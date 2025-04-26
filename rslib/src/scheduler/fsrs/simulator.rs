@@ -232,7 +232,7 @@ impl Collection {
                 .iter()
                 .map(|x| *x as u32)
                 .collect_vec(),
-            daily_new_count: vec![result.cards.iter().map(|c| c.stability).sum::<f32>() as u32],
+            daily_new_count: vec![result.cards.iter().map(|c| c.stability.sqrt() * c.retrievability(&req.params)).sum::<f32>() as u32],
             daily_time_cost: result.cost_per_day,
         })
     }

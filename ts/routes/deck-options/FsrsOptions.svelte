@@ -327,7 +327,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         svg: SVGElement | HTMLElement | null,
         simulateSubgraph: SimulateSubgraph,
     ): Promise<void> {
-        const begin = 0.7;
+        const begin = 0.01;
         const end = 1;
         let results: { i: number; resp: SimulateFsrsReviewResponse }[] = [];
         let failed = true;
