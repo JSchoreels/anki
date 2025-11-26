@@ -279,7 +279,7 @@ impl Collection {
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsWorkloadResponse> {
         let (config, cards) = self.simulate_request_to_config(&req)?;
-        let dr_workload = (70u32..=99u32)
+        let dr_workload = (1u32..=99u32)
             .into_par_iter()
             .map(|dr| {
                 let result = simulate(

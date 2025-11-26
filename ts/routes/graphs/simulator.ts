@@ -54,7 +54,7 @@ export function renderWorkloadChart(
     data: WorkloadPoint[],
     subgraph: SimulateWorkloadSubgraph,
 ) {
-    const xMin = 70;
+    const xMin = 1;
     const xMax = 99;
 
     const x = scaleLinear()
