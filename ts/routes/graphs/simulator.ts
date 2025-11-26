@@ -59,7 +59,7 @@ export function renderWorkloadChart(
     data: WorkloadPoint[],
     subgraph: SimulateWorkloadSubgraph,
 ) {
-    const xMin = 70;
+    const xMin = 1;
     const xMax = 99;
 
     const x = scaleLinear()
@@ -133,8 +133,8 @@ export function renderWorkloadChart(
                 .enter()
                 .attr("x1", x(xMin))
                 .attr("x2", x(xMax))
-                .attr("y1",d => y(d))
-                .attr("y2",d => y(d))
+                .attr("y1", d => y(d))
+                .attr("y2", d => y(d))
                 .attr("stroke", "black")
                 .attr("stroke-dasharray", "5,5")
                 .attr("stroke-width", 1);
