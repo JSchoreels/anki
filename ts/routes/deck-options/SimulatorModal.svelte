@@ -345,7 +345,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     bind:value={daysToSimulate}
                     defaultValue={365}
                     min={1}
-                    max={3650}
+                    max={Infinity}
                 >
                     <SettingTitle on:click={() => openHelpModal("simulateFsrsReview")}>
                         {tr.deckConfigDaysToSimulate()}
