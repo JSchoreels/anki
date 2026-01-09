@@ -125,7 +125,7 @@ impl ReviewState {
             }
             .into()
         } else if ctx.fsrs_allow_short_term
-            && (ctx.fsrs_short_term_with_steps_enabled || ctx.relearn_steps.is_empty())
+            && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
             && scheduled_days < 0.5
         {
             again_relearn.into()

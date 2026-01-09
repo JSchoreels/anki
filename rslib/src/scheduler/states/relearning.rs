@@ -70,7 +70,7 @@ impl RelearnState {
                 review: again_review,
             };
             if ctx.fsrs_allow_short_term
-                && (ctx.fsrs_short_term_with_steps_enabled || ctx.relearn_steps.is_empty())
+                && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
                 && interval < 0.5
             {
                 again_relearn.into()
@@ -118,7 +118,7 @@ impl RelearnState {
                 review: hard_review,
             };
             if ctx.fsrs_allow_short_term
-                && (ctx.fsrs_short_term_with_steps_enabled || ctx.relearn_steps.is_empty())
+                && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
                 && interval < 0.5
             {
                 hard_relearn.into()
@@ -172,7 +172,7 @@ impl RelearnState {
                 review: good_review,
             };
             if ctx.fsrs_allow_short_term
-                && (ctx.fsrs_short_term_with_steps_enabled || ctx.relearn_steps.is_empty())
+                && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
                 && interval < 0.5
             {
                 good_relearn.into()
