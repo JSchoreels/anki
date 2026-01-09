@@ -212,6 +212,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         x: parseInt(dr),
                         timeCost: resp!.cost[dr],
                         memorized: v,
+                        start_memorized: resp!.startMemorized,
                         count: resp!.reviewCount[dr],
                         label: simulationNumber,
                         learnSpan: simulateFsrsRequest.daysToSimulate,
@@ -344,7 +345,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     bind:value={daysToSimulate}
                     defaultValue={365}
                     min={1}
-                    max={3650}
+                    max={Infinity}
                 >
                     <SettingTitle on:click={() => openHelpModal("simulateFsrsReview")}>
                         {tr.deckConfigDaysToSimulate()}
@@ -361,7 +362,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <SpinBoxFloatRow
                         bind:value={simulateFsrsRequest.desiredRetention}
                         defaultValue={$config.desiredRetention}
-                        min={0.7}
+                        min={0.1}
                         max={0.99}
                         percentage={true}
                     >
@@ -570,7 +571,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         value={SimulateWorkloadSubgraph.ratio}
                                         bind:group={simulateWorkloadSubgraph}
                                     />
-                                    {tr.deckConfigFsrsSimulatorRadioRatio()}
+                                    {tr.deckConfigFsrsSimulatorRadioRatio2()}
                                 </label>
                                 <label>
                                     <input

@@ -513,9 +513,8 @@ deck-config-save-options-to-preset-confirm = Overwrite the options in your curre
 # to show the total number of cards that can be recalled or retrieved on a
 # specific date.
 deck-config-fsrs-simulator-radio-memorized = Memorized
-deck-config-fsrs-simulator-radio-ratio = Time / Memorized Ratio
-# $time here is pre-formatted e.g. "10 Seconds" 
-deck-config-fsrs-simulator-ratio-tooltip = { $time } per memorized card
+deck-config-fsrs-simulator-radio-ratio2 = Memorized / Time Ratio
+deck-config-fsrs-simulator-ratio-tooltip2 = { $time } memorized cards per hour
 
 ## Messages related to the FSRS scheduler’s health check. The health check determines whether the correlation between FSRS predictions and your memory is good or bad. It can be optionally triggered as part of the "Optimize" function.
 
@@ -541,11 +540,14 @@ deck-config-unable-to-determine-desired-retention =
 deck-config-predicted-minimum-recommended-retention = Minimum recommended retention: { $num }
 deck-config-compute-minimum-recommended-retention = Minimum recommended retention
 deck-config-compute-optimal-retention-tooltip4 =
-    This tool will attempt to find the desired retention value 
+    This tool will attempt to find the desired retention value
     that will lead to the most material learnt, in the least amount of time. The calculated number can serve as a reference
-    when deciding what to set your desired retention to. You may wish to choose a higher desired retention if you’re 
+    when deciding what to set your desired retention to. You may wish to choose a higher desired retention if you’re
     willing to invest more study time to achieve it. Setting your desired retention lower than the minimum
     is not recommended, as it will lead to a higher workload, because of the high forgetting rate.
+deck-config-fsrs-simulator-radio-ratio = Time / Memorized Ratio
+# $time here is pre-formatted e.g. "10 Seconds"
+deck-config-fsrs-simulator-ratio-tooltip = { $time } per memorized card
 deck-config-plotted-on-x-axis = (Plotted on the X-axis)
 deck-config-a-100-day-interval = 
     { $days ->
