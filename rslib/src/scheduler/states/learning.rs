@@ -52,7 +52,7 @@ impl LearnState {
                 (
                     states.again.interval,
                     ctx.fsrs_allow_short_term
-                        && (ctx.fsrs_short_term_with_steps_enabled || ctx.steps.is_empty())
+                        && (ctx.fsrs_short_term_with_steps_enabled && ctx.steps.is_empty())
                         && states.again.interval < 0.5,
                 )
             } else {
@@ -99,7 +99,7 @@ impl LearnState {
                 (
                     states.hard.interval,
                     ctx.fsrs_allow_short_term
-                        && (ctx.fsrs_short_term_with_steps_enabled || ctx.steps.is_empty())
+                        && (ctx.fsrs_short_term_with_steps_enabled && ctx.steps.is_empty())
                         && states.hard.interval < 0.5,
                 )
             } else {
@@ -146,7 +146,7 @@ impl LearnState {
                 (
                     states.good.interval,
                     ctx.fsrs_allow_short_term
-                        && (ctx.fsrs_short_term_with_steps_enabled || ctx.steps.is_empty())
+                        && (ctx.fsrs_short_term_with_steps_enabled && ctx.steps.is_empty())
                         && states.good.interval < 0.5,
                 )
             } else {
