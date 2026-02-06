@@ -4,12 +4,6 @@
 set -e
 cd ~/workspace/anki
 
-echo "Forcing Rust rebuild..."
-touch rslib/src/lib.rs  # This is all you need
-echo "Cleaning Rust build cache..."
-cargo clean -p anki -p fsrs  # Only clean relevant packages
-
-
 echo "Building Anki wheels..."
 ./tools/build
 
@@ -18,7 +12,7 @@ echo "Building macOS helper..."
 out/pyenv/bin/pip install --force-reinstall qt/mac/dist/anki_mac_helper-0.1.1-py3-none-any.whl
 
 echo "Installing to launcher venv..."
-LAUNCHER_PYTHON="$HOME/Library/Application Support/AnkiProgramFiles/.venv/bin/python"
+LAUNCHER_PYTHON="python3"
 
 # Find the latest wheels
 ANKI_WHEEL=$(ls -t out/wheels/anki-*-cp39-*.whl | head -1)

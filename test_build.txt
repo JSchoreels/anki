@@ -1,0 +1,309 @@
+wheels:anki
+wheels:aqt
+wheels:anki
+n2: ran 2 tasks, now up to date
+[0m[1m[32m
+Build succeeded in 1.07s.
+[0mExporting dependencies...
+Generated pyproject.toml with version 25.09.2
+
+Differences from previous release version:
+Building wheel...
+wheels are in out/wheels
+Building Anki wheels...
+wheels:anki
+wheels:aqt
+wheels:anki
+n2: ran 2 tasks, now up to date
+[0m[1m[32m
+Build succeeded in 1.09s.
+[0mExporting dependencies...
+Generated pyproject.toml with version 25.09.2
+
+Differences from previous release version:
+Building wheel...
+wheels are in out/wheels
+Installing to launcher venv...
+Installing out/wheels/anki-25.9.2-cp39-abi3-macosx_12_0_arm64.whl
+Installing out/wheels/aqt-25.9.2-py3-none-any.whl
+Processing ./out/wheels/anki-25.9.2-cp39-abi3-macosx_12_0_arm64.whl
+Processing ./out/wheels/aqt-25.9.2-py3-none-any.whl
+Installing collected packages: aqt, anki
+  Attempting uninstall: aqt
+    Found existing installation: aqt 25.9.2
+    Uninstalling aqt-25.9.2:
+      Successfully uninstalled aqt-25.9.2
+  Attempting uninstall: anki
+    Found existing installation: anki 25.9.2
+    Uninstalling anki-25.9.2:
+      Successfully uninstalled anki-25.9.2
+
+Successfully installed anki-25.9.2 aqt-25.9.2
+Processing ./out/wheels/aqt-25.9.2-py3-none-any.whl
+Collecting anki-mac-helper>=0.1.1 (from aqt==25.9.2)
+  Using cached anki_mac_helper-0.1.1-py3-none-any.whl.metadata (232 bytes)
+Collecting beautifulsoup4 (from aqt==25.9.2)
+  Using cached beautifulsoup4-4.14.3-py3-none-any.whl.metadata (3.8 kB)
+Collecting flask (from aqt==25.9.2)
+  Using cached flask-3.1.2-py3-none-any.whl.metadata (3.2 kB)
+Collecting flask-cors (from aqt==25.9.2)
+  Using cached flask_cors-6.0.1-py3-none-any.whl.metadata (5.3 kB)
+Collecting jsonschema (from aqt==25.9.2)
+  Using cached jsonschema-4.25.1-py3-none-any.whl.metadata (7.6 kB)
+Collecting pip-system-certs!=5.1 (from aqt==25.9.2)
+  Using cached pip_system_certs-5.3-py3-none-any.whl.metadata (3.9 kB)
+Collecting pyqt6-webengine>=6.2 (from aqt==25.9.2)
+  Using cached pyqt6_webengine-6.10.0-cp39-abi3-macosx_10_14_universal2.whl.metadata (1.9 kB)
+Collecting pyqt6>=6.2 (from aqt==25.9.2)
+  Using cached pyqt6-6.10.1-cp39-abi3-macosx_10_14_universal2.whl.metadata (2.1 kB)
+Collecting requests (from aqt==25.9.2)
+  Using cached requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+Collecting send2trash (from aqt==25.9.2)
+  Using cached Send2Trash-1.8.3-py3-none-any.whl.metadata (4.0 kB)
+Collecting waitress>=2.0.0 (from aqt==25.9.2)
+  Using cached waitress-3.0.2-py3-none-any.whl.metadata (5.8 kB)
+Collecting anki==25.09.2 (from aqt==25.9.2)
+  Using cached anki-25.9.2-cp39-abi3-macosx_12_0_arm64.whl.metadata (355 bytes)
+Collecting decorator (from anki==25.09.2->aqt==25.9.2)
+  Using cached decorator-5.2.1-py3-none-any.whl.metadata (3.9 kB)
+Collecting markdown (from anki==25.09.2->aqt==25.9.2)
+  Using cached markdown-3.10-py3-none-any.whl.metadata (5.1 kB)
+Collecting orjson (from anki==25.09.2->aqt==25.9.2)
+  Using cached orjson-3.11.5-cp313-cp313-macosx_15_0_arm64.whl.metadata (41 kB)
+Collecting protobuf<8.0,>=6.0 (from anki==25.09.2->aqt==25.9.2)
+  Using cached protobuf-6.33.2-cp39-abi3-macosx_10_9_universal2.whl.metadata (593 bytes)
+Collecting typing-extensions (from anki==25.09.2->aqt==25.9.2)
+  Using cached typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting pip>=24.2 (from pip-system-certs!=5.1->aqt==25.9.2)
+  Using cached pip-25.3-py3-none-any.whl.metadata (4.7 kB)
+Collecting PyQt6-sip<14,>=13.8 (from pyqt6>=6.2->aqt==25.9.2)
+  Using cached pyqt6_sip-13.10.3-cp313-cp313-macosx_10_13_universal2.whl.metadata (495 bytes)
+Collecting PyQt6-Qt6<6.11.0,>=6.10.0 (from pyqt6>=6.2->aqt==25.9.2)
+  Using cached pyqt6_qt6-6.10.1-py3-none-macosx_11_0_arm64.whl.metadata (535 bytes)
+Collecting PyQt6-WebEngine-Qt6<6.11.0,>=6.10.0 (from pyqt6-webengine>=6.2->aqt==25.9.2)
+  Using cached pyqt6_webengine_qt6-6.10.1-py3-none-macosx_11_0_arm64.whl.metadata (575 bytes)
+Collecting soupsieve>=1.6.1 (from beautifulsoup4->aqt==25.9.2)
+  Using cached soupsieve-2.8-py3-none-any.whl.metadata (4.6 kB)
+Collecting blinker>=1.9.0 (from flask->aqt==25.9.2)
+  Using cached blinker-1.9.0-py3-none-any.whl.metadata (1.6 kB)
+Collecting click>=8.1.3 (from flask->aqt==25.9.2)
+  Using cached click-8.3.1-py3-none-any.whl.metadata (2.6 kB)
+Collecting itsdangerous>=2.2.0 (from flask->aqt==25.9.2)
+  Using cached itsdangerous-2.2.0-py3-none-any.whl.metadata (1.9 kB)
+Collecting jinja2>=3.1.2 (from flask->aqt==25.9.2)
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Collecting markupsafe>=2.1.1 (from flask->aqt==25.9.2)
+  Using cached markupsafe-3.0.3-cp313-cp313-macosx_11_0_arm64.whl.metadata (2.7 kB)
+Collecting werkzeug>=3.1.0 (from flask->aqt==25.9.2)
+  Using cached werkzeug-3.1.4-py3-none-any.whl.metadata (4.0 kB)
+Collecting attrs>=22.2.0 (from jsonschema->aqt==25.9.2)
+  Using cached attrs-25.4.0-py3-none-any.whl.metadata (10 kB)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema->aqt==25.9.2)
+  Using cached jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting referencing>=0.28.4 (from jsonschema->aqt==25.9.2)
+  Using cached referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting rpds-py>=0.7.1 (from jsonschema->aqt==25.9.2)
+  Using cached rpds_py-0.30.0-cp313-cp313-macosx_11_0_arm64.whl.metadata (4.1 kB)
+Collecting charset_normalizer<4,>=2 (from requests->aqt==25.9.2)
+  Using cached charset_normalizer-3.4.4-cp313-cp313-macosx_10_13_universal2.whl.metadata (37 kB)
+Collecting idna<4,>=2.5 (from requests->aqt==25.9.2)
+  Using cached idna-3.11-py3-none-any.whl.metadata (8.4 kB)
+Collecting urllib3<3,>=1.21.1 (from requests->aqt==25.9.2)
+  Using cached urllib3-2.6.1-py3-none-any.whl.metadata (6.6 kB)
+Collecting certifi>=2017.4.17 (from requests->aqt==25.9.2)
+  Using cached certifi-2025.11.12-py3-none-any.whl.metadata (2.5 kB)
+Collecting PySocks!=1.5.7,>=1.5.6 (from requests[socks]->anki==25.09.2->aqt==25.9.2)
+  Using cached PySocks-1.7.1-py3-none-any.whl.metadata (13 kB)
+Using cached anki-25.9.2-cp39-abi3-macosx_12_0_arm64.whl (9.7 MB)
+Using cached protobuf-6.33.2-cp39-abi3-macosx_10_9_universal2.whl (427 kB)
+Using cached anki_mac_helper-0.1.1-py3-none-any.whl (41 kB)
+Using cached pip_system_certs-5.3-py3-none-any.whl (6.9 kB)
+Using cached pip-25.3-py3-none-any.whl (1.8 MB)
+Using cached pyqt6-6.10.1-cp39-abi3-macosx_10_14_universal2.whl (60.2 MB)
+Using cached pyqt6_qt6-6.10.1-py3-none-macosx_11_0_arm64.whl (62.3 MB)
+Using cached pyqt6_sip-13.10.3-cp313-cp313-macosx_10_13_universal2.whl (112 kB)
+Using cached pyqt6_webengine-6.10.0-cp39-abi3-macosx_10_14_universal2.whl (2.4 MB)
+Using cached pyqt6_webengine_qt6-6.10.1-py3-none-macosx_11_0_arm64.whl (109.5 MB)
+Using cached waitress-3.0.2-py3-none-any.whl (56 kB)
+Using cached beautifulsoup4-4.14.3-py3-none-any.whl (107 kB)
+Using cached soupsieve-2.8-py3-none-any.whl (36 kB)
+Using cached typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+Using cached decorator-5.2.1-py3-none-any.whl (9.2 kB)
+Using cached flask-3.1.2-py3-none-any.whl (103 kB)
+Using cached blinker-1.9.0-py3-none-any.whl (8.5 kB)
+Using cached click-8.3.1-py3-none-any.whl (108 kB)
+Using cached itsdangerous-2.2.0-py3-none-any.whl (16 kB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Using cached markupsafe-3.0.3-cp313-cp313-macosx_11_0_arm64.whl (12 kB)
+Using cached werkzeug-3.1.4-py3-none-any.whl (224 kB)
+Using cached flask_cors-6.0.1-py3-none-any.whl (13 kB)
+Using cached jsonschema-4.25.1-py3-none-any.whl (90 kB)
+Using cached attrs-25.4.0-py3-none-any.whl (67 kB)
+Using cached jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Using cached referencing-0.37.0-py3-none-any.whl (26 kB)
+Using cached rpds_py-0.30.0-cp313-cp313-macosx_11_0_arm64.whl (358 kB)
+Using cached markdown-3.10-py3-none-any.whl (107 kB)
+Using cached orjson-3.11.5-cp313-cp313-macosx_15_0_arm64.whl (129 kB)
+Using cached requests-2.32.5-py3-none-any.whl (64 kB)
+Using cached charset_normalizer-3.4.4-cp313-cp313-macosx_10_13_universal2.whl (208 kB)
+Using cached idna-3.11-py3-none-any.whl (71 kB)
+Using cached urllib3-2.6.1-py3-none-any.whl (131 kB)
+Using cached certifi-2025.11.12-py3-none-any.whl (159 kB)
+Using cached PySocks-1.7.1-py3-none-any.whl (16 kB)
+Using cached Send2Trash-1.8.3-py3-none-any.whl (18 kB)
+Installing collected packages: PyQt6-WebEngine-Qt6, PyQt6-Qt6, waitress, urllib3, typing-extensions, soupsieve, send2trash, rpds-py, PySocks, PyQt6-sip, protobuf, pip, orjson, markupsafe, markdown, itsdangerous, idna, decorator, click, charset_normalizer, certifi, blinker, attrs, anki-mac-helper, werkzeug, requests, referencing, pyqt6, pip-system-certs, jinja2, beautifulsoup4, pyqt6-webengine, jsonschema-specifications, flask, jsonschema, flask-cors, anki, aqt
+  Attempting uninstall: PyQt6-WebEngine-Qt6
+    Found existing installation: PyQt6-WebEngine-Qt6 6.10.1
+    Uninstalling PyQt6-WebEngine-Qt6-6.10.1:
+      Successfully uninstalled PyQt6-WebEngine-Qt6-6.10.1
+  Attempting uninstall: PyQt6-Qt6
+    Found existing installation: PyQt6-Qt6 6.10.1
+    Uninstalling PyQt6-Qt6-6.10.1:
+      Successfully uninstalled PyQt6-Qt6-6.10.1
+  Attempting uninstall: waitress
+    Found existing installation: waitress 3.0.2
+    Uninstalling waitress-3.0.2:
+      Successfully uninstalled waitress-3.0.2
+  Attempting uninstall: urllib3
+    Found existing installation: urllib3 2.6.1
+    Uninstalling urllib3-2.6.1:
+      Successfully uninstalled urllib3-2.6.1
+  Attempting uninstall: typing-extensions
+    Found existing installation: typing_extensions 4.15.0
+    Uninstalling typing_extensions-4.15.0:
+      Successfully uninstalled typing_extensions-4.15.0
+  Attempting uninstall: soupsieve
+    Found existing installation: soupsieve 2.8
+    Uninstalling soupsieve-2.8:
+      Successfully uninstalled soupsieve-2.8
+  Attempting uninstall: send2trash
+    Found existing installation: Send2Trash 1.8.3
+    Uninstalling Send2Trash-1.8.3:
+      Successfully uninstalled Send2Trash-1.8.3
+  Attempting uninstall: rpds-py
+    Found existing installation: rpds-py 0.30.0
+    Uninstalling rpds-py-0.30.0:
+      Successfully uninstalled rpds-py-0.30.0
+  Attempting uninstall: PySocks
+    Found existing installation: PySocks 1.7.1
+    Uninstalling PySocks-1.7.1:
+      Successfully uninstalled PySocks-1.7.1
+  Attempting uninstall: PyQt6-sip
+    Found existing installation: PyQt6_sip 13.10.3
+    Uninstalling PyQt6_sip-13.10.3:
+      Successfully uninstalled PyQt6_sip-13.10.3
+  Attempting uninstall: protobuf
+    Found existing installation: protobuf 6.33.2
+    Uninstalling protobuf-6.33.2:
+      Successfully uninstalled protobuf-6.33.2
+  Attempting uninstall: pip
+    Found existing installation: pip 25.3
+    Uninstalling pip-25.3:
+      Successfully uninstalled pip-25.3
+  Attempting uninstall: orjson
+    Found existing installation: orjson 3.11.5
+    Uninstalling orjson-3.11.5:
+      Successfully uninstalled orjson-3.11.5
+  Attempting uninstall: markupsafe
+    Found existing installation: MarkupSafe 3.0.3
+    Uninstalling MarkupSafe-3.0.3:
+      Successfully uninstalled MarkupSafe-3.0.3
+  Attempting uninstall: markdown
+    Found existing installation: Markdown 3.10
+    Uninstalling Markdown-3.10:
+      Successfully uninstalled Markdown-3.10
+  Attempting uninstall: itsdangerous
+    Found existing installation: itsdangerous 2.2.0
+    Uninstalling itsdangerous-2.2.0:
+      Successfully uninstalled itsdangerous-2.2.0
+  Attempting uninstall: idna
+    Found existing installation: idna 3.11
+    Uninstalling idna-3.11:
+      Successfully uninstalled idna-3.11
+  Attempting uninstall: decorator
+    Found existing installation: decorator 5.2.1
+    Uninstalling decorator-5.2.1:
+      Successfully uninstalled decorator-5.2.1
+  Attempting uninstall: click
+    Found existing installation: click 8.3.1
+    Uninstalling click-8.3.1:
+      Successfully uninstalled click-8.3.1
+  Attempting uninstall: charset_normalizer
+    Found existing installation: charset-normalizer 3.4.4
+    Uninstalling charset-normalizer-3.4.4:
+      Successfully uninstalled charset-normalizer-3.4.4
+  Attempting uninstall: certifi
+    Found existing installation: certifi 2025.11.12
+    Uninstalling certifi-2025.11.12:
+      Successfully uninstalled certifi-2025.11.12
+  Attempting uninstall: blinker
+    Found existing installation: blinker 1.9.0
+    Uninstalling blinker-1.9.0:
+      Successfully uninstalled blinker-1.9.0
+  Attempting uninstall: attrs
+    Found existing installation: attrs 25.4.0
+    Uninstalling attrs-25.4.0:
+      Successfully uninstalled attrs-25.4.0
+  Attempting uninstall: anki-mac-helper
+    Found existing installation: anki-mac-helper 0.1.1
+    Uninstalling anki-mac-helper-0.1.1:
+      Successfully uninstalled anki-mac-helper-0.1.1
+  Attempting uninstall: werkzeug
+    Found existing installation: Werkzeug 3.1.4
+    Uninstalling Werkzeug-3.1.4:
+      Successfully uninstalled Werkzeug-3.1.4
+  Attempting uninstall: requests
+    Found existing installation: requests 2.32.5
+    Uninstalling requests-2.32.5:
+      Successfully uninstalled requests-2.32.5
+  Attempting uninstall: referencing
+    Found existing installation: referencing 0.37.0
+    Uninstalling referencing-0.37.0:
+      Successfully uninstalled referencing-0.37.0
+  Attempting uninstall: pyqt6
+    Found existing installation: PyQt6 6.10.1
+    Uninstalling PyQt6-6.10.1:
+      Successfully uninstalled PyQt6-6.10.1
+  Attempting uninstall: pip-system-certs
+    Found existing installation: pip_system_certs 5.3
+    Uninstalling pip_system_certs-5.3:
+      Successfully uninstalled pip_system_certs-5.3
+  Attempting uninstall: jinja2
+    Found existing installation: Jinja2 3.1.6
+    Uninstalling Jinja2-3.1.6:
+      Successfully uninstalled Jinja2-3.1.6
+  Attempting uninstall: beautifulsoup4
+    Found existing installation: beautifulsoup4 4.14.3
+    Uninstalling beautifulsoup4-4.14.3:
+      Successfully uninstalled beautifulsoup4-4.14.3
+  Attempting uninstall: pyqt6-webengine
+    Found existing installation: PyQt6-WebEngine 6.10.0
+    Uninstalling PyQt6-WebEngine-6.10.0:
+      Successfully uninstalled PyQt6-WebEngine-6.10.0
+  Attempting uninstall: jsonschema-specifications
+    Found existing installation: jsonschema-specifications 2025.9.1
+    Uninstalling jsonschema-specifications-2025.9.1:
+      Successfully uninstalled jsonschema-specifications-2025.9.1
+  Attempting uninstall: flask
+    Found existing installation: Flask 3.1.2
+    Uninstalling Flask-3.1.2:
+      Successfully uninstalled Flask-3.1.2
+  Attempting uninstall: jsonschema
+    Found existing installation: jsonschema 4.25.1
+    Uninstalling jsonschema-4.25.1:
+      Successfully uninstalled jsonschema-4.25.1
+  Attempting uninstall: flask-cors
+    Found existing installation: flask-cors 6.0.1
+    Uninstalling flask-cors-6.0.1:
+      Successfully uninstalled flask-cors-6.0.1
+  Attempting uninstall: anki
+    Found existing installation: anki 25.9.2
+    Uninstalling anki-25.9.2:
+      Successfully uninstalled anki-25.9.2
+  Attempting uninstall: aqt
+    Found existing installation: aqt 25.9.2
+    Uninstalling aqt-25.9.2:
+      Successfully uninstalled aqt-25.9.2
+
+Successfully installed PyQt6-Qt6-6.10.1 PyQt6-WebEngine-Qt6-6.10.1 PyQt6-sip-13.10.3 PySocks-1.7.1 anki-25.9.2 anki-mac-helper-0.1.1 aqt-25.9.2 attrs-25.4.0 beautifulsoup4-4.14.3 blinker-1.9.0 certifi-2025.11.12 charset_normalizer-3.4.4 click-8.3.1 decorator-5.2.1 flask-3.1.2 flask-cors-6.0.1 idna-3.11 itsdangerous-2.2.0 jinja2-3.1.6 jsonschema-4.25.1 jsonschema-specifications-2025.9.1 markdown-3.10 markupsafe-3.0.3 orjson-3.11.5 pip-25.3 pip-system-certs-5.3 protobuf-6.33.2 pyqt6-6.10.1 pyqt6-webengine-6.10.0 referencing-0.37.0 requests-2.32.5 rpds-py-0.30.0 send2trash-1.8.3 soupsieve-2.8 typing-extensions-4.15.0 urllib3-2.6.1 waitress-3.0.2 werkzeug-3.1.4
+Done! Launch Anki.app to see your changes
