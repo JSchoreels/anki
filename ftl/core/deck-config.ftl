@@ -520,6 +520,8 @@ deck-config-fsrs-simulator-ratio-tooltip2 = { $time } memorized cards per hour
 
 # Checkbox
 deck-config-health-check = Check health when optimizing
+# Button
+deck-config-health-check-button = Check Health
 # Message box showing the result of the health check
 deck-config-fsrs-bad-fit-warning = Health Check:
     Your memory is difficult for FSRS to predict. Recommendations:
