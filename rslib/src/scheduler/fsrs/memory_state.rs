@@ -20,6 +20,7 @@ use crate::scheduler::answering::get_fuzz_seed;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::states::fuzz::with_review_fuzz;
+use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::search::Negated;
 use crate::search::SearchNode;
 use crate::search::StateKind;
@@ -48,6 +49,7 @@ pub(crate) struct UpdateMemoryStateRequest {
     pub preset_desired_retention: f32,
     pub historical_retention: f32,
     pub max_interval: u32,
+    pub review_fuzz_config: ReviewFuzzConfig,
     pub reschedule: bool,
     pub deck_desired_retention: HashMap<DeckId, f32>,
 }
@@ -172,6 +174,7 @@ impl Collection {
                                                         interval,
                                                         min_interval(interval as u32),
                                                         req.max_interval,
+                                                        req.review_fuzz_config,
                                                     )
                                                 });
                                             let due = if card.original_due != 0 {

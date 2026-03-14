@@ -24,6 +24,7 @@ use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::scheduler::states::fuzz::constrained_fuzz_bounds;
+use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::calculate_easy_days_modifiers;
 use crate::scheduler::states::load_balancer::interval_to_weekday;
 use crate::scheduler::states::load_balancer::parse_easy_days_percentages;
@@ -40,8 +41,10 @@ pub(crate) fn apply_load_balance_and_easy_days(
     rng: &mut StdRng,
     next_day_at: TimestampSecs,
     easy_days_percentages: &[EasyDay; 7],
+    review_fuzz_config: ReviewFuzzConfig,
 ) -> f32 {
-    let (lower, upper) = constrained_fuzz_bounds(interval, 1, max_interval as u32);
+    let (lower, upper) =
+        constrained_fuzz_bounds(interval, 1, max_interval as u32, review_fuzz_config);
     let mut review_counts = vec![0; upper as usize - lower as usize + 1];
 
     // Fill review_counts with due counts for each interval
@@ -196,6 +199,19 @@ impl Collection {
         let p = self.get_optimal_retention_parameters(revlogs)?;
 
         let easy_days_percentages = parse_easy_days_percentages(&req.easy_days_percentages)?;
+        let mut review_fuzz_config = ReviewFuzzConfig::default();
+        if let Some(value) = req.review_fuzz_base {
+            review_fuzz_config.base = value;
+        }
+        if let Some(value) = req.review_fuzz_factor_short {
+            review_fuzz_config.factor_short = value;
+        }
+        if let Some(value) = req.review_fuzz_factor_mid {
+            review_fuzz_config.factor_mid = value;
+        }
+        if let Some(value) = req.review_fuzz_factor_long {
+            review_fuzz_config.factor_long = value;
+        }
         let next_day_at = self.timing_today()?.next_day_at;
 
         let post_scheduling_fn: Option<PostSchedulingFn> =
@@ -210,6 +226,7 @@ impl Collection {
                             rng,
                             next_day_at,
                             &easy_days_percentages,
+                            review_fuzz_config,
                         )
                     },
                 )))
@@ -300,9 +317,9 @@ impl Collection {
                 ))
             })
             .collect::<Result<HashMap<_, _>>>()?;
-        let start_memorized = cards
-            .iter()
-            .fold(0., |p, c| p + c.retention_on(&req.params, req.days_to_simulate as f32));
+        let start_memorized = cards.iter().fold(0., |p, c| {
+            p + c.retention_on(&req.params, req.days_to_simulate as f32)
+        });
         Ok(SimulateFsrsWorkloadResponse {
             start_memorized,
             memorized: dr_workload.iter().map(|(k, v)| (*k, v.0)).collect(),

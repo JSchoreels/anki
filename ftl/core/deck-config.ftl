@@ -323,6 +323,17 @@ deck-config-easy-days-reduced = Reduced
 deck-config-easy-days-minimum = Minimum
 deck-config-easy-days-no-normal-days = At least one day should be set to '{ deck-config-easy-days-normal }'.
 deck-config-easy-days-change = Existing reviews will not be rescheduled unless '{ deck-config-reschedule-cards-on-change }' is enabled in the FSRS options.
+deck-config-load-balancer-enabled = Enable load balancer
+deck-config-review-fuzz-enabled = Enable review fuzz
+deck-config-review-fuzz-title = Review fuzz
+deck-config-review-fuzz-base = Base fuzz (days)
+deck-config-review-fuzz-factor-short = Fuzz factor (2.5-7 days)
+deck-config-review-fuzz-factor-mid = Fuzz factor (7-20 days)
+deck-config-review-fuzz-factor-long = Fuzz factor (20+ days)
+deck-config-review-fuzz-preview = Review fuzz preview
+deck-config-default-fuzz = Default fuzz
+deck-config-current-fuzz = Current fuzz
+deck-config-selected-fuzz = Selected fuzz
 
 ## Adding/renaming
 
@@ -400,6 +411,13 @@ deck-config-ignore-before = Ignore cards reviewed before
 deck-config-time-to-optimize = It's been a while - using the Optimize All Presets button is recommended.
 deck-config-evaluate-button = Evaluate
 deck-config-desired-retention = Desired retention
+deck-config-new-card-intervals = New card intervals at graduation
+deck-config-current-dr = Current DR
+deck-config-selected-dr = Selected DR
+deck-config-again-then-good = Again -> Good
+deck-config-again-then-again = Again -> Again
+deck-config-good-then-again = Good -> Again
+deck-config-good-then-good = Good -> Good
 deck-config-historical-retention = Historical retention
 deck-config-smaller-is-better = Smaller numbers indicate a better fit to your review history.
 deck-config-steps-too-large-for-fsrs = When FSRS is enabled, steps of 1 day or more are not recommended.

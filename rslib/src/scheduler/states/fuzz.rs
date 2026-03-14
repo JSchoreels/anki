@@ -3,6 +3,10 @@
 
 use super::StateContext;
 use crate::collection::Collection;
+use crate::deckconfig::DEFAULT_REVIEW_FUZZ_BASE;
+use crate::deckconfig::DEFAULT_REVIEW_FUZZ_FACTOR_LONG;
+use crate::deckconfig::DEFAULT_REVIEW_FUZZ_FACTOR_MID;
+use crate::deckconfig::DEFAULT_REVIEW_FUZZ_FACTOR_SHORT;
 use crate::prelude::*;
 
 /// Describes a range of days for which a certain amount of fuzz is applied to
@@ -10,26 +14,56 @@ use crate::prelude::*;
 struct FuzzRange {
     start: f32,
     end: f32,
-    factor: f32,
 }
 
 static FUZZ_RANGES: [FuzzRange; 3] = [
     FuzzRange {
         start: 2.5,
         end: 7.0,
-        factor: 0.15,
     },
     FuzzRange {
         start: 7.0,
         end: 20.0,
-        factor: 0.1,
     },
     FuzzRange {
         start: 20.0,
         end: f32::MAX,
-        factor: 0.05,
     },
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReviewFuzzConfig {
+    pub base: f32,
+    pub factor_short: f32,
+    pub factor_mid: f32,
+    pub factor_long: f32,
+}
+
+impl Default for ReviewFuzzConfig {
+    fn default() -> Self {
+        Self {
+            base: DEFAULT_REVIEW_FUZZ_BASE,
+            factor_short: DEFAULT_REVIEW_FUZZ_FACTOR_SHORT,
+            factor_mid: DEFAULT_REVIEW_FUZZ_FACTOR_MID,
+            factor_long: DEFAULT_REVIEW_FUZZ_FACTOR_LONG,
+        }
+    }
+}
+
+impl ReviewFuzzConfig {
+    pub fn none() -> Self {
+        Self {
+            base: 0.0,
+            factor_short: 0.0,
+            factor_mid: 0.0,
+            factor_long: 0.0,
+        }
+    }
+
+    fn factors(self) -> [f32; 3] {
+        [self.factor_short, self.factor_mid, self.factor_long]
+    }
+}
 
 impl StateContext<'_> {
     /// Apply fuzz, respecting the passed bounds.
@@ -39,7 +73,15 @@ impl StateContext<'_> {
             .and_then(|load_balancer_ctx| {
                 load_balancer_ctx.find_interval(interval, minimum, maximum)
             })
-            .unwrap_or_else(|| with_review_fuzz(self.fuzz_factor, interval, minimum, maximum))
+            .unwrap_or_else(|| {
+                with_review_fuzz(
+                    self.fuzz_factor,
+                    interval,
+                    minimum,
+                    maximum,
+                    self.review_fuzz_config,
+                )
+            })
     }
 }
 
@@ -57,6 +99,7 @@ impl Collection {
             interval as f32,
             1,
             config.inner.maximum_review_interval,
+            config.review_fuzz_config(),
         );
         Ok((fuzzed as i32) - (interval as i32))
     }
@@ -67,9 +110,11 @@ pub(crate) fn with_review_fuzz(
     interval: f32,
     minimum: u32,
     maximum: u32,
+    review_fuzz_config: ReviewFuzzConfig,
 ) -> u32 {
     if let Some(fuzz_factor) = fuzz_factor {
-        let (lower, upper) = constrained_fuzz_bounds(interval, minimum, maximum);
+        let (lower, upper) =
+            constrained_fuzz_bounds(interval, minimum, maximum, review_fuzz_config);
         (lower as f32 + fuzz_factor * ((1 + upper - lower) as f32)).floor() as u32
     } else {
         (interval.round() as u32).clamp(minimum, maximum)
@@ -79,10 +124,15 @@ pub(crate) fn with_review_fuzz(
 /// Return the bounds of the fuzz range, respecting `minimum` and `maximum`.
 /// Ensure the upper bound is larger than the lower bound, if `maximum` allows
 /// it and it is larger than 1.
-pub(crate) fn constrained_fuzz_bounds(interval: f32, minimum: u32, maximum: u32) -> (u32, u32) {
+pub(crate) fn constrained_fuzz_bounds(
+    interval: f32,
+    minimum: u32,
+    maximum: u32,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> (u32, u32) {
     let minimum = minimum.min(maximum);
     let interval = interval.clamp(minimum as f32, maximum as f32);
-    let (mut lower, mut upper) = fuzz_bounds(interval);
+    let (mut lower, mut upper) = fuzz_bounds(interval, review_fuzz_config);
 
     // minimum <= maximum and lower <= upper are assumed
     // now ensure minimum <= lower <= upper <= maximum
@@ -96,8 +146,8 @@ pub(crate) fn constrained_fuzz_bounds(interval: f32, minimum: u32, maximum: u32)
     (lower, upper)
 }
 
-pub(crate) fn fuzz_bounds(interval: f32) -> (u32, u32) {
-    let delta = fuzz_delta(interval);
+pub(crate) fn fuzz_bounds(interval: f32, review_fuzz_config: ReviewFuzzConfig) -> (u32, u32) {
+    let delta = fuzz_delta(interval, review_fuzz_config);
     (
         (interval - delta).round() as u32,
         (interval + delta).round() as u32,
@@ -105,16 +155,19 @@ pub(crate) fn fuzz_bounds(interval: f32) -> (u32, u32) {
 }
 
 /// Return the amount of fuzz to apply to the interval in both directions.
-/// Short intervals do not get fuzzed. All other intervals get fuzzed by 1 day
-/// plus the number of its days in each defined fuzz range multiplied with the
-/// given factor.
-fn fuzz_delta(interval: f32) -> f32 {
+/// Short intervals do not get fuzzed. All other intervals get fuzzed by the
+/// configured base amount plus the number of its days in each defined fuzz
+/// range multiplied with the configured factor for that range.
+fn fuzz_delta(interval: f32, review_fuzz_config: ReviewFuzzConfig) -> f32 {
     if interval < 2.5 {
         0.0
     } else {
-        FUZZ_RANGES.iter().fold(1.0, |delta, range| {
-            delta + range.factor * (interval.min(range.end) - range.start).max(0.0)
-        })
+        FUZZ_RANGES.iter().zip(review_fuzz_config.factors()).fold(
+            review_fuzz_config.base,
+            |delta, (range, factor)| {
+                delta + factor * (interval.min(range.end) - range.start).max(0.0)
+            },
+        )
     }
 }
 
@@ -176,6 +229,30 @@ mod test {
 
     #[test]
     fn invalid_values_will_not_panic() {
-        constrained_fuzz_bounds(1.0, 3, 2);
+        constrained_fuzz_bounds(1.0, 3, 2, ReviewFuzzConfig::default());
+    }
+
+    #[test]
+    fn configurable_review_fuzz_changes_bounds() {
+        let wider = ReviewFuzzConfig {
+            base: 2.0,
+            factor_short: 0.3,
+            factor_mid: 0.2,
+            factor_long: 0.1,
+        };
+        assert_eq!(fuzz_bounds(7.0, wider), (4, 10));
+        assert_eq!(constrained_fuzz_bounds(100.0, 1, 1000, wider), (86, 114));
+    }
+
+    #[test]
+    fn zero_review_fuzz_disables_delta() {
+        let none = ReviewFuzzConfig {
+            base: 0.0,
+            factor_short: 0.0,
+            factor_mid: 0.0,
+            factor_long: 0.0,
+        };
+        assert_eq!(fuzz_bounds(7.0, none), (7, 7));
+        assert_eq!(fuzz_bounds(37.0, none), (37, 37));
     }
 }

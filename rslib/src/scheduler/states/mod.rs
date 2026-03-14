@@ -16,6 +16,7 @@ pub(crate) mod steps;
 
 pub use filtered::FilteredState;
 use fsrs::NextStates;
+use fuzz::ReviewFuzzConfig;
 pub(crate) use interval_kind::IntervalKind;
 pub use learning::LearnState;
 use load_balancer::LoadBalancerContext;
@@ -100,6 +101,7 @@ pub(crate) struct StateContext<'a> {
     pub hard_multiplier: f32,
     pub easy_multiplier: f32,
     pub interval_multiplier: f32,
+    pub review_fuzz_config: ReviewFuzzConfig,
     pub maximum_review_interval: u32,
     pub leech_threshold: u32,
     pub load_balancer_ctx: Option<LoadBalancerContext<'a>>,
@@ -135,6 +137,7 @@ impl StateContext<'_> {
             hard_multiplier: 1.2,
             easy_multiplier: 1.3,
             interval_multiplier: 1.0,
+            review_fuzz_config: ReviewFuzzConfig::default(),
             maximum_review_interval: 36500,
             leech_threshold: 8,
             load_balancer_ctx: None,

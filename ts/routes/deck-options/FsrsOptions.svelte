@@ -12,6 +12,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         computeFsrsParams,
         evaluateParams,
         evaluateParamsLegacy,
+        getFsrsNewCardIntervals,
         getRetentionWorkload,
         setWantsAbort,
     } from "@generated/backend";
@@ -29,6 +30,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
+        DeckConfig_Config,
         GetRetentionWorkloadRequest,
         type GetRetentionWorkloadResponse,
         UpdateDeckConfigsMode,
@@ -104,6 +106,30 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let effectiveDesiredRetention =
         $limits.desiredRetention ?? $config.desiredRetention;
     const startingDesiredRetention = effectiveDesiredRetention.toFixed(2);
+    const startingDesiredRetentionValue = Number(startingDesiredRetention);
+    const intervalColumns = [
+        tr.studyingAgain(),
+        tr.studyingHard(),
+        tr.studyingGood(),
+        tr.studyingEasy(),
+        tr.deckConfigAgainThenGood(),
+        tr.deckConfigAgainThenAgain(),
+        tr.deckConfigGoodThenAgain(),
+        tr.deckConfigGoodThenGood(),
+    ];
+    const intervalRowClasses = [
+        "interval-again",
+        "interval-hard",
+        "interval-good",
+        "interval-easy",
+        "",
+        "",
+        "",
+        "",
+    ];
+    let newCardIntervals: [string[], string[]] | undefined;
+    let newCardIntervalsError = "";
+    let newCardIntervalRequest = 0;
 
     $: simulateFsrsRequest = new SimulateFsrsReviewRequest({
         params: fsrsParams($config),
@@ -118,7 +144,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         historicalRetention: $config.historicalRetention,
         learningStepCount: $config.learnSteps.length,
         relearningStepCount: $config.relearnSteps.length,
+        reviewFuzzBase: $config.reviewFuzzEnabled ? $config.reviewFuzzBase : 0,
+        reviewFuzzFactorShort: $config.reviewFuzzEnabled
+            ? $config.reviewFuzzFactorShort
+            : 0,
+        reviewFuzzFactorMid: $config.reviewFuzzEnabled
+            ? $config.reviewFuzzFactorMid
+            : 0,
+        reviewFuzzFactorLong: $config.reviewFuzzEnabled
+            ? $config.reviewFuzzFactorLong
+            : 0,
     });
+
+    $: void loadNewCardIntervals(
+        startingDesiredRetentionValue,
+        effectiveDesiredRetention,
+        fsrsParams($config),
+        $config.learnSteps,
+        $config.relearnSteps,
+        $config.maximumReviewInterval,
+        $config.graduatingIntervalGood,
+        $config.graduatingIntervalEasy,
+        $config.initialEase,
+        $config.hardMultiplier,
+        $config.easyMultiplier,
+        $config.intervalMultiplier,
+        $config.leechThreshold,
+        $config.lapseMultiplier,
+        $config.minimumLapseInterval,
+    );
 
     const DESIRED_RETENTION_LOW_THRESHOLD = 0.8;
     const DESIRED_RETENTION_HIGH_THRESHOLD = 0.95;
@@ -136,6 +190,62 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let retentionWorkloadInfo: undefined | Promise<GetRetentionWorkloadResponse> =
         undefined;
     let lastParams = [...fsrsParams($config)];
+
+    function configWithDesiredRetention(
+        currentConfig: DeckConfig_Config,
+        desiredRetention: number,
+    ): DeckConfig_Config {
+        const config = new DeckConfig_Config(currentConfig);
+        config.desiredRetention = desiredRetention;
+        return config;
+    }
+
+    async function loadNewCardIntervals(
+        currentRetention: number,
+        selectedRetention: number,
+        params: number[],
+        _learnSteps: number[],
+        _relearnSteps: number[],
+        _maximumReviewInterval: number,
+        _graduatingIntervalGood: number,
+        _graduatingIntervalEasy: number,
+        _initialEase: number,
+        _hardMultiplier: number,
+        _easyMultiplier: number,
+        _intervalMultiplier: number,
+        _leechThreshold: number,
+        _lapseMultiplier: number,
+        _minimumLapseInterval: number,
+    ): Promise<void> {
+        const request = ++newCardIntervalRequest;
+        newCardIntervalsError = "";
+        const currentConfig = new DeckConfig_Config($config);
+        currentConfig.fsrsParams6 = [...params];
+        try {
+            const [current, selected] = await Promise.all([
+                getFsrsNewCardIntervals(
+                    configWithDesiredRetention(currentConfig, currentRetention),
+                ),
+                getFsrsNewCardIntervals(
+                    configWithDesiredRetention(currentConfig, selectedRetention),
+                ),
+            ]);
+            if (request !== newCardIntervalRequest) {
+                return;
+            }
+            newCardIntervals = [current.vals, selected.vals];
+            newCardIntervalsError = "";
+        } catch (err) {
+            if (request === newCardIntervalRequest) {
+                newCardIntervals = undefined;
+                newCardIntervalsError =
+                    err instanceof Error
+                        ? err.message
+                        : String(err);
+                console.error("failed to load FSRS new-card intervals", err);
+            }
+        }
+    }
 
     async function getRetentionChangeInfo(retention: number, params: number[]) {
         if (+startingDesiredRetention == roundedRetention) {
@@ -425,6 +535,40 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </Item>
 </DynamicallySlottable>
 
+{#if newCardIntervals}
+    <div class="interval-preview ms-1 me-1">
+        <div class="interval-preview-title">
+            {tr.deckConfigNewCardIntervals()}
+        </div>
+        <table class="interval-preview-table">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>
+                        {tr.deckConfigCurrentDr()}
+                        ({(startingDesiredRetentionValue * 100).toFixed(2)}%)
+                    </th>
+                    <th>
+                        {tr.deckConfigSelectedDr()}
+                        ({(effectiveDesiredRetention * 100).toFixed(2)}%)
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                {#each intervalColumns as column, index}
+                    <tr class={intervalRowClasses[index]}>
+                        <th>{column}</th>
+                        <td>{newCardIntervals[0][index]}</td>
+                        <td>{newCardIntervals[1][index]}</td>
+                    </tr>
+                {/each}
+            </tbody>
+        </table>
+    </div>
+{/if}
+
+<Warning warning={newCardIntervalsError} className={"alert-warning"} />
+
 <button
     class="btn btn-primary"
     on:click={() => {
@@ -554,6 +698,54 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <style>
     .btn {
         margin-bottom: 0.375rem;
+    }
+
+    .interval-preview {
+        margin-bottom: 0.75rem;
+        overflow-x: auto;
+    }
+
+    .interval-preview-title {
+        font-weight: 600;
+        margin-bottom: 0.375rem;
+    }
+
+    .interval-preview-table {
+        width: 100%;
+        font-size: 0.9rem;
+        border-collapse: collapse;
+    }
+
+    .interval-preview-table th,
+    .interval-preview-table td {
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--border);
+        text-align: left;
+        white-space: nowrap;
+    }
+
+    .interval-preview-table thead th {
+        background: var(--canvas-elevated);
+    }
+
+    .interval-preview-table tr.interval-again th,
+    .interval-preview-table tr.interval-again td {
+        color: var(--fg-red, #b42318);
+    }
+
+    .interval-preview-table tr.interval-hard th,
+    .interval-preview-table tr.interval-hard td {
+        color: var(--fg-orange, #b54708);
+    }
+
+    .interval-preview-table tr.interval-good th,
+    .interval-preview-table tr.interval-good td {
+        color: var(--fg-green, #027a48);
+    }
+
+    .interval-preview-table tr.interval-easy th,
+    .interval-preview-table tr.interval-easy td {
+        color: var(--fg-light-green, #12b76a);
     }
 
     :global(.two-line) {

@@ -41,6 +41,7 @@ pub struct UpdateDeckConfigsRequest {
     pub new_cards_ignore_review_limit: bool,
     pub apply_all_parent_limits: bool,
     pub fsrs: bool,
+    pub load_balancer_enabled: bool,
     pub fsrs_reschedule: bool,
     pub fsrs_health_check: bool,
 }
@@ -73,6 +74,7 @@ impl Collection {
             new_cards_ignore_review_limit: self.get_config_bool(BoolKey::NewCardsIgnoreReviewLimit),
             apply_all_parent_limits: self.get_config_bool(BoolKey::ApplyAllParentLimits),
             fsrs: self.get_config_bool(BoolKey::Fsrs),
+            load_balancer_enabled: self.get_config_bool(BoolKey::LoadBalancerEnabled),
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
@@ -227,6 +229,7 @@ impl Collection {
                 let previous_deck_dr = normal.desired_retention;
                 let previous_dr = previous_deck_dr.or(previous_preset_dr);
                 let previous_easy_days = previous_config.map(|c| &c.inner.easy_days_percentages);
+                let previous_review_fuzz = previous_config.map(|c| c.review_fuzz_config());
 
                 // if a selected (sub)deck, or its old config was removed, update deck to point
                 // to new config
@@ -256,10 +259,12 @@ impl Collection {
                 let current_preset_dr = current_config.map(|c| c.inner.desired_retention);
                 let current_dr = current_deck_dr.or(current_preset_dr);
                 let current_easy_days = current_config.map(|c| &c.inner.easy_days_percentages);
+                let current_review_fuzz = current_config.map(|c| c.review_fuzz_config());
                 if fsrs_toggled
                     || previous_params != current_params
                     || previous_dr != current_dr
                     || (req.fsrs_reschedule && previous_easy_days != current_easy_days)
+                    || (req.fsrs_reschedule && previous_review_fuzz != current_review_fuzz)
                 {
                     decks_needing_memory_recompute
                         .entry(current_config_id)
@@ -284,6 +289,7 @@ impl Collection {
                                 params: c.fsrs_params().clone(),
                                 preset_desired_retention: c.inner.desired_retention,
                                 max_interval: c.inner.maximum_review_interval,
+                                review_fuzz_config: c.review_fuzz_config(),
                                 reschedule: req.fsrs_reschedule,
                                 historical_retention: c.inner.historical_retention,
                                 deck_desired_retention: deck_desired_retention.clone(),
@@ -310,6 +316,7 @@ impl Collection {
             req.new_cards_ignore_review_limit,
         )?;
         self.set_config_bool_inner(BoolKey::ApplyAllParentLimits, req.apply_all_parent_limits)?;
+        self.set_config_bool_inner(BoolKey::LoadBalancerEnabled, req.load_balancer_enabled)?;
         self.set_config_bool_inner(BoolKey::FsrsHealthCheck, req.fsrs_health_check)?;
 
         Ok(())
@@ -500,6 +507,7 @@ mod test {
             card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
+            load_balancer_enabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,

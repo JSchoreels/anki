@@ -96,6 +96,7 @@ impl CardStateUpdater {
             hard_multiplier: self.config.inner.hard_multiplier,
             easy_multiplier: self.config.inner.easy_multiplier,
             interval_multiplier: self.config.inner.interval_multiplier,
+            review_fuzz_config: self.config.review_fuzz_config(),
             maximum_review_interval: self.config.inner.maximum_review_interval,
             leech_threshold: self.config.inner.leech_threshold,
             load_balancer_ctx: load_balancer_ctx

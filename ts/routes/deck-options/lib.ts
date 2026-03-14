@@ -42,6 +42,7 @@ type AllConfigs =
             | "cardStateCustomizer"
             | "limits"
             | "newCardsIgnoreReviewLimit"
+            | "loadBalancerEnabled"
             | "applyAllParentLimits"
             | "fsrs"
             | "fsrsReschedule"
@@ -59,6 +60,7 @@ export class DeckOptionsState {
     readonly defaults: DeckConfig_Config;
     readonly addonComponents: Writable<DynamicSvelteComponent[]>;
     readonly newCardsIgnoreReviewLimit: Writable<boolean>;
+    readonly loadBalancerEnabled: Writable<boolean>;
     readonly applyAllParentLimits: Writable<boolean>;
     readonly fsrs: Writable<boolean>;
     readonly fsrsReschedule: Writable<boolean> = writable(false);
@@ -103,6 +105,7 @@ export class DeckOptionsState {
         this.cardStateCustomizer = writable(data.cardStateCustomizer);
         this.deckLimits = writable(data.currentDeck?.limits ?? createLimits());
         this.newCardsIgnoreReviewLimit = writable(data.newCardsIgnoreReviewLimit);
+        this.loadBalancerEnabled = writable(data.loadBalancerEnabled);
         this.applyAllParentLimits = writable(data.applyAllParentLimits);
         this.fsrs = writable(data.fsrs);
         this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
@@ -268,6 +271,7 @@ export class DeckOptionsState {
             cardStateCustomizer: get(this.cardStateCustomizer),
             limits: get(this.deckLimits),
             newCardsIgnoreReviewLimit: get(this.newCardsIgnoreReviewLimit),
+            loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
             fsrsReschedule: get(this.fsrsReschedule),
@@ -363,6 +367,7 @@ export class DeckOptionsState {
             cardStateCustomizer: get(this.cardStateCustomizer),
             limits: get(this.deckLimits),
             newCardsIgnoreReviewLimit: get(this.newCardsIgnoreReviewLimit),
+            loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
             fsrsReschedule: get(this.fsrsReschedule),

@@ -5,6 +5,7 @@ mod answering;
 mod states;
 
 use anki_proto::cards;
+use anki_proto::deck_config;
 use anki_proto::generic;
 use anki_proto::scheduler;
 use anki_proto::scheduler::ComputeFsrsParamsResponse;
@@ -23,10 +24,13 @@ use fsrs::FSRSReview;
 use fsrs::FSRS;
 
 use crate::backend::Backend;
+use crate::config::BoolKey;
 use crate::prelude::*;
+use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::new::NewCardDueOrder;
 use crate::scheduler::states::CardState;
+use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
 use crate::search::SortMode;
 use crate::stats::studied_today;
@@ -297,6 +301,118 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<ComputeOptimalRetentionResponse> {
         Ok(ComputeOptimalRetentionResponse {
             optimal_retention: self.compute_optimal_retention(input)?,
+        })
+    }
+
+    fn get_fsrs_new_card_intervals(
+        &mut self,
+        input: deck_config::deck_config::Config,
+    ) -> Result<generic::StringList> {
+        let config = crate::deckconfig::DeckConfig {
+            inner: input,
+            ..Default::default()
+        };
+        let fsrs = FSRS::new(Some(config.fsrs_params()))?;
+        let params = config.fsrs_params();
+        let fsrs_allow_short_term = if params.len() >= 19 {
+            params[17] > 0.0 && params[18] > 0.0
+        } else {
+            false
+        };
+        let fsrs_short_term_with_steps_enabled =
+            self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
+        let make_ctx = |memory_state: Option<fsrs::MemoryState>,
+                        days_elapsed: u32|
+         -> Result<crate::scheduler::states::StateContext<'_>> {
+            Ok(crate::scheduler::states::StateContext {
+                fuzz_factor: None,
+                fsrs_next_states: Some(fsrs.next_states(
+                    memory_state,
+                    config.inner.desired_retention,
+                    days_elapsed,
+                )?),
+                fsrs_short_term_with_steps_enabled,
+                fsrs_allow_short_term,
+                steps: crate::scheduler::states::steps::LearningSteps::new(
+                    &config.inner.learn_steps,
+                ),
+                graduating_interval_good: config.inner.graduating_interval_good,
+                graduating_interval_easy: config.inner.graduating_interval_easy,
+                initial_ease_factor: config.inner.initial_ease,
+                hard_multiplier: config.inner.hard_multiplier,
+                easy_multiplier: config.inner.easy_multiplier,
+                interval_multiplier: config.inner.interval_multiplier,
+                review_fuzz_config: config.review_fuzz_config(),
+                maximum_review_interval: config.inner.maximum_review_interval,
+                leech_threshold: config.inner.leech_threshold,
+                load_balancer_ctx: None,
+                relearn_steps: crate::scheduler::states::steps::LearningSteps::new(
+                    &config.inner.relearn_steps,
+                ),
+                lapse_multiplier: config.inner.lapse_multiplier,
+                minimum_lapse_interval: config.inner.minimum_lapse_interval,
+                in_filtered_deck: false,
+                preview_delays: PreviewDelays::default(),
+            })
+        };
+        let next_followup_states =
+            |state: &crate::scheduler::states::CardState| -> Result<SchedulingStates> {
+                let (memory_state, days_elapsed) = match state {
+                    crate::scheduler::states::CardState::Normal(
+                        crate::scheduler::states::NormalState::Learning(state),
+                    ) => (
+                        state.memory_state.map(Into::into),
+                        if state.scheduled_secs == 0 {
+                            0
+                        } else {
+                            (state.scheduled_secs / 86_400).max(1)
+                        },
+                    ),
+                    crate::scheduler::states::CardState::Normal(
+                        crate::scheduler::states::NormalState::Review(state),
+                    ) => (state.memory_state.map(Into::into), state.scheduled_days),
+                    crate::scheduler::states::CardState::Normal(
+                        crate::scheduler::states::NormalState::Relearning(state),
+                    ) => (
+                        state.learning.memory_state.map(Into::into),
+                        if state.learning.scheduled_secs == 0 {
+                            state.review.scheduled_days
+                        } else {
+                            (state.learning.scheduled_secs / 86_400).max(1)
+                        },
+                    ),
+                    crate::scheduler::states::CardState::Normal(
+                        crate::scheduler::states::NormalState::New(_),
+                    )
+                    | crate::scheduler::states::CardState::Filtered(_) => (None, 0),
+                };
+                let ctx = make_ctx(memory_state, days_elapsed)?;
+                Ok(state.next_states(&ctx))
+            };
+        let ctx = make_ctx(None, 0)?;
+        let states = LearnState {
+            remaining_steps: u32::from(!config.inner.learn_steps.is_empty()),
+            scheduled_secs: 0,
+            elapsed_secs: 0,
+            memory_state: None,
+        }
+        .next_states(&ctx);
+        let base = self.describe_next_states(&states)?;
+        let again_followup_labels =
+            self.describe_next_states(&next_followup_states(&states.again)?)?;
+        let good_followup_labels =
+            self.describe_next_states(&next_followup_states(&states.good)?)?;
+        Ok(generic::StringList {
+            vals: vec![
+                base[0].clone(),
+                base[1].clone(),
+                base[2].clone(),
+                base[3].clone(),
+                again_followup_labels[2].clone(),
+                again_followup_labels[0].clone(),
+                good_followup_labels[0].clone(),
+                good_followup_labels[2].clone(),
+            ],
         })
     }
 

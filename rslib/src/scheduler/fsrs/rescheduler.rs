@@ -6,7 +6,9 @@ use chrono::Datelike;
 
 use crate::prelude::*;
 use crate::scheduler::states::fuzz::constrained_fuzz_bounds;
+use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::build_easy_days_percentages;
+use crate::scheduler::states::load_balancer::build_review_fuzz_configs;
 use crate::scheduler::states::load_balancer::calculate_easy_days_modifiers;
 use crate::scheduler::states::load_balancer::select_weighted_interval;
 use crate::scheduler::states::load_balancer::EasyDay;
@@ -19,6 +21,7 @@ pub struct Rescheduler {
     due_today_by_preset: HashMap<DeckConfigId, usize>,
     reviewed_today_by_preset: HashMap<DeckConfigId, usize>,
     easy_days_percentages_by_preset: HashMap<DeckConfigId, [EasyDay; 7]>,
+    review_fuzz_by_preset: HashMap<DeckConfigId, ReviewFuzzConfig>,
 }
 
 impl Rescheduler {
@@ -65,8 +68,9 @@ impl Rescheduler {
             }
         }
 
-        let easy_days_percentages_by_preset =
-            build_easy_days_percentages(col.storage.get_deck_config_map()?)?;
+        let configs = col.storage.get_deck_config_map()?;
+        let easy_days_percentages_by_preset = build_easy_days_percentages(&configs)?;
+        let review_fuzz_by_preset = build_review_fuzz_configs(&configs);
 
         Ok(Self {
             today,
@@ -75,6 +79,7 @@ impl Rescheduler {
             due_today_by_preset,
             reviewed_today_by_preset,
             easy_days_percentages_by_preset,
+            review_fuzz_by_preset,
         })
     }
 
@@ -121,8 +126,13 @@ impl Rescheduler {
         deckconfig_id: DeckConfigId,
         fuzz_seed: Option<u64>,
     ) -> Option<u32> {
-        let (before_days, after_days) =
-            constrained_fuzz_bounds(interval, minimum_interval, maximum_interval);
+        let review_fuzz_config = *self.review_fuzz_by_preset.get(&deckconfig_id)?;
+        let (before_days, after_days) = constrained_fuzz_bounds(
+            interval,
+            minimum_interval,
+            maximum_interval,
+            review_fuzz_config,
+        );
 
         // Don't reschedule the card when it's overdue
         if after_days < days_elapsed {
