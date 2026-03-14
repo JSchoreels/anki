@@ -68,12 +68,16 @@ impl LearnState {
                 }
                 .into()
             } else {
+                let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                    ctx.fuzz_factor,
+                    interval.round().max(1.0),
+                    minimum,
+                    maximum,
+                    ctx.review_fuzz_config,
+                );
                 ReviewState {
-                    scheduled_days: ctx.with_review_fuzz(
-                        interval.round().max(1.0),
-                        minimum,
-                        maximum,
-                    ),
+                    scheduled_days,
+                    fuzz_delta_days,
                     ease_factor: ctx.initial_ease_factor,
                     memory_state,
                     ..Default::default()
@@ -115,12 +119,16 @@ impl LearnState {
                 }
                 .into()
             } else {
+                let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                    ctx.fuzz_factor,
+                    interval.round().max(1.0),
+                    minimum,
+                    maximum,
+                    ctx.review_fuzz_config,
+                );
                 ReviewState {
-                    scheduled_days: ctx.with_review_fuzz(
-                        interval.round().max(1.0),
-                        minimum,
-                        maximum,
-                    ),
+                    scheduled_days,
+                    fuzz_delta_days,
                     ease_factor: ctx.initial_ease_factor,
                     memory_state,
                     ..Default::default()
@@ -162,12 +170,16 @@ impl LearnState {
                 }
                 .into()
             } else {
+                let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                    ctx.fuzz_factor,
+                    interval.round().max(1.0),
+                    minimum,
+                    maximum,
+                    ctx.review_fuzz_config,
+                );
                 ReviewState {
-                    scheduled_days: ctx.with_review_fuzz(
-                        interval.round().max(1.0),
-                        minimum,
-                        maximum,
-                    ),
+                    scheduled_days,
+                    fuzz_delta_days,
                     ease_factor: ctx.initial_ease_factor,
                     memory_state,
                     ..Default::default()
@@ -186,8 +198,16 @@ impl LearnState {
         } else {
             ctx.graduating_interval_easy
         };
+        let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+            ctx.fuzz_factor,
+            interval as f32,
+            minimum,
+            maximum,
+            ctx.review_fuzz_config,
+        );
         ReviewState {
-            scheduled_days: ctx.with_review_fuzz(interval as f32, minimum, maximum),
+            scheduled_days,
+            fuzz_delta_days,
             ease_factor: ctx.initial_ease_factor,
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
             ..Default::default()

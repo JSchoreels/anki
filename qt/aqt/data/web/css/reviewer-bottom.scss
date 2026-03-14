@@ -63,6 +63,11 @@ button {
     display: inline-block;
 }
 
+.fuzz-delta {
+    color: var(--fg-subtle);
+    font-style: italic;
+}
+
 .spacer {
     height: 18px;
 }

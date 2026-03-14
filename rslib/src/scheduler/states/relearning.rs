@@ -35,7 +35,8 @@ impl RelearnState {
     }
 
     fn answer_again(self, ctx: &StateContext) -> CardState {
-        let (scheduled_days, memory_state) = self.review.failing_review_interval(ctx);
+        let (scheduled_days, fuzz_delta_days, memory_state) =
+            self.review.failing_review_interval(ctx);
         if let Some(again_delay) = ctx.relearn_steps.again_delay_secs_learn() {
             RelearnState {
                 learning: LearnState {
@@ -46,6 +47,7 @@ impl RelearnState {
                 },
                 review: ReviewState {
                     scheduled_days: scheduled_days.round().max(1.0) as u32,
+                    fuzz_delta_days,
                     elapsed_days: 0,
                     memory_state,
                     ..self.review
@@ -55,8 +57,16 @@ impl RelearnState {
         } else if let Some(states) = &ctx.fsrs_next_states {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let interval = states.again.interval;
+            let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                ctx.fuzz_factor,
+                interval.round().max(1.0),
+                minimum,
+                maximum,
+                ctx.review_fuzz_config,
+            );
             let again_review = ReviewState {
-                scheduled_days: ctx.with_review_fuzz(interval.round().max(1.0), minimum, maximum),
+                scheduled_days,
+                fuzz_delta_days,
                 memory_state,
                 ..self.review
             };
@@ -104,8 +114,16 @@ impl RelearnState {
         } else if let Some(states) = &ctx.fsrs_next_states {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let interval = states.hard.interval;
+            let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                ctx.fuzz_factor,
+                interval.round().max(1.0),
+                minimum,
+                maximum,
+                ctx.review_fuzz_config,
+            );
             let hard_review = ReviewState {
-                scheduled_days: ctx.with_review_fuzz(interval.round().max(1.0), minimum, maximum),
+                scheduled_days,
+                fuzz_delta_days,
                 memory_state,
                 ..self.review
             };
@@ -155,8 +173,16 @@ impl RelearnState {
         } else if let Some(states) = &ctx.fsrs_next_states {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let interval = states.good.interval;
+            let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                ctx.fuzz_factor,
+                interval.round().max(1.0),
+                minimum,
+                maximum,
+                ctx.review_fuzz_config,
+            );
             let good_review = ReviewState {
-                scheduled_days: ctx.with_review_fuzz(interval.round().max(1.0), minimum, maximum),
+                scheduled_days,
+                fuzz_delta_days,
                 memory_state,
                 ..self.review
             };
@@ -185,17 +211,24 @@ impl RelearnState {
     }
 
     fn answer_easy(self, ctx: &StateContext) -> ReviewState {
-        let scheduled_days = if let Some(states) = &ctx.fsrs_next_states {
+        let (scheduled_days, fuzz_delta_days) = if let Some(states) = &ctx.fsrs_next_states {
             let (mut minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let good = ctx.with_review_fuzz(states.good.interval, minimum, maximum);
             minimum = good + 1;
             let interval = states.easy.interval;
-            ctx.with_review_fuzz(interval.round().max(1.0), minimum, maximum)
+            super::fuzz::with_review_fuzz_and_delta(
+                ctx.fuzz_factor,
+                interval.round().max(1.0),
+                minimum,
+                maximum,
+                ctx.review_fuzz_config,
+            )
         } else {
-            self.review.scheduled_days + 1
+            (self.review.scheduled_days + 1, 0)
         };
         ReviewState {
             scheduled_days,
+            fuzz_delta_days,
             elapsed_days: 0,
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
             ..self.review

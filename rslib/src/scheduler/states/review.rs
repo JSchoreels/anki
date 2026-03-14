@@ -21,6 +21,7 @@ pub const EASE_FACTOR_EASY_DELTA: f32 = 0.15;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReviewState {
     pub scheduled_days: u32,
+    pub fuzz_delta_days: i32,
     pub elapsed_days: u32,
     pub ease_factor: f32,
     pub lapses: u32,
@@ -32,6 +33,7 @@ impl Default for ReviewState {
     fn default() -> Self {
         ReviewState {
             scheduled_days: 0,
+            fuzz_delta_days: 0,
             elapsed_days: 0,
             ease_factor: INITIAL_EASE_FACTOR,
             lapses: 0,
@@ -66,37 +68,46 @@ impl ReviewState {
         SchedulingStates {
             current: self.into(),
             again: self.answer_again(ctx),
-            hard: self.answer_hard(hard_interval, ctx).into(),
-            good: self.answer_good(good_interval, ctx).into(),
-            easy: self.answer_easy(easy_interval, ctx).into(),
+            hard: self
+                .answer_hard(hard_interval.0, hard_interval.1, ctx)
+                .into(),
+            good: self
+                .answer_good(good_interval.0, good_interval.1, ctx)
+                .into(),
+            easy: self
+                .answer_easy(easy_interval.0, easy_interval.1, ctx)
+                .into(),
         }
     }
 
     pub(crate) fn failing_review_interval(
         self,
         ctx: &StateContext,
-    ) -> (f32, Option<FsrsMemoryState>) {
+    ) -> (f32, i32, Option<FsrsMemoryState>) {
         if let Some(states) = &ctx.fsrs_next_states {
             // In FSRS, fuzz is applied when the card leaves the relearning
             // stage
-            (states.again.interval, Some(states.again.memory.into()))
+            (states.again.interval, 0, Some(states.again.memory.into()))
         } else {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval);
-            let interval = ctx.with_review_fuzz(
+            let (interval, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
+                ctx.fuzz_factor,
                 (self.scheduled_days as f32).max(1.0) * ctx.lapse_multiplier,
                 minimum,
                 maximum,
+                ctx.review_fuzz_config,
             );
-            (interval as f32, None)
+            (interval as f32, fuzz_delta_days, None)
         }
     }
 
     fn answer_again(self, ctx: &StateContext) -> CardState {
         let lapses = self.lapses + 1;
         let leeched = leech_threshold_met(lapses, ctx.leech_threshold);
-        let (scheduled_days, memory_state) = self.failing_review_interval(ctx);
+        let (scheduled_days, fuzz_delta_days, memory_state) = self.failing_review_interval(ctx);
         let again_review = ReviewState {
             scheduled_days: scheduled_days.round().max(1.0) as u32,
+            fuzz_delta_days,
             elapsed_days: 0,
             ease_factor: (self.ease_factor + EASE_FACTOR_AGAIN_DELTA).max(MINIMUM_EASE_FACTOR),
             lapses,
@@ -134,9 +145,15 @@ impl ReviewState {
         }
     }
 
-    fn answer_hard(self, scheduled_days: u32, ctx: &StateContext) -> ReviewState {
+    fn answer_hard(
+        self,
+        scheduled_days: u32,
+        fuzz_delta_days: i32,
+        ctx: &StateContext,
+    ) -> ReviewState {
         ReviewState {
             scheduled_days,
+            fuzz_delta_days,
             elapsed_days: 0,
             ease_factor: (self.ease_factor + EASE_FACTOR_HARD_DELTA).max(MINIMUM_EASE_FACTOR),
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into()),
@@ -144,18 +161,30 @@ impl ReviewState {
         }
     }
 
-    fn answer_good(self, scheduled_days: u32, ctx: &StateContext) -> ReviewState {
+    fn answer_good(
+        self,
+        scheduled_days: u32,
+        fuzz_delta_days: i32,
+        ctx: &StateContext,
+    ) -> ReviewState {
         ReviewState {
             scheduled_days,
+            fuzz_delta_days,
             elapsed_days: 0,
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into()),
             ..self
         }
     }
 
-    fn answer_easy(self, scheduled_days: u32, ctx: &StateContext) -> ReviewState {
+    fn answer_easy(
+        self,
+        scheduled_days: u32,
+        fuzz_delta_days: i32,
+        ctx: &StateContext,
+    ) -> ReviewState {
         ReviewState {
             scheduled_days,
+            fuzz_delta_days,
             elapsed_days: 0,
             ease_factor: self.ease_factor + EASE_FACTOR_EASY_DELTA,
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
@@ -165,7 +194,7 @@ impl ReviewState {
 
     /// Return the intervals for hard, good and easy, each of which depends on
     /// the previous.
-    fn passing_review_intervals(self, ctx: &StateContext) -> (u32, u32, u32) {
+    fn passing_review_intervals(self, ctx: &StateContext) -> ((u32, i32), (u32, i32), (u32, i32)) {
         if let Some(states) = &ctx.fsrs_next_states {
             self.passing_fsrs_review_intervals(ctx, states)
         } else if self.days_late() < 0 {
@@ -179,7 +208,7 @@ impl ReviewState {
         self,
         ctx: &StateContext,
         states: &NextStates,
-    ) -> (u32, u32, u32) {
+    ) -> ((u32, i32), (u32, i32), (u32, i32)) {
         // If the interval is larger than last time, don't allow fuzz to go backwards
         let greater_than_last = |interval: u32| {
             if interval > self.scheduled_days {
@@ -198,19 +227,22 @@ impl ReviewState {
         let good = constrain_passing_interval(
             ctx,
             states.good.interval,
-            greater_than_last(states.good.interval.round() as u32).max(hard + 1),
+            greater_than_last(states.good.interval.round() as u32).max(hard.0 + 1),
             true,
         );
         let easy = constrain_passing_interval(
             ctx,
             states.easy.interval,
-            greater_than_last(states.easy.interval.round() as u32).max(good + 1),
+            greater_than_last(states.easy.interval.round() as u32).max(good.0 + 1),
             true,
         );
         (hard, good, easy)
     }
 
-    fn passing_nonearly_review_intervals(self, ctx: &StateContext) -> (u32, u32, u32) {
+    fn passing_nonearly_review_intervals(
+        self,
+        ctx: &StateContext,
+    ) -> ((u32, i32), (u32, i32), (u32, i32)) {
         let current_interval = (self.scheduled_days as f32).max(1.0);
         let days_late = self.days_late().max(0) as f32;
 
@@ -224,22 +256,21 @@ impl ReviewState {
         let hard_interval =
             constrain_passing_interval(ctx, current_interval * hard_factor, hard_minimum, true);
         // good
-        let good_minimum = if hard_factor <= 1.0 {
-            self.scheduled_days + 1
-        } else {
-            hard_interval + 1
-        };
         let good_interval = constrain_passing_interval(
             ctx,
             (current_interval + days_late / 2.0) * self.ease_factor,
-            good_minimum,
+            if hard_factor <= 1.0 {
+                self.scheduled_days + 1
+            } else {
+                hard_interval.0 + 1
+            },
             true,
         );
         // easy
         let easy_interval = constrain_passing_interval(
             ctx,
             (current_interval + days_late) * self.ease_factor * ctx.easy_multiplier,
-            good_interval + 1,
+            good_interval.0 + 1,
             true,
         );
 
@@ -250,7 +281,10 @@ impl ReviewState {
     /// implementation is correct.
     /// FIXME: this needs reworking in the future; it overly penalizes reviews
     /// done shortly before the due date.
-    fn passing_early_review_intervals(self, ctx: &StateContext) -> (u32, u32, u32) {
+    fn passing_early_review_intervals(
+        self,
+        ctx: &StateContext,
+    ) -> ((u32, i32), (u32, i32), (u32, i32)) {
         let scheduled = (self.scheduled_days as f32).max(1.0);
         let elapsed = self.elapsed_days as f32;
 
@@ -299,7 +333,12 @@ fn leech_threshold_met(lapses: u32, threshold: u32) -> bool {
 /// - Apply fuzz.
 /// - Ensure it is at least `minimum`, and at least 1.
 /// - Ensure it is at or below the configured maximum interval.
-fn constrain_passing_interval(ctx: &StateContext, interval: f32, minimum: u32, fuzz: bool) -> u32 {
+fn constrain_passing_interval(
+    ctx: &StateContext,
+    interval: f32,
+    minimum: u32,
+    fuzz: bool,
+) -> (u32, i32) {
     let interval = if ctx.fsrs_next_states.is_some() {
         interval
     } else {
@@ -307,9 +346,15 @@ fn constrain_passing_interval(ctx: &StateContext, interval: f32, minimum: u32, f
     };
     let (minimum, maximum) = ctx.min_and_max_review_intervals(minimum);
     if fuzz {
-        ctx.with_review_fuzz(interval, minimum, maximum)
+        super::fuzz::with_review_fuzz_and_delta(
+            ctx.fuzz_factor,
+            interval,
+            minimum,
+            maximum,
+            ctx.review_fuzz_config,
+        )
     } else {
-        (interval.round() as u32).clamp(minimum, maximum)
+        ((interval.round() as u32).clamp(minimum, maximum), 0)
     }
 }
 
@@ -353,6 +398,7 @@ mod test {
         // multiplier
         let state = ReviewState {
             scheduled_days: 1,
+            fuzz_delta_days: 0,
             elapsed_days: 1,
             ease_factor: 1.3,
             lapses: 0,
@@ -360,18 +406,30 @@ mod test {
             memory_state: None,
         };
         ctx.fuzz_factor = Some(0.0);
-        assert_eq!(state.passing_review_intervals(&ctx), (2, 3, 4));
+        assert_eq!(
+            state.passing_review_intervals(&ctx),
+            ((2, 0), (3, 0), (4, 0))
+        );
 
         // this is a silly multiplier, but it shouldn't underflow
         ctx.interval_multiplier = 0.1;
-        assert_eq!(state.passing_review_intervals(&ctx), (2, 3, 4));
+        assert_eq!(
+            state.passing_review_intervals(&ctx),
+            ((2, 0), (3, 0), (4, 0))
+        );
         ctx.fuzz_factor = Some(0.99);
-        assert_eq!(state.passing_review_intervals(&ctx), (2, 4, 6));
+        assert_eq!(
+            state.passing_review_intervals(&ctx),
+            ((2, 0), (4, 1), (6, 1))
+        );
 
         // maximum must be respected no matter what
         ctx.interval_multiplier = 10.0;
         ctx.maximum_review_interval = 5;
-        assert_eq!(state.passing_review_intervals(&ctx), (5, 5, 5));
+        assert_eq!(
+            state.passing_review_intervals(&ctx),
+            ((5, 0), (5, 0), (5, 0))
+        );
     }
 
     #[test]
@@ -382,6 +440,7 @@ mod test {
         ctx.hard_multiplier = 0.1;
         let state = ReviewState {
             scheduled_days: 2,
+            fuzz_delta_days: 0,
             elapsed_days: 2,
             ease_factor: 1.3,
             lapses: 0,
@@ -389,6 +448,9 @@ mod test {
             memory_state: None,
         };
         ctx.fuzz_factor = Some(0.0);
-        assert_eq!(state.passing_review_intervals(&ctx), (1, 3, 4));
+        assert_eq!(
+            state.passing_review_intervals(&ctx),
+            ((1, 0), (3, 0), (4, 0))
+        );
     }
 }

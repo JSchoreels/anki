@@ -112,12 +112,25 @@ pub(crate) fn with_review_fuzz(
     maximum: u32,
     review_fuzz_config: ReviewFuzzConfig,
 ) -> u32 {
+    with_review_fuzz_and_delta(fuzz_factor, interval, minimum, maximum, review_fuzz_config).0
+}
+
+pub(crate) fn with_review_fuzz_and_delta(
+    fuzz_factor: Option<f32>,
+    interval: f32,
+    minimum: u32,
+    maximum: u32,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> (u32, i32) {
+    let minimum = minimum.min(maximum);
+    let unfuzzed = (interval.round() as u32).clamp(minimum, maximum);
     if let Some(fuzz_factor) = fuzz_factor {
         let (lower, upper) =
             constrained_fuzz_bounds(interval, minimum, maximum, review_fuzz_config);
-        (lower as f32 + fuzz_factor * ((1 + upper - lower) as f32)).floor() as u32
+        let fuzzed = (lower as f32 + fuzz_factor * ((1 + upper - lower) as f32)).floor() as u32;
+        (fuzzed, fuzzed as i32 - unfuzzed as i32)
     } else {
-        (interval.round() as u32).clamp(minimum, maximum)
+        (unfuzzed, 0)
     }
 }
 
@@ -254,5 +267,14 @@ mod test {
         };
         assert_eq!(fuzz_bounds(7.0, none), (7, 7));
         assert_eq!(fuzz_bounds(37.0, none), (37, 37));
+    }
+
+    #[test]
+    fn fuzz_delta_matches_selected_interval() {
+        let (interval, delta) =
+            with_review_fuzz_and_delta(Some(0.99), 7.0, 1, 1000, ReviewFuzzConfig::default());
+
+        assert_eq!(interval, 9);
+        assert_eq!(delta, 2);
     }
 }

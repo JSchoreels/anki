@@ -1,8 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use super::get_fuzz_seed_for_id_and_reps;
 use super::CardStateUpdater;
+use super::get_fuzz_seed_for_id_and_reps;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::decks::DeckKind;
@@ -105,6 +105,7 @@ impl CardStateUpdater {
             .into(),
             CardType::Review => ReviewState {
                 scheduled_days: interval,
+                fuzz_delta_days: 0,
                 elapsed_days: ((interval as i32) - (due - self.timing.days_elapsed as i32)).max(0)
                     as u32,
                 ease_factor,
@@ -124,6 +125,7 @@ impl CardStateUpdater {
                     },
                     review: ReviewState {
                         scheduled_days: interval,
+                        fuzz_delta_days: 0,
                         elapsed_days: interval,
                         ease_factor,
                         lapses,

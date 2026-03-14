@@ -8,21 +8,22 @@ mod relearning;
 mod review;
 mod revlog;
 
-use fsrs::NextStates;
+use anki_i18n::I18n;
 use fsrs::FSRS;
+use fsrs::NextStates;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use revlog::RevlogEntryPartial;
 
 use super::fsrs::params::ignore_revlogs_before_ms_from_config;
 use super::queue::BuryMode;
-use super::states::load_balancer::LoadBalancerContext;
-use super::states::steps::LearningSteps;
 use super::states::CardState;
 use super::states::FilteredState;
 use super::states::NormalState;
 use super::states::SchedulingStates;
 use super::states::StateContext;
+use super::states::load_balancer::LoadBalancerContext;
+use super::states::steps::LearningSteps;
 use super::timespan::answer_button_time_collapsible;
 use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
@@ -265,42 +266,35 @@ impl Collection {
         let now = TimestampSecs::now();
         let timing = self.timing_for_timestamp(now)?;
         let secs_until_rollover = timing.next_day_at.elapsed_secs_since(now).max(0) as u32;
+        let show_fuzz_delta = self.get_config_bool(BoolKey::ShowFuzzDeltaAboveAnswerButtons);
 
         Ok(vec![
-            answer_button_time_collapsible(
-                choices
-                    .again
-                    .interval_kind()
-                    .maybe_as_days(secs_until_rollover)
-                    .as_seconds(),
+            describe_next_state(
+                choices.again,
+                secs_until_rollover,
                 collapse_time,
+                show_fuzz_delta,
                 &self.tr,
             ),
-            answer_button_time_collapsible(
-                choices
-                    .hard
-                    .interval_kind()
-                    .maybe_as_days(secs_until_rollover)
-                    .as_seconds(),
+            describe_next_state(
+                choices.hard,
+                secs_until_rollover,
                 collapse_time,
+                show_fuzz_delta,
                 &self.tr,
             ),
-            answer_button_time_collapsible(
-                choices
-                    .good
-                    .interval_kind()
-                    .maybe_as_days(secs_until_rollover)
-                    .as_seconds(),
+            describe_next_state(
+                choices.good,
+                secs_until_rollover,
                 collapse_time,
+                show_fuzz_delta,
                 &self.tr,
             ),
-            answer_button_time_collapsible(
-                choices
-                    .easy
-                    .interval_kind()
-                    .maybe_as_days(secs_until_rollover)
-                    .as_seconds(),
+            describe_next_state(
+                choices.easy,
+                secs_until_rollover,
                 collapse_time,
+                show_fuzz_delta,
                 &self.tr,
             ),
         ])
@@ -579,6 +573,39 @@ impl Collection {
     }
 }
 
+fn describe_next_state(
+    state: CardState,
+    secs_until_rollover: u32,
+    collapse_time: u32,
+    show_fuzz_delta: bool,
+    tr: &I18n,
+) -> String {
+    let seconds = state
+        .interval_kind()
+        .maybe_as_days(secs_until_rollover)
+        .as_seconds();
+    let mut label = answer_button_time_collapsible(seconds, collapse_time, tr);
+    if show_fuzz_delta {
+        if let Some(fuzz_delta_days) = displayed_fuzz_delta_days(state) {
+            if fuzz_delta_days != 0 {
+                label.push_str(&format!(" ({fuzz_delta_days:+}d)"));
+            }
+        }
+    }
+    label
+}
+
+fn displayed_fuzz_delta_days(state: CardState) -> Option<i32> {
+    match state {
+        CardState::Normal(NormalState::Review(state)) => Some(state.fuzz_delta_days),
+        CardState::Filtered(FilteredState::Rescheduling(state)) => match state.original_state {
+            NormalState::Review(state) => Some(state.fuzz_delta_days),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 pub mod test_helpers {
     use super::*;
@@ -669,11 +696,57 @@ fn get_fuzz_factor(seed: Option<u64>) -> Option<f32> {
 pub(crate) mod test {
     use super::*;
     use crate::card::CardType;
+    use crate::config::BoolKey;
     use crate::deckconfig::ReviewMix;
+    use crate::scheduler::states::LearnState;
+    use crate::scheduler::states::NewState;
+    use crate::scheduler::states::ReviewState;
     use crate::search::SortMode;
 
     fn current_state(col: &mut Collection, card_id: CardId) -> CardState {
         col.get_scheduling_states(card_id).unwrap().current
+    }
+
+    #[test]
+    fn describe_next_states_includes_fuzz_delta() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::ShowFuzzDeltaAboveAnswerButtons, true, false)?;
+        let states = SchedulingStates {
+            current: NewState::default().into(),
+            again: ReviewState {
+                scheduled_days: 4,
+                fuzz_delta_days: 1,
+                ..Default::default()
+            }
+            .into(),
+            hard: ReviewState {
+                scheduled_days: 3,
+                ..Default::default()
+            }
+            .into(),
+            good: ReviewState {
+                scheduled_days: 5,
+                fuzz_delta_days: -1,
+                ..Default::default()
+            }
+            .into(),
+            easy: LearnState {
+                scheduled_secs: 600,
+                elapsed_secs: 0,
+                remaining_steps: 1,
+                memory_state: None,
+            }
+            .into(),
+        };
+
+        let labels = col.describe_next_states(&states)?;
+
+        assert_eq!(labels[0], "4d (+1d)");
+        assert_eq!(labels[1], "3d");
+        assert_eq!(labels[2], "5d (-1d)");
+        assert_eq!(labels[3], "<10m");
+
+        Ok(())
     }
 
     // Test that deck-specific desired retention is used when available

@@ -945,6 +945,11 @@ timerStopped = false;
     def _buttonTime(self, i: int, v3_labels: Sequence[str]) -> str:
         if self.mw.col.conf["estTimes"]:
             txt = v3_labels[i - 1]
+            txt = re.sub(
+                r" (\([+-]\d+d\))$",
+                r' <span class="fuzz-delta">\1</span>',
+                txt,
+            )
             return f"""<span class="nobold">{txt}</span>"""
         else:
             return ""

@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use chrono::Datelike;
-use rand::SeedableRng;
-use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
+use rand::distr::Distribution;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 
-use super::fuzz::ReviewFuzzConfig;
 use super::fuzz::constrained_fuzz_bounds;
+use super::fuzz::ReviewFuzzConfig;
 use crate::card::CardId;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;

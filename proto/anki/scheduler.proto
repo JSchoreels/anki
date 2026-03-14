@@ -96,6 +96,7 @@ message SchedulingState {
     uint32 lapses = 4;
     bool leeched = 5;
     optional cards.FsrsMemoryState memory_state = 6;
+    sint32 fuzz_delta_days = 7;
   }
   message Relearning {
     Review review = 1;
