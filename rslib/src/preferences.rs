@@ -1,11 +1,11 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use anki_proto::config::Preferences;
+use anki_proto::config::preferences::scheduling::NewReviewMix as NewRevMixPB;
 use anki_proto::config::preferences::Editing;
 use anki_proto::config::preferences::Reviewing;
 use anki_proto::config::preferences::Scheduling;
-use anki_proto::config::preferences::scheduling::NewReviewMix as NewRevMixPB;
+use anki_proto::config::Preferences;
 
 use crate::collection::Collection;
 use crate::config::BoolKey;

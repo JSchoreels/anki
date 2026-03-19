@@ -1,8 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use super::CardStateUpdater;
 use super::get_fuzz_seed_for_id_and_reps;
+use super::CardStateUpdater;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::decks::DeckKind;

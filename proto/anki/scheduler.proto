@@ -430,6 +430,11 @@ message SimulateFsrsWorkloadResponse {
   float start_memorized = 2;
   map<uint32, float> memorized = 3;
   map<uint32, uint32> review_count = 4;
+  uint32 review_time_r_bucket_count = 5;
+  uint32 review_time_s_bucket_count = 6;
+  repeated float review_time_fail_seconds = 7;
+  repeated float review_time_pass_seconds = 8;
+  repeated uint32 review_time_sample_counts = 9;
 }
 
 message ComputeOptimalRetentionResponse {

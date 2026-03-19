@@ -44,6 +44,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
     import type { ComputeRetentionProgress } from "@generated/anki/collection_pb";
     import Modal from "bootstrap/js/dist/modal";
+    import {
+        buildFailPassRatioSeries,
+        buildSLineSeries,
+        median,
+        matrixCellValue,
+        rBucketLabel,
+        sBucketLabel,
+        seriesMinMax,
+        type ReviewTimeMatrix,
+    } from "./review-time-matrix";
 
     export let state: DeckOptionsState;
     export let simulateFsrsRequest: SimulateFsrsReviewRequest;
@@ -65,6 +75,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let svg: HTMLElement | SVGElement | null = null;
     let simulationNumber = 0;
     let points: (WorkloadPoint | Point)[] = [];
+    let reviewTimeMatrix: ReviewTimeMatrix | undefined;
+    let reviewTimeSampleMedian = 0;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     let smooth = true;
     let suspendLeeches = $config.leechAction == DeckConfig_Config_LeechAction.SUSPEND;
@@ -206,6 +218,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             simulating = false;
             if (resp) {
                 simulationNumber += 1;
+                reviewTimeMatrix = {
+                    rBucketCount: resp.reviewTimeRBucketCount,
+                    sBucketCount: resp.reviewTimeSBucketCount,
+                    failSeconds: resp.reviewTimeFailSeconds,
+                    passSeconds: resp.reviewTimePassSeconds,
+                    sampleCounts: resp.reviewTimeSampleCounts,
+                };
 
                 points = points.concat(
                     Object.entries(resp.memorized).map(([dr, v]) => ({
@@ -232,12 +251,156 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function clearSimulation() {
         points = points.filter((p) => p.label !== simulationNumber);
         simulationNumber = Math.max(0, simulationNumber - 1);
+        reviewTimeMatrix = undefined;
         tableData = renderSimulationChart(
             svg as SVGElement,
             bounds,
             points,
             simulateSubgraph,
         );
+    }
+
+    function formatSeconds(seconds: number): string {
+        return `${seconds.toFixed(1)}s`;
+    }
+
+    const graphWidth = 820;
+    const graphHeight = 320;
+    const graphMargin = { top: 18, right: 54, bottom: 46, left: 54 };
+    const graphPassColor = "#2bb24c";
+    const graphFailColor = "#e5484d";
+    const graphRatioColor = "#ffffff";
+
+    function graphX(rIndex: number, rBucketCount: number): number {
+        const innerWidth = graphWidth - graphMargin.left - graphMargin.right;
+        if (rBucketCount <= 1) {
+            return graphMargin.left;
+        }
+        return graphMargin.left + (rIndex / (rBucketCount - 1)) * innerWidth;
+    }
+
+    function graphY(value: number, minValue: number, maxValue: number): number {
+        const innerHeight = graphHeight - graphMargin.top - graphMargin.bottom;
+        const ratio = (value - minValue) / Math.max(1e-6, maxValue - minValue);
+        return graphMargin.top + (1 - ratio) * innerHeight;
+    }
+
+    function linePoints(
+        values: number[],
+        rBucketCount: number,
+        minValue: number,
+        maxValue: number,
+    ): string {
+        return values
+            .map(
+                (value, rIndex) =>
+                    `${graphX(rIndex, rBucketCount)},${graphY(value, minValue, maxValue)}`,
+            )
+            .join(" ");
+    }
+
+    type ReviewTimeGraphLine = {
+        color: string;
+        kind: "pass" | "fail" | "ratio";
+        points: string;
+    };
+    let reviewTimeGraphLines: ReviewTimeGraphLine[] = [];
+    let reviewTimeGraphTimeYMin = 0;
+    let reviewTimeGraphTimeYMax = 1;
+    let reviewTimeGraphRatioYMin = 0;
+    let reviewTimeGraphRatioYMax = 1;
+    let reviewTimeGraphXTicks: { rIndex: number; label: string }[] = [];
+    let reviewTimeGraphTimeYTicks: number[] = [];
+    let reviewTimeGraphRatioYTicks: number[] = [];
+
+    $: if (reviewTimeMatrix) {
+        reviewTimeSampleMedian = median(reviewTimeMatrix.sampleCounts);
+        const passLines = buildSLineSeries(
+            reviewTimeMatrix.passSeconds,
+            reviewTimeMatrix.rBucketCount,
+            reviewTimeMatrix.sBucketCount,
+        );
+        const failLines = buildSLineSeries(
+            reviewTimeMatrix.failSeconds,
+            reviewTimeMatrix.rBucketCount,
+            reviewTimeMatrix.sBucketCount,
+        );
+        const ratioLines = buildFailPassRatioSeries(
+            reviewTimeMatrix.failSeconds,
+            reviewTimeMatrix.passSeconds,
+            reviewTimeMatrix.rBucketCount,
+            reviewTimeMatrix.sBucketCount,
+        );
+        const [, passMax] = seriesMinMax(passLines);
+        const [, failMax] = seriesMinMax(failLines);
+        const [, ratioMax] = seriesMinMax(ratioLines);
+        reviewTimeGraphTimeYMin = 0;
+        reviewTimeGraphTimeYMax = Math.max(60, passMax, failMax);
+        reviewTimeGraphRatioYMin = 0;
+        reviewTimeGraphRatioYMax = Math.max(2, ratioMax);
+
+        const graphLines: ReviewTimeGraphLine[] = [];
+        for (let sIndex = 0; sIndex < reviewTimeMatrix.sBucketCount; sIndex++) {
+            graphLines.push({
+                color: graphPassColor,
+                kind: "pass",
+                points: linePoints(
+                    passLines[sIndex],
+                    reviewTimeMatrix.rBucketCount,
+                    reviewTimeGraphTimeYMin,
+                    reviewTimeGraphTimeYMax,
+                ),
+            });
+            graphLines.push({
+                color: graphFailColor,
+                kind: "fail",
+                points: linePoints(
+                    failLines[sIndex],
+                    reviewTimeMatrix.rBucketCount,
+                    reviewTimeGraphTimeYMin,
+                    reviewTimeGraphTimeYMax,
+                ),
+            });
+            graphLines.push({
+                color: graphRatioColor,
+                kind: "ratio",
+                points: linePoints(
+                    ratioLines[sIndex],
+                    reviewTimeMatrix.rBucketCount,
+                    reviewTimeGraphRatioYMin,
+                    reviewTimeGraphRatioYMax,
+                ),
+            });
+        }
+        reviewTimeGraphLines = graphLines;
+
+        const xTickStep = Math.max(1, Math.floor(reviewTimeMatrix.rBucketCount / 6));
+        reviewTimeGraphXTicks = Array.from(
+            { length: reviewTimeMatrix.rBucketCount },
+            (_, rIndex) => rIndex,
+        )
+            .filter(
+                (rIndex) =>
+                    rIndex % xTickStep === 0 ||
+                    rIndex === reviewTimeMatrix.rBucketCount - 1,
+            )
+            .map((rIndex) => ({ rIndex, label: rBucketLabel(rIndex) }));
+
+        reviewTimeGraphTimeYTicks = Array.from({ length: 5 }, (_, i) => {
+            const ratio = i / 4;
+            return (
+                reviewTimeGraphTimeYMin +
+                ratio * (reviewTimeGraphTimeYMax - reviewTimeGraphTimeYMin)
+            );
+        });
+
+        reviewTimeGraphRatioYTicks = Array.from({ length: 5 }, (_, i) => {
+            const ratio = i / 4;
+            return (
+                reviewTimeGraphRatioYMin +
+                ratio * (reviewTimeGraphRatioYMax - reviewTimeGraphRatioYMin)
+            );
+        });
     }
 
     function saveConfigToPreset() {
@@ -615,6 +778,146 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                     <TableData {tableData} />
                 </Graph>
+
+                {#if workload && reviewTimeMatrix}
+                    <details class="review-time-matrix mt-2">
+                        <summary>
+                            {tr.statisticsReviewsTimeCheckbox()} Matrix (R/S, Fail/Pass)
+                        </summary>
+                        <div class="review-time-matrix-wrapper">
+                            <table class="review-time-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th>R \\ S</th>
+                                        {#each Array.from({ length: reviewTimeMatrix.sBucketCount }) as _, sIndex}
+                                            <th>{sBucketLabel(sIndex, reviewTimeMatrix.sBucketCount)}</th>
+                                        {/each}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {#each Array.from({ length: reviewTimeMatrix.rBucketCount }) as _, rIndex}
+                                        <tr>
+                                            <th>{rBucketLabel(rIndex)}</th>
+                                            {#each Array.from({ length: reviewTimeMatrix.sBucketCount }) as _, sIndex}
+                                                <td>
+                                                    <div>F {formatSeconds(matrixCellValue(reviewTimeMatrix.failSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div>P {formatSeconds(matrixCellValue(reviewTimeMatrix.passSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div
+                                                        class="review-time-samples {matrixCellValue(reviewTimeMatrix.sampleCounts, rIndex, sIndex, reviewTimeMatrix.sBucketCount) > reviewTimeSampleMedian
+                                                            ? 'high'
+                                                            : 'low'}"
+                                                    >
+                                                        n {matrixCellValue(reviewTimeMatrix.sampleCounts, rIndex, sIndex, reviewTimeMatrix.sBucketCount)}
+                                                    </div>
+                                                </td>
+                                            {/each}
+                                        </tr>
+                                    {/each}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="review-time-graph-wrapper">
+                            <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`}>
+                                {#each reviewTimeGraphTimeYTicks as tick}
+                                    {@const y = graphY(tick, reviewTimeGraphTimeYMin, reviewTimeGraphTimeYMax)}
+                                    <line
+                                        x1={graphMargin.left}
+                                        x2={graphWidth - graphMargin.right}
+                                        y1={y}
+                                        y2={y}
+                                        stroke="var(--border)"
+                                        stroke-width="1"
+                                    />
+                                    <text
+                                        x={graphMargin.left - 6}
+                                        y={y}
+                                        text-anchor="end"
+                                        dominant-baseline="middle"
+                                        class="review-time-axis-label"
+                                    >
+                                        {tick.toFixed(1)}s
+                                    </text>
+                                {/each}
+
+                                {#each reviewTimeGraphRatioYTicks as tick}
+                                    {@const y = graphY(tick, reviewTimeGraphRatioYMin, reviewTimeGraphRatioYMax)}
+                                    <text
+                                        x={graphWidth - graphMargin.right + 6}
+                                        y={y}
+                                        text-anchor="start"
+                                        dominant-baseline="middle"
+                                        class="review-time-axis-label review-time-axis-label-right"
+                                    >
+                                        {tick.toFixed(2)}
+                                    </text>
+                                {/each}
+
+                                <line
+                                    x1={graphMargin.left}
+                                    x2={graphWidth - graphMargin.right}
+                                    y1={graphHeight - graphMargin.bottom}
+                                    y2={graphHeight - graphMargin.bottom}
+                                    stroke="currentColor"
+                                    stroke-width="1"
+                                />
+                                <line
+                                    x1={graphWidth - graphMargin.right}
+                                    x2={graphWidth - graphMargin.right}
+                                    y1={graphMargin.top}
+                                    y2={graphHeight - graphMargin.bottom}
+                                    stroke="currentColor"
+                                    stroke-width="1"
+                                />
+
+                                {#each reviewTimeGraphXTicks as tick}
+                                    {@const x = graphX(tick.rIndex, reviewTimeMatrix.rBucketCount)}
+                                    <line
+                                        x1={x}
+                                        x2={x}
+                                        y1={graphHeight - graphMargin.bottom}
+                                        y2={graphHeight - graphMargin.bottom + 4}
+                                        stroke="currentColor"
+                                        stroke-width="1"
+                                    />
+                                    <text
+                                        x={x}
+                                        y={graphHeight - graphMargin.bottom + 16}
+                                        text-anchor="middle"
+                                        class="review-time-axis-label"
+                                    >
+                                        {tick.label}
+                                    </text>
+                                {/each}
+
+                                {#each reviewTimeGraphLines as line}
+                                    <polyline
+                                        class={`review-time-line ${line.kind}`}
+                                        fill="none"
+                                        stroke={line.color}
+                                        stroke-width={line.kind === "ratio" ? 1.2 : 1.6}
+                                        points={line.points}
+                                    />
+                                {/each}
+                            </svg>
+                        </div>
+
+                        <div class="review-time-legend">
+                            <div class="review-time-legend-item">
+                                <span class="review-time-legend-line pass"></span>
+                                <span>Pass time (left axis)</span>
+                            </div>
+                            <div class="review-time-legend-item">
+                                <span class="review-time-legend-line fail"></span>
+                                <span>Fail time (left axis)</span>
+                            </div>
+                            <div class="review-time-legend-item">
+                                <span class="review-time-legend-line ratio"></span>
+                                <span>Fail/Pass ratio (right axis)</span>
+                            </div>
+                        </div>
+                    </details>
+                {/if}
             </div>
         </div>
     </div>
@@ -661,5 +964,114 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     summary {
         margin-bottom: 0.5em;
+    }
+
+    .review-time-matrix-wrapper {
+        overflow: auto;
+        max-height: 45vh;
+        border: 1px solid var(--border);
+    }
+
+    .review-time-matrix-table {
+        border-collapse: collapse;
+        font-size: 0.78rem;
+        white-space: nowrap;
+        min-width: 100%;
+    }
+
+    .review-time-matrix-table th,
+    .review-time-matrix-table td {
+        border: 1px solid var(--border);
+        padding: 0.2rem 0.35rem;
+        text-align: right;
+        vertical-align: top;
+    }
+
+    .review-time-matrix-table thead th {
+        position: sticky;
+        top: 0;
+        background: var(--canvas-elevated);
+        z-index: 1;
+    }
+
+    .review-time-graph-wrapper {
+        border: 1px solid var(--border);
+        overflow-x: auto;
+        background: var(--canvas);
+    }
+
+    .review-time-graph-wrapper svg {
+        min-width: 760px;
+    }
+
+    .review-time-axis-label {
+        font-size: 0.7rem;
+        fill: currentColor;
+    }
+
+    .review-time-axis-label-right {
+        fill: color-mix(in srgb, currentColor 75%, transparent);
+    }
+
+    .review-time-line.fail {
+        stroke-dasharray: 6 4;
+    }
+
+    .review-time-line.ratio {
+        stroke-dasharray: 2.5 3;
+        opacity: 0.85;
+    }
+
+    .review-time-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem 1rem;
+        margin-top: 0.45rem;
+        font-size: 0.76rem;
+    }
+
+    .review-time-legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    .review-time-legend-swatch {
+        width: 0.95rem;
+        height: 0.35rem;
+        display: inline-block;
+    }
+
+    .review-time-legend-line {
+        width: 1rem;
+        border-top: 2px solid;
+        display: inline-block;
+    }
+
+    .review-time-legend-line.pass {
+        border-top-color: #2bb24c;
+    }
+
+    .review-time-legend-line.fail {
+        border-top-color: #e5484d;
+        border-top-style: dashed;
+    }
+
+    .review-time-legend-line.ratio {
+        border-top-color: #ffffff;
+        border-top-style: dotted;
+    }
+
+    .review-time-samples {
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+
+    .review-time-samples.high {
+        color: var(--fg-green, #067647);
+    }
+
+    .review-time-samples.low {
+        color: var(--fg-red, #b42318);
     }
 </style>

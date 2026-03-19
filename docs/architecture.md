@@ -44,3 +44,33 @@ At the moment, the protobuf is not considered public API. Some pylib methods
 expose a protobuf object directly to callers, but when they do so, they use a
 type alias, so callers outside pylib should never need to import a generated
 \_pb2.py file.
+
+## FSRS Help Me Decide Review-Time Buckets
+
+`Help Me Decide (Experimental)` now estimates review time from bucketed history
+instead of a single fixed review cost table.
+
+Data flow:
+
+1. Read revlog entries for the searched cards.
+2. Reconstruct review histories and infer pre-review memory state using FSRS.
+3. Build samples `(R, Grade, taken_millis)` for review-kind entries.
+4. Aggregate samples into buckets:
+   - `R`: 5% bands (`95-100`, `90-95`, ...).
+   - `Grade`: Again/Hard/Good/Easy.
+5. Resolve missing buckets by averaging nearby `R` buckets; if still empty,
+   fall back to grade-level mean.
+6. During `simulate_workload`, each simulated review uses
+   `time(R_bucket, Grade)` to accumulate `daily_time_cost`.
+7. The workload response includes a flattened matrix for UI inspection:
+   - `review_time_fail_seconds`
+   - `review_time_pass_seconds`
+   - `review_time_sample_counts` (raw per-cell sample counts)
+   with bucket dimensions:
+   - `review_time_r_bucket_count`
+   - `review_time_s_bucket_count` (fixed to `1`, UI compatibility)
+
+Scope:
+
+- This is currently applied only to the Help Me Decide workload simulation path.
+- Normal review simulation and scheduler behavior are unchanged.

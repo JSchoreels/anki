@@ -4,7 +4,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
     import * as tr from "@generated/ftl";
+    import { HelpPage } from "@tslib/help-page";
+    import type Carousel from "bootstrap/js/dist/carousel";
+    import type Modal from "bootstrap/js/dist/modal";
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
+    import HelpModal from "$lib/components/HelpModal.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
@@ -14,6 +18,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import Warning from "./Warning.svelte";
     import EasyDaysInput from "./EasyDaysInput.svelte";
+    import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     export let state: DeckOptionsState;
     export let api: Record<string, never>;
@@ -39,6 +44,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const prevReviewFuzzFactorLong =
         $config.reviewFuzzFactorLong ?? defaultReviewFuzzFactorLong;
     const previewIntervals = [3, 7, 20, 30, 90, 180];
+    const settings = {
+        loadBalancerEnabled: {
+            title: tr.deckConfigLoadBalancerEnabled(),
+            help: tr.deckConfigLoadBalancerEnabledTooltip(),
+            url: HelpPage.DeckOptions.fsrs,
+            sched: HelpItemScheduler.FSRS,
+            global: true,
+        },
+        reviewFuzzEnabled: {
+            title: tr.deckConfigReviewFuzzEnabled(),
+            help: tr.deckConfigReviewFuzzEnabledTooltip(),
+            url: HelpPage.DeckOptions.fsrs,
+            sched: HelpItemScheduler.FSRS,
+        },
+    };
+    const helpSections: HelpItem[] = Object.values(settings);
 
     $: if ($config.easyDaysPercentages.length !== 7) {
         $config.easyDaysPercentages = defaults.easyDaysPercentages.slice();
@@ -172,6 +193,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             (factorLong ?? 0.05) * Math.max(0, interval - 20)
         );
     }
+
+    let modal: Modal;
+    let carousel: Carousel;
+
+    function openHelpModal(key: keyof typeof settings): void {
+        modal.show();
+        carousel.to(Object.keys(settings).indexOf(key));
+    }
 </script>
 
 <datalist id="easy_day_steplist">
@@ -179,10 +208,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </datalist>
 
 <TitledContainer title={tr.deckConfigEasyDaysTitle()}>
+    <HelpModal
+        title={tr.deckConfigEasyDaysTitle()}
+        url={HelpPage.DeckOptions.fsrs}
+        slot="tooltip"
+        fsrs={$fsrsEnabled}
+        {helpSections}
+        on:mount={(e) => {
+            modal = e.detail.modal;
+            carousel = e.detail.carousel;
+        }}
+    />
     <DynamicallySlottable slotHost={Item} {api}>
         <Item>
             <SwitchRow bind:value={$loadBalancerEnabled} defaultValue={false}>
-                <SettingTitle>
+                <SettingTitle on:click={() => openHelpModal("loadBalancerEnabled")}>
                     <GlobalLabel title={tr.deckConfigLoadBalancerEnabled()} />
                 </SettingTitle>
             </SwitchRow>
@@ -192,7 +232,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 bind:value={$config.reviewFuzzEnabled}
                 defaultValue={defaultReviewFuzzEnabled}
             >
-                <SettingTitle>{tr.deckConfigReviewFuzzEnabled()}</SettingTitle>
+                <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}
+                    >{tr.deckConfigReviewFuzzEnabled()}</SettingTitle
+                >
             </SwitchRow>
         </Item>
         <EasyDaysInput bind:values={$config.easyDaysPercentages} />
