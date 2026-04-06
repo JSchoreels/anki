@@ -1201,6 +1201,24 @@ class Collection(DeprecatedNamesMixin):
         "The delta days of fuzz applied if reviewing the card in v3."
         return self._backend.fuzz_delta(card_id=card_id, interval=interval)
 
+    def fsrs_current_retrievability(
+        self, card_id: CardId, stability: float, elapsed_days: float
+    ) -> float:
+        return self._backend.fsrs_current_retrievability(
+            card_id=card_id,
+            stability=stability,
+            elapsed_days=elapsed_days,
+        )
+
+    def fsrs_next_interval(
+        self, card_id: CardId, stability: float, desired_retention: float
+    ) -> float:
+        return self._backend.fsrs_next_interval(
+            card_id=card_id,
+            stability=stability,
+            desired_retention=desired_retention,
+        )
+
     # Timeboxing
     ##########################################################################
     # fixme: there doesn't seem to be a good reason why this code is in main.py

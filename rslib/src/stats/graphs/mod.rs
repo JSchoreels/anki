@@ -13,8 +13,13 @@ mod retrievability;
 mod reviews;
 mod today;
 
+use std::collections::HashMap;
+
+use fsrs::FSRS;
+
 use crate::config::BoolKey;
 use crate::config::Weekday;
+use crate::decks::DeckId;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::search::SortMode;
@@ -22,6 +27,7 @@ use crate::search::SortMode;
 struct GraphsContext {
     revlog: Vec<RevlogEntry>,
     cards: Vec<Card>,
+    fsrs_by_deck: HashMap<DeckId, FSRS>,
     next_day_start: TimestampSecs,
     days_elapsed: u32,
     local_offset_secs: i64,
@@ -55,10 +61,25 @@ impl Collection {
             self.storage
                 .get_revlog_entries_for_searched_cards_after_stamp(revlog_start)?
         };
+        let cards = self.storage.all_searched_cards()?;
+        let mut fsrs_by_deck = HashMap::new();
+        for card in &cards {
+            let deck_id = card.original_deck_id.or(card.deck_id);
+            if fsrs_by_deck.contains_key(&deck_id) {
+                continue;
+            }
+            let deck = self.get_deck(deck_id)?.or_not_found(deck_id)?;
+            let config_id = deck.config_id().unwrap();
+            let config = self
+                .get_deck_config(config_id, true)?
+                .or_not_found(config_id.to_string())?;
+            fsrs_by_deck.insert(deck_id, FSRS::new(config.fsrs_params())?);
+        }
         let ctx = GraphsContext {
             revlog,
             days_elapsed: timing.days_elapsed,
-            cards: self.storage.all_searched_cards()?,
+            cards,
+            fsrs_by_deck,
             next_day_start: timing.next_day_at,
             local_offset_secs,
         };

@@ -455,7 +455,7 @@ impl Collection {
         let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
         let fsrs_next_states = if fsrs_enabled {
             let params = config.fsrs_params();
-            let fsrs = FSRS::new(Some(params))?;
+            let fsrs = FSRS::new(params)?;
             card.decay = Some(get_decay_from_params(params));
             if card.memory_state.is_none() && card.ctype != CardType::New {
                 // Card has been moved or imported into an FSRS deck after params were set,
@@ -464,12 +464,13 @@ impl Collection {
                 let revlog = self.revlog_for_srs(SearchNode::CardIds(card.id.to_string()))?;
                 let item = fsrs_item_for_memory_state(
                     &fsrs,
+                    params,
                     revlog,
                     timing.next_day_at,
                     config.inner.historical_retention,
                     ignore_revlogs_before_ms_from_config(&config)?,
                 )?;
-                card.set_memory_state(&fsrs, item, config.inner.historical_retention)?;
+                card.set_memory_state(&fsrs, params, item, config.inner.historical_retention)?;
             }
             let days_elapsed = if let Some(last_review_time) = card.last_review_time {
                 timing.next_day_at.elapsed_days_since(last_review_time) as u32

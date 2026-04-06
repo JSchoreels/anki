@@ -404,6 +404,7 @@ deck-config-must-have-400-reviews =
     } You must have at least 400 reviews for this operation.
 # Numbers that control how aggressively the FSRS algorithm schedules cards
 deck-config-weights = FSRS parameters
+deck-config-fsrs-version = FSRS version
 deck-config-compute-optimal-weights = Optimize FSRS parameters
 deck-config-optimize-button = Optimize Current Preset
 # Indicates that a given function or label, provided via the "text" variable, operates slowly.

@@ -7,6 +7,7 @@ pub(crate) mod undo;
 mod update;
 
 pub use anki_proto::deck_config::deck_config::config::AnswerAction;
+pub use anki_proto::deck_config::deck_config::config::FsrsVersion;
 pub use anki_proto::deck_config::deck_config::config::LeechAction;
 pub use anki_proto::deck_config::deck_config::config::NewCardGatherPriority;
 pub use anki_proto::deck_config::deck_config::config::NewCardInsertOrder;
@@ -84,6 +85,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     fsrs_params_4: vec![],
     fsrs_params_5: vec![],
     fsrs_params_6: vec![],
+    fsrs_params_7: vec![],
+    fsrs_version: FsrsVersion::Seven as i32,
     desired_retention: 0.9,
     other: Vec::new(),
     historical_retention: 0.9,
@@ -115,19 +118,41 @@ impl Default for DeckConfig {
 }
 
 impl DeckConfig {
+    fn params_usable_in_current_fsrs(params: &[f32]) -> bool {
+        matches!(params.len(), 17 | 19 | 21 | 35) && params.iter().all(|w| w.is_finite())
+    }
+
     pub(crate) fn set_modified(&mut self, usn: Usn) {
         self.mtime_secs = TimestampSecs::now();
         self.usn = usn;
     }
 
-    /// Retrieve the FSRS 6.0 params, falling back on 5.0 or 4.x ones.
-    pub fn fsrs_params(&self) -> &Vec<f32> {
-        if !self.inner.fsrs_params_6.is_empty() {
+    pub fn selected_fsrs_params(&self) -> &[f32] {
+        match FsrsVersion::try_from(self.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
+            FsrsVersion::Seven => &self.inner.fsrs_params_7,
+            FsrsVersion::Six => &self.inner.fsrs_params_6,
+            FsrsVersion::Five => &self.inner.fsrs_params_5,
+            FsrsVersion::Four => &self.inner.fsrs_params_4,
+        }
+    }
+
+    /// Retrieve FSRS params according to selected version. If selected params
+    /// are unusable, we fall back to best available params for compatibility
+    /// with existing collections that predate explicit version selection.
+    /// Returns an empty slice if none of the stored arrays are usable.
+    pub fn fsrs_params(&self) -> &[f32] {
+        if Self::params_usable_in_current_fsrs(self.selected_fsrs_params()) {
+            self.selected_fsrs_params()
+        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_7) {
+            &self.inner.fsrs_params_7
+        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_6) {
             &self.inner.fsrs_params_6
-        } else if !self.inner.fsrs_params_5.is_empty() {
+        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_5) {
             &self.inner.fsrs_params_5
-        } else {
+        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_4) {
             &self.inner.fsrs_params_4
+        } else {
+            &[]
         }
     }
 
@@ -356,5 +381,30 @@ fn ensure_f32_valid(val: &mut f32, default: f32, min: f32, max: f32) {
 fn ensure_u32_valid(val: &mut u32, default: u32, min: u32, max: u32) {
     if *val < min || *val > max {
         *val = default;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fsrs_params_respects_selected_version_when_usable() {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Six as i32;
+        config.inner.fsrs_params_6 = vec![1.0_f32; 21];
+        config.inner.fsrs_params_7 = vec![2.0_f32; 35];
+
+        assert_eq!(config.fsrs_params(), &[1.0_f32; 21]);
+    }
+
+    #[test]
+    fn fsrs_params_falls_back_for_legacy_configs() {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+        config.inner.fsrs_params_7 = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        config.inner.fsrs_params_6 = vec![2.0_f32; 21];
+
+        assert_eq!(config.fsrs_params(), &[2.0_f32; 21]);
     }
 }

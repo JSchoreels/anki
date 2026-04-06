@@ -8,7 +8,12 @@ import type {
     UpdateDeckConfigsMode,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
-import { DeckConfig, DeckConfig_Config, DeckConfigsForUpdate_CurrentDeck_Limits } from "@generated/anki/deck_config_pb";
+import {
+    DeckConfig,
+    DeckConfig_Config,
+    DeckConfig_Config_FsrsVersion,
+    DeckConfigsForUpdate_CurrentDeck_Limits,
+} from "@generated/anki/deck_config_pb";
 import { updateDeckConfigs } from "@generated/backend";
 import { localeCompare } from "@tslib/i18n";
 import { promiseWithResolver } from "@tslib/promise";
@@ -43,6 +48,7 @@ type AllConfigs =
             | "limits"
             | "newCardsIgnoreReviewLimit"
             | "loadBalancerEnabled"
+            | "fsrsShortTermWithStepsEnabled"
             | "applyAllParentLimits"
             | "fsrs"
             | "fsrsReschedule"
@@ -63,6 +69,7 @@ export class DeckOptionsState {
     readonly loadBalancerEnabled: Writable<boolean>;
     readonly applyAllParentLimits: Writable<boolean>;
     readonly fsrs: Writable<boolean>;
+    readonly fsrsShortTermWithStepsEnabled: Writable<boolean>;
     readonly fsrsReschedule: Writable<boolean> = writable(false);
     readonly fsrsHealthCheck: Writable<boolean>;
     readonly legacyEvaluate: boolean;
@@ -108,6 +115,9 @@ export class DeckOptionsState {
         this.loadBalancerEnabled = writable(data.loadBalancerEnabled);
         this.applyAllParentLimits = writable(data.applyAllParentLimits);
         this.fsrs = writable(data.fsrs);
+        this.fsrsShortTermWithStepsEnabled = writable(
+            data.fsrsShortTermWithStepsEnabled,
+        );
         this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
         this.legacyEvaluate = data.fsrsLegacyEvaluate;
         this.daysSinceLastOptimization = writable(data.daysSinceLastFsrsOptimize);
@@ -274,6 +284,9 @@ export class DeckOptionsState {
             loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
+            fsrsShortTermWithStepsEnabled: get(
+                this.fsrsShortTermWithStepsEnabled,
+            ),
             fsrsReschedule: get(this.fsrsReschedule),
             fsrsHealthCheck: get(this.fsrsHealthCheck),
         };
@@ -370,6 +383,9 @@ export class DeckOptionsState {
             loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
+            fsrsShortTermWithStepsEnabled: get(
+                this.fsrsShortTermWithStepsEnabled,
+            ),
             fsrsReschedule: get(this.fsrsReschedule),
             currentConfig: get(this.currentConfig),
         });
@@ -470,12 +486,64 @@ export async function commitEditing(): Promise<void> {
     await tick();
 }
 
+function fsrsParamsUsable(params: number[] | undefined): params is number[] {
+    if (!params || params.length === 0) {
+        return false;
+    }
+    if (![17, 19, 21, 35].includes(params.length)) {
+        return false;
+    }
+    return params.every((w) => Number.isFinite(w));
+}
+
+function selectedFsrsParams(config: DeckConfig_Config): number[] {
+    switch (config.fsrsVersion) {
+        case DeckConfig_Config_FsrsVersion.SIX:
+            return config.fsrsParams6;
+        case DeckConfig_Config_FsrsVersion.FIVE:
+            return config.fsrsParams5;
+        case DeckConfig_Config_FsrsVersion.FOUR:
+            return config.fsrsParams4;
+        default:
+            return config.fsrsParams7;
+    }
+}
+
+export function withSelectedFsrsParams(
+    config: DeckConfig_Config,
+    params: number[],
+): DeckConfig_Config {
+    const updated = new DeckConfig_Config(config);
+    switch (updated.fsrsVersion) {
+        case DeckConfig_Config_FsrsVersion.SIX:
+            updated.fsrsParams6 = [...params];
+            break;
+        case DeckConfig_Config_FsrsVersion.FIVE:
+            updated.fsrsParams5 = [...params];
+            break;
+        case DeckConfig_Config_FsrsVersion.FOUR:
+            updated.fsrsParams4 = [...params];
+            break;
+        default:
+            updated.fsrsParams7 = [...params];
+            break;
+    }
+    return updated;
+}
+
 export function fsrsParams(config: DeckConfig_Config): number[] {
-    if (config.fsrsParams6) {
+    const selected = selectedFsrsParams(config);
+    if (fsrsParamsUsable(selected)) {
+        return selected;
+    } else if (fsrsParamsUsable(config.fsrsParams7)) {
+        return config.fsrsParams7;
+    } else if (fsrsParamsUsable(config.fsrsParams6)) {
         return config.fsrsParams6;
-    } else if (config.fsrsParams5) {
+    } else if (fsrsParamsUsable(config.fsrsParams5)) {
         return config.fsrsParams5;
-    } else {
+    } else if (fsrsParamsUsable(config.fsrsParams4)) {
         return config.fsrsParams4;
+    } else {
+        return [];
     }
 }

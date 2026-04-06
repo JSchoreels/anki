@@ -76,6 +76,10 @@ pub struct DeckConfSchema11 {
     #[serde(default)]
     fsrs_params_6: Vec<f32>,
     #[serde(default)]
+    fsrs_params_7: Vec<f32>,
+    #[serde(default)]
+    fsrs_version: i32,
+    #[serde(default)]
     desired_retention: f32,
     #[serde(default)]
     ignore_revlogs_before_date: String,
@@ -313,6 +317,8 @@ impl Default for DeckConfSchema11 {
             fsrs_params_4: vec![],
             fsrs_params_5: vec![],
             fsrs_params_6: vec![],
+            fsrs_params_7: vec![],
+            fsrs_version: 0,
             desired_retention: 0.9,
             sm2_retention: 0.9,
             param_search: "".to_string(),
@@ -395,6 +401,8 @@ impl From<DeckConfSchema11> for DeckConfig {
                 fsrs_params_4: c.fsrs_params_4,
                 fsrs_params_5: c.fsrs_params_5,
                 fsrs_params_6: c.fsrs_params_6,
+                fsrs_params_7: c.fsrs_params_7,
+                fsrs_version: c.fsrs_version,
                 ignore_revlogs_before_date: c.ignore_revlogs_before_date,
                 easy_days_percentages: c.easy_days_percentages,
                 review_fuzz_base: None,
@@ -514,6 +522,8 @@ impl From<DeckConfig> for DeckConfSchema11 {
             fsrs_params_4: i.fsrs_params_4,
             fsrs_params_5: i.fsrs_params_5,
             fsrs_params_6: i.fsrs_params_6,
+            fsrs_params_7: i.fsrs_params_7,
+            fsrs_version: i.fsrs_version,
             desired_retention: i.desired_retention,
             sm2_retention: i.historical_retention,
             param_search: i.param_search,
@@ -543,6 +553,8 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "fsrsWeights",
     "fsrsParams5",
     "fsrsParams6",
+    "fsrsParams7",
+    "fsrsVersion",
     "desiredRetention",
     "stopTimerOnAnswer",
     "secondsToShowQuestion",

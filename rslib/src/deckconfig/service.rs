@@ -170,6 +170,7 @@ impl From<anki_proto::deck_config::UpdateDeckConfigsRequest> for UpdateDeckConfi
             limits: c.limits.unwrap_or_default(),
             new_cards_ignore_review_limit: c.new_cards_ignore_review_limit,
             load_balancer_enabled: c.load_balancer_enabled,
+            fsrs_short_term_with_steps_enabled: c.fsrs_short_term_with_steps_enabled,
             apply_all_parent_limits: c.apply_all_parent_limits,
             fsrs: c.fsrs,
             fsrs_reschedule: c.fsrs_reschedule,

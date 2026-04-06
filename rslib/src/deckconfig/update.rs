@@ -14,7 +14,9 @@ use anki_proto::deck_config::UpdateDeckConfigsMode;
 use anki_proto::decks::deck::normal::DayLimit;
 use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
+use fsrs::FSRS6_DEFAULT_PARAMETERS;
 
+use super::FsrsVersion;
 use crate::config::I32ConfigKey;
 use crate::config::StringKey;
 use crate::decks::NormalDeck;
@@ -42,6 +44,7 @@ pub struct UpdateDeckConfigsRequest {
     pub apply_all_parent_limits: bool,
     pub fsrs: bool,
     pub load_balancer_enabled: bool,
+    pub fsrs_short_term_with_steps_enabled: bool,
     pub fsrs_reschedule: bool,
     pub fsrs_health_check: bool,
 }
@@ -53,7 +56,9 @@ impl Collection {
         deck: DeckId,
     ) -> Result<anki_proto::deck_config::DeckConfigsForUpdate> {
         let mut defaults = DeckConfig::default();
-        defaults.inner.fsrs_params_6 = DEFAULT_PARAMETERS.into();
+        defaults.inner.fsrs_params_6 = FSRS6_DEFAULT_PARAMETERS.into();
+        defaults.inner.fsrs_params_7 = DEFAULT_PARAMETERS.into();
+        defaults.inner.fsrs_version = FsrsVersion::Seven as i32;
         let last_optimize = self.get_config_i32(I32ConfigKey::LastFsrsOptimize) as u32;
         let days_since_last_fsrs_optimize = if last_optimize > 0 {
             self.timing_today()?
@@ -75,6 +80,8 @@ impl Collection {
             apply_all_parent_limits: self.get_config_bool(BoolKey::ApplyAllParentLimits),
             fsrs: self.get_config_bool(BoolKey::Fsrs),
             load_balancer_enabled: self.get_config_bool(BoolKey::LoadBalancerEnabled),
+            fsrs_short_term_with_steps_enabled: self
+                .get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
@@ -96,11 +103,25 @@ impl Collection {
         config.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         // pre-fill empty fsrs params with older params
         config.iter_mut().for_each(|c| {
-            if c.inner.fsrs_params_6.is_empty() {
-                c.inner.fsrs_params_6 = if c.inner.fsrs_params_5.is_empty() {
+            if c.inner.fsrs_params_7.is_empty() {
+                c.inner.fsrs_params_7 = if !c.inner.fsrs_params_6.is_empty() {
+                    c.inner.fsrs_params_6.clone()
+                } else if c.inner.fsrs_params_5.is_empty() {
                     c.inner.fsrs_params_4.clone()
                 } else {
                     c.inner.fsrs_params_5.clone()
+                };
+            }
+            if c.inner.fsrs_version == FsrsVersion::Seven as i32 && c.inner.fsrs_params_7.is_empty()
+            {
+                c.inner.fsrs_version = if !c.inner.fsrs_params_6.is_empty() {
+                    FsrsVersion::Six as i32
+                } else if !c.inner.fsrs_params_5.is_empty() {
+                    FsrsVersion::Five as i32
+                } else if !c.inner.fsrs_params_4.is_empty() {
+                    FsrsVersion::Four as i32
+                } else {
+                    FsrsVersion::Seven as i32
                 };
             }
         });
@@ -175,15 +196,8 @@ impl Collection {
 
         // add/update provided configs
         for conf in &mut req.configs {
-            // If the user has provided empty FSRS6 params, zero out any
-            // old params as well, so we don't fall back on them, which would
-            // be surprising as they're not shown in the GUI.
-            if conf.inner.fsrs_params_6.is_empty() {
-                conf.inner.fsrs_params_5.clear();
-                conf.inner.fsrs_params_4.clear();
-            }
             // check the provided parameters are valid before we save them
-            FSRS::new(Some(conf.fsrs_params()))?;
+            FSRS::new(conf.fsrs_params())?;
             self.add_or_update_deck_config(conf)?;
             configs_after_update.insert(conf.id, conf.clone());
         }
@@ -286,7 +300,7 @@ impl Collection {
                     let params = config.and_then(|c| {
                         if req.fsrs {
                             Some(UpdateMemoryStateRequest {
-                                params: c.fsrs_params().clone(),
+                                params: c.fsrs_params().to_vec(),
                                 preset_desired_retention: c.inner.desired_retention,
                                 max_interval: c.inner.maximum_review_interval,
                                 review_fuzz_config: c.review_fuzz_config(),
@@ -317,6 +331,10 @@ impl Collection {
         )?;
         self.set_config_bool_inner(BoolKey::ApplyAllParentLimits, req.apply_all_parent_limits)?;
         self.set_config_bool_inner(BoolKey::LoadBalancerEnabled, req.load_balancer_enabled)?;
+        self.set_config_bool_inner(
+            BoolKey::FsrsShortTermWithStepsEnabled,
+            req.fsrs_short_term_with_steps_enabled,
+        )?;
         self.set_config_bool_inner(BoolKey::FsrsHealthCheck, req.fsrs_health_check)?;
 
         Ok(())
@@ -383,18 +401,19 @@ impl Collection {
             };
             let ignore_revlogs_before_ms = ignore_revlogs_before_ms_from_config(config)?;
             let num_of_relearning_steps = config.inner.relearn_steps.len();
+            let current_params = config.selected_fsrs_params().to_vec();
             match self.compute_params(ComputeParamsRequest {
                 search: &search,
                 ignore_revlogs_before_ms,
                 current_preset: idx as u32 + 1,
                 total_presets: config_len,
-                current_params: config.fsrs_params(),
+                current_params: &current_params,
                 num_of_relearning_steps,
                 health_check: false,
             }) {
                 Ok(params) => {
                     println!("{}: {:?}", config.name, params.params);
-                    config.inner.fsrs_params_6 = params.params;
+                    *selected_fsrs_params_mut(config) = params.params;
                 }
                 Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
                 Err(err) => {
@@ -405,6 +424,15 @@ impl Collection {
             self.set_config_i32_inner(I32ConfigKey::LastFsrsOptimize, today)?;
         }
         Ok(())
+    }
+}
+
+fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
+    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
+        FsrsVersion::Seven => &mut config.inner.fsrs_params_7,
+        FsrsVersion::Six => &mut config.inner.fsrs_params_6,
+        FsrsVersion::Five => &mut config.inner.fsrs_params_5,
+        FsrsVersion::Four => &mut config.inner.fsrs_params_4,
     }
 }
 
@@ -508,6 +536,7 @@ mod test {
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,
@@ -557,6 +586,142 @@ mod test {
         // should have forced a full sync
         assert!(full_sync_required(&mut col));
 
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_params_are_preserved_on_update() -> Result<()> {
+        let mut col = Collection::new();
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: "".to_string(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            apply_all_parent_limits: false,
+            fsrs: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        let expected = vec![0.1, 0.2, 0.3];
+        input.configs[0].inner.fsrs_params_7 = expected.clone();
+        col.update_deck_configs(input)?;
+
+        let stored = col.get_deck_config(DeckConfigId(1), true)?.unwrap();
+        assert_eq!(stored.inner.fsrs_params_7, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn valid_fsrs7_params_are_preferred_on_update() -> Result<()> {
+        let mut col = Collection::new();
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: "".to_string(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            apply_all_parent_limits: false,
+            fsrs: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        let expected = vec![
+            0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
+            1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+        ];
+        input.configs[0].inner.fsrs_params_6 = vec![1.0; 21];
+        input.configs[0].inner.fsrs_params_7 = expected.clone();
+        col.update_deck_configs(input)?;
+
+        let stored = col.get_deck_config(DeckConfigId(1), true)?.unwrap();
+        assert_eq!(stored.fsrs_params(), &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn valid_35_param_fsrs7_is_preferred_on_update() -> Result<()> {
+        let mut col = Collection::new();
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: "".to_string(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            apply_all_parent_limits: false,
+            fsrs: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        let expected: Vec<f32> = (0..35).map(|i| 0.1 + i as f32 * 0.01).collect();
+        input.configs[0].inner.fsrs_params_6 = vec![1.0; 21];
+        input.configs[0].inner.fsrs_params_7 = expected.clone();
+        col.update_deck_configs(input)?;
+
+        let stored = col.get_deck_config(DeckConfigId(1), true)?.unwrap();
+        assert_eq!(stored.fsrs_params(), &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_short_term_with_steps_flag_roundtrip() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool_inner(BoolKey::FsrsShortTermWithStepsEnabled, true)?;
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        assert!(output.fsrs_short_term_with_steps_enabled);
+
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: "".to_string(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            apply_all_parent_limits: false,
+            fsrs: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        col.update_deck_configs(input.clone())?;
+        assert!(!col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
+
+        input.fsrs_short_term_with_steps_enabled = true;
+        col.update_deck_configs(input)?;
+        assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
         Ok(())
     }
 

@@ -4,10 +4,13 @@
 use super::DueCard;
 use super::NewCard;
 use super::QueueBuilder;
+use crate::card::Card;
 use crate::deckconfig::NewCardGatherPriority;
+use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
 use crate::scheduler::queue::DueCardKind;
+use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::card::NewCardSorting;
 
 impl QueueBuilder {
@@ -36,6 +39,15 @@ impl QueueBuilder {
         if self.limits.root_limit_reached(LimitKind::Review) {
             return Ok(());
         }
+        if self.context.fsrs
+            && matches!(
+                self.context.sort_options.review_order,
+                ReviewCardOrder::RetrievabilityAscending
+                    | ReviewCardOrder::RetrievabilityDescending
+            )
+        {
+            return self.gather_due_cards_with_exact_retrievability(col, kind);
+        }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
             self.context.sort_options.review_order,
@@ -58,6 +70,56 @@ impl QueueBuilder {
                 Ok(true)
             },
         )
+    }
+
+    fn gather_due_cards_with_exact_retrievability(
+        &mut self,
+        col: &mut Collection,
+        kind: DueCardKind,
+    ) -> Result<()> {
+        let mut due_cards = Vec::new();
+        col.storage.for_each_due_card_in_active_decks(
+            self.context.timing,
+            ReviewCardOrder::Day,
+            kind,
+            self.context.fsrs,
+            |card| {
+                due_cards.push(card);
+                Ok(true)
+            },
+        )?;
+
+        let descending = matches!(
+            self.context.sort_options.review_order,
+            ReviewCardOrder::RetrievabilityDescending
+        );
+        let mut with_key = Vec::with_capacity(due_cards.len());
+        for card in due_cards {
+            with_key.push((
+                card,
+                exact_relative_retrievability_key(col, card.id, self.context.timing)?,
+            ));
+        }
+        with_key.sort_by(|(card_a, key_a), (card_b, key_b)| {
+            let ord = key_a.total_cmp(key_b);
+            let ord = if descending { ord.reverse() } else { ord };
+            ord.then_with(|| card_a.id.cmp(&card_b.id))
+        });
+
+        for (card, _) in with_key {
+            if self.limits.root_limit_reached(LimitKind::Review) {
+                break;
+            }
+            if !self
+                .limits
+                .limit_reached(card.current_deck_id, LimitKind::Review)?
+                && self.add_due_card(card)
+            {
+                self.limits
+                    .decrement_deck_and_parent_limits(card.current_deck_id, LimitKind::Review)?;
+            }
+        }
+        Ok(())
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
@@ -172,5 +234,45 @@ impl QueueBuilder {
     // when the base salt is a small integer.
     fn knuth_salt(base_salt: u32) -> u32 {
         base_salt.wrapping_mul(2654435761)
+    }
+}
+
+fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
+    if let Some(last_review_time) = card.last_review_time {
+        timing.now.elapsed_secs_since(last_review_time) as u32
+    } else {
+        let due = card.original_or_current_due() as i64;
+        if due > 365_000 {
+            let last_review_time = due.saturating_sub(card.interval as i64);
+            timing.now.0.saturating_sub(last_review_time) as u32
+        } else {
+            let review_day = due.saturating_sub(card.interval as i64);
+            timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
+        }
+    }
+}
+
+fn exact_relative_retrievability_key(
+    col: &mut Collection,
+    card_id: CardId,
+    timing: SchedTimingToday,
+) -> Result<f32> {
+    let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
+    if let (Some(state), Some(desired_retention)) = (card.memory_state, card.desired_retention) {
+        let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
+        let interval_at_target = col
+            .fsrs_next_interval_for_card(card.id, state.stability, desired_retention.max(0.0001))?
+            .max(0.0001);
+        Ok(-(elapsed_days / interval_at_target))
+    } else {
+        // keep SM2-style fallback ordering when FSRS state is missing
+        let due = card.original_or_current_due() as i64;
+        let review_day = due.saturating_sub(card.interval as i64);
+        let days_elapsed = if due > 365_000 {
+            (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
+        } else {
+            timing.days_elapsed.saturating_sub(review_day as u32)
+        };
+        Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
     }
 }

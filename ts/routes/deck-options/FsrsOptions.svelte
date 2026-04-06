@@ -23,14 +23,34 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SwitchRow from "$lib/components/SwitchRow.svelte";
 
     import GlobalLabel from "./GlobalLabel.svelte";
-    import { commitEditing, fsrsParams, type DeckOptionsState, ValueTab } from "./lib";
+    import {
+        commitEditing,
+        type DeckOptionsState,
+        ValueTab,
+        withSelectedFsrsParams,
+    } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import Warning from "./Warning.svelte";
     import ParamsInputRow from "./ParamsInputRow.svelte";
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
+        deltaClass,
+        formatDelta,
+        formatMetric,
+        formatPercentDelta,
+        metricDelta,
+        metricDeltaPercent,
+    } from "./optimize-comparison";
+    import {
+        customDecayCandidates,
+        formatDecay,
+        supportsCustomDecayTable,
+        withLastParam,
+    } from "./custom-decay-table";
+    import {
         DeckConfig_Config,
+        DeckConfig_Config_FsrsVersion,
         GetRetentionWorkloadRequest,
         type GetRetentionWorkloadResponse,
         UpdateDeckConfigsMode,
@@ -48,6 +68,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrsReschedule = state.fsrsReschedule;
+    const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
 
@@ -56,7 +77,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let desiredRetentionFocused = false;
     let desiredRetentionEverFocused = false;
     let optimized = false;
-    const initialParams = [...fsrsParams($config)];
+    const initialParams = [...selectedFsrsParams($config)];
     $: if (desiredRetentionFocused) {
         desiredRetentionEverFocused = true;
     }
@@ -67,6 +88,65 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let computingParams = false;
     let checkingParams = false;
     let checkingHealth = false;
+    type OptimizationMetrics = {
+        logLoss: number;
+        rmseBins: number;
+    };
+    type OptimizationComparison = {
+        optimizedParams: number[];
+        search: string;
+        ignoreRevlogsBeforeMs: bigint;
+        current: OptimizationMetrics;
+        optimized: OptimizationMetrics;
+    };
+    type DecayRow = {
+        decay: number;
+        isBaseline: boolean;
+        logLoss: number;
+        rmseBins: number;
+        logLossDelta: number;
+        logLossDeltaPercent: number | undefined;
+        rmseDelta: number;
+        rmseDeltaPercent: number | undefined;
+    };
+    let optimizationComparison: OptimizationComparison | undefined;
+    let customDecayRows: DecayRow[] = [];
+    let loadingCustomDecayTable = false;
+    const fsrsVersionChoices = [
+        {
+            value: DeckConfig_Config_FsrsVersion.SEVEN,
+            label: "FSRS-7",
+        },
+        {
+            value: DeckConfig_Config_FsrsVersion.SIX,
+            label: "FSRS-6",
+        },
+        {
+            value: DeckConfig_Config_FsrsVersion.FIVE,
+            label: "FSRS-5",
+        },
+        {
+            value: DeckConfig_Config_FsrsVersion.FOUR,
+            label: "FSRS-4.5",
+        },
+    ];
+
+    function selectedFsrsParams(config: DeckConfig_Config): number[] {
+        switch (config.fsrsVersion) {
+            case DeckConfig_Config_FsrsVersion.SIX:
+                return config.fsrsParams6;
+            case DeckConfig_Config_FsrsVersion.FIVE:
+                return config.fsrsParams5;
+            case DeckConfig_Config_FsrsVersion.FOUR:
+                return config.fsrsParams4;
+            default:
+                return config.fsrsParams7;
+        }
+    }
+
+    function setSelectedFsrsParams(params: number[]): void {
+        config.update((current) => withSelectedFsrsParams(current, params));
+    }
 
     const healthCheck = state.fsrsHealthCheck;
 
@@ -77,7 +157,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let desiredRetentionChangeInfo = "";
     $: if (showDesiredRetentionTooltip) {
-        getRetentionChangeInfo(roundedRetention, fsrsParams($config));
+        getRetentionChangeInfo(roundedRetention, selectedFsrsParams($config));
     }
 
     $: retentionWarningClass = getRetentionWarningClass(roundedRetention);
@@ -132,7 +212,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let newCardIntervalRequest = 0;
 
     $: simulateFsrsRequest = new SimulateFsrsReviewRequest({
-        params: fsrsParams($config),
+        params: selectedFsrsParams($config),
         desiredRetention: $config.desiredRetention,
         newLimit: $config.newPerDay,
         reviewLimit: $config.reviewsPerDay,
@@ -159,7 +239,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: void loadNewCardIntervals(
         startingDesiredRetentionValue,
         effectiveDesiredRetention,
-        fsrsParams($config),
+        selectedFsrsParams($config),
         $config.learnSteps,
         $config.relearnSteps,
         $config.maximumReviewInterval,
@@ -189,7 +269,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let retentionWorkloadInfo: undefined | Promise<GetRetentionWorkloadResponse> =
         undefined;
-    let lastParams = [...fsrsParams($config)];
+    let lastParams = [...selectedFsrsParams($config)];
 
     function configWithDesiredRetention(
         currentConfig: DeckConfig_Config,
@@ -219,8 +299,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     ): Promise<void> {
         const request = ++newCardIntervalRequest;
         newCardIntervalsError = "";
-        const currentConfig = new DeckConfig_Config($config);
-        currentConfig.fsrsParams6 = [...params];
+        const currentConfig = withSelectedFsrsParams($config, params);
         try {
             const [current, selected] = await Promise.all([
                 getFsrsNewCardIntervals(
@@ -326,11 +405,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         try {
             await runWithBackendProgress(
                 async () => {
-                    const params = fsrsParams($config);
+                    const params = selectedFsrsParams($config);
+                    const search = $config.paramSearch
+                        ? $config.paramSearch
+                        : defaultparamSearch;
                     const resp = await computeFsrsParams({
-                        search: $config.paramSearch
-                            ? $config.paramSearch
-                            : defaultparamSearch,
+                        search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         currentParams: params,
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
@@ -365,10 +445,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
 
                     if (!alreadyOptimal) {
-                        $config.fsrsParams6 = resp.params;
-                        setTimeout(() => {
-                            optimized = true;
-                        }, 201);
+                        const currentMetrics = await evaluateParamsLegacy({
+                            search,
+                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            params,
+                        });
+                        const optimizedMetrics = await evaluateParamsLegacy({
+                            search,
+                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            params: resp.params,
+                        });
+                        optimizationComparison = {
+                            optimizedParams: [...resp.params],
+                            search,
+                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            current: {
+                                logLoss: currentMetrics.logLoss,
+                                rmseBins: currentMetrics.rmseBins,
+                            },
+                            optimized: {
+                                logLoss: optimizedMetrics.logLoss,
+                                rmseBins: optimizedMetrics.rmseBins,
+                            },
+                        };
                     }
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
@@ -382,6 +481,92 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             );
         } finally {
             computingParams = false;
+        }
+    }
+
+    function closeOptimizationComparison(): void {
+        optimizationComparison = undefined;
+        customDecayRows = [];
+        loadingCustomDecayTable = false;
+    }
+
+    function keepCurrentParams(): void {
+        closeOptimizationComparison();
+    }
+
+    function applyOptimizedParams(): void {
+        if (!optimizationComparison) {
+            return;
+        }
+        setSelectedFsrsParams(optimizationComparison.optimizedParams);
+        optimized = true;
+        closeOptimizationComparison();
+    }
+
+    async function loadCustomDecayTable(): Promise<void> {
+        if (
+            !optimizationComparison
+            || loadingCustomDecayTable
+            || !supportsCustomDecayTable(optimizationComparison.optimizedParams)
+        ) {
+            return;
+        }
+        loadingCustomDecayTable = true;
+        try {
+            const rows = await Promise.all(
+                customDecayCandidates.map(async (decay) => {
+                    const resp = await evaluateParamsLegacy({
+                        search: optimizationComparison.search,
+                        ignoreRevlogsBeforeMs:
+                            optimizationComparison.ignoreRevlogsBeforeMs,
+                        params: withLastParam(
+                            optimizationComparison.optimizedParams,
+                            decay,
+                        ),
+                    });
+                    return {
+                        decay,
+                        isBaseline: false,
+                        logLoss: resp.logLoss,
+                        rmseBins: resp.rmseBins,
+                        logLossDelta: metricDelta(
+                            optimizationComparison.optimized.logLoss,
+                            resp.logLoss,
+                        ),
+                        logLossDeltaPercent: metricDeltaPercent(
+                            optimizationComparison.optimized.logLoss,
+                            resp.logLoss,
+                        ),
+                        rmseDelta: metricDelta(
+                            optimizationComparison.optimized.rmseBins,
+                            resp.rmseBins,
+                        ),
+                        rmseDeltaPercent: metricDeltaPercent(
+                            optimizationComparison.optimized.rmseBins,
+                            resp.rmseBins,
+                        ),
+                    };
+                }),
+            );
+            const optimizedDecay =
+                optimizationComparison.optimizedParams[
+                    optimizationComparison.optimizedParams.length - 1
+                ] ?? 0;
+            customDecayRows = [
+                {
+                    decay: optimizedDecay,
+                    isBaseline: true,
+                    logLoss: optimizationComparison.optimized.logLoss,
+                    rmseBins: optimizationComparison.optimized.rmseBins,
+                    logLossDelta: 0,
+                    logLossDeltaPercent: 0,
+                    rmseDelta: 0,
+                    rmseDeltaPercent: 0,
+                },
+                ...rows,
+            ];
+        } finally {
+            loadingCustomDecayTable = false;
         }
     }
 
@@ -405,7 +590,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     const resp = await evaluateParamsLegacy({
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                        params: fsrsParams($config),
+                        params: selectedFsrsParams($config),
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
@@ -502,7 +687,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function showSimulatorModal(modal: Modal) {
-        if (fsrsParams($config).toString() === initialParams.toString()) {
+        if (selectedFsrsParams($config).toString() === initialParams.toString()) {
             modal?.show();
         } else {
             alert(tr.deckConfigFsrsSimulateSavePreset());
@@ -532,6 +717,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 {tr.deckConfigDesiredRetention()}
             </SettingTitle>
         </SpinBoxFloatRow>
+    </Item>
+</DynamicallySlottable>
+<DynamicallySlottable slotHost={Item} api={{}}>
+    <Item>
+        <SwitchRow bind:value={$fsrsShortTermWithStepsEnabled} defaultValue={false}>
+            <SettingTitle>
+                <GlobalLabel
+                    title={tr.preferencesShowLearningCardsWithLargerSteps()}
+                />
+            </SettingTitle>
+        </SwitchRow>
     </Item>
 </DynamicallySlottable>
 
@@ -583,15 +779,56 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
 
 <div class="ms-1 me-1">
-    <ParamsInputRow
-        bind:value={$config.fsrsParams6}
-        defaultValue={[]}
-        defaults={defaults.fsrsParams6}
-    >
-        <SettingTitle on:click={() => openHelpModal("modelParams")}>
-            {tr.deckConfigWeights()}
-        </SettingTitle>
-    </ParamsInputRow>
+    <div class="mb-3">
+        <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
+        <select bind:value={$config.fsrsVersion} class="form-select">
+            {#each fsrsVersionChoices as choice}
+                <option value={choice.value}>{choice.label}</option>
+            {/each}
+        </select>
+    </div>
+
+    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
+        <ParamsInputRow
+            bind:value={$config.fsrsParams6}
+            defaultValue={[]}
+            defaults={defaults.fsrsParams6}
+        >
+            <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                {tr.deckConfigWeights()}
+            </SettingTitle>
+        </ParamsInputRow>
+    {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FIVE}
+        <ParamsInputRow
+            bind:value={$config.fsrsParams5}
+            defaultValue={[]}
+            defaults={defaults.fsrsParams5}
+        >
+            <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                {tr.deckConfigWeights()}
+            </SettingTitle>
+        </ParamsInputRow>
+    {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FOUR}
+        <ParamsInputRow
+            bind:value={$config.fsrsParams4}
+            defaultValue={[]}
+            defaults={defaults.fsrsParams4}
+        >
+            <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                {tr.deckConfigWeights()}
+            </SettingTitle>
+        </ParamsInputRow>
+    {:else}
+        <ParamsInputRow
+            bind:value={$config.fsrsParams7}
+            defaultValue={[]}
+            defaults={defaults.fsrsParams7}
+        >
+            <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                {tr.deckConfigWeights()}
+            </SettingTitle>
+        </ParamsInputRow>
+    {/if}
 
     <ParamsSearchRow
         bind:value={$config.paramSearch}
@@ -695,6 +932,125 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {onPresetChange}
 />
 
+{#if optimizationComparison}
+    {@const logLossDelta = metricDelta(
+        optimizationComparison.current.logLoss,
+        optimizationComparison.optimized.logLoss,
+    )}
+    {@const rmseDelta = metricDelta(
+        optimizationComparison.current.rmseBins,
+        optimizationComparison.optimized.rmseBins,
+    )}
+    {@const logLossDeltaPercent = metricDeltaPercent(
+        optimizationComparison.current.logLoss,
+        optimizationComparison.optimized.logLoss,
+    )}
+    {@const rmseDeltaPercent = metricDeltaPercent(
+        optimizationComparison.current.rmseBins,
+        optimizationComparison.optimized.rmseBins,
+    )}
+    <div class="optimization-popup-backdrop">
+        <div class="optimization-popup">
+            <div class="optimization-popup-header">Optimization Result</div>
+            <table class="optimization-popup-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Current</th>
+                        <th>Optimized</th>
+                        <th>Delta</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <th>Log loss</th>
+                        <td>{formatMetric(optimizationComparison.current.logLoss)}</td>
+                        <td>{formatMetric(optimizationComparison.optimized.logLoss)}</td>
+                        <td class={`optimize-delta ${deltaClass(logLossDelta)}`}>
+                            {formatDelta(logLossDelta)}
+                            ({formatPercentDelta(logLossDeltaPercent)})
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>RMSE (bins)</th>
+                        <td>{formatMetric(optimizationComparison.current.rmseBins)}</td>
+                        <td>{formatMetric(optimizationComparison.optimized.rmseBins)}</td>
+                        <td class={`optimize-delta ${deltaClass(rmseDelta)}`}>
+                            {formatDelta(rmseDelta)}
+                            ({formatPercentDelta(rmseDeltaPercent)})
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="optimization-popup-actions">
+                <button
+                    class="btn btn-outline-primary"
+                    disabled={loadingCustomDecayTable
+                        || !supportsCustomDecayTable(
+                            optimizationComparison.optimizedParams,
+                        )}
+                    on:click={loadCustomDecayTable}
+                >
+                    {#if !supportsCustomDecayTable(optimizationComparison.optimizedParams)}
+                        Custom Decay Table (FSRS-7 unsupported)
+                    {:else if loadingCustomDecayTable}
+                        {tr.actionsProcessing()}
+                    {:else}
+                        Load Custom Decay Table
+                    {/if}
+                </button>
+            </div>
+            {#if customDecayRows.length}
+                <table class="optimization-popup-table">
+                    <thead>
+                        <tr>
+                            <th>Decay</th>
+                            <th>Log loss</th>
+                            <th>Delta</th>
+                            <th>RMSE (bins)</th>
+                            <th>Delta</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#each customDecayRows as row}
+                            <tr>
+                                <th>
+                                    {formatDecay(row.decay)}
+                                    {#if row.isBaseline}
+                                        (optimized)
+                                    {/if}
+                                </th>
+                                <td>{formatMetric(row.logLoss)}</td>
+                                <td
+                                    class={`optimize-delta ${deltaClass(row.logLossDelta)}`}
+                                >
+                                    {formatDelta(row.logLossDelta)}
+                                    ({formatPercentDelta(row.logLossDeltaPercent)})
+                                </td>
+                                <td>{formatMetric(row.rmseBins)}</td>
+                                <td
+                                    class={`optimize-delta ${deltaClass(row.rmseDelta)}`}
+                                >
+                                    {formatDelta(row.rmseDelta)}
+                                    ({formatPercentDelta(row.rmseDeltaPercent)})
+                                </td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            {/if}
+            <div class="optimization-popup-footer">
+                <button class="btn btn-secondary" on:click={keepCurrentParams}>
+                    Keep Current
+                </button>
+                <button class="btn btn-primary" on:click={applyOptimizedParams}>
+                    Use Optimized
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
+
 <style>
     .btn {
         margin-bottom: 0.375rem;
@@ -760,5 +1116,74 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     hr {
         border-top: 1px solid var(--border);
         opacity: 1;
+    }
+
+    .optimization-popup-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 1060;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+    }
+
+    .optimization-popup {
+        width: min(760px, 95vw);
+        background: var(--canvas);
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        box-shadow: 0 0.75rem 2.25rem rgba(0, 0, 0, 0.2);
+    }
+
+    .optimization-popup-header {
+        font-weight: 700;
+        padding: 0.75rem 1rem 0.5rem;
+    }
+
+    .optimization-popup-table {
+        width: calc(100% - 2rem);
+        margin: 0 1rem 0.75rem;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+
+    .optimization-popup-table th,
+    .optimization-popup-table td {
+        border: 1px solid var(--border);
+        padding: 0.35rem 0.5rem;
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    .optimization-popup-table th:first-child,
+    .optimization-popup-table td:first-child {
+        text-align: left;
+    }
+
+    .optimization-popup-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+        padding: 0 1rem 1rem;
+    }
+
+    .optimization-popup-actions {
+        padding: 0 1rem 0.25rem;
+    }
+
+    .optimize-delta.better {
+        color: var(--fg-green, #027a48);
+        font-weight: 600;
+    }
+
+    .optimize-delta.worse {
+        color: var(--fg-red, #b42318);
+        font-weight: 600;
+    }
+
+    .optimize-delta.equal {
+        color: var(--fg, inherit);
     }
 </style>

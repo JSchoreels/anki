@@ -20,14 +20,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: fsrsEnabled = stats?.memoryState != null;
     $: desiredRetention = stats?.desiredRetention ?? 0.9;
     $: decay = (() => {
-        const paramsLength = stats?.fsrsParams?.length ?? 0;
+        const params = stats?.fsrsParams ?? [];
+        const paramsLength = params.length;
         if (paramsLength === 0) {
             return 0.1542; // default decay for FSRS-6
         }
         if (paramsLength < 21) {
             return 0.5; // default decay for FSRS-4.5 and FSRS-5
         }
-        return stats?.fsrsParams?.[20] ?? 0.1542;
+        if (paramsLength >= 35) {
+            return params[27] ?? 0.0723;
+        }
+        return params[20] ?? 0.1542;
     })();
 </script>
 
@@ -44,7 +48,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
         {#if fsrsEnabled && showCurve}
             <Row>
-                <ForgettingCurve revlog={stats.revlog} {desiredRetention} {decay} />
+                <ForgettingCurve
+                    revlog={stats.revlog}
+                    {desiredRetention}
+                    {decay}
+                    fsrsParams={stats.fsrsParams}
+                />
             </Row>
         {/if}
     {:else}

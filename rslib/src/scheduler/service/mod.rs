@@ -12,12 +12,18 @@ use anki_proto::scheduler::ComputeFsrsParamsResponse;
 use anki_proto::scheduler::ComputeMemoryStateResponse;
 use anki_proto::scheduler::ComputeOptimalRetentionResponse;
 use anki_proto::scheduler::FsrsBenchmarkResponse;
+use anki_proto::scheduler::FsrsCurrentRetrievabilityRequest;
+use anki_proto::scheduler::FsrsCurrentRetrievabilityResponse;
+use anki_proto::scheduler::FsrsNextIntervalRequest;
+use anki_proto::scheduler::FsrsNextIntervalResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
+use fsrs::benchmark;
+use fsrs::compute_parameters;
 use fsrs::ComputeParametersInput;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
@@ -312,7 +318,7 @@ impl crate::services::SchedulerService for Collection {
             inner: input,
             ..Default::default()
         };
-        let fsrs = FSRS::new(Some(config.fsrs_params()))?;
+        let fsrs = FSRS::new(config.fsrs_params())?;
         let params = config.fsrs_params();
         let fsrs_allow_short_term = if params.len() >= 19 {
             params[17] > 0.0 && params[18] > 0.0
@@ -498,6 +504,32 @@ impl crate::services::SchedulerService for Collection {
             delta_days: self.get_fuzz_delta(input.card_id.into(), input.interval)?,
         })
     }
+
+    fn fsrs_current_retrievability(
+        &mut self,
+        input: FsrsCurrentRetrievabilityRequest,
+    ) -> Result<FsrsCurrentRetrievabilityResponse> {
+        Ok(FsrsCurrentRetrievabilityResponse {
+            retrievability: self.fsrs_current_retrievability_for_card(
+                input.card_id.into(),
+                input.stability,
+                input.elapsed_days,
+            )?,
+        })
+    }
+
+    fn fsrs_next_interval(
+        &mut self,
+        input: FsrsNextIntervalRequest,
+    ) -> Result<FsrsNextIntervalResponse> {
+        Ok(FsrsNextIntervalResponse {
+            interval: self.fsrs_next_interval_for_card(
+                input.card_id.into(),
+                input.stability,
+                input.desired_retention,
+            )?,
+        })
+    }
 }
 
 impl crate::services::BackendSchedulerService for Backend {
@@ -505,9 +537,8 @@ impl crate::services::BackendSchedulerService for Backend {
         &self,
         req: scheduler::ComputeFsrsParamsFromItemsRequest,
     ) -> Result<scheduler::ComputeFsrsParamsResponse> {
-        let fsrs = FSRS::new(None)?;
         let fsrs_items = req.items.len() as u32;
-        let params = fsrs.compute_parameters(ComputeParametersInput {
+        let params = compute_parameters(ComputeParametersInput {
             train_set: req.items.into_iter().map(fsrs_item_proto_to_fsrs).collect(),
             progress: None,
             enable_short_term: true,
@@ -524,13 +555,12 @@ impl crate::services::BackendSchedulerService for Backend {
         &self,
         req: scheduler::FsrsBenchmarkRequest,
     ) -> Result<scheduler::FsrsBenchmarkResponse> {
-        let fsrs = FSRS::new(None)?;
         let train_set = req
             .train_set
             .into_iter()
             .map(fsrs_item_proto_to_fsrs)
             .collect();
-        let params = fsrs.benchmark(ComputeParametersInput {
+        let params = benchmark(ComputeParametersInput {
             train_set,
             progress: None,
             enable_short_term: true,

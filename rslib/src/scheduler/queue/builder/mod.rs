@@ -301,6 +301,8 @@ mod test {
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
+    use crate::card::FsrsMemoryState;
+    use crate::search::SortMode;
 
     impl Collection {
         fn set_deck_gather_order(&mut self, deck: &mut Deck, order: NewCardGatherPriority) {
@@ -354,6 +356,14 @@ mod test {
                     let card = self.storage.get_card(entry.card_id()).unwrap().unwrap();
                     (card.due, card.interval)
                 })
+                .collect()
+        }
+
+        fn queue_as_ids(&mut self, deck_id: DeckId) -> Vec<CardId> {
+            self.build_queues(deck_id)
+                .unwrap()
+                .iter()
+                .map(|entry| entry.card_id())
                 .collect()
         }
     }
@@ -472,6 +482,47 @@ mod test {
         col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
         assert_eq!(col.queue_as_due_and_ivl(deck.id), expected_queue);
 
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_retrievability_order_ignores_stale_decay() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, deck.id)?;
+        col.add_note(&mut note2, deck.id)?;
+
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+        let timing = col.timing_today()?;
+        let mut card1 = col.storage.get_card(ids[0])?.unwrap();
+        let mut card2 = col.storage.get_card(ids[1])?.unwrap();
+        for card in [&mut card1, &mut card2] {
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.due = 0;
+            card.interval = 20;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 30.0,
+                difficulty: 5.0,
+            });
+            card.desired_retention = Some(0.8);
+            card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        }
+        card1.decay = Some(0.1);
+        card2.decay = Some(2.0);
+        col.storage.update_card(&card1)?;
+        col.storage.update_card(&card2)?;
+
+        // exact FSRS ordering should tie on identical state/elapsed/DR and fall
+        // back to card id, not stale per-card decay.
+        assert_eq!(col.queue_as_ids(deck.id), vec![card1.id, card2.id]);
         Ok(())
     }
 

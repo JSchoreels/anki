@@ -29,7 +29,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return params.map((v) => v.toFixed(4)).join(", ");
     }
 
-    const validParamCounts = [0, 17, 19, 21];
+    const validParamCounts = [0, 17, 19, 21, 35];
 
     function update(e: Event): void {
         const input = e.target as HTMLTextAreaElement;
@@ -39,7 +39,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             .filter((e) => e)
             .map((v) => Number(v));
 
-        if (validParamCounts.includes(newValue.length)) {
+        if (
+            validParamCounts.includes(newValue.length)
+            && newValue.every((v) => Number.isFinite(v))
+        ) {
             value = newValue;
         } else {
             alert(tr.deckConfigInvalidParameters());

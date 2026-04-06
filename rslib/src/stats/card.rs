@@ -2,12 +2,12 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use fsrs::FSRS;
-use fsrs::FSRS5_DEFAULT_DECAY;
 
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
+use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::timing::is_unix_epoch_timestamp;
@@ -48,18 +48,6 @@ impl Collection {
 
         let seconds_elapsed = timing.now.elapsed_secs_since(last_review_time) as u32;
 
-        let fsrs_retrievability = card
-            .memory_state
-            .zip(Some(seconds_elapsed))
-            .zip(Some(card.decay.unwrap_or(FSRS5_DEFAULT_DECAY)))
-            .map(|((state, seconds), decay)| {
-                FSRS::new(None).unwrap().current_retrievability_seconds(
-                    state.into(),
-                    seconds,
-                    decay,
-                )
-            });
-
         let original_deck = if card.original_deck_id == DeckId(0) {
             deck.clone()
         } else {
@@ -71,6 +59,17 @@ impl Collection {
         let preset = self
             .get_deck_config(config_id, true)?
             .or_not_found(config_id.to_string())?;
+
+        let fsrs_retrievability =
+            card.memory_state
+                .zip(Some(seconds_elapsed))
+                .map(|(state, seconds)| {
+                    fsrs_current_retrievability_for_params(
+                        preset.fsrs_params(),
+                        state.stability,
+                        seconds as f32 / 86_400.0,
+                    )
+                });
         Ok(anki_proto::stats::CardStatsResponse {
             card_id: card.id.into(),
             note_id: card.note_id.into(),
@@ -97,7 +96,7 @@ impl Collection {
             notetype: nt.name.clone(),
             revlog: self.stats_revlog_entries_with_memory_state(&card, revlog)?,
             memory_state: card.memory_state.map(Into::into),
-            fsrs_retrievability,
+            fsrs_retrievability: fsrs_retrievability.transpose()?,
             custom_data: card.custom_data,
             fsrs_params: preset.fsrs_params().to_vec(),
             preset: preset.name,
@@ -161,13 +160,15 @@ impl Collection {
             .get_deck_config(conf_id)?
             .or_not_found(conf_id)?;
         let historical_retention = config.inner.historical_retention;
-        let fsrs = FSRS::new(Some(config.fsrs_params()))?;
+        let params = config.fsrs_params();
+        let fsrs = FSRS::new(params)?;
         let next_day_at = self.timing_today()?.next_day_at;
         let ignore_before = ignore_revlogs_before_ms_from_config(&config)?;
 
         let mut result = Vec::new();
         if let Some(item) = fsrs_item_for_memory_state(
             &fsrs,
+            params,
             revlog.clone(),
             next_day_at,
             historical_retention,
@@ -233,8 +234,52 @@ fn stats_revlog_entry(
 
 #[cfg(test)]
 mod test {
+    use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
+    use anki_proto::deck_config::UpdateDeckConfigsMode;
+    use fsrs::MemoryState;
+    use fsrs::FSRS;
+
     use super::*;
+    use crate::card::FsrsMemoryState;
+    use crate::deckconfig::FsrsVersion;
+    use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::search::SortMode;
+
+    fn fsrs7_params_for_retrievability_test() -> Vec<f32> {
+        vec![
+            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
+            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
+            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339, 0.9846, 0.2485,
+            0.6014, 0.0545, 0.0,
+        ]
+    }
+
+    fn set_selected_fsrs7_params(col: &mut Collection, params: Vec<f32>) -> Result<()> {
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: String::new(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
+        input.configs[0].inner.fsrs_params_7 = params;
+        col.update_deck_configs(input)?;
+        Ok(())
+    }
 
     #[test]
     fn stats() -> Result<()> {
@@ -248,6 +293,44 @@ mod test {
         let _report = col.card_stats(cid)?;
         //println!("report {}", report);
 
+        Ok(())
+    }
+
+    #[test]
+    fn card_stats_retrievability_uses_selected_model_curve() -> Result<()> {
+        let mut col = Collection::new();
+        let params = fsrs7_params_for_retrievability_test();
+        set_selected_fsrs7_params(&mut col, params.clone())?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        let stability = 42.0;
+        let elapsed_days = 120.0;
+        let timing = col.timing_today()?;
+        card.memory_state = Some(FsrsMemoryState {
+            stability,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(timing.now.adding_secs(-(elapsed_days as i64) * 86_400));
+        card.decay = Some(params[27]);
+        col.storage.update_card(&card)?;
+
+        let report = col.card_stats(cid)?;
+        let expected = FSRS::new(&params)?.current_retrievability(
+            MemoryState {
+                stability,
+                difficulty: 5.0,
+            },
+            elapsed_days,
+        );
+        assert_eq!(
+            report.fsrs_retrievability.map(|v| format!("{v:.6}")),
+            Some(format!("{expected:.6}"))
+        );
         Ok(())
     }
 }

@@ -4,19 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
-use anki_proto::deck_config::deck_config::config::ReviewCardOrder::*;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
 use fsrs::simulate;
-use fsrs::PostSchedulingFn;
-use fsrs::ReviewCostFn;
-use fsrs::ReviewPriorityFn;
 use fsrs::SimulatorConfig;
+use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Itertools;
-use rand::rngs::StdRng;
-use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 
@@ -24,106 +19,17 @@ use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::memory_state_from_sm2_with_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
-use crate::scheduler::states::fuzz::constrained_fuzz_bounds;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
-use crate::scheduler::states::load_balancer::calculate_easy_days_modifiers;
-use crate::scheduler::states::load_balancer::interval_to_weekday;
 use crate::scheduler::states::load_balancer::parse_easy_days_percentages;
-use crate::scheduler::states::load_balancer::select_weighted_interval;
-use crate::scheduler::states::load_balancer::EasyDay;
-use crate::scheduler::states::load_balancer::LoadBalancerInterval;
 use crate::search::SortMode;
 
-pub(crate) fn apply_load_balance_and_easy_days(
-    interval: f32,
-    max_interval: f32,
-    day_elapsed: usize,
-    due_cnt_per_day: &[usize],
-    rng: &mut StdRng,
-    next_day_at: TimestampSecs,
-    easy_days_percentages: &[EasyDay; 7],
-    review_fuzz_config: ReviewFuzzConfig,
-) -> f32 {
-    let (lower, upper) =
-        constrained_fuzz_bounds(interval, 1, max_interval as u32, review_fuzz_config);
-    let mut review_counts = vec![0; upper as usize - lower as usize + 1];
-
-    // Fill review_counts with due counts for each interval
-    let start = day_elapsed + lower as usize;
-    let end = (day_elapsed + upper as usize + 1).min(due_cnt_per_day.len());
-    if start < due_cnt_per_day.len() {
-        let copy_len = (end - start).min(review_counts.len());
-        review_counts[..copy_len].copy_from_slice(&due_cnt_per_day[start..start + copy_len]);
-    }
-
-    let possible_intervals: Vec<u32> = (lower..=upper).collect();
-    let weekdays = possible_intervals
-        .iter()
-        .map(|interval| {
-            interval_to_weekday(
-                *interval,
-                next_day_at.adding_secs(day_elapsed as i64 * 86400),
-            )
-        })
-        .collect::<Vec<_>>();
-    let easy_days_modifier =
-        calculate_easy_days_modifiers(easy_days_percentages, &weekdays, &review_counts);
-
-    let intervals =
-        possible_intervals
-            .iter()
-            .enumerate()
-            .map(|(interval_index, &target_interval)| LoadBalancerInterval {
-                target_interval,
-                review_count: review_counts[interval_index],
-                sibling_modifier: 1.0,
-                easy_days_modifier: easy_days_modifier[interval_index],
-            });
-    let fuzz_seed = rng.random();
-    select_weighted_interval(intervals, Some(fuzz_seed)).unwrap() as f32
-}
-
 fn create_review_priority_fn(
-    review_order: ReviewCardOrder,
-    deck_size: usize,
-) -> Option<ReviewPriorityFn> {
-    // Helper macro to wrap closure in ReviewPriorityFn
-    macro_rules! wrap {
-        ($f:expr) => {
-            Some(ReviewPriorityFn(std::sync::Arc::new($f)))
-        };
-    }
-
-    match review_order {
-        // Ease-based ordering
-        EaseAscending => wrap!(|c, _w| -(c.difficulty * 100.0) as i32),
-        EaseDescending => wrap!(|c, _w| (c.difficulty * 100.0) as i32),
-
-        // Interval-based ordering
-        IntervalsAscending => wrap!(|c, _w| c.interval as i32),
-        IntervalsDescending => wrap!(|c, _w| (c.interval as i32).saturating_neg()),
-        // Retrievability-based ordering
-        RetrievabilityAscending => {
-            wrap!(move |c, w| (c.retrievability(w) * 1000.0) as i32)
-        }
-        RetrievabilityDescending => {
-            wrap!(move |c, w| -(c.retrievability(w) * 1000.0) as i32)
-        }
-
-        // Due date ordering
-        Day | DayThenDeck | DeckThenDay => {
-            wrap!(|c, _w| c.scheduled_due() as i32)
-        }
-
-        // Random ordering
-        Random => {
-            wrap!(move |_c, _w| rand::rng().random_range(0..deck_size) as i32)
-        }
-
-        // Not implemented yet
-        Added | ReverseAdded => None,
-    }
+    _review_order: ReviewCardOrder,
+    _deck_size: usize,
+) -> Option<fsrs::ReviewPriorityFn> {
+    None
 }
 
 pub(crate) fn is_included_card(c: &Card) -> bool {
@@ -235,6 +141,7 @@ impl HelpMeDecideReviewTimeModel {
         grade_fallback
     }
 
+    #[cfg(test)]
     fn cost_for(&self, retrievability: f32, _stability: f32, grade: usize) -> f32 {
         let grade_idx = grade.saturating_sub(1).min(3);
         let rb = Self::r_bucket(retrievability);
@@ -269,12 +176,7 @@ impl Collection {
         req: &SimulateFsrsReviewRequest,
         default_review_costs: [f32; 4],
     ) -> Result<HelpMeDecideReviewTimeModel> {
-        let fsrs = FSRS::new(Some(&req.params))?;
-        let decay = req
-            .params
-            .get(20)
-            .copied()
-            .unwrap_or(fsrs::FSRS6_DEFAULT_DECAY);
+        let fsrs = FSRS::new(&req.params)?;
         let next_day_at = self.timing_today()?.next_day_at;
         let guard = self.search_cards_into_table(&req.search, SortMode::NoOrder)?;
         let revlogs = guard
@@ -319,7 +221,7 @@ impl Collection {
                 }
                 let previous_state = states[idx - 1];
                 let retrievability =
-                    fsrs.current_retrievability(previous_state, item.reviews[idx].delta_t, decay);
+                    fsrs.current_retrievability(previous_state, item.reviews[idx].delta_t as f32);
                 let seconds = entry.taken_millis as f32 / 1000.0;
                 samples.push((retrievability, grade, seconds));
             }
@@ -358,25 +260,37 @@ impl Collection {
             .filter(|c| c.ctype == CardType::New && c.queue != CardQueue::Suspended)
             .count()
             + req.deck_size as usize;
-        let fsrs = FSRS::new(Some(&req.params))?;
+        let fsrs = FSRS::new(&req.params)?;
+        let filled_params = normalized_fsrs_parameters(&req.params)?;
+        let shared_parameters = Arc::new(filled_params);
         let mut converted_cards = cards
             .into_iter()
             .filter(is_included_card)
-            .filter_map(|c| {
+            .filter_map(|mut c| {
                 let memory_state = match c.memory_state {
                     Some(state) => state,
                     // cards that lack memory states after compute_memory_state have no FSRS items,
                     // implying a truncated or ignored revlog
-                    None => fsrs
-                        .memory_state_from_sm2(
-                            c.ease_factor(),
-                            c.interval as f32,
-                            req.historical_retention,
-                        )
-                        .ok()?
-                        .into(),
+                    None => memory_state_from_sm2_with_params(
+                        &fsrs,
+                        &req.params,
+                        c.ease_factor(),
+                        c.interval as f32,
+                        req.historical_retention,
+                    )
+                    .ok()?
+                    .into(),
                 };
-                Card::convert(c, days_elapsed, memory_state)
+                // Simulator DR should reflect the request, regardless of any
+                // stale per-card desired retention persisted on cards.
+                apply_simulation_desired_retention(&mut c, req.desired_retention);
+                Card::convert_with_options(
+                    c,
+                    days_elapsed,
+                    memory_state,
+                    req.desired_retention,
+                    &shared_parameters,
+                )
             })
             .collect_vec();
         let introduced_today_count = self
@@ -392,6 +306,8 @@ impl Collection {
                 due: ((introduced_today_count + i) / req.new_limit as usize) as f32,
                 interval: f32::NEG_INFINITY,
                 lapses: 0,
+                desired_retention: req.desired_retention,
+                parameters: shared_parameters.clone(),
             });
             converted_cards.extend(new_cards);
         }
@@ -414,25 +330,12 @@ impl Collection {
         }
         let next_day_at = self.timing_today()?.next_day_at;
 
-        let post_scheduling_fn: Option<PostSchedulingFn> =
-            if self.get_config_bool(BoolKey::LoadBalancerEnabled) {
-                Some(PostSchedulingFn(Arc::new(
-                    move |card, max_interval, today, due_cnt_per_day, rng| {
-                        apply_load_balance_and_easy_days(
-                            card.interval,
-                            max_interval,
-                            today,
-                            due_cnt_per_day,
-                            rng,
-                            next_day_at,
-                            &easy_days_percentages,
-                            review_fuzz_config,
-                        )
-                    },
-                )))
-            } else {
-                None
-            };
+        let post_scheduling_fn = if self.get_config_bool(BoolKey::LoadBalancerEnabled) {
+            let _ = (next_day_at, easy_days_percentages, review_fuzz_config);
+            None
+        } else {
+            None
+        };
 
         let review_priority_fn = req
             .review_order
@@ -458,7 +361,6 @@ impl Collection {
             state_rating_costs: p.state_rating_costs,
             learning_step_count: req.learning_step_count as usize,
             relearning_step_count: req.relearning_step_count as usize,
-            review_cost_fn: None,
         };
 
         Ok((config, converted_cards))
@@ -496,25 +398,21 @@ impl Collection {
         &mut self,
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsWorkloadResponse> {
-        let (mut config, cards) = self.simulate_request_to_config(&req)?;
+        let (config, cards) = self.simulate_request_to_config(&req)?;
         let default_review_costs = config.state_rating_costs[1];
         let model = self.build_help_me_decide_review_time_model(&req, default_review_costs)?;
         let (review_time_fail_seconds, review_time_pass_seconds) =
             model.fail_pass_flattened(config.review_rating_prob);
         let review_time_sample_counts = model.sample_counts_flattened();
-        let model = Arc::new(model);
-        config.review_cost_fn = Some(ReviewCostFn(Arc::new(move |r, s, grade| {
-            model.cost_for(r, s, grade)
-        })));
+        let _model = Arc::new(model);
         let dr_workload = (1u32..=99u32)
             .into_par_iter()
             .map(|dr| {
-                let result = simulate(
+                let result = simulate_workload_for_desired_retention(
                     &config,
                     &req.params,
+                    &cards,
                     dr as f32 / 100.,
-                    None,
-                    Some(cards.clone()),
                 )?;
                 Ok((
                     dr,
@@ -527,9 +425,9 @@ impl Collection {
                 ))
             })
             .collect::<Result<HashMap<_, _>>>()?;
-        let start_memorized = cards.iter().fold(0., |p, c| {
-            p + c.retention_on(&req.params, req.days_to_simulate as f32)
-        });
+        let start_memorized = cards
+            .iter()
+            .fold(0., |p, c| p + c.retention_on(req.days_to_simulate as f32));
         Ok(SimulateFsrsWorkloadResponse {
             start_memorized,
             memorized: dr_workload.iter().map(|(k, v)| (*k, v.0)).collect(),
@@ -544,11 +442,49 @@ impl Collection {
     }
 }
 
+fn apply_simulation_desired_retention(card: &mut Card, desired_retention: f32) {
+    card.desired_retention = Some(desired_retention);
+}
+
+fn apply_simulation_desired_retention_to_cards(cards: &mut [fsrs::Card], desired_retention: f32) {
+    for card in cards {
+        card.desired_retention = desired_retention;
+    }
+}
+
+fn simulate_workload_for_desired_retention(
+    config: &SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    desired_retention: f32,
+) -> Result<fsrs::SimulationResult> {
+    let mut cards_for_dr = cards.to_vec();
+    apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
+    Ok(simulate(
+        config,
+        params,
+        desired_retention,
+        None,
+        Some(cards_for_dr),
+    )?)
+}
+
 impl Card {
     pub(crate) fn convert(
         card: Card,
         days_elapsed: i32,
         memory_state: FsrsMemoryState,
+    ) -> Option<fsrs::Card> {
+        let parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
+        Self::convert_with_options(card, days_elapsed, memory_state, 0.9, &parameters)
+    }
+
+    pub(crate) fn convert_with_options(
+        card: Card,
+        days_elapsed: i32,
+        memory_state: FsrsMemoryState,
+        default_desired_retention: f32,
+        parameters: &Arc<Vec<f32>>,
     ) -> Option<fsrs::Card> {
         match card.queue {
             CardQueue::DayLearn | CardQueue::Review => {
@@ -563,6 +499,8 @@ impl Card {
                     due: relative_due as f32,
                     interval: card.interval as f32,
                     lapses: card.lapses,
+                    desired_retention: card.desired_retention.unwrap_or(default_desired_retention),
+                    parameters: parameters.clone(),
                 })
             }
             CardQueue::New => None,
@@ -574,6 +512,8 @@ impl Card {
                 due: 0.0,
                 interval: card.interval as f32,
                 lapses: card.lapses,
+                desired_retention: card.desired_retention.unwrap_or(default_desired_retention),
+                parameters: parameters.clone(),
             }),
             CardQueue::PreviewRepeat => None,
             CardQueue::Suspended => None,
@@ -581,9 +521,43 @@ impl Card {
     }
 }
 
+fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
+    let converted = match params.len() {
+        0 => DEFAULT_PARAMETERS.to_vec(),
+        17 => {
+            let mut parameters = params.to_vec();
+            parameters[4] = parameters[5].mul_add(2.0, parameters[4]);
+            parameters[5] = parameters[5].mul_add(3.0, 1.0).ln() / 3.0;
+            parameters[6] += 0.5;
+            parameters.extend_from_slice(&[0.0, 0.0, 0.0, fsrs::FSRS5_DEFAULT_DECAY]);
+            parameters
+        }
+        19 => {
+            let mut parameters = params.to_vec();
+            parameters.extend_from_slice(&[0.0, fsrs::FSRS5_DEFAULT_DECAY]);
+            parameters
+        }
+        21 => params.to_vec(),
+        35 => params.to_vec(),
+        _ => invalid_input!("invalid FSRS parameter count"),
+    };
+    if converted.iter().any(|w| !w.is_finite()) {
+        invalid_input!("invalid FSRS parameter values")
+    } else {
+        Ok(converted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::apply_simulation_desired_retention;
+    use super::apply_simulation_desired_retention_to_cards;
+    use super::simulate_workload_for_desired_retention;
     use super::HelpMeDecideReviewTimeModel;
+    use crate::card::Card;
+    use fsrs::Card as SimCard;
+    use fsrs::SimulatorConfig;
+    use fsrs::DEFAULT_PARAMETERS;
 
     #[test]
     fn review_time_model_uses_five_percent_r_buckets() {
@@ -628,5 +602,77 @@ mod tests {
         let rb = HelpMeDecideReviewTimeModel::r_bucket(0.9);
         let counts = model.sample_counts_flattened();
         assert_eq!(counts[rb], 2);
+    }
+
+    #[test]
+    fn simulation_overrides_card_desired_retention_with_request_value() {
+        let mut card = Card {
+            desired_retention: Some(0.75),
+            ..Default::default()
+        };
+        apply_simulation_desired_retention(&mut card, 0.9);
+        assert_eq!(card.desired_retention, Some(0.9));
+    }
+
+    #[test]
+    fn simulation_overrides_existing_sim_cards_for_each_workload_dr() {
+        let config = SimulatorConfig {
+            deck_size: 1,
+            learn_span: 365,
+            learn_limit: 0,
+            review_limit: 9999,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        let card = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 100.0,
+            last_date: -10.0,
+            due: 0.0,
+            interval: 10.0,
+            lapses: 0,
+            desired_retention: 0.95,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let cards = vec![card];
+
+        let low_dr =
+            simulate_workload_for_desired_retention(&config, &DEFAULT_PARAMETERS, &cards, 0.6)
+                .unwrap();
+        let high_dr =
+            simulate_workload_for_desired_retention(&config, &DEFAULT_PARAMETERS, &cards, 0.9)
+                .unwrap();
+
+        let low_reviews = low_dr.review_cnt_per_day.iter().sum::<usize>();
+        let high_reviews = high_dr.review_cnt_per_day.iter().sum::<usize>();
+        let low_interval = low_dr.cards[0].interval;
+        let high_interval = high_dr.cards[0].interval;
+        assert!(
+            low_reviews <= high_reviews,
+            "lower DR should not increase reviews when existing cards are overridden per DR"
+        );
+        assert!(
+            low_interval > high_interval,
+            "lower DR should produce longer intervals when existing cards are overridden per DR"
+        );
+    }
+
+    #[test]
+    fn apply_simulation_desired_retention_overrides_all_sim_cards() {
+        let mut cards = vec![
+            SimCard {
+                desired_retention: 0.8,
+                ..Default::default()
+            },
+            SimCard {
+                desired_retention: 0.95,
+                ..Default::default()
+            },
+        ];
+        apply_simulation_desired_retention_to_cards(&mut cards, 0.7);
+        assert!(cards
+            .iter()
+            .all(|c| (c.desired_retention - 0.7).abs() < 1e-6));
     }
 }

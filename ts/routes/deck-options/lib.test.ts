@@ -234,6 +234,11 @@ test("saving", () => {
     expect(out.configs!.length).toBe(1);
     expect(out.configs![0].name).toBe("another one");
     expect(out.mode).toBe(UpdateDeckConfigsMode.NORMAL);
+    expect(out.fsrsShortTermWithStepsEnabled).toBe(false);
+
+    state.fsrsShortTermWithStepsEnabled.set(true);
+    out = state.dataForSaving(UpdateDeckConfigsMode.NORMAL);
+    expect(out.fsrsShortTermWithStepsEnabled).toBe(true);
 
     // rename, then change current deck
     state.setCurrentName("zzz");
