@@ -422,9 +422,11 @@ impl SqlWriter<'_> {
                 )
                 .unwrap();
             }
-            PropertyKind::Stability(s) => {
-                write!(self.sql, "extract_fsrs_variable(c.data, 's') {op} {s}").unwrap()
-            }
+            PropertyKind::Stability(s) => write!(
+                self.sql,
+                "(select s90 from search_exact_retrievability where cid = c.id) {op} {s}"
+            )
+            .unwrap(),
             PropertyKind::Difficulty(d) => {
                 let d = d * 9.0 + 1.0;
                 write!(self.sql, "extract_fsrs_variable(c.data, 'd') {op} {d}").unwrap()

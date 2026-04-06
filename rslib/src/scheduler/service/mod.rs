@@ -14,6 +14,11 @@ use anki_proto::scheduler::ComputeOptimalRetentionResponse;
 use anki_proto::scheduler::FsrsBenchmarkResponse;
 use anki_proto::scheduler::FsrsCurrentRetrievabilityRequest;
 use anki_proto::scheduler::FsrsCurrentRetrievabilityResponse;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityBatchRequest;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityBatchResponse;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityByConfigBatchRequest;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityByConfigBatchResponse;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityResponse;
 use anki_proto::scheduler::FsrsNextIntervalRequest;
 use anki_proto::scheduler::FsrsNextIntervalResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
@@ -529,6 +534,69 @@ impl crate::services::SchedulerService for Collection {
                 input.desired_retention,
             )?,
         })
+    }
+
+    fn fsrs_interval_at_retrievability(
+        &mut self,
+        input: scheduler::FsrsIntervalAtRetrievabilityRequest,
+    ) -> Result<FsrsIntervalAtRetrievabilityResponse> {
+        Ok(FsrsIntervalAtRetrievabilityResponse {
+            interval: self.fsrs_interval_at_retrievability_for_card(
+                input.card_id.into(),
+                input.stability,
+                input.target_retrievability,
+            )?,
+        })
+    }
+
+    fn fsrs_interval_at_retrievability_batch(
+        &mut self,
+        input: FsrsIntervalAtRetrievabilityBatchRequest,
+    ) -> Result<FsrsIntervalAtRetrievabilityBatchResponse> {
+        let cards: Vec<(CardId, f32)> = input
+            .items
+            .iter()
+            .map(|item| (item.card_id.into(), item.stability))
+            .collect();
+        let intervals =
+            self.fsrs_interval_at_retrievability_for_cards(&cards, input.target_retrievability)?;
+        let items = input
+            .items
+            .into_iter()
+            .zip(intervals)
+            .map(|(item, interval)| {
+                scheduler::fsrs_interval_at_retrievability_batch_response::Item {
+                    card_id: item.card_id,
+                    interval,
+                }
+            })
+            .collect();
+        Ok(FsrsIntervalAtRetrievabilityBatchResponse { items })
+    }
+
+    fn fsrs_interval_at_retrievability_by_config_batch(
+        &mut self,
+        input: FsrsIntervalAtRetrievabilityByConfigBatchRequest,
+    ) -> Result<FsrsIntervalAtRetrievabilityByConfigBatchResponse> {
+        let configs: Vec<(DeckConfigId, f32)> = input
+            .items
+            .iter()
+            .map(|item| (DeckConfigId(item.config_id), item.stability))
+            .collect();
+        let intervals = self
+            .fsrs_interval_at_retrievability_for_configs(&configs, input.target_retrievability)?;
+        let items = input
+            .items
+            .into_iter()
+            .zip(intervals)
+            .map(|(item, interval)| {
+                scheduler::fsrs_interval_at_retrievability_by_config_batch_response::Item {
+                    request_index: item.request_index,
+                    interval,
+                }
+            })
+            .collect();
+        Ok(FsrsIntervalAtRetrievabilityByConfigBatchResponse { items })
     }
 }
 

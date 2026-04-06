@@ -48,6 +48,12 @@ pub enum SortMode {
 
 const EXACT_RETRIEVABILITY_TABLE: &str = "search_exact_retrievability";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactFsrsSortMetric {
+    Retrievability,
+    StabilityS90,
+}
+
 pub trait AsReturnItemType {
     fn as_return_item_type() -> ReturnItemType;
 }
@@ -187,7 +193,7 @@ impl Collection {
     fn setup_exact_retrievability_table(&mut self) -> Result<()> {
         self.storage.db.execute_batch(&format!(
             "drop table if exists {EXACT_RETRIEVABILITY_TABLE};\
-             create temporary table {EXACT_RETRIEVABILITY_TABLE}(cid integer primary key, r real)"
+             create temporary table {EXACT_RETRIEVABILITY_TABLE}(cid integer primary key, r real, s90 real)"
         ))?;
         let ids: Vec<i64> = {
             let mut stmt = self.storage.db.prepare("select id from cards")?;
@@ -199,15 +205,15 @@ impl Collection {
         for cid in ids {
             let card_id = CardId(cid);
             let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
-            if let Some(r) = self.exact_retrievability_for_card(&card, timing)? {
-                rows_to_insert.push((cid, r));
+            if let Some((r, s90)) = self.exact_fsrs_metrics_for_card(&card, timing)? {
+                rows_to_insert.push((cid, r, s90));
             }
         }
         let mut insert = self.storage.db.prepare_cached(&format!(
-            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, r) values (?, ?)"
+            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, r, s90) values (?, ?, ?)"
         ))?;
-        for (cid, r) in rows_to_insert {
-            insert.execute(rusqlite::params![cid, r])?;
+        for (cid, r, s90) in rows_to_insert {
+            insert.execute(rusqlite::params![cid, r, s90])?;
         }
         Ok(())
     }
@@ -224,10 +230,10 @@ impl Collection {
     where
         N: TryIntoSearch,
     {
-        if let Some(reverse) = exact_retrievability_sort_reverse(ReturnItemType::Cards, &mode) {
+        if let Some((metric, reverse)) = exact_fsrs_sort_mode(ReturnItemType::Cards, &mode) {
             let top_node = search.try_into_search()?;
             let mut ids = self.search_card_ids_for_node(&top_node, mode.required_table())?;
-            self.sort_card_ids_by_exact_retrievability(&mut ids, reverse)?;
+            self.sort_card_ids_by_exact_fsrs_metric(&mut ids, metric, reverse)?;
             return Ok(ids);
         }
         self.search(search, mode)
@@ -254,8 +260,8 @@ impl Collection {
         top_node: &Node,
         required_table: RequiredTable,
     ) -> Result<Vec<CardId>> {
-        let use_exact_retrievability = has_retrievability_property(top_node);
-        self.with_exact_retrievability_table(use_exact_retrievability, |col| {
+        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(top_node);
+        self.with_exact_retrievability_table(use_exact_fsrs_metrics, |col| {
             let writer = SqlWriter::new(col, ReturnItemType::Cards);
             let (sql, args) = writer.build_query(top_node, required_table)?;
             let mut stmt = col.storage.db.prepare(&sql)?;
@@ -285,11 +291,11 @@ impl Collection {
         }
     }
 
-    fn exact_retrievability_for_card(
+    fn exact_fsrs_metrics_for_card(
         &mut self,
         card: &Card,
         timing: SchedTimingToday,
-    ) -> Result<Option<f32>> {
+    ) -> Result<Option<(f32, f32)>> {
         let Some(state) = card.memory_state else {
             return Ok(None);
         };
@@ -297,22 +303,38 @@ impl Collection {
             self.elapsed_seconds_since_last_review_for_card(card, timing) as f32 / 86_400.0;
         let r =
             self.fsrs_current_retrievability_for_card(card.id, state.stability, elapsed_days)?;
-        Ok(Some(r))
+        let s90 = self.fsrs_interval_at_retrievability_for_card(card.id, state.stability, 0.9)?;
+        Ok(Some((r, s90)))
     }
 
-    fn sort_card_ids_by_exact_retrievability(
+    fn exact_fsrs_metric_for_card(
+        &mut self,
+        card: &Card,
+        timing: SchedTimingToday,
+        metric: ExactFsrsSortMetric,
+    ) -> Result<Option<f32>> {
+        Ok(self
+            .exact_fsrs_metrics_for_card(card, timing)?
+            .map(|(r, s90)| match metric {
+                ExactFsrsSortMetric::Retrievability => r,
+                ExactFsrsSortMetric::StabilityS90 => s90,
+            }))
+    }
+
+    fn sort_card_ids_by_exact_fsrs_metric(
         &mut self,
         ids: &mut [CardId],
+        metric: ExactFsrsSortMetric,
         reverse: bool,
     ) -> Result<()> {
         let timing = self.timing_today()?;
-        let mut with_r = Vec::with_capacity(ids.len());
+        let mut with_metric = Vec::with_capacity(ids.len());
         for &cid in ids.iter() {
             let card = self.storage.get_card(cid)?.or_not_found(cid)?;
-            with_r.push((cid, self.exact_retrievability_for_card(&card, timing)?));
+            with_metric.push((cid, self.exact_fsrs_metric_for_card(&card, timing, metric)?));
         }
-        with_r.sort_by(|(cid_a, r_a), (cid_b, r_b)| {
-            let ord = match (r_a, r_b) {
+        with_metric.sort_by(|(cid_a, metric_a), (cid_b, metric_b)| {
+            let ord = match (metric_a, metric_b) {
                 (Some(a), Some(b)) => a.total_cmp(b),
                 (None, Some(_)) => Ordering::Less,
                 (Some(_), None) => Ordering::Greater,
@@ -321,7 +343,7 @@ impl Collection {
             let ord = if reverse { ord.reverse() } else { ord };
             ord.then_with(|| cid_a.cmp(cid_b))
         });
-        for (target, (cid, _)) in ids.iter_mut().zip(with_r.into_iter()) {
+        for (target, (cid, _)) in ids.iter_mut().zip(with_metric.into_iter()) {
             *target = cid;
         }
         Ok(())
@@ -334,8 +356,8 @@ impl Collection {
     {
         let item_type = T::as_return_item_type();
         let top_node = search.try_into_search()?;
-        let use_exact_retrievability = has_retrievability_property(&top_node);
-        self.with_exact_retrievability_table(use_exact_retrievability, |col| {
+        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
+        self.with_exact_retrievability_table(use_exact_fsrs_metrics, |col| {
             let writer = SqlWriter::new(col, item_type);
             let (mut sql, args) = writer.build_query(&top_node, mode.required_table())?;
             col.add_order(&mut sql, item_type, mode)?;
@@ -379,10 +401,10 @@ impl Collection {
         search: impl TryIntoSearch,
         mode: SortMode,
     ) -> Result<CardTableGuard<'_>> {
-        if let Some(reverse) = exact_retrievability_sort_reverse(ReturnItemType::Cards, &mode) {
+        if let Some((metric, reverse)) = exact_fsrs_sort_mode(ReturnItemType::Cards, &mode) {
             let top_node = search.try_into_search()?;
             let mut ids = self.search_card_ids_for_node(&top_node, mode.required_table())?;
-            self.sort_card_ids_by_exact_retrievability(&mut ids, reverse)?;
+            self.sort_card_ids_by_exact_fsrs_metric(&mut ids, metric, reverse)?;
             self.storage
                 .setup_searched_cards_table_to_preserve_order()?;
             self.storage.set_search_table_to_card_ids(&ids)?;
@@ -394,8 +416,8 @@ impl Collection {
         }
         let top_node = search.try_into_search()?;
         let want_order = mode != SortMode::NoOrder;
-        let use_exact_retrievability = has_retrievability_property(&top_node);
-        if use_exact_retrievability {
+        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
+        if use_exact_fsrs_metrics {
             self.setup_exact_retrievability_table()?;
         }
 
@@ -425,10 +447,10 @@ impl Collection {
             Ok(cards) => Ok(CardTableGuard {
                 cards,
                 col: self,
-                cleanup_exact_retrievability: use_exact_retrievability,
+                cleanup_exact_retrievability: use_exact_fsrs_metrics,
             }),
             Err(err) => {
-                if use_exact_retrievability {
+                if use_exact_fsrs_metrics {
                     let _ = self.clear_exact_retrievability_table();
                 }
                 Err(err)
@@ -516,7 +538,10 @@ impl Collection {
     }
 }
 
-fn exact_retrievability_sort_reverse(item_type: ReturnItemType, mode: &SortMode) -> Option<bool> {
+fn exact_fsrs_sort_mode(
+    item_type: ReturnItemType,
+    mode: &SortMode,
+) -> Option<(ExactFsrsSortMetric, bool)> {
     match (item_type, mode) {
         (
             ReturnItemType::Cards,
@@ -524,17 +549,24 @@ fn exact_retrievability_sort_reverse(item_type: ReturnItemType, mode: &SortMode)
                 column: Column::Retrievability,
                 reverse,
             },
-        ) => Some(*reverse),
+        ) => Some((ExactFsrsSortMetric::Retrievability, *reverse)),
+        (
+            ReturnItemType::Cards,
+            SortMode::Builtin {
+                column: Column::Stability,
+                reverse,
+            },
+        ) => Some((ExactFsrsSortMetric::StabilityS90, *reverse)),
         _ => None,
     }
 }
 
-fn has_retrievability_property(node: &Node) -> bool {
+fn has_exact_fsrs_metrics_property(node: &Node) -> bool {
     match node {
-        Node::Not(inner) => has_retrievability_property(inner),
-        Node::Group(nodes) => nodes.iter().any(has_retrievability_property),
+        Node::Not(inner) => has_exact_fsrs_metrics_property(inner),
+        Node::Group(nodes) => nodes.iter().any(has_exact_fsrs_metrics_property),
         Node::Search(SearchNode::Property {
-            kind: PropertyKind::Retrievability(_),
+            kind: PropertyKind::Retrievability(_) | PropertyKind::Stability(_),
             ..
         }) => true,
         _ => false,
@@ -699,10 +731,14 @@ mod test {
         }
     }
 
-    fn set_selected_fsrs7_params(col: &mut Collection, params: Vec<f32>) -> Result<()> {
-        let output = col.get_deck_configs_for_update(DeckId(1))?;
+    fn set_selected_fsrs7_params_for_deck(
+        col: &mut Collection,
+        deck_id: DeckId,
+        params: Vec<f32>,
+    ) -> Result<()> {
+        let output = col.get_deck_configs_for_update(deck_id)?;
         let mut input = UpdateDeckConfigsRequest {
-            target_deck_id: DeckId(1),
+            target_deck_id: deck_id,
             configs: output
                 .all_config
                 .into_iter()
@@ -724,6 +760,10 @@ mod test {
         input.configs[0].inner.fsrs_params_7 = params;
         col.update_deck_configs(input)?;
         Ok(())
+    }
+
+    fn set_selected_fsrs7_params(col: &mut Collection, params: Vec<f32>) -> Result<()> {
+        set_selected_fsrs7_params_for_deck(col, DeckId(1), params)
     }
 
     #[test]
@@ -792,6 +832,113 @@ mod test {
     }
 
     #[test]
+    fn browser_stability_sort_uses_exact_model_s90() -> Result<()> {
+        let mut col = Collection::new();
+        let params_a = vec![
+            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
+            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
+            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339, 0.9846, 0.2485,
+            0.6014, 0.0545, 0.2885,
+        ];
+        let params_b = vec![
+            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
+            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
+            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.3000, 0.3000, 0.6000, 0.9500, 0.3500,
+            0.9000, 0.1500, 0.9000,
+        ];
+        set_selected_fsrs7_params_for_deck(&mut col, DeckId(1), params_a)?;
+        let second_deck = col.get_or_create_normal_deck("second")?;
+        let output = col.get_deck_configs_for_update(second_deck.id)?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: second_deck.id,
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: String::new(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        let mut new_config = input.configs[0].clone();
+        new_config.id = DeckConfigId(0);
+        new_config.inner.fsrs_version = FsrsVersion::Seven as i32;
+        new_config.inner.fsrs_params_7 = params_b;
+        input.configs.push(new_config);
+        col.update_deck_configs(input)?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, second_deck.id)?;
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+        let card1_id = ids[0];
+        let card2_id = ids[1];
+
+        let timing = col.timing_today()?;
+        let mut card1 = col.storage.get_card(card1_id)?.unwrap();
+        let mut card2 = col.storage.get_card(card2_id)?.unwrap();
+        for card in [&mut card1, &mut card2] {
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 20;
+            card.due = 0;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 30.0,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        }
+        col.storage.update_card(&card1)?;
+        col.storage.update_card(&card2)?;
+
+        let s90_1 = col.fsrs_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
+        let s90_2 = col.fsrs_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
+        require!(
+            (s90_1 - s90_2).abs() > 0.001,
+            "test requires different s90 values across deck presets"
+        );
+        let expected = if s90_1 <= s90_2 {
+            vec![card1.id, card2.id]
+        } else {
+            vec![card2.id, card1.id]
+        };
+
+        let sorted = col.search_cards(
+            "",
+            SortMode::Builtin {
+                column: Column::Stability,
+                reverse: false,
+            },
+        )?;
+        assert_eq!(sorted, expected);
+
+        let sorted_cards = col.all_cards_for_search_in_order(
+            "",
+            SortMode::Builtin {
+                column: Column::Stability,
+                reverse: false,
+            },
+        )?;
+        assert_eq!(
+            sorted_cards.into_iter().map(|c| c.id).collect::<Vec<_>>(),
+            expected
+        );
+        Ok(())
+    }
+
+    #[test]
     fn retrievability_property_filter_uses_exact_model_r() -> Result<()> {
         let mut col = Collection::new();
         set_selected_fsrs7_params(
@@ -840,6 +987,48 @@ mod test {
 
         let filtered_cards = col.all_cards_for_search(&query)?;
         assert_eq!(filtered_cards.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn stability_property_filter_uses_s90_for_fsrs7() -> Result<()> {
+        let mut col = Collection::new();
+        set_selected_fsrs7_params(
+            &mut col,
+            vec![
+                0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
+                0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455,
+                0.0022, 0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339,
+                0.9846, 0.2485, 0.6014, 0.0545, 0.2885,
+            ],
+        )?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let card_id = col.search_cards("", SortMode::NoOrder)?[0];
+
+        let mut card = col.storage.get_card(card_id)?.unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 30.0,
+            difficulty: 5.0,
+        });
+        col.storage.update_card(&card)?;
+
+        let raw_s = 30.0;
+        let s90 = col.fsrs_interval_at_retrievability_for_card(card.id, raw_s, 0.9)?;
+        require!(
+            (s90 - raw_s).abs() > 0.001,
+            "test requires fsrs7 s90 to differ from raw stability"
+        );
+        let threshold = (raw_s + s90) / 2.0;
+        let query = format!("prop:s>{threshold:.6}");
+        let filtered = col.search_cards(&query, SortMode::NoOrder)?;
+        let expected_match = s90 > threshold;
+        assert_eq!(filtered.contains(&card.id), expected_match);
         Ok(())
     }
 }

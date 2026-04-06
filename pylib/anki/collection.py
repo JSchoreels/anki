@@ -1219,6 +1219,49 @@ class Collection(DeprecatedNamesMixin):
             desired_retention=desired_retention,
         )
 
+    def fsrs_interval_at_retrievability(
+        self, card_id: CardId, stability: float, target_retrievability: float
+    ) -> float:
+        return self._backend.fsrs_interval_at_retrievability(
+            card_id=card_id,
+            stability=stability,
+            target_retrievability=target_retrievability,
+        )
+
+    def fsrs_interval_at_retrievability_batch(
+        self, items: Sequence[tuple[CardId, float]], target_retrievability: float
+    ) -> dict[CardId, float]:
+        req_items = [
+            scheduler_pb2.FsrsIntervalAtRetrievabilityBatchRequest.Item(
+                card_id=card_id,
+                stability=stability,
+            )
+            for card_id, stability in items
+        ]
+        resp_items = self._backend.fsrs_interval_at_retrievability_batch(
+            items=req_items,
+            target_retrievability=target_retrievability,
+        )
+        return {item.card_id: item.interval for item in resp_items}
+
+    def fsrs_interval_at_retrievability_by_config_batch(
+        self, items: Sequence[tuple[int, float]], target_retrievability: float
+    ) -> list[float]:
+        req_items = [
+            scheduler_pb2.FsrsIntervalAtRetrievabilityByConfigBatchRequest.Item(
+                request_index=i,
+                config_id=config_id,
+                stability=stability,
+            )
+            for i, (config_id, stability) in enumerate(items)
+        ]
+        resp_items = self._backend.fsrs_interval_at_retrievability_by_config_batch(
+            items=req_items,
+            target_retrievability=target_retrievability,
+        )
+        by_index = {item.request_index: item.interval for item in resp_items}
+        return [by_index[i] for i in range(len(items))]
+
     # Timeboxing
     ##########################################################################
     # fixme: there doesn't seem to be a good reason why this code is in main.py

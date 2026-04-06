@@ -22,4 +22,4 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     };
 </script>
 
-<CardInfo stats={data.info} {showRevlog} />
+<CardInfo stats={data.info} {showRevlog} fsrsStabilityS90={data.fsrsStabilityS90} />

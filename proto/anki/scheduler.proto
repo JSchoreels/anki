@@ -70,6 +70,12 @@ service SchedulerService {
   rpc FsrsCurrentRetrievability(FsrsCurrentRetrievabilityRequest)
       returns (FsrsCurrentRetrievabilityResponse);
   rpc FsrsNextInterval(FsrsNextIntervalRequest) returns (FsrsNextIntervalResponse);
+  rpc FsrsIntervalAtRetrievability(FsrsIntervalAtRetrievabilityRequest)
+      returns (FsrsIntervalAtRetrievabilityResponse);
+  rpc FsrsIntervalAtRetrievabilityBatch(FsrsIntervalAtRetrievabilityBatchRequest)
+      returns (FsrsIntervalAtRetrievabilityBatchResponse);
+  rpc FsrsIntervalAtRetrievabilityByConfigBatch(FsrsIntervalAtRetrievabilityByConfigBatchRequest)
+      returns (FsrsIntervalAtRetrievabilityByConfigBatchResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -516,4 +522,49 @@ message FsrsNextIntervalRequest {
 
 message FsrsNextIntervalResponse {
   float interval = 1;
+}
+
+message FsrsIntervalAtRetrievabilityRequest {
+  int64 card_id = 1;
+  float stability = 2;
+  float target_retrievability = 3;
+}
+
+message FsrsIntervalAtRetrievabilityResponse {
+  float interval = 1;
+}
+
+message FsrsIntervalAtRetrievabilityBatchRequest {
+  message Item {
+    int64 card_id = 1;
+    float stability = 2;
+  }
+  repeated Item items = 1;
+  float target_retrievability = 2;
+}
+
+message FsrsIntervalAtRetrievabilityBatchResponse {
+  message Item {
+    int64 card_id = 1;
+    float interval = 2;
+  }
+  repeated Item items = 1;
+}
+
+message FsrsIntervalAtRetrievabilityByConfigBatchRequest {
+  message Item {
+    uint32 request_index = 1;
+    int64 config_id = 2;
+    float stability = 3;
+  }
+  repeated Item items = 1;
+  float target_retrievability = 2;
+}
+
+message FsrsIntervalAtRetrievabilityByConfigBatchResponse {
+  message Item {
+    uint32 request_index = 1;
+    float interval = 2;
+  }
+  repeated Item items = 1;
 }

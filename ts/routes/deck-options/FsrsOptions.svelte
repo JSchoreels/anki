@@ -724,7 +724,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <SwitchRow bind:value={$fsrsShortTermWithStepsEnabled} defaultValue={false}>
             <SettingTitle>
                 <GlobalLabel
-                    title={tr.preferencesShowLearningCardsWithLargerSteps()}
+                    title={"Allow same day review for (re)learning steps"}
                 />
             </SettingTitle>
         </SwitchRow>

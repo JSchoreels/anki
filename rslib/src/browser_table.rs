@@ -16,6 +16,7 @@ use crate::notetype::CardTemplate;
 use crate::notetype::NotetypeKind;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
+use crate::scheduler::fsrs::memory_state::fsrs_interval_at_retrievability_for_params;
 use crate::scheduler::timespan::time_span;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::template::RenderedNode;
@@ -70,6 +71,7 @@ struct RowContext {
     timing: SchedTimingToday,
     render_context: RenderContext,
     fsrs_retrievability: Option<f32>,
+    fsrs_stability_s90: Option<f32>,
 }
 
 enum RenderContext {
@@ -403,6 +405,21 @@ impl RowContext {
                 )
             })
             .transpose()?;
+        let fsrs_stability_s90 = cards[0]
+            .memory_state
+            .map(|state| {
+                let fsrs_config_deck = original_deck.as_ref().unwrap_or(&deck);
+                let config_id = fsrs_config_deck.config_id().unwrap();
+                let config = col
+                    .get_deck_config(config_id, true)?
+                    .or_not_found(config_id.to_string())?;
+                fsrs_interval_at_retrievability_for_params(
+                    config.fsrs_params(),
+                    state.stability,
+                    0.9,
+                )
+            })
+            .transpose()?;
         let render_context = if with_card_render {
             RenderContext::new(col, &cards[0], &note, &notetype)
         } else {
@@ -420,6 +437,7 @@ impl RowContext {
             timing,
             render_context,
             fsrs_retrievability,
+            fsrs_stability_s90,
         })
     }
 
@@ -541,10 +559,8 @@ impl RowContext {
     }
 
     fn fsrs_stability_str(&self) -> String {
-        self.cards[0]
-            .memory_state
-            .as_ref()
-            .map(|s| time_span(s.stability * 86400.0, &self.tr, false))
+        self.fsrs_stability_s90
+            .map(|s90| time_span(s90 * 86400.0, &self.tr, false))
             .unwrap_or_default()
     }
 
@@ -777,6 +793,37 @@ mod tests {
             elapsed_days,
         );
         assert_eq!(actual, format!("{:.0}%", expected * 100.0));
+        Ok(())
+    }
+
+    #[test]
+    fn stability_cell_uses_s90_for_fsrs7() -> Result<()> {
+        let mut col = Collection::new();
+        let params = fsrs7_params_for_retrievability_test();
+        set_selected_fsrs7_params(&mut col, params)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        let stability = 42.0;
+        card.memory_state = Some(FsrsMemoryState {
+            stability,
+            difficulty: 5.0,
+        });
+        col.storage.update_card(&card)?;
+
+        let ctx = RowContext::new(&mut col, cid.0, false, false)?;
+        let actual = ctx.get_cell_text(Column::Stability)?;
+        let s90 = col.fsrs_interval_at_retrievability_for_card(cid, stability, 0.9)?;
+        assert!(
+            (s90 - stability).abs() > 0.001,
+            "test requires fsrs7 s90 to differ from raw stability"
+        );
+        let expected = time_span(s90 * 86400.0, &ctx.tr, false);
+        assert_eq!(actual, expected);
         Ok(())
     }
 }

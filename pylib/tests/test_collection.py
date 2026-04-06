@@ -8,6 +8,7 @@ import tempfile
 from typing import Any
 
 from anki.collection import Collection as aopen
+import anki.collection as collection
 from anki.dbproxy import emulate_named_args
 from anki.lang import TR, without_unicode_isolation
 from anki.stdmodels import _legacy_add_basic_model, get_stock_notetypes
@@ -173,3 +174,131 @@ def test_db_named_args(capsys):
 
     # swallow the warning
     _ = capsys.readouterr()
+
+
+def test_fsrs_interval_at_retrievability_helpers():
+    col = getEmptyCol()
+
+    class BatchRequest:
+        class Item:
+            def __init__(self, *, card_id: int, stability: float) -> None:
+                self.card_id = card_id
+                self.stability = stability
+
+    class BatchResponse:
+        class Item:
+            def __init__(self, *, card_id: int, interval: float) -> None:
+                self.card_id = card_id
+                self.interval = interval
+
+    class SchedulerPb2Stub:
+        FsrsIntervalAtRetrievabilityBatchRequest = BatchRequest
+        FsrsIntervalAtRetrievabilityBatchResponse = BatchResponse
+
+    class DummyBackend:
+        def __init__(self) -> None:
+            self.single_args: tuple[int, float, float] | None = None
+            self.batch_args: tuple[list[Any], float] | None = None
+
+        def fsrs_interval_at_retrievability(
+            self, *, card_id: int, stability: float, target_retrievability: float
+        ) -> float:
+            self.single_args = (card_id, stability, target_retrievability)
+            return 12.5
+
+        def fsrs_interval_at_retrievability_batch(
+            self,
+            *,
+            items: list[Any],
+            target_retrievability: float,
+        ) -> list[BatchResponse.Item]:
+            self.batch_args = (items, target_retrievability)
+            return [
+                BatchResponse.Item(
+                    card_id=items[0].card_id,
+                    interval=items[0].stability + 1.0,
+                ),
+                BatchResponse.Item(
+                    card_id=items[1].card_id,
+                    interval=items[1].stability + 2.0,
+                ),
+            ]
+
+    backend = DummyBackend()
+    original_scheduler_pb2 = collection.scheduler_pb2
+    try:
+        collection.scheduler_pb2 = SchedulerPb2Stub  # type: ignore[assignment]
+        col._backend = backend  # type: ignore[assignment]
+
+        single = col.fsrs_interval_at_retrievability(1001, 9.0, 0.9)
+        batch = col.fsrs_interval_at_retrievability_batch(
+            [(1001, 9.0), (1002, 10.0)], 0.9
+        )
+
+        assert single == 12.5
+        assert backend.single_args == (1001, 9.0, 0.9)
+        assert backend.batch_args is not None
+        assert backend.batch_args[1] == 0.9
+        assert [item.card_id for item in backend.batch_args[0]] == [1001, 1002]
+        assert [item.stability for item in backend.batch_args[0]] == [9.0, 10.0]
+        assert batch == {1001: 10.0, 1002: 12.0}
+    finally:
+        collection.scheduler_pb2 = original_scheduler_pb2
+
+
+def test_fsrs_interval_at_retrievability_by_config_batch_helper():
+    col = getEmptyCol()
+
+    class ByConfigBatchRequest:
+        class Item:
+            def __init__(
+                self, *, request_index: int, config_id: int, stability: float
+            ) -> None:
+                self.request_index = request_index
+                self.config_id = config_id
+                self.stability = stability
+
+    class SchedulerPb2Stub:
+        FsrsIntervalAtRetrievabilityByConfigBatchRequest = ByConfigBatchRequest
+
+    class ResponseItem:
+        def __init__(self, *, request_index: int, interval: float) -> None:
+            self.request_index = request_index
+            self.interval = interval
+
+    class DummyBackend:
+        def __init__(self) -> None:
+            self.batch_args: tuple[list[Any], float] | None = None
+
+        def fsrs_interval_at_retrievability_by_config_batch(
+            self,
+            *,
+            items: list[Any],
+            target_retrievability: float,
+        ) -> list[ResponseItem]:
+            self.batch_args = (items, target_retrievability)
+            # Return out of order to verify wrapper reorders by request_index.
+            return [
+                ResponseItem(request_index=2, interval=30.0),
+                ResponseItem(request_index=0, interval=10.0),
+                ResponseItem(request_index=1, interval=20.0),
+            ]
+
+    backend = DummyBackend()
+    original_scheduler_pb2 = collection.scheduler_pb2
+    try:
+        collection.scheduler_pb2 = SchedulerPb2Stub  # type: ignore[assignment]
+        col._backend = backend  # type: ignore[assignment]
+        intervals = col.fsrs_interval_at_retrievability_by_config_batch(
+            [(101, 7.0), (101, 7.0), (202, 9.0)],
+            0.9,
+        )
+
+        assert backend.batch_args is not None
+        assert backend.batch_args[1] == 0.9
+        assert [item.request_index for item in backend.batch_args[0]] == [0, 1, 2]
+        assert [item.config_id for item in backend.batch_args[0]] == [101, 101, 202]
+        assert [item.stability for item in backend.batch_args[0]] == [7.0, 7.0, 9.0]
+        assert intervals == [10.0, 20.0, 30.0]
+    finally:
+        collection.scheduler_pb2 = original_scheduler_pb2

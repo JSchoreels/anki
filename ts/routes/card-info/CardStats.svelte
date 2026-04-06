@@ -8,6 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { DAY, timeSpan, TimespanUnit, Timestamp } from "@tslib/time";
 
     export let stats: CardStatsResponse;
+    export let fsrsStabilityS90: number | null = null;
 
     function dateString(timestamp: bigint): string {
         return new Timestamp(Number(timestamp)).dateString();
@@ -18,7 +19,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         value: string | number | bigint;
     }
 
-    function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
+    function formatStability(stabilityDays: number): string {
+        let value = timeSpan(stabilityDays * 86400, false, false);
+        if (stabilityDays > 31) {
+            const nativeStability = timeSpan(
+                stabilityDays * 86400,
+                false,
+                false,
+                TimespanUnit.Days,
+            );
+            value += ` (${nativeStability})`;
+        }
+        return value;
+    }
+
+    function rowsFromStats(stats: CardStatsResponse, fsrsStabilityS90: number | null): StatsRow[] {
         const statsRows: StatsRow[] = [];
 
         statsRows.push({ label: tr2.cardStatsAdded(), value: dateString(stats.added) });
@@ -56,20 +71,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             });
         }
         if (stats.memoryState) {
-            let stability = timeSpan(stats.memoryState.stability * 86400, false, false);
-            if (stats.memoryState.stability > 31) {
-                const nativeStability = timeSpan(
-                    stats.memoryState.stability * 86400,
-                    false,
-                    false,
-                    TimespanUnit.Days,
-                );
-                stability += ` (${nativeStability})`;
-            }
             statsRows.push({
                 label: tr2.cardStatsFsrsStability(),
-                value: stability,
+                value: formatStability(stats.memoryState.stability),
             });
+            if (fsrsStabilityS90 !== null) {
+                statsRows.push({
+                    label: `${tr2.cardStatsFsrsStability()} (S90)`,
+                    value: formatStability(fsrsStabilityS90),
+                });
+            }
             const difficulty = (
                 ((stats.memoryState.difficulty - 1.0) / 9.0) *
                 100.0
@@ -142,7 +153,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     let statsRows: StatsRow[];
-    $: statsRows = rowsFromStats(stats);
+    $: statsRows = rowsFromStats(stats, fsrsStabilityS90);
 </script>
 
 <table class="stats-table align-start">

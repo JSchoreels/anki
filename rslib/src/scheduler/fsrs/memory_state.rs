@@ -77,6 +77,21 @@ pub(crate) fn fsrs_next_interval_for_params(
     Ok(fsrs.next_interval(Some(stability), desired_retention.clamp(0.0001, 0.9999), 0))
 }
 
+pub(crate) fn fsrs_interval_at_retrievability_for_params(
+    params: &[f32],
+    stability: f32,
+    target_retrievability: f32,
+) -> Result<f32> {
+    let fsrs = FSRS::new(params)?;
+    Ok(fsrs.interval_at_retrievability(
+        MemoryState {
+            stability,
+            difficulty: 5.0,
+        },
+        target_retrievability.clamp(0.0001, 0.9999),
+    ))
+}
+
 fn log_expm1(x: f64) -> f64 {
     if x > 50.0 {
         x
@@ -321,10 +336,14 @@ impl Collection {
         let deck_id = card.original_deck_id.or(card.deck_id);
         let deck = self.get_deck(deck_id)?.or_not_found(card.deck_id)?;
         let conf_id = DeckConfigId(deck.normal()?.config_id);
+        self.fsrs_params_for_config_id(conf_id)
+    }
+
+    fn fsrs_params_for_config_id(&mut self, config_id: DeckConfigId) -> Result<Vec<f32>> {
         let config = self
             .storage
-            .get_deck_config(conf_id)?
-            .or_not_found(conf_id)?;
+            .get_deck_config(config_id)?
+            .or_not_found(config_id)?;
         Ok(config.fsrs_params().to_vec())
     }
 
@@ -346,6 +365,59 @@ impl Collection {
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
         fsrs_next_interval_for_params(&params, stability, desired_retention)
+    }
+
+    pub fn fsrs_interval_at_retrievability_for_card(
+        &mut self,
+        card_id: CardId,
+        stability: f32,
+        target_retrievability: f32,
+    ) -> Result<f32> {
+        let params = self.fsrs_params_for_card_id(card_id)?;
+        fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)
+    }
+
+    pub fn fsrs_interval_at_retrievability_for_cards(
+        &mut self,
+        cards: &[(CardId, f32)],
+        target_retrievability: f32,
+    ) -> Result<Vec<f32>> {
+        cards
+            .iter()
+            .map(|(card_id, stability)| {
+                self.fsrs_interval_at_retrievability_for_card(
+                    *card_id,
+                    *stability,
+                    target_retrievability,
+                )
+            })
+            .collect()
+    }
+
+    pub fn fsrs_interval_at_retrievability_for_configs(
+        &mut self,
+        configs: &[(DeckConfigId, f32)],
+        target_retrievability: f32,
+    ) -> Result<Vec<f32>> {
+        let mut params_by_config: HashMap<DeckConfigId, Vec<f32>> = HashMap::new();
+        let mut intervals = Vec::with_capacity(configs.len());
+        for (config_id, stability) in configs {
+            let params = if let Some(params) = params_by_config.get(config_id) {
+                params
+            } else {
+                let params = self.fsrs_params_for_config_id(*config_id)?;
+                params_by_config.insert(*config_id, params);
+                params_by_config
+                    .get(config_id)
+                    .expect("config params inserted")
+            };
+            intervals.push(fsrs_interval_at_retrievability_for_params(
+                params,
+                *stability,
+                target_retrievability,
+            )?);
+        }
+        Ok(intervals)
     }
 
     pub fn compute_memory_state(&mut self, card_id: CardId) -> Result<ComputeMemoryStateResponse> {
@@ -567,14 +639,19 @@ pub(crate) fn fsrs_item_for_memory_state(
 
 #[cfg(test)]
 mod tests {
+    use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
+    use anki_proto::deck_config::UpdateDeckConfigsMode;
     use fsrs::MemoryState;
     use fsrs::DEFAULT_PARAMETERS;
 
     use super::*;
     use crate::card::FsrsMemoryState;
+    use crate::deckconfig::FsrsVersion;
+    use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::params::tests::convert;
     use crate::scheduler::fsrs::params::tests::revlog;
+    use crate::search::SortMode;
 
     /// Floating point precision can vary between platforms, and each FSRS
     /// update tends to result in small changes to these numbers, so we
@@ -584,6 +661,93 @@ mod tests {
         let expected = expected.unwrap();
         assert_eq!(actual.stability.round(), expected.stability.round());
         assert_eq!(actual.difficulty.round(), expected.difficulty.round());
+    }
+
+    fn set_selected_fsrs_params_for_deck(
+        col: &mut Collection,
+        deck_id: DeckId,
+        version: FsrsVersion,
+        params: Vec<f32>,
+    ) -> Result<DeckConfigId> {
+        let output = col.get_deck_configs_for_update(deck_id)?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: deck_id,
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: String::new(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        match version {
+            FsrsVersion::Six => {
+                input.configs[0].inner.fsrs_version = FsrsVersion::Six as i32;
+                input.configs[0].inner.fsrs_params_6 = params;
+            }
+            FsrsVersion::Seven => {
+                input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
+                input.configs[0].inner.fsrs_params_7 = params;
+            }
+            _ => unreachable!("unsupported FSRS version in test helper"),
+        }
+        col.update_deck_configs(input)?;
+        let deck = col.get_deck(deck_id)?.or_not_found(deck_id)?;
+        Ok(DeckConfigId(deck.normal()?.config_id))
+    }
+
+    fn assign_new_fsrs_config_to_deck(
+        col: &mut Collection,
+        deck_id: DeckId,
+        version: FsrsVersion,
+        params: Vec<f32>,
+    ) -> Result<DeckConfigId> {
+        let output = col.get_deck_configs_for_update(deck_id)?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: deck_id,
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: String::new(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        };
+        let mut new_config = input.configs[0].clone();
+        new_config.id = DeckConfigId(0);
+        match version {
+            FsrsVersion::Six => {
+                new_config.inner.fsrs_version = FsrsVersion::Six as i32;
+                new_config.inner.fsrs_params_6 = params;
+            }
+            FsrsVersion::Seven => {
+                new_config.inner.fsrs_version = FsrsVersion::Seven as i32;
+                new_config.inner.fsrs_params_7 = params;
+            }
+            _ => unreachable!("unsupported FSRS version in test helper"),
+        }
+        input.configs.push(new_config);
+        col.update_deck_configs(input)?;
+        let deck = col.get_deck(deck_id)?.or_not_found(deck_id)?;
+        Ok(DeckConfigId(deck.normal()?.config_id))
     }
 
     #[test]
@@ -700,6 +864,7 @@ mod tests {
         let stability = 14.2;
         let elapsed_days = 21.0;
         let desired_retention = 0.88;
+        let target_retrievability = 0.9;
 
         let expected = FSRS::new(&params)?.current_retrievability(
             MemoryState {
@@ -715,6 +880,17 @@ mod tests {
             FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
         let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
         assert!((actual_interval - expected_interval).abs() < 1e-6);
+
+        let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
+            MemoryState {
+                stability,
+                difficulty: 5.0,
+            },
+            target_retrievability,
+        );
+        let actual_interval_at_target =
+            fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)?;
+        assert!((actual_interval_at_target - expected_interval_at_target).abs() < 1e-6);
         Ok(())
     }
 
@@ -724,6 +900,7 @@ mod tests {
         let stability = 9.5;
         let elapsed_days = 12.0;
         let desired_retention = 0.9;
+        let target_retrievability = 0.9;
 
         let expected = FSRS::new(&params)?.current_retrievability(
             MemoryState {
@@ -739,6 +916,215 @@ mod tests {
             FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
         let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
         assert!((actual_interval - expected_interval).abs() < 1e-6);
+
+        let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
+            MemoryState {
+                stability,
+                difficulty: 5.0,
+            },
+            target_retrievability,
+        );
+        let actual_interval_at_target =
+            fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)?;
+        assert!((actual_interval_at_target - expected_interval_at_target).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_batch_matches_singular_calls() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+
+        let mut card_ids = col.search_cards("", SortMode::NoOrder)?;
+        card_ids.sort();
+        let target_retrievability = 0.9;
+        let cards = vec![(card_ids[0], 12.0), (card_ids[1], 42.0)];
+
+        let batch = col.fsrs_interval_at_retrievability_for_cards(&cards, target_retrievability)?;
+        let singular_1 =
+            col.fsrs_interval_at_retrievability_for_card(card_ids[0], 12.0, target_retrievability)?;
+        let singular_2 =
+            col.fsrs_interval_at_retrievability_for_card(card_ids[1], 42.0, target_retrievability)?;
+
+        assert_eq!(batch.len(), 2);
+        assert!((batch[0] - singular_1).abs() < 1e-6);
+        assert!((batch[1] - singular_2).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_by_config_batch_uses_fsrs7_config() -> Result<()> {
+        let mut col = Collection::new();
+        let params_7 = DEFAULT_PARAMETERS.to_vec();
+        let config_id = set_selected_fsrs_params_for_deck(
+            &mut col,
+            DeckId(1),
+            FsrsVersion::Seven,
+            params_7.clone(),
+        )?;
+        let target_retrievability = 0.9;
+        let stability = 17.3;
+
+        let actual = col.fsrs_interval_at_retrievability_for_configs(
+            &[(config_id, stability)],
+            target_retrievability,
+        )?[0];
+        let expected = fsrs_interval_at_retrievability_for_params(
+            &params_7,
+            stability,
+            target_retrievability,
+        )?;
+        assert!((actual - expected).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_by_config_batch_uses_fsrs6_config() -> Result<()> {
+        let mut col = Collection::new();
+        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let config_id = set_selected_fsrs_params_for_deck(
+            &mut col,
+            DeckId(1),
+            FsrsVersion::Six,
+            params_6.clone(),
+        )?;
+        let target_retrievability = 0.9;
+        let stability = 11.2;
+
+        let actual = col.fsrs_interval_at_retrievability_for_configs(
+            &[(config_id, stability)],
+            target_retrievability,
+        )?[0];
+        let expected = fsrs_interval_at_retrievability_for_params(
+            &params_6,
+            stability,
+            target_retrievability,
+        )?;
+        assert!((actual - expected).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_by_config_batch_supports_mixed_configs() -> Result<()> {
+        let mut col = Collection::new();
+        let params_7 = DEFAULT_PARAMETERS.to_vec();
+        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let config_1 = set_selected_fsrs_params_for_deck(
+            &mut col,
+            DeckId(1),
+            FsrsVersion::Seven,
+            params_7.clone(),
+        )?;
+        let second_deck = col.get_or_create_normal_deck("second-config-batch")?;
+        let config_2 = assign_new_fsrs_config_to_deck(
+            &mut col,
+            second_deck.id,
+            FsrsVersion::Six,
+            params_6.clone(),
+        )?;
+        require!(config_1 != config_2, "test requires different config ids");
+
+        let target_retrievability = 0.9;
+        let actual = col.fsrs_interval_at_retrievability_for_configs(
+            &[(config_1, 20.0), (config_2, 20.0)],
+            target_retrievability,
+        )?;
+        let expected_1 =
+            fsrs_interval_at_retrievability_for_params(&params_7, 20.0, target_retrievability)?;
+        let expected_2 =
+            fsrs_interval_at_retrievability_for_params(&params_6, 20.0, target_retrievability)?;
+        assert_eq!(actual.len(), 2);
+        assert!((actual[0] - expected_1).abs() < 1e-6);
+        assert!((actual[1] - expected_2).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_by_config_batch_preserves_order_with_duplicates(
+    ) -> Result<()> {
+        let mut col = Collection::new();
+        let params_7 = DEFAULT_PARAMETERS.to_vec();
+        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let config_1 = set_selected_fsrs_params_for_deck(
+            &mut col,
+            DeckId(1),
+            FsrsVersion::Seven,
+            params_7.clone(),
+        )?;
+        let second_deck = col.get_or_create_normal_deck("second-config-duplicates")?;
+        let config_2 = assign_new_fsrs_config_to_deck(
+            &mut col,
+            second_deck.id,
+            FsrsVersion::Six,
+            params_6.clone(),
+        )?;
+        let target_retrievability = 0.9;
+        let request = vec![
+            (config_2, 8.0),
+            (config_1, 12.0),
+            (config_2, 21.0),
+            (config_1, 12.0),
+        ];
+        let actual =
+            col.fsrs_interval_at_retrievability_for_configs(&request, target_retrievability)?;
+        let expected = vec![
+            fsrs_interval_at_retrievability_for_params(&params_6, 8.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_params(&params_7, 12.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_params(&params_6, 21.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_params(&params_7, 12.0, target_retrievability)?,
+        ];
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.into_iter().zip(expected) {
+            assert!((a - e).abs() < 1e-6);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_by_config_batch_matches_card_helper() -> Result<()> {
+        let mut col = Collection::new();
+        let params_7 = DEFAULT_PARAMETERS.to_vec();
+        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let config_1 =
+            set_selected_fsrs_params_for_deck(&mut col, DeckId(1), FsrsVersion::Seven, params_7)?;
+        let second_deck = col.get_or_create_normal_deck("second-config-parity")?;
+        let config_2 =
+            assign_new_fsrs_config_to_deck(&mut col, second_deck.id, FsrsVersion::Six, params_6)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, second_deck.id)?;
+        let mut card_ids = col.search_cards("", SortMode::NoOrder)?;
+        card_ids.sort();
+        let card_1 = card_ids[0];
+        let card_2 = card_ids[1];
+
+        let target_retrievability = 0.9;
+        let stability_1 = 16.0;
+        let stability_2 = 24.0;
+        let by_config = col.fsrs_interval_at_retrievability_for_configs(
+            &[(config_1, stability_1), (config_2, stability_2)],
+            target_retrievability,
+        )?;
+        let by_card_1 = col.fsrs_interval_at_retrievability_for_card(
+            card_1,
+            stability_1,
+            target_retrievability,
+        )?;
+        let by_card_2 = col.fsrs_interval_at_retrievability_for_card(
+            card_2,
+            stability_2,
+            target_retrievability,
+        )?;
+        assert_eq!(by_config.len(), 2);
+        assert!((by_config[0] - by_card_1).abs() < 1e-6);
+        assert!((by_config[1] - by_card_2).abs() < 1e-6);
         Ok(())
     }
 }
