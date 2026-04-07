@@ -498,6 +498,8 @@ function fsrsParamsUsable(params: number[] | undefined): params is number[] {
 
 function selectedFsrsParams(config: DeckConfig_Config): number[] {
     switch (config.fsrsVersion) {
+        case DeckConfig_Config_FsrsVersion.SEVEN_PENALTY:
+            return config.fsrsParams7;
         case DeckConfig_Config_FsrsVersion.SIX:
             return config.fsrsParams6;
         case DeckConfig_Config_FsrsVersion.FIVE:
@@ -515,6 +517,9 @@ export function withSelectedFsrsParams(
 ): DeckConfig_Config {
     const updated = new DeckConfig_Config(config);
     switch (updated.fsrsVersion) {
+        case DeckConfig_Config_FsrsVersion.SEVEN_PENALTY:
+            updated.fsrsParams7 = [...params];
+            break;
         case DeckConfig_Config_FsrsVersion.SIX:
             updated.fsrsParams6 = [...params];
             break;

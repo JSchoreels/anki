@@ -36,6 +36,7 @@ use fsrs::FSRS;
 
 use crate::backend::Backend;
 use crate::config::BoolKey;
+use crate::deckconfig::fsrs_version_uses_penalty;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
@@ -289,6 +290,7 @@ impl crate::services::SchedulerService for Collection {
             current_params: &input.current_params,
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
+            fsrs7_penalty: fsrs_version_uses_penalty(input.fsrs_version),
         })
     }
 
@@ -435,6 +437,7 @@ impl crate::services::SchedulerService for Collection {
             &input.search,
             input.ignore_revlogs_before_ms.into(),
             input.num_of_relearning_steps as usize,
+            fsrs_version_uses_penalty(input.fsrs_version),
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,
@@ -611,6 +614,7 @@ impl crate::services::BackendSchedulerService for Backend {
             progress: None,
             enable_short_term: true,
             num_relearning_steps: None,
+            fsrs7_penalty: false,
         })?;
         Ok(ComputeFsrsParamsResponse {
             params,
@@ -633,6 +637,7 @@ impl crate::services::BackendSchedulerService for Backend {
             progress: None,
             enable_short_term: true,
             num_relearning_steps: None,
+            fsrs7_penalty: false,
         });
         Ok(FsrsBenchmarkResponse { params })
     }

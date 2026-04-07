@@ -83,7 +83,8 @@ Scope:
 
 ## FSRS Parameter Source
 
-Deck options include an explicit FSRS version selector (`4.5/5/6/7`) stored in
+Deck options include an explicit FSRS version selector
+(`4.5/5/6/7/7-penalty`) stored in
 `deck_config.config.fsrs_version`. Parameter editing and optimization target the
 selected version's parameter array (`fsrs_params_4/5/6/7`).
 
@@ -95,7 +96,9 @@ Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best
 available parameters for compatibility with existing collections.
 
-Optimization writes newly computed parameters to `fsrs_params_7`.
+`FSRS-7` and `FSRS-7 (penalty)` are separate selector modes that both read/write
+`fsrs_params_7`. The difference is optimization objective: penalty mode sets
+`ComputeParametersInput.fsrs7_penalty=true`, while plain FSRS-7 leaves it off.
 
 When `fsrs_params_7` has 35 values (FSRS-7), card-info forgetting-curve
 visualization uses the FSRS-7 two-curve mixture (`w[27..34]`). The deck-options

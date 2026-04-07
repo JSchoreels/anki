@@ -61,6 +61,7 @@ pub struct ComputeParamsRequest<'t> {
     pub current_params: &'t Params,
     pub num_of_relearning_steps: usize,
     pub health_check: bool,
+    pub fsrs7_penalty: bool,
 }
 
 /// r: retention
@@ -91,6 +92,7 @@ impl Collection {
             current_params,
             num_of_relearning_steps,
             health_check,
+            fsrs7_penalty,
         } = request;
 
         self.clear_progress();
@@ -142,6 +144,7 @@ impl Collection {
             progress: Some(progress.clone()),
             enable_short_term: true,
             num_relearning_steps: Some(num_of_relearning_steps),
+            fsrs7_penalty,
         };
         let mut params = compute_parameters(input.clone())?;
         progress_thread.join().ok();
@@ -276,6 +279,7 @@ impl Collection {
         search: &str,
         ignore_revlogs_before: TimestampMillis,
         num_of_relearning_steps: usize,
+        fsrs7_penalty: bool,
     ) -> Result<ModelEvaluation> {
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
@@ -288,6 +292,7 @@ impl Collection {
             progress: None,
             enable_short_term: true,
             num_relearning_steps: Some(num_of_relearning_steps),
+            fsrs7_penalty,
         };
         Ok(evaluate_with_time_series_splits(input, |ip| {
             anki_progress

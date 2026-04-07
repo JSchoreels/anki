@@ -372,6 +372,7 @@ message ComputeFsrsParamsRequest {
   int64 ignore_revlogs_before_ms = 3;
   uint32 num_of_relearning_steps = 4;
   bool health_check = 5;
+  deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 6;
 }
 
 message ComputeFsrsParamsResponse {
@@ -476,6 +477,7 @@ message EvaluateParamsRequest {
   string search = 1;
   int64 ignore_revlogs_before_ms = 2;
   uint32 num_of_relearning_steps = 3;
+  deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 4;
 }
 
 message EvaluateParamsLegacyRequest {

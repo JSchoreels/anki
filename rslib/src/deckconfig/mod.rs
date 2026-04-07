@@ -129,7 +129,7 @@ impl DeckConfig {
 
     pub fn selected_fsrs_params(&self) -> &[f32] {
         match FsrsVersion::try_from(self.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-            FsrsVersion::Seven => &self.inner.fsrs_params_7,
+            FsrsVersion::Seven | FsrsVersion::SevenPenalty => &self.inner.fsrs_params_7,
             FsrsVersion::Six => &self.inner.fsrs_params_6,
             FsrsVersion::Five => &self.inner.fsrs_params_5,
             FsrsVersion::Four => &self.inner.fsrs_params_4,
@@ -183,6 +183,13 @@ impl DeckConfig {
                 .unwrap_or(DEFAULT_REVIEW_FUZZ_FACTOR_LONG),
         }
     }
+}
+
+pub(crate) fn fsrs_version_uses_penalty(fsrs_version: i32) -> bool {
+    matches!(
+        FsrsVersion::try_from(fsrs_version),
+        Ok(FsrsVersion::SevenPenalty)
+    )
 }
 
 impl Collection {
@@ -406,5 +413,22 @@ mod tests {
         config.inner.fsrs_params_6 = vec![2.0_f32; 21];
 
         assert_eq!(config.fsrs_params(), &[2.0_f32; 21]);
+    }
+
+    #[test]
+    fn fsrs_params_uses_fsrs7_array_for_penalty_mode() {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::SevenPenalty as i32;
+        config.inner.fsrs_params_7 = vec![2.0_f32; 35];
+        config.inner.fsrs_params_6 = vec![1.0_f32; 21];
+
+        assert_eq!(config.selected_fsrs_params(), &[2.0_f32; 35]);
+        assert_eq!(config.fsrs_params(), &[2.0_f32; 35]);
+    }
+
+    #[test]
+    fn fsrs7_penalty_detection_matches_selected_version() {
+        assert!(fsrs_version_uses_penalty(FsrsVersion::SevenPenalty as i32));
+        assert!(!fsrs_version_uses_penalty(FsrsVersion::Seven as i32));
     }
 }

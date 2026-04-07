@@ -114,6 +114,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let loadingCustomDecayTable = false;
     const fsrsVersionChoices = [
         {
+            value: DeckConfig_Config_FsrsVersion.SEVEN_PENALTY,
+            label: "FSRS-7 (penalty)",
+        },
+        {
             value: DeckConfig_Config_FsrsVersion.SEVEN,
             label: "FSRS-7",
         },
@@ -133,6 +137,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function selectedFsrsParams(config: DeckConfig_Config): number[] {
         switch (config.fsrsVersion) {
+            case DeckConfig_Config_FsrsVersion.SEVEN_PENALTY:
+                return config.fsrsParams7;
             case DeckConfig_Config_FsrsVersion.SIX:
                 return config.fsrsParams6;
             case DeckConfig_Config_FsrsVersion.FIVE:
@@ -415,6 +421,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         currentParams: params,
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         healthCheck: $healthCheck,
+                        fsrsVersion: $config.fsrsVersion,
                     });
 
                     const alreadyOptimal =
@@ -637,6 +644,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
+                        fsrsVersion: $config.fsrsVersion,
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
