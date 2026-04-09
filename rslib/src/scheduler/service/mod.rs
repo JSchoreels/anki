@@ -290,6 +290,7 @@ impl crate::services::SchedulerService for Collection {
             current_params: &input.current_params,
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
+            include_same_day_reviews: input.include_same_day_reviews,
         })
     }
 
@@ -441,6 +442,8 @@ impl crate::services::SchedulerService for Collection {
             input.ignore_revlogs_before_ms.into(),
             input.num_of_relearning_steps as usize,
             model_version,
+            input.include_same_day_reviews,
+            input.include_same_day_reviews_for_training,
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,
@@ -456,6 +459,7 @@ impl crate::services::SchedulerService for Collection {
             &input.params,
             &input.search,
             input.ignore_revlogs_before_ms.into(),
+            input.include_same_day_reviews,
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,

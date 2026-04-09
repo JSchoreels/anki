@@ -44,8 +44,11 @@ fn model_version_for_params(params: &[f32]) -> ComputeParametersVersion {
     }
 }
 
-fn include_same_day_training_entries(model_version: ComputeParametersVersion) -> bool {
-    matches!(model_version, ComputeParametersVersion::Fsrs7)
+fn include_same_day_training_entries(
+    model_version: ComputeParametersVersion,
+    include_same_day_override: Option<bool>,
+) -> bool {
+    include_same_day_override.unwrap_or(matches!(model_version, ComputeParametersVersion::Fsrs7))
 }
 
 pub(crate) fn ignore_revlogs_before_date_to_ms(
@@ -74,6 +77,7 @@ pub struct ComputeParamsRequest<'t> {
     pub current_params: &'t Params,
     pub num_of_relearning_steps: usize,
     pub health_check: bool,
+    pub include_same_day_reviews: Option<bool>,
 }
 
 /// r: retention
@@ -86,6 +90,150 @@ fn log_loss_adjustment(r: f32) -> f32 {
 /// c: review count
 fn rmse_adjustment(r: f32, c: u32) -> f32 {
     0.0135 / (r.powf(0.504) - 1.14) + 0.176 / ((c as f32 / 1000.).powf(0.825) + 2.22) + 0.101
+}
+
+fn filter_non_same_day_evaluation_targets(items: Vec<FSRSItem>) -> Vec<FSRSItem> {
+    items
+        .into_iter()
+        .filter(|item| {
+            item.reviews
+                .last()
+                .is_some_and(|review| review.delta_t >= 1.0)
+        })
+        .collect()
+}
+
+fn training_target_counts_from_items(items: &[FSRSItem]) -> TrainingTargetCounts {
+    let total_targets = items.len();
+    let long_term_targets = items
+        .iter()
+        .filter(|item| {
+            item.reviews
+                .last()
+                .is_some_and(|review| review.delta_t >= 1.0)
+        })
+        .count();
+    let short_term_targets = total_targets.saturating_sub(long_term_targets);
+    TrainingTargetCounts {
+        total_targets,
+        long_term_targets,
+        short_term_targets,
+    }
+}
+
+fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSRSItem]) -> bool {
+    let fsrs_items = items.len() as u32;
+    if fsrs_items == 0 {
+        return false;
+    }
+    let r = items.iter().fold(0, |passed, item| {
+        passed
+            + (item
+                .reviews
+                .last()
+                .map(|reviews| reviews.rating)
+                .unwrap_or(0)
+                > 1) as u32
+    }) as f32
+        / fsrs_items as f32;
+    let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
+    let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, fsrs_items);
+    adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
+}
+
+fn time_series_split_items(
+    sorted_items: Vec<FSRSItem>,
+    n_splits: usize,
+) -> Vec<(Vec<FSRSItem>, Vec<FSRSItem>)> {
+    if sorted_items.is_empty() || n_splits == 0 {
+        return vec![];
+    }
+    let total_items = sorted_items.len();
+    let segment_size = total_items / (n_splits + 1);
+    if segment_size == 0 {
+        return vec![];
+    }
+    (0..n_splits)
+        .map(|i| {
+            let test_start = (i + 1) * segment_size;
+            let test_end = if i == n_splits - 1 {
+                total_items
+            } else {
+                (i + 2) * segment_size
+            };
+            (
+                sorted_items[..test_start].to_vec(),
+                sorted_items[test_start..test_end].to_vec(),
+            )
+        })
+        .collect()
+}
+
+fn evaluate_with_time_series_splits_for_targets<F>(
+    ComputeParametersInput {
+        train_set,
+        enable_short_term,
+        enable_sched_penalties,
+        model_version,
+        num_relearning_steps,
+        ..
+    }: ComputeParametersInput,
+    include_target: impl Fn(&FSRSItem) -> bool,
+    mut progress: F,
+) -> Result<ModelEvaluation>
+where
+    F: FnMut(fsrs::ItemProgress) -> bool,
+{
+    if train_set.is_empty() {
+        return Err(fsrs::FSRSError::NotEnoughData.into());
+    }
+    let splits = time_series_split_items(train_set, 5);
+    if splits.is_empty() {
+        return Err(fsrs::FSRSError::NotEnoughData.into());
+    }
+    let mut progress_info = fsrs::ItemProgress {
+        current: 0,
+        total: splits.len(),
+    };
+    let mut total_eval_items = 0usize;
+    let mut weighted_log_loss = 0.0f64;
+    let mut weighted_rmse_bins = 0.0f64;
+
+    for (train_items, test_items) in splits {
+        let parameters = compute_parameters(ComputeParametersInput {
+            train_set: train_items,
+            progress: None,
+            enable_short_term,
+            enable_sched_penalties,
+            model_version,
+            num_relearning_steps,
+        })?;
+        let eval_items = test_items
+            .into_iter()
+            .filter(|item| include_target(item))
+            .collect_vec();
+        if !eval_items.is_empty() {
+            let fold_eval = FSRS::new(&parameters)?.evaluate(eval_items.clone(), |_| true)?;
+            let fold_size = eval_items.len() as f64;
+            weighted_log_loss += fold_eval.log_loss as f64 * fold_size;
+            weighted_rmse_bins += fold_eval.rmse_bins as f64 * fold_size;
+            total_eval_items += eval_items.len();
+        }
+
+        progress_info.current += 1;
+        if !progress(progress_info) {
+            return Err(fsrs::FSRSError::Interrupted.into());
+        }
+    }
+
+    if total_eval_items == 0 {
+        return Err(fsrs::FSRSError::NotEnoughData.into());
+    }
+
+    Ok(ModelEvaluation {
+        log_loss: (weighted_log_loss / total_eval_items as f64) as f32,
+        rmse_bins: (weighted_rmse_bins / total_eval_items as f64) as f32,
+    })
 }
 
 impl Collection {
@@ -104,17 +252,20 @@ impl Collection {
             current_params,
             num_of_relearning_steps,
             health_check,
+            include_same_day_reviews,
         } = request;
 
         self.clear_progress();
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
         let model_version = model_version_for_params(current_params);
+        let include_same_day_reviews =
+            include_same_day_training_entries(model_version, include_same_day_reviews);
         let (items, target_counts) = fsrs_items_for_training(
             revlogs.clone(),
             timing.next_day_at,
             ignore_revlogs_before,
-            model_version,
+            include_same_day_reviews,
         );
 
         let fsrs_items = items.len() as u32;
@@ -200,24 +351,25 @@ impl Collection {
             }
         }
 
-        let health_check_passed = if health_check && input.train_set.len() > 300 {
-            evaluate_with_time_series_splits(input, |_| true)
-                .ok()
-                .map(|eval| {
-                    let r = items.iter().fold(0, |p, item| {
-                        p + (item
-                            .reviews
-                            .last()
-                            .map(|reviews| reviews.rating)
-                            .unwrap_or(0)
-                            > 1) as u32
-                    }) as f32
-                        / fsrs_items as f32;
-                    let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
-                    let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, fsrs_items);
-
-                    adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
-                })
+        let health_check_items = if include_same_day_reviews {
+            items.clone()
+        } else {
+            filter_non_same_day_evaluation_targets(items.clone())
+        };
+        let health_check_passed = if health_check && health_check_items.len() > 300 {
+            evaluate_with_time_series_splits(
+                ComputeParametersInput {
+                    train_set: health_check_items.clone(),
+                    progress: None,
+                    enable_short_term: true,
+                    enable_sched_penalties: true,
+                    model_version,
+                    num_relearning_steps: Some(num_of_relearning_steps),
+                },
+                |_| true,
+            )
+            .ok()
+            .map(|eval| health_check_passed_for_evaluated_targets(eval, &health_check_items))
         } else {
             None
         };
@@ -302,35 +454,81 @@ impl Collection {
         ignore_revlogs_before: TimestampMillis,
         num_of_relearning_steps: usize,
         model_version: ComputeParametersVersion,
+        include_same_day_reviews: Option<bool>,
+        include_same_day_reviews_for_training: Option<bool>,
     ) -> Result<ModelEvaluation> {
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
-        let (items, target_counts) = fsrs_items_for_training(
+        let include_same_day_reviews_for_training =
+            include_same_day_training_entries(model_version, include_same_day_reviews_for_training);
+        let include_same_day_reviews =
+            include_same_day_training_entries(model_version, include_same_day_reviews);
+        let (training_items, _target_counts) = fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
-            model_version,
+            include_same_day_reviews_for_training,
         );
+        let evaluation_items = if include_same_day_reviews {
+            training_items.clone()
+        } else {
+            filter_non_same_day_evaluation_targets(training_items.clone())
+        };
+        let target_counts = training_target_counts_from_items(&evaluation_items);
         let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
-        let input = ComputeParametersInput {
-            train_set: items.clone(),
-            progress: None,
-            enable_short_term: true,
-            enable_sched_penalties: true,
-            model_version,
-            num_relearning_steps: Some(num_of_relearning_steps),
+
+        let use_split_train_and_eval =
+            include_same_day_reviews == include_same_day_reviews_for_training;
+        let eval = if use_split_train_and_eval {
+            evaluate_with_time_series_splits(
+                ComputeParametersInput {
+                    train_set: evaluation_items,
+                    progress: None,
+                    enable_short_term: true,
+                    enable_sched_penalties: true,
+                    model_version,
+                    num_relearning_steps: Some(num_of_relearning_steps),
+                },
+                |ip| {
+                    anki_progress
+                        .update(false, |p| {
+                            p.total_iterations = ip.total as u32;
+                            p.current_iteration = ip.current as u32;
+                        })
+                        .is_ok()
+                },
+            )?
+        } else {
+            evaluate_with_time_series_splits_for_targets(
+                ComputeParametersInput {
+                    train_set: training_items,
+                    progress: None,
+                    enable_short_term: true,
+                    enable_sched_penalties: true,
+                    model_version,
+                    num_relearning_steps: Some(num_of_relearning_steps),
+                },
+                |item| {
+                    include_same_day_reviews
+                        || item
+                            .reviews
+                            .last()
+                            .is_some_and(|review| review.delta_t >= 1.0)
+                },
+                |ip| {
+                    anki_progress
+                        .update(false, |p| {
+                            p.total_iterations = ip.total as u32;
+                            p.current_iteration = ip.current as u32;
+                        })
+                        .is_ok()
+                },
+            )?
         };
-        Ok(evaluate_with_time_series_splits(input, |ip| {
-            anki_progress
-                .update(false, |p| {
-                    p.total_iterations = ip.total as u32;
-                    p.current_iteration = ip.current as u32;
-                })
-                .is_ok()
-        })?)
+        Ok(eval)
     }
 
     pub fn evaluate_params_legacy(
@@ -338,6 +536,7 @@ impl Collection {
         params: &Params,
         search: &str,
         ignore_revlogs_before: TimestampMillis,
+        include_same_day_reviews: Option<bool>,
     ) -> Result<ModelEvaluation> {
         let timing = self.timing_today()?;
         let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
@@ -347,12 +546,20 @@ impl Collection {
             .storage
             .get_revlog_entries_for_searched_cards_in_card_order()?;
         let model_version = model_version_for_params(params);
-        let (items, target_counts) = fsrs_items_for_training(
+        let include_same_day_reviews =
+            include_same_day_training_entries(model_version, include_same_day_reviews);
+        let (items, _target_counts) = fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
-            model_version,
+            include_same_day_reviews,
         );
+        let items = if include_same_day_reviews {
+            items
+        } else {
+            filter_non_same_day_evaluation_targets(items)
+        };
+        let target_counts = training_target_counts_from_items(&items);
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
@@ -412,9 +619,8 @@ fn fsrs_items_for_training(
     revlogs: Vec<RevlogEntry>,
     next_day_at: TimestampSecs,
     review_revlogs_before: TimestampMillis,
-    model_version: ComputeParametersVersion,
+    include_same_day: bool,
 ) -> (Vec<FSRSItem>, TrainingTargetCounts) {
-    let include_same_day = include_same_day_training_entries(model_version);
     let mut revlogs = revlogs
         .into_iter()
         .chunk_by(|r| r.cid)
@@ -432,22 +638,10 @@ fn fsrs_items_for_training(
         .collect_vec();
     // Sort by RevlogId
     revlogs.sort_by_key(|(revlog_id, _)| revlog_id.0);
-    let total_targets = revlogs.len();
-    let long_term_targets = revlogs
-        .iter()
-        .filter(|(_, item)| item.reviews.last().is_some_and(|review| review.delta_t >= 1.0))
-        .count();
-    let short_term_targets = total_targets.saturating_sub(long_term_targets);
     // Extract only the FSRSItems after sorting
     let revlogs = revlogs.into_iter().map(|(_, item)| item).collect_vec();
-    (
-        revlogs,
-        TrainingTargetCounts {
-            total_targets,
-            long_term_targets,
-            short_term_targets,
-        },
-    )
+    let target_counts = training_target_counts_from_items(&revlogs);
+    (revlogs, target_counts)
 }
 
 pub(crate) struct ReviewsForFsrs {
@@ -559,9 +753,11 @@ pub(crate) fn reviews_for_fsrs(
     // Compute delta_t for each entry
     let delta_ts = iter::once(0.0f32)
         .chain(entries.iter().tuple_windows().map(|(previous, current)| {
-            let elapsed_days = previous.days_elapsed(next_day_at) - current.days_elapsed(next_day_at);
-            if include_same_day_training_entries && elapsed_days == 0 {
-                let elapsed_millis = current.id.0.saturating_sub(previous.id.0) as f32;
+            let elapsed_days =
+                previous.days_elapsed(next_day_at) - current.days_elapsed(next_day_at);
+            if include_same_day_training_entries {
+                // FSRS-7 accepts fractional elapsed days; use revlog timestamps directly.
+                let elapsed_millis = current.id.0.saturating_sub(previous.id.0).max(1) as f32;
                 elapsed_millis / 86_400_000.0
             } else {
                 elapsed_days as f32
@@ -675,6 +871,10 @@ pub(crate) mod tests {
         }
     }
 
+    fn review_f(delta_t: f32) -> FSRSReview {
+        FSRSReview { rating: 3, delta_t }
+    }
+
     pub(crate) fn convert_ignore_before(
         revlog: &[RevlogEntry],
         training: bool,
@@ -694,7 +894,23 @@ pub(crate) mod tests {
             NEXT_DAY_AT,
             training,
             0.into(),
-            include_same_day_training_entries(model_version),
+            include_same_day_training_entries(model_version, None),
+        )
+        .map(|i| i.fsrs_items.into_iter().map(|(_, item)| item).collect_vec())
+    }
+
+    fn convert_with_model_and_override(
+        revlog: &[RevlogEntry],
+        training: bool,
+        model_version: ComputeParametersVersion,
+        include_same_day_reviews: Option<bool>,
+    ) -> Option<Vec<FSRSItem>> {
+        reviews_for_fsrs(
+            revlog.to_vec(),
+            NEXT_DAY_AT,
+            training,
+            0.into(),
+            include_same_day_training_entries(model_version, include_same_day_reviews),
         )
         .map(|i| i.fsrs_items.into_iter().map(|(_, item)| item).collect_vec())
     }
@@ -912,8 +1128,115 @@ pub(crate) mod tests {
         );
         assert_eq!(
             convert_with_model(revlogs, true, ComputeParametersVersion::Fsrs7),
-            fsrs_items!([review(0), review(0)], [review(0), review(0), review(0)])
+            Some(vec![
+                FSRSItem {
+                    reviews: vec![review(0), review_f(1.0 / 86_400_000.0)],
+                },
+                FSRSItem {
+                    reviews: vec![
+                        review(0),
+                        review_f(1.0 / 86_400_000.0),
+                        review_f(1.0 / 86_400_000.0),
+                    ],
+                },
+            ])
         );
+    }
+
+    #[test]
+    fn fsrs7_training_can_ignore_same_day_targets_with_override() {
+        let revlogs = &[
+            revlog(RevlogReviewKind::Learning, 1),
+            revlog(RevlogReviewKind::Review, 1),
+            revlog(RevlogReviewKind::Review, 1),
+        ];
+        assert_eq!(
+            convert_with_model_and_override(
+                revlogs,
+                true,
+                ComputeParametersVersion::Fsrs7,
+                Some(false),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn fsrs7_training_toggle_true_path_is_unchanged() {
+        let revlogs = &[
+            revlog(RevlogReviewKind::Learning, 1),
+            revlog(RevlogReviewKind::Review, 1),
+            revlog(RevlogReviewKind::Review, 1),
+        ];
+        assert_eq!(
+            convert_with_model_and_override(
+                revlogs,
+                true,
+                ComputeParametersVersion::Fsrs7,
+                Some(true),
+            ),
+            convert_with_model(revlogs, true, ComputeParametersVersion::Fsrs7)
+        );
+    }
+
+    #[test]
+    fn filtered_empty_dataset_returns_not_enough_data() {
+        let filtered = filter_non_same_day_evaluation_targets(vec![FSRSItem {
+            reviews: vec![review(0), review_f(0.5)],
+        }]);
+        assert!(filtered.is_empty());
+        let err = evaluate_with_time_series_splits(
+            ComputeParametersInput {
+                train_set: filtered,
+                progress: None,
+                enable_short_term: true,
+                enable_sched_penalties: true,
+                model_version: ComputeParametersVersion::Fsrs7,
+                num_relearning_steps: Some(1),
+            },
+            |_| true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, fsrs::FSRSError::NotEnoughData));
+    }
+
+    #[test]
+    fn health_check_adjustment_uses_filtered_target_counts() {
+        let mut items = vec![];
+        for _ in 0..19 {
+            items.push(FSRSItem {
+                reviews: vec![review(0), review(2)],
+            });
+        }
+        items.push(FSRSItem {
+            reviews: vec![
+                review(0),
+                FSRSReview {
+                    rating: 1,
+                    delta_t: 2.0,
+                },
+            ],
+        });
+        for _ in 0..4 {
+            items.push(FSRSItem {
+                reviews: vec![
+                    review(0),
+                    FSRSReview {
+                        rating: 1,
+                        delta_t: 0.5,
+                    },
+                ],
+            });
+        }
+
+        let filtered = filter_non_same_day_evaluation_targets(items.clone());
+        assert_eq!(filtered.len(), 20);
+        let eval = ModelEvaluation {
+            log_loss: 0.3,
+            rmse_bins: 1.0,
+        };
+        assert!(health_check_passed_for_evaluated_targets(eval, &items));
+        assert!(!health_check_passed_for_evaluated_targets(eval, &filtered));
     }
 
     #[test]
@@ -929,7 +1252,14 @@ pub(crate) mod tests {
         );
         assert_eq!(
             convert_with_model(revlogs, true, ComputeParametersVersion::Fsrs7),
-            fsrs_items!([review(0), review(1)], [review(0), review(1), review(0)])
+            Some(vec![
+                FSRSItem {
+                    reviews: vec![review(0), review(1)],
+                },
+                FSRSItem {
+                    reviews: vec![review(0), review(1), review_f(1.0 / 86_400_000.0)],
+                },
+            ])
         );
     }
 
@@ -953,16 +1283,20 @@ pub(crate) mod tests {
             revlogs,
             NEXT_DAY_AT,
             TimestampMillis(0),
-            ComputeParametersVersion::Fsrs7,
+            include_same_day_training_entries(ComputeParametersVersion::Fsrs7, None),
         );
         assert_eq!(
             items,
             vec![
                 FSRSItem {
-                    reviews: vec![review(0), review(0)],
+                    reviews: vec![review(0), review_f(1.0 / 86_400_000.0)],
                 },
                 FSRSItem {
-                    reviews: vec![review(0), review(0), review(0)],
+                    reviews: vec![
+                        review(0),
+                        review_f(1.0 / 86_400_000.0),
+                        review_f(1.0 / 86_400_000.0),
+                    ],
                 },
             ]
         );
@@ -988,7 +1322,7 @@ pub(crate) mod tests {
             revlogs.clone(),
             NEXT_DAY_AT,
             TimestampMillis(0),
-            ComputeParametersVersion::Fsrs6,
+            include_same_day_training_entries(ComputeParametersVersion::Fsrs6, None),
         );
         assert_eq!(fsrs6_counts.total_targets, 1);
         assert_eq!(fsrs6_counts.long_term_targets, 1);
@@ -998,7 +1332,7 @@ pub(crate) mod tests {
             revlogs,
             NEXT_DAY_AT,
             TimestampMillis(0),
-            ComputeParametersVersion::Fsrs7,
+            include_same_day_training_entries(ComputeParametersVersion::Fsrs7, None),
         );
         assert_eq!(fsrs7_counts.total_targets, 2);
         assert_eq!(fsrs7_counts.long_term_targets, 1);
@@ -1018,10 +1352,50 @@ pub(crate) mod tests {
                 ..revlog(RevlogReviewKind::Review, 1)
             },
         ];
-        let converted = convert_with_model(&revlogs, true, ComputeParametersVersion::Fsrs7).unwrap();
+        let converted =
+            convert_with_model(&revlogs, true, ComputeParametersVersion::Fsrs7).unwrap();
         let delta = converted[0].reviews[1].delta_t;
         assert!(delta > 0.0);
         assert!((delta - (1.0 / 24.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fsrs7_same_day_delta_is_positive_when_timestamps_equal() {
+        let base = days_ago_ms(1).0;
+        let revlogs = vec![
+            RevlogEntry {
+                id: RevlogId(base),
+                ..revlog(RevlogReviewKind::Learning, 1)
+            },
+            RevlogEntry {
+                id: RevlogId(base),
+                ..revlog(RevlogReviewKind::Review, 1)
+            },
+        ];
+        let converted =
+            convert_with_model(&revlogs, true, ComputeParametersVersion::Fsrs7).unwrap();
+        assert!(converted[0].reviews[1].delta_t > 0.0);
+    }
+
+    #[test]
+    fn fsrs7_interday_delta_uses_fractional_elapsed_time() {
+        let revlogs = vec![
+            RevlogEntry {
+                id: RevlogId(days_ago_ms(3).0),
+                ..revlog(RevlogReviewKind::Learning, 3)
+            },
+            RevlogEntry {
+                // 0.5 day after the D-1 boundary -> elapsed days differs from elapsed timestamp.
+                id: RevlogId(days_ago_ms(1).0 + 43_200_000),
+                ..revlog(RevlogReviewKind::Review, 1)
+            },
+        ];
+        let converted6 =
+            convert_with_model(&revlogs, true, ComputeParametersVersion::Fsrs6).unwrap();
+        let converted7 =
+            convert_with_model(&revlogs, true, ComputeParametersVersion::Fsrs7).unwrap();
+        assert_eq!(converted6[0].reviews[1].delta_t, 3.0);
+        assert!((converted7[0].reviews[1].delta_t - 2.5).abs() < 1e-6);
     }
 
     #[test]

@@ -410,6 +410,7 @@ impl Collection {
                 current_params: &current_params,
                 num_of_relearning_steps,
                 health_check: false,
+                include_same_day_reviews: None,
             }) {
                 Ok(params) => {
                     println!("{}: {:?}", config.name, params.params);

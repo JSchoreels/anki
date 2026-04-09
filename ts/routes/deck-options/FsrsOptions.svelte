@@ -112,6 +112,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let optimizationComparison: OptimizationComparison | undefined;
     let customDecayRows: DecayRow[] = [];
     let loadingCustomDecayTable = false;
+    let includeSameDayReviewsForOptimizeInFsrs7 = true;
+    let includeSameDayReviewsForEvaluateInFsrs7 = true;
     const fsrsVersionChoices = [
         {
             value: DeckConfig_Config_FsrsVersion.SEVEN,
@@ -399,6 +401,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return numOfRelearningStepsInDay;
     }
 
+    function includeSameDayOptimizeOverride(): boolean | undefined {
+        if ($config.fsrsVersion !== DeckConfig_Config_FsrsVersion.SEVEN) {
+            return undefined;
+        }
+        return includeSameDayReviewsForOptimizeInFsrs7;
+    }
+
+    function includeSameDayEvaluateOverride(): boolean | undefined {
+        if ($config.fsrsVersion !== DeckConfig_Config_FsrsVersion.SEVEN) {
+            return undefined;
+        }
+        return includeSameDayReviewsForEvaluateInFsrs7;
+    }
+
     async function computeParams(): Promise<void> {
         if (computingParams) {
             await setWantsAbort({});
@@ -423,6 +439,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         currentParams: params,
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         healthCheck: $healthCheck,
+                        includeSameDayReviews: includeSameDayOptimizeOverride(),
                     });
 
                     const alreadyOptimal =
@@ -457,11 +474,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             search,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params,
+                            includeSameDayReviews: includeSameDayEvaluateOverride(),
                         });
                         const optimizedMetrics = await evaluateParamsLegacy({
                             search,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params: resp.params,
+                            includeSameDayReviews: includeSameDayEvaluateOverride(),
                         });
                         optimizationComparison = {
                             optimizedParams: [...resp.params],
@@ -531,6 +550,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             optimizationComparison.optimizedParams,
                             decay,
                         ),
+                        includeSameDayReviews: includeSameDayEvaluateOverride(),
                     });
                     return {
                         decay,
@@ -599,6 +619,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         params: selectedFsrsParams($config),
+                        includeSameDayReviews: includeSameDayEvaluateOverride(),
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
@@ -646,6 +667,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         fsrsVersion: $config.fsrsVersion,
+                        includeSameDayReviews: includeSameDayEvaluateOverride(),
+                        includeSameDayReviewsForTraining:
+                            includeSameDayOptimizeOverride(),
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
@@ -796,6 +820,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/each}
         </select>
     </div>
+
+    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
+        <SwitchRow
+            bind:value={includeSameDayReviewsForOptimizeInFsrs7}
+            defaultValue={true}
+        >
+            <SettingTitle>
+                <GlobalLabel
+                    title={"Include same-day reviews in FSRS-7 optimize"}
+                />
+            </SettingTitle>
+        </SwitchRow>
+        <SwitchRow
+            bind:value={includeSameDayReviewsForEvaluateInFsrs7}
+            defaultValue={true}
+        >
+            <SettingTitle>
+                <GlobalLabel
+                    title={"Include same-day reviews in FSRS-7 evaluate"}
+                />
+            </SettingTitle>
+        </SwitchRow>
+    {/if}
 
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
         <ParamsInputRow
