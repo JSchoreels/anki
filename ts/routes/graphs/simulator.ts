@@ -74,7 +74,7 @@ export function renderWorkloadChart(
         [SimulateWorkloadSubgraph.time]: data.map(d => ({ ...d, y: d.timeCost / d.learnSpan })),
         [SimulateWorkloadSubgraph.count]: data.map(d => ({ ...d, y: d.count / d.learnSpan })),
         [SimulateWorkloadSubgraph.memorized]: data.map(d => ({ ...d, y: d.memorized })),
-    })[subgraph];
+    })[subgraph].filter((point) => point !== undefined);
 
     const yTickFormat = (n: number): string => {
         return subgraph == SimulateWorkloadSubgraph.time
@@ -128,7 +128,7 @@ export function renderWorkloadChart(
         );
     }
 
-    const startMemorized = subgraph_data[0].start_memorized;
+    const startMemorized = subgraph_data[0]?.start_memorized ?? 0;
 
     return _renderSimulationChart(
         svgElem,

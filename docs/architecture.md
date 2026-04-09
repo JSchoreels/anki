@@ -99,6 +99,17 @@ Deck Options "Check Health" now also passes the currently selected unsaved
 `fsrs_version` to backend `EvaluateParams`, so split-based logloss/RMSE is
 computed with the selected model family (FSRS-7 vs FSRS-6/5/4).
 
+FSRS training-item extraction is model-family-aware:
+- FSRS-6 family keeps the legacy training target rule (`delta_t > 0` only).
+- FSRS-7 includes same-day (`delta_t == 0`) follow-up targets during
+  optimization/evaluation item generation.
+- Optimize progress now reports:
+  - total training targets,
+  - long-term targets (`delta_t >= 1`),
+  - same-day/short-term targets (`delta_t < 1`).
+- For FSRS-7, same-day target `delta_t` is derived as fractional elapsed days
+  from revlog timestamps instead of forcing `0` in the item conversion path.
+
 Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best
 available parameters for compatibility with existing collections.

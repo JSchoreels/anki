@@ -502,6 +502,10 @@ def update_deck_configs() -> bytes:
                 reviews = tr.deck_config_percent_of_reviews(
                     pct=pct, reviews=val2.reviews
                 )
+                reviews += (
+                    f" (long-term: {val2.long_term_reviews}, "
+                    f"same-day: {val2.short_term_reviews})"
+                )
             else:
                 reviews = tr.qt_misc_processing()
 

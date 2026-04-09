@@ -223,6 +223,8 @@ pub(crate) fn progress_to_proto(
                     reviews: progress.reviews,
                     current_preset: progress.current_preset,
                     total_presets: progress.total_presets,
+                    long_term_reviews: progress.long_term_reviews,
+                    short_term_reviews: progress.short_term_reviews,
                 })
             }
             Progress::ComputeRetention(progress) => {

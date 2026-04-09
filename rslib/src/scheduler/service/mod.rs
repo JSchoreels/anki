@@ -332,11 +332,10 @@ impl crate::services::SchedulerService for Collection {
         } else {
             false
         };
-        let fsrs_short_term_with_steps_enabled =
-            selected_short_term_with_steps_for_preview(
-                requested_short_term_with_steps,
-                self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
-            );
+        let fsrs_short_term_with_steps_enabled = selected_short_term_with_steps_for_preview(
+            requested_short_term_with_steps,
+            self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
+        );
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
                         days_elapsed: u32|
          -> Result<crate::scheduler::states::StateContext<'_>> {
@@ -614,9 +613,7 @@ fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: b
 fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
     match FsrsVersion::try_from(fsrs_version).unwrap_or(FsrsVersion::Seven) {
         FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
-        FsrsVersion::Six | FsrsVersion::Five | FsrsVersion::Four => {
-            ComputeParametersVersion::Fsrs6
-        }
+        FsrsVersion::Six | FsrsVersion::Five | FsrsVersion::Four => ComputeParametersVersion::Fsrs6,
     }
 }
 
@@ -697,8 +694,14 @@ mod tests {
 
     #[test]
     fn new_card_interval_preview_prefers_explicit_toggle_when_provided() {
-        assert!(selected_short_term_with_steps_for_preview(Some(true), false));
-        assert!(!selected_short_term_with_steps_for_preview(Some(false), true));
+        assert!(selected_short_term_with_steps_for_preview(
+            Some(true),
+            false
+        ));
+        assert!(!selected_short_term_with_steps_for_preview(
+            Some(false),
+            true
+        ));
     }
 
     #[test]

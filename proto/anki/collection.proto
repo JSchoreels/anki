@@ -140,11 +140,16 @@ message ComputeParamsProgress {
   uint32 current = 1;
   // Total iterations
   uint32 total = 2;
+  // Total training targets used by optimizer (long-term + same-day)
   uint32 reviews = 3;
   // Only used in 'compute all params' case
   uint32 current_preset = 4;
   // Only used in 'compute all params' case
   uint32 total_presets = 5;
+  // Targets where delta_t >= 1 day
+  uint32 long_term_reviews = 6;
+  // Targets where delta_t < 1 day (same-day / short-term)
+  uint32 short_term_reviews = 7;
 }
 
 message ComputeRetentionProgress {

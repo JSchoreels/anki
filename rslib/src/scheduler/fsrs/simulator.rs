@@ -189,7 +189,8 @@ impl Collection {
 
         for (_cid, group) in &revlogs.into_iter().chunk_by(|r| r.cid) {
             let entries = group.collect_vec();
-            let Some(output) = reviews_for_fsrs(entries, next_day_at, false, TimestampMillis(0))
+            let Some(output) =
+                reviews_for_fsrs(entries, next_day_at, false, TimestampMillis(0), false)
             else {
                 continue;
             };
