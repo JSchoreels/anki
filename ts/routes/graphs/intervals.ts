@@ -20,6 +20,14 @@ export interface IntervalGraphData {
     intervals: number[];
 }
 
+export interface IntervalPercentileSummary {
+    p1: number;
+    p10: number;
+    p50: number;
+    p90: number;
+    p99: number;
+}
+
 export enum IntervalRange {
     Month = 0,
     Percentile50 = 1,
@@ -41,6 +49,22 @@ export function gatherIntervalData(data: GraphsResponse_Intervals): IntervalGrap
     }
     allIntervals.sort((a, b) => a - b);
     return { intervals: allIntervals };
+}
+
+export function intervalPercentileSummary(
+    sortedIntervals: number[],
+): IntervalPercentileSummary {
+    function roundedQuantile(percentile: number): number {
+        return Math.round(quantile(sortedIntervals, percentile) ?? 0);
+    }
+
+    return {
+        p1: roundedQuantile(0.01),
+        p10: roundedQuantile(0.1),
+        p50: roundedQuantile(0.5),
+        p90: roundedQuantile(0.9),
+        p99: roundedQuantile(0.99),
+    };
 }
 
 export function intervalLabel(
@@ -168,12 +192,29 @@ export function prepareIntervalData(
         dispatch("search", { query });
     }
 
-    const medianInterval = Math.round(quantile(allIntervals, 0.5) ?? 0);
-    const medianIntervalString = timeSpan(medianInterval * 86400, false);
+    const percentiles = intervalPercentileSummary(allIntervals);
+    const spanForDays = (days: number): string => timeSpan(days * 86400, false);
+    const metricSuffix = fsrs ? "stability" : "interval";
     const tableData = [
         {
             label: fsrs ? tr.statisticsMedianStability() : tr.statisticsMedianInterval(),
-            value: medianIntervalString,
+            value: spanForDays(percentiles.p50),
+        },
+        {
+            label: `P1 ${metricSuffix}`,
+            value: spanForDays(percentiles.p1),
+        },
+        {
+            label: `P10 ${metricSuffix}`,
+            value: spanForDays(percentiles.p10),
+        },
+        {
+            label: `P90 ${metricSuffix}`,
+            value: spanForDays(percentiles.p90),
+        },
+        {
+            label: `P99 ${metricSuffix}`,
+            value: spanForDays(percentiles.p99),
         },
     ];
 

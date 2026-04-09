@@ -83,8 +83,7 @@ Scope:
 
 ## FSRS Parameter Source
 
-Deck options include an explicit FSRS version selector
-(`4.5/5/6/7/7-penalty`) stored in
+Deck options include an explicit FSRS version selector (`4.5/5/6/7`) stored in
 `deck_config.config.fsrs_version`. Parameter editing and optimization target the
 selected version's parameter array (`fsrs_params_4/5/6/7`).
 
@@ -92,13 +91,24 @@ Deck options also expose the global FSRS short-term toggle (`same-day review`
 behavior for learning/relearning paths) backed by
 `BoolKey::FsrsShortTermWithStepsEnabled`.
 
+The Deck Options "New Card Intervals" preview passes the current unsaved value
+of that toggle to backend `GetFsrsNewCardIntervals`, so preview rows update
+immediately when toggled (without requiring a save first).
+
+Deck Options "Check Health" now also passes the currently selected unsaved
+`fsrs_version` to backend `EvaluateParams`, so split-based logloss/RMSE is
+computed with the selected model family (FSRS-7 vs FSRS-6/5/4).
+
 Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best
 available parameters for compatibility with existing collections.
 
-`FSRS-7` and `FSRS-7 (penalty)` are separate selector modes that both read/write
-`fsrs_params_7`. The difference is optimization objective: penalty mode sets
-`ComputeParametersInput.fsrs7_penalty=true`, while plain FSRS-7 leaves it off.
+FSRS-7 optimization reads/writes `fsrs_params_7`, and follows the FSRS-7
+training objective implemented in `fsrs-rs`.
+When optimizer output length does not match the selected preset's current
+parameter-family length (for example selected FSRS-6 vs optimizer returning
+FSRS-7-length params), deck options keeps the current selected params instead of
+cross-writing a different family into that slot.
 
 When `fsrs_params_7` has 35 values (FSRS-7), card-info forgetting-curve
 visualization uses the FSRS-7 two-curve mixture (`w[27..34]`). The deck-options

@@ -17,6 +17,7 @@ use fsrs::compute_parameters;
 use fsrs::evaluate_with_time_series_splits;
 use fsrs::CombinedProgressState;
 use fsrs::ComputeParametersInput;
+use fsrs::ComputeParametersVersion;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
 use fsrs::MemoryState;
@@ -34,6 +35,14 @@ use crate::search::SearchNode;
 use crate::search::SortMode;
 
 pub(crate) type Params = Vec<f32>;
+
+fn model_version_for_params(params: &[f32]) -> ComputeParametersVersion {
+    if params.len() == 35 {
+        ComputeParametersVersion::Fsrs7
+    } else {
+        ComputeParametersVersion::Fsrs6
+    }
+}
 
 pub(crate) fn ignore_revlogs_before_date_to_ms(
     ignore_revlogs_before_date: &String,
@@ -61,7 +70,6 @@ pub struct ComputeParamsRequest<'t> {
     pub current_params: &'t Params,
     pub num_of_relearning_steps: usize,
     pub health_check: bool,
-    pub fsrs7_penalty: bool,
 }
 
 /// r: retention
@@ -92,7 +100,6 @@ impl Collection {
             current_params,
             num_of_relearning_steps,
             health_check,
-            fsrs7_penalty,
         } = request;
 
         self.clear_progress();
@@ -143,10 +150,14 @@ impl Collection {
             train_set: items.clone(),
             progress: Some(progress.clone()),
             enable_short_term: true,
+            enable_sched_penalties: true,
+            model_version: model_version_for_params(current_params),
             num_relearning_steps: Some(num_of_relearning_steps),
-            fsrs7_penalty,
         };
-        let mut params = compute_parameters(input.clone())?;
+        let mut params = coerce_computed_params_to_selected_version(
+            current_params,
+            compute_parameters(input.clone())?,
+        );
         progress_thread.join().ok();
         if let Ok(current_fsrs) = FSRS::new(current_params) {
             let current_log_loss = current_fsrs.evaluate(items.clone(), |_| true)?.log_loss;
@@ -279,7 +290,7 @@ impl Collection {
         search: &str,
         ignore_revlogs_before: TimestampMillis,
         num_of_relearning_steps: usize,
-        fsrs7_penalty: bool,
+        model_version: ComputeParametersVersion,
     ) -> Result<ModelEvaluation> {
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
@@ -291,8 +302,9 @@ impl Collection {
             train_set: items.clone(),
             progress: None,
             enable_short_term: true,
+            enable_sched_penalties: true,
+            model_version,
             num_relearning_steps: Some(num_of_relearning_steps),
-            fsrs7_penalty,
         };
         Ok(evaluate_with_time_series_splits(input, |ip| {
             anki_progress
@@ -329,6 +341,22 @@ impl Collection {
                 })
                 .is_ok()
         })?)
+    }
+}
+
+fn coerce_computed_params_to_selected_version(
+    current_params: &[f32],
+    computed_params: Vec<f32>,
+) -> Vec<f32> {
+    if current_params.is_empty() || current_params.len() == computed_params.len() {
+        return computed_params;
+    }
+    let current_is_supported = matches!(current_params.len(), 17 | 19 | 21 | 35);
+    let computed_is_supported = matches!(computed_params.len(), 17 | 19 | 21 | 35);
+    if current_is_supported && computed_is_supported {
+        current_params.to_vec()
+    } else {
+        computed_params
     }
 }
 
@@ -490,7 +518,7 @@ pub(crate) fn reviews_for_fsrs(
         for (idx, (entry, &delta_t)) in entries.iter().zip(delta_ts.iter()).enumerate() {
             current_reviews.push(FSRSReview {
                 rating: entry.button_chosen as u32,
-                delta_t,
+                delta_t: delta_t as f32,
             });
             if idx >= 1 && delta_t > 0 {
                 items.push((
@@ -510,7 +538,7 @@ pub(crate) fn reviews_for_fsrs(
             .zip(delta_ts.iter())
             .map(|(entry, &delta_t)| FSRSReview {
                 rating: entry.button_chosen as u32,
-                delta_t,
+                delta_t: delta_t as f32,
             })
             .collect();
         let last_entry = entries.last().unwrap();
@@ -581,7 +609,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn review(delta_t: u32) -> FSRSReview {
-        FSRSReview { rating: 3, delta_t }
+        FSRSReview {
+            rating: 3,
+            delta_t: delta_t as f32,
+        }
     }
 
     pub(crate) fn convert_ignore_before(
@@ -758,6 +789,26 @@ pub(crate) mod tests {
                 false,
             ),
             fsrs_items!([review(0), review(1)])
+        );
+    }
+
+    #[test]
+    fn coerce_computed_params_keeps_current_when_model_family_mismatches() {
+        let current = vec![1.0; 21];
+        let computed = vec![2.0; 35];
+        assert_eq!(
+            coerce_computed_params_to_selected_version(&current, computed),
+            current
+        );
+    }
+
+    #[test]
+    fn coerce_computed_params_keeps_computed_when_lengths_match() {
+        let current = vec![1.0; 21];
+        let computed = vec![2.0; 21];
+        assert_eq!(
+            coerce_computed_params_to_selected_version(&current, computed.clone()),
+            computed
         );
     }
 

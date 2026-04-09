@@ -114,10 +114,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let loadingCustomDecayTable = false;
     const fsrsVersionChoices = [
         {
-            value: DeckConfig_Config_FsrsVersion.SEVEN_PENALTY,
-            label: "FSRS-7 (penalty)",
-        },
-        {
             value: DeckConfig_Config_FsrsVersion.SEVEN,
             label: "FSRS-7",
         },
@@ -137,8 +133,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function selectedFsrsParams(config: DeckConfig_Config): number[] {
         switch (config.fsrsVersion) {
-            case DeckConfig_Config_FsrsVersion.SEVEN_PENALTY:
-                return config.fsrsParams7;
             case DeckConfig_Config_FsrsVersion.SIX:
                 return config.fsrsParams6;
             case DeckConfig_Config_FsrsVersion.FIVE:
@@ -245,6 +239,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: void loadNewCardIntervals(
         startingDesiredRetentionValue,
         effectiveDesiredRetention,
+        $fsrsShortTermWithStepsEnabled,
         selectedFsrsParams($config),
         $config.learnSteps,
         $config.relearnSteps,
@@ -289,6 +284,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function loadNewCardIntervals(
         currentRetention: number,
         selectedRetention: number,
+        fsrsShortTermWithStepsEnabled: boolean,
         params: number[],
         _learnSteps: number[],
         _relearnSteps: number[],
@@ -309,10 +305,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         try {
             const [current, selected] = await Promise.all([
                 getFsrsNewCardIntervals(
-                    configWithDesiredRetention(currentConfig, currentRetention),
+                    {
+                        config: configWithDesiredRetention(currentConfig, currentRetention),
+                        fsrsShortTermWithStepsEnabled,
+                    },
                 ),
                 getFsrsNewCardIntervals(
-                    configWithDesiredRetention(currentConfig, selectedRetention),
+                    {
+                        config: configWithDesiredRetention(currentConfig, selectedRetention),
+                        fsrsShortTermWithStepsEnabled,
+                    },
                 ),
             ]);
             if (request !== newCardIntervalRequest) {
@@ -421,7 +423,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         currentParams: params,
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         healthCheck: $healthCheck,
-                        fsrsVersion: $config.fsrsVersion,
                     });
 
                     const alreadyOptimal =

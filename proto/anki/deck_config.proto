@@ -133,7 +133,6 @@ message DeckConfig {
       FSRS_VERSION_SIX = 1;
       FSRS_VERSION_FIVE = 2;
       FSRS_VERSION_FOUR = 3;
-      FSRS_VERSION_SEVEN_PENALTY = 4;
     }
     repeated float learn_steps = 1;
     repeated float relearn_steps = 2;

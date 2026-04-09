@@ -5,7 +5,6 @@ mod answering;
 mod states;
 
 use anki_proto::cards;
-use anki_proto::deck_config;
 use anki_proto::generic;
 use anki_proto::scheduler;
 use anki_proto::scheduler::ComputeFsrsParamsResponse;
@@ -30,13 +29,14 @@ use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
 use fsrs::benchmark;
 use fsrs::compute_parameters;
 use fsrs::ComputeParametersInput;
+use fsrs::ComputeParametersVersion;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
 use fsrs::FSRS;
 
 use crate::backend::Backend;
 use crate::config::BoolKey;
-use crate::deckconfig::fsrs_version_uses_penalty;
+use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
@@ -290,7 +290,6 @@ impl crate::services::SchedulerService for Collection {
             current_params: &input.current_params,
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
-            fsrs7_penalty: fsrs_version_uses_penalty(input.fsrs_version),
         })
     }
 
@@ -319,10 +318,11 @@ impl crate::services::SchedulerService for Collection {
 
     fn get_fsrs_new_card_intervals(
         &mut self,
-        input: deck_config::deck_config::Config,
+        input: scheduler::GetFsrsNewCardIntervalsRequest,
     ) -> Result<generic::StringList> {
+        let requested_short_term_with_steps = input.fsrs_short_term_with_steps_enabled;
         let config = crate::deckconfig::DeckConfig {
-            inner: input,
+            inner: input.config.unwrap_or_default(),
             ..Default::default()
         };
         let fsrs = FSRS::new(config.fsrs_params())?;
@@ -333,7 +333,10 @@ impl crate::services::SchedulerService for Collection {
             false
         };
         let fsrs_short_term_with_steps_enabled =
-            self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
+            selected_short_term_with_steps_for_preview(
+                requested_short_term_with_steps,
+                self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
+            );
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
                         days_elapsed: u32|
          -> Result<crate::scheduler::states::StateContext<'_>> {
@@ -433,11 +436,12 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::EvaluateParamsRequest,
     ) -> Result<scheduler::EvaluateParamsResponse> {
+        let model_version = health_check_model_version(input.fsrs_version);
         let ret = self.evaluate_params(
             &input.search,
             input.ignore_revlogs_before_ms.into(),
             input.num_of_relearning_steps as usize,
-            fsrs_version_uses_penalty(input.fsrs_version),
+            model_version,
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,
@@ -603,6 +607,19 @@ impl crate::services::SchedulerService for Collection {
     }
 }
 
+fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: bool) -> bool {
+    requested.unwrap_or(stored)
+}
+
+fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
+    match FsrsVersion::try_from(fsrs_version).unwrap_or(FsrsVersion::Seven) {
+        FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
+        FsrsVersion::Six | FsrsVersion::Five | FsrsVersion::Four => {
+            ComputeParametersVersion::Fsrs6
+        }
+    }
+}
+
 impl crate::services::BackendSchedulerService for Backend {
     fn compute_fsrs_params_from_items(
         &self,
@@ -613,8 +630,9 @@ impl crate::services::BackendSchedulerService for Backend {
             train_set: req.items.into_iter().map(fsrs_item_proto_to_fsrs).collect(),
             progress: None,
             enable_short_term: true,
+            enable_sched_penalties: true,
+            model_version: ComputeParametersVersion::default(),
             num_relearning_steps: None,
-            fsrs7_penalty: false,
         })?;
         Ok(ComputeFsrsParamsResponse {
             params,
@@ -636,8 +654,9 @@ impl crate::services::BackendSchedulerService for Backend {
             train_set,
             progress: None,
             enable_short_term: true,
+            enable_sched_penalties: true,
+            model_version: ComputeParametersVersion::default(),
             num_relearning_steps: None,
-            fsrs7_penalty: false,
         });
         Ok(FsrsBenchmarkResponse { params })
     }
@@ -664,7 +683,51 @@ fn fsrs_item_proto_to_fsrs(item: anki_proto::scheduler::FsrsItem) -> FSRSItem {
 
 fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSReview {
     FSRSReview {
-        delta_t: review.delta_t,
+        delta_t: review.delta_t as f32,
         rating: review.rating,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_check_model_version;
+    use super::selected_short_term_with_steps_for_preview;
+    use super::FsrsVersion;
+    use fsrs::ComputeParametersVersion;
+
+    #[test]
+    fn new_card_interval_preview_prefers_explicit_toggle_when_provided() {
+        assert!(selected_short_term_with_steps_for_preview(Some(true), false));
+        assert!(!selected_short_term_with_steps_for_preview(Some(false), true));
+    }
+
+    #[test]
+    fn new_card_interval_preview_falls_back_to_stored_toggle() {
+        assert!(selected_short_term_with_steps_for_preview(None, true));
+        assert!(!selected_short_term_with_steps_for_preview(None, false));
+    }
+
+    #[test]
+    fn health_check_uses_selected_fsrs6_or_fsrs7_family() {
+        assert_eq!(
+            health_check_model_version(FsrsVersion::Seven as i32),
+            ComputeParametersVersion::Fsrs7
+        );
+        assert_eq!(
+            health_check_model_version(FsrsVersion::Six as i32),
+            ComputeParametersVersion::Fsrs6
+        );
+    }
+
+    #[test]
+    fn health_check_maps_fsrs4_and_fsrs5_to_fsrs6_family() {
+        assert_eq!(
+            health_check_model_version(FsrsVersion::Five as i32),
+            ComputeParametersVersion::Fsrs6
+        );
+        assert_eq!(
+            health_check_model_version(FsrsVersion::Four as i32),
+            ComputeParametersVersion::Fsrs6
+        );
     }
 }

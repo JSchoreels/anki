@@ -16,7 +16,6 @@ use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use fsrs::FSRS6_DEFAULT_PARAMETERS;
 
-use super::fsrs_version_uses_penalty;
 use super::FsrsVersion;
 use crate::config::I32ConfigKey;
 use crate::config::StringKey;
@@ -113,10 +112,7 @@ impl Collection {
                     c.inner.fsrs_params_5.clone()
                 };
             }
-            if matches!(
-                FsrsVersion::try_from(c.inner.fsrs_version),
-                Ok(FsrsVersion::Seven | FsrsVersion::SevenPenalty)
-            ) && c.inner.fsrs_params_7.is_empty()
+            if c.inner.fsrs_version == FsrsVersion::Seven as i32 && c.inner.fsrs_params_7.is_empty()
             {
                 c.inner.fsrs_version = if !c.inner.fsrs_params_6.is_empty() {
                     FsrsVersion::Six as i32
@@ -414,7 +410,6 @@ impl Collection {
                 current_params: &current_params,
                 num_of_relearning_steps,
                 health_check: false,
-                fsrs7_penalty: fsrs_version_uses_penalty(config.inner.fsrs_version),
             }) {
                 Ok(params) => {
                     println!("{}: {:?}", config.name, params.params);
@@ -434,7 +429,7 @@ impl Collection {
 
 fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
     match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven | FsrsVersion::SevenPenalty => &mut config.inner.fsrs_params_7,
+        FsrsVersion::Seven => &mut config.inner.fsrs_params_7,
         FsrsVersion::Six => &mut config.inner.fsrs_params_6,
         FsrsVersion::Five => &mut config.inner.fsrs_params_5,
         FsrsVersion::Four => &mut config.inner.fsrs_params_4,
