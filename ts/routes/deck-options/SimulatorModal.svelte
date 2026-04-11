@@ -76,6 +76,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let simulationNumber = 0;
     let points: (WorkloadPoint | Point)[] = [];
     let reviewTimeMatrix: ReviewTimeMatrix | undefined;
+    let reviewTimeAgainCoeffs: number[] = [];
+    let reviewTimePassCoeffs: number[] = [];
     let reviewTimeSampleMedian = 0;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     let smooth = true;
@@ -225,6 +227,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     passSeconds: resp.reviewTimePassSeconds,
                     sampleCounts: resp.reviewTimeSampleCounts,
                 };
+                reviewTimeAgainCoeffs = resp.reviewTimeAgainCoeffs;
+                reviewTimePassCoeffs = resp.reviewTimePassCoeffs;
 
                 points = points.concat(
                     Object.entries(resp.memorized).map(([dr, v]) => ({
@@ -252,12 +256,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         points = points.filter((p) => p.label !== simulationNumber);
         simulationNumber = Math.max(0, simulationNumber - 1);
         reviewTimeMatrix = undefined;
+        reviewTimeAgainCoeffs = [];
+        reviewTimePassCoeffs = [];
         tableData = renderSimulationChart(
             svg as SVGElement,
             bounds,
             points,
             simulateSubgraph,
         );
+    }
+
+    function coeff(index: number, values: number[]): string {
+        return (values[index] ?? 0).toFixed(4);
     }
 
     function formatSeconds(seconds: number): string {
@@ -813,6 +823,39 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                             {/each}
                                         </tr>
                                     {/each}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="review-time-matrix-wrapper mt-2">
+                            <table class="review-time-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th>Model</th>
+                                        <th>a</th>
+                                        <th>b</th>
+                                        <th>c</th>
+                                        <th>d</th>
+                                        <th>e</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <th>Again</th>
+                                        <td>{coeff(0, reviewTimeAgainCoeffs)}</td>
+                                        <td>{coeff(1, reviewTimeAgainCoeffs)}</td>
+                                        <td>{coeff(2, reviewTimeAgainCoeffs)}</td>
+                                        <td>{coeff(3, reviewTimeAgainCoeffs)}</td>
+                                        <td>{coeff(4, reviewTimeAgainCoeffs)}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Hard+Good+Easy</th>
+                                        <td>{coeff(0, reviewTimePassCoeffs)}</td>
+                                        <td>{coeff(1, reviewTimePassCoeffs)}</td>
+                                        <td>{coeff(2, reviewTimePassCoeffs)}</td>
+                                        <td>{coeff(3, reviewTimePassCoeffs)}</td>
+                                        <td>{coeff(4, reviewTimePassCoeffs)}</td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>

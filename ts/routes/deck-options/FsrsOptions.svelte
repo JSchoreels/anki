@@ -49,6 +49,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         withLastParam,
     } from "./custom-decay-table";
     import {
+        readFsrs7SameDaySettings,
+        withFsrs7SameDaySettings,
+    } from "./fsrs-same-day-settings";
+    import {
+        readFsrsSearchSettings,
+        withFsrsSearchSettings,
+    } from "./fsrs-search-settings";
+    import {
         DeckConfig_Config,
         DeckConfig_Config_FsrsVersion,
         GetRetentionWorkloadRequest,
@@ -69,6 +77,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     const fsrsReschedule = state.fsrsReschedule;
     const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
+    const auxData = state.currentAuxData;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
 
@@ -112,8 +121,34 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let optimizationComparison: OptimizationComparison | undefined;
     let customDecayRows: DecayRow[] = [];
     let loadingCustomDecayTable = false;
+    let evaluationSearchFilter = "";
     let includeSameDayReviewsForOptimizeInFsrs7 = true;
     let includeSameDayReviewsForEvaluateInFsrs7 = true;
+    $: evaluationSearchFilter = readFsrsSearchSettings($auxData).evaluationSearch;
+    $: {
+        const updated = withFsrsSearchSettings($auxData, {
+            evaluationSearch: evaluationSearchFilter,
+        });
+        if (updated) {
+            auxData.set(updated);
+        }
+    }
+    $: {
+        const settings = readFsrs7SameDaySettings($auxData);
+        includeSameDayReviewsForOptimizeInFsrs7 =
+            settings.includeSameDayReviewsForOptimize;
+        includeSameDayReviewsForEvaluateInFsrs7 =
+            settings.includeSameDayReviewsForEvaluate;
+    }
+    $: {
+        const updated = withFsrs7SameDaySettings($auxData, {
+            includeSameDayReviewsForOptimize: includeSameDayReviewsForOptimizeInFsrs7,
+            includeSameDayReviewsForEvaluate: includeSameDayReviewsForEvaluateInFsrs7,
+        });
+        if (updated) {
+            auxData.set(updated);
+        }
+    }
     const fsrsVersionChoices = [
         {
             value: DeckConfig_Config_FsrsVersion.SEVEN,
@@ -401,6 +436,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return numOfRelearningStepsInDay;
     }
 
+    function optimizeSearchFilter(): string {
+        return $config.paramSearch ? $config.paramSearch : defaultparamSearch;
+    }
+
+    function evaluateSearchFilter(): string {
+        return evaluationSearchFilter.trim()
+            ? evaluationSearchFilter
+            : optimizeSearchFilter();
+    }
+
     function includeSameDayOptimizeOverride(): boolean | undefined {
         if ($config.fsrsVersion !== DeckConfig_Config_FsrsVersion.SEVEN) {
             return undefined;
@@ -430,9 +475,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             await runWithBackendProgress(
                 async () => {
                     const params = selectedFsrsParams($config);
-                    const search = $config.paramSearch
-                        ? $config.paramSearch
-                        : defaultparamSearch;
+                    const search = optimizeSearchFilter();
+                    const evaluateSearch = evaluateSearchFilter();
                     const resp = await computeFsrsParams({
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
@@ -471,20 +515,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                     if (!alreadyOptimal) {
                         const currentMetrics = await evaluateParamsLegacy({
-                            search,
+                            search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params,
                             includeSameDayReviews: includeSameDayEvaluateOverride(),
                         });
                         const optimizedMetrics = await evaluateParamsLegacy({
-                            search,
+                            search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params: resp.params,
                             includeSameDayReviews: includeSameDayEvaluateOverride(),
                         });
                         optimizationComparison = {
                             optimizedParams: [...resp.params],
-                            search,
+                            search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             current: {
                                 logLoss: currentMetrics.logLoss,
@@ -612,9 +656,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         try {
             await runWithBackendProgress(
                 async () => {
-                    const search = $config.paramSearch
-                        ? $config.paramSearch
-                        : defaultparamSearch;
+                    const search = evaluateSearchFilter();
                     const resp = await evaluateParamsLegacy({
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
@@ -659,11 +701,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         try {
             await runWithBackendProgress(
                 async () => {
-                    const search = $config.paramSearch
-                        ? $config.paramSearch
-                        : defaultparamSearch;
+                    const search = evaluateSearchFilter();
+                    const searchForTraining = optimizeSearchFilter();
                     const resp = await evaluateParams({
                         search,
+                        searchForTraining,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         fsrsVersion: $config.fsrsVersion,
@@ -890,6 +932,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         bind:value={$config.paramSearch}
         placeholder={defaultparamSearch}
     />
+    <ParamsSearchRow
+        bind:value={evaluationSearchFilter}
+        placeholder={defaultparamSearch}
+    >
+        <SettingTitle>Evaluation Search Filter</SettingTitle>
+    </ParamsSearchRow>
 
     <SwitchRow bind:value={$fsrsReschedule} defaultValue={false}>
         <SettingTitle on:click={() => openHelpModal("rescheduleCardsOnChange")}>

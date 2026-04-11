@@ -54,21 +54,24 @@ Data flow:
 
 1. Read revlog entries for the searched cards.
 2. Reconstruct review histories and infer pre-review memory state using FSRS.
-3. Build samples `(R, Grade, taken_millis)` for review-kind entries.
+3. Build samples `(R, S, reps, D, Grade, taken_millis)` for review-kind entries.
+   `reps` is filtered to `[2,30]` for regression fitting.
    `R` is computed from the active FSRS model (`FSRS::current_retrievability`),
    so FSRS-7 uses its native forgetting-curve mixture instead of a single
    scalar decay approximation.
-4. Aggregate samples into buckets:
-   - `R`: 5% bands (`95-100`, `90-95`, ...).
-   - `Grade`: Again/Hard/Good/Easy.
-5. Resolve missing buckets by averaging nearby `R` buckets; if still empty,
-   fall back to grade-level mean.
-6. During `simulate_workload`, each simulated review uses
-   `time(R_bucket, Grade)` to accumulate `daily_time_cost`.
-7. The workload response includes a flattened matrix for UI inspection:
+4. Fit two linear models from samples:
+   - fail (`Again`)
+   - pass (`Hard/Good/Easy`)
+   using `time = a + b * (1 - R) + c * S + d * reps + e * D`.
+5. During `simulate_workload`, each DR sweep updates review costs from those
+   fitted models and then runs simulation to accumulate `daily_time_cost`.
+6. The workload response includes a flattened matrix for UI inspection:
    - `review_time_fail_seconds`
    - `review_time_pass_seconds`
    - `review_time_sample_counts` (raw per-cell sample counts)
+   and the fitted coefficients:
+   - `review_time_again_coeffs`
+   - `review_time_pass_coeffs`
    with bucket dimensions:
    - `review_time_r_bucket_count`
    - `review_time_s_bucket_count` (fixed to `1`, UI compatibility)
@@ -80,6 +83,16 @@ Scope:
 - During the DR sweep (`1..99`), existing simulated cards are re-bound to the
   current sweep DR before each run so `count/time/memorized` curves actually
   reflect the selected DR on all cards (not only newly introduced cards).
+- Help Me Decide review-time modeling now uses two linear regressions from
+  revlog `taken_millis` samples:
+  - fail group (`Again`)
+  - pass group (`Hard/Good/Easy`)
+  with model form: `time = a + b * (1 - R) + c * S + d * reps + e * D`.
+  These predicted costs are also injected into simulator review costs during
+  each DR sweep, so `Time` and `Memorized/Time` charts use the same model.
+  The workload response also exposes fitted coefficients:
+  - `review_time_again_coeffs` (`a,b,c,d,e`)
+  - `review_time_pass_coeffs` (`a,b,c,d,e`)
 
 ## FSRS Parameter Source
 
@@ -111,6 +124,15 @@ FSRS training-item extraction is model-family-aware:
   revlog timestamps (with a 1ms floor to keep `delta_t > 0`).
 - Deck options expose separate FSRS-7 toggles for optimize (training targets)
   and evaluate/health-check target selection.
+  Their per-preset UI state is persisted in `deck_config.config.other` JSON as:
+  - `fsrs7IncludeSameDayOptimize`
+  - `fsrs7IncludeSameDayEvaluate`
+  - `fsrsEvaluationSearch` (separate search expression used by Evaluate /
+    Check Health / Optimize comparison metrics; optimize training still uses
+    `param_search`)
+  - For Check Health specifically:
+    - optimization/training uses `param_search`
+    - metric evaluation uses `fsrsEvaluationSearch` (or `param_search` if blank)
 
 Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best

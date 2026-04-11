@@ -446,6 +446,8 @@ message SimulateFsrsWorkloadResponse {
   repeated float review_time_fail_seconds = 7;
   repeated float review_time_pass_seconds = 8;
   repeated uint32 review_time_sample_counts = 9;
+  repeated float review_time_again_coeffs = 10;
+  repeated float review_time_pass_coeffs = 11;
 }
 
 message ComputeOptimalRetentionResponse {
@@ -480,6 +482,7 @@ message EvaluateParamsRequest {
   deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 4;
   optional bool include_same_day_reviews = 5;
   optional bool include_same_day_reviews_for_training = 6;
+  optional string search_for_training = 7;
 }
 
 message GetFsrsNewCardIntervalsRequest {

@@ -103,6 +103,17 @@ fn filter_non_same_day_evaluation_targets(items: Vec<FSRSItem>) -> Vec<FSRSItem>
         .collect()
 }
 
+fn training_search<'a>(search: &'a str, search_for_training: Option<&'a str>) -> &'a str {
+    match search_for_training.map(str::trim) {
+        Some(non_empty) if !non_empty.is_empty() => non_empty,
+        _ => search,
+    }
+}
+
+fn uses_external_evaluation(training_search: &str, evaluation_search: &str) -> bool {
+    training_search != evaluation_search
+}
+
 fn training_target_counts_from_items(items: &[FSRSItem]) -> TrainingTargetCounts {
     let total_targets = items.len();
     let long_term_targets = items
@@ -234,6 +245,31 @@ where
         log_loss: (weighted_log_loss / total_eval_items as f64) as f32,
         rmse_bins: (weighted_rmse_bins / total_eval_items as f64) as f32,
     })
+}
+
+fn evaluate_from_training_to_external_targets(
+    ComputeParametersInput {
+        train_set,
+        enable_short_term,
+        enable_sched_penalties,
+        model_version,
+        num_relearning_steps,
+        ..
+    }: ComputeParametersInput,
+    evaluation_set: Vec<FSRSItem>,
+) -> Result<ModelEvaluation> {
+    if train_set.is_empty() || evaluation_set.is_empty() {
+        return Err(fsrs::FSRSError::NotEnoughData.into());
+    }
+    let parameters = compute_parameters(ComputeParametersInput {
+        train_set,
+        progress: None,
+        enable_short_term,
+        enable_sched_penalties,
+        model_version,
+        num_relearning_steps,
+    })?;
+    Ok(FSRS::new(&parameters)?.evaluate(evaluation_set, |_| true)?)
 }
 
 impl Collection {
@@ -451,6 +487,7 @@ impl Collection {
     pub fn evaluate_params(
         &mut self,
         search: &str,
+        search_for_training: Option<&str>,
         ignore_revlogs_before: TimestampMillis,
         num_of_relearning_steps: usize,
         model_version: ComputeParametersVersion,
@@ -458,31 +495,55 @@ impl Collection {
         include_same_day_reviews_for_training: Option<bool>,
     ) -> Result<ModelEvaluation> {
         let timing = self.timing_today()?;
-        let revlogs = self.revlog_for_srs(search)?;
+        let training_search = training_search(search, search_for_training);
+        let training_revlogs = self.revlog_for_srs(training_search)?;
+        let evaluation_revlogs = if training_search == search {
+            training_revlogs.clone()
+        } else {
+            self.revlog_for_srs(search)?
+        };
         let include_same_day_reviews_for_training =
             include_same_day_training_entries(model_version, include_same_day_reviews_for_training);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
         let (training_items, _target_counts) = fsrs_items_for_training(
-            revlogs,
+            training_revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
             include_same_day_reviews_for_training,
         );
+        let (evaluation_base_items, _target_counts) = fsrs_items_for_training(
+            evaluation_revlogs,
+            timing.next_day_at,
+            ignore_revlogs_before,
+            include_same_day_reviews,
+        );
         let evaluation_items = if include_same_day_reviews {
-            training_items.clone()
+            evaluation_base_items
         } else {
-            filter_non_same_day_evaluation_targets(training_items.clone())
+            filter_non_same_day_evaluation_targets(evaluation_base_items)
         };
         let target_counts = training_target_counts_from_items(&evaluation_items);
         let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
+        // Ensure UI receives review counts even in paths that don't emit per-fold progress.
+        let _ = anki_progress.update(false, |_| {});
 
-        let use_split_train_and_eval =
-            include_same_day_reviews == include_same_day_reviews_for_training;
-        let eval = if use_split_train_and_eval {
+        let eval = if uses_external_evaluation(training_search, search) {
+            evaluate_from_training_to_external_targets(
+                ComputeParametersInput {
+                    train_set: training_items,
+                    progress: None,
+                    enable_short_term: true,
+                    enable_sched_penalties: true,
+                    model_version,
+                    num_relearning_steps: Some(num_of_relearning_steps),
+                },
+                evaluation_items,
+            )?
+        } else if include_same_day_reviews == include_same_day_reviews_for_training {
             evaluate_with_time_series_splits(
                 ComputeParametersInput {
                     train_set: evaluation_items,
@@ -1512,5 +1573,82 @@ pub(crate) mod tests {
         ];
         // L R |
         assert_eq!(convert_ignore_before(revlogs, false, days_ago_ms(4)), None);
+    }
+
+    #[test]
+    fn training_search_uses_override_when_non_empty() {
+        assert_eq!(
+            super::training_search("deck:train", Some("deck:eval")),
+            "deck:eval"
+        );
+        assert_eq!(
+            super::training_search("deck:train", Some("   deck:eval2  ")),
+            "deck:eval2"
+        );
+    }
+
+    #[test]
+    fn training_search_falls_back_to_search_when_empty() {
+        assert_eq!(super::training_search("deck:train", None), "deck:train");
+        assert_eq!(
+            super::training_search("deck:train", Some("   ")),
+            "deck:train"
+        );
+    }
+
+    #[test]
+    fn external_evaluation_is_enabled_only_for_different_searches() {
+        assert!(super::uses_external_evaluation(
+            "preset:vocabulary rated:1",
+            "preset:vocabulary"
+        ));
+        assert!(!super::uses_external_evaluation(
+            "preset:vocabulary",
+            "preset:vocabulary"
+        ));
+    }
+
+    #[test]
+    fn external_target_evaluation_rejects_empty_sets() {
+        let err = super::evaluate_from_training_to_external_targets(
+            ComputeParametersInput {
+                train_set: vec![],
+                progress: None,
+                enable_short_term: true,
+                enable_sched_penalties: true,
+                model_version: ComputeParametersVersion::Fsrs6,
+                num_relearning_steps: Some(1),
+            },
+            vec![FSRSItem {
+                reviews: vec![review(0), review(2)],
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            AnkiError::FsrsInsufficientData | AnkiError::FsrsInsufficientReviews { .. }
+        ));
+    }
+
+    #[test]
+    fn external_target_evaluation_rejects_empty_evaluation_set() {
+        let err = super::evaluate_from_training_to_external_targets(
+            ComputeParametersInput {
+                train_set: vec![FSRSItem {
+                    reviews: vec![review(0), review(2)],
+                }],
+                progress: None,
+                enable_short_term: true,
+                enable_sched_penalties: true,
+                model_version: ComputeParametersVersion::Fsrs6,
+                num_relearning_steps: Some(1),
+            },
+            vec![],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            AnkiError::FsrsInsufficientData | AnkiError::FsrsInsufficientReviews { .. }
+        ));
     }
 }

@@ -439,6 +439,7 @@ impl crate::services::SchedulerService for Collection {
         let model_version = health_check_model_version(input.fsrs_version);
         let ret = self.evaluate_params(
             &input.search,
+            input.search_for_training.as_deref(),
             input.ignore_revlogs_before_ms.into(),
             input.num_of_relearning_steps as usize,
             model_version,
