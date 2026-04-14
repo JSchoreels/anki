@@ -45,7 +45,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { ComputeRetentionProgress } from "@generated/anki/collection_pb";
     import Modal from "bootstrap/js/dist/modal";
     import {
-        buildFailPassRatioSeries,
         buildSLineSeries,
         median,
         matrixCellValue,
@@ -77,7 +76,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let points: (WorkloadPoint | Point)[] = [];
     let reviewTimeMatrix: ReviewTimeMatrix | undefined;
     let reviewTimeAgainCoeffs: number[] = [];
-    let reviewTimePassCoeffs: number[] = [];
+    let reviewTimeHardCoeffs: number[] = [];
+    let reviewTimeGoodCoeffs: number[] = [];
+    let reviewTimeEasyCoeffs: number[] = [];
+    let reviewTimeGradeWeights: number[] = [];
+    let reviewTimeTransitionProbs: number[] = [];
+    let reviewTimeTransitionCounts: number[] = [];
+    let reviewTimeSuccessGradeProbs: number[] = [];
+    let reviewTimeSuccessGradeCounts: number[] = [];
     let reviewTimeSampleMedian = 0;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     let smooth = true;
@@ -87,6 +93,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let optimalRetention: null | number = null;
     let computingRetention = false;
     let computeRetentionProgress: ComputeRetentionProgress | undefined = undefined;
+    let transitionBlendAlpha =
+        simulateFsrsRequest.helpMeDecideTransitionBlendAlpha ?? 0.5;
 
     $: daysToSimulate = 365;
     $: deckSize = 0;
@@ -125,6 +133,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             ? leechThreshold
             : undefined;
         simulateFsrsRequest.easyDaysPercentages = easyDayPercentages;
+        simulateFsrsRequest.helpMeDecideTransitionBlendAlpha = transitionBlendAlpha;
     }
 
     function renderRetentionProgress(
@@ -223,12 +232,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 reviewTimeMatrix = {
                     rBucketCount: resp.reviewTimeRBucketCount,
                     sBucketCount: resp.reviewTimeSBucketCount,
-                    failSeconds: resp.reviewTimeFailSeconds,
-                    passSeconds: resp.reviewTimePassSeconds,
+                    againSeconds: resp.reviewTimeAgainSeconds,
+                    hardSeconds: resp.reviewTimeHardSeconds,
+                    goodSeconds: resp.reviewTimeGoodSeconds,
+                    easySeconds: resp.reviewTimeEasySeconds,
                     sampleCounts: resp.reviewTimeSampleCounts,
                 };
                 reviewTimeAgainCoeffs = resp.reviewTimeAgainCoeffs;
-                reviewTimePassCoeffs = resp.reviewTimePassCoeffs;
+                reviewTimeHardCoeffs = resp.reviewTimeHardCoeffs;
+                reviewTimeGoodCoeffs = resp.reviewTimeGoodCoeffs;
+                reviewTimeEasyCoeffs = resp.reviewTimeEasyCoeffs;
+                reviewTimeGradeWeights = resp.reviewTimeGradeWeights;
+                reviewTimeTransitionProbs = resp.reviewTimeTransitionProbs;
+                reviewTimeTransitionCounts = resp.reviewTimeTransitionCounts;
+                reviewTimeSuccessGradeProbs = resp.reviewTimeSuccessGradeProbs;
+                reviewTimeSuccessGradeCounts = resp.reviewTimeSuccessGradeCounts;
 
                 points = points.concat(
                     Object.entries(resp.memorized).map(([dr, v]) => ({
@@ -257,7 +275,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulationNumber = Math.max(0, simulationNumber - 1);
         reviewTimeMatrix = undefined;
         reviewTimeAgainCoeffs = [];
-        reviewTimePassCoeffs = [];
+        reviewTimeHardCoeffs = [];
+        reviewTimeGoodCoeffs = [];
+        reviewTimeEasyCoeffs = [];
+        reviewTimeGradeWeights = [];
+        reviewTimeTransitionProbs = [];
+        reviewTimeTransitionCounts = [];
+        reviewTimeSuccessGradeProbs = [];
+        reviewTimeSuccessGradeCounts = [];
         tableData = renderSimulationChart(
             svg as SVGElement,
             bounds,
@@ -270,6 +295,74 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return (values[index] ?? 0).toFixed(4);
     }
 
+    function gradeLabel(index: number): string {
+        return ["Again", "Hard", "Good", "Easy"][index] ?? "";
+    }
+
+    function transitionIndex(fromGrade: number, toGrade: number): number {
+        return fromGrade * 4 + toGrade;
+    }
+
+    function transitionProb(fromGrade: number, toGrade: number): number {
+        return (
+            reviewTimeTransitionProbs[transitionIndex(fromGrade, toGrade)] ?? 0
+        );
+    }
+
+    function transitionCount(fromGrade: number, toGrade: number): number {
+        return (
+            reviewTimeTransitionCounts[transitionIndex(fromGrade, toGrade)] ?? 0
+        );
+    }
+
+    function successGradeProb(rIndex: number, successGrade: number): number {
+        return reviewTimeSuccessGradeProbs[rIndex * 3 + successGrade] ?? 0;
+    }
+
+    function successGradeCount(rIndex: number): number {
+        return reviewTimeSuccessGradeCounts[rIndex] ?? 0;
+    }
+
+    function transitionSuccessPrior(successGrade: number): number {
+        const again = Math.min(1, Math.max(0, reviewTimeGradeWeights[0] ?? 0.25));
+        const successMass = Math.max(1e-6, 1 - again);
+        const hard = (reviewTimeGradeWeights[1] ?? 0.25) / successMass;
+        const good = (reviewTimeGradeWeights[2] ?? 0.25) / successMass;
+        const easy = (reviewTimeGradeWeights[3] ?? 0.25) / successMass;
+        const vals = [hard, good, easy];
+        const sum = Math.max(1e-6, vals[0] + vals[1] + vals[2]);
+        return vals[successGrade] / sum;
+    }
+
+    function blendedSuccessGradeProb(rIndex: number, successGrade: number): number {
+        const alpha = Math.min(1, Math.max(0, transitionBlendAlpha));
+        const scores = [
+            Math.pow(Math.max(1e-6, successGradeProb(rIndex, 0) || 1 / 3), 1 - alpha) *
+                Math.pow(Math.max(1e-6, transitionSuccessPrior(0) || 1 / 3), alpha),
+            Math.pow(Math.max(1e-6, successGradeProb(rIndex, 1) || 1 / 3), 1 - alpha) *
+                Math.pow(Math.max(1e-6, transitionSuccessPrior(1) || 1 / 3), alpha),
+            Math.pow(Math.max(1e-6, successGradeProb(rIndex, 2) || 1 / 3), 1 - alpha) *
+                Math.pow(Math.max(1e-6, transitionSuccessPrior(2) || 1 / 3), alpha),
+        ];
+        const sum = Math.max(1e-6, scores[0] + scores[1] + scores[2]);
+        const normalized = [scores[0] / sum, scores[1] / sum, scores[2] / sum];
+        return normalized[successGrade];
+    }
+
+    function finalGradeProb(rIndex: number, grade: number): number {
+        const again = 1 - bucketRetrievability(rIndex);
+        if (grade === 0) {
+            return again;
+        }
+        const successMass = Math.max(0, 1 - again);
+        return successMass * blendedSuccessGradeProb(rIndex, grade - 1);
+    }
+
+    function bucketRetrievability(rIndex: number): number {
+        // midpoint of 5% bucket: [95,100] -> 0.975, [90,95) -> 0.925, ...
+        return Math.max(0, Math.min(1, 1 - (rIndex * 0.05 + 0.025)));
+    }
+
     function formatSeconds(seconds: number): string {
         return `${seconds.toFixed(1)}s`;
     }
@@ -277,9 +370,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const graphWidth = 820;
     const graphHeight = 320;
     const graphMargin = { top: 18, right: 54, bottom: 46, left: 54 };
-    const graphPassColor = "#2bb24c";
-    const graphFailColor = "#e5484d";
-    const graphRatioColor = "#ffffff";
+    const graphAgainColor = "#e5484d";
+    const graphHardColor = "#f79009";
+    const graphGoodColor = "#2bb24c";
+    const graphEasyColor = "#6fd17e";
+    const graphWeightedColor = "#ffffff";
 
     function graphX(rIndex: number, rBucketCount: number): number {
         const innerWidth = graphWidth - graphMargin.left - graphMargin.right;
@@ -311,74 +406,113 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     type ReviewTimeGraphLine = {
         color: string;
-        kind: "pass" | "fail" | "ratio";
+        kind: "again" | "hard" | "good" | "easy" | "weighted";
         points: string;
     };
     let reviewTimeGraphLines: ReviewTimeGraphLine[] = [];
     let reviewTimeGraphTimeYMin = 0;
     let reviewTimeGraphTimeYMax = 1;
-    let reviewTimeGraphRatioYMin = 0;
-    let reviewTimeGraphRatioYMax = 1;
     let reviewTimeGraphXTicks: { rIndex: number; label: string }[] = [];
     let reviewTimeGraphTimeYTicks: number[] = [];
-    let reviewTimeGraphRatioYTicks: number[] = [];
 
     $: if (reviewTimeMatrix) {
         reviewTimeSampleMedian = median(reviewTimeMatrix.sampleCounts);
-        const passLines = buildSLineSeries(
-            reviewTimeMatrix.passSeconds,
+        const againLines = buildSLineSeries(
+            reviewTimeMatrix.againSeconds,
             reviewTimeMatrix.rBucketCount,
             reviewTimeMatrix.sBucketCount,
         );
-        const failLines = buildSLineSeries(
-            reviewTimeMatrix.failSeconds,
+        const hardLines = buildSLineSeries(
+            reviewTimeMatrix.hardSeconds,
             reviewTimeMatrix.rBucketCount,
             reviewTimeMatrix.sBucketCount,
         );
-        const ratioLines = buildFailPassRatioSeries(
-            reviewTimeMatrix.failSeconds,
-            reviewTimeMatrix.passSeconds,
+        const goodLines = buildSLineSeries(
+            reviewTimeMatrix.goodSeconds,
             reviewTimeMatrix.rBucketCount,
             reviewTimeMatrix.sBucketCount,
         );
-        const [, passMax] = seriesMinMax(passLines);
-        const [, failMax] = seriesMinMax(failLines);
-        const [, ratioMax] = seriesMinMax(ratioLines);
+        const easyLines = buildSLineSeries(
+            reviewTimeMatrix.easySeconds,
+            reviewTimeMatrix.rBucketCount,
+            reviewTimeMatrix.sBucketCount,
+        );
+        const [, againMax] = seriesMinMax(againLines);
+        const [, hardMax] = seriesMinMax(hardLines);
+        const [, goodMax] = seriesMinMax(goodLines);
+        const [, easyMax] = seriesMinMax(easyLines);
+        const weightedLines = againLines.map((line, sIndex) =>
+            line.map((_value, rIndex) => {
+                const again = againLines[sIndex][rIndex];
+                const hard = hardLines[sIndex][rIndex];
+                const good = goodLines[sIndex][rIndex];
+                const easy = easyLines[sIndex][rIndex];
+                const wAgain = finalGradeProb(rIndex, 0);
+                const wHard = finalGradeProb(rIndex, 1);
+                const wGood = finalGradeProb(rIndex, 2);
+                const wEasy = finalGradeProb(rIndex, 3);
+                return (
+                    wAgain * again +
+                    wHard * hard +
+                    wGood * good +
+                    wEasy * easy
+                );
+            }),
+        );
+        const [, weightedMax] = seriesMinMax(weightedLines);
         reviewTimeGraphTimeYMin = 0;
-        reviewTimeGraphTimeYMax = Math.max(60, passMax, failMax);
-        reviewTimeGraphRatioYMin = 0;
-        reviewTimeGraphRatioYMax = Math.max(2, ratioMax);
+        reviewTimeGraphTimeYMax = Math.max(60, againMax, hardMax, goodMax, easyMax, weightedMax);
 
         const graphLines: ReviewTimeGraphLine[] = [];
         for (let sIndex = 0; sIndex < reviewTimeMatrix.sBucketCount; sIndex++) {
             graphLines.push({
-                color: graphPassColor,
-                kind: "pass",
+                color: graphAgainColor,
+                kind: "again",
                 points: linePoints(
-                    passLines[sIndex],
+                    againLines[sIndex],
                     reviewTimeMatrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
             });
             graphLines.push({
-                color: graphFailColor,
-                kind: "fail",
+                color: graphHardColor,
+                kind: "hard",
                 points: linePoints(
-                    failLines[sIndex],
+                    hardLines[sIndex],
                     reviewTimeMatrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
             });
             graphLines.push({
-                color: graphRatioColor,
-                kind: "ratio",
+                color: graphGoodColor,
+                kind: "good",
                 points: linePoints(
-                    ratioLines[sIndex],
+                    goodLines[sIndex],
                     reviewTimeMatrix.rBucketCount,
-                    reviewTimeGraphRatioYMin,
-                    reviewTimeGraphRatioYMax,
+                    reviewTimeGraphTimeYMin,
+                    reviewTimeGraphTimeYMax,
+                ),
+            });
+            graphLines.push({
+                color: graphEasyColor,
+                kind: "easy",
+                points: linePoints(
+                    easyLines[sIndex],
+                    reviewTimeMatrix.rBucketCount,
+                    reviewTimeGraphTimeYMin,
+                    reviewTimeGraphTimeYMax,
+                ),
+            });
+            graphLines.push({
+                color: graphWeightedColor,
+                kind: "weighted",
+                points: linePoints(
+                    weightedLines[sIndex],
+                    reviewTimeMatrix.rBucketCount,
+                    reviewTimeGraphTimeYMin,
+                    reviewTimeGraphTimeYMax,
                 ),
             });
         }
@@ -401,14 +535,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return (
                 reviewTimeGraphTimeYMin +
                 ratio * (reviewTimeGraphTimeYMax - reviewTimeGraphTimeYMin)
-            );
-        });
-
-        reviewTimeGraphRatioYTicks = Array.from({ length: 5 }, (_, i) => {
-            const ratio = i / 4;
-            return (
-                reviewTimeGraphRatioYMin +
-                ratio * (reviewTimeGraphRatioYMax - reviewTimeGraphRatioYMin)
             );
         });
     }
@@ -620,6 +746,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </SettingTitle>
                     </SwitchRow>
 
+                    {#if workload}
+                        <SpinBoxFloatRow
+                            bind:value={transitionBlendAlpha}
+                            defaultValue={0.5}
+                            min={0}
+                            max={1}
+                        >
+                            <SettingTitle
+                                on:click={() => openHelpModal("simulateFsrsReview")}
+                            >
+                                Blend Alpha (R vs Prev Grade)
+                            </SettingTitle>
+                        </SpinBoxFloatRow>
+                    {/if}
+
                     <SwitchRow
                         bind:value={suspendLeeches}
                         defaultValue={$config.leechAction ==
@@ -792,7 +933,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 {#if workload && reviewTimeMatrix}
                     <details class="review-time-matrix mt-2">
                         <summary>
-                            {tr.statisticsReviewsTimeCheckbox()} Matrix (R/S, Fail/Pass)
+                            {tr.statisticsReviewsTimeCheckbox()} Matrix (R/S, Again/Hard/Good/Easy)
                         </summary>
                         <div class="review-time-matrix-wrapper">
                             <table class="review-time-matrix-table">
@@ -810,8 +951,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                             <th>{rBucketLabel(rIndex)}</th>
                                             {#each Array.from({ length: reviewTimeMatrix.sBucketCount }) as _, sIndex}
                                                 <td>
-                                                    <div>F {formatSeconds(matrixCellValue(reviewTimeMatrix.failSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
-                                                    <div>P {formatSeconds(matrixCellValue(reviewTimeMatrix.passSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div>A {formatSeconds(matrixCellValue(reviewTimeMatrix.againSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div>H {formatSeconds(matrixCellValue(reviewTimeMatrix.hardSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div>G {formatSeconds(matrixCellValue(reviewTimeMatrix.goodSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div>E {formatSeconds(matrixCellValue(reviewTimeMatrix.easySeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
                                                     <div
                                                         class="review-time-samples {matrixCellValue(reviewTimeMatrix.sampleCounts, rIndex, sIndex, reviewTimeMatrix.sBucketCount) > reviewTimeSampleMedian
                                                             ? 'high'
@@ -849,13 +992,131 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         <td>{coeff(4, reviewTimeAgainCoeffs)}</td>
                                     </tr>
                                     <tr>
-                                        <th>Hard+Good+Easy</th>
-                                        <td>{coeff(0, reviewTimePassCoeffs)}</td>
-                                        <td>{coeff(1, reviewTimePassCoeffs)}</td>
-                                        <td>{coeff(2, reviewTimePassCoeffs)}</td>
-                                        <td>{coeff(3, reviewTimePassCoeffs)}</td>
-                                        <td>{coeff(4, reviewTimePassCoeffs)}</td>
+                                        <th>Hard</th>
+                                        <td>{coeff(0, reviewTimeHardCoeffs)}</td>
+                                        <td>{coeff(1, reviewTimeHardCoeffs)}</td>
+                                        <td>{coeff(2, reviewTimeHardCoeffs)}</td>
+                                        <td>{coeff(3, reviewTimeHardCoeffs)}</td>
+                                        <td>{coeff(4, reviewTimeHardCoeffs)}</td>
                                     </tr>
+                                    <tr>
+                                        <th>Good</th>
+                                        <td>{coeff(0, reviewTimeGoodCoeffs)}</td>
+                                        <td>{coeff(1, reviewTimeGoodCoeffs)}</td>
+                                        <td>{coeff(2, reviewTimeGoodCoeffs)}</td>
+                                        <td>{coeff(3, reviewTimeGoodCoeffs)}</td>
+                                        <td>{coeff(4, reviewTimeGoodCoeffs)}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Easy</th>
+                                        <td>{coeff(0, reviewTimeEasyCoeffs)}</td>
+                                        <td>{coeff(1, reviewTimeEasyCoeffs)}</td>
+                                        <td>{coeff(2, reviewTimeEasyCoeffs)}</td>
+                                        <td>{coeff(3, reviewTimeEasyCoeffs)}</td>
+                                        <td>{coeff(4, reviewTimeEasyCoeffs)}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Weights</th>
+                                        <td>A {(reviewTimeGradeWeights[0] ?? 0).toFixed(3)}</td>
+                                        <td>H {(reviewTimeGradeWeights[1] ?? 0).toFixed(3)}</td>
+                                        <td>G {(reviewTimeGradeWeights[2] ?? 0).toFixed(3)}</td>
+                                        <td>E {(reviewTimeGradeWeights[3] ?? 0).toFixed(3)}</td>
+                                        <td></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="review-time-matrix-wrapper mt-2">
+                            <table class="review-time-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th>Prev \\ Next</th>
+                                        {#each Array.from({ length: 4 }) as _, toGrade}
+                                            <th>{gradeLabel(toGrade)}</th>
+                                        {/each}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {#each Array.from({ length: 4 }) as _, fromGrade}
+                                        <tr>
+                                            <th>{gradeLabel(fromGrade)}</th>
+                                            {#each Array.from({ length: 4 }) as _, toGrade}
+                                                <td>
+                                                    <div>{(transitionProb(fromGrade, toGrade) * 100).toFixed(1)}%</div>
+                                                    <div
+                                                        class="review-time-samples {transitionCount(fromGrade, toGrade) > 0
+                                                            ? 'high'
+                                                            : 'low'}"
+                                                    >
+                                                        n {transitionCount(fromGrade, toGrade)}
+                                                    </div>
+                                                </td>
+                                            {/each}
+                                        </tr>
+                                    {/each}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="review-time-matrix-wrapper mt-2">
+                            <table class="review-time-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th>R Bucket</th>
+                                        <th>P(Hard | R)</th>
+                                        <th>P(Good | R)</th>
+                                        <th>P(Easy | R)</th>
+                                        <th>n</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {#each Array.from({ length: reviewTimeMatrix.rBucketCount }) as _, rIndex}
+                                        <tr>
+                                            <th>{rBucketLabel(rIndex)}</th>
+                                            <td>{(successGradeProb(rIndex, 0) * 100).toFixed(1)}%</td>
+                                            <td>{(successGradeProb(rIndex, 1) * 100).toFixed(1)}%</td>
+                                            <td>{(successGradeProb(rIndex, 2) * 100).toFixed(1)}%</td>
+                                            <td
+                                                class="review-time-samples {successGradeCount(rIndex) > 0
+                                                    ? 'high'
+                                                    : 'low'}"
+                                            >
+                                                {successGradeCount(rIndex)}
+                                            </td>
+                                        </tr>
+                                    {/each}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="review-time-matrix-wrapper mt-2">
+                            <table class="review-time-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th>R Bucket</th>
+                                        <th>Final P(Hard | success)</th>
+                                        <th>Final P(Good | success)</th>
+                                        <th>Final P(Easy | success)</th>
+                                        <th>n</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {#each Array.from({ length: reviewTimeMatrix.rBucketCount }) as _, rIndex}
+                                        <tr>
+                                            <th>{rBucketLabel(rIndex)}</th>
+                                            <td>{(blendedSuccessGradeProb(rIndex, 0) * 100).toFixed(1)}%</td>
+                                            <td>{(blendedSuccessGradeProb(rIndex, 1) * 100).toFixed(1)}%</td>
+                                            <td>{(blendedSuccessGradeProb(rIndex, 2) * 100).toFixed(1)}%</td>
+                                            <td
+                                                class="review-time-samples {successGradeCount(rIndex) > 0
+                                                    ? 'high'
+                                                    : 'low'}"
+                                            >
+                                                {successGradeCount(rIndex)}
+                                            </td>
+                                        </tr>
+                                    {/each}
                                 </tbody>
                             </table>
                         </div>
@@ -880,19 +1141,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         class="review-time-axis-label"
                                     >
                                         {tick.toFixed(1)}s
-                                    </text>
-                                {/each}
-
-                                {#each reviewTimeGraphRatioYTicks as tick}
-                                    {@const y = graphY(tick, reviewTimeGraphRatioYMin, reviewTimeGraphRatioYMax)}
-                                    <text
-                                        x={graphWidth - graphMargin.right + 6}
-                                        y={y}
-                                        text-anchor="start"
-                                        dominant-baseline="middle"
-                                        class="review-time-axis-label review-time-axis-label-right"
-                                    >
-                                        {tick.toFixed(2)}
                                     </text>
                                 {/each}
 
@@ -938,7 +1186,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         class={`review-time-line ${line.kind}`}
                                         fill="none"
                                         stroke={line.color}
-                                        stroke-width={line.kind === "ratio" ? 1.2 : 1.6}
+                                        stroke-width="1.6"
                                         points={line.points}
                                     />
                                 {/each}
@@ -947,16 +1195,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                         <div class="review-time-legend">
                             <div class="review-time-legend-item">
-                                <span class="review-time-legend-line pass"></span>
-                                <span>Pass time (left axis)</span>
+                                <span class="review-time-legend-line again"></span>
+                                <span>Again time</span>
                             </div>
                             <div class="review-time-legend-item">
-                                <span class="review-time-legend-line fail"></span>
-                                <span>Fail time (left axis)</span>
+                                <span class="review-time-legend-line hard"></span>
+                                <span>Hard time</span>
                             </div>
                             <div class="review-time-legend-item">
-                                <span class="review-time-legend-line ratio"></span>
-                                <span>Fail/Pass ratio (right axis)</span>
+                                <span class="review-time-legend-line good"></span>
+                                <span>Good time</span>
+                            </div>
+                            <div class="review-time-legend-item">
+                                <span class="review-time-legend-line easy"></span>
+                                <span>Easy time</span>
+                            </div>
+                            <div class="review-time-legend-item">
+                                <span class="review-time-legend-line weighted"></span>
+                                <span>Weighted average time</span>
                             </div>
                         </div>
                     </details>
@@ -1052,17 +1308,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fill: currentColor;
     }
 
-    .review-time-axis-label-right {
-        fill: color-mix(in srgb, currentColor 75%, transparent);
-    }
-
-    .review-time-line.fail {
+    .review-time-line.hard {
         stroke-dasharray: 6 4;
     }
 
-    .review-time-line.ratio {
+    .review-time-line.easy {
         stroke-dasharray: 2.5 3;
-        opacity: 0.85;
+    }
+
+    .review-time-line.weighted {
+        stroke-dasharray: 1 0;
+        stroke-width: 2;
     }
 
     .review-time-legend {
@@ -1091,18 +1347,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         display: inline-block;
     }
 
-    .review-time-legend-line.pass {
-        border-top-color: #2bb24c;
+    .review-time-legend-line.again {
+        border-top-color: #e5484d;
     }
 
-    .review-time-legend-line.fail {
-        border-top-color: #e5484d;
+    .review-time-legend-line.hard {
+        border-top-color: #f79009;
         border-top-style: dashed;
     }
 
-    .review-time-legend-line.ratio {
-        border-top-color: #ffffff;
+    .review-time-legend-line.good {
+        border-top-color: #2bb24c;
+    }
+
+    .review-time-legend-line.easy {
+        border-top-color: #6fd17e;
         border-top-style: dotted;
+    }
+
+    .review-time-legend-line.weighted {
+        border-top-color: #ffffff;
     }
 
     .review-time-samples {

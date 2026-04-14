@@ -69,25 +69,43 @@ fn consume_review_repetition(prior_review_repetitions: &mut u32, is_review: bool
 
 #[derive(Clone)]
 struct HelpMeDecideReviewTimeModel {
-    // Fail(Again) + Pass(Hard/Good/Easy) linear models:
+    // Per-rating linear models:
     // seconds = a + b * (1 - retrievability) + c * stability + d * repetitions + e * difficulty
-    coeffs: [[f32; 5]; 2],
+    coeffs: [[f32; 5]; 4],
     // per-group fallback if regression is not applicable / prediction is invalid
-    group_fallback: [f32; 2],
+    group_fallback: [f32; 4],
     // per-group representative stability used for flattened output and DR sweep costs
-    group_mean_stability: [f32; 2],
+    group_mean_stability: [f32; 4],
     // per-group representative repetitions used for flattened output and DR sweep costs
-    group_mean_repetitions: [f32; 2],
+    group_mean_repetitions: [f32; 4],
     // per-group representative difficulty used for flattened output and DR sweep costs
-    group_mean_difficulty: [f32; 2],
+    group_mean_difficulty: [f32; 4],
     // sample count per R bucket (all grades combined)
     sample_counts: [u32; R_BUCKET_COUNT],
+    // Markov transition probabilities P(next_grade | current_grade), flattened row-wise for UI.
+    transition_probs: [[f32; 4]; 4],
+    transition_counts: [[u32; 4]; 4],
+    // P(Hard/Good/Easy | R bucket) + bucket sample size.
+    success_grade_probs_by_r_bucket: [[f32; 3]; R_BUCKET_COUNT],
+    success_grade_counts_by_r_bucket: [u32; R_BUCKET_COUNT],
+    // predicted next-grade weights from transition matrix steady-state.
+    grade_weights: [f32; 4],
 }
 
 impl HelpMeDecideReviewTimeModel {
-    const FAIL_GROUP: usize = 0;
-    const PASS_GROUP: usize = 1;
+    const AGAIN_GROUP: usize = 0;
+    const HARD_GROUP: usize = 1;
+    const GOOD_GROUP: usize = 2;
+    const EASY_GROUP: usize = 3;
     const REVIEW_STATE_INDEX: usize = 1;
+
+    fn group_index_from_grade(grade: usize) -> Option<usize> {
+        if (1..=4).contains(&grade) {
+            Some(grade - 1)
+        } else {
+            None
+        }
+    }
 
     fn r_bucket(retrievability: f32) -> usize {
         let clamped = retrievability.clamp(0.0, 1.0);
@@ -98,41 +116,45 @@ impl HelpMeDecideReviewTimeModel {
 
     fn from_samples(
         samples: &[(f32, f32, f32, f32, usize, f32)],
+        transition_counts: [[u32; 4]; 4],
         default_review_costs: [f32; 4],
     ) -> Self {
         let mut sample_counts = [0u32; R_BUCKET_COUNT];
-        let mut group_sum = [0.0f32; 2];
-        let mut group_count = [0u32; 2];
-        let mut sum_y = [0.0f32; 2];
-        let mut group_sum_stability = [0.0f32; 2];
-        let mut group_sum_repetitions = [0.0f32; 2];
-        let mut group_sum_difficulty = [0.0f32; 2];
-        let mut sum_x1 = [0.0f32; 2];
-        let mut sum_x2 = [0.0f32; 2];
-        let mut sum_x3 = [0.0f32; 2];
-        let mut sum_x4 = [0.0f32; 2];
-        let mut sum_x1x1 = [0.0f32; 2];
-        let mut sum_x2x2 = [0.0f32; 2];
-        let mut sum_x3x3 = [0.0f32; 2];
-        let mut sum_x4x4 = [0.0f32; 2];
-        let mut sum_x1x2 = [0.0f32; 2];
-        let mut sum_x1x3 = [0.0f32; 2];
-        let mut sum_x1x4 = [0.0f32; 2];
-        let mut sum_x2x3 = [0.0f32; 2];
-        let mut sum_x2x4 = [0.0f32; 2];
-        let mut sum_x3x4 = [0.0f32; 2];
-        let mut sum_x1y = [0.0f32; 2];
-        let mut sum_x2y = [0.0f32; 2];
-        let mut sum_x3y = [0.0f32; 2];
-        let mut sum_x4y = [0.0f32; 2];
+        let mut success_grade_counts_by_r_bucket = [[0u32; 3]; R_BUCKET_COUNT];
+        let mut group_sum = [0.0f32; 4];
+        let mut group_count = [0u32; 4];
+        let mut sum_y = [0.0f32; 4];
+        let mut group_sum_stability = [0.0f32; 4];
+        let mut group_sum_repetitions = [0.0f32; 4];
+        let mut group_sum_difficulty = [0.0f32; 4];
+        let mut sum_x1 = [0.0f32; 4];
+        let mut sum_x2 = [0.0f32; 4];
+        let mut sum_x3 = [0.0f32; 4];
+        let mut sum_x4 = [0.0f32; 4];
+        let mut sum_x1x1 = [0.0f32; 4];
+        let mut sum_x2x2 = [0.0f32; 4];
+        let mut sum_x3x3 = [0.0f32; 4];
+        let mut sum_x4x4 = [0.0f32; 4];
+        let mut sum_x1x2 = [0.0f32; 4];
+        let mut sum_x1x3 = [0.0f32; 4];
+        let mut sum_x1x4 = [0.0f32; 4];
+        let mut sum_x2x3 = [0.0f32; 4];
+        let mut sum_x2x4 = [0.0f32; 4];
+        let mut sum_x3x4 = [0.0f32; 4];
+        let mut sum_x1y = [0.0f32; 4];
+        let mut sum_x2y = [0.0f32; 4];
+        let mut sum_x3y = [0.0f32; 4];
+        let mut sum_x4y = [0.0f32; 4];
 
         for (retrievability, stability, repetitions, difficulty, grade, seconds) in samples {
-            if !(1..=4).contains(grade) {
+            let Some(group_idx) = Self::group_index_from_grade(*grade) else {
                 continue;
-            }
-            let group_idx = if *grade == 1 { 0 } else { 1 };
+            };
             let rb = Self::r_bucket(*retrievability);
             sample_counts[rb] += 1;
+            if (2..=4).contains(grade) {
+                success_grade_counts_by_r_bucket[rb][*grade - 2] += 1;
+            }
             group_sum[group_idx] += *seconds;
             group_count[group_idx] += 1;
             group_sum_stability[group_idx] += *stability;
@@ -164,21 +186,16 @@ impl HelpMeDecideReviewTimeModel {
             sum_x4y[group_idx] += x4 * y;
         }
 
-        let mut coeffs = [[0.0f32; 5]; 2];
-        let mut group_fallback = [0.0f32; 2];
-        let mut group_mean_stability = [0.0f32; 2];
-        let mut group_mean_repetitions = [0.0f32; 2];
-        let mut group_mean_difficulty = [0.0f32; 2];
-        for g in 0..2 {
+        let mut coeffs = [[0.0f32; 5]; 4];
+        let mut group_fallback = [0.0f32; 4];
+        let mut group_mean_stability = [0.0f32; 4];
+        let mut group_mean_repetitions = [0.0f32; 4];
+        let mut group_mean_difficulty = [0.0f32; 4];
+        for g in 0..4 {
             let fallback = if group_count[g] > 0 {
                 group_sum[g] / group_count[g] as f32
             } else {
-                if g == 0 {
-                    default_review_costs[0]
-                } else {
-                    (default_review_costs[1] + default_review_costs[2] + default_review_costs[3])
-                        / 3.0
-                }
+                default_review_costs[g]
             };
             group_fallback[g] = fallback;
             group_mean_stability[g] = if group_count[g] > 0 {
@@ -214,6 +231,11 @@ impl HelpMeDecideReviewTimeModel {
             coeffs[g] = [fallback, 0.0, 0.0, 0.0, 0.0];
         }
 
+        let transition_probs = Self::transition_probabilities_from_counts(transition_counts);
+        let grade_weights = Self::stationary_distribution(transition_probs)
+            .unwrap_or_else(|| Self::grade_weights_from_counts(group_count));
+        let (success_grade_probs_by_r_bucket, success_grade_counts_by_r_bucket) =
+            Self::success_grade_probs_by_r_bucket(success_grade_counts_by_r_bucket);
         Self {
             coeffs,
             group_fallback,
@@ -221,6 +243,150 @@ impl HelpMeDecideReviewTimeModel {
             group_mean_repetitions,
             group_mean_difficulty,
             sample_counts,
+            transition_probs,
+            transition_counts,
+            success_grade_probs_by_r_bucket,
+            success_grade_counts_by_r_bucket,
+            grade_weights,
+        }
+    }
+
+    fn grade_weights_from_counts(group_count: [u32; 4]) -> [f32; 4] {
+        let total = group_count.iter().sum::<u32>();
+        if total == 0 {
+            return [0.25; 4];
+        }
+        group_count.map(|count| count as f32 / total as f32)
+    }
+
+    fn transition_probabilities_from_counts(counts: [[u32; 4]; 4]) -> [[f32; 4]; 4] {
+        let mut probs = [[0.0; 4]; 4];
+        let mut global_next = [0u32; 4];
+        for row in counts {
+            for (idx, count) in row.into_iter().enumerate() {
+                global_next[idx] += count;
+            }
+        }
+        let global_total = global_next.iter().sum::<u32>();
+        let global_fallback = if global_total == 0 {
+            [0.25; 4]
+        } else {
+            global_next.map(|count| count as f32 / global_total as f32)
+        };
+
+        for row_idx in 0..4 {
+            let row_total = counts[row_idx].iter().sum::<u32>();
+            if row_total == 0 {
+                probs[row_idx] = global_fallback;
+            } else {
+                probs[row_idx] =
+                    counts[row_idx].map(|count| count as f32 / row_total as f32);
+            }
+        }
+        probs
+    }
+
+    fn stationary_distribution(transition_probs: [[f32; 4]; 4]) -> Option<[f32; 4]> {
+        let mut dist = [0.25f32; 4];
+        for _ in 0..128 {
+            let mut next = [0.0f32; 4];
+            for from in 0..4 {
+                for to in 0..4 {
+                    next[to] += dist[from] * transition_probs[from][to];
+                }
+            }
+            let sum = next.iter().sum::<f32>();
+            if !sum.is_finite() || sum <= f32::EPSILON {
+                return None;
+            }
+            for v in &mut next {
+                *v /= sum;
+            }
+            let delta = (0..4).map(|i| (next[i] - dist[i]).abs()).sum::<f32>();
+            dist = next;
+            if delta <= 1e-6 {
+                break;
+            }
+        }
+        if dist.iter().all(|v| v.is_finite() && *v >= 0.0) {
+            Some(dist)
+        } else {
+            None
+        }
+    }
+
+    fn success_grade_probs_by_r_bucket(
+        counts: [[u32; 3]; R_BUCKET_COUNT],
+    ) -> ([[f32; 3]; R_BUCKET_COUNT], [u32; R_BUCKET_COUNT]) {
+        let mut raw_probs = [[0.0f32; 3]; R_BUCKET_COUNT];
+        let mut totals = [0u32; R_BUCKET_COUNT];
+        for (rb, row) in counts.into_iter().enumerate() {
+            let row_total = row.iter().sum::<u32>();
+            totals[rb] = row_total;
+            // Laplace smoothing to avoid zero probabilities in geometric blend.
+            let denom = row_total as f32 + 3.0;
+            raw_probs[rb] = row.map(|count| (count as f32 + 1.0) / denom);
+        }
+
+        // Reliability shrinkage for sparse low-R buckets:
+        // blend bucket-local estimate with a distance-weighted neighborhood prior.
+        const SHRINK_K: f32 = 100.0;
+        let mut probs = [[0.0f32; 3]; R_BUCKET_COUNT];
+        for rb in 0..R_BUCKET_COUNT {
+            let mut prior = [0.0f32; 3];
+            let mut prior_weight = 0.0f32;
+            for nb in 0..R_BUCKET_COUNT {
+                let distance = (rb as i32 - nb as i32).unsigned_abs() as f32;
+                let kernel = 1.0 / (1.0 + distance);
+                let weight = kernel * (totals[nb] as f32 + 1.0);
+                for g in 0..3 {
+                    prior[g] += raw_probs[nb][g] * weight;
+                }
+                prior_weight += weight;
+            }
+            if prior_weight > f32::EPSILON {
+                for g in 0..3 {
+                    prior[g] /= prior_weight;
+                }
+            } else {
+                prior = [1.0 / 3.0; 3];
+            }
+
+            let local_weight = totals[rb] as f32 / (totals[rb] as f32 + SHRINK_K);
+            let mut blended = [0.0f32; 3];
+            for g in 0..3 {
+                blended[g] =
+                    local_weight * raw_probs[rb][g] + (1.0 - local_weight) * prior[g];
+            }
+            probs[rb] = Self::normalize_triplet(blended);
+        }
+        (probs, totals)
+    }
+
+    fn normalize_triplet(values: [f32; 3]) -> [f32; 3] {
+        let sum = values.iter().sum::<f32>();
+        if !sum.is_finite() || sum <= f32::EPSILON {
+            [1.0 / 3.0; 3]
+        } else {
+            [values[0] / sum, values[1] / sum, values[2] / sum]
+        }
+    }
+
+    fn blend_weight_for_r_bucket(&self, r_bucket: usize) -> f32 {
+        let r_count = self.success_grade_counts_by_r_bucket[r_bucket] as f32;
+        let t_count = self
+            .transition_counts
+            .iter()
+            .flatten()
+            .copied()
+            .sum::<u32>() as f32;
+        let r_conf = r_count / (r_count + 20.0);
+        let t_conf = t_count / (t_count + 50.0);
+        let denom = r_conf + t_conf;
+        if denom <= f32::EPSILON {
+            0.5
+        } else {
+            (t_conf / denom).clamp(0.0, 1.0)
         }
     }
 
@@ -293,19 +459,32 @@ impl HelpMeDecideReviewTimeModel {
     }
 
     fn review_costs_for_desired_retention(&self, desired_retention: f32) -> [f32; 4] {
-        let fail = self.predict_seconds_for_group(
-            Self::FAIL_GROUP,
-            desired_retention,
-            self.group_mean_stability[Self::FAIL_GROUP],
-            self.group_mean_difficulty[Self::FAIL_GROUP],
-        );
-        let pass = self.predict_seconds_for_group(
-            Self::PASS_GROUP,
-            desired_retention,
-            self.group_mean_stability[Self::PASS_GROUP],
-            self.group_mean_difficulty[Self::PASS_GROUP],
-        );
-        [fail, pass, pass, pass]
+        [
+            self.predict_seconds_for_group(
+                Self::AGAIN_GROUP,
+                desired_retention,
+                self.group_mean_stability[Self::AGAIN_GROUP],
+                self.group_mean_difficulty[Self::AGAIN_GROUP],
+            ),
+            self.predict_seconds_for_group(
+                Self::HARD_GROUP,
+                desired_retention,
+                self.group_mean_stability[Self::HARD_GROUP],
+                self.group_mean_difficulty[Self::HARD_GROUP],
+            ),
+            self.predict_seconds_for_group(
+                Self::GOOD_GROUP,
+                desired_retention,
+                self.group_mean_stability[Self::GOOD_GROUP],
+                self.group_mean_difficulty[Self::GOOD_GROUP],
+            ),
+            self.predict_seconds_for_group(
+                Self::EASY_GROUP,
+                desired_retention,
+                self.group_mean_stability[Self::EASY_GROUP],
+                self.group_mean_difficulty[Self::EASY_GROUP],
+            ),
+        ]
     }
 
     #[cfg(test)]
@@ -317,7 +496,9 @@ impl HelpMeDecideReviewTimeModel {
         difficulty: f32,
         grade: usize,
     ) -> f32 {
-        let group_idx = if grade == 1 { 0 } else { 1 };
+        let Some(group_idx) = Self::group_index_from_grade(grade) else {
+            return 0.0;
+        };
         let [a, b, c, d, e] = self.coeffs[group_idx];
         let x1 = 1.0 - retrievability.clamp(0.0, 1.0);
         let x2 = stability.max(0.0);
@@ -335,27 +516,39 @@ impl HelpMeDecideReviewTimeModel {
         self.coeffs[group_idx]
     }
 
-    fn fail_pass_flattened(&self, review_rating_prob: [f32; 3]) -> (Vec<f32>, Vec<f32>) {
-        let mut fail = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
-        let mut pass = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
+    fn grade_flattened(&self) -> [Vec<f32>; 4] {
+        let mut again = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
+        let mut hard = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
+        let mut good = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
+        let mut easy = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
         for rb in 0..R_BUCKET_COUNT {
             let retrievability = (1.0 - ((rb as f32 + 0.5) * 0.05)).clamp(0.0, 1.0);
-            fail.push(self.predict_seconds_for_group(
-                Self::FAIL_GROUP,
+            again.push(self.predict_seconds_for_group(
+                Self::AGAIN_GROUP,
                 retrievability,
-                self.group_mean_stability[Self::FAIL_GROUP],
-                self.group_mean_difficulty[Self::FAIL_GROUP],
+                self.group_mean_stability[Self::AGAIN_GROUP],
+                self.group_mean_difficulty[Self::AGAIN_GROUP],
             ));
-            let weighted_success = self.predict_seconds_for_group(
-                Self::PASS_GROUP,
+            hard.push(self.predict_seconds_for_group(
+                Self::HARD_GROUP,
                 retrievability,
-                self.group_mean_stability[Self::PASS_GROUP],
-                self.group_mean_difficulty[Self::PASS_GROUP],
-            )
-                * (review_rating_prob[0] + review_rating_prob[1] + review_rating_prob[2]);
-            pass.push(weighted_success);
+                self.group_mean_stability[Self::HARD_GROUP],
+                self.group_mean_difficulty[Self::HARD_GROUP],
+            ));
+            good.push(self.predict_seconds_for_group(
+                Self::GOOD_GROUP,
+                retrievability,
+                self.group_mean_stability[Self::GOOD_GROUP],
+                self.group_mean_difficulty[Self::GOOD_GROUP],
+            ));
+            easy.push(self.predict_seconds_for_group(
+                Self::EASY_GROUP,
+                retrievability,
+                self.group_mean_stability[Self::EASY_GROUP],
+                self.group_mean_difficulty[Self::EASY_GROUP],
+            ));
         }
-        (fail, pass)
+        [again, hard, good, easy]
     }
 
     fn sample_counts_flattened(&self) -> Vec<u32> {
@@ -364,6 +557,75 @@ impl HelpMeDecideReviewTimeModel {
             counts.push(self.sample_counts[rb]);
         }
         counts
+    }
+
+    fn grade_weights(&self) -> [f32; 4] {
+        self.grade_weights
+    }
+
+    fn transition_probs_flattened(&self) -> Vec<f32> {
+        self.transition_probs
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect_vec()
+    }
+
+    fn transition_counts_flattened(&self) -> Vec<u32> {
+        self.transition_counts
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect_vec()
+    }
+
+    fn success_review_rating_prob(&self, fallback: [f32; 3]) -> [f32; 3] {
+        let [again, hard, good, easy] = self.grade_weights;
+        let success = hard + good + easy;
+        if success <= 1e-6 || !again.is_finite() {
+            return fallback;
+        }
+        let mut out = [hard / success, good / success, easy / success];
+        let sum = out.iter().sum::<f32>();
+        if !sum.is_finite() || sum <= f32::EPSILON {
+            fallback
+        } else {
+            out.iter_mut().for_each(|v| *v /= sum);
+            out
+        }
+    }
+
+    fn success_review_rating_prob_for_retrievability(
+        &self,
+        retrievability: f32,
+        fallback: [f32; 3],
+        blend_alpha_override: Option<f32>,
+    ) -> [f32; 3] {
+        let rb = Self::r_bucket(retrievability);
+        let pr = self.success_grade_probs_by_r_bucket[rb];
+        let pt = self.success_review_rating_prob(fallback);
+        let alpha = blend_alpha_override
+            .map(|v| v.clamp(0.0, 1.0))
+            .unwrap_or_else(|| self.blend_weight_for_r_bucket(rb));
+        let mut scores = [0.0f32; 3];
+        for i in 0..3 {
+            scores[i] = pr[i].powf(1.0 - alpha) * pt[i].powf(alpha);
+        }
+        let sum = scores.iter().sum::<f32>();
+        if !sum.is_finite() || sum <= f32::EPSILON {
+            fallback
+        } else {
+            scores.map(|v| v / sum)
+        }
+    }
+
+    fn success_grade_probs_flattened(&self) -> Vec<f32> {
+        self.success_grade_probs_by_r_bucket
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect_vec()
+    }
+
+    fn success_grade_counts_flattened(&self) -> Vec<u32> {
+        self.success_grade_counts_by_r_bucket.to_vec()
     }
 }
 
@@ -383,6 +645,7 @@ impl Collection {
         drop(guard);
 
         let mut samples = Vec::new();
+        let mut transition_counts = [[0u32; 4]; 4];
 
         for (_cid, group) in &revlogs.into_iter().chunk_by(|r| r.cid) {
             let entries = group.collect_vec();
@@ -410,6 +673,19 @@ impl Collection {
                 .first()
                 .map(|entry| (entry.review_kind == crate::revlog::RevlogReviewKind::Review) as u32)
                 .unwrap_or(0);
+            let mut previous_review_grade: Option<usize> = output
+                .filtered_revlogs
+                .first()
+                .and_then(|entry| {
+                    let grade = entry.button_chosen as usize;
+                    if entry.review_kind == crate::revlog::RevlogReviewKind::Review
+                        && (1..=4).contains(&grade)
+                    {
+                        Some(grade)
+                    } else {
+                        None
+                    }
+                });
             for idx in 1..output.filtered_revlogs.len() {
                 let entry = &output.filtered_revlogs[idx];
                 let Some(repetitions) = consume_review_repetition(
@@ -425,6 +701,10 @@ impl Collection {
                 if !(1..=4).contains(&grade) {
                     continue;
                 }
+                if let Some(prev_grade) = previous_review_grade {
+                    transition_counts[prev_grade - 1][grade - 1] += 1;
+                }
+                previous_review_grade = Some(grade);
                 let previous_state = states[idx - 1];
                 let retrievability =
                     fsrs.current_retrievability(previous_state, item.reviews[idx].delta_t as f32);
@@ -440,6 +720,7 @@ impl Collection {
 
         Ok(HelpMeDecideReviewTimeModel::from_samples(
             &samples,
+            transition_counts,
             default_review_costs,
         ))
     }
@@ -615,14 +896,21 @@ impl Collection {
         let review_time_model_start = Instant::now();
         let model = self.build_help_me_decide_review_time_model(&req, default_review_costs)?;
         let review_time_model_elapsed_ms = review_time_model_start.elapsed().as_millis();
-        let (review_time_fail_seconds, review_time_pass_seconds) =
-            model.fail_pass_flattened(config.review_rating_prob);
+        let [review_time_again_seconds, review_time_hard_seconds, review_time_good_seconds, review_time_easy_seconds] =
+            model.grade_flattened();
         let review_time_sample_counts = model.sample_counts_flattened();
         let model = Arc::new(model);
         let workload_sweep_start = Instant::now();
         let mut dr_workload = HashMap::with_capacity(99);
+        let base_review_rating_prob = config.review_rating_prob;
+        let blend_alpha_override = req.help_me_decide_transition_blend_alpha;
         for dr in 1u32..=99u32 {
             let desired_retention = dr as f32 / 100.;
+            config.review_rating_prob = model.success_review_rating_prob_for_retrievability(
+                desired_retention,
+                base_review_rating_prob,
+                blend_alpha_override,
+            );
             config.state_rating_costs[HelpMeDecideReviewTimeModel::REVIEW_STATE_INDEX] =
                 model.review_costs_for_desired_retention(desired_retention);
             let result = simulate_workload_for_desired_retention(
@@ -661,11 +949,28 @@ impl Collection {
             review_count: dr_workload.iter().map(|(k, v)| (*k, v.2)).collect(),
             review_time_r_bucket_count: R_BUCKET_COUNT as u32,
             review_time_s_bucket_count: S_BUCKET_COUNT_FOR_UI as u32,
-            review_time_fail_seconds,
-            review_time_pass_seconds,
+            review_time_again_seconds,
+            review_time_hard_seconds,
+            review_time_good_seconds,
+            review_time_easy_seconds,
             review_time_sample_counts,
-            review_time_again_coeffs: model.coeffs_for_group(HelpMeDecideReviewTimeModel::FAIL_GROUP).to_vec(),
-            review_time_pass_coeffs: model.coeffs_for_group(HelpMeDecideReviewTimeModel::PASS_GROUP).to_vec(),
+            review_time_again_coeffs: model
+                .coeffs_for_group(HelpMeDecideReviewTimeModel::AGAIN_GROUP)
+                .to_vec(),
+            review_time_hard_coeffs: model
+                .coeffs_for_group(HelpMeDecideReviewTimeModel::HARD_GROUP)
+                .to_vec(),
+            review_time_good_coeffs: model
+                .coeffs_for_group(HelpMeDecideReviewTimeModel::GOOD_GROUP)
+                .to_vec(),
+            review_time_easy_coeffs: model
+                .coeffs_for_group(HelpMeDecideReviewTimeModel::EASY_GROUP)
+                .to_vec(),
+            review_time_grade_weights: model.grade_weights().to_vec(),
+            review_time_transition_probs: model.transition_probs_flattened(),
+            review_time_transition_counts: model.transition_counts_flattened(),
+            review_time_success_grade_probs: model.success_grade_probs_flattened(),
+            review_time_success_grade_counts: model.success_grade_counts_flattened(),
         })
     }
 }
@@ -787,6 +1092,10 @@ mod tests {
     use fsrs::SimulatorConfig;
     use fsrs::DEFAULT_PARAMETERS;
 
+    fn no_transitions() -> [[u32; 4]; 4] {
+        [[0u32; 4]; 4]
+    }
+
     fn synthetic_fail_model() -> HelpMeDecideReviewTimeModel {
         HelpMeDecideReviewTimeModel::from_samples(
             &[
@@ -797,6 +1106,7 @@ mod tests {
                 (0.5, 8.0, 1.0, 5.5, 1, 40.5),
                 (0.85, 10.0, 2.0, 7.5, 1, 52.45),
             ],
+            no_transitions(),
             [20.0, 18.0, 12.0, 9.0],
         )
     }
@@ -826,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_pass_matrix_uses_pass_group_regression() {
+    fn grade_matrix_uses_per_grade_regression() {
         let mut samples = Vec::new();
         samples.push((0.9, 5.0, 2.0, 5.0, 1, 30.0));
         samples.push((0.9, 5.0, 2.0, 5.0, 2, 20.0));
@@ -840,11 +1150,17 @@ mod tests {
         samples.push((0.7, 5.0, 2.0, 5.0, 2, 26.0));
         samples.push((0.7, 5.0, 2.0, 5.0, 3, 16.0));
         samples.push((0.7, 5.0, 2.0, 5.0, 4, 11.0));
-        let model = HelpMeDecideReviewTimeModel::from_samples(&samples, [1.0, 1.0, 1.0, 1.0]);
-        let (fail, pass) = model.fail_pass_flattened([0.2, 0.5, 0.3]);
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &samples,
+            no_transitions(),
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let [again, hard, good, easy] = model.grade_flattened();
         let rb = HelpMeDecideReviewTimeModel::r_bucket(0.9);
         let idx = rb;
-        assert!(fail[idx] > pass[idx]);
+        assert!(again[idx] > hard[idx]);
+        assert!(hard[idx] > good[idx]);
+        assert!(good[idx] > easy[idx]);
     }
 
     #[test]
@@ -854,6 +1170,7 @@ mod tests {
                 (0.9, 5.0, 2.0, 5.0, 1, 30.0),
                 (0.9, 5.0, 2.0, 5.0, 3, 10.0),
             ],
+            no_transitions(),
             [1.0, 1.0, 1.0, 1.0],
         );
         let rb = HelpMeDecideReviewTimeModel::r_bucket(0.9);
@@ -865,6 +1182,7 @@ mod tests {
     fn review_time_model_falls_back_to_constant_with_single_sample() {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &[(0.7, 12.0, 2.0, 5.0, 2, 9.0)],
+            no_transitions(),
             [1.0, 1.0, 1.0, 1.0],
         );
         assert!((model.cost_for(0.2, 0.0, 2.0, 5.0, 2) - 9.0).abs() < 0.0001);
@@ -872,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn review_costs_for_desired_retention_use_fail_and_pass_groups() {
+    fn review_costs_for_desired_retention_use_per_grade_groups() {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &[
                 (0.9, 5.0, 2.0, 5.0, 1, 30.0),
@@ -888,12 +1206,13 @@ mod tests {
                 (0.7, 5.0, 2.0, 5.0, 3, 13.0),
                 (0.7, 5.0, 2.0, 5.0, 4, 10.0),
             ],
+            no_transitions(),
             [1.0, 1.0, 1.0, 1.0],
         );
         let costs = model.review_costs_for_desired_retention(0.9);
         assert!(costs[0] > costs[1]);
-        assert!((costs[1] - costs[2]).abs() < 0.0001);
-        assert!((costs[2] - costs[3]).abs() < 0.0001);
+        assert!(costs[1] > costs[2]);
+        assert!(costs[2] > costs[3]);
     }
 
     #[test]
@@ -924,21 +1243,164 @@ mod tests {
     fn review_costs_use_group_mean_difficulty() {
         let model = HelpMeDecideReviewTimeModel {
             coeffs: [
-                // fail: a + e*D
+                // again: a + e*D
                 [5.0, 0.0, 0.0, 0.0, 2.0],
-                // pass: a + e*D
+                // hard: a + e*D
                 [3.0, 0.0, 0.0, 0.0, 1.0],
+                // good: a + e*D
+                [2.5, 0.0, 0.0, 0.0, 1.5],
+                // easy: a + e*D
+                [2.0, 0.0, 0.0, 0.0, 0.5],
             ],
-            group_fallback: [0.0, 0.0],
-            group_mean_stability: [0.0, 0.0],
-            group_mean_repetitions: [0.0, 0.0],
-            group_mean_difficulty: [4.0, 6.0],
+            group_fallback: [0.0, 0.0, 0.0, 0.0],
+            group_mean_stability: [0.0, 0.0, 0.0, 0.0],
+            group_mean_repetitions: [0.0, 0.0, 0.0, 0.0],
+            group_mean_difficulty: [4.0, 6.0, 5.0, 8.0],
             sample_counts: [0u32; super::R_BUCKET_COUNT],
+            transition_probs: [[0.25; 4]; 4],
+            transition_counts: [[0u32; 4]; 4],
+            success_grade_probs_by_r_bucket: [[1.0 / 3.0; 3]; super::R_BUCKET_COUNT],
+            success_grade_counts_by_r_bucket: [0u32; super::R_BUCKET_COUNT],
+            grade_weights: [0.25, 0.25, 0.25, 0.25],
         };
 
         let costs = model.review_costs_for_desired_retention(0.9);
         assert!((costs[0] - 13.0).abs() < 1e-4);
         assert!((costs[1] - 9.0).abs() < 1e-4);
+        assert!((costs[2] - 10.0).abs() < 1e-4);
+        assert!((costs[3] - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn grade_weights_default_to_uniform_without_transitions() {
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &[
+                (0.8, 5.0, 2.0, 5.0, 1, 20.0),
+                (0.8, 5.0, 2.0, 5.0, 2, 20.0),
+                (0.8, 5.0, 2.0, 5.0, 2, 20.0),
+                (0.8, 5.0, 2.0, 5.0, 3, 20.0),
+            ],
+            no_transitions(),
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let weights = model.grade_weights();
+        assert!((weights[0] - 0.25).abs() < 1e-6);
+        assert!((weights[1] - 0.25).abs() < 1e-6);
+        assert!((weights[2] - 0.25).abs() < 1e-6);
+        assert!((weights[3] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn transition_probabilities_and_weights_follow_observed_chain() {
+        let transitions = [
+            [0, 0, 0, 0],
+            [0, 0, 2, 0], // Hard -> Good
+            [0, 0, 0, 3], // Good -> Easy
+            [4, 0, 0, 0], // Easy -> Again
+            // Again row has no outgoing transitions in this synthetic example.
+        ];
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &[(0.8, 5.0, 2.0, 5.0, 2, 20.0)],
+            transitions,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let probs = model.transition_probs_flattened();
+        // Hard->Good = 1.0
+        assert!((probs[1 * 4 + 2] - 1.0).abs() < 1e-6);
+        // Good->Easy = 1.0
+        assert!((probs[2 * 4 + 3] - 1.0).abs() < 1e-6);
+        // Easy->Again = 1.0
+        assert!((probs[3 * 4] - 1.0).abs() < 1e-6);
+        let success_probs = model.success_review_rating_prob([0.2, 0.6, 0.2]);
+        let sum = success_probs.iter().sum::<f32>();
+        assert!((sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn success_grade_probability_depends_on_r_bucket() {
+        let mut samples = Vec::new();
+        for _ in 0..20 {
+            samples.push((0.95, 5.0, 3.0, 5.0, 4, 8.0));
+            samples.push((0.95, 5.0, 3.0, 5.0, 3, 9.0));
+            samples.push((0.60, 5.0, 3.0, 5.0, 2, 12.0));
+            samples.push((0.60, 5.0, 3.0, 5.0, 3, 10.0));
+        }
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &samples,
+            no_transitions(),
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let p_hi =
+            model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], None);
+        let p_lo =
+            model.success_review_rating_prob_for_retrievability(0.60, [0.2, 0.6, 0.2], None);
+        // Easy at high R should exceed easy at low R.
+        assert!(p_hi[2] > p_lo[2]);
+        // Hard at low R should exceed hard at high R.
+        assert!(p_lo[0] > p_hi[0]);
+    }
+
+    #[test]
+    fn success_grade_probs_shrink_sparse_buckets_to_neighbor_trend() {
+        let mut samples = Vec::new();
+        // Neighboring buckets around low-R with stable ~20/80 hard/good split.
+        for _ in 0..200 {
+            samples.push((0.35, 5.0, 3.0, 5.0, 2, 12.0));
+            samples.push((0.35, 5.0, 3.0, 5.0, 3, 10.0));
+            samples.push((0.35, 5.0, 3.0, 5.0, 3, 10.0));
+            samples.push((0.35, 5.0, 3.0, 5.0, 3, 10.0));
+            samples.push((0.45, 5.0, 3.0, 5.0, 2, 12.0));
+            samples.push((0.45, 5.0, 3.0, 5.0, 3, 10.0));
+            samples.push((0.45, 5.0, 3.0, 5.0, 3, 10.0));
+            samples.push((0.45, 5.0, 3.0, 5.0, 3, 10.0));
+        }
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &samples,
+            no_transitions(),
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let rb_sparse = HelpMeDecideReviewTimeModel::r_bucket(0.25);
+        let probs = model.success_grade_probs_flattened();
+        let p_hard_sparse = probs[rb_sparse * 3];
+        let p_good_sparse = probs[rb_sparse * 3 + 1];
+        // Should follow neighboring trend instead of defaulting to 1/3,1/3,1/3.
+        assert!(p_hard_sparse < 0.30);
+        assert!(p_good_sparse > 0.60);
+    }
+
+    #[test]
+    fn success_grade_blend_alpha_override_works() {
+        let transitions = [
+            [0, 0, 0, 0],
+            [0, 0, 10, 0], // Hard -> Good
+            [0, 0, 0, 10], // Good -> Easy
+            [10, 0, 0, 0], // Easy -> Again
+        ];
+        let mut samples = Vec::new();
+        for _ in 0..20 {
+            // High-R mostly Easy in bucket model
+            samples.push((0.95, 5.0, 3.0, 5.0, 4, 8.0));
+            samples.push((0.95, 5.0, 3.0, 5.0, 4, 8.0));
+            samples.push((0.95, 5.0, 3.0, 5.0, 2, 12.0));
+        }
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &samples,
+            transitions,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let p_r_only = model.success_review_rating_prob_for_retrievability(
+            0.95,
+            [0.2, 0.6, 0.2],
+            Some(0.0),
+        );
+        let p_t_only = model.success_review_rating_prob_for_retrievability(
+            0.95,
+            [0.2, 0.6, 0.2],
+            Some(1.0),
+        );
+        // R-only should prefer Easy, transition-only prior should lean away from Hard in this setup.
+        assert!(p_r_only[2] > p_r_only[0]);
+        assert!(p_t_only[1] >= p_t_only[0]);
     }
 
     #[test]

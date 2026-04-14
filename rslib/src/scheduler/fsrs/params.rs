@@ -78,6 +78,7 @@ pub struct ComputeParamsRequest<'t> {
     pub num_of_relearning_steps: usize,
     pub health_check: bool,
     pub include_same_day_reviews: Option<bool>,
+    pub model_version_override: Option<ComputeParametersVersion>,
 }
 
 /// r: retention
@@ -112,6 +113,13 @@ fn training_search<'a>(search: &'a str, search_for_training: Option<&'a str>) ->
 
 fn uses_external_evaluation(training_search: &str, evaluation_search: &str) -> bool {
     training_search != evaluation_search
+}
+
+fn resolved_model_version(
+    current_params: &[f32],
+    model_version_override: Option<ComputeParametersVersion>,
+) -> ComputeParametersVersion {
+    model_version_override.unwrap_or_else(|| model_version_for_params(current_params))
 }
 
 fn training_target_counts_from_items(items: &[FSRSItem]) -> TrainingTargetCounts {
@@ -289,12 +297,13 @@ impl Collection {
             num_of_relearning_steps,
             health_check,
             include_same_day_reviews,
+            model_version_override,
         } = request;
 
         self.clear_progress();
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
-        let model_version = model_version_for_params(current_params);
+        let model_version = resolved_model_version(current_params, model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
         let (items, target_counts) = fsrs_items_for_training(
@@ -353,6 +362,7 @@ impl Collection {
             num_relearning_steps: Some(num_of_relearning_steps),
         };
         let mut params = coerce_computed_params_to_selected_version(
+            model_version,
             current_params,
             compute_parameters(input.clone())?,
         );
@@ -361,7 +371,7 @@ impl Collection {
             let current_log_loss = current_fsrs.evaluate(items.clone(), |_| true)?.log_loss;
             let optimized_fsrs = FSRS::new(&params)?;
             let optimized_log_loss = optimized_fsrs.evaluate(items.clone(), |_| true)?.log_loss;
-            if current_log_loss <= optimized_log_loss {
+            if current_log_loss <= optimized_log_loss && current_params.len() == params.len() {
                 if num_of_relearning_steps <= 1 {
                     params = current_params.to_vec();
                 } else {
@@ -637,15 +647,24 @@ impl Collection {
 }
 
 fn coerce_computed_params_to_selected_version(
+    model_version: ComputeParametersVersion,
     current_params: &[f32],
     computed_params: Vec<f32>,
 ) -> Vec<f32> {
     if current_params.is_empty() || current_params.len() == computed_params.len() {
         return computed_params;
     }
-    let current_is_supported = matches!(current_params.len(), 17 | 19 | 21 | 35);
-    let computed_is_supported = matches!(computed_params.len(), 17 | 19 | 21 | 35);
-    if current_is_supported && computed_is_supported {
+
+    let expected_len = match model_version {
+        ComputeParametersVersion::Fsrs7 => 35,
+        ComputeParametersVersion::Fsrs6 => 21,
+    };
+
+    if computed_params.len() == expected_len {
+        return computed_params;
+    }
+
+    if current_params.len() == expected_len {
         current_params.to_vec()
     } else {
         computed_params
@@ -1145,12 +1164,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn coerce_computed_params_keeps_current_when_model_family_mismatches() {
+    fn coerce_computed_params_prefers_computed_when_matches_selected_family() {
         let current = vec![1.0; 21];
         let computed = vec![2.0; 35];
         assert_eq!(
-            coerce_computed_params_to_selected_version(&current, computed),
-            current
+            coerce_computed_params_to_selected_version(
+                ComputeParametersVersion::Fsrs7,
+                &current,
+                computed.clone()
+            ),
+            computed
         );
     }
 
@@ -1159,8 +1182,26 @@ pub(crate) mod tests {
         let current = vec![1.0; 21];
         let computed = vec![2.0; 21];
         assert_eq!(
-            coerce_computed_params_to_selected_version(&current, computed.clone()),
+            coerce_computed_params_to_selected_version(
+                ComputeParametersVersion::Fsrs6,
+                &current,
+                computed.clone()
+            ),
             computed
+        );
+    }
+
+    #[test]
+    fn coerce_computed_params_falls_back_to_current_when_computed_invalid_for_selected_family() {
+        let current = vec![1.0; 35];
+        let computed = vec![2.0; 21];
+        assert_eq!(
+            coerce_computed_params_to_selected_version(
+                ComputeParametersVersion::Fsrs7,
+                &current,
+                computed
+            ),
+            current
         );
     }
 
@@ -1457,6 +1498,30 @@ pub(crate) mod tests {
             convert_with_model(&revlogs, true, ComputeParametersVersion::Fsrs7).unwrap();
         assert_eq!(converted6[0].reviews[1].delta_t, 3.0);
         assert!((converted7[0].reviews[1].delta_t - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolved_model_version_prefers_override() {
+        assert_eq!(
+            super::resolved_model_version(&vec![0.0; 21], Some(ComputeParametersVersion::Fsrs7)),
+            ComputeParametersVersion::Fsrs7
+        );
+        assert_eq!(
+            super::resolved_model_version(&vec![0.0; 35], Some(ComputeParametersVersion::Fsrs6)),
+            ComputeParametersVersion::Fsrs6
+        );
+    }
+
+    #[test]
+    fn resolved_model_version_falls_back_to_param_length() {
+        assert_eq!(
+            super::resolved_model_version(&vec![0.0; 35], None),
+            ComputeParametersVersion::Fsrs7
+        );
+        assert_eq!(
+            super::resolved_model_version(&vec![0.0; 21], None),
+            ComputeParametersVersion::Fsrs6
+        );
     }
 
     #[test]

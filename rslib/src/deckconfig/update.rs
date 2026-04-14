@@ -13,6 +13,7 @@ use anki_proto::deck_config::deck_configs_for_update::CurrentDeck;
 use anki_proto::deck_config::UpdateDeckConfigsMode;
 use anki_proto::decks::deck::normal::DayLimit;
 use fsrs::DEFAULT_PARAMETERS;
+use fsrs::ComputeParametersVersion;
 use fsrs::FSRS;
 use fsrs::FSRS6_DEFAULT_PARAMETERS;
 
@@ -411,6 +412,12 @@ impl Collection {
                 num_of_relearning_steps,
                 health_check: false,
                 include_same_day_reviews: None,
+                model_version_override: Some(match FsrsVersion::try_from(config.inner.fsrs_version)
+                    .unwrap_or(FsrsVersion::Seven)
+                {
+                    FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
+                    _ => ComputeParametersVersion::Fsrs6,
+                }),
             }) {
                 Ok(params) => {
                     println!("{}: {:?}", config.name, params.params);

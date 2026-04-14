@@ -59,19 +59,33 @@ Data flow:
    `R` is computed from the active FSRS model (`FSRS::current_retrievability`),
    so FSRS-7 uses its native forgetting-curve mixture instead of a single
    scalar decay approximation.
-4. Fit two linear models from samples:
-   - fail (`Again`)
-   - pass (`Hard/Good/Easy`)
+4. Fit four linear models from samples:
+   - `Again`
+   - `Hard`
+   - `Good`
+   - `Easy`
    using `time = a + b * (1 - R) + c * S + d * reps + e * D`.
 5. During `simulate_workload`, each DR sweep updates review costs from those
    fitted models and then runs simulation to accumulate `daily_time_cost`.
 6. The workload response includes a flattened matrix for UI inspection:
-   - `review_time_fail_seconds`
-   - `review_time_pass_seconds`
+   - `review_time_again_seconds`
+   - `review_time_hard_seconds`
+   - `review_time_good_seconds`
+   - `review_time_easy_seconds`
    - `review_time_sample_counts` (raw per-cell sample counts)
    and the fitted coefficients:
    - `review_time_again_coeffs`
-   - `review_time_pass_coeffs`
+   - `review_time_hard_coeffs`
+   - `review_time_good_coeffs`
+   - `review_time_easy_coeffs`
+   and empirical grade weights:
+   - `review_time_grade_weights`
+   and grade transition data:
+   - `review_time_transition_probs` (4x4, row-major `P(next|current)`)
+   - `review_time_transition_counts` (4x4, row-major raw counts)
+   and retrievability-conditioned success-grade data:
+   - `review_time_success_grade_probs` (R-bucket x 3, row-major `P(Hard/Good/Easy|R)`)
+   - `review_time_success_grade_counts` (R-bucket sample counts)
    with bucket dimensions:
    - `review_time_r_bucket_count`
    - `review_time_s_bucket_count` (fixed to `1`, UI compatibility)
@@ -83,16 +97,36 @@ Scope:
 - During the DR sweep (`1..99`), existing simulated cards are re-bound to the
   current sweep DR before each run so `count/time/memorized` curves actually
   reflect the selected DR on all cards (not only newly introduced cards).
-- Help Me Decide review-time modeling now uses two linear regressions from
+- Help Me Decide review-time modeling now uses four linear regressions from
   revlog `taken_millis` samples:
-  - fail group (`Again`)
-  - pass group (`Hard/Good/Easy`)
+  - `Again`
+  - `Hard`
+  - `Good`
+  - `Easy`
   with model form: `time = a + b * (1 - R) + c * S + d * reps + e * D`.
   These predicted costs are also injected into simulator review costs during
   each DR sweep, so `Time` and `Memorized/Time` charts use the same model.
   The workload response also exposes fitted coefficients:
   - `review_time_again_coeffs` (`a,b,c,d,e`)
-  - `review_time_pass_coeffs` (`a,b,c,d,e`)
+  - `review_time_hard_coeffs` (`a,b,c,d,e`)
+  - `review_time_good_coeffs` (`a,b,c,d,e`)
+  - `review_time_easy_coeffs` (`a,b,c,d,e`)
+  and empirical grade weights from transition-matrix steady-state:
+  - `review_time_grade_weights` (`Again,Hard,Good,Easy`).
+  Transition matrix (`Again/Hard/Good/Easy -> Again/Hard/Good/Easy`) is
+  estimated from consecutive review-kind entries and used to derive
+  `P(next_grade|prev_grade)`. During DR sweep, simulator success-grade mix
+  (`Hard/Good/Easy`) is computed by blending:
+  - `P(Hard/Good/Easy|R-bucket)` (5% R buckets, Laplace-smoothed), and
+  - transition-derived prior from `P(next_grade|prev_grade)`
+  with reliability-weighted geometric pooling.
+  `P(Hard/Good/Easy|R-bucket)` is additionally reliability-shrunk toward a
+  distance-weighted neighborhood prior (`w=n/(n+k)`), to stabilize sparse
+  low-sample buckets.
+  This blended distribution is injected into `config.review_rating_prob`, so
+  `Time` and `Memorized/Time` use both R-conditioned and transition-informed
+  grade mixes. The blend can be overridden in Deck Options simulator with
+  `help_me_decide_transition_blend_alpha` (`0`=R-only, `1`=transition-only).
 
 ## FSRS Parameter Source
 

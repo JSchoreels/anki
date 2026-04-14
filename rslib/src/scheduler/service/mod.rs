@@ -291,6 +291,7 @@ impl crate::services::SchedulerService for Collection {
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
             include_same_day_reviews: input.include_same_day_reviews,
+            model_version_override: input.fsrs_version.map(health_check_model_version),
         })
     }
 

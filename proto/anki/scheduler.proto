@@ -373,6 +373,7 @@ message ComputeFsrsParamsRequest {
   uint32 num_of_relearning_steps = 4;
   bool health_check = 5;
   optional bool include_same_day_reviews = 6;
+  optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 7;
 }
 
 message ComputeFsrsParamsResponse {
@@ -427,6 +428,7 @@ message SimulateFsrsReviewRequest {
   optional float review_fuzz_factor_short = 17;
   optional float review_fuzz_factor_mid = 18;
   optional float review_fuzz_factor_long = 19;
+  optional float help_me_decide_transition_blend_alpha = 21;
 }
 
 message SimulateFsrsReviewResponse {
@@ -443,11 +445,20 @@ message SimulateFsrsWorkloadResponse {
   map<uint32, uint32> review_count = 4;
   uint32 review_time_r_bucket_count = 5;
   uint32 review_time_s_bucket_count = 6;
-  repeated float review_time_fail_seconds = 7;
-  repeated float review_time_pass_seconds = 8;
+  repeated float review_time_again_seconds = 7;
+  repeated float review_time_hard_seconds = 8;
+  repeated float review_time_good_seconds = 12;
+  repeated float review_time_easy_seconds = 13;
   repeated uint32 review_time_sample_counts = 9;
   repeated float review_time_again_coeffs = 10;
-  repeated float review_time_pass_coeffs = 11;
+  repeated float review_time_hard_coeffs = 11;
+  repeated float review_time_good_coeffs = 14;
+  repeated float review_time_easy_coeffs = 15;
+  repeated float review_time_grade_weights = 16;
+  repeated float review_time_transition_probs = 17;
+  repeated uint32 review_time_transition_counts = 18;
+  repeated float review_time_success_grade_probs = 19;
+  repeated uint32 review_time_success_grade_counts = 20;
 }
 
 message ComputeOptimalRetentionResponse {

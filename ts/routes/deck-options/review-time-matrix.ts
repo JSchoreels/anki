@@ -4,8 +4,10 @@
 export type ReviewTimeMatrix = {
     rBucketCount: number;
     sBucketCount: number;
-    failSeconds: number[];
-    passSeconds: number[];
+    againSeconds: number[];
+    hardSeconds: number[];
+    goodSeconds: number[];
+    easySeconds: number[];
     sampleCounts: number[];
 };
 
@@ -75,25 +77,6 @@ export function buildSLineSeries(
         }
     }
     return lines;
-}
-
-export function buildFailPassRatioSeries(
-    failValues: number[],
-    passValues: number[],
-    rBucketCount: number,
-    sBucketCount: number,
-): number[][] {
-    const failLines = buildSLineSeries(failValues, rBucketCount, sBucketCount);
-    const passLines = buildSLineSeries(passValues, rBucketCount, sBucketCount);
-    return failLines.map((line, sIndex) =>
-        line.map((failValue, rIndex) => {
-            const passValue = passLines[sIndex][rIndex];
-            if (passValue <= 0) {
-                return 0;
-            }
-            return failValue / passValue;
-        }),
-    );
 }
 
 export function seriesMinMax(series: number[][]): [number, number] {

@@ -271,6 +271,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reviewFuzzFactorLong: $config.reviewFuzzEnabled
             ? $config.reviewFuzzFactorLong
             : 0,
+        helpMeDecideTransitionBlendAlpha: 0.5,
     });
 
     $: void loadNewCardIntervals(
@@ -484,6 +485,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         healthCheck: $healthCheck,
                         includeSameDayReviews: includeSameDayOptimizeOverride(),
+                        fsrsVersion: $config.fsrsVersion,
                     });
 
                     const alreadyOptimal =
@@ -497,7 +499,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     if (resp.healthCheckPassed !== undefined) {
                         healthCheckMessage = resp.healthCheckPassed
                             ? tr.deckConfigFsrsGoodFit()
-                            : tr.deckConfigFsrsBadFitWarning();
+                            : "";
                     }
                     let alreadyOptimalMessage = "";
                     if (alreadyOptimal) {
