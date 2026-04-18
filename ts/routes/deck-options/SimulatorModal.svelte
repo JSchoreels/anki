@@ -95,6 +95,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let computeRetentionProgress: ComputeRetentionProgress | undefined = undefined;
     let transitionBlendAlpha =
         simulateFsrsRequest.helpMeDecideTransitionBlendAlpha ?? 0.5;
+    let enforceMonotonicSuccessGradeProbs =
+        simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs ??
+        false;
 
     $: daysToSimulate = 365;
     $: deckSize = 0;
@@ -134,6 +137,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             : undefined;
         simulateFsrsRequest.easyDaysPercentages = easyDayPercentages;
         simulateFsrsRequest.helpMeDecideTransitionBlendAlpha = transitionBlendAlpha;
+        simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs =
+            enforceMonotonicSuccessGradeProbs;
     }
 
     function renderRetentionProgress(
@@ -759,6 +764,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 Blend Alpha (R vs Prev Grade)
                             </SettingTitle>
                         </SpinBoxFloatRow>
+
+                        <SwitchRow
+                            bind:value={enforceMonotonicSuccessGradeProbs}
+                            defaultValue={false}
+                        >
+                            <SettingTitle
+                                on:click={() => openHelpModal("simulateFsrsReview")}
+                            >
+                                Enforce monotonic H/G/E by R
+                            </SettingTitle>
+                        </SwitchRow>
                     {/if}
 
                     <SwitchRow
@@ -971,6 +987,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </div>
 
                         <div class="review-time-matrix-wrapper mt-2">
+                            <div class="p-2">
+                                <code>time = a + b * (1 - R) + c * S + d * reps + e * D</code>
+                            </div>
                             <table class="review-time-matrix-table">
                                 <thead>
                                     <tr>

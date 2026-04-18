@@ -429,6 +429,7 @@ message SimulateFsrsReviewRequest {
   optional float review_fuzz_factor_mid = 18;
   optional float review_fuzz_factor_long = 19;
   optional float help_me_decide_transition_blend_alpha = 21;
+  optional bool help_me_decide_enforce_monotonic_success_grade_probs = 22;
 }
 
 message SimulateFsrsReviewResponse {

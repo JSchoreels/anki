@@ -122,7 +122,10 @@ Scope:
   with reliability-weighted geometric pooling.
   `P(Hard/Good/Easy|R-bucket)` is additionally reliability-shrunk toward a
   distance-weighted neighborhood prior (`w=n/(n+k)`), to stabilize sparse
-  low-sample buckets.
+  low-sample buckets. Optional simulator toggle
+  `help_me_decide_enforce_monotonic_success_grade_probs` applies weighted
+  isotonic constraints (`Hard` non-decreasing as R decreases, `Easy`
+  non-increasing as R decreases), then recomputes `Good`.
   This blended distribution is injected into `config.review_rating_prob`, so
   `Time` and `Memorized/Time` use both R-conditioned and transition-informed
   grade mixes. The blend can be overridden in Deck Options simulator with

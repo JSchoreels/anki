@@ -272,6 +272,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             ? $config.reviewFuzzFactorLong
             : 0,
         helpMeDecideTransitionBlendAlpha: 0.5,
+        helpMeDecideEnforceMonotonicSuccessGradeProbs: false,
     });
 
     $: void loadNewCardIntervals(

@@ -117,6 +117,7 @@ impl HelpMeDecideReviewTimeModel {
     fn from_samples(
         samples: &[(f32, f32, f32, f32, usize, f32)],
         transition_counts: [[u32; 4]; 4],
+        enforce_monotonic_success_grade_probs: bool,
         default_review_costs: [f32; 4],
     ) -> Self {
         let mut sample_counts = [0u32; R_BUCKET_COUNT];
@@ -235,7 +236,10 @@ impl HelpMeDecideReviewTimeModel {
         let grade_weights = Self::stationary_distribution(transition_probs)
             .unwrap_or_else(|| Self::grade_weights_from_counts(group_count));
         let (success_grade_probs_by_r_bucket, success_grade_counts_by_r_bucket) =
-            Self::success_grade_probs_by_r_bucket(success_grade_counts_by_r_bucket);
+            Self::success_grade_probs_by_r_bucket(
+                success_grade_counts_by_r_bucket,
+                enforce_monotonic_success_grade_probs,
+            );
         Self {
             coeffs,
             group_fallback,
@@ -317,6 +321,7 @@ impl HelpMeDecideReviewTimeModel {
 
     fn success_grade_probs_by_r_bucket(
         counts: [[u32; 3]; R_BUCKET_COUNT],
+        enforce_monotonic: bool,
     ) -> ([[f32; 3]; R_BUCKET_COUNT], [u32; R_BUCKET_COUNT]) {
         let mut raw_probs = [[0.0f32; 3]; R_BUCKET_COUNT];
         let mut totals = [0u32; R_BUCKET_COUNT];
@@ -360,7 +365,76 @@ impl HelpMeDecideReviewTimeModel {
             }
             probs[rb] = Self::normalize_triplet(blended);
         }
+
+        if enforce_monotonic {
+            let mut hard = [0.0f32; R_BUCKET_COUNT];
+            let mut easy = [0.0f32; R_BUCKET_COUNT];
+            let mut weights = [0.0f32; R_BUCKET_COUNT];
+            for rb in 0..R_BUCKET_COUNT {
+                hard[rb] = probs[rb][0];
+                easy[rb] = probs[rb][2];
+                weights[rb] = totals[rb] as f32 + 1.0;
+            }
+            let hard = Self::isotonic_increasing(hard, weights);
+            let neg_easy = easy.map(|v| -v);
+            let neg_easy = Self::isotonic_increasing(neg_easy, weights);
+            let easy = neg_easy.map(|v| -v);
+            for rb in 0..R_BUCKET_COUNT {
+                let mut h = hard[rb].clamp(0.0, 1.0);
+                let mut e = easy[rb].clamp(0.0, 1.0);
+                if h + e >= 0.999 {
+                    let scale = 0.999 / (h + e);
+                    h *= scale;
+                    e *= scale;
+                }
+                let g = 1.0 - h - e;
+                probs[rb] = Self::normalize_triplet([h, g.max(0.0), e]);
+            }
+        }
         (probs, totals)
+    }
+
+    fn isotonic_increasing(
+        values: [f32; R_BUCKET_COUNT],
+        weights: [f32; R_BUCKET_COUNT],
+    ) -> [f32; R_BUCKET_COUNT] {
+        let mut starts: Vec<usize> = Vec::with_capacity(R_BUCKET_COUNT);
+        let mut ends: Vec<usize> = Vec::with_capacity(R_BUCKET_COUNT);
+        let mut sums: Vec<f32> = Vec::with_capacity(R_BUCKET_COUNT);
+        let mut ws: Vec<f32> = Vec::with_capacity(R_BUCKET_COUNT);
+
+        for i in 0..R_BUCKET_COUNT {
+            starts.push(i);
+            ends.push(i);
+            sums.push(values[i] * weights[i]);
+            ws.push(weights[i]);
+            while sums.len() >= 2 {
+                let n = sums.len();
+                let avg_prev = sums[n - 2] / ws[n - 2];
+                let avg_curr = sums[n - 1] / ws[n - 1];
+                if avg_prev <= avg_curr {
+                    break;
+                }
+                let merged_sum = sums[n - 2] + sums[n - 1];
+                let merged_w = ws[n - 2] + ws[n - 1];
+                sums[n - 2] = merged_sum;
+                ws[n - 2] = merged_w;
+                ends[n - 2] = ends[n - 1];
+                sums.pop();
+                ws.pop();
+                starts.pop();
+                ends.pop();
+            }
+        }
+
+        let mut out = [0.0f32; R_BUCKET_COUNT];
+        for block in 0..sums.len() {
+            let avg = sums[block] / ws[block];
+            for idx in starts[block]..=ends[block] {
+                out[idx] = avg;
+            }
+        }
+        out
     }
 
     fn normalize_triplet(values: [f32; 3]) -> [f32; 3] {
@@ -721,6 +795,8 @@ impl Collection {
         Ok(HelpMeDecideReviewTimeModel::from_samples(
             &samples,
             transition_counts,
+            req.help_me_decide_enforce_monotonic_success_grade_probs
+                .unwrap_or(false),
             default_review_costs,
         ))
     }
@@ -1107,6 +1183,7 @@ mod tests {
                 (0.85, 10.0, 2.0, 7.5, 1, 52.45),
             ],
             no_transitions(),
+            false,
             [20.0, 18.0, 12.0, 9.0],
         )
     }
@@ -1153,6 +1230,7 @@ mod tests {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &samples,
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let [again, hard, good, easy] = model.grade_flattened();
@@ -1171,6 +1249,7 @@ mod tests {
                 (0.9, 5.0, 2.0, 5.0, 3, 10.0),
             ],
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let rb = HelpMeDecideReviewTimeModel::r_bucket(0.9);
@@ -1183,6 +1262,7 @@ mod tests {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &[(0.7, 12.0, 2.0, 5.0, 2, 9.0)],
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         assert!((model.cost_for(0.2, 0.0, 2.0, 5.0, 2) - 9.0).abs() < 0.0001);
@@ -1207,6 +1287,7 @@ mod tests {
                 (0.7, 5.0, 2.0, 5.0, 4, 10.0),
             ],
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let costs = model.review_costs_for_desired_retention(0.9);
@@ -1281,6 +1362,7 @@ mod tests {
                 (0.8, 5.0, 2.0, 5.0, 3, 20.0),
             ],
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let weights = model.grade_weights();
@@ -1302,6 +1384,7 @@ mod tests {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &[(0.8, 5.0, 2.0, 5.0, 2, 20.0)],
             transitions,
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let probs = model.transition_probs_flattened();
@@ -1328,6 +1411,7 @@ mod tests {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &samples,
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let p_hi =
@@ -1357,6 +1441,7 @@ mod tests {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &samples,
             no_transitions(),
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let rb_sparse = HelpMeDecideReviewTimeModel::r_bucket(0.25);
@@ -1386,6 +1471,7 @@ mod tests {
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &samples,
             transitions,
+            false,
             [1.0, 1.0, 1.0, 1.0],
         );
         let p_r_only = model.success_review_rating_prob_for_retrievability(
@@ -1401,6 +1487,34 @@ mod tests {
         // R-only should prefer Easy, transition-only prior should lean away from Hard in this setup.
         assert!(p_r_only[2] > p_r_only[0]);
         assert!(p_t_only[1] >= p_t_only[0]);
+    }
+
+    #[test]
+    fn monotonic_toggle_enforces_hard_and_easy_trends() {
+        let mut samples = Vec::new();
+        // Intentionally noisy pattern across neighboring buckets.
+        for _ in 0..120 {
+            samples.push((0.62, 5.0, 3.0, 5.0, 2, 12.0)); // hard
+            samples.push((0.62, 5.0, 3.0, 5.0, 3, 10.0)); // good
+            samples.push((0.58, 5.0, 3.0, 5.0, 3, 10.0)); // good-heavy lower R
+            samples.push((0.58, 5.0, 3.0, 5.0, 4, 8.0)); // easy noise
+        }
+        let model = HelpMeDecideReviewTimeModel::from_samples(
+            &samples,
+            no_transitions(),
+            true,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        let probs = model.success_grade_probs_flattened();
+        for rb in 1..super::R_BUCKET_COUNT {
+            let hard_prev = probs[(rb - 1) * 3];
+            let hard_cur = probs[rb * 3];
+            let easy_prev = probs[(rb - 1) * 3 + 2];
+            let easy_cur = probs[rb * 3 + 2];
+            // As R decreases with rb index, hard should not go down and easy should not go up.
+            assert!(hard_cur + 1e-6 >= hard_prev);
+            assert!(easy_cur <= easy_prev + 1e-6);
+        }
     }
 
     #[test]
