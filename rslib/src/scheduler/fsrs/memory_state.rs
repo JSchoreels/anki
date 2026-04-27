@@ -26,7 +26,7 @@ use crate::search::Negated;
 use crate::search::SearchNode;
 use crate::search::StateKind;
 
-const S_MIN: f32 = 0.001;
+const S_MIN: f32 = 0.0001;
 const S_MAX: f32 = 36_500.0;
 const D_MIN: f32 = 1.0;
 const D_MAX: f32 = 10.0;
@@ -688,6 +688,7 @@ mod tests {
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
         };
@@ -730,6 +731,7 @@ mod tests {
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
         };
@@ -843,6 +845,11 @@ mod tests {
             ),
         );
         Ok(())
+    }
+
+    #[test]
+    fn minimum_stability_uses_fsrs_floor() {
+        assert_eq!(S_MIN, 0.0001);
     }
 
     #[test]

@@ -37,7 +37,12 @@ impl RelearnState {
     fn answer_again(self, ctx: &StateContext) -> CardState {
         let (scheduled_days, fuzz_delta_days, memory_state) =
             self.review.failing_review_interval(ctx);
-        if let Some(again_delay) = ctx.relearn_steps.again_delay_secs_learn() {
+        let again_delay = if ctx.fsrs_uses_learning_queues() {
+            ctx.relearn_steps.again_delay_secs_learn()
+        } else {
+            None
+        };
+        if let Some(again_delay) = again_delay {
             RelearnState {
                 learning: LearnState {
                     remaining_steps: ctx.relearn_steps.remaining_for_failed(),
@@ -80,7 +85,9 @@ impl RelearnState {
                 review: again_review,
             };
             if ctx.fsrs_allow_short_term
-                && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
+                && ctx.fsrs_short_term_with_steps_enabled
+                && ctx.fsrs_uses_learning_queues()
+                && ctx.relearn_steps.is_empty()
                 && interval < 0.5
             {
                 again_relearn.into()
@@ -94,10 +101,13 @@ impl RelearnState {
 
     fn answer_hard(self, ctx: &StateContext) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
-        if let Some(hard_delay) = ctx
-            .relearn_steps
-            .hard_delay_secs(self.learning.remaining_steps)
-        {
+        let hard_delay = if ctx.fsrs_uses_learning_queues() {
+            ctx.relearn_steps
+                .hard_delay_secs(self.learning.remaining_steps)
+        } else {
+            None
+        };
+        if let Some(hard_delay) = hard_delay {
             RelearnState {
                 learning: LearnState {
                     scheduled_secs: hard_delay,
@@ -136,7 +146,9 @@ impl RelearnState {
                 review: hard_review,
             };
             if ctx.fsrs_allow_short_term
-                && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
+                && ctx.fsrs_short_term_with_steps_enabled
+                && ctx.fsrs_uses_learning_queues()
+                && ctx.relearn_steps.is_empty()
                 && interval < 0.5
             {
                 hard_relearn.into()
@@ -150,10 +162,13 @@ impl RelearnState {
 
     fn answer_good(self, ctx: &StateContext) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
-        if let Some(good_delay) = ctx
-            .relearn_steps
-            .good_delay_secs(self.learning.remaining_steps)
-        {
+        let good_delay = if ctx.fsrs_uses_learning_queues() {
+            ctx.relearn_steps
+                .good_delay_secs(self.learning.remaining_steps)
+        } else {
+            None
+        };
+        if let Some(good_delay) = good_delay {
             RelearnState {
                 learning: LearnState {
                     scheduled_secs: good_delay,
@@ -198,7 +213,9 @@ impl RelearnState {
                 review: good_review,
             };
             if ctx.fsrs_allow_short_term
-                && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
+                && ctx.fsrs_short_term_with_steps_enabled
+                && ctx.fsrs_uses_learning_queues()
+                && ctx.relearn_steps.is_empty()
                 && interval < 0.5
             {
                 good_relearn.into()

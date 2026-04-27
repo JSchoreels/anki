@@ -81,6 +81,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     const fsrsReschedule = state.fsrsReschedule;
     const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
+    const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
     const auxData = state.currentAuxData;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
@@ -285,6 +286,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         startingDesiredRetentionValue,
         effectiveDesiredRetention,
         $fsrsShortTermWithStepsEnabled,
+        $fsrsLearningQueuesDisabled,
         selectedFsrsParams($config),
         $config.learnSteps,
         $config.relearnSteps,
@@ -330,6 +332,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         currentRetention: number,
         selectedRetention: number,
         fsrsShortTermWithStepsEnabled: boolean,
+        fsrsLearningQueuesDisabled: boolean,
         params: number[],
         _learnSteps: number[],
         _relearnSteps: number[],
@@ -353,12 +356,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {
                         config: configWithDesiredRetention(currentConfig, currentRetention),
                         fsrsShortTermWithStepsEnabled,
+                        fsrsLearningQueuesDisabled,
                     },
                 ),
                 getFsrsNewCardIntervals(
                     {
                         config: configWithDesiredRetention(currentConfig, selectedRetention),
                         fsrsShortTermWithStepsEnabled,
+                        fsrsLearningQueuesDisabled,
                     },
                 ),
             ]);

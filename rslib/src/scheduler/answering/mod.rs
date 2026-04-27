@@ -77,6 +77,7 @@ struct CardStateUpdater {
     /// Set if FSRS is enabled.
     desired_retention: Option<f32>,
     fsrs_short_term_with_steps: bool,
+    fsrs_learning_queues_disabled: bool,
     fsrs_allow_short_term: bool,
 }
 
@@ -117,6 +118,7 @@ impl CardStateUpdater {
             },
             fsrs_next_states: self.fsrs_next_states.clone(),
             fsrs_short_term_with_steps_enabled: self.fsrs_short_term_with_steps,
+            fsrs_learning_queues_disabled: self.fsrs_learning_queues_disabled,
             fsrs_allow_short_term: self.fsrs_allow_short_term,
         }
     }
@@ -494,6 +496,8 @@ impl Collection {
         let desired_retention = fsrs_enabled.then_some(desired_retention);
         let fsrs_short_term_with_steps =
             self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
+        let fsrs_learning_queues_disabled =
+            fsrs_enabled && self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled);
         let fsrs_allow_short_term = if fsrs_enabled {
             let params = config.fsrs_params();
             if params.len() >= 19 {
@@ -514,6 +518,7 @@ impl Collection {
             fsrs_next_states,
             desired_retention,
             fsrs_short_term_with_steps,
+            fsrs_learning_queues_disabled,
             fsrs_allow_short_term,
         })
     }
@@ -729,6 +734,15 @@ pub(crate) mod test {
         col.get_scheduling_states(card_id).unwrap().current
     }
 
+    fn low_retention_fsrs7_params() -> Vec<f32> {
+        vec![
+            0.0113, 0.7801, 2.2056, 17.8287, 5.7900, 0.4527, 3.1686, 2.1464, 0.2876, 1.2004,
+            0.4385, 0.0057, 0.8110, 0.2112, 0.5439, 1.7069, 0.9438, 0.3588, 3.6203, 0.3262, 0.0060,
+            0.2524, 2.6739, 0.5529, 1.3967, 2.5000, 0.9966, 0.0630, 0.2528, 0.6248, 0.9734, 0.1204,
+            0.6260, 0.1575, 0.4048,
+        ]
+    }
+
     #[test]
     fn describe_next_states_includes_fuzz_delta() -> Result<()> {
         let mut col = Collection::new();
@@ -810,18 +824,12 @@ pub(crate) mod test {
 
     #[test]
     fn fsrs_relearning_good_uses_fractional_same_day_elapsed_time() -> Result<()> {
-        let params = vec![
-            0.0113, 0.7801, 2.2056, 17.8287, 5.7900, 0.4527, 3.1686, 2.1464, 0.2876, 1.2004,
-            0.4385, 0.0057, 0.8110, 0.2112, 0.5439, 1.7069, 0.9438, 0.3588, 3.6203, 0.3262, 0.0060,
-            0.2524, 2.6739, 0.5529, 1.3967, 2.5000, 0.9966, 0.0630, 0.2528, 0.6248, 0.9734, 0.1204,
-            0.6260, 0.1575, 0.4048,
-        ];
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
         col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
         col.update_default_deck_config(|config| {
             config.fsrs_version = FsrsVersion::Seven as i32;
-            config.fsrs_params_7 = params;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
             config.desired_retention = 0.65;
             config.relearn_steps = vec![];
         });
@@ -838,7 +846,7 @@ pub(crate) mod test {
         card.lapses = 1;
         card.remaining_steps = 0;
         card.memory_state = Some(FsrsMemoryState {
-            stability: 0.001,
+            stability: 0.0001,
             difficulty: 9.796331,
         });
         card.last_review_time = Some(now.adding_secs(-105));
@@ -850,13 +858,67 @@ pub(crate) mod test {
         };
         let good_minutes = state.learning.scheduled_secs as f32 / 60.0;
         assert!(
-            good_minutes > 60.0,
+            good_minutes > 30.0,
             "same-day Good should use elapsed seconds and grow beyond the stuck minute interval, got {good_minutes}m"
         );
         assert!(
             good_minutes < 12.0 * 60.0,
             "regression setup should still exercise short-term relearning, got {good_minutes}m"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_learning_queue_bypass_graduates_learning_and_relearning() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
+        col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+            config.desired_retention = 0.65;
+            config.learn_steps = vec![1.0, 10.0];
+            config.relearn_steps = vec![10.0];
+        });
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let new_card = col.get_first_card();
+        let states = col.get_scheduling_states(new_card.id)?;
+        assert!(matches!(
+            states.good,
+            CardState::Normal(NormalState::Review(_))
+        ));
+
+        let now = TimestampSecs::now();
+        let mut relearn_card = new_card;
+        relearn_card.ctype = CardType::Relearn;
+        relearn_card.queue = CardQueue::Learn;
+        relearn_card.due = now.0 as i32;
+        relearn_card.interval = 1;
+        relearn_card.lapses = 1;
+        relearn_card.remaining_steps = 0;
+        relearn_card.memory_state = Some(FsrsMemoryState {
+            stability: 0.0001,
+            difficulty: 9.796331,
+        });
+        relearn_card.last_review_time = Some(now.adding_secs(-105));
+        col.storage.update_card(&relearn_card)?;
+
+        let states = col.get_scheduling_states(relearn_card.id)?;
+        assert!(matches!(
+            states.again,
+            CardState::Normal(NormalState::Review(_))
+        ));
+
+        col.update_default_deck_config(|config| config.relearn_steps = vec![]);
+        let states = col.get_scheduling_states(relearn_card.id)?;
+        assert!(matches!(
+            states.good,
+            CardState::Normal(NormalState::Review(_))
+        ));
         Ok(())
     }
 

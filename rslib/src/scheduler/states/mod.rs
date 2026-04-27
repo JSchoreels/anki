@@ -90,6 +90,7 @@ pub(crate) struct StateContext<'a> {
     pub fuzz_factor: Option<f32>,
     pub fsrs_next_states: Option<NextStates>,
     pub fsrs_short_term_with_steps_enabled: bool,
+    pub fsrs_learning_queues_disabled: bool,
     pub fsrs_allow_short_term: bool,
     // learning
     pub steps: LearningSteps<'a>,
@@ -126,6 +127,17 @@ impl StateContext<'_> {
         (minimum, maximum)
     }
 
+    pub(crate) fn fsrs_uses_learning_queues(&self) -> bool {
+        self.fsrs_next_states.is_none() || !self.fsrs_learning_queues_disabled
+    }
+
+    pub(crate) fn fsrs_uses_short_term_learning_queue(&self, steps: LearningSteps<'_>) -> bool {
+        self.fsrs_allow_short_term
+            && self.fsrs_short_term_with_steps_enabled
+            && self.fsrs_uses_learning_queues()
+            && steps.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn defaults_for_testing() -> Self {
         Self {
@@ -152,6 +164,7 @@ impl StateContext<'_> {
             },
             fsrs_next_states: None,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             fsrs_allow_short_term: false,
         }
     }

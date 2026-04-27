@@ -13,10 +13,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
+    import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     import { leechChoices } from "./choices";
+    import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
@@ -28,6 +30,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
 
     let stepsExceedMinimumInterval: string;
     let stepsTooLargeForFsrs: string;
@@ -109,6 +112,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <Item>
             <Warning warning={stepsTooLargeForFsrs} />
         </Item>
+
+        {#if $fsrs}
+            <Item>
+                <SwitchRow bind:value={$fsrsLearningQueuesDisabled} defaultValue={false}>
+                    <SettingTitle>
+                        <GlobalLabel
+                            title={"Skip learning/relearning queues with FSRS"}
+                        />
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
 
         {#if !$fsrs}
             <Item>

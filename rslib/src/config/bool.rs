@@ -44,6 +44,7 @@ pub enum BoolKey {
     FsrsLegacyEvaluate,
     LoadBalancerEnabled,
     FsrsShortTermWithStepsEnabled,
+    FsrsLearningQueuesDisabled,
     ShowFuzzDeltaAboveAnswerButtons,
     #[strum(to_string = "normalize_note_text")]
     NormalizeNoteText,

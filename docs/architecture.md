@@ -143,8 +143,14 @@ Deck options also expose the global FSRS short-term toggle (`same-day review`
 behavior for learning/relearning paths) backed by
 `BoolKey::FsrsShortTermWithStepsEnabled`.
 
-The Deck Options "New Card Intervals" preview passes the current unsaved value
-of that toggle to backend `GetFsrsNewCardIntervals`, so preview rows update
+Deck options also expose a global FSRS learning-queue bypass backed by
+`BoolKey::FsrsLearningQueuesDisabled`. When enabled with FSRS active, answering
+cards schedules review states directly instead of writing learning/relearning
+queue states, including configured steps and FSRS short-term intervals below
+half a day.
+
+The Deck Options "New Card Intervals" preview passes the current unsaved values
+of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update
 immediately when toggled (without requiring a save first).
 
 Deck Options "Check Health" now also passes the currently selected unsaved

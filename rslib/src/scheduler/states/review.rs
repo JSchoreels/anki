@@ -124,7 +124,12 @@ impl ReviewState {
             review: again_review,
         };
 
-        if let Some(again_delay) = ctx.relearn_steps.again_delay_secs_learn() {
+        let again_delay = if ctx.fsrs_uses_learning_queues() {
+            ctx.relearn_steps.again_delay_secs_learn()
+        } else {
+            None
+        };
+        if let Some(again_delay) = again_delay {
             RelearnState {
                 learning: LearnState {
                     remaining_steps: ctx.relearn_steps.remaining_for_failed(),
@@ -136,7 +141,9 @@ impl ReviewState {
             }
             .into()
         } else if ctx.fsrs_allow_short_term
-            && (ctx.fsrs_short_term_with_steps_enabled && ctx.relearn_steps.is_empty())
+            && ctx.fsrs_short_term_with_steps_enabled
+            && ctx.fsrs_uses_learning_queues()
+            && ctx.relearn_steps.is_empty()
             && scheduled_days < 0.5
         {
             again_relearn.into()

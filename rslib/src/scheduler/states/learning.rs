@@ -38,21 +38,23 @@ impl LearnState {
 
     fn answer_again(self, ctx: &StateContext) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.again.memory.into());
-        if let Some(again_delay) = ctx.steps.again_delay_secs_learn() {
-            LearnState {
-                remaining_steps: ctx.steps.remaining_for_failed(),
-                scheduled_secs: again_delay,
-                elapsed_secs: 0,
-                memory_state,
+        if ctx.fsrs_uses_learning_queues() {
+            if let Some(again_delay) = ctx.steps.again_delay_secs_learn() {
+                return LearnState {
+                    remaining_steps: ctx.steps.remaining_for_failed(),
+                    scheduled_secs: again_delay,
+                    elapsed_secs: 0,
+                    memory_state,
+                }
+                .into();
             }
-            .into()
-        } else {
+        }
+        {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
                 (
                     states.again.interval,
-                    ctx.fsrs_allow_short_term
-                        && (ctx.fsrs_short_term_with_steps_enabled && ctx.steps.is_empty())
+                    ctx.fsrs_uses_short_term_learning_queue(ctx.steps)
                         && states.again.interval < 0.5,
                 )
             } else {
@@ -89,21 +91,23 @@ impl LearnState {
 
     fn answer_hard(self, ctx: &StateContext) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
-        if let Some(hard_delay) = ctx.steps.hard_delay_secs(self.remaining_steps) {
-            LearnState {
-                scheduled_secs: hard_delay,
-                elapsed_secs: 0,
-                memory_state,
-                ..self
+        if ctx.fsrs_uses_learning_queues() {
+            if let Some(hard_delay) = ctx.steps.hard_delay_secs(self.remaining_steps) {
+                return LearnState {
+                    scheduled_secs: hard_delay,
+                    elapsed_secs: 0,
+                    memory_state,
+                    ..self
+                }
+                .into();
             }
-            .into()
-        } else {
+        }
+        {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
                 (
                     states.hard.interval,
-                    ctx.fsrs_allow_short_term
-                        && (ctx.fsrs_short_term_with_steps_enabled && ctx.steps.is_empty())
+                    ctx.fsrs_uses_short_term_learning_queue(ctx.steps)
                         && states.hard.interval < 0.5,
                 )
             } else {
@@ -140,21 +144,23 @@ impl LearnState {
 
     fn answer_good(self, ctx: &StateContext) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
-        if let Some(good_delay) = ctx.steps.good_delay_secs(self.remaining_steps) {
-            LearnState {
-                remaining_steps: ctx.steps.remaining_for_good(self.remaining_steps),
-                scheduled_secs: good_delay,
-                elapsed_secs: 0,
-                memory_state,
+        if ctx.fsrs_uses_learning_queues() {
+            if let Some(good_delay) = ctx.steps.good_delay_secs(self.remaining_steps) {
+                return LearnState {
+                    remaining_steps: ctx.steps.remaining_for_good(self.remaining_steps),
+                    scheduled_secs: good_delay,
+                    elapsed_secs: 0,
+                    memory_state,
+                }
+                .into();
             }
-            .into()
-        } else {
+        }
+        {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
                 (
                     states.good.interval,
-                    ctx.fsrs_allow_short_term
-                        && (ctx.fsrs_short_term_with_steps_enabled && ctx.steps.is_empty())
+                    ctx.fsrs_uses_short_term_learning_queue(ctx.steps)
                         && states.good.interval < 0.5,
                 )
             } else {

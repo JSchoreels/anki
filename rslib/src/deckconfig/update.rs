@@ -46,6 +46,7 @@ pub struct UpdateDeckConfigsRequest {
     pub fsrs: bool,
     pub load_balancer_enabled: bool,
     pub fsrs_short_term_with_steps_enabled: bool,
+    pub fsrs_learning_queues_disabled: bool,
     pub fsrs_reschedule: bool,
     pub fsrs_health_check: bool,
 }
@@ -83,6 +84,8 @@ impl Collection {
             load_balancer_enabled: self.get_config_bool(BoolKey::LoadBalancerEnabled),
             fsrs_short_term_with_steps_enabled: self
                 .get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
+            fsrs_learning_queues_disabled: self
+                .get_config_bool(BoolKey::FsrsLearningQueuesDisabled),
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
@@ -335,6 +338,10 @@ impl Collection {
         self.set_config_bool_inner(
             BoolKey::FsrsShortTermWithStepsEnabled,
             req.fsrs_short_term_with_steps_enabled,
+        )?;
+        self.set_config_bool_inner(
+            BoolKey::FsrsLearningQueuesDisabled,
+            req.fsrs_learning_queues_disabled,
         )?;
         self.set_config_bool_inner(BoolKey::FsrsHealthCheck, req.fsrs_health_check)?;
 
@@ -600,6 +607,7 @@ mod test {
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,
@@ -670,6 +678,7 @@ mod test {
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,
@@ -702,6 +711,7 @@ mod test {
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,
@@ -738,6 +748,7 @@ mod test {
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,
@@ -757,8 +768,10 @@ mod test {
     fn fsrs_short_term_with_steps_flag_roundtrip() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool_inner(BoolKey::FsrsShortTermWithStepsEnabled, true)?;
+        col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, true)?;
         let output = col.get_deck_configs_for_update(DeckId(1))?;
         assert!(output.fsrs_short_term_with_steps_enabled);
+        assert!(output.fsrs_learning_queues_disabled);
 
         let mut input = UpdateDeckConfigsRequest {
             target_deck_id: DeckId(1),
@@ -774,6 +787,7 @@ mod test {
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             apply_all_parent_limits: false,
             fsrs: false,
             fsrs_reschedule: false,
@@ -781,10 +795,13 @@ mod test {
         };
         col.update_deck_configs(input.clone())?;
         assert!(!col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
+        assert!(!col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
 
         input.fsrs_short_term_with_steps_enabled = true;
+        input.fsrs_learning_queues_disabled = true;
         col.update_deck_configs(input)?;
         assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
+        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
         Ok(())
     }
 

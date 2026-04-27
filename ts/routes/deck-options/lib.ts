@@ -49,6 +49,7 @@ type AllConfigs =
             | "newCardsIgnoreReviewLimit"
             | "loadBalancerEnabled"
             | "fsrsShortTermWithStepsEnabled"
+            | "fsrsLearningQueuesDisabled"
             | "applyAllParentLimits"
             | "fsrs"
             | "fsrsReschedule"
@@ -70,6 +71,7 @@ export class DeckOptionsState {
     readonly applyAllParentLimits: Writable<boolean>;
     readonly fsrs: Writable<boolean>;
     readonly fsrsShortTermWithStepsEnabled: Writable<boolean>;
+    readonly fsrsLearningQueuesDisabled: Writable<boolean>;
     readonly fsrsReschedule: Writable<boolean> = writable(false);
     readonly fsrsHealthCheck: Writable<boolean>;
     readonly legacyEvaluate: boolean;
@@ -117,6 +119,9 @@ export class DeckOptionsState {
         this.fsrs = writable(data.fsrs);
         this.fsrsShortTermWithStepsEnabled = writable(
             data.fsrsShortTermWithStepsEnabled,
+        );
+        this.fsrsLearningQueuesDisabled = writable(
+            data.fsrsLearningQueuesDisabled,
         );
         this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
         this.legacyEvaluate = data.fsrsLegacyEvaluate;
@@ -287,6 +292,9 @@ export class DeckOptionsState {
             fsrsShortTermWithStepsEnabled: get(
                 this.fsrsShortTermWithStepsEnabled,
             ),
+            fsrsLearningQueuesDisabled: get(
+                this.fsrsLearningQueuesDisabled,
+            ),
             fsrsReschedule: get(this.fsrsReschedule),
             fsrsHealthCheck: get(this.fsrsHealthCheck),
         };
@@ -385,6 +393,9 @@ export class DeckOptionsState {
             fsrs: get(this.fsrs),
             fsrsShortTermWithStepsEnabled: get(
                 this.fsrsShortTermWithStepsEnabled,
+            ),
+            fsrsLearningQueuesDisabled: get(
+                this.fsrsLearningQueuesDisabled,
             ),
             fsrsReschedule: get(this.fsrsReschedule),
             currentConfig: get(this.currentConfig),

@@ -323,6 +323,7 @@ impl crate::services::SchedulerService for Collection {
         input: scheduler::GetFsrsNewCardIntervalsRequest,
     ) -> Result<generic::StringList> {
         let requested_short_term_with_steps = input.fsrs_short_term_with_steps_enabled;
+        let requested_learning_queues_disabled = input.fsrs_learning_queues_disabled;
         let config = crate::deckconfig::DeckConfig {
             inner: input.config.unwrap_or_default(),
             ..Default::default()
@@ -338,17 +339,20 @@ impl crate::services::SchedulerService for Collection {
             requested_short_term_with_steps,
             self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
         );
+        let fsrs_learning_queues_disabled = requested_learning_queues_disabled
+            .unwrap_or_else(|| self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
-                        days_elapsed: u32|
+                        days_elapsed: f32|
          -> Result<crate::scheduler::states::StateContext<'_>> {
             Ok(crate::scheduler::states::StateContext {
                 fuzz_factor: None,
-                fsrs_next_states: Some(fsrs.next_states(
+                fsrs_next_states: Some(fsrs.next_states_with_elapsed_days(
                     memory_state,
                     config.inner.desired_retention,
                     days_elapsed,
                 )?),
                 fsrs_short_term_with_steps_enabled,
+                fsrs_learning_queues_disabled,
                 fsrs_allow_short_term,
                 steps: crate::scheduler::states::steps::LearningSteps::new(
                     &config.inner.learn_steps,
@@ -380,33 +384,36 @@ impl crate::services::SchedulerService for Collection {
                     ) => (
                         state.memory_state.map(Into::into),
                         if state.scheduled_secs == 0 {
-                            0
+                            0.0
                         } else {
-                            (state.scheduled_secs / 86_400).max(1)
+                            state.scheduled_secs as f32 / 86_400.0
                         },
                     ),
                     crate::scheduler::states::CardState::Normal(
                         crate::scheduler::states::NormalState::Review(state),
-                    ) => (state.memory_state.map(Into::into), state.scheduled_days),
+                    ) => (
+                        state.memory_state.map(Into::into),
+                        state.scheduled_days as f32,
+                    ),
                     crate::scheduler::states::CardState::Normal(
                         crate::scheduler::states::NormalState::Relearning(state),
                     ) => (
                         state.learning.memory_state.map(Into::into),
                         if state.learning.scheduled_secs == 0 {
-                            state.review.scheduled_days
+                            state.review.scheduled_days as f32
                         } else {
-                            (state.learning.scheduled_secs / 86_400).max(1)
+                            state.learning.scheduled_secs as f32 / 86_400.0
                         },
                     ),
                     crate::scheduler::states::CardState::Normal(
                         crate::scheduler::states::NormalState::New(_),
                     )
-                    | crate::scheduler::states::CardState::Filtered(_) => (None, 0),
+                    | crate::scheduler::states::CardState::Filtered(_) => (None, 0.0),
                 };
                 let ctx = make_ctx(memory_state, days_elapsed)?;
                 Ok(state.next_states(&ctx))
             };
-        let ctx = make_ctx(None, 0)?;
+        let ctx = make_ctx(None, 0.0)?;
         let states = LearnState {
             remaining_steps: u32::from(!config.inner.learn_steps.is_empty()),
             scheduled_secs: 0,

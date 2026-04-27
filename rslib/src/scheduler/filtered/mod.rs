@@ -389,6 +389,7 @@ mod test {
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
         };
