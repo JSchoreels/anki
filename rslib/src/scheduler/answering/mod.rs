@@ -434,6 +434,7 @@ impl Collection {
 
     fn card_state_updater(&mut self, mut card: Card) -> Result<CardStateUpdater> {
         let timing = self.timing_today()?;
+        let now = TimestampSecs::now();
         let deck = self
             .storage
             .get_deck(card.deck_id)?
@@ -472,15 +473,17 @@ impl Collection {
                 )?;
                 card.set_memory_state(&fsrs, params, item, config.inner.historical_retention)?;
             }
-            let days_elapsed = if let Some(last_review_time) = card.last_review_time {
-                timing.next_day_at.elapsed_days_since(last_review_time) as u32
+            let last_review_time = if card.last_review_time.is_some() {
+                card.last_review_time
             } else {
-                self.storage
-                    .time_of_last_review(card.id)?
-                    .map(|ts| timing.next_day_at.elapsed_days_since(ts))
-                    .unwrap_or_default() as u32
+                self.storage.time_of_last_review(card.id)?
             };
-            Some(fsrs.next_states(
+            let days_elapsed = last_review_time
+                .map(|last_review_time| {
+                    fsrs_elapsed_days(&card, last_review_time, timing.next_day_at, now)
+                })
+                .unwrap_or_default();
+            Some(fsrs.next_states_with_elapsed_days(
                 card.memory_state.map(Into::into),
                 desired_retention,
                 days_elapsed,
@@ -507,7 +510,7 @@ impl Collection {
             deck,
             config,
             timing,
-            now: TimestampSecs::now(),
+            now,
             fsrs_next_states,
             desired_retention,
             fsrs_short_term_with_steps,
@@ -571,6 +574,21 @@ impl Collection {
                 _ => {} // Other states don't use elapsed_secs.
             }
         }
+    }
+}
+
+fn fsrs_elapsed_days(
+    card: &Card,
+    last_review_time: TimestampSecs,
+    next_day_at: TimestampSecs,
+    now: TimestampSecs,
+) -> f32 {
+    if matches!(card.queue, CardQueue::Learn)
+        && matches!(card.ctype, CardType::Learn | CardType::Relearn)
+    {
+        (now.elapsed_secs_since(last_review_time).max(0) as f32) / 86_400.0
+    } else {
+        next_day_at.elapsed_days_since(last_review_time) as f32
     }
 }
 
@@ -697,10 +715,13 @@ fn get_fuzz_factor(seed: Option<u64>) -> Option<f32> {
 pub(crate) mod test {
     use super::*;
     use crate::card::CardType;
+    use crate::card::FsrsMemoryState;
     use crate::config::BoolKey;
+    use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::ReviewMix;
     use crate::scheduler::states::LearnState;
     use crate::scheduler::states::NewState;
+    use crate::scheduler::states::NormalState;
     use crate::scheduler::states::ReviewState;
     use crate::search::SortMode;
 
@@ -784,6 +805,58 @@ pub(crate) mod test {
         // Verify that the desired retention is from the deck, not the config
         assert_eq!(updater.desired_retention, Some(0.85));
 
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_relearning_good_uses_fractional_same_day_elapsed_time() -> Result<()> {
+        let params = vec![
+            0.0113, 0.7801, 2.2056, 17.8287, 5.7900, 0.4527, 3.1686, 2.1464, 0.2876, 1.2004,
+            0.4385, 0.0057, 0.8110, 0.2112, 0.5439, 1.7069, 0.9438, 0.3588, 3.6203, 0.3262, 0.0060,
+            0.2524, 2.6739, 0.5529, 1.3967, 2.5000, 0.9966, 0.0630, 0.2528, 0.6248, 0.9734, 0.1204,
+            0.6260, 0.1575, 0.4048,
+        ];
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = params;
+            config.desired_retention = 0.65;
+            config.relearn_steps = vec![];
+        });
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.get_first_card();
+        let now = TimestampSecs::now();
+        card.ctype = CardType::Relearn;
+        card.queue = CardQueue::Learn;
+        card.due = now.0 as i32;
+        card.interval = 1;
+        card.lapses = 1;
+        card.remaining_steps = 0;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 0.001,
+            difficulty: 9.796331,
+        });
+        card.last_review_time = Some(now.adding_secs(-105));
+        col.storage.update_card(&card)?;
+
+        let states = col.get_scheduling_states(card.id)?;
+        let CardState::Normal(NormalState::Relearning(state)) = states.good else {
+            panic!("expected Good to stay in short-term relearning");
+        };
+        let good_minutes = state.learning.scheduled_secs as f32 / 60.0;
+        assert!(
+            good_minutes > 60.0,
+            "same-day Good should use elapsed seconds and grow beyond the stuck minute interval, got {good_minutes}m"
+        );
+        assert!(
+            good_minutes < 12.0 * 60.0,
+            "regression setup should still exercise short-term relearning, got {good_minutes}m"
+        );
         Ok(())
     }
 

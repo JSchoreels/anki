@@ -53,6 +53,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         seriesMinMax,
         type ReviewTimeMatrix,
     } from "./review-time-matrix";
+    import {
+        HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
+        HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
+    } from "./help-me-decide-defaults";
 
     export let state: DeckOptionsState;
     export let simulateFsrsRequest: SimulateFsrsReviewRequest;
@@ -94,10 +98,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let computingRetention = false;
     let computeRetentionProgress: ComputeRetentionProgress | undefined = undefined;
     let transitionBlendAlpha =
-        simulateFsrsRequest.helpMeDecideTransitionBlendAlpha ?? 0.5;
+        simulateFsrsRequest.helpMeDecideTransitionBlendAlpha ??
+        HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT;
     let enforceMonotonicSuccessGradeProbs =
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs ??
-        false;
+        HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT;
 
     $: daysToSimulate = 365;
     $: deckSize = 0;
@@ -754,7 +759,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {#if workload}
                         <SpinBoxFloatRow
                             bind:value={transitionBlendAlpha}
-                            defaultValue={0.5}
+                            defaultValue={HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT}
                             min={0}
                             max={1}
                         >
@@ -767,7 +772,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                         <SwitchRow
                             bind:value={enforceMonotonicSuccessGradeProbs}
-                            defaultValue={false}
+                            defaultValue={HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT}
                         >
                             <SettingTitle
                                 on:click={() => openHelpModal("simulateFsrsReview")}

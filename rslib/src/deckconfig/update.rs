@@ -12,8 +12,8 @@ use anki_proto::deck_config::deck_configs_for_update::ConfigWithExtra;
 use anki_proto::deck_config::deck_configs_for_update::CurrentDeck;
 use anki_proto::deck_config::UpdateDeckConfigsMode;
 use anki_proto::decks::deck::normal::DayLimit;
-use fsrs::DEFAULT_PARAMETERS;
 use fsrs::ComputeParametersVersion;
+use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use fsrs::FSRS6_DEFAULT_PARAMETERS;
 
@@ -411,13 +411,15 @@ impl Collection {
                 current_params: &current_params,
                 num_of_relearning_steps,
                 health_check: false,
-                include_same_day_reviews: None,
-                model_version_override: Some(match FsrsVersion::try_from(config.inner.fsrs_version)
-                    .unwrap_or(FsrsVersion::Seven)
-                {
-                    FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
-                    _ => ComputeParametersVersion::Fsrs6,
-                }),
+                include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(config),
+                model_version_override: Some(
+                    match FsrsVersion::try_from(config.inner.fsrs_version)
+                        .unwrap_or(FsrsVersion::Seven)
+                    {
+                        FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
+                        _ => ComputeParametersVersion::Fsrs6,
+                    },
+                ),
             }) {
                 Ok(params) => {
                     println!("{}: {:?}", config.name, params.params);
@@ -442,6 +444,18 @@ fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
         FsrsVersion::Five => &mut config.inner.fsrs_params_5,
         FsrsVersion::Four => &mut config.inner.fsrs_params_4,
     }
+}
+
+fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> {
+    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
+        FsrsVersion::Seven => {}
+        _ => return None,
+    }
+
+    serde_json::from_slice::<serde_json::Value>(&config.inner.other)
+        .ok()?
+        .get("fsrs7IncludeSameDayOptimize")?
+        .as_bool()
 }
 
 fn normal_deck_to_limits(deck: &NormalDeck, today: u32) -> Limits {
@@ -492,6 +506,47 @@ mod test {
     use crate::deckconfig::NewCardInsertOrder;
     use crate::tests::open_test_collection_with_learning_card;
     use crate::tests::open_test_collection_with_relearning_card;
+
+    #[test]
+    fn fsrs7_optimize_include_same_day_reviews_reads_stored_flag() -> Result<()> {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "fsrs7IncludeSameDayOptimize": false,
+            "fsrs7IncludeSameDayEvaluate": true,
+        }))?;
+
+        assert_eq!(
+            fsrs7_optimize_include_same_day_reviews(&config),
+            Some(false)
+        );
+
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "fsrs7IncludeSameDayOptimize": true,
+        }))?;
+        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_optimize_include_same_day_reviews_defaults_when_missing() {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+
+        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
+    }
+
+    #[test]
+    fn fsrs7_optimize_include_same_day_reviews_ignores_older_versions() -> Result<()> {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Six as i32;
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "fsrs7IncludeSameDayOptimize": false,
+        }))?;
+
+        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
+        Ok(())
+    }
 
     #[test]
     fn updating() -> Result<()> {

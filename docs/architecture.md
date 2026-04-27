@@ -130,6 +130,8 @@ Scope:
   `Time` and `Memorized/Time` use both R-conditioned and transition-informed
   grade mixes. The blend can be overridden in Deck Options simulator with
   `help_me_decide_transition_blend_alpha` (`0`=R-only, `1`=transition-only).
+  Deck Options currently defaults this override to `0` and leaves
+  `help_me_decide_enforce_monotonic_success_grade_probs` disabled.
 
 ## FSRS Parameter Source
 
@@ -170,6 +172,8 @@ FSRS training-item extraction is model-family-aware:
   - For Check Health specifically:
     - optimization/training uses `param_search`
     - metric evaluation uses `fsrsEvaluationSearch` (or `param_search` if blank)
+  - Optimize All Decks reads `fsrs7IncludeSameDayOptimize` from each preset's
+    stored `other` JSON before optimizing that preset.
 
 Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best

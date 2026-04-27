@@ -57,6 +57,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         withFsrsSearchSettings,
     } from "./fsrs-search-settings";
     import {
+        HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
+        HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
+    } from "./help-me-decide-defaults";
+    import {
         DeckConfig_Config,
         DeckConfig_Config_FsrsVersion,
         GetRetentionWorkloadRequest,
@@ -271,8 +275,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reviewFuzzFactorLong: $config.reviewFuzzEnabled
             ? $config.reviewFuzzFactorLong
             : 0,
-        helpMeDecideTransitionBlendAlpha: 0.5,
-        helpMeDecideEnforceMonotonicSuccessGradeProbs: false,
+        helpMeDecideTransitionBlendAlpha:
+            HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
+        helpMeDecideEnforceMonotonicSuccessGradeProbs:
+            HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
     });
 
     $: void loadNewCardIntervals(
