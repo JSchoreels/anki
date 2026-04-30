@@ -808,18 +808,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SpinBoxFloatRow>
     </Item>
 </DynamicallySlottable>
-<DynamicallySlottable slotHost={Item} api={{}}>
-    <Item>
-        <SwitchRow bind:value={$fsrsShortTermWithStepsEnabled} defaultValue={false}>
-            <SettingTitle>
-                <GlobalLabel
-                    title={"Allow same day review for (re)learning steps"}
-                />
-            </SettingTitle>
-        </SwitchRow>
-    </Item>
-</DynamicallySlottable>
-
 {#if newCardIntervals}
     <div class="interval-preview ms-1 me-1">
         <div class="interval-preview-title">

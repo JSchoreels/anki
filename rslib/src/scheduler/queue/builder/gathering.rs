@@ -15,10 +15,49 @@ use crate::storage::card::NewCardSorting;
 
 impl QueueBuilder {
     pub(super) fn gather_cards(&mut self, col: &mut Collection) -> Result<()> {
+        if self.context.non_news_sorted_by_retrievability() {
+            self.gather_due_non_new_cards_with_exact_retrievability(col)?;
+            self.gather_new_cards(col)?;
+            return Ok(());
+        }
+
         self.gather_intraday_learning_cards(col)?;
         self.gather_due_cards(col, DueCardKind::Learning)?;
         self.gather_due_cards(col, DueCardKind::Review)?;
         self.gather_new_cards(col)?;
+
+        Ok(())
+    }
+
+    fn gather_due_non_new_cards_with_exact_retrievability(
+        &mut self,
+        col: &mut Collection,
+    ) -> Result<()> {
+        let mut due_cards = Vec::new();
+        self.gather_intraday_learning_cards_for_retrievability_sort(col, &mut due_cards)?;
+        self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Learning, &mut due_cards)?;
+        self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Review, &mut due_cards)?;
+
+        let mut with_key = Vec::with_capacity(due_cards.len());
+        for card in due_cards {
+            with_key.push((
+                card,
+                exact_relative_retrievability_key(col, card.id, self.context.timing)?,
+            ));
+        }
+        with_key.sort_by(|(card_a, key_a), (card_b, key_b)| {
+            key_a
+                .total_cmp(key_b)
+                .then_with(|| card_a.id.cmp(&card_b.id))
+        });
+
+        for (card, _) in with_key {
+            match card.kind {
+                DueCardKind::Review | DueCardKind::Learning => {
+                    self.r_sorted_non_new.push(card);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -33,6 +72,61 @@ impl QueueBuilder {
         )?;
 
         Ok(())
+    }
+
+    fn gather_intraday_learning_cards_for_retrievability_sort(
+        &mut self,
+        col: &mut Collection,
+        due_cards: &mut Vec<DueCard>,
+    ) -> Result<()> {
+        col.storage.for_each_intraday_card_in_active_decks(
+            self.context.timing.next_day_at,
+            |card| {
+                if card.due <= self.context.timing.now.0 as i32 {
+                    if self.add_due_card_for_retrievability_sort(card, false) {
+                        due_cards.push(card);
+                    }
+                } else {
+                    self.learning.push(card);
+                }
+            },
+        )?;
+
+        Ok(())
+    }
+
+    fn gather_due_cards_for_retrievability_sort(
+        &mut self,
+        col: &mut Collection,
+        kind: DueCardKind,
+        due_cards: &mut Vec<DueCard>,
+    ) -> Result<()> {
+        if self.limits.root_limit_reached(LimitKind::Review) {
+            return Ok(());
+        }
+        col.storage.for_each_due_card_in_active_decks(
+            self.context.timing,
+            ReviewCardOrder::Day,
+            kind,
+            self.context.fsrs,
+            |card| {
+                if self.limits.root_limit_reached(LimitKind::Review) {
+                    return Ok(false);
+                }
+                if !self
+                    .limits
+                    .limit_reached(card.current_deck_id, LimitKind::Review)?
+                    && self.add_due_card_for_retrievability_sort(card, true)
+                {
+                    due_cards.push(card);
+                    self.limits.decrement_deck_and_parent_limits(
+                        card.current_deck_id,
+                        LimitKind::Review,
+                    )?;
+                }
+                Ok(true)
+            },
+        )
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
@@ -196,23 +290,31 @@ impl QueueBuilder {
 
     /// True if limit should be decremented.
     fn add_due_card(&mut self, card: DueCard) -> bool {
-        let bury_this_card = self
-            .get_and_update_bury_mode_for_note(card.into())
-            .map(|mode| match card.kind {
-                DueCardKind::Review => mode.bury_reviews,
-                DueCardKind::Learning => mode.bury_interday_learning,
-            })
-            .unwrap_or_default();
-        if bury_this_card {
-            false
-        } else {
+        let added = self.add_due_card_for_retrievability_sort(card, true);
+        if added {
             match card.kind {
                 DueCardKind::Review => self.review.push(card),
                 DueCardKind::Learning => self.day_learning.push(card),
             }
-
-            true
         }
+
+        added
+    }
+
+    fn add_due_card_for_retrievability_sort(
+        &mut self,
+        card: DueCard,
+        interday_or_review: bool,
+    ) -> bool {
+        let bury_this_card = self
+            .get_and_update_bury_mode_for_note(card.into())
+            .map(|mode| match card.kind {
+                DueCardKind::Review => mode.bury_reviews,
+                DueCardKind::Learning if interday_or_review => mode.bury_interday_learning,
+                DueCardKind::Learning => false,
+            })
+            .unwrap_or_default();
+        !bury_this_card
     }
 
     // True if limit should be decremented.

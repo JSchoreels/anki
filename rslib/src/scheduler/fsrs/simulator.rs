@@ -218,10 +218,34 @@ impl HelpMeDecideReviewTimeModel {
                 let n = group_count[g] as f32;
                 let matrix = [
                     [n, sum_x1[g], sum_x2[g], sum_x3[g], sum_x4[g]],
-                    [sum_x1[g], sum_x1x1[g], sum_x1x2[g], sum_x1x3[g], sum_x1x4[g]],
-                    [sum_x2[g], sum_x1x2[g], sum_x2x2[g], sum_x2x3[g], sum_x2x4[g]],
-                    [sum_x3[g], sum_x1x3[g], sum_x2x3[g], sum_x3x3[g], sum_x3x4[g]],
-                    [sum_x4[g], sum_x1x4[g], sum_x2x4[g], sum_x3x4[g], sum_x4x4[g]],
+                    [
+                        sum_x1[g],
+                        sum_x1x1[g],
+                        sum_x1x2[g],
+                        sum_x1x3[g],
+                        sum_x1x4[g],
+                    ],
+                    [
+                        sum_x2[g],
+                        sum_x1x2[g],
+                        sum_x2x2[g],
+                        sum_x2x3[g],
+                        sum_x2x4[g],
+                    ],
+                    [
+                        sum_x3[g],
+                        sum_x1x3[g],
+                        sum_x2x3[g],
+                        sum_x3x3[g],
+                        sum_x3x4[g],
+                    ],
+                    [
+                        sum_x4[g],
+                        sum_x1x4[g],
+                        sum_x2x4[g],
+                        sum_x3x4[g],
+                        sum_x4x4[g],
+                    ],
                 ];
                 let vector = [sum_y[g], sum_x1y[g], sum_x2y[g], sum_x3y[g], sum_x4y[g]];
                 if let Some(solution) = Self::solve_5x5(matrix, vector) {
@@ -283,8 +307,7 @@ impl HelpMeDecideReviewTimeModel {
             if row_total == 0 {
                 probs[row_idx] = global_fallback;
             } else {
-                probs[row_idx] =
-                    counts[row_idx].map(|count| count as f32 / row_total as f32);
+                probs[row_idx] = counts[row_idx].map(|count| count as f32 / row_total as f32);
             }
         }
         probs
@@ -360,8 +383,7 @@ impl HelpMeDecideReviewTimeModel {
             let local_weight = totals[rb] as f32 / (totals[rb] as f32 + SHRINK_K);
             let mut blended = [0.0f32; 3];
             for g in 0..3 {
-                blended[g] =
-                    local_weight * raw_probs[rb][g] + (1.0 - local_weight) * prior[g];
+                blended[g] = local_weight * raw_probs[rb][g] + (1.0 - local_weight) * prior[g];
             }
             probs[rb] = Self::normalize_triplet(blended);
         }
@@ -747,10 +769,8 @@ impl Collection {
                 .first()
                 .map(|entry| (entry.review_kind == crate::revlog::RevlogReviewKind::Review) as u32)
                 .unwrap_or(0);
-            let mut previous_review_grade: Option<usize> = output
-                .filtered_revlogs
-                .first()
-                .and_then(|entry| {
+            let mut previous_review_grade: Option<usize> =
+                output.filtered_revlogs.first().and_then(|entry| {
                     let grade = entry.button_chosen as usize;
                     if entry.review_kind == crate::revlog::RevlogReviewKind::Review
                         && (1..=4).contains(&grade)
@@ -788,7 +808,14 @@ impl Collection {
                     continue;
                 }
                 let seconds = entry.taken_millis as f32 / 1000.0;
-                samples.push((retrievability, stability, repetitions, difficulty, grade, seconds));
+                samples.push((
+                    retrievability,
+                    stability,
+                    repetitions,
+                    difficulty,
+                    grade,
+                    seconds,
+                ));
             }
         }
 
@@ -1244,10 +1271,7 @@ mod tests {
     #[test]
     fn sample_count_matrix_tracks_observed_samples() {
         let model = HelpMeDecideReviewTimeModel::from_samples(
-            &[
-                (0.9, 5.0, 2.0, 5.0, 1, 30.0),
-                (0.9, 5.0, 2.0, 5.0, 3, 10.0),
-            ],
+            &[(0.9, 5.0, 2.0, 5.0, 1, 30.0), (0.9, 5.0, 2.0, 5.0, 3, 10.0)],
             no_transitions(),
             false,
             [1.0, 1.0, 1.0, 1.0],
@@ -1379,7 +1403,7 @@ mod tests {
             [0, 0, 2, 0], // Hard -> Good
             [0, 0, 0, 3], // Good -> Easy
             [4, 0, 0, 0], // Easy -> Again
-            // Again row has no outgoing transitions in this synthetic example.
+                          // Again row has no outgoing transitions in this synthetic example.
         ];
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &[(0.8, 5.0, 2.0, 5.0, 2, 20.0)],
@@ -1414,10 +1438,8 @@ mod tests {
             false,
             [1.0, 1.0, 1.0, 1.0],
         );
-        let p_hi =
-            model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], None);
-        let p_lo =
-            model.success_review_rating_prob_for_retrievability(0.60, [0.2, 0.6, 0.2], None);
+        let p_hi = model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], None);
+        let p_lo = model.success_review_rating_prob_for_retrievability(0.60, [0.2, 0.6, 0.2], None);
         // Easy at high R should exceed easy at low R.
         assert!(p_hi[2] > p_lo[2]);
         // Hard at low R should exceed hard at high R.
@@ -1474,16 +1496,10 @@ mod tests {
             false,
             [1.0, 1.0, 1.0, 1.0],
         );
-        let p_r_only = model.success_review_rating_prob_for_retrievability(
-            0.95,
-            [0.2, 0.6, 0.2],
-            Some(0.0),
-        );
-        let p_t_only = model.success_review_rating_prob_for_retrievability(
-            0.95,
-            [0.2, 0.6, 0.2],
-            Some(1.0),
-        );
+        let p_r_only =
+            model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], Some(0.0));
+        let p_t_only =
+            model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], Some(1.0));
         // R-only should prefer Easy, transition-only prior should lean away from Hard in this setup.
         assert!(p_r_only[2] > p_r_only[0]);
         assert!(p_t_only[1] >= p_t_only[0]);

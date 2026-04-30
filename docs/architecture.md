@@ -45,6 +45,24 @@ expose a protobuf object directly to callers, but when they do so, they use a
 type alias, so callers outside pylib should never need to import a generated
 \_pb2.py file.
 
+## Search Query Reads
+
+Search parsing and SQL generation live in `rslib/src/search/`. Arbitrary named
+field searches resolve field names against each notetype, so they read from
+`notes.flds` by field ordinal instead of relying on `notes.sfld`.
+
+Numeric field comparisons such as `Frequency>500 Frequency<1500` use the same
+per-notetype field-name resolution. The generated SQL reads the matching field
+with `field_at_index(n.flds, ordinal)`, verifies that the trimmed field text is
+numeric, and then compares it as a real number. This means the field does not
+need to be the notetype's sort field.
+
+Bracketed ranges such as `Frequency:[500,600]`, `Frequency:[500,600[`, and
+`Frequency:]500,600]` are implemented as two comparisons against the same
+resolved field value. `[` and `]` at the lower bound mean inclusive and
+exclusive respectively; `]` and `[` at the upper bound mean inclusive and
+exclusive respectively.
+
 ## FSRS Help Me Decide Review-Time Buckets
 
 `Help Me Decide (Experimental)` now estimates review time from bucketed history
@@ -148,6 +166,13 @@ Deck options also expose a global FSRS learning-queue bypass backed by
 cards schedules review states directly instead of writing learning/relearning
 queue states, including configured steps and FSRS short-term intervals below
 half a day.
+
+When FSRS review order is ascending retrievability, due review,
+interday-learning, and due-now intraday learning/relearning cards are gathered
+into one exact-retrievability ordering. Intraday cards with a future timestamp
+remain hidden until their due time, at which point the queue is rebuilt so they
+can be inserted according to their current retrievability. New cards are not
+included in this ordering because they do not have retrievability yet.
 
 The Deck Options "New Card Intervals" preview passes the current unsaved values
 of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update

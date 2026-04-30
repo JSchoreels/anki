@@ -30,6 +30,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
     const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
 
     let stepsExceedMinimumInterval: string;
@@ -114,6 +115,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </Item>
 
         {#if $fsrs}
+            <Item>
+                <SwitchRow bind:value={$fsrsShortTermWithStepsEnabled} defaultValue={false}>
+                    <SettingTitle>
+                        <GlobalLabel
+                            title={"Allow same day review for (re)learning steps"}
+                        />
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+
             <Item>
                 <SwitchRow bind:value={$fsrsLearningQueuesDisabled} defaultValue={false}>
                     <SettingTitle>

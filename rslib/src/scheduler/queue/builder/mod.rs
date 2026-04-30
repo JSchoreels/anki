@@ -106,6 +106,7 @@ pub(super) struct QueueBuilder {
     pub(super) review: Vec<DueCard>,
     pub(super) learning: Vec<DueCard>,
     pub(super) day_learning: Vec<DueCard>,
+    pub(super) r_sorted_non_new: Vec<DueCard>,
     limits: LimitTreeMap,
     load_balancer: Option<LoadBalancer>,
     context: Context,
@@ -167,6 +168,7 @@ impl QueueBuilder {
             review: Vec::new(),
             learning: Vec::new(),
             day_learning: Vec::new(),
+            r_sorted_non_new: Vec::new(),
             limits,
             load_balancer,
             context: Context {
@@ -188,21 +190,45 @@ impl QueueBuilder {
         let intraday_learning = sort_learning(self.learning);
         let now = TimestampSecs::now();
         let cutoff = now.adding_secs(learn_ahead_secs);
-        let learn_count = intraday_learning
+        let shared_r_sort = self.context.non_news_sorted_by_retrievability();
+        let r_sorted_learning_count = self
+            .r_sorted_non_new
             .iter()
-            .take_while(|e| e.due <= cutoff)
-            .count()
-            + self.day_learning.len();
+            .filter(|card| matches!(card.kind, DueCardKind::Learning))
+            .count();
+        let r_sorted_review_count = self
+            .r_sorted_non_new
+            .iter()
+            .filter(|card| matches!(card.kind, DueCardKind::Review))
+            .count();
+        let learn_count = if shared_r_sort {
+            r_sorted_learning_count
+        } else {
+            intraday_learning
+                .iter()
+                .take_while(|e| e.due <= cutoff)
+                .count()
+                + self.day_learning.len()
+        };
 
-        let review_count = self.review.len();
+        let review_count = if shared_r_sort {
+            r_sorted_review_count
+        } else {
+            self.review.len()
+        };
         let new_count = self.new.len();
 
-        // merge interday and new cards into main
-        let with_interday_learn = merge_day_learning(
-            self.review,
-            self.day_learning,
-            self.context.sort_options.day_learn_mix,
-        );
+        // merge due non-new and new cards into main
+        let with_interday_learn = if shared_r_sort {
+            Box::new(self.r_sorted_non_new.into_iter().map(Into::into))
+                as Box<dyn ExactSizeIterator<Item = MainQueueEntry>>
+        } else {
+            merge_day_learning(
+                self.review,
+                self.day_learning,
+                self.context.sort_options.day_learn_mix,
+            )
+        };
         let main_iter = merge_new(
             with_interday_learn,
             self.new,
@@ -222,7 +248,18 @@ impl QueueBuilder {
             build_time: TimestampMillis::now(),
             load_balancer: self.load_balancer,
             current_learning_cutoff: now,
+            non_news_sorted_by_retrievability: shared_r_sort,
         }
+    }
+}
+
+impl Context {
+    fn non_news_sorted_by_retrievability(&self) -> bool {
+        self.fsrs
+            && matches!(
+                self.sort_options.review_order,
+                ReviewCardOrder::RetrievabilityAscending
+            )
     }
 }
 
@@ -523,6 +560,137 @@ mod test {
         // exact FSRS ordering should tie on identical state/elapsed/DR and fall
         // back to card id, not stale per-card decay.
         assert_eq!(col.queue_as_ids(deck.id), vec![card1.id, card2.id]);
+        Ok(())
+    }
+
+    fn add_memory_state_card(
+        col: &mut Collection,
+        deck_id: DeckId,
+        queue: CardQueue,
+        ctype: CardType,
+        due: i32,
+        elapsed_secs: i64,
+        stability: f32,
+    ) -> Result<CardId> {
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "foo")?;
+        col.add_note(&mut note, deck_id)?;
+        let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+        card.ctype = ctype;
+        card.queue = queue;
+        card.due = due;
+        card.interval = 1;
+        card.memory_state = Some(FsrsMemoryState {
+            stability,
+            difficulty: 5.0,
+        });
+        card.desired_retention = Some(0.9);
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-elapsed_secs));
+        col.storage.update_card(&card)?;
+        Ok(card.id)
+    }
+
+    #[test]
+    fn fsrs_retrievability_order_interleaves_due_non_new_queues() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+
+        let timing = col.timing_today()?;
+        let review = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let day_learning = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::DayLearn,
+            CardType::Relearn,
+            timing.days_elapsed as i32,
+            4 * 86_400,
+            30.0,
+        )?;
+        let intraday_learning = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Learn,
+            CardType::Relearn,
+            (timing.now.0 - 1) as i32,
+            6 * 86_400,
+            30.0,
+        )?;
+
+        assert_eq!(
+            col.queue_as_ids(deck.id),
+            vec![intraday_learning, day_learning, review]
+        );
+        assert_eq!(col.counts(), [0, 2, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_retrievability_order_excludes_future_intraday_learning() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+
+        let timing = col.timing_today()?;
+        let review = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Learn,
+            CardType::Relearn,
+            (timing.now.0 + 60) as i32,
+            6 * 86_400,
+            30.0,
+        )?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![review]);
+        assert_eq!(col.counts(), [0, 0, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_retrievability_order_preserves_new_card_mix() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let deck_config_id = deck.config_id().unwrap();
+        let mut config = col.get_deck_config(deck_config_id, false)?.unwrap();
+        config.inner.new_mix = ReviewMix::BeforeReviews as i32;
+        col.add_or_update_deck_config(&mut config)?;
+
+        let new_card = CardAdder::new().add(&mut col)[0].id;
+        let timing = col.timing_today()?;
+        let review = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![new_card, review]);
         Ok(())
     }
 
