@@ -38,6 +38,7 @@ pub(crate) struct DueCard {
     pub current_deck_id: DeckId,
     pub original_deck_id: DeckId,
     pub kind: DueCardKind,
+    pub reps: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +88,7 @@ impl From<DueCard> for LearningQueueEntry {
             due: TimestampSecs(c.due as i64),
             id: c.id,
             mtime: c.mtime,
+            reps: c.reps,
         }
     }
 }
@@ -204,11 +206,7 @@ impl QueueBuilder {
         let learn_count = if shared_r_sort {
             r_sorted_learning_count
         } else {
-            intraday_learning
-                .iter()
-                .take_while(|e| e.due <= cutoff)
-                .count()
-                + self.day_learning.len()
+            intraday_learning.iter().filter(|e| e.due <= cutoff).count() + self.day_learning.len()
         };
 
         let review_count = if shared_r_sort {
@@ -311,9 +309,11 @@ fn merge_new(
     }
 }
 
-fn sort_learning(mut learning: Vec<DueCard>) -> VecDeque<LearningQueueEntry> {
-    learning.sort_unstable_by(|a, b| a.due.cmp(&b.due));
-    learning.into_iter().map(LearningQueueEntry::from).collect()
+fn sort_learning(learning: Vec<DueCard>) -> VecDeque<LearningQueueEntry> {
+    let mut entries: Vec<LearningQueueEntry> =
+        learning.into_iter().map(LearningQueueEntry::from).collect();
+    entries.sort_by(|a, b| a.cmp_by_reps_then_due(b));
+    entries.into_iter().collect()
 }
 
 impl Collection {
@@ -516,7 +516,7 @@ mod test {
             cards.push(card);
         }
         col.update_cards_maybe_undoable(cards, false)?;
-        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RelativeOverdueness);
         assert_eq!(col.queue_as_due_and_ivl(deck.id), expected_queue);
 
         Ok(())

@@ -441,18 +441,18 @@ message SimulateFsrsReviewResponse {
 
 message SimulateFsrsWorkloadResponse {
   map<uint32, float> cost = 1;
-  float start_memorized = 2;
+  float reviewless_end_memorized = 2;
   map<uint32, float> memorized = 3;
   map<uint32, uint32> review_count = 4;
   uint32 review_time_r_bucket_count = 5;
   uint32 review_time_s_bucket_count = 6;
   repeated float review_time_again_seconds = 7;
   repeated float review_time_hard_seconds = 8;
-  repeated float review_time_good_seconds = 12;
-  repeated float review_time_easy_seconds = 13;
   repeated uint32 review_time_sample_counts = 9;
   repeated float review_time_again_coeffs = 10;
   repeated float review_time_hard_coeffs = 11;
+  repeated float review_time_good_seconds = 12;
+  repeated float review_time_easy_seconds = 13;
   repeated float review_time_good_coeffs = 14;
   repeated float review_time_easy_coeffs = 15;
   repeated float review_time_grade_weights = 16;

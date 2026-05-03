@@ -38,7 +38,7 @@ export interface Point {
 
 export type WorkloadPoint = Point & {
     learnSpan: number;
-    start_memorized: number;
+    reviewless_end_memorized: number;
 };
 
 export enum SimulateSubgraph {
@@ -70,7 +70,8 @@ export function renderWorkloadChart(
     const subgraph_data = {
         [SimulateWorkloadSubgraph.ratio]: data.map((d) => ({
             ...d,
-            y: (60 * 60 * (d.memorized - d.start_memorized)) / d.timeCost,
+            y: (60 * 60 * (d.memorized - d.reviewless_end_memorized)) /
+                d.timeCost,
         })),
         [SimulateWorkloadSubgraph.time]: data.map((d) => ({
             ...d,
@@ -141,7 +142,7 @@ export function renderWorkloadChart(
         );
     }
 
-    const startMemorized = subgraph_data[0]?.start_memorized ?? 0;
+    const startMemorized = subgraph_data[0].reviewless_end_memorized;
 
     return _renderSimulationChart(
         svgElem,
