@@ -636,6 +636,50 @@ mod test {
     }
 
     #[test]
+    fn fsrs_retrievability_order_applies_limits_after_sorting_filtered_child_cards() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let mut parent = DeckAdder::new("Parent").add(&mut col);
+        let study = DeckAdder::new("Parent::Study").add(&mut col);
+        let filtered = DeckAdder::new("Parent::Filtered")
+            .filtered(true)
+            .add(&mut col);
+        col.set_deck_review_order(&mut parent, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_review_limit(parent.id, 1);
+
+        let timing = col.timing_today()?;
+        let lower_retrievability_card = add_memory_state_card(
+            &mut col,
+            study.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            30.0,
+        )?;
+        let filtered_card = add_memory_state_card(
+            &mut col,
+            study.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            86_400,
+            30.0,
+        )?;
+
+        let mut card = col.storage.get_card(filtered_card)?.unwrap();
+        card.original_deck_id = card.deck_id;
+        card.deck_id = filtered.id;
+        card.original_due = card.due;
+        card.due = -100_000;
+        col.storage.update_card(&card)?;
+
+        assert_eq!(col.queue_as_ids(parent.id), vec![lower_retrievability_card]);
+        Ok(())
+    }
+
+    #[test]
     fn fsrs_retrievability_order_excludes_future_intraday_learning() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;

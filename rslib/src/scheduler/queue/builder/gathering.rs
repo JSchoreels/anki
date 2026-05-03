@@ -13,6 +13,13 @@ use crate::scheduler::queue::DueCardKind;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::card::NewCardSorting;
 
+#[derive(Debug, Clone, Copy)]
+struct DueCardForRetrievabilitySort {
+    card: DueCard,
+    counts_towards_review_limit: bool,
+    interday_or_review: bool,
+}
+
 impl QueueBuilder {
     pub(super) fn gather_cards(&mut self, col: &mut Collection) -> Result<()> {
         if self.context.non_news_sorted_by_retrievability() {
@@ -39,22 +46,39 @@ impl QueueBuilder {
         self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Review, &mut due_cards)?;
 
         let mut with_key = Vec::with_capacity(due_cards.len());
-        for card in due_cards {
+        for candidate in due_cards {
             with_key.push((
-                card,
-                exact_relative_retrievability_key(col, card.id, self.context.timing)?,
+                candidate,
+                exact_relative_retrievability_key(col, candidate.card.id, self.context.timing)?,
             ));
         }
-        with_key.sort_by(|(card_a, key_a), (card_b, key_b)| {
+        with_key.sort_by(|(candidate_a, key_a), (candidate_b, key_b)| {
             key_a
                 .total_cmp(key_b)
-                .then_with(|| card_a.id.cmp(&card_b.id))
+                .then_with(|| candidate_a.card.id.cmp(&candidate_b.card.id))
         });
 
-        for (card, _) in with_key {
-            match card.kind {
-                DueCardKind::Review | DueCardKind::Learning => {
-                    self.r_sorted_non_new.push(card);
+        for (candidate, _) in with_key {
+            if candidate.counts_towards_review_limit {
+                if self.limits.root_limit_reached(LimitKind::Review)
+                    || self
+                        .limits
+                        .limit_reached(candidate.card.current_deck_id, LimitKind::Review)?
+                {
+                    continue;
+                }
+            }
+
+            if self
+                .add_due_card_for_retrievability_sort(candidate.card, candidate.interday_or_review)
+            {
+                self.r_sorted_non_new.push(candidate.card);
+
+                if candidate.counts_towards_review_limit {
+                    self.limits.decrement_deck_and_parent_limits(
+                        candidate.card.current_deck_id,
+                        LimitKind::Review,
+                    )?;
                 }
             }
         }
@@ -77,15 +101,17 @@ impl QueueBuilder {
     fn gather_intraday_learning_cards_for_retrievability_sort(
         &mut self,
         col: &mut Collection,
-        due_cards: &mut Vec<DueCard>,
+        due_cards: &mut Vec<DueCardForRetrievabilitySort>,
     ) -> Result<()> {
         col.storage.for_each_intraday_card_in_active_decks(
             self.context.timing.next_day_at,
             |card| {
                 if card.due <= self.context.timing.now.0 as i32 {
-                    if self.add_due_card_for_retrievability_sort(card, false) {
-                        due_cards.push(card);
-                    }
+                    due_cards.push(DueCardForRetrievabilitySort {
+                        card,
+                        counts_towards_review_limit: false,
+                        interday_or_review: false,
+                    });
                 } else {
                     self.learning.push(card);
                 }
@@ -99,31 +125,19 @@ impl QueueBuilder {
         &mut self,
         col: &mut Collection,
         kind: DueCardKind,
-        due_cards: &mut Vec<DueCard>,
+        due_cards: &mut Vec<DueCardForRetrievabilitySort>,
     ) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::Review) {
-            return Ok(());
-        }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
             ReviewCardOrder::Day,
             kind,
             self.context.fsrs,
             |card| {
-                if self.limits.root_limit_reached(LimitKind::Review) {
-                    return Ok(false);
-                }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card_for_retrievability_sort(card, true)
-                {
-                    due_cards.push(card);
-                    self.limits.decrement_deck_and_parent_limits(
-                        card.current_deck_id,
-                        LimitKind::Review,
-                    )?;
-                }
+                due_cards.push(DueCardForRetrievabilitySort {
+                    card,
+                    counts_towards_review_limit: true,
+                    interday_or_review: true,
+                });
                 Ok(true)
             },
         )

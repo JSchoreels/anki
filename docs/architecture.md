@@ -180,6 +180,8 @@ into one exact-retrievability ordering. Intraday cards with a future timestamp
 remain hidden until their due time, at which point the queue is rebuilt so they
 can be inserted according to their current retrievability. New cards are not
 included in this ordering because they do not have retrievability yet.
+Review limits are applied after the shared retrievability sort, so filtered-deck
+positions do not decide which cards are admitted before sorting.
 
 The Deck Options "New Card Intervals" preview passes the current unsaved values
 of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update
