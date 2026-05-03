@@ -165,8 +165,24 @@ impl Collection {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            subtree_config_ids: self
+                .subtree_config_ids(&deck)?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             limits: Some(normal_deck_to_limits(normal, today)),
         })
+    }
+
+    /// Deck configs used by the selected deck and its descendants.
+    fn subtree_config_ids(&self, deck: &Deck) -> Result<HashSet<DeckConfigId>> {
+        Ok(self
+            .storage
+            .child_decks(deck)?
+            .iter()
+            .chain(iter::once(deck))
+            .filter_map(|deck| deck.config_id())
+            .collect())
     }
 
     /// Deck configs used by parent decks.
@@ -657,6 +673,34 @@ mod test {
         // should have forced a full sync
         assert!(full_sync_required(&mut col));
 
+        Ok(())
+    }
+
+    #[test]
+    fn current_deck_reports_subtree_config_ids() -> Result<()> {
+        let mut col = Collection::new();
+        let mut child_config = DeckConfig {
+            name: "Child preset".into(),
+            ..Default::default()
+        };
+        col.add_or_update_deck_config(&mut child_config)?;
+
+        let mut child = col.get_or_create_normal_deck("Default::child")?;
+        child.normal_mut()?.config_id = child_config.id.0;
+        col.add_or_update_deck(&mut child)?;
+
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let subtree_config_ids: HashSet<_> = output
+            .current_deck
+            .unwrap()
+            .subtree_config_ids
+            .into_iter()
+            .collect();
+
+        assert_eq!(
+            subtree_config_ids,
+            HashSet::from([DeckConfigId(1).0, child_config.id.0])
+        );
         Ok(())
     }
 

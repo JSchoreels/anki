@@ -33,6 +33,7 @@ export interface Point {
     count: number;
     memorized: number;
     label: number;
+    labelName?: string;
 }
 
 export type WorkloadPoint = Point & {
@@ -66,15 +67,24 @@ export function renderWorkloadChart(
         .domain([xMin, xMax])
         .range([bounds.marginLeft, bounds.width - bounds.marginRight]);
 
-    const subgraph_data = ({
-        [SimulateWorkloadSubgraph.ratio]: data.map(d => ({
+    const subgraph_data = {
+        [SimulateWorkloadSubgraph.ratio]: data.map((d) => ({
             ...d,
             y: (60 * 60 * (d.memorized - d.start_memorized)) / d.timeCost,
         })),
-        [SimulateWorkloadSubgraph.time]: data.map(d => ({ ...d, y: d.timeCost / d.learnSpan })),
-        [SimulateWorkloadSubgraph.count]: data.map(d => ({ ...d, y: d.count / d.learnSpan })),
-        [SimulateWorkloadSubgraph.memorized]: data.map(d => ({ ...d, y: d.memorized })),
-    })[subgraph].filter((point) => point !== undefined);
+        [SimulateWorkloadSubgraph.time]: data.map((d) => ({
+            ...d,
+            y: d.timeCost / d.learnSpan,
+        })),
+        [SimulateWorkloadSubgraph.count]: data.map((d) => ({
+            ...d,
+            y: d.count / d.learnSpan,
+        })),
+        [SimulateWorkloadSubgraph.memorized]: data.map((d) => ({
+            ...d,
+            y: d.memorized,
+        })),
+    }[subgraph].filter((point) => point !== undefined);
 
     const yTickFormat = (n: number): string => {
         return subgraph == SimulateWorkloadSubgraph.time
@@ -89,15 +99,18 @@ export function renderWorkloadChart(
     });
     const xTickFormat = (n: number) => formatter.format(n / 100);
 
-    const formatY: (value: number) => string = ({
+    const formatY: (value: number) => string = {
         [SimulateWorkloadSubgraph.ratio]: (value: number) =>
             tr.deckConfigFsrsSimulatorRatioTooltip2({ time: value.toFixed(2) }),
         [SimulateWorkloadSubgraph.time]: (value: number) =>
-            tr.statisticsMinutesPerDay({ count: parseFloat((value / 60).toPrecision(2)) }),
-        [SimulateWorkloadSubgraph.count]: (value: number) => tr.statisticsReviewsPerDay({ count: Math.round(value) }),
+            tr.statisticsMinutesPerDay({
+                count: parseFloat((value / 60).toPrecision(2)),
+            }),
+        [SimulateWorkloadSubgraph.count]: (value: number) =>
+            tr.statisticsReviewsPerDay({ count: Math.round(value) }),
         [SimulateWorkloadSubgraph.memorized]: (value: number) =>
             tr.statisticsMemorized({ memorized: Math.round(value).toFixed(0) }),
-    })[subgraph];
+    }[subgraph];
 
     function formatX(dr: number) {
         return `${tr.deckConfigDesiredRetention()}: ${xTickFormat(dr)}<br>`;
@@ -141,14 +154,17 @@ export function renderWorkloadChart(
         yTickFormat,
         xTickFormat,
         (svg, x, y) => {
-            svg
-                .selectAll("line")
-                .data(subgraph == SimulateWorkloadSubgraph.memorized ? [startMemorized] : [])
+            svg.selectAll("line")
+                .data(
+                    subgraph == SimulateWorkloadSubgraph.memorized
+                        ? [startMemorized]
+                        : [],
+                )
                 .enter()
                 .attr("x1", x(xMin))
                 .attr("x2", x(xMax))
-                .attr("y1", d => y(d))
-                .attr("y2", d => y(d))
+                .attr("y1", (d) => y(d))
+                .attr("y2", (d) => y(d))
                 .attr("stroke", "black")
                 .attr("stroke-dasharray", "5,5")
                 .attr("stroke-width", 1);
@@ -164,19 +180,22 @@ export function renderSimulationChart(
     subgraph: SimulateSubgraph,
 ): TableDatum[] {
     const today = new Date();
-    const convertedData = data.map(d => ({
+    const convertedData = data.map((d) => ({
         ...d,
         x: new Date(today.getTime() + d.x * 24 * 60 * 60 * 1000),
     }));
 
-    const subgraph_data = ({
-        [SimulateSubgraph.count]: convertedData.map(d => ({ ...d, y: d.count })),
-        [SimulateSubgraph.time]: convertedData.map(d => ({ ...d, y: d.timeCost })),
-        [SimulateSubgraph.memorized]: convertedData.map(d => ({ ...d, y: d.memorized })),
-    })[subgraph];
+    const subgraph_data = {
+        [SimulateSubgraph.count]: convertedData.map((d) => ({ ...d, y: d.count })),
+        [SimulateSubgraph.time]: convertedData.map((d) => ({ ...d, y: d.timeCost })),
+        [SimulateSubgraph.memorized]: convertedData.map((d) => ({
+            ...d,
+            y: d.memorized,
+        })),
+    }[subgraph];
 
     const xMin = today;
-    const xMax = max(subgraph_data, d => d.x);
+    const xMax = max(subgraph_data, (d) => d.x);
 
     const x = scaleTime()
         .domain([xMin, xMax!])
@@ -186,25 +205,27 @@ export function renderSimulationChart(
         return subgraph == SimulateSubgraph.time ? timeSpan(n, true) : n.toString();
     };
 
-    const formatY: (value: number) => string = ({
+    const formatY: (value: number) => string = {
         [SimulateSubgraph.time]: timeSpan,
-        [SimulateSubgraph.count]: (value: number) => tr.statisticsReviews({ reviews: Math.round(value) }),
+        [SimulateSubgraph.count]: (value: number) =>
+            tr.statisticsReviews({ reviews: Math.round(value) }),
         [SimulateSubgraph.memorized]: (value: number) =>
             tr.statisticsMemorized({ memorized: Math.round(value).toFixed(0) }),
-    })[subgraph];
+    }[subgraph];
 
-    const perDay = ({
+    const perDay = {
         [SimulateSubgraph.count]: tr.statisticsReviewsPerDay,
         [SimulateSubgraph.time]: ({ count }: { count: number }) => timeSpan(count),
         [SimulateSubgraph.memorized]: tr.statisticsCardsPerDay,
-    })[subgraph];
+    }[subgraph];
 
     function legendMouseMove(e: MouseEvent, d: number) {
-        const data = subgraph_data.filter(datum => datum.label == d);
+        const data = subgraph_data.filter((datum) => datum.label == d);
 
-        const total = subgraph == SimulateSubgraph.memorized
-            ? data[data.length - 1].memorized - data[0].memorized
-            : sumBy(data, d => d.y);
+        const total =
+            subgraph == SimulateSubgraph.memorized
+                ? data[data.length - 1].memorized - data[0].memorized
+                : sumBy(data, (d) => d.y);
         const average = total / (data?.length || 1);
 
         showTooltip(
@@ -236,7 +257,7 @@ export function renderSimulationChart(
 
 function _renderSimulationChart<
     X extends ScaleLinear<number, number> | ScaleTime<number, number>,
-    T extends { x: any; y: any; label: number },
+    T extends { x: any; y: any; label: number; labelName?: string },
 >(
     svgElem: SVGElement,
     bounds: GraphBounds,
@@ -267,13 +288,18 @@ function _renderSimulationChart<
 
     svg.select<SVGGElement>(".x-ticks")
         .call((selection) =>
-            selection.transition(trans).call(axisBottom(x).ticks(7).tickSizeOuter(0).tickFormat(xTickFormat as any))
+            selection.transition(trans).call(
+                axisBottom(x)
+                    .ticks(7)
+                    .tickSizeOuter(0)
+                    .tickFormat(xTickFormat as any),
+            ),
         )
         .attr("direction", "ltr");
     // y scale
 
-    const yMax = max(subgraph_data, d => d.y)!;
-    let yMin = min(subgraph_data, d => d.y)!;
+    const yMax = max(subgraph_data, (d) => d.y)!;
+    let yMin = min(subgraph_data, (d) => d.y)!;
     yMin = min([yMin, y_min])!;
     const y = scaleLinear()
         .range([bounds.height - bounds.marginBottom, bounds.marginTop])
@@ -286,7 +312,7 @@ function _renderSimulationChart<
                     .ticks(bounds.height / 50)
                     .tickSizeOuter(0)
                     .tickFormat(yTickFormat as any),
-            )
+            ),
         )
         .attr("direction", "ltr");
 
@@ -296,14 +322,23 @@ function _renderSimulationChart<
         .attr("class", "y-axis-title")
         .attr("transform", "rotate(-90)")
         .attr("y", 0 - bounds.marginLeft)
-        .attr("x", 0 - (bounds.height / 2))
+        .attr("x", 0 - bounds.height / 2)
         .attr("font-size", "1rem")
         .attr("dy", "1.1em")
         .attr("fill", "currentColor");
 
     // x lines
     const points = subgraph_data.map((d) => [x(d.x)!, y(d.y)!, d.label]);
-    const groups = rollup(points, v => Object.assign(v, { z: v[0][2] }), d => d[2]);
+    const groups = rollup(
+        points,
+        (v) => Object.assign(v, { z: v[0][2] }),
+        (d) => d[2],
+    );
+    const groupLabels = rollup(
+        subgraph_data,
+        (v) => v[0]?.labelName ?? `#${v[0]?.label}`,
+        (d) => d.label,
+    );
 
     const color = schemeCategory10;
 
@@ -318,10 +353,11 @@ function _renderSimulationChart<
         .join("path")
         .attr("vector-effect", "non-scaling-stroke")
         .attr("stroke", (d, i) => color[i % color.length])
-        .attr("d", d => line()(d[1].map(p => [p[0], p[1]])))
-        .attr("data-group", d => d[0]);
+        .attr("d", (d) => line()(d[1].map((p) => [p[0], p[1]])))
+        .attr("data-group", (d) => d[0]);
 
-    const focusLine = svg.append("line")
+    const focusLine = svg
+        .append("line")
         .attr("class", "focus-line")
         .attr("y1", bounds.marginTop)
         .attr("y2", bounds.height - bounds.marginBottom)
@@ -329,7 +365,9 @@ function _renderSimulationChart<
         .attr("stroke-width", 1)
         .style("opacity", 0);
 
-    const LongestGroupData = Array.from(groups.values()).reduce((a, b) => a.length > b.length ? a : b);
+    const LongestGroupData = Array.from(groups.values()).reduce((a, b) =>
+        a.length > b.length ? a : b,
+    );
     const barWidth = bounds.width / LongestGroupData.length;
 
     // hover/tooltip
@@ -338,7 +376,7 @@ function _renderSimulationChart<
         .selectAll("rect")
         .data(LongestGroupData)
         .join("rect")
-        .attr("x", d => d[0] - barWidth / 2)
+        .attr("x", (d) => d[0] - barWidth / 2)
         .attr("y", bounds.marginTop)
         .attr("width", barWidth)
         .attr("height", bounds.height - bounds.marginTop - bounds.marginBottom)
@@ -373,16 +411,18 @@ function _renderSimulationChart<
             const hidden = path.classed("hidden");
 
             if (!hidden) {
-                tooltipContent += `<span style="color:${color[(parseInt(key) - 1) % color.length]}">■</span> #${key}: ${
-                    formatY(value)
-                }<br>`;
+                const label = groupLabels.get(Number(key)) ?? `#${key}`;
+                tooltipContent += `<span style="color:${color[(parseInt(key) - 1) % color.length]}">■</span> ${label}: ${formatY(
+                    value,
+                )}<br>`;
             }
         }
 
         showTooltip(tooltipContent, event.pageX, event.pageY);
     }
 
-    const legend = svg.append("g")
+    const legend = svg
+        .append("g")
         .attr("class", "legend")
         .attr("font-family", "sans-serif")
         .attr("font-size", 10)
@@ -396,18 +436,20 @@ function _renderSimulationChart<
         .on("mousemove", legendMouseMove)
         .on("mouseout", hideTooltip);
 
-    legend.append("rect")
+    legend
+        .append("rect")
         .attr("x", bounds.width - bounds.marginRight + 36)
         .attr("width", 12)
         .attr("height", 12)
         .attr("fill", (d, i) => color[i % color.length]);
 
-    legend.append("text")
+    legend
+        .append("text")
         .attr("x", bounds.width - bounds.marginRight + 52)
         .attr("y", 7)
         .attr("dy", "0.3em")
         .attr("fill", "currentColor")
-        .text(d => `#${d}`);
+        .text((d) => groupLabels.get(d) ?? `#${d}`);
 
     const toggleGroup = (event: MouseEvent, d: number) => {
         const group = d;
@@ -416,9 +458,10 @@ function _renderSimulationChart<
         const target = event.currentTarget as HTMLElement;
 
         path.classed("hidden", !hidden);
-        path.style("display", () => hidden ? null : "none");
+        path.style("display", () => (hidden ? null : "none"));
 
-        select(target).select("rect")
+        select(target)
+            .select("rect")
             .style("opacity", hidden ? 1 : 0.5);
     };
 

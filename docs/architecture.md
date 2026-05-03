@@ -68,6 +68,13 @@ exclusive respectively.
 `Help Me Decide (Experimental)` now estimates review time from bucketed history
 instead of a single fixed review cost table.
 
+When opened from deck options, the deck-options payload includes the distinct
+deck preset ids used by the selected deck and its descendants. The Help Me
+Decide workload modal uses those ids to run one scoped simulation per preset
+under the selected deck. Each request searches `deck:"selected deck"
+preset:"preset name" -is:suspended` and uses that preset's FSRS parameters and
+stored scheduling options for the simulated curve.
+
 Data flow:
 
 1. Read revlog entries for the searched cards.

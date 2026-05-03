@@ -39,23 +39,21 @@ export interface ConfigListEntry {
     current: boolean;
 }
 
-type AllConfigs =
-    & Required<
-        Pick<
-            PlainMessage<UpdateDeckConfigsRequest>,
-            | "configs"
-            | "cardStateCustomizer"
-            | "limits"
-            | "newCardsIgnoreReviewLimit"
-            | "loadBalancerEnabled"
-            | "fsrsShortTermWithStepsEnabled"
-            | "fsrsLearningQueuesDisabled"
-            | "applyAllParentLimits"
-            | "fsrs"
-            | "fsrsReschedule"
-        >
+type AllConfigs = Required<
+    Pick<
+        PlainMessage<UpdateDeckConfigsRequest>,
+        | "configs"
+        | "cardStateCustomizer"
+        | "limits"
+        | "newCardsIgnoreReviewLimit"
+        | "loadBalancerEnabled"
+        | "fsrsShortTermWithStepsEnabled"
+        | "fsrsLearningQueuesDisabled"
+        | "applyAllParentLimits"
+        | "fsrs"
+        | "fsrsReschedule"
     >
-    & { currentConfig: DeckConfig_Config };
+> & { currentConfig: DeckConfig_Config };
 
 export class DeckOptionsState {
     readonly currentConfig: Writable<DeckConfig_Config>;
@@ -120,9 +118,7 @@ export class DeckOptionsState {
         this.fsrsShortTermWithStepsEnabled = writable(
             data.fsrsShortTermWithStepsEnabled,
         );
-        this.fsrsLearningQueuesDisabled = writable(
-            data.fsrsLearningQueuesDisabled,
-        );
+        this.fsrsLearningQueuesDisabled = writable(data.fsrsLearningQueuesDisabled);
         this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
         this.legacyEvaluate = data.fsrsLegacyEvaluate;
         this.daysSinceLastOptimization = writable(data.daysSinceLastFsrsOptimize);
@@ -155,7 +151,8 @@ export class DeckOptionsState {
 
         // Must be resolved after all components are mounted, as some components
         // may modify the config during their initialization.
-        [this.originalConfigsPromise, this.originalConfigsResolve] = promiseWithResolver<AllConfigs>();
+        [this.originalConfigsPromise, this.originalConfigsResolve] =
+            promiseWithResolver<AllConfigs>();
     }
 
     /**
@@ -175,7 +172,9 @@ export class DeckOptionsState {
             const idx = original.configs.findIndex((conf) => conf.id === id);
             // this should never be -1, since new presets are excluded, and removed presets aren't considered
             if (idx !== -1) {
-                original.configs[idx] = cloneDeep(this.configs[this.selectedIdx].config);
+                original.configs[idx] = cloneDeep(
+                    this.configs[this.selectedIdx].config,
+                );
             }
         }
     }
@@ -195,7 +194,19 @@ export class DeckOptionsState {
     }
 
     getCurrentNameForSearch(): string {
-        return this.getCurrentName().replace(/([\\"])/g, "\\$1");
+        return escapeSearchText(this.getCurrentName());
+    }
+
+    getCurrentDeckNameForSearch(): string {
+        return escapeSearchText(this.currentDeck.name);
+    }
+
+    getSubtreeConfigIds(): bigint[] {
+        return this.currentDeck.subtreeConfigIds;
+    }
+
+    getConfigById(id: DeckConfig["id"]): DeckConfig | undefined {
+        return this.configs.find((c) => c.config.id === id)?.config;
     }
 
     setCurrentName(name: string): void {
@@ -262,15 +273,13 @@ export class DeckOptionsState {
         this.setCurrentIndex(newIdx);
     }
 
-    dataForSaving(
-        mode: UpdateDeckConfigsMode,
-    ): PlainMessage<UpdateDeckConfigsRequest> {
+    dataForSaving(mode: UpdateDeckConfigsMode): PlainMessage<UpdateDeckConfigsRequest> {
         const modifiedConfigsExcludingCurrent = this.configs
             .map((c) => c.config)
             .filter((c, idx) => {
                 return (
-                    idx !== this.selectedIdx
-                    && (c.id === 0n || this.modifiedConfigs.has(c.id))
+                    idx !== this.selectedIdx &&
+                    (c.id === 0n || this.modifiedConfigs.has(c.id))
                 );
             });
         const configs = [
@@ -289,12 +298,8 @@ export class DeckOptionsState {
             loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
-            fsrsShortTermWithStepsEnabled: get(
-                this.fsrsShortTermWithStepsEnabled,
-            ),
-            fsrsLearningQueuesDisabled: get(
-                this.fsrsLearningQueuesDisabled,
-            ),
+            fsrsShortTermWithStepsEnabled: get(this.fsrsShortTermWithStepsEnabled),
+            fsrsLearningQueuesDisabled: get(this.fsrsLearningQueuesDisabled),
             fsrsReschedule: get(this.fsrsReschedule),
             fsrsHealthCheck: get(this.fsrsHealthCheck),
         };
@@ -305,9 +310,7 @@ export class DeckOptionsState {
     }
 
     async save(mode: UpdateDeckConfigsMode): Promise<void> {
-        await updateDeckConfigs(
-            this.dataForSaving(mode),
-        );
+        await updateDeckConfigs(this.dataForSaving(mode));
     }
 
     private onCurrentConfigChanged(config: DeckConfig_Config): void {
@@ -363,7 +366,9 @@ export class DeckOptionsState {
 
     private sortConfigs() {
         const currentConfigName = this.configs[this.selectedIdx].config.name;
-        this.configs.sort((a, b) => localeCompare(a.config.name, b.config.name, { sensitivity: "base" }));
+        this.configs.sort((a, b) =>
+            localeCompare(a.config.name, b.config.name, { sensitivity: "base" }),
+        );
         this.selectedIdx = this.configs.findIndex(
             (c) => c.config.name == currentConfigName,
         );
@@ -384,19 +389,15 @@ export class DeckOptionsState {
 
     private getAllConfigs(): AllConfigs {
         return cloneDeep({
-            configs: this.configs.map(c => c.config),
+            configs: this.configs.map((c) => c.config),
             cardStateCustomizer: get(this.cardStateCustomizer),
             limits: get(this.deckLimits),
             newCardsIgnoreReviewLimit: get(this.newCardsIgnoreReviewLimit),
             loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
-            fsrsShortTermWithStepsEnabled: get(
-                this.fsrsShortTermWithStepsEnabled,
-            ),
-            fsrsLearningQueuesDisabled: get(
-                this.fsrsLearningQueuesDisabled,
-            ),
+            fsrsShortTermWithStepsEnabled: get(this.fsrsShortTermWithStepsEnabled),
+            fsrsLearningQueuesDisabled: get(this.fsrsLearningQueuesDisabled),
             fsrsReschedule: get(this.fsrsReschedule),
             currentConfig: get(this.currentConfig),
         });
@@ -446,6 +447,10 @@ function bytesToObject(bytes: Uint8Array): Record<string, unknown> {
 
 export function createLimits(): DeckConfigsForUpdate_CurrentDeck_Limits {
     return new DeckConfigsForUpdate_CurrentDeck_Limits({});
+}
+
+function escapeSearchText(text: string): string {
+    return text.replace(/([\\"])/g, "\\$1");
 }
 
 export class ValueTab {

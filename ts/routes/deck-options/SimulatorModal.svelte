@@ -27,9 +27,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsWorkload,
     } from "@generated/backend";
     import { runWithBackendProgress } from "@tslib/progress";
+    import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
     import type {
         ComputeOptimalRetentionResponse,
-        SimulateFsrsReviewRequest,
         SimulateFsrsReviewResponse,
         SimulateFsrsWorkloadResponse,
     } from "@generated/anki/scheduler_pb";
@@ -39,7 +39,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import { reviewOrderChoices } from "./choices";
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
-    import { DeckConfig_Config_LeechAction } from "@generated/anki/deck_config_pb";
+    import {
+        DeckConfig_Config_FsrsVersion,
+        DeckConfig_Config_LeechAction,
+    } from "@generated/anki/deck_config_pb";
+    import type { DeckConfig, DeckConfig_Config } from "@generated/anki/deck_config_pb";
     import EasyDaysInput from "./EasyDaysInput.svelte";
     import Warning from "./Warning.svelte";
     import type { ComputeRetentionProgress } from "@generated/anki/collection_pb";
@@ -146,6 +150,64 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             enforceMonotonicSuccessGradeProbs;
     }
 
+    function selectedFsrsParams(config: DeckConfig_Config): number[] {
+        switch (config.fsrsVersion) {
+            case DeckConfig_Config_FsrsVersion.SIX:
+                return config.fsrsParams6;
+            case DeckConfig_Config_FsrsVersion.FIVE:
+                return config.fsrsParams5;
+            case DeckConfig_Config_FsrsVersion.FOUR:
+                return config.fsrsParams4;
+            default:
+                return config.fsrsParams7;
+        }
+    }
+
+    function workloadSearchForPreset(presetName: string): string {
+        return `deck:"${state.getCurrentDeckNameForSearch()}" preset:"${presetName.replace(/([\\"])/g, "\\$1")}" -is:suspended`;
+    }
+
+    function requestForPreset(config: DeckConfig): SimulateFsrsReviewRequest {
+        const inner = config.config!;
+        const request = new SimulateFsrsReviewRequest(simulateFsrsRequest);
+        request.params = selectedFsrsParams(inner);
+        request.desiredRetention = inner.desiredRetention;
+        request.newLimit = inner.newPerDay;
+        request.maxInterval = inner.maximumReviewInterval;
+        request.search = workloadSearchForPreset(config.name);
+        request.easyDaysPercentages = inner.easyDaysPercentages;
+        request.reviewOrder = inner.reviewOrder;
+        request.historicalRetention = inner.historicalRetention;
+        request.learningStepCount = inner.learnSteps.length;
+        request.relearningStepCount = inner.relearnSteps.length;
+        request.reviewFuzzBase = inner.reviewFuzzEnabled ? inner.reviewFuzzBase : 0;
+        request.reviewFuzzFactorShort = inner.reviewFuzzEnabled
+            ? inner.reviewFuzzFactorShort
+            : 0;
+        request.reviewFuzzFactorMid = inner.reviewFuzzEnabled
+            ? inner.reviewFuzzFactorMid
+            : 0;
+        request.reviewFuzzFactorLong = inner.reviewFuzzEnabled
+            ? inner.reviewFuzzFactorLong
+            : 0;
+        return request;
+    }
+
+    function workloadRequests(): {
+        name: string;
+        request: SimulateFsrsReviewRequest;
+    }[] {
+        const subtreeIds = new Set(state.getSubtreeConfigIds());
+        return Array.from(subtreeIds)
+            .map((id) => state.getConfigById(id))
+            .filter((config): config is DeckConfig => config !== undefined)
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((config) => ({
+                name: config.name,
+                request: requestForPreset(config),
+            }));
+    }
+
     function renderRetentionProgress(
         val: ComputeRetentionProgress | undefined,
     ): String {
@@ -225,49 +287,72 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     async function simulateWorkload(): Promise<void> {
-        let resp: SimulateFsrsWorkloadResponse | undefined;
+        let responses: {
+            name: string;
+            response: SimulateFsrsWorkloadResponse;
+        }[] = [];
         updateRequest();
         try {
             await runWithBackendProgress(
                 async () => {
                     simulating = true;
-                    resp = await simulateFsrsWorkload(simulateFsrsRequest);
+                    for (const { name, request } of workloadRequests()) {
+                        const response = await simulateFsrsWorkload(request);
+                        responses.push({ name, response });
+                    }
                 },
                 () => {},
             );
         } finally {
             simulating = false;
-            if (resp) {
+            if (responses.length) {
                 simulationNumber += 1;
+                const runNumber = simulationNumber;
+                let labelOffset = 0;
+                const responseWithSamples = responses.find(
+                    ({ response }) => response.reviewTimeSampleCounts.length,
+                );
+                const firstResponse =
+                    responseWithSamples?.response ?? responses[0].response;
                 reviewTimeMatrix = {
-                    rBucketCount: resp.reviewTimeRBucketCount,
-                    sBucketCount: resp.reviewTimeSBucketCount,
-                    againSeconds: resp.reviewTimeAgainSeconds,
-                    hardSeconds: resp.reviewTimeHardSeconds,
-                    goodSeconds: resp.reviewTimeGoodSeconds,
-                    easySeconds: resp.reviewTimeEasySeconds,
-                    sampleCounts: resp.reviewTimeSampleCounts,
+                    rBucketCount: firstResponse.reviewTimeRBucketCount,
+                    sBucketCount: firstResponse.reviewTimeSBucketCount,
+                    againSeconds: firstResponse.reviewTimeAgainSeconds,
+                    hardSeconds: firstResponse.reviewTimeHardSeconds,
+                    goodSeconds: firstResponse.reviewTimeGoodSeconds,
+                    easySeconds: firstResponse.reviewTimeEasySeconds,
+                    sampleCounts: firstResponse.reviewTimeSampleCounts,
                 };
-                reviewTimeAgainCoeffs = resp.reviewTimeAgainCoeffs;
-                reviewTimeHardCoeffs = resp.reviewTimeHardCoeffs;
-                reviewTimeGoodCoeffs = resp.reviewTimeGoodCoeffs;
-                reviewTimeEasyCoeffs = resp.reviewTimeEasyCoeffs;
-                reviewTimeGradeWeights = resp.reviewTimeGradeWeights;
-                reviewTimeTransitionProbs = resp.reviewTimeTransitionProbs;
-                reviewTimeTransitionCounts = resp.reviewTimeTransitionCounts;
-                reviewTimeSuccessGradeProbs = resp.reviewTimeSuccessGradeProbs;
-                reviewTimeSuccessGradeCounts = resp.reviewTimeSuccessGradeCounts;
+                reviewTimeAgainCoeffs = firstResponse.reviewTimeAgainCoeffs;
+                reviewTimeHardCoeffs = firstResponse.reviewTimeHardCoeffs;
+                reviewTimeGoodCoeffs = firstResponse.reviewTimeGoodCoeffs;
+                reviewTimeEasyCoeffs = firstResponse.reviewTimeEasyCoeffs;
+                reviewTimeGradeWeights = firstResponse.reviewTimeGradeWeights;
+                reviewTimeTransitionProbs = firstResponse.reviewTimeTransitionProbs;
+                reviewTimeTransitionCounts = firstResponse.reviewTimeTransitionCounts;
+                reviewTimeSuccessGradeProbs = firstResponse.reviewTimeSuccessGradeProbs;
+                reviewTimeSuccessGradeCounts =
+                    firstResponse.reviewTimeSuccessGradeCounts;
 
                 points = points.concat(
-                    Object.entries(resp.memorized).map(([dr, v]) => ({
-                        x: parseInt(dr),
-                        timeCost: resp!.cost[dr],
-                        memorized: v,
-                        start_memorized: resp!.startMemorized,
-                        count: resp!.reviewCount[dr],
-                        label: simulationNumber,
-                        learnSpan: simulateFsrsRequest.daysToSimulate,
-                    })),
+                    responses.flatMap(({ name, response }) => {
+                        labelOffset += 1;
+                        const label = runNumber * 1000 + labelOffset;
+                        return Object.entries(response.memorized)
+                            .filter(
+                                ([dr]) => response.reviewCount[dr] || response.cost[dr],
+                            )
+                            .map(([dr, v]) => ({
+                                x: parseInt(dr),
+                                timeCost: response.cost[dr],
+                                memorized: v,
+                                start_memorized: response.startMemorized,
+                                count: response.reviewCount[dr],
+                                label,
+                                labelName: name,
+                                learnSpan: simulateFsrsRequest.daysToSimulate,
+                            }));
+                    }),
                 );
 
                 tableData = renderWorkloadChart(
@@ -281,7 +366,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function clearSimulation() {
-        points = points.filter((p) => p.label !== simulationNumber);
+        points = points.filter((p) =>
+            workload
+                ? Math.floor(p.label / 1000) !== simulationNumber
+                : p.label !== simulationNumber,
+        );
         simulationNumber = Math.max(0, simulationNumber - 1);
         reviewTimeMatrix = undefined;
         reviewTimeAgainCoeffs = [];
@@ -314,15 +403,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function transitionProb(fromGrade: number, toGrade: number): number {
-        return (
-            reviewTimeTransitionProbs[transitionIndex(fromGrade, toGrade)] ?? 0
-        );
+        return reviewTimeTransitionProbs[transitionIndex(fromGrade, toGrade)] ?? 0;
     }
 
     function transitionCount(fromGrade: number, toGrade: number): number {
-        return (
-            reviewTimeTransitionCounts[transitionIndex(fromGrade, toGrade)] ?? 0
-        );
+        return reviewTimeTransitionCounts[transitionIndex(fromGrade, toGrade)] ?? 0;
     }
 
     function successGradeProb(rIndex: number, successGrade: number): number {
@@ -426,26 +511,27 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let reviewTimeGraphTimeYTicks: number[] = [];
 
     $: if (reviewTimeMatrix) {
-        reviewTimeSampleMedian = median(reviewTimeMatrix.sampleCounts);
+        const matrix = reviewTimeMatrix;
+        reviewTimeSampleMedian = median(matrix.sampleCounts);
         const againLines = buildSLineSeries(
-            reviewTimeMatrix.againSeconds,
-            reviewTimeMatrix.rBucketCount,
-            reviewTimeMatrix.sBucketCount,
+            matrix.againSeconds,
+            matrix.rBucketCount,
+            matrix.sBucketCount,
         );
         const hardLines = buildSLineSeries(
-            reviewTimeMatrix.hardSeconds,
-            reviewTimeMatrix.rBucketCount,
-            reviewTimeMatrix.sBucketCount,
+            matrix.hardSeconds,
+            matrix.rBucketCount,
+            matrix.sBucketCount,
         );
         const goodLines = buildSLineSeries(
-            reviewTimeMatrix.goodSeconds,
-            reviewTimeMatrix.rBucketCount,
-            reviewTimeMatrix.sBucketCount,
+            matrix.goodSeconds,
+            matrix.rBucketCount,
+            matrix.sBucketCount,
         );
         const easyLines = buildSLineSeries(
-            reviewTimeMatrix.easySeconds,
-            reviewTimeMatrix.rBucketCount,
-            reviewTimeMatrix.sBucketCount,
+            matrix.easySeconds,
+            matrix.rBucketCount,
+            matrix.sBucketCount,
         );
         const [, againMax] = seriesMinMax(againLines);
         const [, hardMax] = seriesMinMax(hardLines);
@@ -461,26 +547,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 const wHard = finalGradeProb(rIndex, 1);
                 const wGood = finalGradeProb(rIndex, 2);
                 const wEasy = finalGradeProb(rIndex, 3);
-                return (
-                    wAgain * again +
-                    wHard * hard +
-                    wGood * good +
-                    wEasy * easy
-                );
+                return wAgain * again + wHard * hard + wGood * good + wEasy * easy;
             }),
         );
         const [, weightedMax] = seriesMinMax(weightedLines);
         reviewTimeGraphTimeYMin = 0;
-        reviewTimeGraphTimeYMax = Math.max(60, againMax, hardMax, goodMax, easyMax, weightedMax);
+        reviewTimeGraphTimeYMax = Math.max(
+            60,
+            againMax,
+            hardMax,
+            goodMax,
+            easyMax,
+            weightedMax,
+        );
 
         const graphLines: ReviewTimeGraphLine[] = [];
-        for (let sIndex = 0; sIndex < reviewTimeMatrix.sBucketCount; sIndex++) {
+        for (let sIndex = 0; sIndex < matrix.sBucketCount; sIndex++) {
             graphLines.push({
                 color: graphAgainColor,
                 kind: "again",
                 points: linePoints(
                     againLines[sIndex],
-                    reviewTimeMatrix.rBucketCount,
+                    matrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
@@ -490,7 +578,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 kind: "hard",
                 points: linePoints(
                     hardLines[sIndex],
-                    reviewTimeMatrix.rBucketCount,
+                    matrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
@@ -500,7 +588,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 kind: "good",
                 points: linePoints(
                     goodLines[sIndex],
-                    reviewTimeMatrix.rBucketCount,
+                    matrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
@@ -510,7 +598,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 kind: "easy",
                 points: linePoints(
                     easyLines[sIndex],
-                    reviewTimeMatrix.rBucketCount,
+                    matrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
@@ -520,7 +608,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 kind: "weighted",
                 points: linePoints(
                     weightedLines[sIndex],
-                    reviewTimeMatrix.rBucketCount,
+                    matrix.rBucketCount,
                     reviewTimeGraphTimeYMin,
                     reviewTimeGraphTimeYMax,
                 ),
@@ -528,15 +616,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         reviewTimeGraphLines = graphLines;
 
-        const xTickStep = Math.max(1, Math.floor(reviewTimeMatrix.rBucketCount / 6));
+        const xTickStep = Math.max(1, Math.floor(matrix.rBucketCount / 6));
         reviewTimeGraphXTicks = Array.from(
-            { length: reviewTimeMatrix.rBucketCount },
+            { length: matrix.rBucketCount },
             (_, rIndex) => rIndex,
         )
             .filter(
                 (rIndex) =>
-                    rIndex % xTickStep === 0 ||
-                    rIndex === reviewTimeMatrix.rBucketCount - 1,
+                    rIndex % xTickStep === 0 || rIndex === matrix.rBucketCount - 1,
             )
             .map((rIndex) => ({ rIndex, label: rBucketLabel(rIndex) }));
 
@@ -961,27 +1048,78 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 <thead>
                                     <tr>
                                         <th>R \\ S</th>
-                                        {#each Array.from({ length: reviewTimeMatrix.sBucketCount }) as _, sIndex}
-                                            <th>{sBucketLabel(sIndex, reviewTimeMatrix.sBucketCount)}</th>
+                                        {#each Array.from( { length: reviewTimeMatrix.sBucketCount }, ) as _, sIndex}
+                                            <th>
+                                                {sBucketLabel(
+                                                    sIndex,
+                                                    reviewTimeMatrix.sBucketCount,
+                                                )}
+                                            </th>
                                         {/each}
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {#each Array.from({ length: reviewTimeMatrix.rBucketCount }) as _, rIndex}
+                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount }, ) as _, rIndex}
                                         <tr>
                                             <th>{rBucketLabel(rIndex)}</th>
-                                            {#each Array.from({ length: reviewTimeMatrix.sBucketCount }) as _, sIndex}
+                                            {#each Array.from( { length: reviewTimeMatrix.sBucketCount }, ) as _, sIndex}
                                                 <td>
-                                                    <div>A {formatSeconds(matrixCellValue(reviewTimeMatrix.againSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
-                                                    <div>H {formatSeconds(matrixCellValue(reviewTimeMatrix.hardSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
-                                                    <div>G {formatSeconds(matrixCellValue(reviewTimeMatrix.goodSeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
-                                                    <div>E {formatSeconds(matrixCellValue(reviewTimeMatrix.easySeconds, rIndex, sIndex, reviewTimeMatrix.sBucketCount))}</div>
+                                                    <div>
+                                                        A {formatSeconds(
+                                                            matrixCellValue(
+                                                                reviewTimeMatrix.againSeconds,
+                                                                rIndex,
+                                                                sIndex,
+                                                                reviewTimeMatrix.sBucketCount,
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                    <div>
+                                                        H {formatSeconds(
+                                                            matrixCellValue(
+                                                                reviewTimeMatrix.hardSeconds,
+                                                                rIndex,
+                                                                sIndex,
+                                                                reviewTimeMatrix.sBucketCount,
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                    <div>
+                                                        G {formatSeconds(
+                                                            matrixCellValue(
+                                                                reviewTimeMatrix.goodSeconds,
+                                                                rIndex,
+                                                                sIndex,
+                                                                reviewTimeMatrix.sBucketCount,
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                    <div>
+                                                        E {formatSeconds(
+                                                            matrixCellValue(
+                                                                reviewTimeMatrix.easySeconds,
+                                                                rIndex,
+                                                                sIndex,
+                                                                reviewTimeMatrix.sBucketCount,
+                                                            ),
+                                                        )}
+                                                    </div>
                                                     <div
-                                                        class="review-time-samples {matrixCellValue(reviewTimeMatrix.sampleCounts, rIndex, sIndex, reviewTimeMatrix.sBucketCount) > reviewTimeSampleMedian
+                                                        class="review-time-samples {matrixCellValue(
+                                                            reviewTimeMatrix.sampleCounts,
+                                                            rIndex,
+                                                            sIndex,
+                                                            reviewTimeMatrix.sBucketCount,
+                                                        ) > reviewTimeSampleMedian
                                                             ? 'high'
                                                             : 'low'}"
                                                     >
-                                                        n {matrixCellValue(reviewTimeMatrix.sampleCounts, rIndex, sIndex, reviewTimeMatrix.sBucketCount)}
+                                                        n {matrixCellValue(
+                                                            reviewTimeMatrix.sampleCounts,
+                                                            rIndex,
+                                                            sIndex,
+                                                            reviewTimeMatrix.sBucketCount,
+                                                        )}
                                                     </div>
                                                 </td>
                                             {/each}
@@ -993,7 +1131,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                         <div class="review-time-matrix-wrapper mt-2">
                             <div class="p-2">
-                                <code>time = a + b * (1 - R) + c * S + d * reps + e * D</code>
+                                <code>
+                                    time = a + b * (1 - R) + c * S + d * reps + e * D
+                                </code>
                             </div>
                             <table class="review-time-matrix-table">
                                 <thead>
@@ -1041,10 +1181,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     </tr>
                                     <tr>
                                         <th>Weights</th>
-                                        <td>A {(reviewTimeGradeWeights[0] ?? 0).toFixed(3)}</td>
-                                        <td>H {(reviewTimeGradeWeights[1] ?? 0).toFixed(3)}</td>
-                                        <td>G {(reviewTimeGradeWeights[2] ?? 0).toFixed(3)}</td>
-                                        <td>E {(reviewTimeGradeWeights[3] ?? 0).toFixed(3)}</td>
+                                        <td>
+                                            A {(reviewTimeGradeWeights[0] ?? 0).toFixed(
+                                                3,
+                                            )}
+                                        </td>
+                                        <td>
+                                            H {(reviewTimeGradeWeights[1] ?? 0).toFixed(
+                                                3,
+                                            )}
+                                        </td>
+                                        <td>
+                                            G {(reviewTimeGradeWeights[2] ?? 0).toFixed(
+                                                3,
+                                            )}
+                                        </td>
+                                        <td>
+                                            E {(reviewTimeGradeWeights[3] ?? 0).toFixed(
+                                                3,
+                                            )}
+                                        </td>
                                         <td></td>
                                     </tr>
                                 </tbody>
@@ -1065,15 +1221,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     {#each Array.from({ length: 4 }) as _, fromGrade}
                                         <tr>
                                             <th>{gradeLabel(fromGrade)}</th>
-                                            {#each Array.from({ length: 4 }) as _, toGrade}
+                                            {#each Array.from( { length: 4 }, ) as _, toGrade}
                                                 <td>
-                                                    <div>{(transitionProb(fromGrade, toGrade) * 100).toFixed(1)}%</div>
+                                                    <div>
+                                                        {(
+                                                            transitionProb(
+                                                                fromGrade,
+                                                                toGrade,
+                                                            ) * 100
+                                                        ).toFixed(1)}%
+                                                    </div>
                                                     <div
-                                                        class="review-time-samples {transitionCount(fromGrade, toGrade) > 0
+                                                        class="review-time-samples {transitionCount(
+                                                            fromGrade,
+                                                            toGrade,
+                                                        ) > 0
                                                             ? 'high'
                                                             : 'low'}"
                                                     >
-                                                        n {transitionCount(fromGrade, toGrade)}
+                                                        n {transitionCount(
+                                                            fromGrade,
+                                                            toGrade,
+                                                        )}
                                                     </div>
                                                 </td>
                                             {/each}
@@ -1095,14 +1264,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {#each Array.from({ length: reviewTimeMatrix.rBucketCount }) as _, rIndex}
+                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount }, ) as _, rIndex}
                                         <tr>
                                             <th>{rBucketLabel(rIndex)}</th>
-                                            <td>{(successGradeProb(rIndex, 0) * 100).toFixed(1)}%</td>
-                                            <td>{(successGradeProb(rIndex, 1) * 100).toFixed(1)}%</td>
-                                            <td>{(successGradeProb(rIndex, 2) * 100).toFixed(1)}%</td>
+                                            <td>
+                                                {(
+                                                    successGradeProb(rIndex, 0) * 100
+                                                ).toFixed(1)}%
+                                            </td>
+                                            <td>
+                                                {(
+                                                    successGradeProb(rIndex, 1) * 100
+                                                ).toFixed(1)}%
+                                            </td>
+                                            <td>
+                                                {(
+                                                    successGradeProb(rIndex, 2) * 100
+                                                ).toFixed(1)}%
+                                            </td>
                                             <td
-                                                class="review-time-samples {successGradeCount(rIndex) > 0
+                                                class="review-time-samples {successGradeCount(
+                                                    rIndex,
+                                                ) > 0
                                                     ? 'high'
                                                     : 'low'}"
                                             >
@@ -1126,14 +1309,31 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {#each Array.from({ length: reviewTimeMatrix.rBucketCount }) as _, rIndex}
+                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount }, ) as _, rIndex}
                                         <tr>
                                             <th>{rBucketLabel(rIndex)}</th>
-                                            <td>{(blendedSuccessGradeProb(rIndex, 0) * 100).toFixed(1)}%</td>
-                                            <td>{(blendedSuccessGradeProb(rIndex, 1) * 100).toFixed(1)}%</td>
-                                            <td>{(blendedSuccessGradeProb(rIndex, 2) * 100).toFixed(1)}%</td>
+                                            <td>
+                                                {(
+                                                    blendedSuccessGradeProb(rIndex, 0) *
+                                                    100
+                                                ).toFixed(1)}%
+                                            </td>
+                                            <td>
+                                                {(
+                                                    blendedSuccessGradeProb(rIndex, 1) *
+                                                    100
+                                                ).toFixed(1)}%
+                                            </td>
+                                            <td>
+                                                {(
+                                                    blendedSuccessGradeProb(rIndex, 2) *
+                                                    100
+                                                ).toFixed(1)}%
+                                            </td>
                                             <td
-                                                class="review-time-samples {successGradeCount(rIndex) > 0
+                                                class="review-time-samples {successGradeCount(
+                                                    rIndex,
+                                                ) > 0
                                                     ? 'high'
                                                     : 'low'}"
                                             >
@@ -1148,7 +1348,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         <div class="review-time-graph-wrapper">
                             <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`}>
                                 {#each reviewTimeGraphTimeYTicks as tick}
-                                    {@const y = graphY(tick, reviewTimeGraphTimeYMin, reviewTimeGraphTimeYMax)}
+                                    {@const y = graphY(
+                                        tick,
+                                        reviewTimeGraphTimeYMin,
+                                        reviewTimeGraphTimeYMax,
+                                    )}
                                     <line
                                         x1={graphMargin.left}
                                         x2={graphWidth - graphMargin.right}
@@ -1159,7 +1363,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     />
                                     <text
                                         x={graphMargin.left - 6}
-                                        y={y}
+                                        {y}
                                         text-anchor="end"
                                         dominant-baseline="middle"
                                         class="review-time-axis-label"
@@ -1186,7 +1390,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 />
 
                                 {#each reviewTimeGraphXTicks as tick}
-                                    {@const x = graphX(tick.rIndex, reviewTimeMatrix.rBucketCount)}
+                                    {@const x = graphX(
+                                        tick.rIndex,
+                                        reviewTimeMatrix.rBucketCount,
+                                    )}
                                     <line
                                         x1={x}
                                         x2={x}
@@ -1196,7 +1403,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         stroke-width="1"
                                     />
                                     <text
-                                        x={x}
+                                        {x}
                                         y={graphHeight - graphMargin.bottom + 16}
                                         text-anchor="middle"
                                         class="review-time-axis-label"

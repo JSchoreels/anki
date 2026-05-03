@@ -237,6 +237,7 @@ message DeckConfigsForUpdate {
     int64 config_id = 2;
     repeated int64 parent_config_ids = 3;
     Limits limits = 4;
+    repeated int64 subtree_config_ids = 5;
   }
 
   repeated ConfigWithExtra all_config = 1;
