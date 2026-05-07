@@ -449,7 +449,7 @@ export function createLimits(): DeckConfigsForUpdate_CurrentDeck_Limits {
     return new DeckConfigsForUpdate_CurrentDeck_Limits({});
 }
 
-function escapeSearchText(text: string): string {
+export function escapeSearchText(text: string): string {
     return text.replace(/([\\"])/g, "\\$1");
 }
 

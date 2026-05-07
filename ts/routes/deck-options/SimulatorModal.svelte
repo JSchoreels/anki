@@ -39,14 +39,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import { reviewOrderChoices } from "./choices";
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
-    import {
-        DeckConfig_Config_FsrsVersion,
-        DeckConfig_Config_LeechAction,
-    } from "@generated/anki/deck_config_pb";
-    import type { DeckConfig, DeckConfig_Config } from "@generated/anki/deck_config_pb";
+    import { DeckConfig_Config_LeechAction } from "@generated/anki/deck_config_pb";
+    import type { DeckConfig } from "@generated/anki/deck_config_pb";
     import EasyDaysInput from "./EasyDaysInput.svelte";
     import Warning from "./Warning.svelte";
     import type { ComputeRetentionProgress } from "@generated/anki/collection_pb";
+    import { workloadRequestForPreset } from "./simulator-workload";
     import Modal from "bootstrap/js/dist/modal";
     import {
         buildSLineSeries,
@@ -150,49 +148,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             enforceMonotonicSuccessGradeProbs;
     }
 
-    function selectedFsrsParams(config: DeckConfig_Config): number[] {
-        switch (config.fsrsVersion) {
-            case DeckConfig_Config_FsrsVersion.SIX:
-                return config.fsrsParams6;
-            case DeckConfig_Config_FsrsVersion.FIVE:
-                return config.fsrsParams5;
-            case DeckConfig_Config_FsrsVersion.FOUR:
-                return config.fsrsParams4;
-            default:
-                return config.fsrsParams7;
-        }
-    }
-
-    function workloadSearchForPreset(presetName: string): string {
-        return `deck:"${state.getCurrentDeckNameForSearch()}" preset:"${presetName.replace(/([\\"])/g, "\\$1")}" -is:suspended`;
-    }
-
-    function requestForPreset(config: DeckConfig): SimulateFsrsReviewRequest {
-        const inner = config.config!;
-        const request = new SimulateFsrsReviewRequest(simulateFsrsRequest);
-        request.params = selectedFsrsParams(inner);
-        request.desiredRetention = inner.desiredRetention;
-        request.newLimit = inner.newPerDay;
-        request.maxInterval = inner.maximumReviewInterval;
-        request.search = workloadSearchForPreset(config.name);
-        request.easyDaysPercentages = inner.easyDaysPercentages;
-        request.reviewOrder = inner.reviewOrder;
-        request.historicalRetention = inner.historicalRetention;
-        request.learningStepCount = inner.learnSteps.length;
-        request.relearningStepCount = inner.relearnSteps.length;
-        request.reviewFuzzBase = inner.reviewFuzzEnabled ? inner.reviewFuzzBase : 0;
-        request.reviewFuzzFactorShort = inner.reviewFuzzEnabled
-            ? inner.reviewFuzzFactorShort
-            : 0;
-        request.reviewFuzzFactorMid = inner.reviewFuzzEnabled
-            ? inner.reviewFuzzFactorMid
-            : 0;
-        request.reviewFuzzFactorLong = inner.reviewFuzzEnabled
-            ? inner.reviewFuzzFactorLong
-            : 0;
-        return request;
-    }
-
     function workloadRequests(): {
         name: string;
         request: SimulateFsrsReviewRequest;
@@ -204,7 +159,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((config) => ({
                 name: config.name,
-                request: requestForPreset(config),
+                request: workloadRequestForPreset(
+                    simulateFsrsRequest,
+                    state.getCurrentDeckNameForSearch(),
+                    config,
+                ),
             }));
     }
 

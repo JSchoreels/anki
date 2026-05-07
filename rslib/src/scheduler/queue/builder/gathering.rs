@@ -49,7 +49,7 @@ impl QueueBuilder {
         for candidate in due_cards {
             with_key.push((
                 candidate,
-                exact_relative_retrievability_key(col, candidate.card.id, self.context.timing)?,
+                exact_retrievability_key(col, candidate.card.id, self.context.timing)?,
             ));
         }
         with_key.sort_by(|(candidate_a, key_a), (candidate_b, key_b)| {
@@ -205,7 +205,7 @@ impl QueueBuilder {
         for card in due_cards {
             with_key.push((
                 card,
-                exact_relative_retrievability_key(col, card.id, self.context.timing)?,
+                exact_retrievability_key(col, card.id, self.context.timing)?,
             ));
         }
         with_key.sort_by(|(card_a, key_a), (card_b, key_b)| {
@@ -368,18 +368,15 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
     }
 }
 
-fn exact_relative_retrievability_key(
+fn exact_retrievability_key(
     col: &mut Collection,
     card_id: CardId,
     timing: SchedTimingToday,
 ) -> Result<f32> {
     let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
-    if let (Some(state), Some(desired_retention)) = (card.memory_state, card.desired_retention) {
+    if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
-        let interval_at_target = col
-            .fsrs_next_interval_for_card(card.id, state.stability, desired_retention.max(0.0001))?
-            .max(0.0001);
-        Ok(-(elapsed_days / interval_at_target))
+        col.fsrs_current_retrievability_for_card(card.id, state.stability, elapsed_days)
     } else {
         // keep SM2-style fallback ordering when FSRS state is missing
         let due = card.original_or_current_due() as i64;

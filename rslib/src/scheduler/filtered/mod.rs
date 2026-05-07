@@ -166,7 +166,7 @@ impl Collection {
     ) -> Result<i32> {
         let mut cards_with_keys = Vec::new();
         for card in self.all_cards_for_search(search)? {
-            let key = exact_relative_retrievability_key_for_card(self, &card, ctx.timing)?;
+            let key = exact_retrievability_key_for_card(self, &card, ctx.timing)?;
             let hash = fnvhash_card_and_mod(&card);
             cards_with_keys.push((card, key, hash));
         }
@@ -334,17 +334,14 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
     }
 }
 
-fn exact_relative_retrievability_key_for_card(
+fn exact_retrievability_key_for_card(
     col: &mut Collection,
     card: &Card,
     timing: SchedTimingToday,
 ) -> Result<f32> {
-    if let (Some(state), Some(desired_retention)) = (card.memory_state, card.desired_retention) {
+    if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-        let interval_at_target = col
-            .fsrs_next_interval_for_card(card.id, state.stability, desired_retention.max(0.0001))?
-            .max(0.0001);
-        Ok(-(elapsed_days / interval_at_target))
+        col.fsrs_current_retrievability_for_card(card.id, state.stability, elapsed_days)
     } else {
         let due = card.original_or_current_due() as i64;
         let review_day = due.saturating_sub(card.interval as i64);
@@ -444,8 +441,8 @@ mod test {
         card2.decay = Some(2.0);
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
-        let key1 = exact_relative_retrievability_key_for_card(&mut col, &card1, timing)?;
-        let key2 = exact_relative_retrievability_key_for_card(&mut col, &card2, timing)?;
+        let key1 = exact_retrievability_key_for_card(&mut col, &card1, timing)?;
+        let key2 = exact_retrievability_key_for_card(&mut col, &card2, timing)?;
         assert_ne!(key1, key2);
 
         let mut deck = col.get_or_create_filtered_deck(DeckId(0))?;

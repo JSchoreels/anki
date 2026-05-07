@@ -680,6 +680,52 @@ mod test {
     }
 
     #[test]
+    fn fsrs_retrievability_order_uses_actual_r_across_child_decks() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let mut parent = DeckAdder::new("Parent").add(&mut col);
+        let low_r_deck = DeckAdder::new("Parent::LowR").add(&mut col);
+        let high_r_deck = DeckAdder::new("Parent::HighR").add(&mut col);
+        col.set_deck_review_order(&mut parent, ReviewCardOrder::RetrievabilityAscending);
+
+        let timing = col.timing_today()?;
+        let low_r_card = add_memory_state_card(
+            &mut col,
+            low_r_deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            30.0,
+        )?;
+        let high_r_card = add_memory_state_card(
+            &mut col,
+            high_r_deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            86_400,
+            30.0,
+        )?;
+
+        let mut low_r = col.storage.get_card(low_r_card)?.unwrap();
+        low_r.desired_retention = Some(0.1);
+        col.storage.update_card(&low_r)?;
+        let mut high_r = col.storage.get_card(high_r_card)?.unwrap();
+        high_r.desired_retention = Some(0.9999);
+        col.storage.update_card(&high_r)?;
+
+        let low_retrievability =
+            col.fsrs_current_retrievability_for_card(low_r_card, 30.0, 20.0)?;
+        let high_retrievability =
+            col.fsrs_current_retrievability_for_card(high_r_card, 30.0, 1.0)?;
+        assert!(low_retrievability < high_retrievability);
+        assert_eq!(col.queue_as_ids(parent.id), vec![low_r_card, high_r_card]);
+        Ok(())
+    }
+
+    #[test]
     fn fsrs_retrievability_order_excludes_future_intraday_learning() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;

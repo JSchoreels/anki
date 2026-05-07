@@ -73,7 +73,11 @@ deck preset ids used by the selected deck and its descendants. The Help Me
 Decide workload modal uses those ids to run one scoped simulation per preset
 under the selected deck. Each request searches `deck:"selected deck"
 preset:"preset name" -is:suspended` and uses that preset's FSRS parameters and
-stored scheduling options for the simulated curve.
+stored scheduling options for fields that are not exposed in the Help Me Decide
+modal. Settings shown in the modal, such as limits, maximum interval, easy days,
+review order, and leech suspension, override the preset values for every curve.
+Review-time cost is charged from the card's actual simulated retrievability at
+the review event, not from the target desired retention being swept.
 
 Data flow:
 
@@ -178,8 +182,10 @@ When FSRS review order is ascending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
 into one exact-retrievability ordering. Intraday cards with a future timestamp
 remain hidden until their due time, at which point the queue is rebuilt so they
-can be inserted according to their current retrievability. New cards are not
-included in this ordering because they do not have retrievability yet.
+can be inserted according to their current retrievability. The ordering key is
+the card's current FSRS retrievability from its selected deck preset, not its
+relative distance from desired retention. New cards are not included in this
+ordering because they do not have retrievability yet.
 Review limits are applied after the shared retrievability sort, so filtered-deck
 positions do not decide which cards are admitted before sorting.
 
@@ -262,6 +268,16 @@ approximation).
 
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
 stored scalar decay from `card.data` for ordering/search expressions.
+
+Do not store current FSRS retrievability as persistent card state. Upstream's
+SQLite review ordering could compute retrievability directly from `card.data`
+because it used the legacy scalar-decay curve. Exact FSRS-7 retrievability also
+depends on the selected deck preset's full parameter array and elapsed time, so
+a stored value would become stale when time passes, cards move decks, filtered
+cards return home, deck presets change, or memory states are recomputed. Exact
+FSRS-7 ordering/search should compute retrievability on demand, or use a local
+temporary table/cache scoped to the current operation, instead of syncing a
+derived `R` value in card data.
 
 Implication for aggregates:
 

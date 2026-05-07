@@ -25,10 +25,69 @@ use crate::scheduler::states::load_balancer::parse_easy_days_percentages;
 use crate::search::SortMode;
 
 fn create_review_priority_fn(
-    _review_order: ReviewCardOrder,
+    review_order: ReviewCardOrder,
     _deck_size: usize,
 ) -> Option<fsrs::ReviewPriorityFn> {
-    None
+    match review_order {
+        ReviewCardOrder::Day | ReviewCardOrder::DayThenDeck | ReviewCardOrder::DeckThenDay => {
+            Some(fsrs::ReviewPriorityFn::new(|card| {
+                stable_card_hash(card.id)
+            }))
+        }
+        ReviewCardOrder::IntervalsAscending => Some(fsrs::ReviewPriorityFn::new(|card| {
+            scaled_i32(card.interval, 100.0)
+        })),
+        ReviewCardOrder::IntervalsDescending => Some(fsrs::ReviewPriorityFn::new(|card| {
+            -scaled_i32(card.interval, 100.0)
+        })),
+        ReviewCardOrder::EaseAscending => Some(fsrs::ReviewPriorityFn::new(|card| {
+            -scaled_i32(card.difficulty, 100.0)
+        })),
+        ReviewCardOrder::EaseDescending => Some(fsrs::ReviewPriorityFn::new(|card| {
+            scaled_i32(card.difficulty, 100.0)
+        })),
+        ReviewCardOrder::RetrievabilityAscending => Some(fsrs::ReviewPriorityFn::new(|card| {
+            scaled_i32(card.retrievability(), 1000.0)
+        })),
+        ReviewCardOrder::RetrievabilityDescending => Some(fsrs::ReviewPriorityFn::new(|card| {
+            -scaled_i32(card.retrievability(), 1000.0)
+        })),
+        ReviewCardOrder::RelativeOverdueness => Some(fsrs::ReviewPriorityFn::new(|card| {
+            scaled_i32(
+                card.retrievability() / card.desired_retention.max(0.0001),
+                1000.0,
+            )
+        })),
+        ReviewCardOrder::Random => Some(fsrs::ReviewPriorityFn::new(|card| {
+            stable_card_hash(card.id)
+        })),
+        ReviewCardOrder::Added => Some(fsrs::ReviewPriorityFn::new(|card| {
+            card.id.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+        })),
+        ReviewCardOrder::ReverseAdded => Some(fsrs::ReviewPriorityFn::new(|card| {
+            -(card.id.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+        })),
+    }
+}
+
+fn scaled_i32(value: f32, scale: f32) -> i32 {
+    if value.is_finite() {
+        (value * scale)
+            .round()
+            .clamp(i32::MIN as f32, i32::MAX as f32) as i32
+    } else {
+        0
+    }
+}
+
+fn stable_card_hash(id: i64) -> i32 {
+    let mut value = id as u64;
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xc4ceb9fe1a85ec53);
+    value ^= value >> 33;
+    (value >> 32) as i32
 }
 
 pub(crate) fn is_included_card(c: &Card) -> bool {
@@ -583,6 +642,19 @@ impl HelpMeDecideReviewTimeModel {
         ]
     }
 
+    fn review_cost_for_rating(
+        &self,
+        retrievability: f32,
+        stability: f32,
+        difficulty: f32,
+        rating: usize,
+    ) -> f32 {
+        let Some(group_idx) = Self::group_index_from_grade(rating) else {
+            return 0.0;
+        };
+        self.predict_seconds_for_group(group_idx, retrievability, stability, difficulty)
+    }
+
     #[cfg(test)]
     fn cost_for(
         &self,
@@ -951,6 +1023,7 @@ impl Collection {
             suspend_after_lapses: req.suspend_after_lapse_count,
             post_scheduling_fn,
             review_priority_fn,
+            review_rating_cost_fn: None,
             learning_step_transitions: p.learning_step_transitions,
             relearning_step_transitions: p.relearning_step_transitions,
             state_rating_costs: p.state_rating_costs,
@@ -1003,6 +1076,17 @@ impl Collection {
             model.grade_flattened();
         let review_time_sample_counts = model.sample_counts_flattened();
         let model = Arc::new(model);
+        let review_cost_model = model.clone();
+        config.review_rating_cost_fn = Some(fsrs::ReviewRatingCostFn::new(
+            move |card, rating, retrievability| {
+                review_cost_model.review_cost_for_rating(
+                    retrievability,
+                    card.stability,
+                    card.difficulty,
+                    rating,
+                )
+            },
+        ));
         let workload_sweep_start = Instant::now();
         let mut dr_workload = HashMap::with_capacity(99);
         let base_review_rating_prob = config.review_rating_prob;
@@ -1014,8 +1098,6 @@ impl Collection {
                 base_review_rating_prob,
                 blend_alpha_override,
             );
-            config.state_rating_costs[HelpMeDecideReviewTimeModel::REVIEW_STATE_INDEX] =
-                model.review_costs_for_desired_retention(desired_retention);
             let result = simulate_workload_for_desired_retention(
                 &config,
                 &req.params,
@@ -1188,9 +1270,11 @@ fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
 mod tests {
     use super::apply_simulation_desired_retention;
     use super::apply_simulation_desired_retention_to_cards;
+    use super::create_review_priority_fn;
     use super::simulate_workload_for_desired_retention;
     use super::HelpMeDecideReviewTimeModel;
     use crate::card::Card;
+    use crate::deckconfig::ReviewCardOrder;
     use fsrs::Card as SimCard;
     use fsrs::SimulatorConfig;
     use fsrs::DEFAULT_PARAMETERS;
@@ -1237,6 +1321,115 @@ mod tests {
             super::help_me_decide_timing_line(123, 45, 67),
             "[help-me-decide timing] total=123ms review_time_model=45ms workload_sweep=67ms"
         );
+    }
+
+    #[test]
+    fn review_priority_fn_reflects_review_order() {
+        let short_low_r = SimCard {
+            id: 1,
+            difficulty: 3.0,
+            stability: 5.0,
+            last_date: -5.0,
+            due: -1.0,
+            interval: 5.0,
+            lapses: 0,
+            desired_retention: 0.9,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let long_high_r = SimCard {
+            id: 2,
+            difficulty: 7.0,
+            stability: 50.0,
+            last_date: -5.0,
+            due: -5.0,
+            interval: 50.0,
+            lapses: 0,
+            desired_retention: 0.9,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+
+        let interval_ascending =
+            create_review_priority_fn(ReviewCardOrder::IntervalsAscending, 2).unwrap();
+        assert!(interval_ascending(&short_low_r) < interval_ascending(&long_high_r));
+
+        let interval_descending =
+            create_review_priority_fn(ReviewCardOrder::IntervalsDescending, 2).unwrap();
+        assert!(interval_descending(&short_low_r) > interval_descending(&long_high_r));
+
+        let retrievability_ascending =
+            create_review_priority_fn(ReviewCardOrder::RetrievabilityAscending, 2).unwrap();
+        assert!(retrievability_ascending(&short_low_r) < retrievability_ascending(&long_high_r));
+
+        let retrievability_descending =
+            create_review_priority_fn(ReviewCardOrder::RetrievabilityDescending, 2).unwrap();
+        assert!(retrievability_descending(&short_low_r) > retrievability_descending(&long_high_r));
+    }
+
+    #[test]
+    fn review_priority_changes_limited_workload_simulation() {
+        let short = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 10.0,
+            last_date: -10.0,
+            due: -1.0,
+            interval: 10.0,
+            lapses: 0,
+            desired_retention: 0.9,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let long = SimCard {
+            id: 2,
+            difficulty: 5.0,
+            stability: 50.0,
+            last_date: -50.0,
+            due: -5.0,
+            interval: 50.0,
+            lapses: 0,
+            desired_retention: 0.9,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let cards = vec![short, long];
+        let mut ascending_config = SimulatorConfig {
+            deck_size: cards.len(),
+            learn_span: 1,
+            learn_limit: 0,
+            review_limit: 1,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        ascending_config.review_priority_fn =
+            create_review_priority_fn(ReviewCardOrder::IntervalsAscending, cards.len());
+        let mut descending_config = SimulatorConfig {
+            deck_size: cards.len(),
+            learn_span: 1,
+            learn_limit: 0,
+            review_limit: 1,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        descending_config.review_priority_fn =
+            create_review_priority_fn(ReviewCardOrder::IntervalsDescending, cards.len());
+
+        let ascending = simulate_workload_for_desired_retention(
+            &ascending_config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.9,
+        )
+        .unwrap();
+        let descending = simulate_workload_for_desired_retention(
+            &descending_config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.9,
+        )
+        .unwrap();
+
+        assert_eq!(ascending.cards[0].last_date, 0.0);
+        assert_eq!(ascending.cards[1].last_date, -50.0);
+        assert_eq!(descending.cards[0].last_date, -10.0);
+        assert_eq!(descending.cards[1].last_date, 0.0);
     }
 
     #[test]

@@ -19,14 +19,17 @@ import type { HistogramData } from "./histogram-graph";
 export interface GraphData {
     dueCounts: Map<number, number>;
     haveBacklog: boolean;
+    backlogCount: number;
     dailyLoad: number;
 }
 
 export function gatherData(data: GraphsResponse): GraphData {
     const msg = data.futureDue!;
+    const dueCounts = numericMap(msg.futureDue);
     return {
-        dueCounts: numericMap(msg.futureDue),
+        dueCounts,
         haveBacklog: msg.haveBacklog,
+        backlogCount: backlogCount(dueCounts),
         dailyLoad: msg.dailyLoad,
     };
 }
@@ -54,6 +57,10 @@ function withoutBacklog(data: Map<number, number>): Map<number, number> {
         }
     }
     return map;
+}
+
+export function backlogCount(data: Map<number, number>): number {
+    return sum([...data.entries()].filter(([day]) => day < 0), ([, count]) => count);
 }
 
 export function buildHistogram(
@@ -145,6 +152,12 @@ export function buildHistogram(
             label: tr.statisticsAverage(),
             value: tr.statisticsReviewsPerDay({
                 count: Math.round(total / periodDays),
+            }),
+        },
+        {
+            label: tr.statisticsBacklogCheckbox(),
+            value: tr.statisticsReviews({
+                reviews: sourceData.backlogCount,
             }),
         },
         {
