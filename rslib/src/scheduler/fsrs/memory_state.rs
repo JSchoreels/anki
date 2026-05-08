@@ -60,14 +60,47 @@ pub(crate) fn fsrs_current_retrievability_for_params(
     stability: f32,
     elapsed_days: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
-    Ok(fsrs.current_retrievability(
-        MemoryState {
-            stability,
-            difficulty: 5.0,
-        },
-        elapsed_days.max(0.0),
-    ))
+    fsrs_current_retrievability_scalar_for_params(params, stability, elapsed_days)
+}
+
+pub(crate) fn fsrs_current_retrievability_scalar_for_params(
+    params: &[f32],
+    stability: f32,
+    elapsed_days: f32,
+) -> Result<f32> {
+    if params.len() != 35 {
+        let fsrs = FSRS::new(params)?;
+        return Ok(fsrs.current_retrievability(
+            MemoryState {
+                stability,
+                difficulty: 5.0,
+            },
+            elapsed_days.max(0.0),
+        ));
+    }
+    let retrievability = fsrs7_current_retrievability_scalar(params, stability, elapsed_days);
+    require!(retrievability.is_finite(), "invalid FSRS parameter values");
+    Ok(retrievability)
+}
+
+fn fsrs7_current_retrievability_scalar(params: &[f32], stability: f32, elapsed_days: f32) -> f32 {
+    let stability = stability.max(S_MIN);
+    let t_over_s = elapsed_days.max(0.0) / stability;
+
+    let decay1 = -params[27];
+    let decay2 = -params[28];
+    let base1 = params[29];
+    let base2 = params[30];
+
+    let factor1 = base1.powf(1.0 / decay1) - 1.0;
+    let factor2 = base2.powf(1.0 / decay2) - 1.0;
+    let r1 = (1.0 + factor1 * t_over_s).powf(decay1);
+    let r2 = (1.0 + factor2 * t_over_s).powf(decay2);
+
+    let weight1 = params[31] * stability.powf(-params[33]);
+    let weight2 = params[32] * stability.powf(params[34]);
+
+    (weight1 * r1 + weight2 * r2) / (weight1 + weight2)
 }
 
 pub(crate) fn fsrs_next_interval_for_params(

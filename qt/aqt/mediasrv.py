@@ -16,9 +16,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from errno import EPROTOTYPE
 from http import HTTPStatus
+from pathlib import Path
 
 import flask
-import flask_cors
 import stringcase
 import waitress.wasyncore
 from flask import Response, abort, request
@@ -45,7 +45,6 @@ waitress.wasyncore._DISCONNECTED = waitress.wasyncore._DISCONNECTED.union({EPROT
 
 logger = logging.getLogger(__name__)
 app = flask.Flask(__name__, root_path="/fake")
-flask_cors.CORS(app, resources={r"/*": {"origins": "127.0.0.1"}})
 
 
 @dataclass
@@ -220,6 +219,40 @@ def _text_response(code: HTTPStatus, text: str) -> Response:
     return resp
 
 
+class UnsafePathException(Exception):
+    def __init__(self, path: str):
+        super().__init__(f"Invalid path: {path}")
+
+
+def ensure_safe_path(base_dir: str | Path, path: str | Path) -> str:
+    base_dir = os.path.realpath(base_dir)
+    path = os.path.normpath(path)
+    fullpath = os.path.abspath(os.path.join(base_dir, path))
+
+    # protect against directory traversal: https://security.openstack.org/guidelines/dg_using-file-paths.html
+    if not fullpath.startswith(base_dir + os.sep):
+        raise UnsafePathException(path)
+    return fullpath
+
+
+_LOCALHOST_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+_ALLOWED_ORIGIN_PREFIXES = tuple(
+    f"{scheme}{host}" for scheme in ("http://", "https://") for host in _LOCALHOST_HOSTS
+)
+
+
+def is_localhost_origin(origin: str) -> bool:
+    for prefix in _ALLOWED_ORIGIN_PREFIXES:
+        if (
+            origin == prefix
+            or origin.startswith(prefix + ":")
+            or origin.startswith(prefix + "/")
+        ):
+            return True
+    return False
+
+
 def _handle_local_file_request(request: LocalFileRequest) -> Response:
     directory = request.root
     path = request.path
@@ -230,15 +263,7 @@ def _handle_local_file_request(request: LocalFileRequest) -> Response:
             HTTPStatus.BAD_REQUEST, f"Path for '{directory} - {path}' is too long!"
         )
 
-    directory = os.path.realpath(directory)
-    path = os.path.normpath(path)
-    fullpath = os.path.abspath(os.path.join(directory, path))
-
-    # protect against directory transversal: https://security.openstack.org/guidelines/dg_using-file-paths.html
-    if not fullpath.startswith(directory + os.sep):
-        return _text_response(
-            HTTPStatus.FORBIDDEN, f"Path for '{directory} - {path}' is a security leak!"
-        )
+    fullpath = ensure_safe_path(directory, path)
 
     if isdir:
         return _text_response(
@@ -283,10 +308,10 @@ def _handle_local_file_request(request: LocalFileRequest) -> Response:
 
 
 def _builtin_data(path: str) -> bytes:
-    """Return data from file in aqt/data folder.
-    Path must use forward slash separators."""
-    full_path = aqt_data_path() / ".." / path
-    return full_path.read_bytes()
+    """Return data from file in aqt/data folder."""
+    full_path = ensure_safe_path(aqt_data_path().parent, path)
+    with open(full_path, "rb") as f:
+        return f.read()
 
 
 def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
@@ -326,29 +351,34 @@ def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
 
 @app.route("/<path:pathin>", methods=["GET", "POST"])
 def handle_request(pathin: str) -> Response:
-    host = request.headers.get("Host", "").lower()
-    allowed_prefixes = ("127.0.0.1:", "localhost:", "[::1]:")
-    if not any(host.startswith(prefix) for prefix in allowed_prefixes):
-        # while we only bind to localhost, this request may have come from a local browser
-        # via a DNS rebinding attack; deny it unless we're doing non-local testing
-        if os.environ.get("ANKI_API_HOST") != "0.0.0.0":
-            print("deny non-local host", host)
+    if os.environ.get("ANKI_API_HOST") != "0.0.0.0":
+        host = request.headers.get("Host", "").lower()
+        origin = request.headers.get("Origin", "").lower()
+        allowed_hosts = tuple(f"{h}:" for h in _LOCALHOST_HOSTS)
+        if not any(host.startswith(h) for h in allowed_hosts):
+            logger.warning("denied non-local host: %s", host)
+            abort(403)
+        if origin and not is_localhost_origin(origin):
+            logger.warning("denied non-local origin: %s", origin)
             abort(403)
 
     req = _extract_request(pathin)
     logger.debug("%s /%s", flask.request.method, pathin)
 
-    if isinstance(req, NotFound):
-        print(req.message)
-        return _text_response(HTTPStatus.NOT_FOUND, f"Invalid path: {pathin}")
-    elif callable(req):
-        return _handle_dynamic_request(req)
-    elif isinstance(req, BundledFileRequest):
-        return _handle_builtin_file_request(req)
-    elif isinstance(req, LocalFileRequest):
-        return _handle_local_file_request(req)
-    else:
-        return _text_response(HTTPStatus.FORBIDDEN, f"unexpected request: {pathin}")
+    try:
+        if isinstance(req, NotFound):
+            print(req.message)
+            return _text_response(HTTPStatus.NOT_FOUND, f"Invalid path: {pathin}")
+        elif callable(req):
+            return _handle_dynamic_request(req)
+        elif isinstance(req, BundledFileRequest):
+            return _handle_builtin_file_request(req)
+        elif isinstance(req, LocalFileRequest):
+            return _handle_local_file_request(req)
+        else:
+            return _text_response(HTTPStatus.FORBIDDEN, f"unexpected request: {pathin}")
+    except UnsafePathException as exc:
+        return _text_response(HTTPStatus.FORBIDDEN, str(exc))
 
 
 def is_sveltekit_page(path: str) -> bool:

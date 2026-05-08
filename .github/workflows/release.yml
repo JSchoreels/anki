@@ -1,0 +1,319 @@
+name: Release
+run-name: "Release ${{ inputs.version }} (sign=${{ inputs.sign }}, draft=${{ inputs['draft-release'] }}, testpypi=${{ inputs['publish-testpypi'] }}, pypi=${{ inputs['publish-pypi'] }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for draft release/PyPI (must match .version on main)"
+        required: true
+        type: string
+      sign:
+        description: "Sign macOS and Windows artifacts (requires release environment)"
+        default: false
+        required: false
+        type: boolean
+      draft-release:
+        description: "Create a draft GitHub release (requires sign)"
+        default: false
+        required: false
+        type: boolean
+      publish-testpypi:
+        description: "Publish wheels to TestPyPI"
+        default: false
+        required: false
+        type: boolean
+      publish-pypi:
+        description: "Publish wheels to PyPI after TestPyPI"
+        default: false
+        required: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  # Build profile: 1 = Release, 2 = ReleaseWithLto (see build/ninja_gen/src/build.rs)
+  RELEASE: 2
+  N2_OUTPUT_PROGRESS: "1"
+  N2_OUTPUT_SUCCESS: "1"
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      public_release: ${{ steps.validate.outputs.public_release }}
+      pep440_version: ${{ steps.validate.outputs.pep440_version }}
+      tag_name: ${{ steps.validate.outputs.tag_name }}
+      release_name: ${{ steps.validate.outputs.release_name }}
+      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Reject incompatible inputs
+        run: |
+          if [ "$DRAFT_RELEASE" = "true" ] && [ "$SIGN" != "true" ]; then
+            echo "::error::Draft releases must be signed"
+            exit 1
+          fi
+        env:
+          DRAFT_RELEASE: ${{ inputs['draft-release'] }}
+          SIGN: ${{ inputs.sign }}
+
+      - name: Validate version and compute metadata
+        id: validate
+        run: |
+          pip install --break-system-packages 'packaging>=24,<26'
+          file_version=$(cat .version)
+
+          public_release=false
+          if [ "$DRAFT_RELEASE" = "true" ] || [ "$PUBLISH_PYPI" = "true" ]; then
+            public_release=true
+          fi
+
+          if [ "$public_release" = "true" ] && [ "$file_version" != "$INPUT_VERSION" ]; then
+            echo "::error::Input version '$INPUT_VERSION' does not match .version '$file_version'"
+            exit 1
+          fi
+
+          # Use .version for non-release runs so builds work without a prepare step
+          version="$INPUT_VERSION"
+          if [ "$public_release" != "true" ]; then
+            echo "::notice::Non-release run — ignoring version input '$INPUT_VERSION', using .version='$file_version'"
+            version="$file_version"
+          fi
+
+          # "0.0" skips the ordering check — non-release builds only need format validation
+          is_prerelease=$(python3 .github/scripts/validate_version.py "$version" "0.0")
+          echo "Version check passed: $version (prerelease=$is_prerelease)"
+
+          {
+            echo "pep440_version=$version"
+            echo "tag_name=$version"
+            echo "release_name=Anki $version"
+            echo "public_release=$public_release"
+            echo "is_prerelease=$is_prerelease"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DRAFT_RELEASE: ${{ inputs['draft-release'] }}
+          PUBLISH_PYPI: ${{ inputs['publish-pypi'] }}
+
+      # - name: Check CI passed on main
+      #   if: ${{ steps.validate.outputs.public_release == 'true' }}
+      #   run: |
+      #     conclusion=$(gh run list \
+      #       --workflow=ci.yml \
+      #       -e push -e workflow_dispatch \
+      #       --commit "$COMMIT_SHA" \
+      #       --limit 1 \
+      #       --json conclusion \
+      #       --jq ".[0].conclusion")
+
+      #     if [[ -z "$conclusion" ]]; then
+      #       echo "::error::Could not determine CI status for commit $COMMIT_SHA"
+      #       exit 1
+      #     elif [[ "$conclusion" != "success" ]]; then
+      #       echo "::error::CI for commit $COMMIT_SHA concluded with '$conclusion'"
+      #       exit 1
+      #     fi
+      #   env:
+      #     GH_TOKEN: ${{ github.token }}
+      #     COMMIT_SHA: ${{ github.sha }}
+
+      - name: Check for duplicate tag or release
+        if: ${{ inputs['draft-release'] == true }}
+        run: |
+          git fetch --tags origin
+          if git rev-parse "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "::error::Tag '$TAG_NAME' already exists"
+            exit 1
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "::error::GitHub release '$TAG_NAME' already exists"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.validate.outputs.tag_name }}
+
+  # macOS ARM and Intel are kept as separate jobs rather than a matrix because
+  # they are likely to diverge (signing quirks, Xcode versions, cross-compilation
+  # flags, Rosetta workarounds), and the conditional environment expression is
+  # already complex enough without adding matrix dimensions.
+  build-and-sign-mac:
+    needs: prepare
+    runs-on: macos-14
+    timeout-minutes: 90
+    environment: ${{ inputs.sign == true && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-anki
+
+      - name: Build wheels
+        run: ./ninja wheels:anki
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos
+          path: out/wheels/anki-*.whl
+
+  build-and-sign-mac-intel:
+    needs: prepare
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    environment: ${{ inputs.sign == true && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-anki
+
+      - name: Build wheels
+        run: ./ninja wheels:anki
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-intel
+          path: out/wheels/anki-*.whl
+
+  build-and-sign-windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: ${{ inputs.sign == true && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-anki
+
+      - name: Build wheels
+        run: tools\ninja wheels:anki
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows
+          path: out/wheels/anki-*.whl
+
+  # Linux x86 and ARM are kept as separate jobs rather than a matrix because the ARM
+  # build requires different runners for wheels vs installer: ubuntu-22.04
+  # for wheels (to target glibc 2.35) and ubuntu-24.04-arm for the installer (the Qt wheels require it).
+  build-linux-x86:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-anki
+
+      # Upload both anki and aqt wheels; the pure-Python aqt wheel is the same on all platforms
+      - name: Build wheels
+        run: ./ninja wheels
+
+      - name: Build anki-release wheel
+        run: cd qt/release && bash build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-x86
+          path: out/wheels/*.whl
+
+  build-linux-arm-wheels:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-anki
+
+      - name: Build wheels
+        run: |
+          sudo apt-get install --yes --no-install-recommends libc6-dev-arm64-cross gcc-aarch64-linux-gnu
+          ./tools/build-arm-lin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-arm
+          path: out/wheels/anki-*.whl
+
+  publish-testpypi:
+    needs: [prepare, build-and-sign-mac, build-and-sign-mac-intel, build-and-sign-windows, build-linux-x86, build-linux-arm-wheels]
+    if: >-
+      ${{ always()
+      && (inputs['publish-testpypi'] == true || inputs['publish-pypi'] == true)
+      && needs.prepare.result == 'success'
+      && needs.build-and-sign-mac.result == 'success'
+      && needs.build-and-sign-mac-intel.result == 'success'
+      && needs.build-and-sign-windows.result == 'success'
+      && needs.build-linux-x86.result == 'success'
+      && needs.build-linux-arm-wheels.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels/
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    needs: [prepare, publish-testpypi]
+    if: >-
+      ${{ always()
+      && inputs['publish-pypi'] == true
+      && needs.prepare.result == 'success'
+      && needs.publish-testpypi.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels/
