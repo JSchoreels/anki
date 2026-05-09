@@ -13,22 +13,20 @@ import {
 describe("minimum interval", () => {
     test("parses supported suffixes", () => {
         expect(stringToMinimumInterval("1s")).toBe(1);
+        expect(stringToMinimumInterval("1m")).toBe(60);
+        expect(stringToMinimumInterval("1h")).toBe(3_600);
         expect(stringToMinimumInterval("1d")).toBe(86_400);
-        expect(stringToMinimumInterval("1w")).toBe(604_800);
-        expect(stringToMinimumInterval("1m")).toBe(2_592_000);
-        expect(stringToMinimumInterval("1y")).toBe(31_536_000);
     });
 
     test("formats with the largest whole supported unit", () => {
         expect(minimumIntervalToString(1)).toBe("1s");
+        expect(minimumIntervalToString(60)).toBe("1m");
+        expect(minimumIntervalToString(3_600)).toBe("1h");
         expect(minimumIntervalToString(86_400)).toBe("1d");
-        expect(minimumIntervalToString(604_800)).toBe("1w");
-        expect(minimumIntervalToString(2_592_000)).toBe("1m");
-        expect(minimumIntervalToString(31_536_000)).toBe("1y");
     });
 
     test("caps values at the backend maximum", () => {
-        expect(stringToMinimumInterval("9999m")).toBe(3_153_600_000);
+        expect(stringToMinimumInterval("99999d")).toBe(3_153_600_000);
     });
 
     test("parses maximum intervals into whole days", () => {

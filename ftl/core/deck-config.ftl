@@ -295,7 +295,7 @@ deck-config-maximum-interval-tooltip =
     values like 1d, 1w, 1m, or 1y.
 deck-config-fsrs-minimum-interval-tooltip =
     The minimum interval for FSRS same-day learning and relearning cards, such as
-    1s, 1d, 1w, or 1m.
+    1s, 1m, 1h, or 1d.
 deck-config-starting-ease-tooltip =
     The ease multiplier new cards start with. By default, the `Good` button on a
     newly-learned card will delay the next review by 2.5x the previous delay.
