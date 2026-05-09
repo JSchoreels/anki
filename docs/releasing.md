@@ -92,6 +92,9 @@ example after rerunning a workflow that already created the draft release, the
 workflow falls back to the run attempt suffix, such as
 `25.09.4+fsrs7.build.7.2`.
 
+Runtime integer version checks use only the release segment (`YY.MM[.patch]`).
+For example, `25.09.4+fsrs7.build.7` is treated as `250904`.
+
 ## Workflow inputs
 
 **prepare-release:** takes a `version` string and an optional `skip-ci-check`

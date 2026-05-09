@@ -311,18 +311,19 @@ def int_version() -> int:
 
     from anki.buildinfo import version
 
-    # Strip non-numeric characters (handles beta/rc suffixes like '25.02b1' or 'rc3')
-    numeric_version = re.sub(r"[^0-9.]", "", version)
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?(?=$|[a-zA-Z+])", version)
+    if not match:
+        raise ValueError(f"invalid version: {version}")
 
-    try:
-        [year, month, patch] = numeric_version.split(".")
-    except ValueError:
-        [year, month] = numeric_version.split(".")
-        patch = "0"
+    year, month, patch = match.groups()
+    patch = patch or "0"
 
     year_num = int(year)
     month_num = int(month)
     patch_num = int(patch)
+
+    if year_num == 2 and month_num == 1:
+        return patch_num
 
     return year_num * 10_000 + month_num * 100 + patch_num
 
