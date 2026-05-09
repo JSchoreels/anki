@@ -1,28 +1,26 @@
 # Anki FSRS7 Fork
 
-This repository is an unofficial fork of [Anki](https://apps.ankiweb.net) focused on
-FSRS7 experimentation and internal builds.
+This is an unofficial Anki desktop build focused on trying FSRS7 scheduling
+changes before they are available in the official Anki app.
 
 It is not maintained by Ankitects and should not be confused with the official
 Anki desktop app. The original upstream README is preserved in
 [OFFICIAL_README.md](./OFFICIAL_README.md).
 
-## Differences From Official Anki
+## What This Fork Is For
 
-Compared with upstream Anki, this fork adds FSRS7-oriented scheduling,
-optimization, and simulator work. In particular, it includes:
+This fork is for users who want to test newer FSRS behavior and compare how it
+affects their reviews, study time, and retention choices.
 
-- FSRS7 support backed by this fork's pinned `fsrs-rs` dependency.
-- FSRS7 deck option data such as same-day optimization/evaluation settings.
-- Separate evaluation search handling for FSRS optimization/evaluation.
-- Additional simulator and "Help me decide" work around retention, time cost,
-  and workload inspection.
-- Internal build versioning with the `+fsrs7` suffix.
+Compared with official Anki, it adds more FSRS7-focused options and analysis
+tools in deck options. These are intended to help you understand trade-offs
+before changing how your cards are scheduled.
 
-The goal is to make FSRS7 behavior easier to test before it is appropriate for
-general official Anki distribution.
+Use this build if you are comfortable trying experimental scheduling behavior.
+Use official Anki if you prefer the most stable and broadly supported desktop
+release.
 
-## What This Adds For Users
+## What It Adds
 
 This fork extends the FSRS tools in deck options so you can inspect the impact
 of FSRS7 settings before committing to them:
@@ -42,6 +40,16 @@ of FSRS7 settings before committing to them:
 - The "Skip learning/relearning queues with FSRS" option lets FSRS schedule
   review states directly instead of using the learning/relearning queues.
 
+## Before You Use It
+
+This fork changes scheduling behavior. Before relying on it for an important
+collection, make sure you are comfortable with the experimental nature of the
+build and keep normal Anki backups.
+
+Some add-ons may expect official Anki version strings or official scheduling
+behavior. If an add-on behaves unexpectedly, check whether there is a compatible
+version listed below.
+
 ## Compatible Add-ons
 
 The following add-ons have been adapted for this fork:
@@ -54,15 +62,6 @@ The following add-ons have been adapted for this fork:
   required when other tools use AnkiConnect against this fork, because the
   upstream AnkiConnect version parsing does not handle the `+fsrs7` build
   suffix correctly.
-
-## Building
-
-Use the same development flow as upstream Anki. See
-[OFFICIAL_README.md](./OFFICIAL_README.md) and
-[docs/development.md](./docs/development.md) for build and development details.
-
-Unsigned internal installer builds are produced through the release workflow on
-this fork's `main` branch.
 
 ## License
 
