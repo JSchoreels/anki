@@ -26,6 +26,7 @@ build ref="HEAD":
 draft ref="main":
     gh workflow run release.yml --repo JSchoreels/anki --ref {{ ref }} \
         -f version="{{ version }}" \
+        -f skip-ci-check=true \
         -f sign=false \
         -f draft-release=true \
         -f publish-testpypi=false \
