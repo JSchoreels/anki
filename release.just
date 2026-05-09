@@ -23,10 +23,11 @@ build ref="HEAD":
 
 # Build all platforms and create an unsigned draft GitHub release
 [arg("ref", long)]
-draft ref="main":
+[arg("skip-ci-check", long)]
+draft ref="main" skip-ci-check="false":
     gh workflow run release.yml --repo JSchoreels/anki --ref {{ ref }} \
         -f version="{{ version }}" \
-        -f skip-ci-check=true \
+        -f skip-ci-check={{ skip-ci-check }} \
         -f sign=false \
         -f draft-release=true \
         -f publish-testpypi=false \
