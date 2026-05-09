@@ -21,6 +21,16 @@ build ref="HEAD":
         -f publish-testpypi=false \
         -f publish-pypi=false
 
+# Build all platforms and create an unsigned draft GitHub release
+[arg("ref", long)]
+draft ref="main":
+    gh workflow run release.yml --repo JSchoreels/anki --ref {{ ref }} \
+        -f version="{{ version }}" \
+        -f sign=false \
+        -f draft-release=true \
+        -f publish-testpypi=false \
+        -f publish-pypi=false
+
 # Build and sign artifacts
 [arg("ref", long)]
 sign ref="HEAD":
