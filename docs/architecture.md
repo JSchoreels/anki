@@ -178,6 +178,13 @@ cards schedules review states directly instead of writing learning/relearning
 queue states, including configured steps and FSRS short-term intervals below
 half a day.
 
+When FSRS computes a failing review interval for `Again`, the scheduler clamps
+that interval to the deck preset's minimum lapse interval and maximum review
+interval before storing it on the card. This applies both when empty relearning
+steps schedule the card directly as a review card and when configured
+relearning steps keep the card in the relearning queue with an embedded review
+interval.
+
 When FSRS review order is ascending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
 into one exact-retrievability ordering. Intraday cards with a future timestamp

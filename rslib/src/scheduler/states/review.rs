@@ -87,7 +87,12 @@ impl ReviewState {
         if let Some(states) = &ctx.fsrs_next_states {
             // In FSRS, fuzz is applied when the card leaves the relearning
             // stage
-            (states.again.interval, 0, Some(states.again.memory.into()))
+            let (minimum, maximum) = ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval);
+            (
+                states.again.interval.clamp(minimum as f32, maximum as f32),
+                0,
+                Some(states.again.memory.into()),
+            )
         } else {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval);
             let (interval, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
@@ -368,6 +373,10 @@ fn constrain_passing_interval(
 #[cfg(test)]
 mod test {
     use super::*;
+    use fsrs::{ItemState, MemoryState, NextStates};
+
+    use crate::scheduler::states::steps::LearningSteps;
+    use crate::scheduler::states::NormalState;
 
     #[test]
     fn leech_threshold() {
@@ -396,6 +405,52 @@ mod test {
         assert!(leech_threshold_met(1, 1));
         assert!(leech_threshold_met(2, 1));
         assert!(leech_threshold_met(3, 1));
+    }
+
+    fn fsrs_item_state(interval: f32) -> ItemState {
+        ItemState {
+            interval,
+            memory: MemoryState {
+                stability: interval.max(0.1),
+                difficulty: 5.0,
+            },
+        }
+    }
+
+    #[test]
+    fn fsrs_again_respects_maximum_interval() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.maximum_review_interval = 5;
+        ctx.minimum_lapse_interval = 1;
+        ctx.fsrs_next_states = Some(NextStates {
+            again: fsrs_item_state(10.0),
+            hard: fsrs_item_state(11.0),
+            good: fsrs_item_state(12.0),
+            easy: fsrs_item_state(13.0),
+        });
+
+        let state = ReviewState {
+            scheduled_days: 30,
+            elapsed_days: 30,
+            memory_state: Some(crate::card::FsrsMemoryState {
+                stability: 30.0,
+                difficulty: 5.0,
+            }),
+            ..Default::default()
+        };
+
+        ctx.relearn_steps = LearningSteps::new(&[]);
+        let CardState::Normal(NormalState::Review(again)) = state.next_states(&ctx).again else {
+            panic!("empty relearning steps should schedule Again directly as review");
+        };
+        assert_eq!(again.scheduled_days, 5);
+
+        ctx.relearn_steps = LearningSteps::new(&[10.0]);
+        let CardState::Normal(NormalState::Relearning(again)) = state.next_states(&ctx).again
+        else {
+            panic!("configured relearning steps should keep Again in relearning");
+        };
+        assert_eq!(again.review.scheduled_days, 5);
     }
 
     #[test]
