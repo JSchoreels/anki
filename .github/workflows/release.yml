@@ -54,6 +54,7 @@ jobs:
     outputs:
       public_release: ${{ steps.validate.outputs.public_release }}
       pep440_version: ${{ steps.validate.outputs.pep440_version }}
+      app_version: ${{ steps.validate.outputs.app_version }}
       tag_name: ${{ steps.validate.outputs.tag_name }}
       release_name: ${{ steps.validate.outputs.release_name }}
       is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
@@ -113,6 +114,11 @@ jobs:
             echo "::notice::Unsigned draft release version resolved to '$version'"
           fi
 
+          app_version="$version"
+          if [[ "$app_version" == *+*.build.* ]]; then
+            app_version="${app_version%%.build.*}"
+          fi
+
           # "0.0" skips the ordering check — non-release builds only need format validation
           is_prerelease=$(python3 .github/scripts/validate_version.py "$version" "0.0")
           echo "Version check passed: $version (prerelease=$is_prerelease)"
@@ -122,11 +128,13 @@ jobs:
             echo
             echo "- Input version: \`$INPUT_VERSION\`"
             echo "- Resolved version: \`$version\`"
+            echo "- App version: \`$app_version\`"
             echo "- GitHub run number: \`$GITHUB_RUN_NUMBER\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
           {
             echo "pep440_version=$version"
+            echo "app_version=$app_version"
             echo "tag_name=$version"
             echo "release_name=Anki $version"
             echo "public_release=$public_release"
@@ -191,9 +199,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -251,9 +259,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -311,9 +319,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -412,9 +420,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -497,9 +505,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -584,9 +592,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -626,9 +634,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki
@@ -656,9 +664,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Use resolved release version
+      - name: Use app version
         shell: bash
-        run: printf '%s\n' '${{ needs.prepare.outputs.pep440_version }}' > .version
+        run: printf '%s\n' '${{ needs.prepare.outputs.app_version }}' > .version
 
       - name: Setup build environment
         uses: ./.github/actions/setup-anki

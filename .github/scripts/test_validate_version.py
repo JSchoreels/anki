@@ -17,6 +17,7 @@ from validate_version import validate_version
         ("26.04.1rc2", "26.04", True),
         ("26.04.1b1", "26.04", True),
         ("25.09.4+fsrs7", "0.0", False),
+        ("25.09.4+fsrs7.build.7", "0.0", False),
     ],
 )
 def test_valid_versions(version: str, current: str, expected: bool) -> None:

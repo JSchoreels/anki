@@ -28,6 +28,9 @@ def test_int_version(buildinfo: ModuleType):
     set_buildinfo_version(buildinfo, "25.09.4")
     assert int_version() == 250904
 
+    set_buildinfo_version(buildinfo, "25.09.4+fsrs7")
+    assert int_version() == 250904
+
     set_buildinfo_version(buildinfo, "25.09.4+fsrs7.build.7")
     assert int_version() == 250904
 

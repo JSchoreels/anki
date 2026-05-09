@@ -86,14 +86,19 @@ Internal fork builds may use a PEP 440 local version suffix such as
 `25.09.4+fsrs7`. Use `+fsrs7`, not `-fsrs7`, so wheel and installer builds
 receive a valid Python package version.
 
-Unsigned draft releases append the GitHub Actions run number to the local suffix,
-such as `25.09.4+fsrs7.build.7`. If that exact draft/tag already exists, for
-example after rerunning a workflow that already created the draft release, the
-workflow falls back to the run attempt suffix, such as
+Unsigned draft releases append the GitHub Actions run number to the GitHub
+release/tag version, such as `25.09.4+fsrs7.build.7`. If that exact draft/tag
+already exists, for example after rerunning a workflow that already created the
+draft release, the workflow falls back to the run attempt suffix, such as
 `25.09.4+fsrs7.build.7.2`.
 
+The built Anki app uses the base local version without the build number. For
+example, a GitHub release tagged `25.09.4+fsrs7.build.7` writes
+`25.09.4+fsrs7` into the app's `.version`.
+
 Runtime integer version checks use only the release segment (`YY.MM[.patch]`).
-For example, `25.09.4+fsrs7.build.7` is treated as `250904`.
+For example, both `25.09.4+fsrs7` and `25.09.4+fsrs7.build.7` are treated as
+`250904`.
 
 ## Workflow inputs
 
@@ -138,14 +143,14 @@ secrets.
 The `release.yml` workflow uses independent boolean inputs to control what gets
 signed and published:
 
-| Input              | Effect                                                                                                                                                                                                                                                                                               |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                                                                           |
-| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires passing CI unless skipped, no duplicate final tag/release, and `version` matching `.version`. Unsigned draft releases append the GitHub run number, such as `25.09.4+fsrs7` → `25.09.4+fsrs7.build.7`. |
-| `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                                                                    |
-| `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI unless skipped, and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. Public releases should use `sign=true`.                                                                       |
-| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`.                                                                                                                                                                               |
-| `version`          | For `draft-release` or `publish-pypi`: must match `.version`. Unsigned draft releases resolve to a suffixed build version before packaging. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).                                          |
+| Input              | Effect                                                                                                                                                                                                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                                                                                                         |
+| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires passing CI unless skipped, no duplicate final tag/release, and `version` matching `.version`. Unsigned draft releases append the GitHub run number to the GitHub release/tag version, while the app keeps the base `+fsrs7` version. |
+| `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                                                                                                  |
+| `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI unless skipped, and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. Public releases should use `sign=true`.                                                                                                     |
+| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`.                                                                                                                                                                                                             |
+| `version`          | For `draft-release` or `publish-pypi`: must match `.version`. Unsigned draft releases resolve to a suffixed GitHub release/tag version before packaging, but write the base local version into the app. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).            |
 
 ```mermaid
 flowchart TD
@@ -249,9 +254,9 @@ For a hotfix release (e.g. from a `25.09.3` branch):
   release before prepare's commit has propagated, the build will use whatever
   `.version` was HEAD at dispatch time.
 - `draft-release=true` with `sign=false` creates an unsigned internal draft
-  release. The build version gets the GitHub Actions run number appended before
-  packaging, for example `25.09.4+fsrs7.build.7`. If that exact draft/tag already
-  exists, the workflow appends the run attempt as well.
+  release. The GitHub release/tag version gets the GitHub Actions run number
+  appended, for example `25.09.4+fsrs7.build.7`, but the built app uses
+  `25.09.4+fsrs7` in `.version`.
 - When `publish-pypi=true`, wheels are published to TestPyPI first, then to
   PyPI after the TestPyPI job succeeds. If `draft-release=true` is also set,
   PyPI publishing waits for the draft GitHub release to succeed too.
