@@ -133,11 +133,11 @@ struct HelpMeDecideReviewTimeModel {
     coeffs: [[f32; 5]; 4],
     // per-group fallback if regression is not applicable / prediction is invalid
     group_fallback: [f32; 4],
-    // per-group representative stability used for flattened output and DR sweep costs
+    // per-group representative stability used for flattened output
     group_mean_stability: [f32; 4],
-    // per-group representative repetitions used for flattened output and DR sweep costs
+    // per-group representative repetitions used for cost prediction
     group_mean_repetitions: [f32; 4],
-    // per-group representative difficulty used for flattened output and DR sweep costs
+    // per-group representative difficulty used for flattened output
     group_mean_difficulty: [f32; 4],
     // sample count per R bucket (all grades combined)
     sample_counts: [u32; R_BUCKET_COUNT],
@@ -156,7 +156,6 @@ impl HelpMeDecideReviewTimeModel {
     const HARD_GROUP: usize = 1;
     const GOOD_GROUP: usize = 2;
     const EASY_GROUP: usize = 3;
-    const REVIEW_STATE_INDEX: usize = 1;
 
     fn group_index_from_grade(grade: usize) -> Option<usize> {
         if (1..=4).contains(&grade) {
@@ -611,35 +610,6 @@ impl HelpMeDecideReviewTimeModel {
         } else {
             self.group_fallback[group_idx]
         }
-    }
-
-    fn review_costs_for_desired_retention(&self, desired_retention: f32) -> [f32; 4] {
-        [
-            self.predict_seconds_for_group(
-                Self::AGAIN_GROUP,
-                desired_retention,
-                self.group_mean_stability[Self::AGAIN_GROUP],
-                self.group_mean_difficulty[Self::AGAIN_GROUP],
-            ),
-            self.predict_seconds_for_group(
-                Self::HARD_GROUP,
-                desired_retention,
-                self.group_mean_stability[Self::HARD_GROUP],
-                self.group_mean_difficulty[Self::HARD_GROUP],
-            ),
-            self.predict_seconds_for_group(
-                Self::GOOD_GROUP,
-                desired_retention,
-                self.group_mean_stability[Self::GOOD_GROUP],
-                self.group_mean_difficulty[Self::GOOD_GROUP],
-            ),
-            self.predict_seconds_for_group(
-                Self::EASY_GROUP,
-                desired_retention,
-                self.group_mean_stability[Self::EASY_GROUP],
-                self.group_mean_difficulty[Self::EASY_GROUP],
-            ),
-        ]
     }
 
     fn review_cost_for_rating(
@@ -1487,33 +1457,6 @@ mod tests {
     }
 
     #[test]
-    fn review_costs_for_desired_retention_use_per_grade_groups() {
-        let model = HelpMeDecideReviewTimeModel::from_samples(
-            &[
-                (0.9, 5.0, 2.0, 5.0, 1, 30.0),
-                (0.9, 5.0, 2.0, 5.0, 2, 12.0),
-                (0.9, 5.0, 2.0, 5.0, 3, 9.0),
-                (0.9, 5.0, 2.0, 5.0, 4, 6.0),
-                (0.8, 5.0, 2.0, 5.0, 1, 32.0),
-                (0.8, 5.0, 2.0, 5.0, 2, 14.0),
-                (0.8, 5.0, 2.0, 5.0, 3, 11.0),
-                (0.8, 5.0, 2.0, 5.0, 4, 8.0),
-                (0.7, 5.0, 2.0, 5.0, 1, 34.0),
-                (0.7, 5.0, 2.0, 5.0, 2, 16.0),
-                (0.7, 5.0, 2.0, 5.0, 3, 13.0),
-                (0.7, 5.0, 2.0, 5.0, 4, 10.0),
-            ],
-            no_transitions(),
-            false,
-            [1.0, 1.0, 1.0, 1.0],
-        );
-        let costs = model.review_costs_for_desired_retention(0.9);
-        assert!(costs[0] > costs[1]);
-        assert!(costs[1] > costs[2]);
-        assert!(costs[2] > costs[3]);
-    }
-
-    #[test]
     fn review_time_model_uses_stability_factor() {
         let model = synthetic_fail_model();
         let low_s = model.cost_for(0.8, 5.0, 2.0, 6.0, 1);
@@ -1535,38 +1478,6 @@ mod tests {
         let low_d = model.cost_for(0.8, 7.0, 2.0, 5.0, 1);
         let high_d = model.cost_for(0.8, 7.0, 2.0, 8.0, 1);
         assert!(high_d > low_d);
-    }
-
-    #[test]
-    fn review_costs_use_group_mean_difficulty() {
-        let model = HelpMeDecideReviewTimeModel {
-            coeffs: [
-                // again: a + e*D
-                [5.0, 0.0, 0.0, 0.0, 2.0],
-                // hard: a + e*D
-                [3.0, 0.0, 0.0, 0.0, 1.0],
-                // good: a + e*D
-                [2.5, 0.0, 0.0, 0.0, 1.5],
-                // easy: a + e*D
-                [2.0, 0.0, 0.0, 0.0, 0.5],
-            ],
-            group_fallback: [0.0, 0.0, 0.0, 0.0],
-            group_mean_stability: [0.0, 0.0, 0.0, 0.0],
-            group_mean_repetitions: [0.0, 0.0, 0.0, 0.0],
-            group_mean_difficulty: [4.0, 6.0, 5.0, 8.0],
-            sample_counts: [0u32; super::R_BUCKET_COUNT],
-            transition_probs: [[0.25; 4]; 4],
-            transition_counts: [[0u32; 4]; 4],
-            success_grade_probs_by_r_bucket: [[1.0 / 3.0; 3]; super::R_BUCKET_COUNT],
-            success_grade_counts_by_r_bucket: [0u32; super::R_BUCKET_COUNT],
-            grade_weights: [0.25, 0.25, 0.25, 0.25],
-        };
-
-        let costs = model.review_costs_for_desired_retention(0.9);
-        assert!((costs[0] - 13.0).abs() < 1e-4);
-        assert!((costs[1] - 9.0).abs() < 1e-4);
-        assert!((costs[2] - 10.0).abs() < 1e-4);
-        assert!((costs[3] - 6.0).abs() < 1e-4);
     }
 
     #[test]
