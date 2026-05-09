@@ -19,7 +19,7 @@ on:
         required: false
         type: boolean
       draft-release:
-        description: "Create a draft GitHub release (requires sign)"
+        description: "Create a draft GitHub release"
         default: false
         required: false
         type: boolean
@@ -62,16 +62,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-
-      - name: Reject incompatible inputs
-        run: |
-          if [ "$DRAFT_RELEASE" = "true" ] && [ "$SIGN" != "true" ]; then
-            echo "::error::Draft releases must be signed"
-            exit 1
-          fi
-        env:
-          DRAFT_RELEASE: ${{ inputs['draft-release'] }}
-          SIGN: ${{ inputs.sign }}
 
       - name: Validate version and compute metadata
         id: validate
@@ -633,7 +623,7 @@ jobs:
       && needs.sign-msi-windows-arm.result == 'success'
       }}
     runs-on: ubuntu-latest
-    environment: release
+    environment: ${{ inputs.sign == true && 'release' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -660,7 +650,7 @@ jobs:
             --generate-notes \
             ${prerelease_flag:+"$prerelease_flag"}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ inputs.sign == true && secrets.RELEASE_TOKEN || github.token }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
           IS_PRERELEASE: ${{ needs.prepare.outputs.is_prerelease }}
