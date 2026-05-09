@@ -53,6 +53,34 @@ class LocalFileRequest:
     root: str
     # path to file relative to root folder
     path: str
+    # collection media is untrusted user content; add-on web exports are not
+    untrusted: bool = True
+
+
+UNTRUSTED_MEDIA_CSP = "; ".join(
+    (
+        "default-src 'none'",
+        "script-src 'none'",
+        "connect-src 'none'",
+        "object-src 'none'",
+        "frame-src 'none'",
+        "child-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "sandbox",
+    )
+)
+
+
+def _editor_content_security_policy(port: int) -> str:
+    # Only script-src is restricted here. Adding frame-src, object-src, img-src
+    # etc. would break existing user content: YouTube embeds, dictionary iframes,
+    # remote images, and SVG object tags.
+    csp_paths = (
+        f"http://127.0.0.1:{port}/_anki/",
+        f"http://127.0.0.1:{port}/_addons/",
+    )
+    return "; ".join((f"script-src {' '.join(csp_paths)}",))
 
 
 @dataclass
@@ -283,13 +311,17 @@ def _handle_local_file_request(request: LocalFileRequest) -> Response:
                 max_age = 0
             else:
                 max_age = 60 * 60
-            return flask.send_file(
+            response = flask.send_file(
                 fullpath,
                 mimetype=mimetype,
                 conditional=True,
                 max_age=max_age,
                 download_name="foo",  # type: ignore[call-arg]
             )
+            if request.untrusted:
+                # Prevent user-provided HTML/SVG from running as an active document.
+                response.headers["Content-Security-Policy"] = UNTRUSTED_MEDIA_CSP
+            return response
         else:
             print(f"Not found: {path}")
             return _text_response(HTTPStatus.NOT_FOUND, f"Invalid path: {path}")
@@ -475,7 +507,9 @@ def _extract_addon_request(path: str) -> LocalFileRequest | NotFound | None:
         return None
 
     if re.fullmatch(pattern, sub_path):
-        return LocalFileRequest(root=manager.addonsFolder(), path=addon_path)
+        return LocalFileRequest(
+            root=manager.addonsFolder(), path=addon_path, untrusted=False
+        )
 
     return NotFound(message=f"couldn't locate item in add-on folder {path}")
 
@@ -830,13 +864,8 @@ def legacy_page_data() -> Response:
         # Prevent JS in field content from being executed in the editor, as it would
         # have access to our internal API, and is a security risk.
         if page.context == PageContext.EDITOR:
-            port = aqt.mw.mediaServer.getPort()
-            csp_paths = (
-                f"http://127.0.0.1:{port}/_anki/",
-                f"http://127.0.0.1:{port}/_addons/",
-            )
             response.headers["Content-Security-Policy"] = (
-                f"script-src {' '.join(csp_paths)}"
+                _editor_content_security_policy(aqt.mw.mediaServer.getPort())
             )
         return response
     else:
