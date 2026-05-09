@@ -24,9 +24,12 @@ general official Anki distribution.
 
 ## Compatible Add-ons
 
-The following add-on has been adapted for this fork:
+The following add-ons have been adapted for this fork:
 
-- [Search Stats Extended](https://ankiweb.net/shared/info/1339555413?cb=1778336951277)
+- [Search Stats Extended (Sound's Fork)](https://ankiweb.net/shared/info/1339555413?cb=1778336951277):
+  search statistics adapted and tested primarily against this FSRS7 fork.
+- [FSRS Helper (Sound's Fork)](https://ankiweb.net/shared/info/218829258?cb=1778337495548):
+  FSRS helper add-on adapted to work with this fork's FSRS7 behavior.
 
 ## Building
 
