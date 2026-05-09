@@ -86,6 +86,10 @@ Internal fork builds may use a PEP 440 local version suffix such as
 `25.09.4+fsrs7`. Use `+fsrs7`, not `-fsrs7`, so wheel and installer builds
 receive a valid Python package version.
 
+When an unsigned draft release for the base fork version already exists, the
+release workflow uses the next available local suffix, such as
+`25.09.4+fsrs7.1`, `25.09.4+fsrs7.2`, and so on.
+
 ## Workflow inputs
 
 **prepare-release:** takes a `version` string and an optional `skip-ci-check`
@@ -115,9 +119,10 @@ The release workflow uses GitHub
 as manual approval gates. Jobs that access signing credentials or publish
 artifacts require a reviewer to approve the deployment before they run:
 
-- **`release`** — Required when `sign`, `draft-release`, `publish-testpypi`, or
-  `publish-pypi` is enabled. Protects code-signing secrets, the release token,
-  and PyPI/TestPyPI trusted publishing/OIDC.
+- **`release`** — Required when `sign`, `publish-testpypi`, or `publish-pypi`
+  is enabled. Protects code-signing secrets, the release token, and
+  PyPI/TestPyPI trusted publishing/OIDC. Unsigned draft releases use the normal
+  workflow token and do not require this environment.
 
 When `sign` is disabled, the macOS and Windows build jobs run without the
 `release` environment so they do not require approval and cannot access signing
@@ -128,22 +133,21 @@ secrets.
 The `release.yml` workflow uses independent boolean inputs to control what gets
 signed and published:
 
-| Input              | Effect                                                                                                                                                                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                        |
-| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires `sign=true`, the `release` environment, passing CI (unless skipped), no duplicate tag/release, and `version` matching `.version`.                   |
-| `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                 |
-| `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI (unless skipped), and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. It does not require signing unless `draft-release=true`. |
-| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`.                                                                                                                            |
-| `version`          | For `draft-release` or `publish-pypi`: must match `.version`. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).                                                                     |
+| Input              | Effect                                                                                                                                                                                                                                                                                                    |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                                                                                |
+| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires passing CI unless skipped, no duplicate final tag/release, and `version` matching `.version`. Unsigned draft releases auto-increment an existing local suffix, such as `25.09.4+fsrs7` → `25.09.4+fsrs7.1`. |
+| `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                                                                         |
+| `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI unless skipped, and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. Public releases should use `sign=true`.                                                                            |
+| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`.                                                                                                                                                                                    |
+| `version`          | For `draft-release` or `publish-pypi`: must match `.version`. Unsigned draft releases may resolve to a suffixed build version before packaging if the base release already exists. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).        |
 
 ```mermaid
 flowchart TD
     start["workflow_dispatch"]
 
-    start --> valid{"draft-release\nwithout sign?"}
-    valid -- Yes --> rejected["❌ Rejected"]
-    valid -- No --> build["Build all platforms"]
+    start --> resolve["Resolve build version"]
+    resolve --> build["Build all platforms"]
 
     build --> sign{"sign?"}
     sign -- Yes --> signed["Sign macOS/Windows\n<i>requires release env</i>"]
@@ -154,7 +158,7 @@ flowchart TD
 
     artifacts --> draft{"draft-release?"}
     draft -- Yes --> guards1["Release guards\n<i>CI (unless skipped), duplicate check,\nversion matches .version</i>"]
-    guards1 --> ghrel["Create draft GitHub release\n<i>requires release env</i>"]
+    guards1 --> ghrel["Create draft GitHub release\n<i>release env only when signing</i>"]
 
     artifacts --> testpypi{"publish-testpypi\nor publish-pypi?"}
     testpypi -- Yes --> tpypi["Publish to TestPyPI\n<i>requires release env</i>"]
@@ -164,7 +168,6 @@ flowchart TD
     ghrel --> pypi
     guards2 --> realpypi["Publish to PyPI\n<i>requires release env</i>"]
 
-    style rejected fill:#3d2020,stroke:#f85149,color:#f85149
     style guards1 fill:#2d333b,stroke:#539bf5,color:#adbac7
     style guards2 fill:#2d333b,stroke:#539bf5,color:#adbac7
 ```
@@ -240,8 +243,9 @@ For a hotfix release (e.g. from a `25.09.3` branch):
   write `.version` — that is done by the prepare workflow. If you dispatch
   release before prepare's commit has propagated, the build will use whatever
   `.version` was HEAD at dispatch time.
-- `draft-release=true` with `sign=false` is rejected — draft releases must use
-  signed installer artifacts.
+- `draft-release=true` with `sign=false` creates an unsigned internal draft
+  release. If the base fork release already exists, the build version is
+  auto-incremented with the next `.N` local suffix before packaging.
 - When `publish-pypi=true`, wheels are published to TestPyPI first, then to
   PyPI after the TestPyPI job succeeds. If `draft-release=true` is also set,
   PyPI publishing waits for the draft GitHub release to succeed too.
