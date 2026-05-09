@@ -27,7 +27,7 @@ test("prepareIntervalData exposes median and percentile rows for review interval
     const [_histogram, tableData] = prepareIntervalData(
         { intervals },
         IntervalRange.All,
-        () => {},
+        () => undefined,
         false,
         false,
     );
@@ -54,7 +54,7 @@ test("prepareIntervalData exposes stability percentile rows in FSRS mode", () =>
     const [_histogram, tableData] = prepareIntervalData(
         { intervals },
         IntervalRange.All,
-        () => {},
+        () => undefined,
         false,
         true,
     );

@@ -959,7 +959,7 @@ mod test {
 
         let s90_1 = col.fsrs_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
         let s90_2 = col.fsrs_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
-        require!(
+        assert!(
             (s90_1 - s90_2).abs() > 0.001,
             "test requires different s90 values across deck presets"
         );
@@ -1074,7 +1074,7 @@ mod test {
 
         let raw_s = 30.0;
         let s90 = col.fsrs_interval_at_retrievability_for_card(card.id, raw_s, 0.9)?;
-        require!(
+        assert!(
             (s90 - raw_s).abs() > 0.001,
             "test requires fsrs7 s90 to differ from raw stability"
         );

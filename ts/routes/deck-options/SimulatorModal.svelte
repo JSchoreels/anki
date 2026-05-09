@@ -16,31 +16,34 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         SimulateSubgraph,
         SimulateWorkloadSubgraph,
+        renderSimulationChart,
+        renderWorkloadChart,
         type Point,
         type WorkloadPoint,
     } from "../graphs/simulator";
+    import type {
+        ComputeOptimalRetentionResponse,
+        SimulateFsrsReviewResponse,
+        SimulateFsrsWorkloadResponse,
+    } from "@generated/anki/scheduler_pb";
+    import type { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
+    import type { DeckOptionsState } from "./lib";
     import * as tr from "@generated/ftl";
-    import { renderSimulationChart, renderWorkloadChart } from "../graphs/simulator";
     import {
         computeOptimalRetention,
         simulateFsrsReview,
         simulateFsrsWorkload,
     } from "@generated/backend";
     import { runWithBackendProgress } from "@tslib/progress";
-    import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
-    import type {
-        ComputeOptimalRetentionResponse,
-        SimulateFsrsReviewResponse,
-        SimulateFsrsWorkloadResponse,
-    } from "@generated/anki/scheduler_pb";
-    import type { DeckOptionsState } from "./lib";
+    import {
+        DeckConfig_Config_LeechAction,
+        type DeckConfig,
+    } from "@generated/anki/deck_config_pb";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import { reviewOrderChoices } from "./choices";
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
-    import { DeckConfig_Config_LeechAction } from "@generated/anki/deck_config_pb";
-    import type { DeckConfig } from "@generated/anki/deck_config_pb";
     import EasyDaysInput from "./EasyDaysInput.svelte";
     import Warning from "./Warning.svelte";
     import type { ComputeRetentionProgress } from "@generated/anki/collection_pb";
@@ -246,7 +249,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     async function simulateWorkload(): Promise<void> {
-        let responses: {
+        const responses: {
             name: string;
             response: SimulateFsrsWorkloadResponse;
         }[] = [];

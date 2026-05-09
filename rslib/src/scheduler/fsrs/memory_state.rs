@@ -1008,7 +1008,7 @@ mod tests {
             Some(
                 MemoryState {
                     stability: 99.999954,
-                    difficulty: 9.979899,
+                    difficulty: 5.0,
                 }
                 .into(),
             ),

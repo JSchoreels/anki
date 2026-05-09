@@ -587,6 +587,9 @@ mod test {
         col.set_config_string_inner(StringKey::CardStateCustomizer, "")?;
         col.set_config_bool_inner(BoolKey::NewCardsIgnoreReviewLimit, false)?;
         col.set_config_bool_inner(BoolKey::ApplyAllParentLimits, false)?;
+        col.set_config_bool_inner(BoolKey::LoadBalancerEnabled, false)?;
+        col.set_config_bool_inner(BoolKey::FsrsShortTermWithStepsEnabled, false)?;
+        col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, false)?;
         col.set_config_bool_inner(BoolKey::FsrsHealthCheck, true)?;
 
         // pretend we're in sync

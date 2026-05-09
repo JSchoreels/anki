@@ -607,16 +607,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         loadingCustomDecayTable = true;
         try {
+            const comparison = optimizationComparison;
             const rows = await Promise.all(
                 customDecayCandidates.map(async (decay) => {
                     const resp = await evaluateParamsLegacy({
-                        search: optimizationComparison.search,
-                        ignoreRevlogsBeforeMs:
-                            optimizationComparison.ignoreRevlogsBeforeMs,
-                        params: withLastParam(
-                            optimizationComparison.optimizedParams,
-                            decay,
-                        ),
+                        search: comparison.search,
+                        ignoreRevlogsBeforeMs: comparison.ignoreRevlogsBeforeMs,
+                        params: withLastParam(comparison.optimizedParams, decay),
                         includeSameDayReviews: includeSameDayEvaluateOverride(),
                     });
                     return {
@@ -625,28 +622,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         logLoss: resp.logLoss,
                         rmseBins: resp.rmseBins,
                         logLossDelta: metricDelta(
-                            optimizationComparison.optimized.logLoss,
+                            comparison.optimized.logLoss,
                             resp.logLoss,
                         ),
                         logLossDeltaPercent: metricDeltaPercent(
-                            optimizationComparison.optimized.logLoss,
+                            comparison.optimized.logLoss,
                             resp.logLoss,
                         ),
                         rmseDelta: metricDelta(
-                            optimizationComparison.optimized.rmseBins,
+                            comparison.optimized.rmseBins,
                             resp.rmseBins,
                         ),
                         rmseDeltaPercent: metricDeltaPercent(
-                            optimizationComparison.optimized.rmseBins,
+                            comparison.optimized.rmseBins,
                             resp.rmseBins,
                         ),
                     };
                 }),
             );
             const optimizedDecay =
-                optimizationComparison.optimizedParams[
-                    optimizationComparison.optimizedParams.length - 1
-                ] ?? 0;
+                comparison.optimizedParams[comparison.optimizedParams.length - 1] ?? 0;
             customDecayRows = [
                 {
                     decay: optimizedDecay,
@@ -894,41 +889,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {/if}
 
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
-        <ParamsInputRow
-            bind:value={$config.fsrsParams6}
-            defaultValue={[]}
-            defaults={defaults.fsrsParams6}
-        >
+        <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>
             <SettingTitle on:click={() => openHelpModal("modelParams")}>
                 {tr.deckConfigWeights()}
             </SettingTitle>
         </ParamsInputRow>
     {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FIVE}
-        <ParamsInputRow
-            bind:value={$config.fsrsParams5}
-            defaultValue={[]}
-            defaults={defaults.fsrsParams5}
-        >
+        <ParamsInputRow bind:value={$config.fsrsParams5} defaultValue={[]}>
             <SettingTitle on:click={() => openHelpModal("modelParams")}>
                 {tr.deckConfigWeights()}
             </SettingTitle>
         </ParamsInputRow>
     {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FOUR}
-        <ParamsInputRow
-            bind:value={$config.fsrsParams4}
-            defaultValue={[]}
-            defaults={defaults.fsrsParams4}
-        >
+        <ParamsInputRow bind:value={$config.fsrsParams4} defaultValue={[]}>
             <SettingTitle on:click={() => openHelpModal("modelParams")}>
                 {tr.deckConfigWeights()}
             </SettingTitle>
         </ParamsInputRow>
     {:else}
-        <ParamsInputRow
-            bind:value={$config.fsrsParams7}
-            defaultValue={[]}
-            defaults={defaults.fsrsParams7}
-        >
+        <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
             <SettingTitle on:click={() => openHelpModal("modelParams")}>
                 {tr.deckConfigWeights()}
             </SettingTitle>

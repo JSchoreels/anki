@@ -236,8 +236,6 @@ fn stats_revlog_entry(
 mod test {
     use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
     use anki_proto::deck_config::UpdateDeckConfigsMode;
-    use fsrs::MemoryState;
-    use fsrs::FSRS;
 
     use super::*;
     use crate::card::FsrsMemoryState;
@@ -321,13 +319,7 @@ mod test {
         col.storage.update_card(&card)?;
 
         let report = col.card_stats(cid)?;
-        let expected = FSRS::new(&params)?.current_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-            },
-            elapsed_days,
-        );
+        let expected = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
         assert_eq!(
             report.fsrs_retrievability.map(|v| format!("{v:.6}")),
             Some(format!("{expected:.6}"))

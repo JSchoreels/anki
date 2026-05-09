@@ -1244,7 +1244,7 @@ class Collection(DeprecatedNamesMixin):
             items=req_items,
             target_retrievability=target_retrievability,
         )
-        return {item.card_id: item.interval for item in resp_items}
+        return {CardId(item.card_id): item.interval for item in resp_items}
 
     def fsrs_interval_at_retrievability_by_config_batch(
         self, items: Sequence[tuple[int, float]], target_retrievability: float

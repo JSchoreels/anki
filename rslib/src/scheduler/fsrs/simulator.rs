@@ -114,7 +114,7 @@ fn help_me_decide_timing_line(
 }
 
 fn include_repetitions_in_regression(repetitions: f32) -> bool {
-    repetitions >= MIN_REPS_FOR_REGRESSION && repetitions <= MAX_REPS_FOR_REGRESSION
+    (MIN_REPS_FOR_REGRESSION..=MAX_REPS_FOR_REGRESSION).contains(&repetitions)
 }
 
 fn consume_review_repetition(prior_review_repetitions: &mut u32, is_review: bool) -> Option<f32> {
@@ -425,14 +425,14 @@ impl HelpMeDecideReviewTimeModel {
                 let distance = (rb as i32 - nb as i32).unsigned_abs() as f32;
                 let kernel = 1.0 / (1.0 + distance);
                 let weight = kernel * (totals[nb] as f32 + 1.0);
-                for g in 0..3 {
-                    prior[g] += raw_probs[nb][g] * weight;
+                for (g, value) in prior.iter_mut().enumerate() {
+                    *value += raw_probs[nb][g] * weight;
                 }
                 prior_weight += weight;
             }
             if prior_weight > f32::EPSILON {
-                for g in 0..3 {
-                    prior[g] /= prior_weight;
+                for value in &mut prior {
+                    *value /= prior_weight;
                 }
             } else {
                 prior = [1.0 / 3.0; 3];
@@ -510,8 +510,8 @@ impl HelpMeDecideReviewTimeModel {
         let mut out = [0.0f32; R_BUCKET_COUNT];
         for block in 0..sums.len() {
             let avg = sums[block] / ws[block];
-            for idx in starts[block]..=ends[block] {
-                out[idx] = avg;
+            for value in out.iter_mut().take(ends[block] + 1).skip(starts[block]) {
+                *value = avg;
             }
         }
         out
@@ -567,19 +567,20 @@ impl HelpMeDecideReviewTimeModel {
                 m.swap(best, pivot);
             }
             let pivot_value = m[pivot][pivot];
-            for col in pivot..6 {
-                m[pivot][col] /= pivot_value;
+            for value in m[pivot].iter_mut().skip(pivot) {
+                *value /= pivot_value;
             }
-            for row in 0..5 {
+            let pivot_row = m[pivot];
+            for (row, row_values) in m.iter_mut().enumerate() {
                 if row == pivot {
                     continue;
                 }
-                let factor = m[row][pivot];
+                let factor = row_values[pivot];
                 if factor.abs() <= f32::EPSILON {
                     continue;
                 }
-                for col in pivot..6 {
-                    m[row][col] -= factor * m[pivot][col];
+                for (col, value) in row_values.iter_mut().enumerate().skip(pivot) {
+                    *value -= factor * pivot_row[col];
                 }
             }
         }
@@ -843,7 +844,7 @@ impl Collection {
                 previous_review_grade = Some(grade);
                 let previous_state = states[idx - 1];
                 let retrievability =
-                    fsrs.current_retrievability(previous_state, item.reviews[idx].delta_t as f32);
+                    fsrs.current_retrievability(previous_state, item.reviews[idx].delta_t);
                 let stability = previous_state.stability;
                 let difficulty = previous_state.difficulty;
                 if !include_repetitions_in_regression(repetitions) {
@@ -1405,19 +1406,20 @@ mod tests {
 
     #[test]
     fn grade_matrix_uses_per_grade_regression() {
-        let mut samples = Vec::new();
-        samples.push((0.9, 5.0, 2.0, 5.0, 1, 30.0));
-        samples.push((0.9, 5.0, 2.0, 5.0, 2, 20.0));
-        samples.push((0.9, 5.0, 2.0, 5.0, 3, 10.0));
-        samples.push((0.9, 5.0, 2.0, 5.0, 4, 5.0));
-        samples.push((0.8, 5.0, 2.0, 5.0, 1, 33.0));
-        samples.push((0.8, 5.0, 2.0, 5.0, 2, 23.0));
-        samples.push((0.8, 5.0, 2.0, 5.0, 3, 13.0));
-        samples.push((0.8, 5.0, 2.0, 5.0, 4, 8.0));
-        samples.push((0.7, 5.0, 2.0, 5.0, 1, 36.0));
-        samples.push((0.7, 5.0, 2.0, 5.0, 2, 26.0));
-        samples.push((0.7, 5.0, 2.0, 5.0, 3, 16.0));
-        samples.push((0.7, 5.0, 2.0, 5.0, 4, 11.0));
+        let samples = vec![
+            (0.9, 5.0, 2.0, 5.0, 1, 30.0),
+            (0.9, 5.0, 2.0, 5.0, 2, 20.0),
+            (0.9, 5.0, 2.0, 5.0, 3, 10.0),
+            (0.9, 5.0, 2.0, 5.0, 4, 5.0),
+            (0.8, 5.0, 2.0, 5.0, 1, 33.0),
+            (0.8, 5.0, 2.0, 5.0, 2, 23.0),
+            (0.8, 5.0, 2.0, 5.0, 3, 13.0),
+            (0.8, 5.0, 2.0, 5.0, 4, 8.0),
+            (0.7, 5.0, 2.0, 5.0, 1, 36.0),
+            (0.7, 5.0, 2.0, 5.0, 2, 26.0),
+            (0.7, 5.0, 2.0, 5.0, 3, 16.0),
+            (0.7, 5.0, 2.0, 5.0, 4, 11.0),
+        ];
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &samples,
             no_transitions(),
@@ -1518,7 +1520,7 @@ mod tests {
         );
         let probs = model.transition_probs_flattened();
         // Hard->Good = 1.0
-        assert!((probs[1 * 4 + 2] - 1.0).abs() < 1e-6);
+        assert!((probs[6] - 1.0).abs() < 1e-6);
         // Good->Easy = 1.0
         assert!((probs[2 * 4 + 3] - 1.0).abs() < 1e-6);
         // Easy->Again = 1.0

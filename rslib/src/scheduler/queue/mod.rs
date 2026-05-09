@@ -259,14 +259,13 @@ impl Collection {
     pub(crate) fn get_queues(&mut self) -> Result<&mut CardQueues> {
         let deck = self.get_current_deck()?;
         self.clear_queues_if_day_changed()?;
-        if self.state.card_queues.is_none() {
-            self.state.card_queues = Some(self.build_queues(deck.id)?);
-        } else if self
-            .state
-            .card_queues
-            .as_ref()
-            .map(|queues| queues.due_intraday_needs_retrievability_resort())
-            .unwrap_or(false)
+        if self.state.card_queues.is_none()
+            || self
+                .state
+                .card_queues
+                .as_ref()
+                .map(|queues| queues.due_intraday_needs_retrievability_resort())
+                .unwrap_or(false)
         {
             self.state.card_queues = Some(self.build_queues(deck.id)?);
         }

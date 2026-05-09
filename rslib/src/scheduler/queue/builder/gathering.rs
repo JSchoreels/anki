@@ -59,14 +59,13 @@ impl QueueBuilder {
         });
 
         for (candidate, _) in with_key {
-            if candidate.counts_towards_review_limit {
-                if self.limits.root_limit_reached(LimitKind::Review)
+            if candidate.counts_towards_review_limit
+                && (self.limits.root_limit_reached(LimitKind::Review)
                     || self
                         .limits
-                        .limit_reached(candidate.card.current_deck_id, LimitKind::Review)?
-                {
-                    continue;
-                }
+                        .limit_reached(candidate.card.current_deck_id, LimitKind::Review)?)
+            {
+                continue;
             }
 
             if self

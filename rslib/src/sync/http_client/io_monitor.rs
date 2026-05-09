@@ -188,6 +188,7 @@ mod test {
     use async_stream::stream;
     use futures::pin_mut;
     use futures::StreamExt;
+    use futures::TryStreamExt;
     use tokio::select;
     use tokio::time::sleep;
     use wiremock::matchers::method;
@@ -266,16 +267,24 @@ mod test {
     #[tokio::test]
     async fn http_success() {
         let mock_server = MockServer::start().await;
+        let body_chunks: Vec<_> = crate::sync::request::header_and_stream::encode_zstd_body(vec![])
+            .try_collect()
+            .await
+            .unwrap();
         Mock::given(method("POST"))
             .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).insert_header(ORIGINAL_SIZE.as_str(), "0"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(ORIGINAL_SIZE.as_str(), "0")
+                    .set_body_bytes(body_chunks.concat()),
+            )
             .mount(&mock_server)
             .await;
         let monitor = IoMonitor::new();
         let req = monitor.zstd_request_with_timeout(
             reqwest::Client::new().post(mock_server.uri()),
             vec![],
-            millis(10),
+            millis(1_000),
         );
         req.await.unwrap();
     }

@@ -494,6 +494,7 @@ impl Collection {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_params(
         &mut self,
         search: &str,
@@ -1502,11 +1503,11 @@ pub(crate) mod tests {
     #[test]
     fn resolved_model_version_prefers_override() {
         assert_eq!(
-            super::resolved_model_version(&vec![0.0; 21], Some(ComputeParametersVersion::Fsrs7)),
+            super::resolved_model_version(&[0.0; 21], Some(ComputeParametersVersion::Fsrs7)),
             ComputeParametersVersion::Fsrs7
         );
         assert_eq!(
-            super::resolved_model_version(&vec![0.0; 35], Some(ComputeParametersVersion::Fsrs6)),
+            super::resolved_model_version(&[0.0; 35], Some(ComputeParametersVersion::Fsrs6)),
             ComputeParametersVersion::Fsrs6
         );
     }
@@ -1514,11 +1515,11 @@ pub(crate) mod tests {
     #[test]
     fn resolved_model_version_falls_back_to_param_length() {
         assert_eq!(
-            super::resolved_model_version(&vec![0.0; 35], None),
+            super::resolved_model_version(&[0.0; 35], None),
             ComputeParametersVersion::Fsrs7
         );
         assert_eq!(
-            super::resolved_model_version(&vec![0.0; 21], None),
+            super::resolved_model_version(&[0.0; 21], None),
             ComputeParametersVersion::Fsrs6
         );
     }

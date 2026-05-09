@@ -21,7 +21,7 @@ test("buildHistogram exposes backlog count in table data", () => {
         },
         GraphRange.Month,
         false,
-        () => {},
+        () => undefined,
         false,
     );
 

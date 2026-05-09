@@ -588,6 +588,11 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
         name: "new dconf".into(),
         ..Default::default()
     };
+    dconf.inner.review_fuzz_base = None;
+    dconf.inner.review_fuzz_factor_short = None;
+    dconf.inner.review_fuzz_factor_mid = None;
+    dconf.inner.review_fuzz_factor_long = None;
+    dconf.inner.review_fuzz_enabled = None;
     col1.add_or_update_deck_config(&mut dconf)?;
     if let DeckKind::Normal(deck) = &mut deck.kind {
         deck.config_id = dconf.id.0;

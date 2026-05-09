@@ -9,6 +9,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let placeholder: string;
 </script>
 
+<slot />
 <ConfigInput>
     <input type="text" bind:value {placeholder} class="w-100 mb-1" />
 </ConfigInput>

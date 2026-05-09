@@ -77,6 +77,19 @@ export function buildSLineSeries(
     return lines;
 }
 
+export function buildFailPassRatioSeries(
+    failValues: number[],
+    passValues: number[],
+    rBucketCount: number,
+    sBucketCount: number,
+): number[][] {
+    const ratios = failValues.map((failValue, index) => {
+        const passValue = passValues[index] ?? 0;
+        return passValue ? failValue / passValue : 0;
+    });
+    return buildSLineSeries(ratios, rBucketCount, sBucketCount);
+}
+
 export function seriesMinMax(series: number[][]): [number, number] {
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;

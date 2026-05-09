@@ -715,8 +715,6 @@ impl RowContext {
 mod tests {
     use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
     use anki_proto::deck_config::UpdateDeckConfigsMode;
-    use fsrs::MemoryState;
-    use fsrs::FSRS;
 
     use super::*;
     use crate::card::FsrsMemoryState;
@@ -786,13 +784,7 @@ mod tests {
 
         let ctx = RowContext::new(&mut col, cid.0, false, false)?;
         let actual = ctx.get_cell_text(Column::Retrievability)?;
-        let expected = FSRS::new(&params)?.current_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-            },
-            elapsed_days,
-        );
+        let expected = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
         assert_eq!(actual, format!("{:.0}%", expected * 100.0));
         Ok(())
     }
