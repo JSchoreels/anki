@@ -22,6 +22,26 @@ optimization, and simulator work. In particular, it includes:
 The goal is to make FSRS7 behavior easier to test before it is appropriate for
 general official Anki distribution.
 
+## What This Adds For Users
+
+This fork extends the FSRS tools in deck options so you can inspect the impact
+of FSRS7 settings before committing to them:
+
+- The experimental FSRS simulator has extra views for reviews, review time,
+  memorized cards, and efficiency, so you can compare retention choices by both
+  workload and expected learning outcome.
+- The experimental "Help Me Decide" flow uses the simulator to estimate how
+  different desired retention values affect daily review load, time spent, and
+  memorized cards.
+- FSRS7 optimization and evaluation can include same-day review history, which
+  helps the model learn from short-term relearning behavior.
+- You can also disable same-day review history for FSRS7 optimize/evaluate when
+  you want to compare against long-term review behavior only.
+- The "Allow same day review for (re)learning steps" option lets FSRS schedule
+  short-term learning/relearning reviews on the same day.
+- The "Skip learning/relearning queues with FSRS" option lets FSRS schedule
+  review states directly instead of using the learning/relearning queues.
+
 ## Compatible Add-ons
 
 The following add-ons have been adapted for this fork:
