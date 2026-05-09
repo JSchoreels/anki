@@ -26,7 +26,7 @@ general official Anki distribution.
 
 The following add-on has been adapted for this fork:
 
-- [FSRS Helper / adapted add-on](https://ankiweb.net/shared/info/1339555413?cb=1778336951277)
+- [Search Stats Extended](https://ankiweb.net/shared/info/1339555413?cb=1778336951277)
 
 ## Building
 
