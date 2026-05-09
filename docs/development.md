@@ -209,6 +209,15 @@ Depending on your operating system, this produces a file under `out/installer/di
 - A .dmg file on macOS.
 - A tarball on Linux.
 
+On macOS, you can also run:
+
+```
+just macos-installer
+```
+
+This uses the same Briefcase build path as `tools/build-installer`, packages an
+unsigned local `.dmg`, and writes it under `out/installer/dist`.
+
 ### UV-based launcher
 
 - The anki-release package is created/published with the scripts in qt/release.

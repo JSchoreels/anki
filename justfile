@@ -14,6 +14,12 @@ build:
 wheels:
     {{ ninja }} wheels
 
+# Build a local unsigned macOS installer (.dmg)
+macos-installer:
+    @if [ "{{ os() }}" != "macos" ]; then echo "macos-installer must be run on macOS" >&2; exit 1; fi
+    ./tools/build-installer
+    @echo "Installer written under out/installer/dist/"
+
 # Build and run all checks (lint + test) - lets ninja handle dependencies
 check:
     {{ ninja }} pylib qt check
