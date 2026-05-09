@@ -8,6 +8,7 @@
 - Keep diagrams aligned with the codebase when adding or updating them.
 - When manipulating data (create, read, update, delete), add documentation in `docs/*.MD`; consult those docs for data inconsistencies before fixing behavior.
 - Consider logging when adding logic, using maintainable log levels and operationally useful messages.
+- After fixes or new features, ask the user whether to retrigger a release. Do not run a release unless the user explicitly confirms. If confirmed for an internal draft build, use `just release::draft --skip-ci-check true`.
 
 ## Code Style
 
