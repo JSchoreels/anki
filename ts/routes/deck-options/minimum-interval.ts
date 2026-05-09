@@ -18,9 +18,8 @@ const UNITS: [string, number][] = [
 
 export function minimumIntervalToString(seconds: number): string {
     const rounded = Math.max(1, Math.round(seconds));
-    const [suffix, unitSeconds] =
-        UNITS.find(([, unitSeconds]) => rounded % unitSeconds === 0) ??
-        UNITS[UNITS.length - 1];
+    const [suffix, unitSeconds] = UNITS.find(([, unitSeconds]) => rounded % unitSeconds === 0)
+        ?? UNITS[UNITS.length - 1];
 
     return `${rounded / unitSeconds}${suffix}`;
 }
@@ -43,9 +42,8 @@ export function stringToMinimumInterval(text: string): number | undefined {
 
 export function maximumIntervalToString(days: number): string {
     const seconds = Math.max(1, Math.round(days)) * DAY_SECS;
-    const [suffix, unitSeconds] =
-        UNITS.find(([, unitSeconds]) => seconds % unitSeconds === 0) ??
-        UNITS.find(([suffix]) => suffix === "d")!;
+    const [suffix, unitSeconds] = UNITS.find(([, unitSeconds]) => seconds % unitSeconds === 0)
+        ?? UNITS.find(([suffix]) => suffix === "d")!;
 
     return `${seconds / unitSeconds}${suffix}`;
 }

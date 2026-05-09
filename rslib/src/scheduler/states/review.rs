@@ -376,9 +376,11 @@ fn constrain_passing_interval(
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use fsrs::{ItemState, MemoryState, NextStates};
+    use fsrs::ItemState;
+    use fsrs::MemoryState;
+    use fsrs::NextStates;
 
+    use super::*;
     use crate::scheduler::states::steps::LearningSteps;
     use crate::scheduler::states::NormalState;
 

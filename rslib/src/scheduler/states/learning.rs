@@ -224,11 +224,12 @@ impl LearnState {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::scheduler::states::steps::LearningSteps;
     use fsrs::ItemState;
     use fsrs::MemoryState;
     use fsrs::NextStates;
+
+    use super::*;
+    use crate::scheduler::states::steps::LearningSteps;
 
     fn fsrs_item_state(interval: f32) -> ItemState {
         ItemState {

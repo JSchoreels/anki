@@ -5,6 +5,7 @@
 - If unsure about a feature, double-check with the user before implementing.
 - Do not implement extra logic that was not requested; consider maintenance cost before adding logic.
 - Cover implemented behavior with tests. If no relevant tests exist, ask the user how to proceed.
+- Before pushing, run `just fmt` and `just check`. If formatting fails, run `just fix-fmt`, then rerun `just fmt`. Do not push while either command fails.
 - Keep diagrams aligned with the codebase when adding or updating them.
 - When manipulating data (create, read, update, delete), add documentation in `docs/*.MD`; consult those docs for data inconsistencies before fixing behavior.
 - Consider logging when adding logic, using maintainable log levels and operationally useful messages.
