@@ -123,8 +123,8 @@ artifacts require a reviewer to approve the deployment before they run:
 
 - **`release`** — Required when `sign`, `publish-testpypi`, or `publish-pypi`
   is enabled. Protects code-signing secrets, the release token, and
-  PyPI/TestPyPI trusted publishing/OIDC. Unsigned draft releases use the normal
-  workflow token and do not require this environment.
+  PyPI/TestPyPI trusted publishing/OIDC. Unsigned draft releases do not require
+  this environment, and prefer `RELEASE_TOKEN` when configured.
 
 When `sign` is disabled, the macOS and Windows build jobs run without the
 `release` environment so they do not require approval and cannot access signing

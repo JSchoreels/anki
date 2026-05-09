@@ -693,6 +693,8 @@ jobs:
       }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.sign == true && 'release' || '' }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -719,7 +721,7 @@ jobs:
             --generate-notes \
             ${prerelease_flag:+"$prerelease_flag"}
         env:
-          GH_TOKEN: ${{ inputs.sign == true && secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
           IS_PRERELEASE: ${{ needs.prepare.outputs.is_prerelease }}
