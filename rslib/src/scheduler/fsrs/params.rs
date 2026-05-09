@@ -538,7 +538,8 @@ impl Collection {
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
-        // Ensure UI receives review counts even in paths that don't emit per-fold progress.
+        // Ensure UI receives review counts even in paths that don't emit per-fold
+        // progress.
         let _ = anki_progress.update(false, |_| {});
 
         let eval = if uses_external_evaluation(training_search, search) {

@@ -9,8 +9,8 @@ import {
     matrixCellIndex,
     median,
     rBucketLabel,
-    sBucketLabel,
     sBucketBounds,
+    sBucketLabel,
     seriesMinMax,
 } from "./review-time-matrix";
 

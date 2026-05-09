@@ -1238,6 +1238,10 @@ fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
 
 #[cfg(test)]
 mod tests {
+    use fsrs::Card as SimCard;
+    use fsrs::SimulatorConfig;
+    use fsrs::DEFAULT_PARAMETERS;
+
     use super::apply_simulation_desired_retention;
     use super::apply_simulation_desired_retention_to_cards;
     use super::create_review_priority_fn;
@@ -1245,9 +1249,6 @@ mod tests {
     use super::HelpMeDecideReviewTimeModel;
     use crate::card::Card;
     use crate::deckconfig::ReviewCardOrder;
-    use fsrs::Card as SimCard;
-    use fsrs::SimulatorConfig;
-    use fsrs::DEFAULT_PARAMETERS;
 
     fn no_transitions() -> [[u32; 4]; 4] {
         [[0u32; 4]; 4]
@@ -1506,8 +1507,8 @@ mod tests {
             [0, 0, 0, 0],
             [0, 0, 2, 0], // Hard -> Good
             [0, 0, 0, 3], // Good -> Easy
-            [4, 0, 0, 0], // Easy -> Again
-                          // Again row has no outgoing transitions in this synthetic example.
+            [4, 0, 0, 0], /* Easy -> Again
+                           * Again row has no outgoing transitions in this synthetic example. */
         ];
         let model = HelpMeDecideReviewTimeModel::from_samples(
             &[(0.8, 5.0, 2.0, 5.0, 2, 20.0)],
@@ -1604,7 +1605,8 @@ mod tests {
             model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], Some(0.0));
         let p_t_only =
             model.success_review_rating_prob_for_retrievability(0.95, [0.2, 0.6, 0.2], Some(1.0));
-        // R-only should prefer Easy, transition-only prior should lean away from Hard in this setup.
+        // R-only should prefer Easy, transition-only prior should lean away from Hard
+        // in this setup.
         assert!(p_r_only[2] > p_r_only[0]);
         assert!(p_t_only[1] >= p_t_only[0]);
     }
@@ -1631,7 +1633,8 @@ mod tests {
             let hard_cur = probs[rb * 3];
             let easy_prev = probs[(rb - 1) * 3 + 2];
             let easy_cur = probs[rb * 3 + 2];
-            // As R decreases with rb index, hard should not go down and easy should not go up.
+            // As R decreases with rb index, hard should not go down and easy should not go
+            // up.
             assert!(hard_cur + 1e-6 >= hard_prev);
             assert!(easy_cur <= easy_prev + 1e-6);
         }

@@ -69,12 +69,15 @@ service SchedulerService {
   // Helper APIs for add-ons that need scheduler-accurate FSRS math.
   rpc FsrsCurrentRetrievability(FsrsCurrentRetrievabilityRequest)
       returns (FsrsCurrentRetrievabilityResponse);
-  rpc FsrsNextInterval(FsrsNextIntervalRequest) returns (FsrsNextIntervalResponse);
+  rpc FsrsNextInterval(FsrsNextIntervalRequest)
+      returns (FsrsNextIntervalResponse);
   rpc FsrsIntervalAtRetrievability(FsrsIntervalAtRetrievabilityRequest)
       returns (FsrsIntervalAtRetrievabilityResponse);
-  rpc FsrsIntervalAtRetrievabilityBatch(FsrsIntervalAtRetrievabilityBatchRequest)
+  rpc FsrsIntervalAtRetrievabilityBatch(
+      FsrsIntervalAtRetrievabilityBatchRequest)
       returns (FsrsIntervalAtRetrievabilityBatchResponse);
-  rpc FsrsIntervalAtRetrievabilityByConfigBatch(FsrsIntervalAtRetrievabilityByConfigBatchRequest)
+  rpc FsrsIntervalAtRetrievabilityByConfigBatch(
+      FsrsIntervalAtRetrievabilityByConfigBatchRequest)
       returns (FsrsIntervalAtRetrievabilityByConfigBatchResponse);
 }
 

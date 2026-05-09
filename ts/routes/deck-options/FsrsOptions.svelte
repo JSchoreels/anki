@@ -287,8 +287,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reviewFuzzFactorLong: $config.reviewFuzzEnabled
             ? $config.reviewFuzzFactorLong
             : 0,
-        helpMeDecideTransitionBlendAlpha:
-            HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
+        helpMeDecideTransitionBlendAlpha: HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
         helpMeDecideEnforceMonotonicSuccessGradeProbs:
             HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
     });
@@ -363,20 +362,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const currentConfig = withSelectedFsrsParams($config, params);
         try {
             const [current, selected] = await Promise.all([
-                getFsrsNewCardIntervals(
-                    {
-                        config: configWithDesiredRetention(currentConfig, currentRetention),
-                        fsrsShortTermWithStepsEnabled,
-                        fsrsLearningQueuesDisabled,
-                    },
-                ),
-                getFsrsNewCardIntervals(
-                    {
-                        config: configWithDesiredRetention(currentConfig, selectedRetention),
-                        fsrsShortTermWithStepsEnabled,
-                        fsrsLearningQueuesDisabled,
-                    },
-                ),
+                getFsrsNewCardIntervals({
+                    config: configWithDesiredRetention(currentConfig, currentRetention),
+                    fsrsShortTermWithStepsEnabled,
+                    fsrsLearningQueuesDisabled,
+                }),
+                getFsrsNewCardIntervals({
+                    config: configWithDesiredRetention(
+                        currentConfig,
+                        selectedRetention,
+                    ),
+                    fsrsShortTermWithStepsEnabled,
+                    fsrsLearningQueuesDisabled,
+                }),
             ]);
             if (request !== newCardIntervalRequest) {
                 return;
@@ -387,9 +385,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             if (request === newCardIntervalRequest) {
                 newCardIntervals = undefined;
                 newCardIntervalsError =
-                    err instanceof Error
-                        ? err.message
-                        : String(err);
+                    err instanceof Error ? err.message : String(err);
                 console.error("failed to load FSRS new-card intervals", err);
             }
         }
@@ -601,9 +597,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function loadCustomDecayTable(): Promise<void> {
         if (
-            !optimizationComparison
-            || loadingCustomDecayTable
-            || !supportsCustomDecayTable(optimizationComparison.optimizedParams)
+            !optimizationComparison ||
+            loadingCustomDecayTable ||
+            !supportsCustomDecayTable(optimizationComparison.optimizedParams)
         ) {
             return;
         }
@@ -882,9 +878,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             defaultValue={true}
         >
             <SettingTitle>
-                <GlobalLabel
-                    title={"Include same-day reviews in FSRS-7 optimize"}
-                />
+                <GlobalLabel title={"Include same-day reviews in FSRS-7 optimize"} />
             </SettingTitle>
         </SwitchRow>
         <SwitchRow
@@ -892,9 +886,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             defaultValue={true}
         >
             <SettingTitle>
-                <GlobalLabel
-                    title={"Include same-day reviews in FSRS-7 evaluate"}
-                />
+                <GlobalLabel title={"Include same-day reviews in FSRS-7 evaluate"} />
             </SettingTitle>
         </SwitchRow>
     {/if}
@@ -1082,7 +1074,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <tr>
                         <th>Log loss</th>
                         <td>{formatMetric(optimizationComparison.current.logLoss)}</td>
-                        <td>{formatMetric(optimizationComparison.optimized.logLoss)}</td>
+                        <td>
+                            {formatMetric(optimizationComparison.optimized.logLoss)}
+                        </td>
                         <td class={`optimize-delta ${deltaClass(logLossDelta)}`}>
                             {formatDelta(logLossDelta)}
                             ({formatPercentDelta(logLossDeltaPercent)})
@@ -1091,7 +1085,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <tr>
                         <th>RMSE (bins)</th>
                         <td>{formatMetric(optimizationComparison.current.rmseBins)}</td>
-                        <td>{formatMetric(optimizationComparison.optimized.rmseBins)}</td>
+                        <td>
+                            {formatMetric(optimizationComparison.optimized.rmseBins)}
+                        </td>
                         <td class={`optimize-delta ${deltaClass(rmseDelta)}`}>
                             {formatDelta(rmseDelta)}
                             ({formatPercentDelta(rmseDeltaPercent)})
@@ -1102,8 +1098,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <div class="optimization-popup-actions">
                 <button
                     class="btn btn-outline-primary"
-                    disabled={loadingCustomDecayTable
-                        || !supportsCustomDecayTable(
+                    disabled={loadingCustomDecayTable ||
+                        !supportsCustomDecayTable(
                             optimizationComparison.optimizedParams,
                         )}
                     on:click={loadCustomDecayTable}

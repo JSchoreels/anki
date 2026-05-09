@@ -75,7 +75,7 @@ const exampleData = {
         },
     ],
     currentDeck: {
-        name: 'Default::"child"',
+        name: "Default::\"child\"",
         configId: 1618570764780n,
         subtreeConfigIds: [1n, 1618570764780n],
     },
@@ -106,7 +106,7 @@ function startingState(): DeckOptionsState {
 
 test("start", () => {
     const state = startingState();
-    expect(state.currentDeck.name).toBe('Default::"child"');
+    expect(state.currentDeck.name).toBe("Default::\"child\"");
 });
 
 test("subtree presets and search names", () => {
@@ -114,7 +114,7 @@ test("subtree presets and search names", () => {
     expect(state.getSubtreeConfigIds()).toStrictEqual([1n, 1618570764780n]);
     expect(state.getConfigById(1n)?.name).toBe("Default");
     expect(state.getCurrentNameForSearch()).toBe("another one");
-    expect(state.getCurrentDeckNameForSearch()).toBe('Default::\\"child\\"');
+    expect(state.getCurrentDeckNameForSearch()).toBe("Default::\\\"child\\\"");
 });
 
 test("deck list", () => {
@@ -304,9 +304,7 @@ test("aux data", () => {
     // ensure changes serialize
     const out = state.dataForSaving(UpdateDeckConfigsMode.APPLY_TO_CHILDREN);
     expect(out.configs!.length).toBe(2);
-    const json = out.configs!.map((c) =>
-        JSON.parse(new TextDecoder().decode(c.config!.other)),
-    );
+    const json = out.configs!.map((c) => JSON.parse(new TextDecoder().decode(c.config!.other)));
     expect(json).toStrictEqual([
         // other deck comes first
         {

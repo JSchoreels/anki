@@ -700,10 +700,11 @@ fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSR
 
 #[cfg(test)]
 mod tests {
+    use fsrs::ComputeParametersVersion;
+
     use super::health_check_model_version;
     use super::selected_short_term_with_steps_for_preview;
     use super::FsrsVersion;
-    use fsrs::ComputeParametersVersion;
 
     #[test]
     fn new_card_interval_preview_prefers_explicit_toggle_when_provided() {

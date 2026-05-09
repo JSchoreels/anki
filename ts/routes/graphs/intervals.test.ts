@@ -4,11 +4,7 @@
 import { timeSpan } from "@tslib/time";
 import { expect, test } from "vitest";
 
-import {
-    IntervalRange,
-    intervalPercentileSummary,
-    prepareIntervalData,
-} from "./intervals";
+import { intervalPercentileSummary, IntervalRange, prepareIntervalData } from "./intervals";
 
 function sortedIntervalsOneToHundred(): number[] {
     return Array.from({ length: 100 }, (_, i) => i + 1);

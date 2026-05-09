@@ -70,8 +70,8 @@ export function renderWorkloadChart(
     const subgraph_data = {
         [SimulateWorkloadSubgraph.ratio]: data.map((d) => ({
             ...d,
-            y: (60 * 60 * (d.memorized - d.reviewless_end_memorized)) /
-                d.timeCost,
+            y: (60 * 60 * (d.memorized - d.reviewless_end_memorized))
+                / d.timeCost,
         })),
         [SimulateWorkloadSubgraph.time]: data.map((d) => ({
             ...d,
@@ -107,8 +107,7 @@ export function renderWorkloadChart(
             tr.statisticsMinutesPerDay({
                 count: parseFloat((value / 60).toPrecision(2)),
             }),
-        [SimulateWorkloadSubgraph.count]: (value: number) =>
-            tr.statisticsReviewsPerDay({ count: Math.round(value) }),
+        [SimulateWorkloadSubgraph.count]: (value: number) => tr.statisticsReviewsPerDay({ count: Math.round(value) }),
         [SimulateWorkloadSubgraph.memorized]: (value: number) =>
             tr.statisticsMemorized({ memorized: Math.round(value).toFixed(0) }),
     }[subgraph];
@@ -208,8 +207,7 @@ export function renderSimulationChart(
 
     const formatY: (value: number) => string = {
         [SimulateSubgraph.time]: timeSpan,
-        [SimulateSubgraph.count]: (value: number) =>
-            tr.statisticsReviews({ reviews: Math.round(value) }),
+        [SimulateSubgraph.count]: (value: number) => tr.statisticsReviews({ reviews: Math.round(value) }),
         [SimulateSubgraph.memorized]: (value: number) =>
             tr.statisticsMemorized({ memorized: Math.round(value).toFixed(0) }),
     }[subgraph];
@@ -223,10 +221,9 @@ export function renderSimulationChart(
     function legendMouseMove(e: MouseEvent, d: number) {
         const data = subgraph_data.filter((datum) => datum.label == d);
 
-        const total =
-            subgraph == SimulateSubgraph.memorized
-                ? data[data.length - 1].memorized - data[0].memorized
-                : sumBy(data, (d) => d.y);
+        const total = subgraph == SimulateSubgraph.memorized
+            ? data[data.length - 1].memorized - data[0].memorized
+            : sumBy(data, (d) => d.y);
         const average = total / (data?.length || 1);
 
         showTooltip(
@@ -294,7 +291,7 @@ function _renderSimulationChart<
                     .ticks(7)
                     .tickSizeOuter(0)
                     .tickFormat(xTickFormat as any),
-            ),
+            )
         )
         .attr("direction", "ltr");
     // y scale
@@ -313,7 +310,7 @@ function _renderSimulationChart<
                     .ticks(bounds.height / 50)
                     .tickSizeOuter(0)
                     .tickFormat(yTickFormat as any),
-            ),
+            )
         )
         .attr("direction", "ltr");
 
@@ -366,9 +363,7 @@ function _renderSimulationChart<
         .attr("stroke-width", 1)
         .style("opacity", 0);
 
-    const LongestGroupData = Array.from(groups.values()).reduce((a, b) =>
-        a.length > b.length ? a : b,
-    );
+    const LongestGroupData = Array.from(groups.values()).reduce((a, b) => a.length > b.length ? a : b);
     const barWidth = bounds.width / LongestGroupData.length;
 
     // hover/tooltip
@@ -413,9 +408,13 @@ function _renderSimulationChart<
 
             if (!hidden) {
                 const label = groupLabels.get(Number(key)) ?? `#${key}`;
-                tooltipContent += `<span style="color:${color[(parseInt(key) - 1) % color.length]}">■</span> ${label}: ${formatY(
-                    value,
-                )}<br>`;
+                tooltipContent += `<span style="color:${
+                    color[(parseInt(key) - 1) % color.length]
+                }">■</span> ${label}: ${
+                    formatY(
+                        value,
+                    )
+                }<br>`;
             }
         }
 

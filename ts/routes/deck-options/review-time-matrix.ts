@@ -63,9 +63,7 @@ export function buildSLineSeries(
     rBucketCount: number,
     sBucketCount: number,
 ): number[][] {
-    const lines = Array.from({ length: sBucketCount }, () =>
-        Array.from({ length: rBucketCount }, () => 0),
-    );
+    const lines = Array.from({ length: sBucketCount }, () => Array.from({ length: rBucketCount }, () => 0));
     for (let rIndex = 0; rIndex < rBucketCount; rIndex++) {
         for (let sIndex = 0; sIndex < sBucketCount; sIndex++) {
             lines[sIndex][rIndex] = matrixCellValue(

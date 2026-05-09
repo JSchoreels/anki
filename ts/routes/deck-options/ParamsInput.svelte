@@ -40,8 +40,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             .map((v) => Number(v));
 
         if (
-            validParamCounts.includes(newValue.length)
-            && newValue.every((v) => Number.isFinite(v))
+            validParamCounts.includes(newValue.length) &&
+            newValue.every((v) => Number.isFinite(v))
         ) {
             value = newValue;
         } else {

@@ -3,12 +3,7 @@
 
 import { expect, test } from "vitest";
 
-import {
-    customDecayCandidates,
-    formatDecay,
-    supportsCustomDecayTable,
-    withLastParam,
-} from "./custom-decay-table";
+import { customDecayCandidates, formatDecay, supportsCustomDecayTable, withLastParam } from "./custom-decay-table";
 
 test("custom decay candidates are the requested values", () => {
     expect(customDecayCandidates).toStrictEqual([0.1, 0.15, 0.2, 0.25, 0.35, 0.4]);

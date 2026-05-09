@@ -5,11 +5,7 @@
 import { expect, test } from "vitest";
 
 import type { GraphBounds } from "./graph-helpers";
-import {
-    type WorkloadPoint,
-    renderWorkloadChart,
-    SimulateWorkloadSubgraph,
-} from "./simulator";
+import { renderWorkloadChart, SimulateWorkloadSubgraph, type WorkloadPoint } from "./simulator";
 
 function makeSvg(): SVGElement {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -36,9 +32,7 @@ const bounds: GraphBounds = {
 
 test("renderWorkloadChart handles empty memorized data without throwing", () => {
     const svg = makeSvg();
-    expect(() =>
-        renderWorkloadChart(svg, bounds, [], SimulateWorkloadSubgraph.memorized),
-    ).not.toThrow();
+    expect(() => renderWorkloadChart(svg, bounds, [], SimulateWorkloadSubgraph.memorized)).not.toThrow();
     expect(
         renderWorkloadChart(svg, bounds, [], SimulateWorkloadSubgraph.memorized),
     ).toStrictEqual([]);
@@ -58,9 +52,7 @@ test("renderWorkloadChart handles sparse workload data without throwing", () => 
         },
     ];
     delete sparse[0];
-    expect(() =>
-        renderWorkloadChart(svg, bounds, sparse, SimulateWorkloadSubgraph.memorized),
-    ).not.toThrow();
+    expect(() => renderWorkloadChart(svg, bounds, sparse, SimulateWorkloadSubgraph.memorized)).not.toThrow();
 });
 
 test("renderWorkloadChart labels workload curves by preset name", () => {

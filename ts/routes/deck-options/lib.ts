@@ -39,21 +39,23 @@ export interface ConfigListEntry {
     current: boolean;
 }
 
-type AllConfigs = Required<
-    Pick<
-        PlainMessage<UpdateDeckConfigsRequest>,
-        | "configs"
-        | "cardStateCustomizer"
-        | "limits"
-        | "newCardsIgnoreReviewLimit"
-        | "loadBalancerEnabled"
-        | "fsrsShortTermWithStepsEnabled"
-        | "fsrsLearningQueuesDisabled"
-        | "applyAllParentLimits"
-        | "fsrs"
-        | "fsrsReschedule"
+type AllConfigs =
+    & Required<
+        Pick<
+            PlainMessage<UpdateDeckConfigsRequest>,
+            | "configs"
+            | "cardStateCustomizer"
+            | "limits"
+            | "newCardsIgnoreReviewLimit"
+            | "loadBalancerEnabled"
+            | "fsrsShortTermWithStepsEnabled"
+            | "fsrsLearningQueuesDisabled"
+            | "applyAllParentLimits"
+            | "fsrs"
+            | "fsrsReschedule"
+        >
     >
-> & { currentConfig: DeckConfig_Config };
+    & { currentConfig: DeckConfig_Config };
 
 export class DeckOptionsState {
     readonly currentConfig: Writable<DeckConfig_Config>;
@@ -151,8 +153,7 @@ export class DeckOptionsState {
 
         // Must be resolved after all components are mounted, as some components
         // may modify the config during their initialization.
-        [this.originalConfigsPromise, this.originalConfigsResolve] =
-            promiseWithResolver<AllConfigs>();
+        [this.originalConfigsPromise, this.originalConfigsResolve] = promiseWithResolver<AllConfigs>();
     }
 
     /**
@@ -278,8 +279,8 @@ export class DeckOptionsState {
             .map((c) => c.config)
             .filter((c, idx) => {
                 return (
-                    idx !== this.selectedIdx &&
-                    (c.id === 0n || this.modifiedConfigs.has(c.id))
+                    idx !== this.selectedIdx
+                    && (c.id === 0n || this.modifiedConfigs.has(c.id))
                 );
             });
         const configs = [
@@ -366,9 +367,7 @@ export class DeckOptionsState {
 
     private sortConfigs() {
         const currentConfigName = this.configs[this.selectedIdx].config.name;
-        this.configs.sort((a, b) =>
-            localeCompare(a.config.name, b.config.name, { sensitivity: "base" }),
-        );
+        this.configs.sort((a, b) => localeCompare(a.config.name, b.config.name, { sensitivity: "base" }));
         this.selectedIdx = this.configs.findIndex(
             (c) => c.config.name == currentConfigName,
         );

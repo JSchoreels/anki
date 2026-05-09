@@ -20,7 +20,7 @@ test("workload request keeps Help Me Decide menu settings", () => {
         easyDaysPercentages: [1, 2, 3, 4, 5, 6, 7],
     });
     const config = new DeckConfig({
-        name: 'Preset "A"',
+        name: "Preset \"A\"",
         config: {
             fsrsVersion: DeckConfig_Config_FsrsVersion.SIX,
             fsrsParams6: [1, 2, 3],
@@ -43,5 +43,5 @@ test("workload request keeps Help Me Decide menu settings", () => {
     expect(request.maxInterval).toBe(456);
     expect(request.easyDaysPercentages).toStrictEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(request.params).toStrictEqual([1, 2, 3]);
-    expect(request.search).toBe('deck:"Default" preset:"Preset \\"A\\"" -is:suspended');
+    expect(request.search).toBe("deck:\"Default\" preset:\"Preset \\\"A\\\"\" -is:suspended");
 });

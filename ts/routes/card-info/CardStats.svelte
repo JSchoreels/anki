@@ -33,7 +33,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return value;
     }
 
-    function rowsFromStats(stats: CardStatsResponse, fsrsStabilityS90: number | null): StatsRow[] {
+    function rowsFromStats(
+        stats: CardStatsResponse,
+        fsrsStabilityS90: number | null,
+    ): StatsRow[] {
         const statsRows: StatsRow[] = [];
 
         statsRows.push({ label: tr2.cardStatsAdded(), value: dateString(stats.added) });

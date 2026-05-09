@@ -34,8 +34,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaultReviewFuzzFactorShort = defaults.reviewFuzzFactorShort ?? 0.15;
     const defaultReviewFuzzFactorMid = defaults.reviewFuzzFactorMid ?? 0.1;
     const defaultReviewFuzzFactorLong = defaults.reviewFuzzFactorLong ?? 0.05;
-    const prevReviewFuzzEnabled =
-        $config.reviewFuzzEnabled ?? defaultReviewFuzzEnabled;
+    const prevReviewFuzzEnabled = $config.reviewFuzzEnabled ?? defaultReviewFuzzEnabled;
     const prevReviewFuzzBase = $config.reviewFuzzBase ?? defaultReviewFuzzBase;
     const prevReviewFuzzFactorShort =
         $config.reviewFuzzFactorShort ?? defaultReviewFuzzFactorShort;
@@ -232,9 +231,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 bind:value={$config.reviewFuzzEnabled}
                 defaultValue={defaultReviewFuzzEnabled}
             >
-                <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}
-                    >{tr.deckConfigReviewFuzzEnabled()}</SettingTitle
-                >
+                <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}>
+                    {tr.deckConfigReviewFuzzEnabled()}
+                </SettingTitle>
             </SwitchRow>
         </Item>
         <EasyDaysInput bind:values={$config.easyDaysPercentages} />

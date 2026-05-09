@@ -1,12 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { type DeckConfig, type DeckConfig_Config, DeckConfig_Config_FsrsVersion } from "@generated/anki/deck_config_pb";
 import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
-import {
-    DeckConfig_Config_FsrsVersion,
-    type DeckConfig,
-    type DeckConfig_Config,
-} from "@generated/anki/deck_config_pb";
 
 import { escapeSearchText } from "./lib";
 

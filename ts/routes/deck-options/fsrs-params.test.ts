@@ -1,10 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import {
-    DeckConfig_Config,
-    DeckConfig_Config_FsrsVersion,
-} from "@generated/anki/deck_config_pb";
+import { DeckConfig_Config, DeckConfig_Config_FsrsVersion } from "@generated/anki/deck_config_pb";
 import { expect, test } from "vitest";
 
 import { fsrsParams, withSelectedFsrsParams } from "./lib";

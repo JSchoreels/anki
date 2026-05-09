@@ -7,8 +7,8 @@ import os
 import tempfile
 from typing import Any
 
-from anki.collection import Collection as aopen
 import anki.collection as collection
+from anki.collection import Collection as aopen
 from anki.dbproxy import emulate_named_args
 from anki.lang import TR, without_unicode_isolation
 from anki.stdmodels import _legacy_add_basic_model, get_stock_notetypes
