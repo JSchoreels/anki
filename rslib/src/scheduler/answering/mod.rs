@@ -101,6 +101,7 @@ impl CardStateUpdater {
             interval_multiplier: self.config.inner.interval_multiplier,
             review_fuzz_config: self.config.review_fuzz_config(),
             maximum_review_interval: self.config.inner.maximum_review_interval,
+            fsrs_minimum_interval_secs: self.config.inner.fsrs_minimum_interval_secs,
             leech_threshold: self.config.inner.leech_threshold,
             load_balancer_ctx: load_balancer_ctx
                 .map(|load_balancer_ctx| load_balancer_ctx.set_fuzz_seed(self.fuzz_seed)),

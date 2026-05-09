@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use super::fsrs_interval_as_secs;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::LearnState;
@@ -78,7 +79,7 @@ impl RelearnState {
             let again_relearn = RelearnState {
                 learning: LearnState {
                     remaining_steps: ctx.relearn_steps.remaining_for_failed(),
-                    scheduled_secs: (interval * 86_400.0) as u32,
+                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     elapsed_secs: 0,
                     memory_state,
                 },
@@ -139,7 +140,7 @@ impl RelearnState {
             };
             let hard_relearn = RelearnState {
                 learning: LearnState {
-                    scheduled_secs: (interval * 86_400.0) as u32,
+                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     memory_state,
                     ..self.learning
                 },
@@ -203,7 +204,7 @@ impl RelearnState {
             };
             let good_relearn = RelearnState {
                 learning: LearnState {
-                    scheduled_secs: (interval * 86_400.0) as u32,
+                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     remaining_steps: ctx
                         .relearn_steps
                         .remaining_for_good(self.learning.remaining_steps),

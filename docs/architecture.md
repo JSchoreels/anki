@@ -185,6 +185,12 @@ steps schedule the card directly as a review card and when configured
 relearning steps keep the card in the relearning queue with an embedded review
 interval.
 
+When FSRS same-day scheduling keeps a card in a learning or relearning queue,
+the computed day interval is stored on the card as seconds. Sub-second FSRS
+intervals are clamped to the deck preset's FSRS minimum interval so real review
+scheduling and Deck Options' "New Card Intervals" preview do not represent them
+as a zero-second `(end)` interval.
+
 When FSRS review order is ascending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
 into one exact-retrievability ordering. Intraday cards with a future timestamp

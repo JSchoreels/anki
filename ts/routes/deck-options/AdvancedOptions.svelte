@@ -18,7 +18,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import CardStateCustomizer from "./CardStateCustomizer.svelte";
     import type { DeckOptionsState } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
-    import SpinBoxRow from "./SpinBoxRow.svelte";
+    import MinimumIntervalInputRow from "./MinimumIntervalInputRow.svelte";
+    import MaximumIntervalInputRow from "./MaximumIntervalInputRow.svelte";
     import DateInput from "./DateInput.svelte";
     import Warning from "./Warning.svelte";
     import { getIgnoredBeforeCount } from "@generated/backend";
@@ -37,6 +38,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.schedulingMaximumInterval(),
             help: tr.deckConfigMaximumIntervalTooltip(),
             url: HelpPage.DeckOptions.maximumInterval,
+        },
+        fsrsMinimumInterval: {
+            title: tr.schedulingMinimumInterval(),
+            help: tr.deckConfigFsrsMinimumIntervalTooltip(),
+            sched: HelpItemScheduler.FSRS,
         },
         historicalRetention: {
             title: tr.deckConfigHistoricalRetention(),
@@ -179,11 +185,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     />
     <DynamicallySlottable slotHost={Item} {api}>
         <Item>
-            <SpinBoxRow
+            <MaximumIntervalInputRow
                 bind:value={$config.maximumReviewInterval}
                 defaultValue={defaults.maximumReviewInterval}
-                min={1}
-                max={365 * 100}
             >
                 <SettingTitle
                     on:click={() =>
@@ -191,8 +195,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 >
                     {settings.maximumInterval.title}
                 </SettingTitle>
-            </SpinBoxRow>
+            </MaximumIntervalInputRow>
         </Item>
+
+        {#if $fsrs}
+            <Item>
+                <MinimumIntervalInputRow
+                    bind:value={$config.fsrsMinimumIntervalSecs}
+                    defaultValue={defaults.fsrsMinimumIntervalSecs}
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("fsrsMinimumInterval"),
+                            )}
+                    >
+                        {settings.fsrsMinimumInterval.title}
+                    </SettingTitle>
+                </MinimumIntervalInputRow>
+            </Item>
+        {/if}
 
         <Item>
             <Warning warning={maxIntervalWarning} className={maxIntervalWarningClass}

@@ -365,6 +365,7 @@ impl crate::services::SchedulerService for Collection {
                 interval_multiplier: config.inner.interval_multiplier,
                 review_fuzz_config: config.review_fuzz_config(),
                 maximum_review_interval: config.inner.maximum_review_interval,
+                fsrs_minimum_interval_secs: config.inner.fsrs_minimum_interval_secs,
                 leech_threshold: config.inner.leech_threshold,
                 load_balancer_ctx: None,
                 relearn_steps: crate::scheduler::states::steps::LearningSteps::new(

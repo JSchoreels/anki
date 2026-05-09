@@ -78,6 +78,8 @@ pub struct DeckConfSchema11 {
     #[serde(default)]
     fsrs_params_7: Vec<f32>,
     #[serde(default)]
+    fsrs_minimum_interval_secs: u32,
+    #[serde(default)]
     fsrs_version: i32,
     #[serde(default)]
     desired_retention: f32,
@@ -314,6 +316,7 @@ impl Default for DeckConfSchema11 {
             fsrs_params_5: vec![],
             fsrs_params_6: vec![],
             fsrs_params_7: vec![],
+            fsrs_minimum_interval_secs: 1,
             fsrs_version: 0,
             desired_retention: 0.9,
             sm2_retention: 0.9,
@@ -398,6 +401,7 @@ impl From<DeckConfSchema11> for DeckConfig {
                 fsrs_params_5: c.fsrs_params_5,
                 fsrs_params_6: c.fsrs_params_6,
                 fsrs_params_7: c.fsrs_params_7,
+                fsrs_minimum_interval_secs: c.fsrs_minimum_interval_secs,
                 fsrs_version: c.fsrs_version,
                 ignore_revlogs_before_date: c.ignore_revlogs_before_date,
                 easy_days_percentages: c.easy_days_percentages,
@@ -519,6 +523,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
             fsrs_params_5: i.fsrs_params_5,
             fsrs_params_6: i.fsrs_params_6,
             fsrs_params_7: i.fsrs_params_7,
+            fsrs_minimum_interval_secs: i.fsrs_minimum_interval_secs,
             fsrs_version: i.fsrs_version,
             desired_retention: i.desired_retention,
             sm2_retention: i.historical_retention,
@@ -550,6 +555,7 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "fsrsParams5",
     "fsrsParams6",
     "fsrsParams7",
+    "fsrsMinimumIntervalSecs",
     "fsrsVersion",
     "desiredRetention",
     "stopTimerOnAnswer",

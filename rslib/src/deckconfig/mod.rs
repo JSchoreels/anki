@@ -86,6 +86,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     fsrs_params_5: vec![],
     fsrs_params_6: vec![],
     fsrs_params_7: vec![],
+    fsrs_minimum_interval_secs: 1,
     fsrs_version: FsrsVersion::Seven as i32,
     desired_retention: 0.9,
     other: Vec::new(),
@@ -327,6 +328,12 @@ pub(crate) fn ensure_deck_config_values_valid(config: &mut DeckConfigInner) {
         default.maximum_review_interval,
         1,
         36_500,
+    );
+    ensure_u32_valid(
+        &mut config.fsrs_minimum_interval_secs,
+        default.fsrs_minimum_interval_secs,
+        1,
+        36_500 * 86_400,
     );
     ensure_u32_valid(
         &mut config.minimum_lapse_interval,

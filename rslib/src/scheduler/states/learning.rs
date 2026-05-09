@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use super::fsrs_interval_as_secs;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::ReviewState;
@@ -64,7 +65,7 @@ impl LearnState {
             if short_term {
                 LearnState {
                     remaining_steps: ctx.steps.remaining_for_failed(),
-                    scheduled_secs: (interval * 86_400.0) as u32,
+                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     elapsed_secs: 0,
                     memory_state,
                 }
@@ -116,7 +117,7 @@ impl LearnState {
 
             if short_term {
                 LearnState {
-                    scheduled_secs: (interval * 86_400.0) as u32,
+                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     elapsed_secs: 0,
                     memory_state,
                     ..self
@@ -169,7 +170,7 @@ impl LearnState {
 
             if short_term {
                 LearnState {
-                    scheduled_secs: (interval * 86_400.0) as u32,
+                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     elapsed_secs: 0,
                     memory_state,
                     ..self
@@ -218,5 +219,62 @@ impl LearnState {
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::scheduler::states::steps::LearningSteps;
+    use fsrs::ItemState;
+    use fsrs::MemoryState;
+    use fsrs::NextStates;
+
+    fn fsrs_item_state(interval: f32) -> ItemState {
+        ItemState {
+            interval,
+            memory: MemoryState {
+                stability: 0.1,
+                difficulty: 5.0,
+            },
+        }
+    }
+
+    #[test]
+    fn fsrs_short_term_intervals_are_at_least_one_second() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.steps = LearningSteps::new(&[]);
+        ctx.fsrs_allow_short_term = true;
+        ctx.fsrs_short_term_with_steps_enabled = true;
+        ctx.fsrs_minimum_interval_secs = 5;
+        ctx.fsrs_next_states = Some(NextStates {
+            again: fsrs_item_state(0.000001),
+            hard: fsrs_item_state(0.000001),
+            good: fsrs_item_state(0.000001),
+            easy: fsrs_item_state(1.0),
+        });
+
+        let state = LearnState {
+            remaining_steps: 0,
+            scheduled_secs: 0,
+            elapsed_secs: 0,
+            memory_state: None,
+        };
+        let next = state.next_states(&ctx);
+
+        let CardState::Normal(super::super::NormalState::Learning(again)) = next.again else {
+            panic!("Again should stay in learning");
+        };
+        assert_eq!(again.scheduled_secs, 5);
+
+        let CardState::Normal(super::super::NormalState::Learning(hard)) = next.hard else {
+            panic!("Hard should stay in learning");
+        };
+        assert_eq!(hard.scheduled_secs, 5);
+
+        let CardState::Normal(super::super::NormalState::Learning(good)) = next.good else {
+            panic!("Good should stay in learning");
+        };
+        assert_eq!(good.scheduled_secs, 5);
     }
 }

@@ -291,7 +291,11 @@ deck-config-advanced-title = Advanced
 deck-config-maximum-interval-tooltip =
     The maximum number of days a review card will wait. When reviews have
     reached the limit, `Hard`, `Good` and `Easy` will all give the same delay.
-    The shorter you set this, the greater your workload will be.
+    The shorter you set this, the greater your workload will be. You can enter
+    values like 1d, 1w, 1m, or 1y.
+deck-config-fsrs-minimum-interval-tooltip =
+    The minimum interval for FSRS same-day learning and relearning cards, such as
+    1s, 1d, 1w, or 1m.
 deck-config-starting-ease-tooltip =
     The ease multiplier new cards start with. By default, the `Good` button on a
     newly-learned card will delay the next review by 2.5x the previous delay.

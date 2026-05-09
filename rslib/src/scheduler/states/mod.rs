@@ -31,6 +31,12 @@ use self::steps::LearningSteps;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::answering::PreviewDelays;
 
+const SECONDS_PER_DAY: f32 = 86_400.0;
+
+pub(super) fn fsrs_interval_as_secs(interval_days: f32, minimum_interval_secs: u32) -> u32 {
+    ((interval_days * SECONDS_PER_DAY) as u32).max(minimum_interval_secs.max(1))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CardState {
     Normal(NormalState),
@@ -104,6 +110,7 @@ pub(crate) struct StateContext<'a> {
     pub interval_multiplier: f32,
     pub review_fuzz_config: ReviewFuzzConfig,
     pub maximum_review_interval: u32,
+    pub fsrs_minimum_interval_secs: u32,
     pub leech_threshold: u32,
     pub load_balancer_ctx: Option<LoadBalancerContext<'a>>,
 
@@ -151,6 +158,7 @@ impl StateContext<'_> {
             interval_multiplier: 1.0,
             review_fuzz_config: ReviewFuzzConfig::default(),
             maximum_review_interval: 36500,
+            fsrs_minimum_interval_secs: 1,
             leech_threshold: 8,
             load_balancer_ctx: None,
             relearn_steps: LearningSteps::new(&[10.0]),
