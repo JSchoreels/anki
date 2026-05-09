@@ -98,20 +98,32 @@ jobs:
 
             git fetch --tags origin
             base_version="$version"
-            suffix=0
+            version="${base_version}.build.${GITHUB_RUN_NUMBER}"
+
+            if git rev-parse "refs/tags/$version" >/dev/null 2>&1 || gh release view "$version" >/dev/null 2>&1; then
+              suffix="${GITHUB_RUN_ATTEMPT:-1}"
+              version="${base_version}.build.${GITHUB_RUN_NUMBER}.${suffix}"
+            fi
+
             while git rev-parse "refs/tags/$version" >/dev/null 2>&1 || gh release view "$version" >/dev/null 2>&1; do
               suffix=$((suffix + 1))
-              version="${base_version}.${suffix}"
+              version="${base_version}.build.${GITHUB_RUN_NUMBER}.${suffix}"
             done
 
-            if [ "$version" != "$base_version" ]; then
-              echo "::notice::Draft release '$base_version' already exists; using '$version'"
-            fi
+            echo "::notice::Unsigned draft release version resolved to '$version'"
           fi
 
           # "0.0" skips the ordering check — non-release builds only need format validation
           is_prerelease=$(python3 .github/scripts/validate_version.py "$version" "0.0")
           echo "Version check passed: $version (prerelease=$is_prerelease)"
+
+          {
+            echo "### Release version"
+            echo
+            echo "- Input version: \`$INPUT_VERSION\`"
+            echo "- Resolved version: \`$version\`"
+            echo "- GitHub run number: \`$GITHUB_RUN_NUMBER\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           {
             echo "pep440_version=$version"
