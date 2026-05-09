@@ -1,6 +1,7 @@
 [submodule "ftl/core-repo"]
 	path = ftl/core-repo
-	url = https://github.com/ankitects/anki-core-i18n.git
+	url = https://github.com/JSchoreels/anki-core-i18n.git
+	branch = fsrs7-i18n
 	shallow = true
 [submodule "ftl/qt-repo"]
 	path = ftl/qt-repo
