@@ -82,6 +82,10 @@ Versions follow calendar versioning with PEP 440: `YY.MM` for stable releases
 (e.g. `26.04`), with optional `.patch` (e.g. `26.04.1`) and pre-release
 suffixes (`b1`, `rc1`, `a1`). Months must be zero-padded.
 
+Internal fork builds may use a PEP 440 local version suffix such as
+`25.09.4+fsrs7`. Use `+fsrs7`, not `-fsrs7`, so wheel and installer builds
+receive a valid Python package version.
+
 ## Workflow inputs
 
 **prepare-release:** takes a `version` string and an optional `skip-ci-check`

@@ -8,7 +8,9 @@ import sys
 
 from packaging.version import InvalidVersion, Version
 
-VERSION_RE = re.compile(r"^\d+\.(\d{2})(\.\d+)?(a\d+|b\d+|rc\d+)?$")
+VERSION_RE = re.compile(
+    r"^\d+\.(\d{2})(\.\d+)?(a\d+|b\d+|rc\d+)?(\+[a-z0-9]+([._-][a-z0-9]+)*)?$"
+)
 
 
 def validate_version(version: str, current_version: str) -> bool:

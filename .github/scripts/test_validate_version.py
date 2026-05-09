@@ -16,6 +16,7 @@ from validate_version import validate_version
         ("26.04rc1", "26.03", True),
         ("26.04.1rc2", "26.04", True),
         ("26.04.1b1", "26.04", True),
+        ("25.09.4+fsrs7", "0.0", False),
     ],
 )
 def test_valid_versions(version: str, current: str, expected: bool) -> None:
@@ -35,6 +36,7 @@ def test_valid_versions(version: str, current: str, expected: bool) -> None:
         ("not-a-version", "26.03", "zero-padded month"),
         ("26.04.dev1", "26.03", "zero-padded month"),
         ("26.04.post1", "26.03", "zero-padded month"),
+        ("26.04-fsrs7", "26.03", "zero-padded month"),
         ("26.13", "26.12", "zero-padded month"),
     ],
 )
