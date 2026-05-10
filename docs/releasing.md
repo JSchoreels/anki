@@ -3,10 +3,9 @@
 Releases are managed by two GitHub Actions workflows under `.github/workflows/`:
 
 1. **`prepare-release.yml`** — Run first. Validates the version, checks that CI
-   passed, syncs translations, updates `.version`, and pushes everything
-   to the dispatching branch in a single commit. Normal CI then runs on the
-   resulting commit. Can be dispatched from any branch (not just main) for
-   hotfix/security releases. The CI check can be skipped with `skip-ci-check`.
+   passed, updates `.version`, and pushes everything to the dispatching branch
+   in a single commit. CI then runs automatically on the resulting commit (for
+   `release/**` branches). The CI check can be skipped with `skip-ci-check`.
 
 2. **`release.yml`** — Run after CI passes on the prepared commit. Builds
    installers and wheels for all platforms (Linux x86/ARM, macOS Intel/ARM,
@@ -16,71 +15,14 @@ Releases are managed by two GitHub Actions workflows under `.github/workflows/`:
 Both workflows are `workflow_dispatch` and share a `release` concurrency group so
 they cannot run simultaneously.
 
-## Release process overview
-
-```mermaid
-flowchart LR
-    A["<b>prepare-release.yml</b><br/>validate version<br/>check CI ✓<br/>check duplicate tag<br/>sync translations<br/>update .version<br/>push to branch"] --> B["<b>CI (ci.yml)</b><br/>runs automatically<br/>on the new commit"]
-    B --> C["<b>release.yml</b><br/>build all platforms<br/>optionally sign macOS/Windows<br/>optionally create draft GitHub release<br/>optionally publish to TestPyPI/PyPI"]
-
-    style A fill:#2d333b,stroke:#539bf5,color:#adbac7
-    style B fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style C fill:#2d333b,stroke:#7ee787,color:#adbac7
-```
-
-## Release workflow jobs
-
-```mermaid
-flowchart TD
-    prepare[prepare<br/><i>validate version,<br/>check CI, check duplicates</i>]
-
-    prepare --> mac["build-and-sign-mac<br/>🍎 ARM"]
-    prepare --> macint["build-and-sign-mac-intel<br/>🍎 Intel"]
-    prepare --> win["build-and-sign-windows<br/>🪟🔏 Azure"]
-    prepare --> lin[build-linux-x86<br/>🐧 x86<br/><i>installer + wheels</i>]
-    prepare --> linarmw[build-linux-arm-wheels<br/>🐧 ARM wheels]
-    prepare --> linarmi[build-linux-arm-installer<br/>🐧 ARM installer]
-
-    mac --> release
-    macint --> release
-    win --> release
-    lin --> release
-    linarmw --> release
-    linarmi --> release
-
-    release["release<br/>📦 draft GitHub release<br/><i>if draft-release</i>"]
-
-    mac --> testpypi
-    macint --> testpypi
-    win --> testpypi
-    lin --> testpypi
-    linarmw --> testpypi
-    linarmi --> testpypi
-
-    testpypi["publish-testpypi<br/>🧪 TestPyPI<br/><i>if publish-testpypi or publish-pypi</i>"]
-
-    release --> pypi
-    testpypi --> pypi
-
-    pypi["publish-pypi<br/>🚀 PyPI<br/><i>if publish-pypi</i>"]
-
-    style prepare fill:#2d333b,stroke:#539bf5,color:#adbac7
-    style mac fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style macint fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style win fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style lin fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style linarmw fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style linarmi fill:#2d333b,stroke:#e5c07b,color:#adbac7
-    style release fill:#2d333b,stroke:#7ee787,color:#adbac7
-    style testpypi fill:#2d333b,stroke:#7ee787,color:#adbac7
-    style pypi fill:#2d333b,stroke:#7ee787,color:#adbac7
-```
-
 ## Version format
 
 Versions follow calendar versioning with PEP 440: `YY.MM` for stable releases
 (e.g. `26.04`), with optional `.patch` (e.g. `26.04.1`) and pre-release
 suffixes (`b1`, `rc1`, `a1`). Months must be zero-padded.
+
+Examples: `26.05b1` (beta), `26.05rc1` (release candidate), `26.05` (stable),
+`26.05.1` (patch).
 
 Internal fork builds may use a PEP 440 local version suffix such as
 `25.09.4+fsrs7`. Use `+fsrs7`, not `-fsrs7`, so wheel and installer builds
@@ -100,12 +42,152 @@ Runtime integer version checks use only the release segment (`YY.MM[.patch]`).
 For example, both `25.09.4+fsrs7` and `25.09.4+fsrs7.build.7` are treated as
 `250904`.
 
+## Release branch workflow
+
+All releases are cut from a `release/YY.MM` branch. The branch name uses only
+the major version (`YY.MM`), not the full pre-release suffix — betas, release
+candidates, and the stable release all come from the same branch.
+
+### Standard release
+
+1. Create a release branch from `main`:
+   ```
+   git checkout -b release/26.05 main
+   git push origin release/26.05
+   ```
+
+2. CI runs automatically on push to `release/**` branches.
+
+3. Prepare the release (updates `.version` on the branch):
+   ```
+   just release::prepare --version 26.05b1 --ref release/26.05
+   ```
+
+4. Pull the version bump commit:
+   ```
+   git pull origin release/26.05
+   ```
+
+5. Verify on TestPyPI:
+   ```
+   just release::testpypi --ref release/26.05
+   ```
+
+6. Publish the full release:
+   ```
+   just release::public --ref release/26.05
+   ```
+
+7. For subsequent pre-releases or the stable release from the same cycle,
+   repeat steps 3-6 with the new version (e.g. `26.05b2`, `26.05rc1`, `26.05`).
+
+8. After the stable release, merge the release branch back to `main` to pick up
+   the `.version` bump and any cherry-picked fixes:
+   ```
+   git checkout main
+   git merge release/26.05
+   git push origin main
+   ```
+
+9. Delete the release branch after the stable release is published.
+
+### Security and hotfix releases
+
+For security fixes, an admin should first create a
+[security advisory](https://github.com/ankitects/anki/security/advisories)
+with a temporary private fork. Work on the fix in the private fork via the
+normal PR workflow. Do not open a public PR or publish the advisory until
+the fix is ready for release.
+
+Once the fix is ready:
+
+1. Create a release branch from the latest release tag:
+   ```
+   git checkout -b release/26.05 26.05
+   ```
+
+2. Cherry-pick the fix onto the release branch.
+
+3. Push the branch and wait for CI:
+   ```
+   git push origin release/26.05
+   ```
+
+4. Prepare and publish:
+   ```
+   just release::prepare --version 26.05.1 --ref release/26.05
+   just release::public --ref release/26.05
+   ```
+
+5. Merge the release branch back to `main`.
+
+6. For security patches, publish the advisory and credit the reporter if
+   applicable.
+
+## Release process overview
+
+```{mermaid}
+flowchart LR
+    A["<b>prepare-release.yml</b><br/>validate version<br/>check CI<br/>check duplicate tag<br/>update .version<br/>push to branch"] --> B["<b>CI (ci.yml)</b><br/>runs automatically<br/>on release/** branches"]
+    B --> C["<b>release.yml</b><br/>build all platforms<br/>optionally sign macOS/Windows<br/>optionally create draft GitHub release<br/>optionally publish to TestPyPI/PyPI"]
+
+    style A fill:#2d333b,stroke:#539bf5,color:#adbac7
+    style B fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style C fill:#2d333b,stroke:#7ee787,color:#adbac7
+```
+
+## Release workflow jobs
+
+```{mermaid}
+flowchart TD
+    prepare[prepare<br/><i>validate version,<br/>check CI, check duplicates</i>]
+
+    prepare --> mac["build-and-sign-mac<br/>ARM"]
+    prepare --> macint["build-and-sign-mac-intel<br/>Intel"]
+    prepare --> win["build-and-sign-windows"]
+    prepare --> lin[build-linux-x86<br/><i>installer + wheels</i>]
+    prepare --> linarmw[build-linux-arm-wheels]
+    prepare --> linarmi[build-linux-arm-installer]
+
+    mac --> release
+    macint --> release
+    win --> release
+    lin --> release
+    linarmw --> release
+    linarmi --> release
+
+    release["release<br/>draft GitHub release<br/><i>if draft-release</i>"]
+
+    mac --> testpypi
+    macint --> testpypi
+    win --> testpypi
+    lin --> testpypi
+    linarmw --> testpypi
+    linarmi --> testpypi
+
+    testpypi["publish-testpypi<br/>TestPyPI<br/><i>if publish-testpypi or publish-pypi</i>"]
+
+    release --> pypi
+    testpypi --> pypi
+
+    pypi["publish-pypi<br/>PyPI<br/><i>if publish-pypi</i>"]
+
+    style prepare fill:#2d333b,stroke:#539bf5,color:#adbac7
+    style mac fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style macint fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style win fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style lin fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style linarmw fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style linarmi fill:#2d333b,stroke:#e5c07b,color:#adbac7
+    style release fill:#2d333b,stroke:#7ee787,color:#adbac7
+    style testpypi fill:#2d333b,stroke:#7ee787,color:#adbac7
+    style pypi fill:#2d333b,stroke:#7ee787,color:#adbac7
+```
+
 ## Workflow inputs
 
 **prepare-release:** takes a `version` string and an optional `skip-ci-check`
-boolean (default `false`). Set `skip-ci-check=true` for hotfix releases from
-non-main branches where CI was triggered via `workflow_dispatch` or hasn't run
-on the branch yet.
+boolean (default `false`).
 
 **release:** takes a `version` (must match `.version` for public release
 operations) and five boolean inputs:
@@ -114,7 +196,7 @@ operations) and five boolean inputs:
 - `draft-release` creates the draft GitHub release.
 - `publish-testpypi` publishes wheels to TestPyPI.
 - `publish-pypi` publishes wheels to PyPI.
-- `skip-ci-check` skips the CI status check (for hotfix releases).
+- `skip-ci-check` skips the CI status check.
 
 All booleans default to `false`. Non-release runs use the `.version`
 already in the repo, so builds work without a prepare step.
@@ -152,7 +234,7 @@ signed and published:
 | `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`.                                                                                                                                                                                                             |
 | `version`          | For `draft-release` or `publish-pypi`: must match `.version`. Unsigned draft releases resolve to a suffixed GitHub release/tag version before packaging, but write the base local version into the app. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).            |
 
-```mermaid
+```{mermaid}
 flowchart TD
     start["workflow_dispatch"]
 
@@ -185,26 +267,25 @@ flowchart TD
 ## Dispatching with just
 
 Release workflows can be dispatched via `just` using the `release` module
-defined in `release.just`. All recipes read the version from `.version`
-automatically.
+defined in `release.just`. Most recipes require an explicit `--ref` argument
+pointing to the release branch; the internal draft recipe defaults to `main`.
 
 Run `just --list --list-submodules` to see all available recipes and their
 arguments.
 
 ## Testing the release workflow from a feature branch
 
-`release.yml` can be dispatched from any branch for testing. The `main` branch
-requirement only applies when `draft-release` or `publish-pypi` is enabled. To
-run a test build:
+`release.yml` can be dispatched from any branch for testing. The release guards
+only apply when `draft-release` or `publish-pypi` is enabled. To run a test
+build:
 
 1. Dispatch `release.yml` from your branch with all boolean inputs left false:
    ```
-   just release::build <your-branch>
+   just release::build --ref <your-branch>
    ```
 2. The workflow reads `.version` from the branch as-is (the version input is
    ignored for non-release runs), so no prepare step is needed.
-3. All release guards (main-branch check, CI check, duplicate tag check) are
-   skipped.
+3. All release guards (CI check, duplicate tag check) are skipped.
 4. Artifacts are uploaded to the workflow run but nothing is published or tagged.
 
 ### Testing with code signing
@@ -215,7 +296,7 @@ To test the signing flow from a feature branch:
    branch to the allowed deployment branches.
 2. Dispatch the workflow:
    ```
-   just release::sign <your-branch>
+   just release::sign --ref <your-branch>
    ```
 3. Approve the environment deployment when prompted.
 4. After testing, remove your branch from the environment's allowed branches.
@@ -224,28 +305,6 @@ To test the signing flow from a feature branch:
 > if the workflow file exists on the default branch. If `release.yml` is new or
 > modified on your branch, use `gh workflow run` to trigger it — the UI
 > dropdown won't show it until it's merged to main.
-
-### Hotfix / security releases from non-main branches
-
-Both `prepare-release.yml` and `release.yml` can be dispatched from any branch.
-For a hotfix release (e.g. from a `25.09.3` branch):
-
-1. Trigger CI on the branch:
-   ```
-   just ci 25.09.3
-   ```
-2. Prepare the release (skip CI check if CI was triggered via `workflow_dispatch`):
-   ```
-   just release::prepare 25.09.3 skip-ci-check=true
-   ```
-3. Run the release workflow:
-   ```
-   just release::public 25.09.3
-   ```
-   Or with `skip-ci-check`:
-   ```
-   just release::custom 25.09.3 sign=true draft-release=true publish-testpypi=true publish-pypi=true skip-ci-check=true
-   ```
 
 ## Important notes
 
@@ -260,6 +319,8 @@ For a hotfix release (e.g. from a `25.09.3` branch):
 - When `publish-pypi=true`, wheels are published to TestPyPI first, then to
   PyPI after the TestPyPI job succeeds. If `draft-release=true` is also set,
   PyPI publishing waits for the draft GitHub release to succeed too.
+- Pre-release versions (e.g. `26.05b1`) are automatically marked as
+  pre-releases on the GitHub draft release.
 
 ## Announcements
 

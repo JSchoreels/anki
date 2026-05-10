@@ -874,17 +874,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             bind:value={includeSameDayReviewsForOptimizeInFsrs7}
             defaultValue={true}
         >
-            <SettingTitle>
-                <GlobalLabel title={"Include same-day reviews in FSRS-7 optimize"} />
-            </SettingTitle>
+            <SettingTitle>Include same-day reviews in FSRS-7 optimize</SettingTitle>
         </SwitchRow>
         <SwitchRow
             bind:value={includeSameDayReviewsForEvaluateInFsrs7}
             defaultValue={true}
         >
-            <SettingTitle>
-                <GlobalLabel title={"Include same-day reviews in FSRS-7 evaluate"} />
-            </SettingTitle>
+            <SettingTitle>Include same-day reviews in FSRS-7 evaluate</SettingTitle>
         </SwitchRow>
     {/if}
 

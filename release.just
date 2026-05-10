@@ -2,18 +2,18 @@ set windows-shell := ["cmd.exe", "/c"]
 
 version := `cat .version`
 
-# Prepare a release: validate version, check CI, sync translations, update .version
+# Prepare a release: validate version, check CI, update .version
 [arg("version", long)]
 [arg("ref", long)]
 [arg("skip-ci-check", long)]
-prepare version ref="HEAD" skip-ci-check="false":
+prepare version ref skip-ci-check="false":
     gh workflow run prepare-release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f skip-ci-check={{ skip-ci-check }}
 
 # Build all platforms, no signing or publishing
 [arg("ref", long)]
-build ref="HEAD":
+build ref:
     gh workflow run release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f sign=false \
@@ -35,7 +35,7 @@ draft ref="main" skip-ci-check="false":
 
 # Build and sign artifacts
 [arg("ref", long)]
-sign ref="HEAD":
+sign ref:
     gh workflow run release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f sign=true \
@@ -45,7 +45,7 @@ sign ref="HEAD":
 
 # Full public release: sign, draft, testpypi, pypi
 [arg("ref", long)]
-public ref="main":
+public ref:
     gh workflow run release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f sign=true \
@@ -55,7 +55,7 @@ public ref="main":
 
 # Publish Python packages to TestPyPI only
 [arg("ref", long)]
-testpypi ref="HEAD":
+testpypi ref:
     gh workflow run release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f sign=false \
@@ -65,7 +65,7 @@ testpypi ref="HEAD":
 
 # Publish Python packages to TestPyPI and PyPI
 [arg("ref", long)]
-pypi ref="HEAD":
+pypi ref:
     gh workflow run release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f sign=false \
@@ -80,7 +80,7 @@ pypi ref="HEAD":
 [arg("publish-testpypi", long)]
 [arg("publish-pypi", long)]
 [arg("skip-ci-check", long)]
-custom ref="HEAD" sign="false" draft-release="false" publish-testpypi="false" publish-pypi="false" skip-ci-check="false":
+custom ref sign="false" draft-release="false" publish-testpypi="false" publish-pypi="false" skip-ci-check="false":
     gh workflow run release.yml --ref {{ ref }} \
         -f version="{{ version }}" \
         -f sign={{ sign }} \
