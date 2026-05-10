@@ -50,10 +50,23 @@ Some add-ons may expect official Anki version strings or official scheduling
 behavior. If an add-on behaves unexpectedly, check whether there is a compatible
 version listed below.
 
+## FSRS Preset Versions
+
+The deck options "Optimize All Presets" action optimizes each preset using that
+preset's current FSRS version. It does not convert all presets to FSRS7. For
+example, an FSRS6 preset stays FSRS6 and receives optimized FSRS6 parameters,
+while an FSRS7 preset stays FSRS7 and receives optimized FSRS7 parameters.
+
+If you want to mass-change existing presets to FSRS7 before optimizing them, use
+[Change FSRS Version for Presets](https://ankiweb.net/shared/info/1542952656?cb=1778427918643).
+
 ## Compatible Add-ons
 
 The following add-ons have been adapted for this fork:
 
+- [Change FSRS Version for Presets](https://ankiweb.net/shared/info/1542952656?cb=1778427918643):
+  use this if you want to change many existing presets to FSRS7 before running
+  Optimize All Presets in this fork.
 - [Search Stats Extended (Sound's Fork)](https://ankiweb.net/shared/info/1339555413?cb=1778336951277):
   search statistics adapted and tested primarily against this FSRS7 fork.
 - [FSRS Helper (Sound's Fork)](https://ankiweb.net/shared/info/218829258?cb=1778337495548):
