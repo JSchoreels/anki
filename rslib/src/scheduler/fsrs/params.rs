@@ -22,7 +22,6 @@ use fsrs::ComputeParametersInput;
 use fsrs::ComputeParametersVersion;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
-use fsrs::MemoryState;
 use fsrs::ModelEvaluation;
 use fsrs::FSRS;
 use itertools::Itertools;
@@ -320,40 +319,11 @@ pub(crate) fn compute_params_from_prepared(
         model_version,
         num_relearning_steps: Some(num_of_relearning_steps),
     };
-    let mut params = coerce_computed_params_to_selected_version(
+    let params = coerce_computed_params_to_selected_version(
         model_version,
         &current_params,
         compute_parameters(input)?,
     );
-    if let Ok(current_fsrs) = FSRS::new(&current_params) {
-        let current_log_loss = current_fsrs.evaluate(items.clone(), |_| true)?.log_loss;
-        let optimized_fsrs = FSRS::new(&params)?;
-        let optimized_log_loss = optimized_fsrs.evaluate(items.clone(), |_| true)?.log_loss;
-        if current_log_loss <= optimized_log_loss && current_params.len() == params.len() {
-            if num_of_relearning_steps <= 1 {
-                params = current_params;
-            } else {
-                let memory_state = MemoryState {
-                    stability: 1.0,
-                    difficulty: 1.0,
-                };
-
-                let s_fail = current_fsrs.next_states(Some(memory_state), 0.9, 2)?.again;
-                let mut s_short_term = s_fail.memory;
-
-                for _ in 0..num_of_relearning_steps {
-                    s_short_term = current_fsrs
-                        .next_states(Some(s_short_term), 0.9, 0)?
-                        .good
-                        .memory;
-                }
-
-                if s_short_term.stability < memory_state.stability {
-                    params = current_params;
-                }
-            }
-        }
-    }
 
     let health_check_items = if include_same_day_reviews {
         items.clone()

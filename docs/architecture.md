@@ -257,8 +257,11 @@ Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best
 available parameters for compatibility with existing collections.
 
-FSRS-7 optimization reads/writes `fsrs_params_7`, and follows the FSRS-7
-training objective implemented in `fsrs-rs`.
+FSRS optimization follows the training objective implemented in `fsrs-rs`. Anki
+does not apply the legacy raw-logloss post-filter to optimizer output, because
+optimized parameters are selected by the regularized training objective, which
+can include L2 and schedule penalty terms depending on the model family.
+FSRS-7 optimization reads/writes `fsrs_params_7`.
 When optimizer output length does not match the selected preset's current
 parameter-family length (for example selected FSRS-6 vs optimizer returning
 FSRS-7-length params), deck options keeps the current selected params instead of
