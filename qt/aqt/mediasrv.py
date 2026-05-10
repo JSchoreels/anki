@@ -11,12 +11,14 @@ import re
 import secrets
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from errno import EPROTOTYPE
 from http import HTTPStatus
 from pathlib import Path
+from typing import Any
 
 import flask
 import stringcase
@@ -36,7 +38,7 @@ from aqt.changenotetype import ChangeNotetypeDialog
 from aqt.deckoptions import DeckOptionsDialog
 from aqt.operations import on_op_finished
 from aqt.operations.deck import update_deck_configs as update_deck_configs_op
-from aqt.progress import ProgressUpdate
+from aqt.progress import ProgressBarUpdate, ProgressUpdate
 from aqt.qt import *
 from aqt.utils import aqt_data_path, show_warning, tr
 
@@ -546,8 +548,39 @@ def update_deck_configs() -> bytes:
 
     input = UpdateDeckConfigs()
     input.ParseFromString(request.data)
+    completed_preset_names: set[str] = set()
+    preset_log: list[str] = []
+    zero_review_skip_logged = False
+    first_progress_at: float | None = None
+    smoothed_remaining: float | None = None
+    preset_started_at: dict[str, float] = {}
+
+    def format_elapsed_time(seconds: float) -> str:
+        seconds = int(max(seconds, 0))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}h {minutes:02d}m {seconds:02d}s"
+        if minutes:
+            return f"{minutes}m {seconds:02d}s"
+        return f"{seconds}s"
+
+    def review_weighted_progress(progress: Any) -> tuple[int, float]:
+        total_reviews = sum(
+            preset.reviews for preset in progress.presets if not preset.skipped
+        )
+        completed_reviews = 0.0
+        for preset in progress.presets:
+            if preset.skipped:
+                continue
+            if preset.finished:
+                completed_reviews += preset.reviews
+            elif preset.total:
+                completed_reviews += preset.reviews * preset.current / preset.total
+        return total_reviews, completed_reviews
 
     def on_progress(progress: Progress, update: ProgressUpdate) -> None:
+        nonlocal first_progress_at, smoothed_remaining, zero_review_skip_logged
         if progress.HasField("compute_memory"):
             val = progress.compute_memory
             update.max = val.total_cards
@@ -574,6 +607,70 @@ def update_deck_configs() -> bytes:
                 reviews = tr.qt_misc_processing()
 
             update.label = label + "\n" + reviews
+        elif progress.HasField("compute_all_params"):
+            val3 = progress.compute_all_params
+            now = time.monotonic()
+            if first_progress_at is None:
+                first_progress_at = now
+            update.max = max(val3.total, 1)
+            update.value = val3.current
+            pct = str(int(val3.current / val3.total * 100) if val3.total > 0 else 0)
+            total_reviews, completed_reviews = review_weighted_progress(val3)
+            elapsed = now - first_progress_at
+            label_parts = [
+                f"Optimizing presets: {val3.current}/{val3.total} ({pct}%)",
+                f"elapsed: {format_elapsed_time(elapsed)}",
+            ]
+            if 0 < completed_reviews < total_reviews:
+                remaining = (
+                    elapsed * (total_reviews - completed_reviews) / completed_reviews
+                )
+                if smoothed_remaining is None:
+                    smoothed_remaining = remaining
+                else:
+                    smoothed_remaining = smoothed_remaining * 0.85 + remaining * 0.15
+                label_parts.append(
+                    f"remaining: {format_elapsed_time(smoothed_remaining)}"
+                )
+            update.label = " | ".join(label_parts)
+            skipped_count = sum(1 for preset in val3.presets if preset.skipped)
+            if skipped_count and not zero_review_skip_logged:
+                preset_log.append(f"[SKIP] {skipped_count} Presets with 0 reviews")
+                zero_review_skip_logged = True
+            for preset in val3.presets:
+                if not preset.finished and not preset.skipped and preset.total > 0:
+                    preset_started_at.setdefault(preset.name, now)
+                if preset.name in completed_preset_names:
+                    continue
+                if preset.skipped:
+                    completed_preset_names.add(preset.name)
+                elif preset.finished:
+                    started_at = preset_started_at.get(preset.name, first_progress_at)
+                    duration = format_elapsed_time(now - started_at)
+                    preset_log.append(
+                        f"[DONE] {preset.name} - {duration} "
+                        f"({preset.reviews} reviews, "
+                        f"long-term: {preset.long_term_reviews}, "
+                        f"same-day: {preset.short_term_reviews})"
+                    )
+                    completed_preset_names.add(preset.name)
+            update.details = "\n".join(preset_log[-12:]) if preset_log else None
+            update.bars = [
+                ProgressBarUpdate(
+                    label=f"{preset.name} ({preset.reviews} reviews)",
+                    value=preset.current if preset.total else int(preset.finished),
+                    max=max(preset.total, 1),
+                )
+                for preset in sorted(
+                    (
+                        preset
+                        for preset in val3.presets
+                        if not preset.finished and preset.total > 0
+                    ),
+                    key=lambda preset: preset.reviews,
+                    reverse=True,
+                )
+            ]
         else:
             return
         if update.user_wants_abort:

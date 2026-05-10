@@ -221,6 +221,24 @@ FSRS training-item extraction is model-family-aware:
   - same-day/short-term targets (`delta_t < 1`).
 - For FSRS-7, target `delta_t` is derived as fractional elapsed days from
   revlog timestamps (with a 1ms floor to keep `delta_t > 0`).
+- Optimize All Presets prepares each preset's read-only training input
+  sequentially from the collection, then optimizes those prepared inputs in
+  parallel. Optimizer jobs are ordered by review count from largest to smallest
+  and assigned to Rayon worker lanes with a greedy review-count balance, so large
+  presets start early and total estimated work is spread across lanes. Preset
+  parameter writes and `LastFsrsOptimize` updates remain on the collection thread
+  after optimization results are collected.
+- Optimize All Presets reports aggregate progress plus one progress entry per
+  preset, including total, long-term, and same-day/short-term target counts.
+  Presets with no training targets are skipped before optimizer threads are
+  started and reported as skipped 0-review presets, but they are not included
+  in aggregate current/total optimizer progress. The progress dialog shows bars
+  for currently active optimizer jobs only, ordered by review count from largest
+  to smallest, with completed preset names and a single skipped-preset count
+  summarized above those bars. The dialog estimates remaining time from elapsed
+  time and review-weighted progress across all non-skipped presets, smooths that
+  estimate across progress updates, and logs each completed preset with the time
+  observed for that preset's optimizer job.
 - Deck options expose separate FSRS-7 toggles for optimize (training targets)
   and evaluate/health-check target selection.
   Their per-preset UI state is persisted in `deck_config.config.other` JSON as:

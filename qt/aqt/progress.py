@@ -156,7 +156,7 @@ class ProgressManager:
         self._win.form.label.setText(label)
         self._win.setWindowTitle(title)
         self._win.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self._win.setMinimumWidth(300)
+        self._win.setMinimumWidth(520)
         self._busy_cursor_timer = QTimer(self.mw)
         self._busy_cursor_timer.setSingleShot(True)
         self._busy_cursor_timer.start(300)
@@ -195,7 +195,13 @@ class ProgressManager:
             if update.abort:
                 self.mw.backend.set_wants_abort()
             if update.has_update():
-                self.update(label=update.label, value=update.value, max=update.max)
+                self.update(
+                    label=update.label,
+                    value=update.value,
+                    max=update.max,
+                    details=update.details,
+                    bars=update.bars,
+                )
 
         qconnect(self._backend_timer.timeout, on_progress)
         self._backend_timer.start()
@@ -207,6 +213,8 @@ class ProgressManager:
         process: bool = True,
         maybeShow: bool = True,
         max: int | None = None,
+        details: str | None = None,
+        bars: list[ProgressBarUpdate] | None = None,
     ) -> None:
         # print("update", label, self._levels, self._min, self._counter, self._max, label, time.monotonic() - self._shown)
         if not self.mw.inMainThread():
@@ -220,6 +228,8 @@ class ProgressManager:
         assert self._win is not None
         if label:
             self._win.form.label.setText(label)
+        self._win.set_details_text(details)
+        self._win.set_multi_progress_bars(bars or [])
 
         self._max = max or 0
         self._win.form.progressBar.setMaximum(self._max)
@@ -338,6 +348,8 @@ class ProgressManager:
 
 
 class ProgressDialog(QDialog):
+    LOG_COLUMNS = 80
+
     def __init__(self, parent: QWidget | None) -> None:
         QDialog.__init__(self, parent)
         disable_help_button(self)
@@ -345,8 +357,100 @@ class ProgressDialog(QDialog):
         self.form.setupUi(self)
         self._closingDown = False
         self.wantCancel = False
+        self._details_text: QPlainTextEdit | None = None
+        self._multi_progress_widgets: list[tuple[QLabel, QProgressBar]] = []
         # required for smooth progress bars
         self.form.progressBar.setStyleSheet("QProgressBar::chunk { width: 1px; }")
+
+    def set_details_text(self, text: str | None) -> None:
+        if not text:
+            if self._details_text:
+                self.form.verticalLayout.removeWidget(self._details_text)
+                self._details_text.deleteLater()
+                self._details_text = None
+            return
+
+        if not self._details_text:
+            self._details_text = QPlainTextEdit()
+            self._details_text.setReadOnly(True)
+            self._details_text.setMaximumBlockCount(200)
+            self._details_text.setMaximumHeight(132)
+            self._details_text.setMinimumHeight(76)
+            self._details_text.setFrameShape(QFrame.Shape.StyledPanel)
+            self._details_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+            self._details_text.setFont(
+                QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+            )
+            font_metrics = self._details_text.fontMetrics()
+            vertical_scrollbar = self._details_text.verticalScrollBar()
+            vertical_scrollbar_width = (
+                vertical_scrollbar.sizeHint().width() if vertical_scrollbar else 0
+            )
+            log_width = (
+                font_metrics.horizontalAdvance("0" * self.LOG_COLUMNS)
+                + self._details_text.contentsMargins().left()
+                + self._details_text.contentsMargins().right()
+                + vertical_scrollbar_width
+            )
+            self._details_text.setMinimumWidth(log_width)
+            self.setMinimumWidth(max(self.minimumWidth(), log_width))
+            self.form.verticalLayout.insertWidget(3, self._details_text)
+        self._details_text.setPlainText(text)
+        self._details_text.moveCursor(QTextCursor.MoveOperation.End)
+        self._details_text.ensureCursorVisible()
+        QTimer.singleShot(0, self._scroll_details_to_bottom)
+
+    def _scroll_details_to_bottom(self) -> None:
+        if not self._details_text:
+            return
+
+        if scrollbar := self._details_text.verticalScrollBar():
+            scrollbar.setValue(scrollbar.maximum())
+
+    def set_multi_progress_bars(self, bars: list[ProgressBarUpdate]) -> None:
+        removed_widgets = False
+        while len(self._multi_progress_widgets) > len(bars):
+            label, bar = self._multi_progress_widgets.pop()
+            self.form.verticalLayout.removeWidget(label)
+            self.form.verticalLayout.removeWidget(bar)
+            label.deleteLater()
+            bar.deleteLater()
+            removed_widgets = True
+
+        while len(self._multi_progress_widgets) < len(bars):
+            label = QLabel()
+            label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            label.setMinimumWidth(0)
+            label.setWordWrap(False)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
+            bar = QProgressBar()
+            bar.setTextVisible(False)
+            bar.setStyleSheet("QProgressBar::chunk { width: 1px; }")
+            insert_at = max(self.form.verticalLayout.count() - 1, 0)
+            self.form.verticalLayout.insertWidget(insert_at, label)
+            self.form.verticalLayout.insertWidget(insert_at + 1, bar)
+            self._multi_progress_widgets.append((label, bar))
+
+        for (label, bar), update in zip(self._multi_progress_widgets, bars):
+            label.setToolTip(update.label)
+            label_width = label.width()
+            if self._details_text:
+                label_width = max(label_width, self._details_text.width())
+            label.setText(
+                label.fontMetrics().elidedText(
+                    update.label,
+                    Qt.TextElideMode.ElideRight,
+                    max(label_width, self.minimumWidth()),
+                )
+            )
+            bar.setMaximum(max(update.max, 1))
+            bar.setValue(min(update.value, max(update.max, 1)))
+
+        if removed_widgets:
+            self.form.verticalLayout.invalidate()
+            self.adjustSize()
 
     def cancel(self) -> None:
         self._closingDown = True
@@ -369,12 +473,27 @@ class ProgressDialog(QDialog):
 
 
 @dataclass
+class ProgressBarUpdate:
+    label: str
+    value: int
+    max: int
+
+
+@dataclass
 class ProgressUpdate:
     label: str | None = None
     value: int | None = None
     max: int | None = None
+    details: str | None = None
+    bars: list[ProgressBarUpdate] | None = None
     user_wants_abort: bool = False
     abort: bool = False
 
     def has_update(self) -> bool:
-        return self.label is not None or self.value is not None or self.max is not None
+        return (
+            self.label is not None
+            or self.value is not None
+            or self.max is not None
+            or self.details is not None
+            or self.bars is not None
+        )

@@ -15,6 +15,7 @@ use crate::import_export::ExportProgress;
 use crate::import_export::ImportProgress;
 use crate::prelude::Collection;
 use crate::scheduler::fsrs::memory_state::ComputeMemoryProgress;
+use crate::scheduler::fsrs::params::ComputeAllParamsProgress;
 use crate::scheduler::fsrs::params::ComputeParamsProgress;
 use crate::scheduler::fsrs::retention::ComputeRetentionProgress;
 use crate::sync::collection::normal::NormalSyncProgress;
@@ -130,7 +131,7 @@ impl ProgressState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Progress {
     MediaSync(MediaSyncProgress),
     MediaCheck(MediaCheckProgress),
@@ -140,6 +141,7 @@ pub enum Progress {
     Import(ImportProgress),
     Export(ExportProgress),
     ComputeParams(ComputeParamsProgress),
+    ComputeAllParams(ComputeAllParamsProgress),
     ComputeRetention(ComputeRetentionProgress),
     ComputeMemory(ComputeMemoryProgress),
     DownloadUpdate(DownloadUpdateProgress),
@@ -227,6 +229,28 @@ pub(crate) fn progress_to_proto(
                     total_presets: progress.total_presets,
                     long_term_reviews: progress.long_term_reviews,
                     short_term_reviews: progress.short_term_reviews,
+                })
+            }
+            Progress::ComputeAllParams(progress) => {
+                Value::ComputeAllParams(anki_proto::collection::ComputeAllParamsProgress {
+                    current: progress.current_iteration,
+                    total: progress.total_iterations,
+                    presets: progress
+                        .presets
+                        .into_iter()
+                        .map(
+                            |preset| anki_proto::collection::compute_all_params_progress::Preset {
+                                name: preset.name,
+                                current: preset.current_iteration,
+                                total: preset.total_iterations,
+                                reviews: preset.reviews,
+                                long_term_reviews: preset.long_term_reviews,
+                                short_term_reviews: preset.short_term_reviews,
+                                finished: preset.finished,
+                                skipped: preset.skipped,
+                            },
+                        )
+                        .collect(),
                 })
             }
             Progress::ComputeRetention(progress) => {
@@ -319,6 +343,12 @@ impl From<ComputeParamsProgress> for Progress {
     }
 }
 
+impl From<ComputeAllParamsProgress> for Progress {
+    fn from(p: ComputeAllParamsProgress) -> Self {
+        Progress::ComputeAllParams(p)
+    }
+}
+
 impl From<ComputeRetentionProgress> for Progress {
     fn from(p: ComputeRetentionProgress) -> Self {
         Progress::ComputeRetention(p)
@@ -378,5 +408,43 @@ impl<'f, F: 'f + FnMut(usize) -> Result<()>> Incrementor<'f, F> {
 
     pub(crate) fn count(&self) -> usize {
         self.count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::fsrs::params::ComputeAllParamsPresetProgress;
+
+    #[test]
+    fn compute_all_params_progress_maps_to_proto() {
+        let progress = Progress::ComputeAllParams(ComputeAllParamsProgress {
+            current_iteration: 3,
+            total_iterations: 10,
+            presets: vec![ComputeAllParamsPresetProgress {
+                name: "Default".to_string(),
+                current_iteration: 1,
+                total_iterations: 4,
+                reviews: 12,
+                long_term_reviews: 8,
+                short_term_reviews: 4,
+                finished: false,
+                skipped: false,
+            }],
+        });
+
+        let proto = progress_to_proto(Some(progress), &I18n::template_only());
+        let Some(Value::ComputeAllParams(progress)) = proto.value else {
+            panic!("expected compute_all_params progress");
+        };
+
+        assert_eq!(progress.current, 3);
+        assert_eq!(progress.total, 10);
+        assert_eq!(progress.presets[0].name, "Default");
+        assert_eq!(progress.presets[0].reviews, 12);
+        assert_eq!(progress.presets[0].long_term_reviews, 8);
+        assert_eq!(progress.presets[0].short_term_reviews, 4);
+        assert!(!progress.presets[0].finished);
+        assert!(!progress.presets[0].skipped);
     }
 }
