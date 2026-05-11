@@ -173,10 +173,10 @@ behavior for learning/relearning paths) backed by
 `BoolKey::FsrsShortTermWithStepsEnabled`.
 
 Deck options also expose a global FSRS learning-queue bypass backed by
-`BoolKey::FsrsLearningQueuesDisabled`. When enabled with FSRS active, answering
-cards schedules review states directly instead of writing learning/relearning
-queue states, including configured steps and FSRS short-term intervals below
-half a day.
+`BoolKey::FsrsLearningQueuesDisabled`. It defaults to disabled. When enabled
+with FSRS active, answering cards schedules review states directly instead of
+writing learning/relearning queue states, including configured steps and FSRS
+short-term intervals below half a day.
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review

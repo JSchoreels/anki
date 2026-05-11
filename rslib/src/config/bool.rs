@@ -59,6 +59,8 @@ pub enum BoolKey {
 impl Collection {
     pub fn get_config_bool(&self, key: BoolKey) -> bool {
         match key {
+            BoolKey::FsrsLearningQueuesDisabled => self.get_config_optional(key).unwrap_or(false),
+
             // some keys default to true
             BoolKey::InterruptAudioWhenAnswering
             | BoolKey::ShowIntervalsAboveAnswerButtons
@@ -98,5 +100,17 @@ impl Collection {
 impl Collection {
     pub(crate) fn set_config_bool_inner(&mut self, key: BoolKey, value: bool) -> Result<bool> {
         self.set_config(key, &value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fsrs_learning_queue_bypass_defaults_to_disabled() {
+        let col = Collection::new();
+
+        assert!(!col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
     }
 }
