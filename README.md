@@ -71,7 +71,7 @@ The following add-ons have been adapted for this fork:
   search statistics adapted and tested primarily against this FSRS7 fork.
 - [FSRS Helper (Sound's Fork)](https://ankiweb.net/shared/info/218829258?cb=1778337495548):
   FSRS helper add-on adapted to work with this fork's FSRS7 behavior.
-- Dynamic Desired Retention:
+- [Dynamic Desired Retention](https://ankiweb.net/shared/info/160848019?cb=1778705771363):
   add-on for overriding desired retention on cards matched by ordered Anki
   search rules, such as `Frequency<1000`.
 - [AnkiConnect Extended](https://ankiweb.net/shared/info/1635024181?cb=1778339678165):
