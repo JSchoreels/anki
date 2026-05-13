@@ -258,6 +258,11 @@ message DeckConfigsForUpdate {
   bool fsrs_legacy_evaluate = 12;
   bool apply_all_parent_limits = 9;
   uint32 days_since_last_fsrs_optimize = 10;
+  bool review_fuzz_enabled = 16;
+  float review_fuzz_base = 17;
+  float review_fuzz_factor_short = 18;
+  float review_fuzz_factor_mid = 19;
+  float review_fuzz_factor_long = 20;
 }
 
 enum UpdateDeckConfigsMode {
@@ -283,4 +288,9 @@ message UpdateDeckConfigsRequest {
   bool load_balancer_enabled = 12;
   bool fsrs_short_term_with_steps_enabled = 13;
   bool fsrs_learning_queues_disabled = 14;
+  optional bool review_fuzz_enabled = 15;
+  optional float review_fuzz_base = 16;
+  optional float review_fuzz_factor_short = 17;
+  optional float review_fuzz_factor_mid = 18;
+  optional float review_fuzz_factor_long = 19;
 }

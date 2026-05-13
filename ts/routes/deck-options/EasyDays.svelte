@@ -26,22 +26,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fsrsEnabled = state.fsrs;
     const reschedule = state.fsrsReschedule;
     const loadBalancerEnabled = state.loadBalancerEnabled;
+    const reviewFuzzEnabled = state.reviewFuzzEnabled;
+    const reviewFuzzBase = state.reviewFuzzBase;
+    const reviewFuzzFactorShort = state.reviewFuzzFactorShort;
+    const reviewFuzzFactorMid = state.reviewFuzzFactorMid;
+    const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
     const config = state.currentConfig;
     const defaults = state.defaults;
     const prevEasyDaysPercentages = $config.easyDaysPercentages.slice();
-    const defaultReviewFuzzEnabled = defaults.reviewFuzzEnabled ?? true;
-    const defaultReviewFuzzBase = defaults.reviewFuzzBase ?? 1.0;
-    const defaultReviewFuzzFactorShort = defaults.reviewFuzzFactorShort ?? 0.15;
-    const defaultReviewFuzzFactorMid = defaults.reviewFuzzFactorMid ?? 0.1;
-    const defaultReviewFuzzFactorLong = defaults.reviewFuzzFactorLong ?? 0.05;
-    const prevReviewFuzzEnabled = $config.reviewFuzzEnabled ?? defaultReviewFuzzEnabled;
-    const prevReviewFuzzBase = $config.reviewFuzzBase ?? defaultReviewFuzzBase;
-    const prevReviewFuzzFactorShort =
-        $config.reviewFuzzFactorShort ?? defaultReviewFuzzFactorShort;
-    const prevReviewFuzzFactorMid =
-        $config.reviewFuzzFactorMid ?? defaultReviewFuzzFactorMid;
-    const prevReviewFuzzFactorLong =
-        $config.reviewFuzzFactorLong ?? defaultReviewFuzzFactorLong;
+    const defaultReviewFuzzEnabled = true;
+    const defaultReviewFuzzBase = 1.0;
+    const defaultReviewFuzzFactorShort = 0.15;
+    const defaultReviewFuzzFactorMid = 0.1;
+    const defaultReviewFuzzFactorLong = 0.05;
+    const prevReviewFuzzEnabled = $reviewFuzzEnabled;
+    const prevReviewFuzzBase = $reviewFuzzBase;
+    const prevReviewFuzzFactorShort = $reviewFuzzFactorShort;
+    const prevReviewFuzzFactorMid = $reviewFuzzFactorMid;
+    const prevReviewFuzzFactorLong = $reviewFuzzFactorLong;
     const previewIntervals = [3, 7, 20, 30, 90, 180];
     const settings = {
         loadBalancerEnabled: {
@@ -64,31 +66,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $config.easyDaysPercentages = defaults.easyDaysPercentages.slice();
     }
 
-    $: if ($config.reviewFuzzBase === undefined) {
-        $config.reviewFuzzBase = defaultReviewFuzzBase;
-    }
-    $: if ($config.reviewFuzzEnabled === undefined) {
-        $config.reviewFuzzEnabled = defaultReviewFuzzEnabled;
-    }
-    $: if ($config.reviewFuzzFactorShort === undefined) {
-        $config.reviewFuzzFactorShort = defaultReviewFuzzFactorShort;
-    }
-    $: if ($config.reviewFuzzFactorMid === undefined) {
-        $config.reviewFuzzFactorMid = defaultReviewFuzzFactorMid;
-    }
-    $: if ($config.reviewFuzzFactorLong === undefined) {
-        $config.reviewFuzzFactorLong = defaultReviewFuzzFactorLong;
-    }
-
     $: easyDaysChanged = $config.easyDaysPercentages.some(
         (value, index) => value !== prevEasyDaysPercentages[index],
     );
     $: reviewFuzzChanged =
-        $config.reviewFuzzEnabled !== prevReviewFuzzEnabled ||
-        $config.reviewFuzzBase !== prevReviewFuzzBase ||
-        $config.reviewFuzzFactorShort !== prevReviewFuzzFactorShort ||
-        $config.reviewFuzzFactorMid !== prevReviewFuzzFactorMid ||
-        $config.reviewFuzzFactorLong !== prevReviewFuzzFactorLong;
+        $reviewFuzzEnabled !== prevReviewFuzzEnabled ||
+        $reviewFuzzBase !== prevReviewFuzzBase ||
+        $reviewFuzzFactorShort !== prevReviewFuzzFactorShort ||
+        $reviewFuzzFactorMid !== prevReviewFuzzFactorMid ||
+        $reviewFuzzFactorLong !== prevReviewFuzzFactorLong;
 
     $: noNormalDay = $config.easyDaysPercentages.some((p) => p === 1.0)
         ? ""
@@ -118,11 +104,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ),
         selectedBounds: formatFuzzBounds(
             interval,
-            $config.reviewFuzzEnabled,
-            $config.reviewFuzzBase,
-            $config.reviewFuzzFactorShort,
-            $config.reviewFuzzFactorMid,
-            $config.reviewFuzzFactorLong,
+            $reviewFuzzEnabled,
+            $reviewFuzzBase,
+            $reviewFuzzFactorShort,
+            $reviewFuzzFactorMid,
+            $reviewFuzzFactorLong,
         ),
     }));
 
@@ -226,69 +212,67 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </SwitchRow>
         </Item>
-        {#if $config.reviewFuzzEnabled !== undefined && $config.reviewFuzzBase !== undefined && $config.reviewFuzzFactorShort !== undefined && $config.reviewFuzzFactorMid !== undefined && $config.reviewFuzzFactorLong !== undefined}
-            <Item>
-                <SwitchRow
-                    bind:value={$config.reviewFuzzEnabled}
-                    defaultValue={defaultReviewFuzzEnabled}
-                >
-                    <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}>
-                        {tr.deckConfigReviewFuzzEnabled()}
-                    </SettingTitle>
-                </SwitchRow>
-            </Item>
-            <EasyDaysInput bind:values={$config.easyDaysPercentages} />
-            <Item>
-                <div class="review-fuzz-title">{tr.deckConfigReviewFuzzTitle()}</div>
-            </Item>
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.reviewFuzzBase}
-                    defaultValue={defaultReviewFuzzBase}
-                    min={0}
-                    max={10}
-                    step={0.1}
-                >
-                    {tr.deckConfigReviewFuzzBase()}
-                </SpinBoxFloatRow>
-            </Item>
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.reviewFuzzFactorShort}
-                    defaultValue={defaultReviewFuzzFactorShort}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    percentage={true}
-                >
-                    {tr.deckConfigReviewFuzzFactorShort()}
-                </SpinBoxFloatRow>
-            </Item>
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.reviewFuzzFactorMid}
-                    defaultValue={defaultReviewFuzzFactorMid}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    percentage={true}
-                >
-                    {tr.deckConfigReviewFuzzFactorMid()}
-                </SpinBoxFloatRow>
-            </Item>
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.reviewFuzzFactorLong}
-                    defaultValue={defaultReviewFuzzFactorLong}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    percentage={true}
-                >
-                    {tr.deckConfigReviewFuzzFactorLong()}
-                </SpinBoxFloatRow>
-            </Item>
-        {/if}
+        <Item>
+            <SwitchRow
+                bind:value={$reviewFuzzEnabled}
+                defaultValue={defaultReviewFuzzEnabled}
+            >
+                <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}>
+                    <GlobalLabel title={tr.deckConfigReviewFuzzEnabled()} />
+                </SettingTitle>
+            </SwitchRow>
+        </Item>
+        <EasyDaysInput bind:values={$config.easyDaysPercentages} />
+        <Item>
+            <div class="review-fuzz-title">{tr.deckConfigReviewFuzzTitle()}</div>
+        </Item>
+        <Item>
+            <SpinBoxFloatRow
+                bind:value={$reviewFuzzBase}
+                defaultValue={defaultReviewFuzzBase}
+                min={0}
+                max={10}
+                step={0.1}
+            >
+                {tr.deckConfigReviewFuzzBase()}
+            </SpinBoxFloatRow>
+        </Item>
+        <Item>
+            <SpinBoxFloatRow
+                bind:value={$reviewFuzzFactorShort}
+                defaultValue={defaultReviewFuzzFactorShort}
+                min={0}
+                max={1}
+                step={0.01}
+                percentage={true}
+            >
+                {tr.deckConfigReviewFuzzFactorShort()}
+            </SpinBoxFloatRow>
+        </Item>
+        <Item>
+            <SpinBoxFloatRow
+                bind:value={$reviewFuzzFactorMid}
+                defaultValue={defaultReviewFuzzFactorMid}
+                min={0}
+                max={1}
+                step={0.01}
+                percentage={true}
+            >
+                {tr.deckConfigReviewFuzzFactorMid()}
+            </SpinBoxFloatRow>
+        </Item>
+        <Item>
+            <SpinBoxFloatRow
+                bind:value={$reviewFuzzFactorLong}
+                defaultValue={defaultReviewFuzzFactorLong}
+                min={0}
+                max={1}
+                step={0.01}
+                percentage={true}
+            >
+                {tr.deckConfigReviewFuzzFactorLong()}
+            </SpinBoxFloatRow>
+        </Item>
         <Item>
             <div class="review-fuzz-preview">
                 <div class="review-fuzz-preview-title">

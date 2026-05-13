@@ -53,6 +53,11 @@ type AllConfigs =
             | "applyAllParentLimits"
             | "fsrs"
             | "fsrsReschedule"
+            | "reviewFuzzEnabled"
+            | "reviewFuzzBase"
+            | "reviewFuzzFactorShort"
+            | "reviewFuzzFactorMid"
+            | "reviewFuzzFactorLong"
         >
     >
     & { currentConfig: DeckConfig_Config };
@@ -74,6 +79,11 @@ export class DeckOptionsState {
     readonly fsrsLearningQueuesDisabled: Writable<boolean>;
     readonly fsrsReschedule: Writable<boolean> = writable(false);
     readonly fsrsHealthCheck: Writable<boolean>;
+    readonly reviewFuzzEnabled: Writable<boolean>;
+    readonly reviewFuzzBase: Writable<number>;
+    readonly reviewFuzzFactorShort: Writable<number>;
+    readonly reviewFuzzFactorMid: Writable<number>;
+    readonly reviewFuzzFactorLong: Writable<number>;
     readonly legacyEvaluate: boolean;
     readonly daysSinceLastOptimization: Writable<number>;
     readonly currentPresetName: Writable<string>;
@@ -122,6 +132,11 @@ export class DeckOptionsState {
         );
         this.fsrsLearningQueuesDisabled = writable(data.fsrsLearningQueuesDisabled);
         this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
+        this.reviewFuzzEnabled = writable(data.reviewFuzzEnabled);
+        this.reviewFuzzBase = writable(data.reviewFuzzBase);
+        this.reviewFuzzFactorShort = writable(data.reviewFuzzFactorShort);
+        this.reviewFuzzFactorMid = writable(data.reviewFuzzFactorMid);
+        this.reviewFuzzFactorLong = writable(data.reviewFuzzFactorLong);
         this.legacyEvaluate = data.fsrsLegacyEvaluate;
         this.daysSinceLastOptimization = writable(data.daysSinceLastFsrsOptimize);
 
@@ -303,6 +318,11 @@ export class DeckOptionsState {
             fsrsLearningQueuesDisabled: get(this.fsrsLearningQueuesDisabled),
             fsrsReschedule: get(this.fsrsReschedule),
             fsrsHealthCheck: get(this.fsrsHealthCheck),
+            reviewFuzzEnabled: get(this.reviewFuzzEnabled),
+            reviewFuzzBase: get(this.reviewFuzzBase),
+            reviewFuzzFactorShort: get(this.reviewFuzzFactorShort),
+            reviewFuzzFactorMid: get(this.reviewFuzzFactorMid),
+            reviewFuzzFactorLong: get(this.reviewFuzzFactorLong),
         };
     }
 
@@ -398,6 +418,11 @@ export class DeckOptionsState {
             fsrsShortTermWithStepsEnabled: get(this.fsrsShortTermWithStepsEnabled),
             fsrsLearningQueuesDisabled: get(this.fsrsLearningQueuesDisabled),
             fsrsReschedule: get(this.fsrsReschedule),
+            reviewFuzzEnabled: get(this.reviewFuzzEnabled),
+            reviewFuzzBase: get(this.reviewFuzzBase),
+            reviewFuzzFactorShort: get(this.reviewFuzzFactorShort),
+            reviewFuzzFactorMid: get(this.reviewFuzzFactorMid),
+            reviewFuzzFactorLong: get(this.reviewFuzzFactorLong),
             currentConfig: get(this.currentConfig),
         });
     }

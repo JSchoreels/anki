@@ -39,15 +39,5 @@ export function workloadRequestForPreset(
     request.historicalRetention = inner.historicalRetention;
     request.learningStepCount = inner.learnSteps.length;
     request.relearningStepCount = inner.relearnSteps.length;
-    request.reviewFuzzBase = inner.reviewFuzzEnabled ? inner.reviewFuzzBase : 0;
-    request.reviewFuzzFactorShort = inner.reviewFuzzEnabled
-        ? inner.reviewFuzzFactorShort
-        : 0;
-    request.reviewFuzzFactorMid = inner.reviewFuzzEnabled
-        ? inner.reviewFuzzFactorMid
-        : 0;
-    request.reviewFuzzFactorLong = inner.reviewFuzzEnabled
-        ? inner.reviewFuzzFactorLong
-        : 0;
     return request;
 }

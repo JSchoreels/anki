@@ -118,7 +118,7 @@ pub struct LoadBalancer {
     /// cards in the same preset as the card being balanced.
     days_by_preset: HashMap<DeckConfigId, Vec<LoadBalancerDay>>,
     easy_days_percentages_by_preset: HashMap<DeckConfigId, [EasyDay; 7]>,
-    review_fuzz_by_preset: HashMap<DeckConfigId, ReviewFuzzConfig>,
+    review_fuzz_config: ReviewFuzzConfig,
     next_day_at: TimestampSecs,
 }
 
@@ -126,11 +126,12 @@ impl LoadBalancer {
     pub fn new(
         today: u32,
         did_to_dcid: HashMap<DeckId, DeckConfigId>,
+        review_fuzz_config: ReviewFuzzConfig,
         next_day_at: TimestampSecs,
         storage: &SqliteStorage,
     ) -> Result<LoadBalancer> {
         let configs = storage.get_deck_config_map()?;
-        let cache_days = required_load_balance_days(&configs);
+        let cache_days = required_load_balance_days(&configs, review_fuzz_config);
         let cards_on_each_day =
             storage.get_all_cards_due_in_range(today, today + cache_days as u32)?;
         let days_by_preset = cards_on_each_day
@@ -169,12 +170,11 @@ impl LoadBalancer {
                 },
             );
         let easy_days_percentages_by_preset = build_easy_days_percentages(&configs)?;
-        let review_fuzz_by_preset = build_review_fuzz_configs(&configs);
 
         Ok(LoadBalancer {
             days_by_preset,
             easy_days_percentages_by_preset,
-            review_fuzz_by_preset,
+            review_fuzz_config,
             next_day_at,
         })
     }
@@ -226,9 +226,8 @@ impl LoadBalancer {
             return None;
         }
 
-        let review_fuzz_config = *self.review_fuzz_by_preset.get(&deckconfig_id)?;
         let (before_days, after_days) =
-            constrained_fuzz_bounds(interval, minimum, maximum, review_fuzz_config);
+            constrained_fuzz_bounds(interval, minimum, maximum, self.review_fuzz_config);
 
         let days = self.days_by_preset.get(&deckconfig_id)?;
         let interval_days = &days[before_days as usize..=after_days as usize];
@@ -286,20 +285,26 @@ impl LoadBalancer {
     }
 }
 
-fn required_load_balance_days(configs: &HashMap<DeckConfigId, DeckConfig>) -> usize {
+fn required_load_balance_days(
+    configs: &HashMap<DeckConfigId, DeckConfig>,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> usize {
     configs
         .values()
-        .map(load_balance_days_for_config)
+        .map(|config| load_balance_days_for_config(config, review_fuzz_config))
         .max()
         .unwrap_or(MAX_LOAD_BALANCE_INTERVAL + 1)
 }
 
-fn load_balance_days_for_config(config: &DeckConfig) -> usize {
+fn load_balance_days_for_config(
+    config: &DeckConfig,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> usize {
     let (_, after_days) = constrained_fuzz_bounds(
         MAX_LOAD_BALANCE_INTERVAL as f32,
         1,
         config.inner.maximum_review_interval,
-        config.review_fuzz_config(),
+        review_fuzz_config,
     );
     after_days as usize + 1
 }
@@ -330,15 +335,6 @@ pub(crate) fn build_easy_days_percentages(
                 parse_easy_days_percentages(&conf.inner.easy_days_percentages)?;
             Ok((*dcid, easy_days_percentages))
         })
-        .collect()
-}
-
-pub(crate) fn build_review_fuzz_configs(
-    configs: &HashMap<DeckConfigId, DeckConfig>,
-) -> HashMap<DeckConfigId, ReviewFuzzConfig> {
-    configs
-        .iter()
-        .map(|(dcid, conf)| (*dcid, conf.review_fuzz_config()))
         .collect()
 }
 
@@ -490,43 +486,48 @@ pub(crate) fn interval_to_weekday(interval: u32, next_day_at: TimestampSecs) -> 
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::scheduler::states::StateContext;
 
     #[test]
     fn cache_days_expand_to_cover_configured_fuzz() {
-        let mut config = DeckConfig::default();
-        config.inner.review_fuzz_base = Some(20.0);
-        config.inner.review_fuzz_factor_short = Some(0.3);
-        config.inner.review_fuzz_factor_mid = Some(0.2);
-        config.inner.review_fuzz_factor_long = Some(0.1);
+        let config = DeckConfig::default();
+        let review_fuzz_config = ReviewFuzzConfig {
+            base: 20.0,
+            factor_short: 0.3,
+            factor_mid: 0.2,
+            factor_long: 0.1,
+        };
 
         let (_, after_days) = constrained_fuzz_bounds(
             MAX_LOAD_BALANCE_INTERVAL as f32,
             1,
             config.inner.maximum_review_interval,
-            config.review_fuzz_config(),
+            review_fuzz_config,
         );
 
         assert_eq!(
-            load_balance_days_for_config(&config),
+            load_balance_days_for_config(&config, review_fuzz_config),
             after_days as usize + 1
         );
-        assert!(load_balance_days_for_config(&config) > 99);
+        assert!(load_balance_days_for_config(&config, review_fuzz_config) > 99);
     }
 
     #[test]
     fn find_interval_handles_ranges_past_previous_fixed_cache() {
         let dcid = DeckConfigId(1);
-        let mut config = DeckConfig::default();
-        config.inner.review_fuzz_base = Some(20.0);
-        config.inner.review_fuzz_factor_short = Some(0.3);
-        config.inner.review_fuzz_factor_mid = Some(0.2);
-        config.inner.review_fuzz_factor_long = Some(0.1);
-        let cache_days = load_balance_days_for_config(&config);
+        let config = DeckConfig::default();
+        let review_fuzz_config = ReviewFuzzConfig {
+            base: 20.0,
+            factor_short: 0.3,
+            factor_mid: 0.2,
+            factor_long: 0.1,
+        };
+        let cache_days = load_balance_days_for_config(&config, review_fuzz_config);
         let (before_days, after_days) = constrained_fuzz_bounds(
             90.0,
             1,
             config.inner.maximum_review_interval,
-            config.review_fuzz_config(),
+            review_fuzz_config,
         );
 
         let load_balancer = LoadBalancer {
@@ -537,7 +538,7 @@ mod test {
                     .collect(),
             )]),
             easy_days_percentages_by_preset: HashMap::from([(dcid, [EasyDay::Normal; 7])]),
-            review_fuzz_by_preset: HashMap::from([(dcid, config.review_fuzz_config())]),
+            review_fuzz_config,
             next_day_at: TimestampSecs(0),
         };
 
@@ -546,5 +547,50 @@ mod test {
         assert!(selected.is_some());
         assert!(selected.unwrap() >= before_days);
         assert!(selected.unwrap() <= after_days);
+    }
+
+    #[test]
+    fn state_context_reports_load_balanced_fuzz_delta() {
+        let dcid = DeckConfigId(1);
+        let load_balancer = LoadBalancer {
+            days_by_preset: HashMap::from([(
+                dcid,
+                std::iter::repeat_with(LoadBalancerDay::default)
+                    .take(10)
+                    .collect(),
+            )]),
+            easy_days_percentages_by_preset: HashMap::from([(dcid, [EasyDay::Normal; 7])]),
+            review_fuzz_config: ReviewFuzzConfig::default(),
+            next_day_at: TimestampSecs(0),
+        };
+        let interval: f32 = 7.0;
+        let minimum = 1;
+        let maximum = 36_500;
+        let unfuzzed = interval.round() as u32;
+        let fuzz_seed = (0_u64..100)
+            .find(|seed| {
+                load_balancer
+                    .find_interval(interval, minimum, maximum, dcid, Some(*seed), None)
+                    .is_some_and(|selected| selected != unfuzzed)
+            })
+            .expect(
+                "test setup should find a seed that load balances away from the unfuzzed interval",
+            );
+        let expected = load_balancer
+            .find_interval(interval, minimum, maximum, dcid, Some(fuzz_seed), None)
+            .unwrap();
+
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.fuzz_factor = None;
+        ctx.load_balancer_ctx = Some(
+            load_balancer
+                .review_context(None, dcid)
+                .set_fuzz_seed(Some(fuzz_seed)),
+        );
+
+        assert_eq!(
+            ctx.with_review_fuzz_and_delta(interval, minimum, maximum),
+            (expected, expected as i32 - unfuzzed as i32)
+        );
     }
 }

@@ -102,6 +102,7 @@ mod tests {
             fsrs_learning_queues_disabled: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
         input.configs[0].inner.fsrs_params_7 = params;

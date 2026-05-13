@@ -25,7 +25,6 @@ pub(crate) const INITIAL_EASE_FACTOR_THOUSANDS: u16 = (INITIAL_EASE_FACTOR * 100
 
 use crate::define_newtype;
 use crate::prelude::*;
-use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::review::INITIAL_EASE_FACTOR;
 
 define_newtype!(DeckConfigId, i64);
@@ -94,11 +93,11 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     param_search: String::new(),
     ignore_revlogs_before_date: String::new(),
     easy_days_percentages: Vec::new(),
-    review_fuzz_base: Some(DEFAULT_REVIEW_FUZZ_BASE),
-    review_fuzz_factor_short: Some(DEFAULT_REVIEW_FUZZ_FACTOR_SHORT),
-    review_fuzz_factor_mid: Some(DEFAULT_REVIEW_FUZZ_FACTOR_MID),
-    review_fuzz_factor_long: Some(DEFAULT_REVIEW_FUZZ_FACTOR_LONG),
-    review_fuzz_enabled: Some(DEFAULT_REVIEW_FUZZ_ENABLED),
+    review_fuzz_base: None,
+    review_fuzz_factor_short: None,
+    review_fuzz_factor_mid: None,
+    review_fuzz_factor_long: None,
+    review_fuzz_enabled: None,
 };
 
 impl Default for DeckConfig {
@@ -154,34 +153,6 @@ impl DeckConfig {
             &self.inner.fsrs_params_4
         } else {
             &[]
-        }
-    }
-
-    pub fn review_fuzz_config(&self) -> ReviewFuzzConfig {
-        if !self
-            .inner
-            .review_fuzz_enabled
-            .unwrap_or(DEFAULT_REVIEW_FUZZ_ENABLED)
-        {
-            return ReviewFuzzConfig::none();
-        }
-        ReviewFuzzConfig {
-            base: self
-                .inner
-                .review_fuzz_base
-                .unwrap_or(DEFAULT_REVIEW_FUZZ_BASE),
-            factor_short: self
-                .inner
-                .review_fuzz_factor_short
-                .unwrap_or(DEFAULT_REVIEW_FUZZ_FACTOR_SHORT),
-            factor_mid: self
-                .inner
-                .review_fuzz_factor_mid
-                .unwrap_or(DEFAULT_REVIEW_FUZZ_FACTOR_MID),
-            factor_long: self
-                .inner
-                .review_fuzz_factor_long
-                .unwrap_or(DEFAULT_REVIEW_FUZZ_FACTOR_LONG),
         }
     }
 }

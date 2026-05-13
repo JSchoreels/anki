@@ -35,6 +35,7 @@ use crate::decks::Deck;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
+use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
 use crate::search::SearchNode;
 
@@ -73,6 +74,7 @@ struct CardStateUpdater {
     timing: SchedTimingToday,
     now: TimestampSecs,
     fuzz_seed: Option<u64>,
+    review_fuzz_config: ReviewFuzzConfig,
     /// Set if FSRS is enabled.
     fsrs_next_states: Option<NextStates>,
     /// Set if FSRS is enabled.
@@ -99,7 +101,7 @@ impl CardStateUpdater {
             hard_multiplier: self.config.inner.hard_multiplier,
             easy_multiplier: self.config.inner.easy_multiplier,
             interval_multiplier: self.config.inner.interval_multiplier,
-            review_fuzz_config: self.config.review_fuzz_config(),
+            review_fuzz_config: self.review_fuzz_config,
             maximum_review_interval: self.config.inner.maximum_review_interval,
             fsrs_minimum_interval_secs: self.config.inner.fsrs_minimum_interval_secs,
             leech_threshold: self.config.inner.leech_threshold,
@@ -519,6 +521,7 @@ impl Collection {
             .or_not_found(home_deck.id)?;
         Ok(CardStateUpdater {
             fuzz_seed: get_fuzz_seed(&card, false),
+            review_fuzz_config: self.review_fuzz_config(),
             card,
             deck,
             original_deck,

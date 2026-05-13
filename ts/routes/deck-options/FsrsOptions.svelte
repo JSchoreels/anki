@@ -93,6 +93,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fsrsReschedule = state.fsrsReschedule;
     const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
     const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
+    const reviewFuzzEnabled = state.reviewFuzzEnabled;
+    const reviewFuzzBase = state.reviewFuzzBase;
+    const reviewFuzzFactorShort = state.reviewFuzzFactorShort;
+    const reviewFuzzFactorMid = state.reviewFuzzFactorMid;
+    const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
     const auxData = state.currentAuxData;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
@@ -277,16 +282,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         historicalRetention: $config.historicalRetention,
         learningStepCount: $config.learnSteps.length,
         relearningStepCount: $config.relearnSteps.length,
-        reviewFuzzBase: $config.reviewFuzzEnabled ? $config.reviewFuzzBase : 0,
-        reviewFuzzFactorShort: $config.reviewFuzzEnabled
-            ? $config.reviewFuzzFactorShort
-            : 0,
-        reviewFuzzFactorMid: $config.reviewFuzzEnabled
-            ? $config.reviewFuzzFactorMid
-            : 0,
-        reviewFuzzFactorLong: $config.reviewFuzzEnabled
-            ? $config.reviewFuzzFactorLong
-            : 0,
+        reviewFuzzBase: $reviewFuzzEnabled ? $reviewFuzzBase : 0,
+        reviewFuzzFactorShort: $reviewFuzzEnabled ? $reviewFuzzFactorShort : 0,
+        reviewFuzzFactorMid: $reviewFuzzEnabled ? $reviewFuzzFactorMid : 0,
+        reviewFuzzFactorLong: $reviewFuzzEnabled ? $reviewFuzzFactorLong : 0,
         helpMeDecideTransitionBlendAlpha: HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
         helpMeDecideEnforceMonotonicSuccessGradeProbs:
             HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,

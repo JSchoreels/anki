@@ -860,6 +860,7 @@ mod tests {
             fsrs_learning_queues_disabled: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         match version {
             FsrsVersion::Six => {
@@ -903,6 +904,7 @@ mod tests {
             fsrs_learning_queues_disabled: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         let mut new_config = input.configs[0].clone();
         new_config.id = DeckConfigId(0);

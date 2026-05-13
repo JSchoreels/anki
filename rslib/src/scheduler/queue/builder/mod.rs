@@ -159,6 +159,7 @@ impl QueueBuilder {
                 LoadBalancer::new(
                     timing.days_elapsed,
                     did_to_dcid,
+                    col.review_fuzz_config(),
                     col.timing_today()?.next_day_at,
                     &col.storage,
                 )

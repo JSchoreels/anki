@@ -18,6 +18,10 @@ test("workload request keeps Help Me Decide menu settings", () => {
         reviewLimit: 9999,
         maxInterval: 456,
         easyDaysPercentages: [1, 2, 3, 4, 5, 6, 7],
+        reviewFuzzBase: 2,
+        reviewFuzzFactorShort: 0.3,
+        reviewFuzzFactorMid: 0.2,
+        reviewFuzzFactorLong: 0.1,
     });
     const config = new DeckConfig({
         name: "Preset \"A\"",
@@ -42,6 +46,10 @@ test("workload request keeps Help Me Decide menu settings", () => {
     expect(request.reviewLimit).toBe(9999);
     expect(request.maxInterval).toBe(456);
     expect(request.easyDaysPercentages).toStrictEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(request.reviewFuzzBase).toBe(2);
+    expect(request.reviewFuzzFactorShort).toBe(0.3);
+    expect(request.reviewFuzzFactorMid).toBe(0.2);
+    expect(request.reviewFuzzFactorLong).toBe(0.1);
     expect(request.params).toStrictEqual([1, 2, 3]);
     expect(request.search).toBe("deck:\"Default\" preset:\"Preset \\\"A\\\"\" -is:suspended");
 });

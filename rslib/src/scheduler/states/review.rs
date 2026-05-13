@@ -96,12 +96,10 @@ impl ReviewState {
             )
         } else {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval);
-            let (interval, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
-                ctx.fuzz_factor,
+            let (interval, fuzz_delta_days) = ctx.with_review_fuzz_and_delta(
                 (self.scheduled_days as f32).max(1.0) * ctx.lapse_multiplier,
                 minimum,
                 maximum,
-                ctx.review_fuzz_config,
             );
             (interval as f32, fuzz_delta_days, None)
         }
@@ -362,13 +360,7 @@ fn constrain_passing_interval(
     };
     let (minimum, maximum) = ctx.min_and_max_review_intervals(minimum);
     if fuzz {
-        super::fuzz::with_review_fuzz_and_delta(
-            ctx.fuzz_factor,
-            interval,
-            minimum,
-            maximum,
-            ctx.review_fuzz_config,
-        )
+        ctx.with_review_fuzz_and_delta(interval, minimum, maximum)
     } else {
         ((interval.round() as u32).clamp(minimum, maximum), 0)
     }

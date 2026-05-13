@@ -1,9 +1,13 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::StateContext;
 use crate::collection::Collection;
 use crate::deckconfig::DEFAULT_REVIEW_FUZZ_BASE;
+use crate::deckconfig::DEFAULT_REVIEW_FUZZ_ENABLED;
 use crate::deckconfig::DEFAULT_REVIEW_FUZZ_FACTOR_LONG;
 use crate::deckconfig::DEFAULT_REVIEW_FUZZ_FACTOR_MID;
 use crate::deckconfig::DEFAULT_REVIEW_FUZZ_FACTOR_SHORT;
@@ -65,16 +69,69 @@ impl ReviewFuzzConfig {
     }
 }
 
+const REVIEW_FUZZ_CONFIG_KEY: &str = "reviewFuzz";
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StoredReviewFuzzConfig {
+    pub enabled: bool,
+    pub base: f32,
+    pub factor_short: f32,
+    pub factor_mid: f32,
+    pub factor_long: f32,
+}
+
+impl Default for StoredReviewFuzzConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_REVIEW_FUZZ_ENABLED,
+            base: DEFAULT_REVIEW_FUZZ_BASE,
+            factor_short: DEFAULT_REVIEW_FUZZ_FACTOR_SHORT,
+            factor_mid: DEFAULT_REVIEW_FUZZ_FACTOR_MID,
+            factor_long: DEFAULT_REVIEW_FUZZ_FACTOR_LONG,
+        }
+    }
+}
+
+impl StoredReviewFuzzConfig {
+    pub fn review_fuzz_config(self) -> ReviewFuzzConfig {
+        if self.enabled {
+            ReviewFuzzConfig {
+                base: self.base,
+                factor_short: self.factor_short,
+                factor_mid: self.factor_mid,
+                factor_long: self.factor_long,
+            }
+        } else {
+            ReviewFuzzConfig::none()
+        }
+    }
+}
+
 impl StateContext<'_> {
     /// Apply fuzz, respecting the passed bounds.
     pub(crate) fn with_review_fuzz(&self, interval: f32, minimum: u32, maximum: u32) -> u32 {
+        self.with_review_fuzz_and_delta(interval, minimum, maximum)
+            .0
+    }
+
+    /// Apply fuzz, respecting the passed bounds, and return the difference
+    /// from the unfuzzed interval.
+    pub(crate) fn with_review_fuzz_and_delta(
+        &self,
+        interval: f32,
+        minimum: u32,
+        maximum: u32,
+    ) -> (u32, i32) {
+        let minimum = minimum.min(maximum);
+        let unfuzzed = (interval.round() as u32).clamp(minimum, maximum);
         self.load_balancer_ctx
             .as_ref()
             .and_then(|load_balancer_ctx| {
                 load_balancer_ctx.find_interval(interval, minimum, maximum)
             })
+            .map(|fuzzed| (fuzzed, fuzzed as i32 - unfuzzed as i32))
             .unwrap_or_else(|| {
-                with_review_fuzz(
+                with_review_fuzz_and_delta(
                     self.fuzz_factor,
                     interval,
                     minimum,
@@ -86,6 +143,22 @@ impl StateContext<'_> {
 }
 
 impl Collection {
+    pub(crate) fn stored_review_fuzz_config(&self) -> StoredReviewFuzzConfig {
+        self.get_config_optional(REVIEW_FUZZ_CONFIG_KEY)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn review_fuzz_config(&self) -> ReviewFuzzConfig {
+        self.stored_review_fuzz_config().review_fuzz_config()
+    }
+
+    pub(crate) fn set_stored_review_fuzz_config(
+        &mut self,
+        config: StoredReviewFuzzConfig,
+    ) -> Result<bool> {
+        self.set_config(REVIEW_FUZZ_CONFIG_KEY, &config)
+    }
+
     /// Used for FSRS add-on.
     pub(crate) fn get_fuzz_delta(&self, card_id: CardId, interval: u32) -> Result<i32> {
         let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
@@ -99,7 +172,7 @@ impl Collection {
             interval as f32,
             1,
             config.inner.maximum_review_interval,
-            config.review_fuzz_config(),
+            self.review_fuzz_config(),
         );
         Ok((fuzzed as i32) - (interval as i32))
     }
@@ -276,5 +349,34 @@ mod test {
 
         assert_eq!(interval, 9);
         assert_eq!(delta, 2);
+    }
+
+    #[test]
+    fn collection_review_fuzz_defaults_to_anki_values() {
+        let col = Collection::new();
+
+        assert_eq!(col.review_fuzz_config(), ReviewFuzzConfig::default());
+        assert_eq!(
+            col.stored_review_fuzz_config(),
+            StoredReviewFuzzConfig::default()
+        );
+    }
+
+    #[test]
+    fn collection_review_fuzz_can_be_disabled() -> Result<()> {
+        let mut col = Collection::new();
+        let stored = StoredReviewFuzzConfig {
+            enabled: false,
+            base: 3.0,
+            factor_short: 0.4,
+            factor_mid: 0.3,
+            factor_long: 0.2,
+        };
+
+        col.set_stored_review_fuzz_config(stored)?;
+
+        assert_eq!(col.stored_review_fuzz_config(), stored);
+        assert_eq!(col.review_fuzz_config(), ReviewFuzzConfig::none());
+        Ok(())
     }
 }

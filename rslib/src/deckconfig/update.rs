@@ -38,6 +38,7 @@ use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::ComputeAllParamsPresetProgress;
 use crate::scheduler::fsrs::params::ComputeAllParamsProgress;
 use crate::scheduler::fsrs::params::PreparedComputeParams;
+use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 use crate::search::JoinSearches;
 use crate::search::Negated;
 use crate::search::SearchNode;
@@ -81,6 +82,7 @@ pub struct UpdateDeckConfigsRequest {
     pub fsrs_learning_queues_disabled: bool,
     pub fsrs_reschedule: bool,
     pub fsrs_health_check: bool,
+    pub review_fuzz_config: StoredReviewFuzzConfig,
 }
 
 impl Collection {
@@ -101,7 +103,13 @@ impl Collection {
         } else {
             0
         };
+        let review_fuzz_config = self.stored_review_fuzz_config();
         Ok(anki_proto::deck_config::DeckConfigsForUpdate {
+            review_fuzz_enabled: review_fuzz_config.enabled,
+            review_fuzz_base: review_fuzz_config.base,
+            review_fuzz_factor_short: review_fuzz_config.factor_short,
+            review_fuzz_factor_mid: review_fuzz_config.factor_mid,
+            review_fuzz_factor_long: review_fuzz_config.factor_long,
             all_config: self.get_deck_config_with_extra_for_update()?,
             current_deck: Some(self.get_current_deck_for_update(deck)?),
             defaults: Some(defaults.into()),
@@ -235,6 +243,8 @@ impl Collection {
         require!(!req.configs.is_empty(), "config not provided");
         let configs_before_update = self.storage.get_deck_config_map()?;
         let mut configs_after_update = configs_before_update.clone();
+        let previous_review_fuzz = self.stored_review_fuzz_config();
+        let review_fuzz_changed = previous_review_fuzz != req.review_fuzz_config;
 
         // handle removals first
         for dcid in &req.removed_config_ids {
@@ -280,6 +290,9 @@ impl Collection {
         if fsrs_toggled {
             self.set_config_bool_inner(BoolKey::Fsrs, req.fsrs)?;
         }
+        if review_fuzz_changed {
+            self.set_stored_review_fuzz_config(req.review_fuzz_config)?;
+        }
         let mut deck_desired_retention: HashMap<DeckId, f32> = Default::default();
         for deck in self.storage.get_all_decks()? {
             if let Ok(normal) = deck.normal() {
@@ -295,7 +308,6 @@ impl Collection {
                 let previous_deck_dr = normal.desired_retention;
                 let previous_dr = previous_deck_dr.or(previous_preset_dr);
                 let previous_easy_days = previous_config.map(|c| &c.inner.easy_days_percentages);
-                let previous_review_fuzz = previous_config.map(|c| c.review_fuzz_config());
 
                 // if a selected (sub)deck, or its old config was removed, update deck to point
                 // to new config
@@ -325,12 +337,11 @@ impl Collection {
                 let current_preset_dr = current_config.map(|c| c.inner.desired_retention);
                 let current_dr = current_deck_dr.or(current_preset_dr);
                 let current_easy_days = current_config.map(|c| &c.inner.easy_days_percentages);
-                let current_review_fuzz = current_config.map(|c| c.review_fuzz_config());
                 if fsrs_toggled
                     || previous_params != current_params
                     || previous_dr != current_dr
                     || (req.fsrs_reschedule && previous_easy_days != current_easy_days)
-                    || (req.fsrs_reschedule && previous_review_fuzz != current_review_fuzz)
+                    || (req.fsrs_reschedule && review_fuzz_changed)
                 {
                     decks_needing_memory_recompute
                         .entry(current_config_id)
@@ -355,7 +366,7 @@ impl Collection {
                                 params: c.fsrs_params().to_vec(),
                                 preset_desired_retention: c.inner.desired_retention,
                                 max_interval: c.inner.maximum_review_interval,
-                                review_fuzz_config: c.review_fuzz_config(),
+                                review_fuzz_config: req.review_fuzz_config.review_fuzz_config(),
                                 reschedule: req.fsrs_reschedule,
                                 historical_retention: c.inner.historical_retention,
                                 deck_desired_retention: deck_desired_retention.clone(),
@@ -854,6 +865,7 @@ mod test {
             fsrs: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         assert!(!col.update_deck_configs(input.clone())?.changes.had_change());
 
@@ -953,6 +965,7 @@ mod test {
             fsrs: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         let expected = vec![0.1, 0.2, 0.3];
         input.configs[0].inner.fsrs_params_7 = expected.clone();
@@ -986,6 +999,7 @@ mod test {
             fsrs: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         let expected = vec![
             0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
@@ -1023,6 +1037,7 @@ mod test {
             fsrs: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         let expected: Vec<f32> = (0..35).map(|i| 0.1 + i as f32 * 0.01).collect();
         input.configs[0].inner.fsrs_params_6 = vec![1.0; 21];
@@ -1062,6 +1077,7 @@ mod test {
             fsrs: false,
             fsrs_reschedule: false,
             fsrs_health_check: true,
+            review_fuzz_config: Default::default(),
         };
         col.update_deck_configs(input.clone())?;
         assert!(!col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));

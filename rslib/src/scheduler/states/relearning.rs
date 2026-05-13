@@ -63,13 +63,8 @@ impl RelearnState {
         } else if let Some(states) = &ctx.fsrs_next_states {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let interval = states.again.interval;
-            let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
-                ctx.fuzz_factor,
-                interval.round().max(1.0),
-                minimum,
-                maximum,
-                ctx.review_fuzz_config,
-            );
+            let (scheduled_days, fuzz_delta_days) =
+                ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum);
             let again_review = ReviewState {
                 scheduled_days,
                 fuzz_delta_days,
@@ -125,13 +120,8 @@ impl RelearnState {
         } else if let Some(states) = &ctx.fsrs_next_states {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let interval = states.hard.interval;
-            let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
-                ctx.fuzz_factor,
-                interval.round().max(1.0),
-                minimum,
-                maximum,
-                ctx.review_fuzz_config,
-            );
+            let (scheduled_days, fuzz_delta_days) =
+                ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum);
             let hard_review = ReviewState {
                 scheduled_days,
                 fuzz_delta_days,
@@ -189,13 +179,8 @@ impl RelearnState {
         } else if let Some(states) = &ctx.fsrs_next_states {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
             let interval = states.good.interval;
-            let (scheduled_days, fuzz_delta_days) = super::fuzz::with_review_fuzz_and_delta(
-                ctx.fuzz_factor,
-                interval.round().max(1.0),
-                minimum,
-                maximum,
-                ctx.review_fuzz_config,
-            );
+            let (scheduled_days, fuzz_delta_days) =
+                ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum);
             let good_review = ReviewState {
                 scheduled_days,
                 fuzz_delta_days,
@@ -234,13 +219,7 @@ impl RelearnState {
             let good = ctx.with_review_fuzz(states.good.interval, minimum, maximum);
             minimum = good + 1;
             let interval = states.easy.interval;
-            super::fuzz::with_review_fuzz_and_delta(
-                ctx.fuzz_factor,
-                interval.round().max(1.0),
-                minimum,
-                maximum,
-                ctx.review_fuzz_config,
-            )
+            ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum)
         } else {
             (self.review.scheduled_days + 1, 0)
         };

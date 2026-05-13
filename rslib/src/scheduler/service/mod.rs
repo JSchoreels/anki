@@ -341,6 +341,7 @@ impl crate::services::SchedulerService for Collection {
         );
         let fsrs_learning_queues_disabled = requested_learning_queues_disabled
             .unwrap_or_else(|| self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        let review_fuzz_config = self.review_fuzz_config();
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
                         days_elapsed: f32|
          -> Result<crate::scheduler::states::StateContext<'_>> {
@@ -363,7 +364,7 @@ impl crate::services::SchedulerService for Collection {
                 hard_multiplier: config.inner.hard_multiplier,
                 easy_multiplier: config.inner.easy_multiplier,
                 interval_multiplier: config.inner.interval_multiplier,
-                review_fuzz_config: config.review_fuzz_config(),
+                review_fuzz_config,
                 maximum_review_interval: config.inner.maximum_review_interval,
                 fsrs_minimum_interval_secs: config.inner.fsrs_minimum_interval_secs,
                 leech_threshold: config.inner.leech_threshold,
