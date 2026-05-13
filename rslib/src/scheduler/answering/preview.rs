@@ -96,6 +96,7 @@ mod test {
             answered_at: TimestampMillis::now(),
             milliseconds_taken: 0,
             custom_data: None,
+            desired_retention_override: None,
             from_queue: true,
         })?;
 
@@ -112,6 +113,7 @@ mod test {
             answered_at: TimestampMillis::now(),
             milliseconds_taken: 0,
             custom_data: None,
+            desired_retention_override: None,
             from_queue: true,
         })?;
         c = col.storage.get_card(c.id)?.unwrap();
@@ -128,6 +130,7 @@ mod test {
             answered_at: TimestampMillis::now(),
             milliseconds_taken: 0,
             custom_data: None,
+            desired_retention_override: None,
             from_queue: true,
         })?;
         c = col.storage.get_card(c.id)?.unwrap();

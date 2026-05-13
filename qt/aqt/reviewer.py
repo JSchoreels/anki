@@ -102,6 +102,15 @@ class V3CardInfo:
             queued_cards=queued_cards, states=states, context=top_card.context
         )
 
+    @staticmethod
+    def from_queue_without_states(queued_cards: QueuedCards) -> V3CardInfo:
+        top_card = queued_cards.cards[0]
+        return V3CardInfo(
+            queued_cards=queued_cards,
+            states=SchedulingStates(),
+            context=top_card.context,
+        )
+
     def top_card(self) -> QueuedCards.QueuedCard:
         return self.queued_cards.cards[0]
 
@@ -159,6 +168,7 @@ class Reviewer:
         self.state: Literal["question", "answer", "transition"] | None = None
         self._refresh_needed: RefreshNeeded | None = None
         self._v3: V3CardInfo | None = None
+        self._desired_retention_override: float | None = None
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
         self.bottom = BottomBar(mw, mw.bottomWeb)
         self._card_info = ReviewerCardInfo(self.mw)
@@ -248,6 +258,7 @@ class Reviewer:
         self.previous_card = self.card
         self.card = None
         self._v3 = None
+        self._desired_retention_override = None
         self._get_next_v3_card()
 
         self._previous_card_info.set_card(self.previous_card)
@@ -264,11 +275,29 @@ class Reviewer:
 
     def _get_next_v3_card(self) -> None:
         assert isinstance(self.mw.col.sched, V3Scheduler)
-        output = self.mw.col.sched.get_queued_cards()
+        if gui_hooks.reviewer_will_compute_desired_retention.count() > 0:
+            output = self.mw.col.sched.get_queued_cards_without_states()
+        else:
+            output = self.mw.col.sched.get_queued_cards()
         if not output.cards:
             return
-        self._v3 = V3CardInfo.from_queue(output)
+        self._v3 = (
+            V3CardInfo.from_queue_without_states(output)
+            if gui_hooks.reviewer_will_compute_desired_retention.count() > 0
+            else V3CardInfo.from_queue(output)
+        )
         self.card = Card(self.mw.col, backend_card=self._v3.top_card().card)
+        if gui_hooks.reviewer_will_compute_desired_retention.count() > 0:
+            self._desired_retention_override = (
+                gui_hooks.reviewer_will_compute_desired_retention(
+                    None, self, self.card
+                )
+            )
+            self._v3.states = self.mw.col.sched.get_scheduling_states(
+                self.card.id,
+                desired_retention_override=self._desired_retention_override,
+            )
+            self._v3.states.current.custom_data = self.card.custom_data
         self.card.start_timer()
 
     def get_scheduling_states(self) -> SchedulingStates:
@@ -548,6 +577,7 @@ class Reviewer:
             card=self.card,
             states=self._v3.states,
             rating=self._v3.rating_from_ease(ease),
+            desired_retention_override=self._desired_retention_override,
         )
 
         def after_answer(changes: OpChanges) -> None:

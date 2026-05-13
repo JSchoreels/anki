@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from anki import frontend_pb2, scheduler_pb2
 from anki._legacy import deprecated
-from anki.cards import Card
+from anki.cards import Card, CardId
 from anki.collection import OpChanges
 from anki.consts import *
 from anki.decks import DeckId
@@ -53,12 +53,43 @@ class Scheduler(SchedulerBaseWithLegacy):
     ) -> QueuedCards:
         "Returns zero or more pending cards, and the remaining counts. Idempotent."
         return self.col._backend.get_queued_cards(
-            fetch_limit=fetch_limit, intraday_learning_only=intraday_learning_only
+            fetch_limit=fetch_limit,
+            intraday_learning_only=intraday_learning_only,
+            skip_scheduling_states=False,
+        )
+
+    def get_queued_cards_without_states(
+        self,
+        *,
+        fetch_limit: int = 1,
+        intraday_learning_only: bool = False,
+    ) -> QueuedCards:
+        "Like get_queued_cards(), but skips computing scheduling states."
+        return self.col._backend.get_queued_cards(
+            fetch_limit=fetch_limit,
+            intraday_learning_only=intraday_learning_only,
+            skip_scheduling_states=True,
         )
 
     def describe_next_states(self, next_states: SchedulingStates) -> Sequence[str]:
         "Labels for each of the answer buttons."
         return self.col._backend.describe_next_states(next_states)
+
+    def get_scheduling_states(
+        self,
+        card_id: CardId,
+        desired_retention_override: float | None = None,
+    ) -> SchedulingStates:
+        "Return answer states for a card, optionally using a custom desired retention."
+        if desired_retention_override is None:
+            return self.col._backend.get_scheduling_states(card_id)
+
+        return self.col._backend.get_scheduling_states_with_opts(
+            scheduler_pb2.GetSchedulingStatesRequest(
+                card_id=card_id,
+                desired_retention_override=desired_retention_override,
+            )
+        )
 
     # Answering a card
     ##########################################################################
@@ -69,6 +100,7 @@ class Scheduler(SchedulerBaseWithLegacy):
         card: Card,
         states: SchedulingStates,
         rating: CardAnswer.Rating.V,
+        desired_retention_override: float | None = None,
     ) -> CardAnswer:
         "Build input for answer_card()."
         if rating == CardAnswer.AGAIN:
@@ -82,7 +114,7 @@ class Scheduler(SchedulerBaseWithLegacy):
         else:
             raise Exception("invalid rating")
 
-        return CardAnswer(
+        answer = CardAnswer(
             card_id=card.id,
             current_state=states.current,
             new_state=new_state,
@@ -90,6 +122,9 @@ class Scheduler(SchedulerBaseWithLegacy):
             answered_at_millis=int_time(1000),
             milliseconds_taken=card.time_taken(capped=False),
         )
+        if desired_retention_override is not None:
+            answer.desired_retention_override = desired_retention_override
+        return answer
 
     def answer_card(self, input: CardAnswer) -> OpChanges:
         "Update card to provided state, and remove it from queue."

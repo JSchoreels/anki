@@ -59,7 +59,7 @@ impl Counts {
 pub struct QueuedCard {
     pub card: Card,
     pub kind: QueueEntryKind,
-    pub states: SchedulingStates,
+    pub states: Option<SchedulingStates>,
     pub context: SchedulingContext,
 }
 
@@ -82,7 +82,7 @@ pub(crate) struct BuryMode {
 
 impl Collection {
     pub fn get_next_card(&mut self) -> Result<Option<QueuedCard>> {
-        self.get_queued_cards(1, false)
+        self.get_queued_cards(1, false, false)
             .map(|queued| queued.cards.first().cloned())
     }
 
@@ -90,6 +90,7 @@ impl Collection {
         &mut self,
         fetch_limit: usize,
         intraday_learning_only: bool,
+        skip_scheduling_states: bool,
     ) -> Result<QueuedCards> {
         let queues = self.get_queues()?;
         let counts = queues.counts();
@@ -117,8 +118,12 @@ impl Collection {
                     entry.mtime()
                 );
 
-                // fixme: pass in card instead of id
-                let next_states = self.get_scheduling_states(card.id)?;
+                let next_states = if skip_scheduling_states {
+                    None
+                } else {
+                    // fixme: pass in card instead of id
+                    Some(self.get_scheduling_states(card.id)?)
+                };
 
                 Ok(QueuedCard {
                     context: new_scheduling_context(self, &card)?,
@@ -314,7 +319,7 @@ impl Collection {
 #[cfg(test)]
 impl Collection {
     pub(crate) fn counts(&mut self) -> [usize; 3] {
-        self.get_queued_cards(1, false)
+        self.get_queued_cards(1, false, false)
             .map(|q| [q.new_count, q.learning_count, q.review_count])
             .unwrap_or([0; 3])
     }

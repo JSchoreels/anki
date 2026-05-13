@@ -184,6 +184,22 @@ hooks = [
         the reviewer_did_answer_card hook instead.""",
     ),
     Hook(
+        name="reviewer_will_compute_desired_retention",
+        args=[
+            "desired_retention: float | None",
+            "reviewer: aqt.reviewer.Reviewer",
+            "card: Card",
+        ],
+        return_type="float | None",
+        doc="""Used to override the desired retention used to compute the
+        current card's answer states.
+
+        Return None to use the deck/preset desired retention, or a float to ask
+        the backend scheduler to compute answer states with that desired
+        retention.
+        """,
+    ),
+    Hook(
         name="reviewer_did_answer_card",
         args=[
             "reviewer: aqt.reviewer.Reviewer",

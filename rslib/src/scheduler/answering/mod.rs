@@ -55,6 +55,7 @@ pub struct CardAnswer {
     pub answered_at: TimestampMillis,
     pub milliseconds_taken: u32,
     pub custom_data: Option<String>,
+    pub desired_retention_override: Option<f32>,
     pub from_queue: bool,
 }
 
@@ -235,10 +236,18 @@ impl Rating {
 impl Collection {
     /// Return the next states that will be applied for each answer button.
     pub fn get_scheduling_states(&mut self, cid: CardId) -> Result<SchedulingStates> {
+        self.get_scheduling_states_with_desired_retention_override(cid, None)
+    }
+
+    pub fn get_scheduling_states_with_desired_retention_override(
+        &mut self,
+        cid: CardId,
+        desired_retention_override: Option<f32>,
+    ) -> Result<SchedulingStates> {
         let card = self.storage.get_card(cid)?.or_not_found(cid)?;
         let note_id = card.note_id;
 
-        let ctx = self.card_state_updater(card)?;
+        let ctx = self.card_state_updater(card, desired_retention_override)?;
         let current = ctx.current_card_state();
 
         let load_balancer_ctx = if let Some(load_balancer) = self
@@ -320,7 +329,7 @@ impl Collection {
         let original = card.clone();
         let usn = self.usn()?;
 
-        let mut updater = self.card_state_updater(card)?;
+        let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
         // If the states aren't equal, it's probably because some time has passed.
@@ -438,7 +447,11 @@ impl Collection {
         )
     }
 
-    fn card_state_updater(&mut self, mut card: Card) -> Result<CardStateUpdater> {
+    fn card_state_updater(
+        &mut self,
+        mut card: Card,
+        desired_retention_override: Option<f32>,
+    ) -> Result<CardStateUpdater> {
         let timing = self.timing_today()?;
         let now = TimestampSecs::now();
         let deck = self
@@ -458,7 +471,8 @@ impl Collection {
             .get_deck_config(home_deck.config_id().or_invalid("home deck is filtered")?)?
             .unwrap_or_default();
 
-        let desired_retention = home_deck.effective_desired_retention(&config);
+        let desired_retention = desired_retention_override
+            .unwrap_or_else(|| home_deck.effective_desired_retention(&config));
         let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
         let fsrs_next_states = if fsrs_enabled {
             let params = config.fsrs_params();
@@ -675,15 +689,17 @@ pub mod test_helpers {
             F: FnOnce(&SchedulingStates) -> CardState,
         {
             let queued = self.get_next_card()?.unwrap();
-            let new_state = get_state(&queued.states);
+            let states = queued.states.expect("queued card has scheduling states");
+            let new_state = get_state(&states);
             self.answer_card(&mut CardAnswer {
                 card_id: queued.card.id,
-                current_state: queued.states.current,
+                current_state: states.current,
                 new_state,
                 rating,
                 answered_at: TimestampMillis::now(),
                 milliseconds_taken: 0,
                 custom_data: None,
+                desired_retention_override: None,
                 from_queue: true,
             })?;
             Ok(PostAnswerState {
@@ -732,6 +748,7 @@ fn get_fuzz_factor(seed: Option<u64>) -> Option<f32> {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
+    use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
     use crate::config::BoolKey;
@@ -823,7 +840,7 @@ pub(crate) mod test {
         let card = col.storage.get_card(cards[0])?.unwrap();
 
         // Test that the card state updater uses deck-specific desired retention
-        let updater = col.card_state_updater(card)?;
+        let updater = col.card_state_updater(card, None)?;
 
         // Print debug information
         println!("FSRS enabled: {}", col.get_config_bool(BoolKey::Fsrs));
@@ -831,6 +848,65 @@ pub(crate) mod test {
 
         // Verify that the desired retention is from the deck, not the config
         assert_eq!(updater.desired_retention, Some(0.85));
+
+        Ok(())
+    }
+
+    #[test]
+    fn desired_retention_override_recomputes_states_and_is_saved() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+            config.desired_retention = 0.65;
+        });
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
+        col.storage.update_card(&card)?;
+
+        let default_states = col.get_scheduling_states(card.id)?;
+        let override_states =
+            col.get_scheduling_states_with_desired_retention_override(card.id, Some(0.95))?;
+
+        let CardState::Normal(NormalState::Review(default_good)) = default_states.good else {
+            panic!("expected default Good to be review");
+        };
+        let CardState::Normal(NormalState::Review(override_good)) = override_states.good else {
+            panic!("expected override Good to be review");
+        };
+        assert!(
+            override_good.scheduled_days < default_good.scheduled_days,
+            "higher desired retention should produce a shorter Good interval"
+        );
+
+        col.answer_card(&mut CardAnswer {
+            card_id: card.id,
+            current_state: override_states.current,
+            new_state: override_states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: Some(0.95),
+            from_queue: true,
+        })?;
+
+        let card = col.storage.get_card(card.id)?.unwrap();
+        assert_eq!(card.desired_retention, Some(0.95));
 
         Ok(())
     }
@@ -1063,7 +1139,7 @@ pub(crate) mod test {
             assert_eq!(tree.new_count, $new);
             assert_eq!(tree.learn_count, $learn);
             assert_eq!(tree.review_count, $review);
-            let queued = $col.get_queued_cards(1, false).unwrap();
+            let queued = $col.get_queued_cards(1, false, false).unwrap();
             assert_eq!(queued.new_count, $new);
             assert_eq!(queued.learning_count, $learn);
             assert_eq!(queued.review_count, $review);

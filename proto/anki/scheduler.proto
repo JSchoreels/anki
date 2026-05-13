@@ -40,6 +40,8 @@ service SchedulerService {
   rpc SortCards(SortCardsRequest) returns (collection.OpChangesWithCount);
   rpc SortDeck(SortDeckRequest) returns (collection.OpChangesWithCount);
   rpc GetSchedulingStates(cards.CardId) returns (SchedulingStates);
+  rpc GetSchedulingStatesWithOpts(GetSchedulingStatesRequest)
+      returns (SchedulingStates);
   rpc DescribeNextStates(SchedulingStates) returns (generic.StringList);
   rpc StateIsLeech(SchedulingState) returns (generic.Bool);
   rpc UpgradeScheduler(generic.Empty) returns (generic.Empty);
@@ -169,6 +171,12 @@ message QueuedCards {
 message GetQueuedCardsRequest {
   uint32 fetch_limit = 1;
   bool intraday_learning_only = 2;
+  bool skip_scheduling_states = 3;
+}
+
+message GetSchedulingStatesRequest {
+  int64 card_id = 1;
+  optional float desired_retention_override = 2;
 }
 
 message SchedTimingTodayResponse {
@@ -299,6 +307,7 @@ message CardAnswer {
   Rating rating = 4;
   int64 answered_at_millis = 5;
   uint32 milliseconds_taken = 6;
+  optional float desired_retention_override = 7;
 }
 
 message CustomStudyRequest {

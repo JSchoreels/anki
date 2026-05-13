@@ -407,6 +407,20 @@ mod test {
     }
 
     #[test]
+    fn queued_cards_can_skip_scheduling_states() {
+        let mut col = Collection::new();
+        CardAdder::new().add(&mut col);
+
+        let queued = col.get_queued_cards(1, false, true).unwrap();
+        assert_eq!(queued.cards.len(), 1);
+        assert!(queued.cards[0].states.is_none());
+
+        let queued = col.get_queued_cards(1, false, false).unwrap();
+        assert_eq!(queued.cards.len(), 1);
+        assert!(queued.cards[0].states.is_some());
+    }
+
+    #[test]
     fn should_build_empty_queue_if_limit_is_reached() {
         let mut col = Collection::new();
         CardAdder::new().due_dates(["0"]).add(&mut col);
@@ -787,7 +801,7 @@ mod test {
 
     impl Collection {
         fn card_queue_len(&mut self) -> usize {
-            self.get_queued_cards(5, false).unwrap().cards.len()
+            self.get_queued_cards(5, false, false).unwrap().cards.len()
         }
     }
 

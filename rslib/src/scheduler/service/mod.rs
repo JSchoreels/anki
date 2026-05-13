@@ -232,6 +232,17 @@ impl crate::services::SchedulerService for Collection {
         self.get_scheduling_states(cid).map(Into::into)
     }
 
+    fn get_scheduling_states_with_opts(
+        &mut self,
+        input: scheduler::GetSchedulingStatesRequest,
+    ) -> Result<scheduler::SchedulingStates> {
+        self.get_scheduling_states_with_desired_retention_override(
+            CardId(input.card_id),
+            input.desired_retention_override,
+        )
+        .map(Into::into)
+    }
+
     fn describe_next_states(
         &mut self,
         input: scheduler::SchedulingStates,
@@ -260,8 +271,12 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::GetQueuedCardsRequest,
     ) -> Result<scheduler::QueuedCards> {
-        self.get_queued_cards(input.fetch_limit as usize, input.intraday_learning_only)
-            .map(Into::into)
+        self.get_queued_cards(
+            input.fetch_limit as usize,
+            input.intraday_learning_only,
+            input.skip_scheduling_states,
+        )
+        .map(Into::into)
     }
 
     fn custom_study(
