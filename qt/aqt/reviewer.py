@@ -289,9 +289,7 @@ class Reviewer:
         self.card = Card(self.mw.col, backend_card=self._v3.top_card().card)
         if gui_hooks.reviewer_will_compute_desired_retention.count() > 0:
             self._desired_retention_override = (
-                gui_hooks.reviewer_will_compute_desired_retention(
-                    None, self, self.card
-                )
+                gui_hooks.reviewer_will_compute_desired_retention(None, self, self.card)
             )
             self._v3.states = self.mw.col.sched.get_scheduling_states(
                 self.card.id,

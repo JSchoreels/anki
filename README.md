@@ -71,10 +71,25 @@ The following add-ons have been adapted for this fork:
   search statistics adapted and tested primarily against this FSRS7 fork.
 - [FSRS Helper (Sound's Fork)](https://ankiweb.net/shared/info/218829258?cb=1778337495548):
   FSRS helper add-on adapted to work with this fork's FSRS7 behavior.
+- Dynamic Desired Retention:
+  add-on for overriding desired retention on cards matched by ordered Anki
+  search rules, such as `Frequency<1000`.
 - [AnkiConnect Extended](https://ankiweb.net/shared/info/1635024181?cb=1778339678165):
   required when other tools use AnkiConnect against this fork, because the
   upstream AnkiConnect version parsing does not handle the `+fsrs7` build
   suffix correctly.
+
+### Dynamic Desired Retention and FSRS Helper
+
+This fork exposes a reviewer hook that lets add-ons override desired retention
+for the current card before Anki computes FSRS scheduling states. Dynamic
+Desired Retention uses that hook during normal reviews.
+
+FSRS Helper uses a separate reschedule path. Its adapted fork calls Dynamic
+Desired Retention's Python resolver before recomputing a card interval, so
+`Reschedule All Cards` can use the same ordered search rules as normal review.
+If Dynamic Desired Retention is not installed or does not expose the resolver,
+FSRS Helper falls back to the deck or preset desired retention.
 
 ## License
 
