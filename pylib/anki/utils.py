@@ -306,14 +306,16 @@ def version_with_build() -> str:
 def int_version() -> int:
     """Anki's version as an integer in the form YYMMPP, e.g. 230900.
     (year, month, patch).
-    In 2.1.x releases, this was just the last number."""
+    In 2.1.x releases, this was just the last number.
+    Beta/rc suffixes (e.g. '26.05b1', '25.09rc1') decode to the same
+    value as the base release."""
     import re
 
     from anki.buildinfo import version
 
     match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?(?=$|[a-zA-Z+])", version)
     if not match:
-        raise ValueError(f"invalid version: {version}")
+        raise ValueError(f"unrecognised version: {version!r}")
 
     year, month, patch = match.groups()
     patch = patch or "0"

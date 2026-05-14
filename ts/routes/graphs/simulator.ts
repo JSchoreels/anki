@@ -127,21 +127,7 @@ export function renderWorkloadChart(
         .attr("stroke", "black")
         .attr("stroke-width", 1);
 
-    if (subgraph_data.length === 0) {
-        return _renderSimulationChart(
-            svgElem,
-            bounds,
-            subgraph_data,
-            x,
-            formatY,
-            formatX,
-            (_e: MouseEvent, _d: number) => undefined,
-            yTickFormat,
-            xTickFormat,
-        );
-    }
-
-    const startMemorized = subgraph_data[0].reviewless_end_memorized;
+    const startMemorized = subgraph_data[0]?.reviewless_end_memorized ?? 0;
 
     return _renderSimulationChart(
         svgElem,
