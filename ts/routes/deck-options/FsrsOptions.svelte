@@ -139,12 +139,32 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rmseDelta: number;
         rmseDeltaPercent: number | undefined;
     };
+    type SameDayDecisionRow = {
+        label: string;
+        fsrsItems: number;
+        allTargets: OptimizationMetrics;
+        longTermTargets: OptimizationMetrics;
+    };
+    type SameDayParamsCandidate = {
+        label: string;
+        fsrsItems: number;
+        params: number[];
+    };
+    type SameDayDecisionComparison = {
+        withSameDay: SameDayDecisionRow;
+        withoutSameDay: SameDayDecisionRow;
+    };
+    type SameDayRecommendation = {
+        tone: "better" | "worse" | "equal";
+        text: string;
+    };
     let optimizationComparison: OptimizationComparison | undefined;
+    let sameDayDecisionComparison: SameDayDecisionComparison | undefined;
     let customDecayRows: DecayRow[] = [];
     let loadingCustomDecayTable = false;
     let evaluationSearchFilter = "";
-    let includeSameDayReviewsForOptimizeInFsrs7 = true;
-    let includeSameDayReviewsForEvaluateInFsrs7 = true;
+    let includeSameDayReviewsInFsrs7 = true;
+    let checkingSameDayDecision = false;
     $: evaluationSearchFilter = readFsrsSearchSettings($auxData).evaluationSearch;
     $: {
         const updated = withFsrsSearchSettings($auxData, {
@@ -156,15 +176,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     $: {
         const settings = readFsrs7SameDaySettings($auxData);
-        includeSameDayReviewsForOptimizeInFsrs7 =
-            settings.includeSameDayReviewsForOptimize;
-        includeSameDayReviewsForEvaluateInFsrs7 =
-            settings.includeSameDayReviewsForEvaluate;
+        includeSameDayReviewsInFsrs7 = settings.includeSameDayReviews;
     }
     $: {
         const updated = withFsrs7SameDaySettings($auxData, {
-            includeSameDayReviewsForOptimize: includeSameDayReviewsForOptimizeInFsrs7,
-            includeSameDayReviewsForEvaluate: includeSameDayReviewsForEvaluateInFsrs7,
+            includeSameDayReviews: includeSameDayReviewsInFsrs7,
         });
         if (updated) {
             auxData.set(updated);
@@ -208,7 +224,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const healthCheck = state.fsrsHealthCheck;
 
-    $: computing = computingParams || checkingParams || checkingHealth;
+    $: computing =
+        computingParams || checkingParams || checkingHealth || checkingSameDayDecision;
     $: defaultparamSearch = `preset:"${state.getCurrentNameForSearch()}" -is:suspended`;
     $: roundedRetention = Number(effectiveDesiredRetention.toFixed(2));
     $: desiredRetentionWarning = getRetentionLongShortWarning(roundedRetention);
@@ -467,18 +484,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             : optimizeSearchFilter();
     }
 
-    function includeSameDayOptimizeOverride(): boolean | undefined {
+    function includeSameDayOverride(): boolean | undefined {
         if ($config.fsrsVersion !== DeckConfig_Config_FsrsVersion.SEVEN) {
             return undefined;
         }
-        return includeSameDayReviewsForOptimizeInFsrs7;
-    }
-
-    function includeSameDayEvaluateOverride(): boolean | undefined {
-        if ($config.fsrsVersion !== DeckConfig_Config_FsrsVersion.SEVEN) {
-            return undefined;
-        }
-        return includeSameDayReviewsForEvaluateInFsrs7;
+        return includeSameDayReviewsInFsrs7;
     }
 
     async function computeParams(): Promise<void> {
@@ -490,6 +500,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
+        await commitEditing();
         computingParams = true;
         computeParamsProgress = undefined;
         try {
@@ -504,7 +515,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         currentParams: params,
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         healthCheck: $healthCheck,
-                        includeSameDayReviews: includeSameDayOptimizeOverride(),
+                        includeSameDayReviews: includeSameDayOverride(),
                         fsrsVersion: $config.fsrsVersion,
                     });
 
@@ -540,13 +551,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params,
-                            includeSameDayReviews: includeSameDayEvaluateOverride(),
+                            includeSameDayReviews: includeSameDayOverride(),
                         });
                         const optimizedMetrics = await evaluateParamsLegacy({
                             search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params: resp.params,
-                            includeSameDayReviews: includeSameDayEvaluateOverride(),
+                            includeSameDayReviews: includeSameDayOverride(),
                         });
                         optimizationComparison = {
                             optimizedParams: [...resp.params],
@@ -613,7 +624,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         search: comparison.search,
                         ignoreRevlogsBeforeMs: comparison.ignoreRevlogsBeforeMs,
                         params: withLastParam(comparison.optimizedParams, decay),
-                        includeSameDayReviews: includeSameDayEvaluateOverride(),
+                        includeSameDayReviews: includeSameDayOverride(),
                     });
                     return {
                         decay,
@@ -659,6 +670,155 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
+    async function sameDayParamsCandidate(
+        label: string,
+        includeSameDayReviews: boolean,
+    ): Promise<SameDayParamsCandidate> {
+        const paramsResp = await computeFsrsParams({
+            search: optimizeSearchFilter(),
+            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+            currentParams: selectedFsrsParams($config),
+            numOfRelearningSteps: getNumOfRelearningStepsInDay(),
+            healthCheck: false,
+            includeSameDayReviews,
+            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+        });
+        return {
+            label,
+            fsrsItems: paramsResp.fsrsItems,
+            params: paramsResp.params,
+        };
+    }
+
+    async function sameDayDecisionRow(
+        candidate: SameDayParamsCandidate,
+    ): Promise<SameDayDecisionRow> {
+        const search = evaluateSearchFilter();
+        const allTargets = await evaluateParamsLegacy({
+            search,
+            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+            params: candidate.params,
+            includeSameDayReviews: true,
+        });
+        const longTermTargets = await evaluateParamsLegacy({
+            search,
+            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+            params: candidate.params,
+            includeSameDayReviews: false,
+        });
+        return {
+            label: candidate.label,
+            fsrsItems: candidate.fsrsItems,
+            allTargets: {
+                logLoss: allTargets.logLoss,
+                rmseBins: allTargets.rmseBins,
+            },
+            longTermTargets: {
+                logLoss: longTermTargets.logLoss,
+                rmseBins: longTermTargets.rmseBins,
+            },
+        };
+    }
+
+    async function checkSameDayDecision(): Promise<void> {
+        if (checkingSameDayDecision) {
+            await setWantsAbort({});
+            return;
+        }
+        if (state.presetAssignmentsChanged()) {
+            alert(tr.deckConfigPleaseSaveYourChangesFirst());
+            return;
+        }
+        await commitEditing();
+        checkingSameDayDecision = true;
+        computeParamsProgress = undefined;
+        sameDayDecisionComparison = undefined;
+        try {
+            await runWithBackendProgress(
+                async () => {
+                    const withSameDayParams = await sameDayParamsCandidate(
+                        "Optimized with same-day reviews",
+                        true,
+                    );
+                    const withoutSameDayParams = await sameDayParamsCandidate(
+                        "Optimized without same-day reviews",
+                        false,
+                    );
+                    if (
+                        !withSameDayParams.fsrsItems ||
+                        !withoutSameDayParams.fsrsItems
+                    ) {
+                        alert(
+                            "Not enough review history to compare same-day settings.",
+                        );
+                        return;
+                    }
+                    const withSameDay = await sameDayDecisionRow(withSameDayParams);
+                    const withoutSameDay =
+                        await sameDayDecisionRow(withoutSameDayParams);
+                    sameDayDecisionComparison = { withSameDay, withoutSameDay };
+                    if (computeParamsProgress) {
+                        computeParamsProgress.current = computeParamsProgress.total;
+                    }
+                },
+                (progress) => {
+                    if (progress.value.case === "computeParams") {
+                        computeParamsProgress = progress.value.value;
+                    }
+                },
+            );
+        } finally {
+            checkingSameDayDecision = false;
+        }
+    }
+
+    function sameDayMetricClass(value: number, otherValue: number): string {
+        return `optimize-delta ${deltaClass(metricDelta(otherValue, value))}`;
+    }
+
+    function sameDayRecommendation(
+        comparison: SameDayDecisionComparison,
+    ): SameDayRecommendation {
+        const allLogLossDelta = metricDelta(
+            comparison.withoutSameDay.allTargets.logLoss,
+            comparison.withSameDay.allTargets.logLoss,
+        );
+        const longTermLogLossDelta = metricDelta(
+            comparison.withoutSameDay.longTermTargets.logLoss,
+            comparison.withSameDay.longTermTargets.logLoss,
+        );
+        const allLogLossDeltaText = formatDelta(allLogLossDelta);
+        const longTermLogLossDeltaText = formatDelta(longTermLogLossDelta);
+
+        if (allLogLossDelta === 0 && longTermLogLossDelta === 0) {
+            return {
+                tone: "equal",
+                text: "No clear winner: both options have the same log loss on all targets and long-term-only targets.",
+            };
+        }
+
+        if (
+            longTermLogLossDelta <= 0 ||
+            (allLogLossDelta < 0 && Math.abs(allLogLossDelta) >= longTermLogLossDelta)
+        ) {
+            return {
+                tone: "better",
+                text:
+                    `Recommended: include same-day reviews. ` +
+                    `All-target log loss changes by ${allLogLossDeltaText}, ` +
+                    `and long-term-only log loss changes by ${longTermLogLossDeltaText}.`,
+            };
+        }
+
+        return {
+            tone: "worse",
+            text:
+                `Recommended: exclude same-day reviews. ` +
+                `All-target log loss changes by ${allLogLossDeltaText}, ` +
+                `but long-term-only log loss changes by ${longTermLogLossDeltaText}.`,
+        };
+    }
+
     async function checkParams(): Promise<void> {
         if (checkingParams) {
             await setWantsAbort({});
@@ -678,7 +838,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         params: selectedFsrsParams($config),
-                        includeSameDayReviews: includeSameDayEvaluateOverride(),
+                        includeSameDayReviews: includeSameDayOverride(),
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
@@ -726,9 +886,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                         fsrsVersion: $config.fsrsVersion,
-                        includeSameDayReviews: includeSameDayEvaluateOverride(),
-                        includeSameDayReviewsForTraining:
-                            includeSameDayOptimizeOverride(),
+                        includeSameDayReviews: includeSameDayOverride(),
+                        includeSameDayReviewsForTraining: includeSameDayOverride(),
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
@@ -811,6 +970,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SpinBoxFloatRow>
     </Item>
 </DynamicallySlottable>
+<Warning warning={desiredRetentionChangeInfo} className={"alert-info two-line"} />
+<Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
+
 {#if newCardIntervals}
     <div class="interval-preview ms-1 me-1">
         <div class="interval-preview-title">
@@ -845,20 +1007,66 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <Warning warning={newCardIntervalsError} className={"alert-warning"} />
 
-<button
-    class="btn btn-primary"
-    on:click={() => {
-        simulateFsrsRequest.reviewLimit = 9999;
-        showSimulatorModal(workloadModal);
-    }}
->
-    {tr.deckConfigFsrsDesiredRetentionHelpMeDecideExperimental()}
-</button>
-
-<Warning warning={desiredRetentionChangeInfo} className={"alert-info two-line"} />
-<Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
-
 <div class="ms-1 me-1">
+    <button
+        class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
+        disabled={!computingParams && computing}
+        on:click={() => computeParams()}
+    >
+        {#if computingParams}
+            {tr.actionsCancel()}
+        {:else}
+            {tr.deckConfigOptimizeButton()}
+        {/if}
+    </button>
+    <button class="btn btn-primary" on:click={() => computeAllParams()}>
+        {tr.deckConfigSaveAndOptimize()}
+    </button>
+    <div>
+        {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
+            {computeParamsProgressString}
+        {:else if totalReviews !== undefined}
+            {tr.statisticsReviews({ reviews: totalReviews })}
+        {/if}
+    </div>
+</div>
+
+<details class="fsrs-advanced m-1">
+    <summary>{tr.deckConfigAdvancedSettings()}</summary>
+
+    <div>
+        <button
+            class="btn btn-outline-primary"
+            on:click={() => {
+                simulateFsrsRequest.reviewLimit = 9999;
+                showSimulatorModal(workloadModal);
+            }}
+        >
+            {tr.deckConfigFsrsDesiredRetentionHelpMeDecideExperimental()}
+        </button>
+    </div>
+
+    <Warning warning={lastOptimizationWarning} className="alert-warning" />
+
+    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
+        <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>
+            <SettingTitle>Include same-day reviews in FSRS-7</SettingTitle>
+        </SwitchRow>
+        <button
+            class="btn {checkingSameDayDecision
+                ? 'btn-warning'
+                : 'btn-outline-primary'}"
+            disabled={!checkingSameDayDecision && computing}
+            on:click={() => checkSameDayDecision()}
+        >
+            {#if checkingSameDayDecision}
+                {tr.actionsCancel()}
+            {:else}
+                Same-day reviews: Help Me Decide
+            {/if}
+        </button>
+    {/if}
+
     <div class="mb-3">
         <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
         <select bind:value={$config.fsrsVersion} class="form-select">
@@ -867,21 +1075,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/each}
         </select>
     </div>
-
-    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
-        <SwitchRow
-            bind:value={includeSameDayReviewsForOptimizeInFsrs7}
-            defaultValue={true}
-        >
-            <SettingTitle>Include same-day reviews in FSRS-7 optimize</SettingTitle>
-        </SwitchRow>
-        <SwitchRow
-            bind:value={includeSameDayReviewsForEvaluateInFsrs7}
-            defaultValue={true}
-        >
-            <SettingTitle>Include same-day reviews in FSRS-7 evaluate</SettingTitle>
-        </SwitchRow>
-    {/if}
 
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
         <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>
@@ -909,10 +1102,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ParamsInputRow>
     {/if}
 
-    <ParamsSearchRow
-        bind:value={$config.paramSearch}
-        placeholder={defaultparamSearch}
-    />
+    <ParamsSearchRow bind:value={$config.paramSearch} placeholder={defaultparamSearch}>
+        <SettingTitle>Optimize Search Filter</SettingTitle>
+    </ParamsSearchRow>
     <ParamsSearchRow
         bind:value={evaluationSearchFilter}
         placeholder={defaultparamSearch}
@@ -939,17 +1131,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </SwitchRow>
 
     <button
-        class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
-        disabled={!computingParams && computing}
-        on:click={() => computeParams()}
-    >
-        {#if computingParams}
-            {tr.actionsCancel()}
-        {:else}
-            {tr.deckConfigOptimizeButton()}
-        {/if}
-    </button>
-    <button
         class="btn {checkingHealth ? 'btn-warning' : 'btn-primary'}"
         disabled={!checkingHealth && computing}
         on:click={() => checkHealth()}
@@ -973,30 +1154,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/if}
         </button>
     {/if}
-    <div>
-        {#if computingParams || checkingParams || checkingHealth}
-            {computeParamsProgressString}
-        {:else if totalReviews !== undefined}
-            {tr.statisticsReviews({ reviews: totalReviews })}
-        {/if}
-    </div>
-</div>
-
-<div class="m-1">
-    <Warning warning={lastOptimizationWarning} className="alert-warning" />
-
-    <button class="btn btn-primary" on:click={() => computeAllParams()}>
-        {tr.deckConfigSaveAndOptimize()}
-    </button>
-</div>
-
-<hr />
-
-<div class="m-1">
     <button class="btn btn-primary" on:click={() => showSimulatorModal(simulatorModal)}>
         {tr.deckConfigFsrsSimulatorExperimental()}
     </button>
-</div>
+</details>
 
 <SimulatorModal
     bind:modal={simulatorModal}
@@ -1016,6 +1177,94 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {openHelpModal}
     {onPresetChange}
 />
+
+{#if sameDayDecisionComparison}
+    {@const recommendation = sameDayRecommendation(sameDayDecisionComparison)}
+    <div class="optimization-popup-backdrop">
+        <div class="optimization-popup optimization-popup-wide">
+            <div class="optimization-popup-header">Same-Day Review Comparison</div>
+            <table class="optimization-popup-table same-day-comparison-table">
+                <thead>
+                    <tr>
+                        <th>Candidate</th>
+                        <th>Training targets</th>
+                        <th>All log loss</th>
+                        <th>All RMSE</th>
+                        <th>Long-term log loss</th>
+                        <th>Long-term RMSE</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {#each [sameDayDecisionComparison.withSameDay, sameDayDecisionComparison.withoutSameDay] as row}
+                        <tr>
+                            <th>{row.label}</th>
+                            <td>{row.fsrsItems}</td>
+                            <td
+                                class={sameDayMetricClass(
+                                    row.allTargets.logLoss,
+                                    row === sameDayDecisionComparison.withSameDay
+                                        ? sameDayDecisionComparison.withoutSameDay
+                                              .allTargets.logLoss
+                                        : sameDayDecisionComparison.withSameDay
+                                              .allTargets.logLoss,
+                                )}
+                            >
+                                {formatMetric(row.allTargets.logLoss)}
+                            </td>
+                            <td
+                                class={sameDayMetricClass(
+                                    row.allTargets.rmseBins,
+                                    row === sameDayDecisionComparison.withSameDay
+                                        ? sameDayDecisionComparison.withoutSameDay
+                                              .allTargets.rmseBins
+                                        : sameDayDecisionComparison.withSameDay
+                                              .allTargets.rmseBins,
+                                )}
+                            >
+                                {formatMetric(row.allTargets.rmseBins)}
+                            </td>
+                            <td
+                                class={sameDayMetricClass(
+                                    row.longTermTargets.logLoss,
+                                    row === sameDayDecisionComparison.withSameDay
+                                        ? sameDayDecisionComparison.withoutSameDay
+                                              .longTermTargets.logLoss
+                                        : sameDayDecisionComparison.withSameDay
+                                              .longTermTargets.logLoss,
+                                )}
+                            >
+                                {formatMetric(row.longTermTargets.logLoss)}
+                            </td>
+                            <td
+                                class={sameDayMetricClass(
+                                    row.longTermTargets.rmseBins,
+                                    row === sameDayDecisionComparison.withSameDay
+                                        ? sameDayDecisionComparison.withoutSameDay
+                                              .longTermTargets.rmseBins
+                                        : sameDayDecisionComparison.withSameDay
+                                              .longTermTargets.rmseBins,
+                                )}
+                            >
+                                {formatMetric(row.longTermTargets.rmseBins)}
+                            </td>
+                        </tr>
+                    {/each}
+                </tbody>
+            </table>
+            <div class={`same-day-recommendation ${recommendation.tone}`}>
+                {recommendation.text}
+            </div>
+            <div class="optimization-popup-footer">
+                <button
+                    class="btn btn-secondary"
+                    on:click={() => (sameDayDecisionComparison = undefined)}
+                >
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
 
 {#if optimizationComparison}
     {@const logLossDelta = metricDelta(
@@ -1145,6 +1394,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         margin-bottom: 0.375rem;
     }
 
+    .fsrs-advanced {
+        border-top: 1px solid var(--border);
+        padding-top: 0.75rem;
+    }
+
+    .fsrs-advanced summary {
+        cursor: pointer;
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+    }
+
     .interval-preview {
         margin-bottom: 0.75rem;
         overflow-x: auto;
@@ -1202,11 +1462,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         flex-wrap: wrap;
     }
 
-    hr {
-        border-top: 1px solid var(--border);
-        opacity: 1;
-    }
-
     .optimization-popup-backdrop {
         position: fixed;
         inset: 0;
@@ -1220,10 +1475,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     .optimization-popup {
         width: min(760px, 95vw);
+        max-width: calc(100vw - 2rem);
         background: var(--canvas);
         border: 1px solid var(--border);
         border-radius: 0.5rem;
         box-shadow: 0 0.75rem 2.25rem rgba(0, 0, 0, 0.2);
+        overflow-x: auto;
+    }
+
+    .optimization-popup-wide {
+        width: max-content;
     }
 
     .optimization-popup-header {
@@ -1236,6 +1497,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         margin: 0 1rem 0.75rem;
         border-collapse: collapse;
         font-size: 0.9rem;
+    }
+
+    .same-day-comparison-table {
+        width: max-content;
+        min-width: calc(100% - 2rem);
+    }
+
+    .same-day-recommendation {
+        margin: 0 1rem 0.75rem;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 0.375rem;
+        font-size: 0.9rem;
+    }
+
+    .same-day-recommendation.better {
+        color: var(--fg-green, #027a48);
+        border-color: var(--fg-green, #027a48);
+    }
+
+    .same-day-recommendation.worse {
+        color: var(--fg-red, #b42318);
+        border-color: var(--fg-red, #b42318);
     }
 
     .optimization-popup-table th,

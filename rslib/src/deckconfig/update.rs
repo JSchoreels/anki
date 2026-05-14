@@ -770,7 +770,6 @@ mod test {
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
         config.inner.other = serde_json::to_vec(&serde_json::json!({
             "fsrs7IncludeSameDayOptimize": false,
-            "fsrs7IncludeSameDayEvaluate": true,
         }))?;
 
         assert_eq!(

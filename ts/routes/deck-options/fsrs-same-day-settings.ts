@@ -2,16 +2,14 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 export interface Fsrs7SameDaySettings {
-    includeSameDayReviewsForOptimize: boolean;
-    includeSameDayReviewsForEvaluate: boolean;
+    includeSameDayReviews: boolean;
 }
 
 const OPTIMIZE_KEY = "fsrs7IncludeSameDayOptimize";
 const EVALUATE_KEY = "fsrs7IncludeSameDayEvaluate";
 
 const DEFAULT_SETTINGS: Fsrs7SameDaySettings = {
-    includeSameDayReviewsForOptimize: true,
-    includeSameDayReviewsForEvaluate: true,
+    includeSameDayReviews: true,
 };
 
 function readBool(value: unknown, fallback: boolean): boolean {
@@ -22,13 +20,9 @@ export function readFsrs7SameDaySettings(
     auxData: Record<string, unknown>,
 ): Fsrs7SameDaySettings {
     return {
-        includeSameDayReviewsForOptimize: readBool(
+        includeSameDayReviews: readBool(
             auxData[OPTIMIZE_KEY],
-            DEFAULT_SETTINGS.includeSameDayReviewsForOptimize,
-        ),
-        includeSameDayReviewsForEvaluate: readBool(
-            auxData[EVALUATE_KEY],
-            DEFAULT_SETTINGS.includeSameDayReviewsForEvaluate,
+            readBool(auxData[EVALUATE_KEY], DEFAULT_SETTINGS.includeSameDayReviews),
         ),
     };
 }
@@ -38,18 +32,17 @@ export function withFsrs7SameDaySettings(
     settings: Fsrs7SameDaySettings,
 ): Record<string, unknown> | undefined {
     const current = readFsrs7SameDaySettings(auxData);
+    const hasLegacyEvaluateKey = EVALUATE_KEY in auxData;
     if (
-        current.includeSameDayReviewsForOptimize
-            === settings.includeSameDayReviewsForOptimize
-        && current.includeSameDayReviewsForEvaluate
-            === settings.includeSameDayReviewsForEvaluate
+        current.includeSameDayReviews === settings.includeSameDayReviews
+        && !hasLegacyEvaluateKey
     ) {
         return;
     }
 
+    const { [EVALUATE_KEY]: _, ...rest } = auxData;
     return {
-        ...auxData,
-        [OPTIMIZE_KEY]: settings.includeSameDayReviewsForOptimize,
-        [EVALUATE_KEY]: settings.includeSameDayReviewsForEvaluate,
+        ...rest,
+        [OPTIMIZE_KEY]: settings.includeSameDayReviews,
     };
 }

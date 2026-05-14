@@ -7,20 +7,27 @@ import { readFsrs7SameDaySettings, withFsrs7SameDaySettings } from "./fsrs-same-
 
 test("readFsrs7SameDaySettings defaults to enabled flags", () => {
     expect(readFsrs7SameDaySettings({})).toStrictEqual({
-        includeSameDayReviewsForOptimize: true,
-        includeSameDayReviewsForEvaluate: true,
+        includeSameDayReviews: true,
     });
 });
 
-test("readFsrs7SameDaySettings reads stored booleans", () => {
+test("readFsrs7SameDaySettings reads stored boolean", () => {
     expect(
         readFsrs7SameDaySettings({
             fsrs7IncludeSameDayOptimize: false,
-            fsrs7IncludeSameDayEvaluate: true,
         }),
     ).toStrictEqual({
-        includeSameDayReviewsForOptimize: false,
-        includeSameDayReviewsForEvaluate: true,
+        includeSameDayReviews: false,
+    });
+});
+
+test("readFsrs7SameDaySettings falls back to legacy evaluate key", () => {
+    expect(
+        readFsrs7SameDaySettings({
+            fsrs7IncludeSameDayEvaluate: false,
+        }),
+    ).toStrictEqual({
+        includeSameDayReviews: false,
     });
 });
 
@@ -33,14 +40,29 @@ test("withFsrs7SameDaySettings updates keys when values differ", () => {
                 fsrs7IncludeSameDayEvaluate: true,
             },
             {
-                includeSameDayReviewsForOptimize: false,
-                includeSameDayReviewsForEvaluate: true,
+                includeSameDayReviews: false,
             },
         ),
     ).toStrictEqual({
         unrelated: "keep",
         fsrs7IncludeSameDayOptimize: false,
-        fsrs7IncludeSameDayEvaluate: true,
+    });
+});
+
+test("withFsrs7SameDaySettings migrates legacy evaluate key", () => {
+    expect(
+        withFsrs7SameDaySettings(
+            {
+                unrelated: "keep",
+                fsrs7IncludeSameDayEvaluate: false,
+            },
+            {
+                includeSameDayReviews: false,
+            },
+        ),
+    ).toStrictEqual({
+        unrelated: "keep",
+        fsrs7IncludeSameDayOptimize: false,
     });
 });
 
@@ -49,11 +71,9 @@ test("withFsrs7SameDaySettings is a no-op when values are unchanged", () => {
         withFsrs7SameDaySettings(
             {
                 fsrs7IncludeSameDayOptimize: false,
-                fsrs7IncludeSameDayEvaluate: false,
             },
             {
-                includeSameDayReviewsForOptimize: false,
-                includeSameDayReviewsForEvaluate: false,
+                includeSameDayReviews: false,
             },
         ),
     ).toBeUndefined();

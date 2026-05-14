@@ -239,11 +239,10 @@ FSRS training-item extraction is model-family-aware:
   time and review-weighted progress across all non-skipped presets, smooths that
   estimate across progress updates, and logs each completed preset with the time
   observed for that preset's optimizer job.
-- Deck options expose separate FSRS-7 toggles for optimize (training targets)
-  and evaluate/health-check target selection.
+- Deck options expose a single per-preset FSRS-7 same-day review toggle used by
+  optimize, evaluate, and health-check target selection.
   Their per-preset UI state is persisted in `deck_config.config.other` JSON as:
   - `fsrs7IncludeSameDayOptimize`
-  - `fsrs7IncludeSameDayEvaluate`
   - `fsrsEvaluationSearch` (separate search expression used by Evaluate /
     Check Health / Optimize comparison metrics; optimize training still uses
     `param_search`)
@@ -252,6 +251,9 @@ FSRS training-item extraction is model-family-aware:
     - metric evaluation uses `fsrsEvaluationSearch` (or `param_search` if blank)
   - Optimize All Decks reads `fsrs7IncludeSameDayOptimize` from each preset's
     stored `other` JSON before optimizing that preset.
+  - The FSRS options UI also provides a transient same-day "Help Me Decide"
+    comparison that optimizes FSRS-7 parameters with and without same-day reviews
+    and evaluates both parameter sets on all targets and long-term-only targets.
 
 Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/35` length with finite values), it falls back to best
