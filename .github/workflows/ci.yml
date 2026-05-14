@@ -76,9 +76,6 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            ~/.cargo/bin
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
@@ -161,9 +158,6 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            ~/.cargo/bin
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
           key: cargo-macOS-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-macOS-
 
@@ -235,9 +229,6 @@ jobs:
             D:\cargo-home\registry\index
             D:\cargo-home\registry\cache
             D:\cargo-home\git\db
-            D:\cargo-home\bin
-            D:\cargo-home\.crates.toml
-            D:\cargo-home\.crates2.json
           key: cargo-Windows-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-Windows-
 
