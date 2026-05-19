@@ -28,6 +28,7 @@ from anki.cards import Card
 from anki.decks import DeckDict, DeckConfigDict
 from anki.hooks import runFilter, runHook
 from anki.models import NotetypeDict
+from anki.scheduler.v3 import SchedulingStates
 from anki.collection import OpChangesAfterUndo
 from aqt.qt import QDialog, QEvent, QMenu, QModelIndex, QWidget, QMimeData
 from aqt.tagedit import TagEdit
@@ -197,6 +198,21 @@ hooks = [
         Return None to use the deck/preset desired retention, or a float to ask
         the backend scheduler to compute answer states with that desired
         retention.
+        """,
+    ),
+    Hook(
+        name="reviewer_will_update_scheduling_states",
+        args=[
+            "states: SchedulingStates",
+            "reviewer: aqt.reviewer.Reviewer",
+            "card: Card",
+        ],
+        return_type="SchedulingStates",
+        doc="""Used to update the current card's answer states before answer
+        buttons are rendered.
+
+        The returned states are used both to render answer-button intervals and
+        to build the answer that is persisted when a button is pressed.
         """,
     ),
     Hook(

@@ -940,6 +940,9 @@ timerStopped = false;
         default = self._defaultEase()
 
         assert isinstance(self.mw.col.sched, V3Scheduler)
+        self._v3.states = gui_hooks.reviewer_will_update_scheduling_states(
+            self._v3.states, self, self.card
+        )
         labels = self.mw.col.sched.describe_next_states(self._v3.states)
 
         def but(i: int, label: str) -> str:
