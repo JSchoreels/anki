@@ -337,6 +337,10 @@ Current exact-vs-scalar status:
 - Card Info now shows both raw stored stability (`S`) and `S90`. `S90` is read
   via scheduler helper `fsrsNextInterval(card_id, stability, desired_retention=0.9)`,
   so it always follows the selected FSRS model/version.
+- The Card Info forgetting curve still plots retrievability from the stored
+  review-log stability values, but its hover tooltip labels and displays
+  stability as `S90`; for FSRS-7 this is derived from the same curve parameters
+  at 90% retrievability.
 - Add-on helper APIs expose exact interval-at-target-retrievability math:
   - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
   - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`

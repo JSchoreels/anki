@@ -12,6 +12,10 @@ import { type GraphBounds, setDataAvailable } from "../graphs/graph-helpers";
 import { hideTooltip, showTooltip } from "../graphs/tooltip-utils.svelte";
 
 const MIN_POINTS = 1000;
+const FSRS7_PARAM_COUNT = 35;
+const S90_TARGET_RETRIEVABILITY = 0.9;
+const S_MAX = 36_500;
+const S90_SEARCH_STEPS = 32;
 
 function forgettingCurveFsrs6(stability: number, daysElapsed: number, decay: number): number {
     const factor = Math.pow(0.9, 1 / -decay) - 1;
@@ -46,10 +50,40 @@ function forgettingCurve(
     decay: number,
     params: number[] | undefined,
 ): number {
-    if (params && params.length >= 35) {
+    if (params && params.length >= FSRS7_PARAM_COUNT) {
         return forgettingCurveFsrs7(stability, daysElapsed, params);
     }
     return forgettingCurveFsrs6(stability, daysElapsed, decay);
+}
+
+export function stabilityS90(
+    stability: number,
+    decay: number,
+    params: number[] | undefined,
+): number {
+    if (!params || params.length < FSRS7_PARAM_COUNT) {
+        return stability;
+    }
+
+    let low = 0;
+    let high = Math.max(stability, 1);
+    while (
+        forgettingCurve(stability, high, decay, params) > S90_TARGET_RETRIEVABILITY
+        && high < S_MAX
+    ) {
+        high = Math.min(high * 2, S_MAX);
+    }
+
+    for (let i = 0; i < S90_SEARCH_STEPS; i++) {
+        const mid = (low + high) / 2;
+        if (forgettingCurve(stability, mid, decay, params) > S90_TARGET_RETRIEVABILITY) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    return (low + high) / 2;
 }
 
 interface DataPoint {
@@ -58,6 +92,7 @@ interface DataPoint {
     elapsedDaysSinceLastReview: number;
     retrievability: number;
     stability: number;
+    stabilityS90: number;
 }
 
 export enum TimeRange {
@@ -110,6 +145,7 @@ export function prepareData(
     const data: DataPoint[] = [];
     let lastReviewTime = 0;
     let lastStability = 0;
+    let lastStabilityS90 = 0;
     const step = Math.min(maxDays / MIN_POINTS, 1);
     let daysSinceFirstLearn = 0;
 
@@ -121,12 +157,14 @@ export function prepareData(
             if (index === 0) {
                 lastReviewTime = reviewTime;
                 lastStability = entry.memoryState?.stability || 0;
+                lastStabilityS90 = stabilityS90(lastStability, decay, params);
                 data.push({
                     date: new Date(reviewTime * 1000),
                     daysSinceFirstLearn: 0,
                     elapsedDaysSinceLastReview: 0,
                     retrievability: 100,
                     stability: lastStability,
+                    stabilityS90: lastStabilityS90,
                 });
                 return;
             }
@@ -142,6 +180,7 @@ export function prepareData(
                     elapsedDaysSinceLastReview: elapsedDays,
                     retrievability: retrievability * 100,
                     stability: lastStability,
+                    stabilityS90: lastStabilityS90,
                 });
             }
             daysSinceFirstLearn += totalDaysElapsed;
@@ -151,10 +190,12 @@ export function prepareData(
                 retrievability: 100,
                 elapsedDaysSinceLastReview: 0,
                 stability: lastStability,
+                stabilityS90: lastStabilityS90,
             });
 
             lastReviewTime = reviewTime;
             lastStability = entry.memoryState?.stability || 0;
+            lastStabilityS90 = stabilityS90(lastStability, decay, params);
         });
 
     if (data.length === 0) {
@@ -173,6 +214,7 @@ export function prepareData(
             elapsedDaysSinceLastReview: elapsedDays,
             retrievability: retrievability * 100,
             stability: lastStability,
+            stabilityS90: lastStabilityS90,
         });
     }
     daysSinceFirstLearn += totalDaysSinceLastReview;
@@ -188,6 +230,7 @@ export function prepareData(
         elapsedDaysSinceLastReview: totalDaysSinceLastReview,
         retrievability: retrievability * 100,
         stability: lastStability,
+        stabilityS90: lastStabilityS90,
     });
 
     const previewDays = maxDays - totalDaysSinceLastReview;
@@ -206,6 +249,7 @@ export function prepareData(
             elapsedDaysSinceLastReview: totalDaysSinceLastReview + previewDaysElapsed,
             retrievability: retrievability * 100,
             stability: lastStability,
+            stabilityS90: lastStabilityS90,
         });
     }
 
@@ -363,9 +407,9 @@ export function renderForgettingCurve(
         }<br>
         ${tr.cardStatsReviewLogElapsedTime()}: ${
             timeSpan(d.elapsedDaysSinceLastReview * 86400)
-        }<br>${tr.cardStatsFsrsRetrievability()}: ${d.retrievability.toFixed(2)}%<br>${tr.cardStatsFsrsStability()}: ${
-            timeSpan(d.stability * 86400)
-        }`;
+        }<br>${tr.cardStatsFsrsRetrievability()}: ${
+            d.retrievability.toFixed(2)
+        }%<br>${tr.cardStatsFsrsStability()} (S90): ${timeSpan(d.stabilityS90 * 86400)}`;
     }
 
     // hover/tooltip
