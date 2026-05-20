@@ -41,6 +41,12 @@ pub struct ComputeMemoryProgress {
     pub total_cards: u32,
 }
 
+struct ComputedMemoryState {
+    memory_state: Option<FsrsMemoryState>,
+    desired_retention: f32,
+    decay: f32,
+}
+
 /// Helper function to determine the appropriate decay value based on FSRS
 /// parameters
 pub(crate) fn get_decay_from_params(params: &[f32]) -> f32 {
@@ -612,7 +618,32 @@ impl Collection {
     }
 
     pub fn compute_memory_state(&mut self, card_id: CardId) -> Result<ComputeMemoryStateResponse> {
-        let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+        let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+        let computed = self.compute_memory_state_for_card(&card, false)?;
+        Ok(ComputeMemoryStateResponse {
+            state: computed.memory_state.map(Into::into),
+            desired_retention: computed.desired_retention,
+            decay: computed.decay,
+        })
+    }
+
+    pub(crate) fn recompute_fsrs_data_for_card(&mut self, card: &mut Card) -> Result<()> {
+        if card.ctype == CardType::New {
+            return Ok(());
+        }
+
+        let computed = self.compute_memory_state_for_card(card, true)?;
+        card.memory_state = computed.memory_state;
+        card.desired_retention = Some(computed.desired_retention);
+        card.decay = Some(computed.decay);
+        Ok(())
+    }
+
+    fn compute_memory_state_for_card(
+        &mut self,
+        card: &Card,
+        infer_from_current_card_state: bool,
+    ) -> Result<ComputedMemoryState> {
         let deck_id = card.original_deck_id.or(card.deck_id);
         let deck = self.get_deck(deck_id)?.or_not_found(card.deck_id)?;
         let conf_id = DeckConfigId(deck.normal()?.config_id);
@@ -629,7 +660,8 @@ impl Collection {
         let params = config.fsrs_params();
         let decay = get_decay_from_params(params);
         let fsrs = FSRS::new(params)?;
-        let revlog = self.revlog_for_srs(SearchNode::CardIds(card.id.to_string()))?;
+        let mut revlog = self.storage.get_revlog_entries_for_card(card.id)?;
+        revlog.sort_unstable_by_key(|entry| entry.id);
         let item = fsrs_item_for_memory_state(
             &fsrs,
             params,
@@ -638,20 +670,19 @@ impl Collection {
             historical_retention,
             ignore_revlogs_before_ms_from_config(&config)?,
         )?;
-        if item.is_some() {
+        let memory_state = if item.is_some() || infer_from_current_card_state {
+            let mut card = card.clone();
             card.set_memory_state(&fsrs, params, item, historical_retention)?;
-            Ok(ComputeMemoryStateResponse {
-                state: card.memory_state.map(Into::into),
-                desired_retention,
-                decay,
-            })
+            card.memory_state
         } else {
-            Ok(ComputeMemoryStateResponse {
-                state: None,
-                desired_retention,
-                decay,
-            })
-        }
+            None
+        };
+
+        Ok(ComputedMemoryState {
+            memory_state,
+            desired_retention,
+            decay,
+        })
     }
 }
 

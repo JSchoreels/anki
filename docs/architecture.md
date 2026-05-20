@@ -316,6 +316,13 @@ FSRS-7 ordering/search should compute retrievability on demand, or use a local
 temporary table/cache scoped to the current operation, instead of syncing a
 derived `R` value in card data.
 
+When cards are moved to another normal deck, their persisted FSRS data in
+`card.data` (`s`, `s_int`, `d`, `dr`, `decay`) is rewritten for the target
+deck preset. Non-new cards rebuild memory state from revlog history using the
+target deck's FSRS params and ignore-before setting; if no usable revlog data is
+available, the state is inferred from the card's current SM-2 fields. New cards
+remain without memory state.
+
 Implication for aggregates:
 
 - Stats retrievability aggregate (`sum_by_card` / average, i.e. `SUM(R)`-style

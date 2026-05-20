@@ -14,6 +14,7 @@ use serde_repr::Deserialize_repr;
 use serde_repr::Serialize_repr;
 
 use crate::collection::Collection;
+use crate::config::BoolKey;
 use crate::config::SchedulerVersion;
 use crate::deckconfig::DeckConfig;
 use crate::decks::DeckId;
@@ -375,6 +376,7 @@ impl Collection {
             source: FilteredDeckError::CanNotMoveCardsInto,
         })?;
         let config = self.get_deck_config(config_id, true)?.unwrap();
+        let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
         let mut steps_adjuster = RemainingStepsAdjuster::new(&config);
         let usn = self.usn()?;
         self.transact(Op::SetCardDeck, |col| {
@@ -387,6 +389,9 @@ impl Collection {
                 let original = card.clone();
                 steps_adjuster.adjust_remaining_steps(col, &mut card)?;
                 card.set_deck(deck_id);
+                if fsrs_enabled {
+                    col.recompute_fsrs_data_for_card(&mut card)?;
+                }
                 col.update_card_inner(&mut card, original, usn)?;
             }
             Ok(count)
@@ -509,10 +514,24 @@ impl From<MemoryState> for FsrsMemoryState {
 
 #[cfg(test)]
 mod test {
+    use fsrs::DEFAULT_PARAMETERS;
+
+    use crate::card::FsrsMemoryState;
+    use crate::deckconfig::FsrsVersion;
     use crate::prelude::*;
+    use crate::scheduler::fsrs::memory_state::get_decay_from_params;
     use crate::tests::open_test_collection_with_learning_card;
     use crate::tests::open_test_collection_with_relearning_card;
     use crate::tests::DeckAdder;
+
+    fn assert_memory_state_close(actual: FsrsMemoryState, expected: FsrsMemoryState) {
+        assert_eq!(actual.stability.round(), expected.stability.round());
+        assert_eq!(
+            actual.stability_internal.round(),
+            expected.stability_internal.round()
+        );
+        assert_eq!(actual.difficulty.round(), expected.difficulty.round());
+    }
 
     #[test]
     fn should_increase_remaining_learning_steps_if_new_deck_has_more_unpassed_ones() {
@@ -556,6 +575,34 @@ mod test {
 
         assert_eq!(col.get_first_card().remaining_steps, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn should_recompute_fsrs_memory_state_with_target_deck_params() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let answer = col.answer_easy();
+        let before = col.storage.get_card(answer.card_id)?.unwrap();
+        assert!(before.memory_state.is_some());
+
+        let target_params = DEFAULT_PARAMETERS[0..21].to_vec();
+        let target_deck = DeckAdder::new("target")
+            .with_config(|config| {
+                config.inner.fsrs_version = FsrsVersion::Six as i32;
+                config.inner.fsrs_params_6 = target_params.clone();
+            })
+            .add(&mut col);
+
+        col.set_deck(&[answer.card_id], target_deck.id)?;
+        let moved = col.storage.get_card(answer.card_id)?.unwrap();
+        assert_eq!(moved.deck_id, target_deck.id);
+        assert!((moved.decay.unwrap() - get_decay_from_params(&target_params)).abs() < 0.001);
+
+        let expected = col.compute_memory_state(answer.card_id)?;
+
+        assert_memory_state_close(moved.memory_state.unwrap(), expected.state.unwrap().into());
         Ok(())
     }
 }
