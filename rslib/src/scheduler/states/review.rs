@@ -432,6 +432,7 @@ mod test {
             elapsed_days: 30,
             memory_state: Some(crate::card::FsrsMemoryState {
                 stability: 30.0,
+                stability_internal: 30.0,
                 difficulty: 5.0,
             }),
             ..Default::default()

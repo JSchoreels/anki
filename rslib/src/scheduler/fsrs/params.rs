@@ -52,6 +52,10 @@ fn include_same_day_training_entries(
     include_same_day_override.unwrap_or(matches!(model_version, ComputeParametersVersion::Fsrs7))
 }
 
+pub(crate) fn include_same_day_for_params(params: &[f32]) -> bool {
+    include_same_day_training_entries(model_version_for_params(params), None)
+}
+
 pub(crate) fn ignore_revlogs_before_date_to_ms(
     ignore_revlogs_before_date: &String,
 ) -> Result<TimestampMillis> {

@@ -9,6 +9,7 @@ use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
+use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::timing::is_unix_epoch_timestamp;
 
@@ -66,7 +67,7 @@ impl Collection {
                 .map(|(state, seconds)| {
                     fsrs_current_retrievability_for_params(
                         preset.fsrs_params(),
-                        state.stability,
+                        state.stability_internal,
                         seconds as f32 / 86_400.0,
                     )
                 });
@@ -94,7 +95,7 @@ impl Collection {
             total_secs,
             card_type: nt.get_template(card.template_idx)?.name.clone(),
             notetype: nt.name.clone(),
-            revlog: self.stats_revlog_entries_with_memory_state(&card, revlog)?,
+            revlog: self.stats_revlog_entries_with_memory_state(&card, last_review_time, revlog)?,
             memory_state: card.memory_state.map(Into::into),
             fsrs_retrievability: fsrs_retrievability.transpose()?,
             custom_data: card.custom_data,
@@ -150,6 +151,7 @@ impl Collection {
     fn stats_revlog_entries_with_memory_state(
         self: &mut Collection,
         card: &Card,
+        last_review_time: TimestampSecs,
         revlog: Vec<RevlogEntry>,
     ) -> Result<Vec<anki_proto::stats::card_stats_response::StatsRevlogEntry>> {
         let deck_id = card.original_deck_id.or(card.deck_id);
@@ -181,10 +183,16 @@ impl Collection {
                 let memory_state: Option<FsrsMemoryState> = if revlog_index >= memory_states.len() {
                     // The removed revlog is in the end of the revlog, so we use the last memory
                     // state
-                    Some(memory_states[memory_states.len() - 1].into())
+                    Some(fsrs_memory_state_for_params(
+                        params,
+                        memory_states[memory_states.len() - 1],
+                    )?)
                 } else if entry.id == item.filtered_revlogs[revlog_index].id {
                     revlog_index += 1;
-                    Some(memory_states[revlog_index - 1].into())
+                    Some(fsrs_memory_state_for_params(
+                        params,
+                        memory_states[revlog_index - 1],
+                    )?)
                 } else if revlog_index == 0 {
                     // The removed revlog is in the start of the revlog, so we don't have a memory
                     // state for it
@@ -192,16 +200,43 @@ impl Collection {
                 } else {
                     // The removed revlog is in the middle of the revlog, so we use the memory
                     // state for the previous revlog entry
-                    Some(memory_states[revlog_index].into())
+                    Some(fsrs_memory_state_for_params(
+                        params,
+                        memory_states[revlog_index],
+                    )?)
                 };
                 stats_entry.memory_state = memory_state.map(|s| s.into());
                 result.push(stats_entry);
             }
-            Ok(result.into_iter().rev().collect())
+            Ok(with_current_memory_state_on_latest_review(
+                card.memory_state,
+                last_review_time,
+                result.into_iter().rev().collect(),
+            ))
         } else {
-            Ok(revlog.iter().rev().map(stats_revlog_entry).collect())
+            Ok(with_current_memory_state_on_latest_review(
+                card.memory_state,
+                last_review_time,
+                revlog.iter().rev().map(stats_revlog_entry).collect(),
+            ))
         }
     }
+}
+
+fn with_current_memory_state_on_latest_review(
+    memory_state: Option<FsrsMemoryState>,
+    last_review_time: TimestampSecs,
+    mut entries: Vec<anki_proto::stats::card_stats_response::StatsRevlogEntry>,
+) -> Vec<anki_proto::stats::card_stats_response::StatsRevlogEntry> {
+    if let Some(memory_state) = memory_state {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.button_chosen > 0 && entry.time == last_review_time.0)
+        {
+            entry.memory_state = Some(memory_state.into());
+        }
+    }
+    entries
 }
 
 fn average_and_total_secs_strings(revlog: &[RevlogEntry]) -> (f32, f32) {
@@ -241,6 +276,8 @@ mod test {
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
     use crate::search::SortMode;
 
     fn fsrs7_params_for_retrievability_test() -> Vec<f32> {
@@ -313,6 +350,7 @@ mod test {
         let timing = col.timing_today()?;
         card.memory_state = Some(FsrsMemoryState {
             stability,
+            stability_internal: stability,
             difficulty: 5.0,
         });
         card.last_review_time = Some(timing.now.adding_secs(-(elapsed_days as i64) * 86_400));
@@ -325,6 +363,48 @@ mod test {
             report.fsrs_retrievability.map(|v| format!("{v:.6}")),
             Some(format!("{expected:.6}"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn card_stats_latest_revlog_uses_current_memory_state() -> Result<()> {
+        let mut col = Collection::new();
+        let params = fsrs7_params_for_retrievability_test();
+        set_selected_fsrs7_params(&mut col, params.clone())?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+        let last_review_time = TimestampSecs::now();
+        let stability = 0.0101;
+        let stability_internal = 0.0733;
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.memory_state = Some(FsrsMemoryState {
+            stability,
+            stability_internal,
+            difficulty: 9.168,
+        });
+        card.last_review_time = Some(last_review_time);
+        card.decay = Some(params[27]);
+        col.storage.update_card(&card)?;
+        col.storage.add_revlog_entry(
+            &RevlogEntry {
+                id: RevlogId(last_review_time.0 * 1000),
+                cid,
+                usn: Usn(0),
+                button_chosen: 3,
+                review_kind: RevlogReviewKind::Learning,
+                ..Default::default()
+            },
+            false,
+        )?;
+
+        let report = col.card_stats(cid)?;
+        let latest = report.revlog[0].memory_state.as_ref().unwrap();
+        assert!((latest.stability - stability).abs() < 0.0001);
+        assert!((latest.stability_internal.unwrap() - stability_internal).abs() < 0.0001);
         Ok(())
     }
 }

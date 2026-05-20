@@ -375,7 +375,7 @@ fn exact_retrievability_key(
     let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
     if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
-        col.fsrs_current_retrievability_for_card(card.id, state.stability, elapsed_days)
+        col.fsrs_current_retrievability_for_card(card.id, state.stability_internal, elapsed_days)
     } else {
         // keep SM2-style fallback ordering when FSRS state is missing
         let due = card.original_or_current_due() as i64;

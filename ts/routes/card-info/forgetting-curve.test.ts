@@ -32,7 +32,11 @@ test("prepareData carries S90 for the forgetting curve tooltip", () => {
             [
                 {
                     time: Date.parse("2024-01-01T00:00:00Z") / 1000,
-                    memoryState: { stability: 10, difficulty: 5 },
+                    memoryState: {
+                        stability: 40 / 9,
+                        stabilityInternal: 10,
+                        difficulty: 5,
+                    },
                 },
             ] as any,
             2,

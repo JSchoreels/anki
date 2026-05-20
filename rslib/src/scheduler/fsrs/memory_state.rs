@@ -17,9 +17,11 @@ use super::params::ignore_revlogs_before_ms_from_config;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
+use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::get_fuzz_seed;
+use crate::scheduler::fsrs::params::include_same_day_for_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::states::fuzz::with_review_fuzz;
@@ -125,6 +127,26 @@ pub(crate) fn fsrs_interval_at_retrievability_for_params(
         },
         target_retrievability.clamp(0.0001, 0.9999),
     ))
+}
+
+pub(crate) fn fsrs_memory_state_for_params(
+    params: &[f32],
+    memory_state: MemoryState,
+) -> Result<FsrsMemoryState> {
+    let fsrs = FSRS::new(params)?;
+    Ok(fsrs_memory_state_for_fsrs(&fsrs, memory_state))
+}
+
+pub(crate) fn fsrs_memory_state_for_fsrs(
+    fsrs: &FSRS,
+    memory_state: MemoryState,
+) -> FsrsMemoryState {
+    let stability = fsrs.interval_at_retrievability(memory_state, 0.9);
+    FsrsMemoryState {
+        stability,
+        stability_internal: memory_state.stability,
+        difficulty: memory_state.difficulty,
+    }
 }
 
 fn log_expm1(x: f64) -> f64 {
@@ -491,7 +513,7 @@ impl Collection {
                 let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
                 let original = card.clone();
                 set_decay_and_desired_retention(&mut card);
-                card.memory_state = Some(memory_state.into());
+                card.memory_state = Some(fsrs_memory_state_for_fsrs(fsrs, memory_state));
                 maybe_reschedule_card(&mut card, self, fsrs)?;
                 self.update_card_inner(&mut card, original, usn)?;
                 on_updated_card()?;
@@ -655,7 +677,7 @@ impl Card {
                 historical_retention,
             )?)
         };
-        self.memory_state = memory_state.map(Into::into);
+        self.memory_state = memory_state.map(|state| fsrs_memory_state_for_fsrs(fsrs, state));
         Ok(())
     }
 }
@@ -759,9 +781,13 @@ pub(crate) fn fsrs_item_for_memory_state(
         interval: f32,
         ease_factor: f32,
     }
-    if let Some(mut output) =
-        reviews_for_fsrs(entries, next_day_at, false, ignore_revlogs_before, false)
-    {
+    if let Some(mut output) = reviews_for_fsrs(
+        entries,
+        next_day_at,
+        false,
+        ignore_revlogs_before,
+        include_same_day_for_params(params),
+    ) {
         let mut item = output.fsrs_items.pop().unwrap().1;
         if output.revlogs_complete {
             Ok(Some(FsrsItemForMemoryState {
@@ -816,9 +842,9 @@ mod tests {
     use fsrs::DEFAULT_PARAMETERS;
 
     use super::*;
-    use crate::card::FsrsMemoryState;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
+    use crate::revlog::RevlogId;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::params::tests::convert;
     use crate::scheduler::fsrs::params::tests::revlog;
@@ -950,6 +976,7 @@ mod tests {
             item.starting_state.map(Into::into),
             Some(FsrsMemoryState {
                 stability: 100.0,
+                stability_internal: 100.0,
                 difficulty: 5.003576,
             }),
         );
@@ -962,6 +989,7 @@ mod tests {
             card.memory_state,
             Some(FsrsMemoryState {
                 stability: 248.9251,
+                stability_internal: 248.9251,
                 difficulty: 4.9938006,
             }),
         );
@@ -986,6 +1014,7 @@ mod tests {
             card.memory_state,
             Some(FsrsMemoryState {
                 stability: 100.0,
+                stability_internal: 100.0,
                 difficulty: 5.003576,
             }),
         );
@@ -1015,6 +1044,208 @@ mod tests {
                 .into(),
             ),
         );
+        Ok(())
+    }
+
+    fn reconstructed_same_day_delta(params: &[f32]) -> Result<f32> {
+        let fsrs = FSRS::new(params)?;
+        let next_day_at = TimestampSecs(86_400 * 1000);
+        let base = (next_day_at.0 - 86_400 + 3_600) * 1000;
+        let item = fsrs_item_for_memory_state(
+            &fsrs,
+            params,
+            vec![
+                RevlogEntry {
+                    id: RevlogId(base),
+                    ..revlog(RevlogReviewKind::Learning, 1)
+                },
+                RevlogEntry {
+                    id: RevlogId(base + 3_600_000),
+                    ..revlog(RevlogReviewKind::Review, 1)
+                },
+            ],
+            next_day_at,
+            0.9,
+            0.into(),
+        )?
+        .unwrap();
+        Ok(item.item.reviews[1].delta_t)
+    }
+
+    fn relearning_card_1779209293223_revlogs() -> Vec<RevlogEntry> {
+        let ratings = [1, 1, 3, 3, 3, 3, 3, 3, 1, 3, 3, 3, 3, 3, 3, 3];
+        let elapsed_millis = [
+            454_026, 1_544, 4_430, 2_798, 1_981, 3_691, 10_876, 80_546, 1_799, 36_528, 2_281,
+            7_919, 265_132, 2_144, 13_635,
+        ];
+        let mut id = 1_779_281_655_000;
+        let mut revlogs = Vec::with_capacity(ratings.len());
+        for (index, rating) in ratings.into_iter().enumerate() {
+            if index > 0 {
+                id += elapsed_millis[index - 1];
+            }
+            revlogs.push(RevlogEntry {
+                id: RevlogId(id),
+                button_chosen: rating,
+                review_kind: RevlogReviewKind::Learning,
+                ..Default::default()
+            });
+        }
+        revlogs
+    }
+
+    #[test]
+    fn fsrs7_memory_state_reconstruction_preserves_reported_relearning_elapsed_time() -> Result<()>
+    {
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let revlogs = relearning_card_1779209293223_revlogs();
+        let next_day_at = TimestampSecs(1_779_292_800);
+        let reconstructed = fsrs_item_for_memory_state(
+            &fsrs,
+            &DEFAULT_PARAMETERS,
+            revlogs.clone(),
+            next_day_at,
+            0.9,
+            0.into(),
+        )?
+        .unwrap();
+        let legacy = reviews_for_fsrs(revlogs, next_day_at, false, 0.into(), false)
+            .unwrap()
+            .fsrs_items
+            .pop()
+            .unwrap()
+            .1;
+
+        let reconstructed_elapsed_secs = reconstructed
+            .item
+            .reviews
+            .iter()
+            .map(|review| review.delta_t)
+            .sum::<f32>()
+            * 86_400.0;
+        let legacy_elapsed_secs = legacy
+            .reviews
+            .iter()
+            .map(|review| review.delta_t)
+            .sum::<f32>()
+            * 86_400.0;
+
+        assert!((reconstructed_elapsed_secs - 889.33).abs() < 0.01);
+        assert_eq!(legacy_elapsed_secs, 0.0);
+
+        let reconstructed_state = fsrs.memory_state(reconstructed.item, None)?;
+        let legacy_state = fsrs.memory_state(legacy, None)?;
+        assert!(reconstructed_state.stability > legacy_state.stability);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_memory_state_reconstruction_uses_card_1779209293223_real_timestamps() -> Result<()> {
+        let params = vec![
+            0.164_769_28,
+            1.781_043_3,
+            3.960_628_7,
+            17.227_514,
+            5.775_701_5,
+            0.350_562_72,
+            3.297_959,
+            2.193_530_6,
+            0.315_878_87,
+            1.232_677_5,
+            0.383919,
+            0.006_497_408_7,
+            0.687_791_05,
+            0.0,
+            0.541_600_17,
+            1.3993783,
+            0.961_712_66,
+            0.372_928_4,
+            3.647_044_7,
+            0.443_311_54,
+            0.001,
+            0.37068215,
+            2.665_900_5,
+            0.563_425_4,
+            1.305_368_8,
+            2.5,
+            0.910_621_2,
+            0.134_659_71,
+            0.534_766_55,
+            0.632_104_46,
+            0.978_705_9,
+            0.194_363_62,
+            0.696_230_1,
+            0.121_837_68,
+            0.37259683,
+        ];
+        let fsrs = FSRS::new(&params)?;
+        let revlogs: Vec<_> = [
+            (1_779_280_455_399, 1, -794, 631),
+            (1_779_280_909_425, 1, -76, 969),
+            (1_779_280_910_969, 3, -76, 964),
+            (1_779_280_915_399, 3, -76, 958),
+            (1_779_280_918_197, 3, -76, 953),
+            (1_779_280_920_178, 3, -76, 948),
+            (1_779_280_923_869, 3, -76, 942),
+            (1_779_280_934_745, 3, -76, 937),
+            (1_779_281_015_291, 1, -9, 1050),
+            (1_779_281_017_090, 3, -9, 1044),
+            (1_779_281_053_618, 3, -49, 1038),
+            (1_779_281_055_899, 3, -49, 1032),
+            (1_779_281_063_818, 3, -49, 1025),
+            (1_779_281_328_950, 3, -248, 1019),
+            (1_779_281_331_094, 3, -248, 1013),
+            (1_779_281_344_729, 3, -248, 1008),
+            (1_779_281_802_797, 3, -572, 1002),
+            (1_779_281_809_803, 4, 1, 960),
+        ]
+        .into_iter()
+        .map(|(id, button_chosen, interval, ease_factor)| RevlogEntry {
+            id: RevlogId(id),
+            button_chosen,
+            interval,
+            ease_factor,
+            review_kind: RevlogReviewKind::Learning,
+            ..Default::default()
+        })
+        .collect();
+        let item = fsrs_item_for_memory_state(
+            &fsrs,
+            &params,
+            revlogs.clone(),
+            TimestampSecs(1_779_292_800),
+            0.9,
+            0.into(),
+        )?
+        .unwrap();
+        let elapsed_secs = item
+            .item
+            .reviews
+            .iter()
+            .map(|review| review.delta_t)
+            .sum::<f32>()
+            * 86_400.0;
+        let internal = fsrs.memory_state(item.item, item.starting_state)?;
+        let s90 = fsrs.interval_at_retrievability(internal, 0.9);
+
+        assert!((elapsed_secs - 1354.404).abs() < 0.01);
+        assert!((internal.stability - 0.14337839).abs() < 1e-6);
+        assert!((s90 - 0.029655233).abs() < 1e-6);
+        assert!((internal.difficulty - 8.743349).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_memory_state_reconstruction_uses_fractional_same_day_delta() -> Result<()> {
+        let delta = reconstructed_same_day_delta(&DEFAULT_PARAMETERS)?;
+        assert!((delta - (1.0 / 24.0)).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs6_memory_state_reconstruction_keeps_integer_same_day_delta() -> Result<()> {
+        let delta = reconstructed_same_day_delta(&DEFAULT_PARAMETERS[0..21])?;
+        assert_eq!(delta, 0.0);
         Ok(())
     }
 
@@ -1330,6 +1561,7 @@ mod tests {
             // Set FSRS parameters
             card.memory_state = Some(FsrsMemoryState {
                 stability: 1.0,
+                stability_internal: 1.0,
                 difficulty: 1.0,
             });
             card.desired_retention = Some(0.123);

@@ -8,7 +8,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { DAY, timeSpan, TimespanUnit, Timestamp } from "@tslib/time";
 
     export let stats: CardStatsResponse;
-    export let fsrsStabilityS90: number | null = null;
 
     function dateString(timestamp: bigint): string {
         return new Timestamp(Number(timestamp)).dateString();
@@ -33,10 +32,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return value;
     }
 
-    function rowsFromStats(
-        stats: CardStatsResponse,
-        fsrsStabilityS90: number | null,
-    ): StatsRow[] {
+    function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
         const statsRows: StatsRow[] = [];
 
         statsRows.push({ label: tr2.cardStatsAdded(), value: dateString(stats.added) });
@@ -78,12 +74,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 label: tr2.cardStatsFsrsStability(),
                 value: formatStability(stats.memoryState.stability),
             });
-            if (fsrsStabilityS90 !== null) {
-                statsRows.push({
-                    label: `${tr2.cardStatsFsrsStability()} (S90)`,
-                    value: formatStability(fsrsStabilityS90),
-                });
-            }
             const difficulty = (
                 ((stats.memoryState.difficulty - 1.0) / 9.0) *
                 100.0
@@ -156,7 +146,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     let statsRows: StatsRow[];
-    $: statsRows = rowsFromStats(stats, fsrsStabilityS90);
+    $: statsRows = rowsFromStats(stats);
 </script>
 
 <table class="stats-table align-start">

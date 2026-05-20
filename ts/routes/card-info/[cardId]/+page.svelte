@@ -16,10 +16,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     globalThis.anki ||= {};
     globalThis.anki.updateCard = async (card_id: string): Promise<void> => {
         const path = `/card-info/${card_id}`;
-        return goto(path).catch(() => {
+        return goto(path, { invalidateAll: true }).catch(() => {
             window.location.href = path;
         });
     };
 </script>
 
-<CardInfo stats={data.info} {showRevlog} fsrsStabilityS90={data.fsrsStabilityS90} />
+<CardInfo stats={data.info} {showRevlog} />

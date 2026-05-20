@@ -155,8 +155,10 @@ impl From<anki_proto::cards::CardId> for CardId {
 
 impl From<anki_proto::cards::FsrsMemoryState> for FsrsMemoryState {
     fn from(value: anki_proto::cards::FsrsMemoryState) -> Self {
+        let stability_internal = value.stability_internal.unwrap_or(value.stability);
         FsrsMemoryState {
             stability: value.stability,
+            stability_internal,
             difficulty: value.difficulty,
         }
     }
@@ -167,6 +169,7 @@ impl From<FsrsMemoryState> for anki_proto::cards::FsrsMemoryState {
         anki_proto::cards::FsrsMemoryState {
             stability: value.stability,
             difficulty: value.difficulty,
+            stability_internal: Some(value.stability_internal),
         }
     }
 }

@@ -34,6 +34,7 @@ use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
+use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
@@ -144,6 +145,23 @@ impl CardStateUpdater {
         self.card
     }
 
+    fn memory_state_for_storage(
+        &self,
+        memory_state: Option<crate::card::FsrsMemoryState>,
+    ) -> Result<Option<crate::card::FsrsMemoryState>> {
+        memory_state
+            .map(|state| {
+                fsrs_memory_state_for_params(
+                    self.config.fsrs_params(),
+                    fsrs::MemoryState {
+                        stability: state.stability_internal,
+                        difficulty: state.difficulty,
+                    },
+                )
+            })
+            .transpose()
+    }
+
     fn apply_study_state(
         &mut self,
         current: CardState,
@@ -165,14 +183,14 @@ impl CardStateUpdater {
                     }
                 }
                 // apply normal scheduling
-                self.apply_normal_study_state(current, normal)
+                self.apply_normal_study_state(current, normal)?
             }
             CardState::Filtered(filtered) => {
                 self.ensure_filtered()?;
                 match filtered {
                     FilteredState::Preview(next) => self.apply_preview_state(current, next),
                     FilteredState::Rescheduling(next) => {
-                        let revlog = self.apply_normal_study_state(current, next.original_state);
+                        let revlog = self.apply_normal_study_state(current, next.original_state)?;
                         self.card.original_due = self.card.due;
 
                         revlog
@@ -188,22 +206,22 @@ impl CardStateUpdater {
         &mut self,
         current: CardState,
         next: NormalState,
-    ) -> RevlogEntryPartial {
+    ) -> Result<RevlogEntryPartial> {
         self.card.reps += 1;
         self.card.desired_retention = self.desired_retention;
 
         let revlog = match next {
             NormalState::New(next) => self.apply_new_state(current, next),
-            NormalState::Learning(next) => self.apply_learning_state(current, next),
-            NormalState::Review(next) => self.apply_review_state(current, next),
-            NormalState::Relearning(next) => self.apply_relearning_state(current, next),
+            NormalState::Learning(next) => self.apply_learning_state(current, next)?,
+            NormalState::Review(next) => self.apply_review_state(current, next)?,
+            NormalState::Relearning(next) => self.apply_relearning_state(current, next)?,
         };
 
         if next.leeched() && self.config.inner.leech_action() == LeechAction::Suspend {
             self.card.queue = CardQueue::Suspended;
         }
 
-        revlog
+        Ok(revlog)
     }
 
     fn ensure_filtered(&self) -> Result<()> {
@@ -873,6 +891,7 @@ pub(crate) mod test {
         card.due = col.timing_today()?.days_elapsed as i32;
         card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
+            stability_internal: 10.0,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -936,6 +955,7 @@ pub(crate) mod test {
         card.remaining_steps = 0;
         card.memory_state = Some(FsrsMemoryState {
             stability: 0.0001,
+            stability_internal: 0.0001,
             difficulty: 9.796331,
         });
         card.last_review_time = Some(now.adding_secs(-105));
@@ -954,6 +974,59 @@ pub(crate) mod test {
             good_minutes < 12.0 * 60.0,
             "regression setup should still exercise short-term relearning, got {good_minutes}m"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_relearning_good_with_tiny_stability_writes_revlog() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+            config.desired_retention = 0.65;
+            config.relearn_steps = vec![];
+        });
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.get_first_card();
+        let now = TimestampSecs::now();
+        card.ctype = CardType::Relearn;
+        card.queue = CardQueue::Learn;
+        card.due = now.0 as i32;
+        card.interval = 1;
+        card.lapses = 1;
+        card.remaining_steps = 0;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 0.0001,
+            stability_internal: 0.0001,
+            difficulty: 9.796331,
+        });
+        card.last_review_time = Some(now.adding_secs(-105));
+        col.storage.update_card(&card)?;
+
+        let revlogs_before = col.storage.get_revlog_entries_for_card(card.id)?.len();
+        let states = col.get_scheduling_states(card.id)?;
+        col.answer_card(&mut CardAnswer {
+            card_id: card.id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            from_queue: true,
+        })?;
+
+        let revlogs_after = col.storage.get_revlog_entries_for_card(card.id)?.len();
+        assert_eq!(revlogs_after, revlogs_before + 1);
+        let card = col.storage.get_card(card.id)?.unwrap();
+        assert_eq!(card.reps, 1);
+        assert_eq!(card.ctype, CardType::Relearn);
         Ok(())
     }
 
@@ -991,6 +1064,7 @@ pub(crate) mod test {
         relearn_card.remaining_steps = 0;
         relearn_card.memory_state = Some(FsrsMemoryState {
             stability: 0.0001,
+            stability_internal: 0.0001,
             difficulty: 9.796331,
         });
         relearn_card.last_review_time = Some(now.adding_secs(-105));

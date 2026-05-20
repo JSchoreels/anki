@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { FsrsMemoryState } from "@generated/anki/cards_pb";
 import { SchedulingStatesWithContext } from "@generated/anki/frontend_pb";
 import { SchedulingContext, SchedulingStates } from "@generated/anki/scheduler_pb";
 import { expect, test } from "vitest";
@@ -116,6 +117,24 @@ test("no-op transform", async () => {
     input.states!.good!.customData = input.states!.current!.customData;
     input.states!.easy!.customData = input.states!.current!.customData;
     expect(output).toStrictEqual(input.states);
+});
+
+test("no-op transform preserves FSRS internal stability", async () => {
+    const input = exampleInput();
+    const review = input.states!.current!.kind.value.kind.value;
+    review.memoryState = new FsrsMemoryState({
+        stability: 0.0002,
+        stabilityInternal: 0.0001,
+        difficulty: 9.7,
+    });
+
+    const output = await applyStateTransform(input, async (_states: any) => {
+        void _states;
+    });
+    const outputReview = output.current!.kind.value.kind.value;
+
+    expect(outputReview.memoryState?.stability).toBeCloseTo(0.0002);
+    expect(outputReview.memoryState?.stabilityInternal).toBeCloseTo(0.0001);
 });
 
 test("custom data change", async () => {

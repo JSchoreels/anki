@@ -341,7 +341,7 @@ fn exact_retrievability_key_for_card(
 ) -> Result<f32> {
     if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-        col.fsrs_current_retrievability_for_card(card.id, state.stability, elapsed_days)
+        col.fsrs_current_retrievability_for_card(card.id, state.stability_internal, elapsed_days)
     } else {
         let due = card.original_or_current_due() as i64;
         let review_day = due.saturating_sub(card.interval as i64);
@@ -429,6 +429,7 @@ mod test {
             card.interval = 20;
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
+                stability_internal: 30.0,
                 difficulty: 5.0,
             });
             card.desired_retention = Some(0.8);
@@ -436,6 +437,7 @@ mod test {
         }
         card2.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
+            stability_internal: 10.0,
             difficulty: 5.0,
         });
         card1.decay = Some(0.1);

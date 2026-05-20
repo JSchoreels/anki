@@ -301,10 +301,12 @@ impl Collection {
         };
         let elapsed_days =
             self.elapsed_seconds_since_last_review_for_card(card, timing) as f32 / 86_400.0;
-        let r =
-            self.fsrs_current_retrievability_for_card(card.id, state.stability, elapsed_days)?;
-        let s90 = self.fsrs_interval_at_retrievability_for_card(card.id, state.stability, 0.9)?;
-        Ok(Some((r, s90)))
+        let r = self.fsrs_current_retrievability_for_card(
+            card.id,
+            state.stability_internal,
+            elapsed_days,
+        )?;
+        Ok(Some((r, state.stability)))
     }
 
     fn exact_fsrs_metric_for_card(
@@ -852,6 +854,7 @@ mod test {
             card.due = 0;
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
+                stability_internal: 30.0,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
@@ -945,6 +948,8 @@ mod test {
         let timing = col.timing_today()?;
         let mut card1 = col.storage.get_card(card1_id)?.unwrap();
         let mut card2 = col.storage.get_card(card2_id)?.unwrap();
+        let s90_1 = col.fsrs_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
+        let s90_2 = col.fsrs_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
         for card in [&mut card1, &mut card2] {
             card.ctype = CardType::Review;
             card.queue = CardQueue::Review;
@@ -952,15 +957,16 @@ mod test {
             card.due = 0;
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
+                stability_internal: 30.0,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
         }
+        card1.memory_state.as_mut().unwrap().stability = s90_1;
+        card2.memory_state.as_mut().unwrap().stability = s90_2;
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
 
-        let s90_1 = col.fsrs_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
-        let s90_2 = col.fsrs_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
         assert!(
             (s90_1 - s90_2).abs() > 0.001,
             "test requires different s90 values across deck presets"
@@ -1026,6 +1032,7 @@ mod test {
             card.due = 0;
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
+                stability_internal: 30.0,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
@@ -1068,14 +1075,15 @@ mod test {
         let mut card = col.storage.get_card(card_id)?.unwrap();
         card.ctype = CardType::Review;
         card.queue = CardQueue::Review;
+        let raw_s = 30.0;
+        let s90 = col.fsrs_interval_at_retrievability_for_card(card.id, raw_s, 0.9)?;
         card.memory_state = Some(FsrsMemoryState {
-            stability: 30.0,
+            stability: s90,
+            stability_internal: raw_s,
             difficulty: 5.0,
         });
         col.storage.update_card(&card)?;
 
-        let raw_s = 30.0;
-        let s90 = col.fsrs_interval_at_retrievability_for_card(card.id, raw_s, 0.9)?;
         assert!(
             (s90 - raw_s).abs() > 0.001,
             "test requires fsrs7 s90 to differ from raw stability"

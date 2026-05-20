@@ -562,6 +562,7 @@ mod test {
             card.interval = 20;
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
+                stability_internal: 30.0,
                 difficulty: 5.0,
             });
             card.desired_retention = Some(0.8);
@@ -598,6 +599,7 @@ mod test {
         card.interval = 1;
         card.memory_state = Some(FsrsMemoryState {
             stability,
+            stability_internal: stability,
             difficulty: 5.0,
         });
         card.desired_retention = Some(0.9);

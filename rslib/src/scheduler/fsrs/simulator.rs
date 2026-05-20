@@ -1183,7 +1183,7 @@ impl Card {
                 Some(fsrs::Card {
                     id: card.id.0,
                     difficulty: memory_state.difficulty,
-                    stability: memory_state.stability,
+                    stability: memory_state.stability_internal,
                     last_date,
                     due: relative_due as f32,
                     interval: card.interval as f32,
@@ -1196,7 +1196,7 @@ impl Card {
             CardQueue::Learn | CardQueue::SchedBuried | CardQueue::UserBuried => Some(fsrs::Card {
                 id: card.id.0,
                 difficulty: memory_state.difficulty,
-                stability: memory_state.stability,
+                stability: memory_state.stability_internal,
                 last_date: 0.0,
                 due: 0.0,
                 interval: card.interval as f32,

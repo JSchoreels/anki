@@ -31,6 +31,12 @@ pub(crate) struct CardData {
     )]
     pub(crate) fsrs_stability: Option<f32>,
     #[serde(
+        rename = "s_int",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "default_on_invalid"
+    )]
+    pub(crate) fsrs_stability_internal: Option<f32>,
+    #[serde(
         rename = "d",
         skip_serializing_if = "Option::is_none",
         deserialize_with = "default_on_invalid"
@@ -66,6 +72,7 @@ impl CardData {
         Self {
             original_position: card.original_position,
             fsrs_stability: card.memory_state.as_ref().map(|m| m.stability),
+            fsrs_stability_internal: card.memory_state.as_ref().map(|m| m.stability_internal),
             fsrs_difficulty: card.memory_state.as_ref().map(|m| m.difficulty),
             fsrs_desired_retention: card.desired_retention,
             decay: card.decay,
@@ -83,6 +90,7 @@ impl CardData {
             if let Some(difficulty) = self.fsrs_difficulty {
                 return Some(FsrsMemoryState {
                     stability,
+                    stability_internal: self.fsrs_stability_internal.unwrap_or(stability),
                     difficulty,
                 });
             }
@@ -92,6 +100,9 @@ impl CardData {
 
     pub(crate) fn convert_to_json(&mut self) -> Result<String> {
         if let Some(v) = &mut self.fsrs_stability {
+            round_to_places(v, 4)
+        }
+        if let Some(v) = &mut self.fsrs_stability_internal {
             round_to_places(v, 4)
         }
         if let Some(v) = &mut self.fsrs_difficulty {
@@ -173,6 +184,7 @@ mod test {
         let mut data = CardData {
             original_position: None,
             fsrs_stability: Some(123.45678),
+            fsrs_stability_internal: Some(234.56789),
             fsrs_difficulty: Some(1.234567),
             fsrs_desired_retention: Some(0.987654),
             decay: Some(0.123456),
@@ -181,7 +193,71 @@ mod test {
         };
         assert_eq!(
             data.convert_to_json().unwrap(),
-            r#"{"s":123.4568,"d":1.235,"dr":0.99,"decay":0.123}"#
+            r#"{"s":123.4568,"s_int":234.5679,"d":1.235,"dr":0.99,"decay":0.123}"#
         );
+    }
+
+    #[test]
+    fn compact_floats_preserves_minimum_fsrs_stability() {
+        let mut data = CardData {
+            fsrs_stability: Some(0.0001),
+            fsrs_stability_internal: Some(0.0001),
+            fsrs_difficulty: Some(1.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            data.convert_to_json().unwrap(),
+            r#"{"s":0.0001,"s_int":0.0001,"d":1.0}"#
+        );
+    }
+
+    #[test]
+    fn memory_state_reads_internal_stability_when_present() {
+        let data = CardData {
+            fsrs_stability: Some(12.0),
+            fsrs_stability_internal: Some(30.0),
+            fsrs_difficulty: Some(5.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            data.memory_state(),
+            Some(FsrsMemoryState {
+                stability: 12.0,
+                stability_internal: 30.0,
+                difficulty: 5.0,
+            })
+        );
+    }
+
+    #[test]
+    fn memory_state_defaults_internal_stability_to_stability() {
+        let data = CardData {
+            fsrs_stability: Some(12.0),
+            fsrs_difficulty: Some(5.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            data.memory_state(),
+            Some(FsrsMemoryState {
+                stability: 12.0,
+                stability_internal: 12.0,
+                difficulty: 5.0,
+            })
+        );
+    }
+
+    #[test]
+    fn from_card_writes_internal_stability_even_when_equal() {
+        let card = crate::card::Card {
+            memory_state: Some(FsrsMemoryState {
+                stability: 12.0,
+                stability_internal: 12.0,
+                difficulty: 5.0,
+            }),
+            ..Default::default()
+        };
+        let data = CardData::from_card(&card);
+        assert_eq!(data.fsrs_stability, Some(12.0));
+        assert_eq!(data.fsrs_stability_internal, Some(12.0));
     }
 }

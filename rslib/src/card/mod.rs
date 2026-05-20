@@ -104,8 +104,10 @@ pub struct Card {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FsrsMemoryState {
-    /// The expected memory stability, in days.
+    /// The interval where retrievability reaches 90%, in days.
     pub stability: f32,
+    /// The model's internal stability, in days.
+    pub stability_internal: f32,
     /// A number in the range 1.0-10.0. Use difficulty() for a normalized
     /// number.
     pub difficulty: f32,
@@ -489,7 +491,7 @@ impl<'a> RemainingStepsAdjuster<'a> {
 impl From<FsrsMemoryState> for MemoryState {
     fn from(value: FsrsMemoryState) -> Self {
         MemoryState {
-            stability: value.stability,
+            stability: value.stability_internal,
             difficulty: value.difficulty,
         }
     }
@@ -499,6 +501,7 @@ impl From<MemoryState> for FsrsMemoryState {
     fn from(value: MemoryState) -> Self {
         FsrsMemoryState {
             stability: value.stability,
+            stability_internal: value.stability,
             difficulty: value.difficulty,
         }
     }

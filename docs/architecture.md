@@ -331,20 +331,24 @@ Current exact-vs-scalar status:
   - Filtered deck retrievability order (`ascending` / `descending`)
 - `prop:r` filtering is exact-model-based. Search builds a temporary
   `search_exact_retrievability` table (`cid`, `r`, `s90`) from
-  `FSRS::current_retrievability` and `FSRS::interval_at_retrievability(..., 0.9)`.
-- `prop:s` filtering is exact-model-based and compares against `s90` (interval
-  at 90% retrievability), not raw stored model stability.
-- Card Info now shows both raw stored stability (`S`) and `S90`. `S90` is read
-  via scheduler helper `fsrsNextInterval(card_id, stability, desired_retention=0.9)`,
-  so it always follows the selected FSRS model/version.
-- The Card Info forgetting curve still plots retrievability from the stored
-  review-log stability values, but its hover tooltip labels and displays
-  stability as `S90`; for FSRS-7 this is derived from the same curve parameters
-  at 90% retrievability.
+  `FSRS::current_retrievability` and the stored `S90`.
+- `card.data.s` stores `S90` (the interval at 90% retrievability), so
+  `prop:s`, the browser stability column, and Card Info all use the same
+  stability value across FSRS-6 and FSRS-7.
+- The scheduler's internal stability is stored separately in `card.data.s_int`
+  on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
+  math use `s_int`; legacy card data without `s_int` treats `s` as both values.
+- The Card Info forgetting curve plots retrievability from reconstructed
+  review-log memory states. FSRS-7 reconstruction uses fractional same-day
+  review deltas from revlog timestamps, matching the scheduler path; FSRS-6
+  keeps calendar-day deltas. When the newest user-graded revlog entry matches
+  the card's last review time, Card Info uses the current stored card memory
+  state for that newest point, so the curve tooltip and the Card Info stability
+  row agree after same-day learning/relearning answers.
 - Add-on helper APIs expose exact interval-at-target-retrievability math:
   - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
   - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
   - `fsrs_interval_at_retrievability_by_config_batch([{request_index, config_id, stability}, ...], target_retrievability)`
-    These call the same per-card selected-parameter path as `prop:s`.
+    These call the per-card selected-parameter path used when writing `S90`.
 - Legacy sqlite FSRS helper expressions continue to use stored scalar decay, but
   the standard retrievability search/order paths above no longer depend on them.

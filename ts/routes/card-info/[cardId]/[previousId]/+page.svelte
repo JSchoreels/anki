@@ -17,7 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     globalThis.anki ||= {};
     globalThis.anki.updateCardInfos = async (card_id: string): Promise<void> => {
         const path = `/card-info/${card_id}`;
-        return goto(path).catch(() => {
+        return goto(path, { invalidateAll: true }).catch(() => {
             window.location.href = path;
         });
     };
@@ -26,21 +26,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <center>
     {#if data.currentInfo}
         <h3>Current</h3>
-        <CardInfo
-            stats={data.currentInfo}
-            {showRevlog}
-            {showCurve}
-            fsrsStabilityS90={data.currentFsrsStabilityS90}
-        />
+        <CardInfo stats={data.currentInfo} {showRevlog} {showCurve} />
     {/if}
     {#if data.previousInfo}
         <h3>Previous</h3>
-        <CardInfo
-            stats={data.previousInfo}
-            {showRevlog}
-            {showCurve}
-            fsrsStabilityS90={data.previousFsrsStabilityS90}
-        />
+        <CardInfo stats={data.previousInfo} {showRevlog} {showCurve} />
     {/if}
 </center>
 

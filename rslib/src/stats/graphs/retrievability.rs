@@ -127,6 +127,7 @@ mod tests {
         let timing = col.timing_today()?;
         card.memory_state = Some(FsrsMemoryState {
             stability,
+            stability_internal: stability,
             difficulty: 5.0,
         });
         card.last_review_time = Some(timing.now.adding_secs(-(elapsed_days as i64) * 86_400));

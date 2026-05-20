@@ -280,7 +280,8 @@ fn add_extract_custom_data_function(db: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// eg. extract_fsrs_variable(card.data, 's' | 'd' | 'dr') -> float | null
+/// eg. extract_fsrs_variable(card.data, 's' | 's_int' | 'd' | 'dr') -> float |
+/// null
 fn add_extract_fsrs_variable(db: &Connection) -> rusqlite::Result<()> {
     db.create_scalar_function(
         "extract_fsrs_variable",
@@ -301,6 +302,7 @@ fn add_extract_fsrs_variable(db: &Connection) -> rusqlite::Result<()> {
             let card_data = &CardData::from_str(card_data);
             Ok(match key {
                 "s" => card_data.fsrs_stability,
+                "s_int" => card_data.fsrs_stability_internal,
                 "d" => card_data.fsrs_difficulty,
                 "dr" => card_data.fsrs_desired_retention,
                 _ => panic!("invalid key: {key}"),

@@ -156,8 +156,11 @@ export function prepareData(
             const reviewTime = Number(entry.time);
             if (index === 0) {
                 lastReviewTime = reviewTime;
-                lastStability = entry.memoryState?.stability || 0;
-                lastStabilityS90 = stabilityS90(lastStability, decay, params);
+                lastStability = entry.memoryState?.stabilityInternal
+                    ?? entry.memoryState?.stability
+                    ?? 0;
+                lastStabilityS90 = entry.memoryState?.stability
+                    ?? stabilityS90(lastStability, decay, params);
                 data.push({
                     date: new Date(reviewTime * 1000),
                     daysSinceFirstLearn: 0,
@@ -194,8 +197,11 @@ export function prepareData(
             });
 
             lastReviewTime = reviewTime;
-            lastStability = entry.memoryState?.stability || 0;
-            lastStabilityS90 = stabilityS90(lastStability, decay, params);
+            lastStability = entry.memoryState?.stabilityInternal
+                ?? entry.memoryState?.stability
+                ?? 0;
+            lastStabilityS90 = entry.memoryState?.stability
+                ?? stabilityS90(lastStability, decay, params);
         });
 
     if (data.length === 0) {

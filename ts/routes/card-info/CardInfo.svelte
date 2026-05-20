@@ -16,7 +16,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let stats: CardStatsResponse | null = null;
     export let showRevlog: boolean = true;
     export let showCurve: boolean = true;
-    export let fsrsStabilityS90: number | null = null;
 
     $: fsrsEnabled = stats?.memoryState != null;
     $: desiredRetention = stats?.desiredRetention ?? 0.9;
@@ -39,7 +38,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <Container breakpoint="md" --gutter-inline="1rem" --gutter-block="0.5rem">
     {#if stats}
         <Row>
-            <CardStats {stats} {fsrsStabilityS90} />
+            <CardStats {stats} />
         </Row>
 
         {#if showRevlog}

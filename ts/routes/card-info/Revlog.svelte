@@ -76,9 +76,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             ease: formatEaseOrDifficulty(entry.ease),
             takenSecs: timeSpan(entry.takenSecs, true),
             elapsedTime,
-            stability: entry.memoryState?.stability
-                ? timeSpan(entry.memoryState.stability * 86400)
-                : "",
+            stability:
+                entry.memoryState?.stability != null
+                    ? timeSpan(entry.memoryState.stability * 86400)
+                    : "",
         };
     }
 
