@@ -519,7 +519,7 @@ jobs:
 
       - name: Package installer
         run: |
-          tools\ninja pyenv
+          tools\ninja pyenv pylib:anki
           out\pyenv\scripts\python.exe qt\tools\build_installer.py --version ${{ needs.prepare.outputs.pep440_version }} package
 
       - uses: actions/upload-artifact@v4
