@@ -20,7 +20,7 @@ from anki.decks import DeckId
 from anki.notes import NoteId
 from anki.scheduler import CustomStudyRequest, FilteredDeckForUpdate, UnburyDeck
 from anki.scheduler.base import ScheduleCardsAsNew
-from anki.scheduler.v3 import CardAnswer
+from anki.scheduler.v3 import CardAnswer, GradeNowCardOptions
 from anki.scheduler.v3 import Scheduler as V3Scheduler
 from aqt.operations import CollectionOp
 from aqt.qt import *
@@ -70,6 +70,7 @@ def grade_now(
     parent: QWidget,
     card_ids: Sequence[CardId],
     ease: int,
+    card_options: Sequence[GradeNowCardOptions] | None = None,
 ) -> CollectionOp[OpChanges]:
     if ease == 1:
         rating = CardAnswer.AGAIN
@@ -84,6 +85,7 @@ def grade_now(
         lambda col: col._backend.grade_now(
             card_ids=card_ids,
             rating=rating,
+            card_options=card_options or [],
         ),
     ).success(
         lambda _: tooltip(

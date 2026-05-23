@@ -30,10 +30,13 @@ import aqt
 import aqt.main
 import aqt.operations
 from anki import hooks
+from anki.cards import CardId
 from anki.collection import OpChanges, OpChangesOnly, Progress, SearchNode
 from anki.decks import UpdateDeckConfigs
 from anki.scheduler.v3 import SchedulingStatesWithContext, SetSchedulingStatesRequest
+from anki.stats_pb2 import CardStatsResponse
 from anki.utils import dev_mode
+from aqt import gui_hooks
 from aqt.changenotetype import ChangeNotetypeDialog
 from aqt.deckoptions import DeckOptionsDialog
 from aqt.operations import on_op_finished
@@ -802,6 +805,26 @@ def save_custom_colours() -> bytes:
     return b""
 
 
+def card_stats() -> bytes:
+    raw_output = aqt.mw.col._backend.card_stats_raw(request.data)
+    if gui_hooks.card_info_will_add_rows.count() == 0:
+        return raw_output
+
+    response = CardStatsResponse()
+    response.ParseFromString(raw_output)
+
+    from aqt.browser.card_info import CardInfoRow
+
+    rows: list[CardInfoRow] = []
+    card = aqt.mw.col.get_card(CardId(response.card_id))
+    gui_hooks.card_info_will_add_rows(rows, card)
+
+    for row in rows:
+        response.extra_rows.add(label=row.label, value=row.value)
+
+    return response.SerializeToString()
+
+
 post_handler_list = [
     congrats_info,
     get_deck_configs_for_update,
@@ -818,6 +841,7 @@ post_handler_list = [
     deck_options_require_close,
     deck_options_ready,
     save_custom_colours,
+    card_stats,
 ]
 
 
@@ -839,7 +863,6 @@ exposed_backend_list = [
     "get_notetype_names",
     "get_change_notetype_info",
     # StatsService
-    "card_stats",
     "get_review_logs",
     "graphs",
     "get_graph_preferences",

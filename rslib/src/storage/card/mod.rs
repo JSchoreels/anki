@@ -721,6 +721,20 @@ impl super::SqliteStorage {
         Ok(())
     }
 
+    pub(crate) fn setup_fsrs_preset_search_cards_table(&self) -> Result<()> {
+        self.db.execute_batch(
+            "DROP TABLE IF EXISTS fsrs_preset_search_cids;
+CREATE TEMPORARY TABLE fsrs_preset_search_cids (cid integer PRIMARY KEY NOT NULL);",
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_fsrs_preset_search_cards_table(&self) -> Result<()> {
+        self.db
+            .execute("drop table if exists fsrs_preset_search_cids", [])?;
+        Ok(())
+    }
+
     /// Injects the provided card IDs into the search_cids table, for
     /// when ids have arrived outside of a search.
     pub(crate) fn set_search_table_to_card_ids(&self, cards: &[CardId]) -> Result<()> {
@@ -730,6 +744,55 @@ impl super::SqliteStorage {
         for cid in cards {
             stmt.execute([cid])?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn set_fsrs_preset_search_table_to_card_ids(&self, cards: &[CardId]) -> Result<()> {
+        let mut stmt = self
+            .db
+            .prepare_cached("insert into fsrs_preset_search_cids values (?)")?;
+        for cid in cards {
+            stmt.execute([cid])?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_fsrs_preset_search_table_card_ids(&self, cards: &[CardId]) -> Result<()> {
+        let mut stmt = self
+            .db
+            .prepare_cached("delete from fsrs_preset_search_cids where cid = ?")?;
+        for cid in cards {
+            stmt.execute([cid])?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn setup_fsrs_preset_first_grades_table(&self) -> Result<()> {
+        self.db.execute_batch(
+            "DROP TABLE IF EXISTS fsrs_preset_first_grades;
+CREATE TEMPORARY TABLE fsrs_preset_first_grades (
+  cid integer PRIMARY KEY NOT NULL,
+  ease integer NOT NULL
+);
+INSERT INTO fsrs_preset_first_grades
+SELECT sc.cid,
+  (
+    SELECT r.ease
+    FROM revlog r
+    WHERE r.cid = sc.cid
+      AND r.ease BETWEEN 1 AND 4
+    ORDER BY r.id
+    LIMIT 1
+  ) AS ease
+FROM fsrs_preset_search_cids sc
+WHERE ease IS NOT NULL;",
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_fsrs_preset_first_grades_table(&self) -> Result<()> {
+        self.db
+            .execute("drop table if exists fsrs_preset_first_grades", [])?;
         Ok(())
     }
 

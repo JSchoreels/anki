@@ -42,6 +42,8 @@ pub(crate) struct SqlWriter<'a> {
     args: Vec<String>,
     normalize_note_text: bool,
     table: RequiredTable,
+    card_id_filter_table: Option<&'static str>,
+    first_grade_table: Option<&'static str>,
 }
 
 impl SqlWriter<'_> {
@@ -56,7 +58,19 @@ impl SqlWriter<'_> {
             args,
             normalize_note_text,
             table: item_type.required_table(),
+            card_id_filter_table: None,
+            first_grade_table: None,
         }
+    }
+
+    pub(super) fn with_card_id_filter_table(mut self, table: &'static str) -> Self {
+        self.card_id_filter_table = Some(table);
+        self
+    }
+
+    pub(super) fn with_first_grade_table(mut self, table: &'static str) -> Self {
+        self.first_grade_table = Some(table);
+        self
     }
 
     pub(super) fn build_query(
@@ -71,17 +85,39 @@ impl SqlWriter<'_> {
     }
 
     fn write_table_sql(&mut self) {
-        let sql = match self.table {
-            RequiredTable::Cards => "select c.id from cards c where ",
-            RequiredTable::Notes => "select n.id from notes n where ",
-            _ => match self.item_type {
-                ReturnItemType::Cards => "select c.id from cards c, notes n where c.nid=n.id and ",
-                ReturnItemType::Notes => {
-                    "select distinct n.id from cards c, notes n where c.nid=n.id and "
+        if let Some(filter_table) = self.card_id_filter_table {
+            let sql = match self.table {
+                RequiredTable::Cards => {
+                    format!("select c.id from {filter_table} sc, cards c where sc.cid=c.id and ")
                 }
-            },
-        };
-        self.sql.push_str(sql);
+                RequiredTable::Notes => format!(
+                    "select n.id from {filter_table} sc, cards c, notes n where sc.cid=c.id and c.nid=n.id and "
+                ),
+                _ => match self.item_type {
+                    ReturnItemType::Cards => format!(
+                        "select c.id from {filter_table} sc, cards c, notes n where sc.cid=c.id and c.nid=n.id and "
+                    ),
+                    ReturnItemType::Notes => format!(
+                        "select distinct n.id from {filter_table} sc, cards c, notes n where sc.cid=c.id and c.nid=n.id and "
+                    ),
+                },
+            };
+            self.sql.push_str(&sql);
+        } else {
+            let sql = match self.table {
+                RequiredTable::Cards => "select c.id from cards c where ",
+                RequiredTable::Notes => "select n.id from notes n where ",
+                _ => match self.item_type {
+                    ReturnItemType::Cards => {
+                        "select c.id from cards c, notes n where c.nid=n.id and "
+                    }
+                    ReturnItemType::Notes => {
+                        "select distinct n.id from cards c, notes n where c.nid=n.id and "
+                    }
+                },
+            };
+            self.sql.push_str(sql);
+        }
     }
 
     /// As an optimization we can omit the cards or notes tables from
@@ -200,6 +236,7 @@ impl SqlWriter<'_> {
             SearchNode::DeckIdWithChildren(did) => self.write_deck_id_with_children(*did)?,
             SearchNode::Notetype(notetype) => self.write_notetype(&norm(notetype)),
             SearchNode::Rated { days, ease } => self.write_rated(">", -i64::from(*days), ease)?,
+            SearchNode::FirstGrade(button) => self.write_first_grade(*button),
 
             SearchNode::Tag { tag, mode } => self.write_tag(&norm(tag), *mode),
             SearchNode::State(state) => self.write_state(state)?,
@@ -218,6 +255,31 @@ impl SqlWriter<'_> {
             SearchNode::Preset(name) => self.write_deck_preset(name)?,
         };
         Ok(())
+    }
+
+    fn write_first_grade(&mut self, button: u8) {
+        if let Some(table) = self.first_grade_table {
+            write!(
+                self.sql,
+                "c.id in (select cid from {table} where ease = {button})"
+            )
+            .unwrap();
+        } else {
+            write!(
+                self.sql,
+                "exists (
+                select 1 from revlog r
+                where r.cid = c.id
+                and r.ease = {button}
+                and r.id = (
+                    select min(first.id) from revlog first
+                    where first.cid = c.id
+                    and first.ease between 1 and 4
+                )
+            )"
+            )
+            .unwrap();
+        }
     }
 
     fn write_unqualified(
@@ -1135,6 +1197,7 @@ impl SearchNode {
             SearchNode::DeckIdsWithoutChildren(_) => RequiredTable::Cards,
             SearchNode::DeckIdWithChildren(_) => RequiredTable::Cards,
             SearchNode::Rated { .. } => RequiredTable::Cards,
+            SearchNode::FirstGrade(_) => RequiredTable::Cards,
             SearchNode::State(_) => RequiredTable::Cards,
             SearchNode::Flag(_) => RequiredTable::Cards,
             SearchNode::CardIds(_) => RequiredTable::Cards,
@@ -1384,6 +1447,11 @@ mod test {
             )
         );
         assert_eq!(s(ctx, "rated:0").0, s(ctx, "rated:1").0);
+        let first_grade_sql = s(ctx, "firstgrade:2").0;
+        assert!(first_grade_sql.contains("r.ease = 2"));
+        assert!(first_grade_sql.contains("r.cid = c.id"));
+        assert!(first_grade_sql.contains("first.cid = c.id"));
+        assert!(first_grade_sql.contains("first.ease between 1 and 4"));
 
         // resched
         assert_eq!(

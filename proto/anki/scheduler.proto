@@ -51,6 +51,8 @@ service SchedulerService {
   rpc RepositionDefaults(generic.Empty) returns (RepositionDefaultsResponse);
   rpc ComputeFsrsParams(ComputeFsrsParamsRequest)
       returns (ComputeFsrsParamsResponse);
+  rpc ComputeFsrsParamsBatch(ComputeFsrsParamsBatchRequest)
+      returns (ComputeFsrsParamsBatchResponse);
   rpc GetOptimalRetentionParameters(GetOptimalRetentionParametersRequest)
       returns (GetOptimalRetentionParametersResponse);
   rpc ComputeOptimalRetention(SimulateFsrsReviewRequest)
@@ -268,8 +270,15 @@ message SetDueDateRequest {
 }
 
 message GradeNowRequest {
+  message CardOptions {
+    int64 card_id = 1;
+    optional float desired_retention_override = 2;
+    optional SchedulingStates scheduling_states = 3;
+  }
+
   repeated int64 card_ids = 1;
   CardAnswer.Rating rating = 2;
+  repeated CardOptions card_options = 3;
 }
 
 message SortCardsRequest {
@@ -392,6 +401,33 @@ message ComputeFsrsParamsResponse {
   repeated float params = 1;
   uint32 fsrs_items = 2;
   optional bool health_check_passed = 3;
+}
+
+message ComputeFsrsParamsBatchRequest {
+  message Item {
+    string id = 1;
+    string name = 2;
+    /// The search used to gather cards for training
+    string search = 3;
+    repeated float current_params = 4;
+    int64 ignore_revlogs_before_ms = 5;
+    uint32 num_of_relearning_steps = 6;
+    optional bool include_same_day_reviews = 7;
+    optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 8;
+  }
+
+  repeated Item items = 1;
+}
+
+message ComputeFsrsParamsBatchResponse {
+  message Item {
+    string id = 1;
+    string name = 2;
+    repeated float params = 3;
+    uint32 fsrs_items = 4;
+  }
+
+  repeated Item items = 1;
 }
 
 message ComputeFsrsParamsFromItemsRequest {

@@ -1069,6 +1069,7 @@ title="{}" {}>{}</button>""".format(
     def setupThreads(self) -> None:
         self._mainThread = QThread.currentThread()
         self._background_op_count = 0
+        self._unload_profile_and_exit_pending = False
 
     def inMainThread(self) -> bool:
         return self._mainThread == QThread.currentThread()
@@ -1260,7 +1261,22 @@ title="{}" {}>{}</button>""".format(
         else:
             # ignore the event for now, as we need time to clean up
             event.ignore()
-            self.unloadProfileAndExit()
+            self._unloadProfileAndExitWhenIdle()
+
+    def _unloadProfileAndExitWhenIdle(self) -> None:
+        if self._unload_profile_and_exit_pending:
+            return
+
+        self._unload_profile_and_exit_pending = True
+        self._unloadProfileAndExitWhenIdleOnce()
+
+    def _unloadProfileAndExitWhenIdleOnce(self) -> None:
+        if self._background_op_count:
+            self.progress.single_shot(100, self._unloadProfileAndExitWhenIdleOnce)
+            return
+
+        self._unload_profile_and_exit_pending = False
+        self.unloadProfileAndExit()
 
     # Undo & autosave
     ##########################################################################

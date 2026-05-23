@@ -1,8 +1,6 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use fsrs::FSRS;
-
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
@@ -10,7 +8,6 @@ use crate::revlog::RevlogEntry;
 use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
-use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::timing::is_unix_epoch_timestamp;
 
 impl Collection {
@@ -56,17 +53,14 @@ impl Collection {
                 .get_deck(card.original_deck_id)?
                 .or_not_found(card.original_deck_id)?
         };
-        let config_id = original_deck.config_id().unwrap();
-        let preset = self
-            .get_deck_config(config_id, true)?
-            .or_not_found(config_id.to_string())?;
+        let fsrs_preset = self.fsrs_preset_for_card(&card)?;
 
         let fsrs_retrievability =
             card.memory_state
                 .zip(Some(seconds_elapsed))
                 .map(|(state, seconds)| {
                     fsrs_current_retrievability_for_params(
-                        preset.fsrs_params(),
+                        &fsrs_preset.params,
                         state.stability_internal,
                         seconds as f32 / 86_400.0,
                     )
@@ -99,14 +93,15 @@ impl Collection {
             memory_state: card.memory_state.map(Into::into),
             fsrs_retrievability: fsrs_retrievability.transpose()?,
             custom_data: card.custom_data,
-            fsrs_params: preset.fsrs_params().to_vec(),
-            preset: preset.name,
+            fsrs_params: fsrs_preset.params,
+            preset: fsrs_preset.name,
             original_deck: if original_deck != deck {
                 Some(original_deck.human_name())
             } else {
                 None
             },
             desired_retention: card.desired_retention,
+            extra_rows: vec![],
         })
     }
 
@@ -154,18 +149,12 @@ impl Collection {
         last_review_time: TimestampSecs,
         revlog: Vec<RevlogEntry>,
     ) -> Result<Vec<anki_proto::stats::card_stats_response::StatsRevlogEntry>> {
-        let deck_id = card.original_deck_id.or(card.deck_id);
-        let deck = self.get_deck(deck_id)?.or_not_found(card.deck_id)?;
-        let conf_id = DeckConfigId(deck.normal()?.config_id);
-        let config = self
-            .storage
-            .get_deck_config(conf_id)?
-            .or_not_found(conf_id)?;
-        let historical_retention = config.inner.historical_retention;
-        let params = config.fsrs_params();
-        let fsrs = FSRS::new(params)?;
+        let fsrs_preset = self.fsrs_preset_for_card(card)?;
+        let historical_retention = fsrs_preset.historical_retention;
+        let params = &fsrs_preset.params;
+        let fsrs = fsrs_preset.fsrs()?;
         let next_day_at = self.timing_today()?.next_day_at;
-        let ignore_before = ignore_revlogs_before_ms_from_config(&config)?;
+        let ignore_before = fsrs_preset.ignore_revlogs_before_ms()?;
 
         let mut result = Vec::new();
         if let Some(item) = fsrs_item_for_memory_state(
@@ -278,6 +267,11 @@ mod test {
     use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+    use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+    use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+    use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
     use crate::search::SortMode;
 
     fn fsrs7_params_for_retrievability_test() -> Vec<f32> {
@@ -363,6 +357,41 @@ mod test {
             report.fsrs_retrievability.map(|v| format!("{v:.6}")),
             Some(format!("{expected:.6}"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn card_stats_uses_card_level_fsrs_preset() -> Result<()> {
+        let mut col = Collection::new();
+        let params = fsrs7_params_for_retrievability_test();
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:card-info".into(),
+                    name: "Card Info Dynamic".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: params.clone(),
+                    desired_retention: 0.81,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "deck:Default".into(),
+                    preset_id: "addon:test:card-info".into(),
+                }],
+            },
+        )?;
+
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+        let report = col.card_stats(cid)?;
+        assert_eq!(report.preset, "Card Info Dynamic");
+        assert_eq!(report.fsrs_params, params);
         Ok(())
     }
 

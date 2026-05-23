@@ -490,6 +490,8 @@ class Reviewer:
         if self.mw.state != "review":
             # showing resetRequired screen; ignore space
             return
+        if self.card is None or self._v3 is None:
+            return
         self.state = "answer"
         c = self.card
         a = c.answer()
@@ -827,7 +829,7 @@ class Reviewer:
     def _getTypedAnswer(self) -> None:
         self.web.evalWithCallback("getTypedAnswer();", self._onTypedAnswer)
 
-    def _onTypedAnswer(self, val: None) -> None:
+    def _onTypedAnswer(self, val: str | None) -> None:
         self.typedAnswer = val or ""
         self._showAnswer()
 

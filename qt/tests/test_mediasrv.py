@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -213,3 +214,47 @@ class TestEditorPageCSP:
         assert "frame-src" not in directives
         assert "child-src" not in directives
         assert "img-src" not in directives
+
+
+class TestCardStats:
+    def test_card_info_hook_can_append_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aqt
+        from anki.stats_pb2 import CardStatsResponse
+        from aqt import gui_hooks
+        from aqt.browser.card_info import CardInfoRow
+        from aqt.mediasrv import app, card_stats
+
+        card = object()
+        response = CardStatsResponse(card_id=123)
+
+        class Backend:
+            def card_stats_raw(self, data: bytes) -> bytes:
+                return response.SerializeToString()
+
+        class Collection:
+            _backend = Backend()
+
+            def get_card(self, card_id: int) -> object:
+                assert card_id == 123
+                return card
+
+        def add_row(rows: list[CardInfoRow], hook_card: object) -> None:
+            assert hook_card is card
+            rows.append(CardInfoRow(label="Dynamic DR", value="0.71"))
+
+        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=Collection()))
+        gui_hooks.card_info_will_add_rows.append(add_row)
+        try:
+            with app.test_request_context(data=b""):
+                raw_output = card_stats()
+        finally:
+            gui_hooks.card_info_will_add_rows.remove(add_row)
+
+        output = CardStatsResponse()
+        output.ParseFromString(raw_output)
+
+        assert len(output.extra_rows) == 1
+        assert output.extra_rows[0].label == "Dynamic DR"
+        assert output.extra_rows[0].value == "0.71"

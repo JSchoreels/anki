@@ -39,6 +39,7 @@ use crate::config::BoolKey;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
+use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::new::NewCardDueOrder;
 use crate::scheduler::states::CardState;
@@ -187,8 +188,7 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::GradeNowRequest,
     ) -> Result<anki_proto::collection::OpChanges> {
-        self.grade_now(&input.card_ids.into_newtype(CardId), input.rating)
-            .map(Into::into)
+        self.grade_now(input).map(Into::into)
     }
 
     fn sort_cards(
@@ -308,6 +308,48 @@ impl crate::services::SchedulerService for Collection {
             include_same_day_reviews: input.include_same_day_reviews,
             model_version_override: input.fsrs_version.map(health_check_model_version),
         })
+    }
+
+    fn compute_fsrs_params_batch(
+        &mut self,
+        input: scheduler::ComputeFsrsParamsBatchRequest,
+    ) -> Result<scheduler::ComputeFsrsParamsBatchResponse> {
+        let mut response_meta = Vec::with_capacity(input.items.len());
+        let mut jobs = Vec::with_capacity(input.items.len());
+
+        for (index, item) in input.items.into_iter().enumerate() {
+            let prepared = self.prepare_compute_params(
+                &item.search,
+                item.ignore_revlogs_before_ms.into(),
+                &item.current_params,
+                item.num_of_relearning_steps as usize,
+                item.include_same_day_reviews,
+                item.fsrs_version.map(health_check_model_version),
+            )?;
+            response_meta.push((item.id.clone(), item.name.clone()));
+            jobs.push(ComputeParamsBatchInput {
+                index,
+                name: item.name,
+                prepared,
+            });
+        }
+
+        let items = self
+            .compute_params_batch(jobs)?
+            .into_iter()
+            .map(|output| {
+                let (id, name) = &response_meta[output.index];
+                let params = output.result?;
+                Ok(scheduler::compute_fsrs_params_batch_response::Item {
+                    id: id.clone(),
+                    name: name.clone(),
+                    params: params.params,
+                    fsrs_items: params.fsrs_items,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
     }
 
     fn simulate_fsrs_review(

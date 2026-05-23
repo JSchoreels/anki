@@ -24,6 +24,7 @@ use crate::error::Result;
 use crate::notetype::Notetype;
 use crate::notetype::NotetypeId;
 use crate::progress::ProgressState;
+use crate::scheduler::fsrs::preset::FsrsPresetOverlayCache;
 use crate::scheduler::queue::CardQueues;
 use crate::scheduler::SchedulerInfo;
 use crate::storage::SchemaVersion;
@@ -130,6 +131,7 @@ pub struct CollectionState {
     pub(crate) deck_cache: HashMap<DeckId, Arc<Deck>>,
     pub(crate) scheduler_info: Option<SchedulerInfo>,
     pub(crate) card_queues: Option<CardQueues>,
+    pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
     /// True if legacy Python code has executed SQL that has modified the
     /// database, requiring modification time to be bumped.
@@ -210,6 +212,7 @@ impl Collection {
     pub(crate) fn clear_caches(&mut self) {
         self.state.deck_cache.clear();
         self.state.notetype_cache.clear();
+        self.state.fsrs_preset_overlay_cache = None;
     }
 
     pub fn tr(&self) -> &I18n {

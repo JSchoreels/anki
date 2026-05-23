@@ -101,6 +101,7 @@ fn write_search_node(node: &SearchNode) -> String {
         NotetypeId(NotetypeIdType(i)) => format!("mid:{i}"),
         Notetype(s) => maybe_quote(&format!("note:{s}")),
         Rated { days, ease } => write_rated(days, ease),
+        FirstGrade(button) => format!("firstgrade:{button}"),
         Tag { tag, mode } => write_single_field("tag", tag, *mode),
         Duplicates { notetype_id, text } => write_dupe(notetype_id, text),
         State(k) => write_state(k),

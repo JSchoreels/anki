@@ -66,7 +66,7 @@ import sys
 import time
 import traceback
 import weakref
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import anki.latex
 from anki import hooks
@@ -99,6 +99,8 @@ anki.latex.setup_hook()
 
 
 SearchJoiner = Literal["AND", "OR"]
+FsrsPresetVersion = Literal["seven", "six", "five", "four"]
+FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 
 
 @dataclass
@@ -123,8 +125,61 @@ ExportLimit = Union[DeckIdLimit, NoteIdsLimit, CardIdsLimit, None]
 class ComputedMemoryState:
     desired_retention: float
     stability: float | None = None
+    stability_internal: float | None = None
     difficulty: float | None = None
     decay: float | None = None
+
+
+@dataclass
+class AddonFsrsPreset:
+    id: str
+    name: str
+    fsrs_version: FsrsPresetVersion
+    params: Sequence[float]
+    desired_retention: float
+    historical_retention: float
+    ignore_revlogs_before_date: str = ""
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> AddonFsrsPreset:
+        return AddonFsrsPreset(
+            id=data["id"],
+            name=data["name"],
+            fsrs_version=data.get("fsrs_version", "seven"),
+            params=data["params"],
+            desired_retention=data["desired_retention"],
+            historical_retention=data["historical_retention"],
+            ignore_revlogs_before_date=data.get("ignore_revlogs_before_date", ""),
+        )
+
+
+@dataclass
+class FsrsPresetRule:
+    search: str
+    preset_id: str
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> FsrsPresetRule:
+        return FsrsPresetRule(search=data["search"], preset_id=data["preset_id"])
+
+
+@dataclass
+class FsrsPresetOverlay:
+    presets: Sequence[AddonFsrsPreset]
+    rules: Sequence[FsrsPresetRule]
+
+    @staticmethod
+    def from_dict(data: dict[str, Any] | None) -> FsrsPresetOverlay:
+        data = data or {}
+        return FsrsPresetOverlay(
+            presets=[
+                AddonFsrsPreset.from_dict(preset) for preset in data.get("presets", [])
+            ],
+            rules=[FsrsPresetRule.from_dict(rule) for rule in data.get("rules", [])],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -927,6 +982,24 @@ class Collection(DeprecatedNamesMixin):
             key=key, value_json=to_json_bytes(val), undoable=undoable
         )
 
+    def get_fsrs_preset_overlay(self) -> FsrsPresetOverlay:
+        """Return add-on-provided FSRS presets and card matching rules."""
+        return FsrsPresetOverlay.from_dict(
+            self.get_config(FSRS_PRESET_OVERLAY_CONFIG_KEY)
+        )
+
+    def set_fsrs_preset_overlay(
+        self, overlay: FsrsPresetOverlay, *, undoable: bool = False
+    ) -> OpChanges:
+        """Set add-on-provided FSRS presets and card matching rules.
+
+        The backend validates add-on preset ids, FSRS params, search syntax, and
+        disallows FSRS metric properties in rules.
+        """
+        return self.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY, overlay.to_dict(), undoable=undoable
+        )
+
     def remove_config(self, key: str) -> OpChanges:
         return self.conf.remove(key)
 
@@ -1187,9 +1260,15 @@ class Collection(DeprecatedNamesMixin):
     def compute_memory_state(self, card_id: CardId) -> ComputedMemoryState:
         resp = self._backend.compute_memory_state(card_id)
         if resp.HasField("state"):
+            stability_internal = (
+                resp.state.stability_internal
+                if resp.state.HasField("stability_internal")
+                else resp.state.stability
+            )
             return ComputedMemoryState(
                 desired_retention=resp.desired_retention,
                 stability=resp.state.stability,
+                stability_internal=stability_internal,
                 difficulty=resp.state.difficulty,
                 decay=resp.decay,
             )

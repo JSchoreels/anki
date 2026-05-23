@@ -5,15 +5,28 @@
 
 import os
 import tempfile
-from typing import Any
+import types
+from typing import Any, cast
 
 import anki.collection as collection
+from anki.cards import CardId
+from anki.collection import AddonFsrsPreset, FsrsPresetOverlay, FsrsPresetRule
 from anki.collection import Collection as aopen
 from anki.dbproxy import emulate_named_args
 from anki.lang import TR, without_unicode_isolation
 from anki.stdmodels import _legacy_add_basic_model, get_stock_notetypes
 from anki.utils import is_win
 from tests.shared import assertException, getEmptyCol
+
+
+class FakeProto:
+    def __init__(self, **fields: Any) -> None:
+        self._fields = set(fields)
+        for key, value in fields.items():
+            setattr(self, key, value)
+
+    def HasField(self, field: str) -> bool:
+        return field in self._fields
 
 
 def test_create_open():
@@ -46,6 +59,129 @@ def test_create_open():
     assertException(Exception, lambda: aopen(newPath))
     os.chmod(newPath, 0o666)
     os.unlink(newPath)
+
+
+def test_fsrs_preset_overlay_helper():
+    col = getEmptyCol()
+    overlay = FsrsPresetOverlay(
+        presets=[
+            AddonFsrsPreset(
+                id="addon:test:medical",
+                name="Medical",
+                fsrs_version="six",
+                params=[1.0] * 21,
+                desired_retention=0.9,
+                historical_retention=0.9,
+            )
+        ],
+        rules=[
+            FsrsPresetRule(
+                search="tag:medical",
+                preset_id="addon:test:medical",
+            )
+        ],
+    )
+
+    col.set_fsrs_preset_overlay(overlay)
+    stored = col.get_fsrs_preset_overlay()
+
+    assert stored == overlay
+
+
+def test_fsrs_preset_overlay_helper_validates_rules():
+    col = getEmptyCol()
+    overlay = FsrsPresetOverlay(
+        presets=[
+            AddonFsrsPreset(
+                id="addon:test:medical",
+                name="Medical",
+                fsrs_version="six",
+                params=[1.0] * 21,
+                desired_retention=0.9,
+                historical_retention=0.9,
+            )
+        ],
+        rules=[
+            FsrsPresetRule(
+                search="prop:d>0.5",
+                preset_id="addon:test:medical",
+            )
+        ],
+    )
+
+    assertException(Exception, lambda: col.set_fsrs_preset_overlay(overlay))
+
+
+def test_fsrs_preset_overlay_helper_validates_rule_preset_ids():
+    col = getEmptyCol()
+    overlay = FsrsPresetOverlay(
+        presets=[
+            AddonFsrsPreset(
+                id="addon:test:medical",
+                name="Medical",
+                fsrs_version="six",
+                params=[1.0] * 21,
+                desired_retention=0.9,
+                historical_retention=0.9,
+            )
+        ],
+        rules=[
+            FsrsPresetRule(
+                search="tag:medical",
+                preset_id="addon:test:missing",
+            )
+        ],
+    )
+
+    assertException(Exception, lambda: col.set_fsrs_preset_overlay(overlay))
+
+
+def test_compute_memory_state_exposes_internal_stability():
+    col = object.__new__(collection.Collection)
+    col._backend = cast(
+        Any,
+        types.SimpleNamespace(
+            compute_memory_state=lambda _card_id: FakeProto(
+                desired_retention=0.9,
+                decay=0.047,
+                state=FakeProto(
+                    stability=164.3861,
+                    stability_internal=139.0,
+                    difficulty=3.189,
+                ),
+            )
+        ),
+    )
+
+    memory_state = col.compute_memory_state(CardId(123))
+
+    assert memory_state.stability == 164.3861
+    assert memory_state.stability_internal == 139.0
+    assert memory_state.difficulty == 3.189
+    assert memory_state.desired_retention == 0.9
+    assert memory_state.decay == 0.047
+
+
+def test_compute_memory_state_internal_stability_defaults_to_stability():
+    col = object.__new__(collection.Collection)
+    col._backend = cast(
+        Any,
+        types.SimpleNamespace(
+            compute_memory_state=lambda _card_id: FakeProto(
+                desired_retention=0.9,
+                decay=0.047,
+                state=FakeProto(
+                    stability=164.3861,
+                    difficulty=3.189,
+                ),
+            )
+        ),
+    )
+
+    memory_state = col.compute_memory_state(CardId(123))
+
+    assert memory_state.stability == 164.3861
+    assert memory_state.stability_internal == 164.3861
 
 
 def test_noteAddDelete():

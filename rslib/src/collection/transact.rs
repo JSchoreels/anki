@@ -28,10 +28,12 @@ impl Collection {
                 // finalize undo
                 let changes = if have_op {
                     let changes = self.op_changes();
+                    self.maybe_clear_fsrs_preset_overlay_cache_after_op(&changes);
                     self.maybe_clear_study_queues_after_op(&changes);
                     self.maybe_coalesce_note_undo_entry(&changes);
                     changes
                 } else {
+                    self.state.fsrs_preset_overlay_cache = None;
                     self.clear_study_queues();
                     // dummy value that will be discarded
                     OpChanges {
@@ -70,5 +72,16 @@ impl Collection {
         F: FnOnce(&mut Collection) -> Result<R>,
     {
         self.transact_inner(None, func).map(|out| out.output)
+    }
+
+    fn maybe_clear_fsrs_preset_overlay_cache_after_op(&mut self, changes: &OpChanges) {
+        let c = &changes.changes;
+        if c.config {
+            self.state.fsrs_preset_overlay_cache = None;
+        } else if c.card || c.note || c.deck || c.deck_config || c.tag || c.notetype {
+            if let Some(cache) = self.state.fsrs_preset_overlay_cache.as_mut() {
+                cache.clear_card_matches();
+            }
+        }
     }
 }

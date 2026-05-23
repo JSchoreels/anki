@@ -15,7 +15,6 @@ use crate::card_rendering::prettify_av_tags;
 use crate::notetype::CardTemplate;
 use crate::notetype::NotetypeKind;
 use crate::prelude::*;
-use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
 use crate::scheduler::timespan::time_span;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::template::RenderedNode;
@@ -391,14 +390,8 @@ impl RowContext {
             .memory_state
             .zip(cards[0].seconds_since_last_review(&timing))
             .map(|(state, seconds)| {
-                let fsrs_config_deck = original_deck.as_ref().unwrap_or(&deck);
-                let config_id = fsrs_config_deck.config_id().unwrap();
-                let config = col
-                    .get_deck_config(config_id, true)?
-                    .or_not_found(config_id.to_string())?;
-
-                fsrs_current_retrievability_for_params(
-                    config.fsrs_params(),
+                col.fsrs_current_retrievability_for_card(
+                    cards[0].id,
                     state.stability_internal,
                     seconds as f32 / 86_400.0,
                 )
@@ -705,6 +698,7 @@ mod tests {
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
+    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
     use crate::search::SortMode;
 
     fn fsrs7_params_for_retrievability_test() -> Vec<f32> {

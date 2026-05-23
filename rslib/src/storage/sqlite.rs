@@ -3,7 +3,6 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hasher;
 use std::path::Path;
@@ -194,14 +193,21 @@ fn add_regexp_fields_function(db: &Connection) -> rusqlite::Result<()> {
                 .get_or_create_aux(0, |vr| -> std::result::Result<_, BoxError> {
                     Ok(Regex::new(vr.as_str()?)?)
                 })?;
-            let fields = ctx.get_raw(1).as_str()?.split('\x1f');
-            let indices: HashSet<usize> = (2..ctx.len())
-                .map(|i| ctx.get(i))
-                .collect::<rusqlite::Result<_>>()?;
+            let fields = ctx.get_raw(1).as_str()?;
+            if ctx.len() == 2 {
+                return Ok(fields.split('\x1f').any(|field| re.is_match(field)));
+            }
 
-            Ok(fields.enumerate().any(|(idx, field)| {
-                (indices.is_empty() || indices.contains(&idx)) && re.is_match(field)
-            }))
+            for (idx, field) in fields.split('\x1f').enumerate() {
+                for arg_idx in 2..ctx.len() {
+                    let selected_idx: usize = ctx.get(arg_idx)?;
+                    if selected_idx == idx && re.is_match(field) {
+                        return Ok(true);
+                    }
+                }
+            }
+
+            Ok(false)
         },
     )
 }

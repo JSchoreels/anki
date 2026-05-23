@@ -34,6 +34,7 @@ SchedulingContext = scheduler_pb2.SchedulingContext
 SchedulingStatesWithContext = frontend_pb2.SchedulingStatesWithContext
 SetSchedulingStatesRequest = frontend_pb2.SetSchedulingStatesRequest
 CardAnswer = scheduler_pb2.CardAnswer
+GradeNowCardOptions = scheduler_pb2.GradeNowRequest.CardOptions
 
 
 class Scheduler(SchedulerBaseWithLegacy):

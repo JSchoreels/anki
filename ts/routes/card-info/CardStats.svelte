@@ -123,6 +123,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         statsRows.push({ label: tr2.cardStatsDeckName(), value: deck });
         statsRows.push({ label: tr2.cardStatsPreset(), value: stats.preset });
 
+        for (const row of stats.extraRows) {
+            statsRows.push({ label: row.label, value: row.value });
+        }
+
         statsRows.push({ label: tr2.cardStatsCardId(), value: stats.cardId });
         statsRows.push({ label: tr2.cardStatsNoteId(), value: stats.noteId });
 

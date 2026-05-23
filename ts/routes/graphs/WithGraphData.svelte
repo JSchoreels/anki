@@ -25,16 +25,64 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let sourceData: GraphsResponse | null = null;
     let loading = true;
-    $: updateSourceData($search, $days);
+    let activeRequestId = 0;
+    let inFlightKey = "";
+    let inFlightGraphs: Promise<GraphsResponse> | null = null;
+    let pendingSearch = $search;
+    let pendingDays = $days;
+    let updateScheduled = false;
+    $: scheduleSourceDataUpdate($search, $days);
 
-    async function updateSourceData(search: string, days: number): Promise<void> {
+    function graphData(search: string, days: number): Promise<GraphsResponse> {
+        const key = `${days}\0${search}`;
+        if (inFlightGraphs && inFlightKey === key) {
+            return inFlightGraphs;
+        }
+
+        inFlightKey = key;
+        inFlightGraphs = graphs({ search, days }).finally(() => {
+            if (inFlightKey === key) {
+                inFlightGraphs = null;
+            }
+        });
+        return inFlightGraphs;
+    }
+
+    function scheduleSourceDataUpdate(search: string, days: number): void {
+        pendingSearch = search;
+        pendingDays = days;
+        activeRequestId += 1;
+        if (updateScheduled) {
+            return;
+        }
+
+        updateScheduled = true;
+        Promise.resolve().then(() => {
+            updateScheduled = false;
+            updateSourceData(pendingSearch, pendingDays, activeRequestId);
+        });
+    }
+
+    async function updateSourceData(
+        search: string,
+        days: number,
+        requestId: number,
+    ): Promise<void> {
         // ensure the fast-loading preferences come first
         await prefsPromise;
+        if (requestId !== activeRequestId) {
+            return;
+        }
         loading = true;
         try {
-            sourceData = await graphs({ search, days });
+            const data = await graphData(search, days);
+            if (requestId === activeRequestId) {
+                sourceData = data;
+            }
         } finally {
-            loading = false;
+            if (requestId === activeRequestId) {
+                loading = false;
+            }
         }
     }
 

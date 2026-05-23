@@ -23,6 +23,7 @@ pub use self::number::I32ConfigKey;
 pub use self::string::StringKey;
 use crate::import_export::package::UpdateCondition;
 use crate::prelude::*;
+use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
 
 /// Only used when updating/undoing.
 #[derive(Debug)]
@@ -134,20 +135,29 @@ impl Collection {
     where
         K: Into<&'a str>,
     {
-        let entry = ConfigEntry::boxed(
-            key.into(),
-            serde_json::to_vec(val)?,
-            self.usn()?,
-            TimestampSecs::now(),
-        );
-        self.set_config_undoable(entry)
+        let key = key.into();
+        let value = serde_json::to_vec(val)?;
+        if key == FSRS_PRESET_OVERLAY_CONFIG_KEY {
+            self.validate_fsrs_preset_overlay_json(&value)?;
+        }
+        let entry = ConfigEntry::boxed(key, value, self.usn()?, TimestampSecs::now());
+        let changed = self.set_config_undoable(entry)?;
+        if key == FSRS_PRESET_OVERLAY_CONFIG_KEY {
+            self.state.fsrs_preset_overlay_cache = None;
+        }
+        Ok(changed)
     }
 
     pub(crate) fn remove_config_inner<'a, K>(&mut self, key: K) -> Result<()>
     where
         K: Into<&'a str>,
     {
-        self.remove_config_undoable(key.into())
+        let key = key.into();
+        self.remove_config_undoable(key)?;
+        if key == FSRS_PRESET_OVERLAY_CONFIG_KEY {
+            self.state.fsrs_preset_overlay_cache = None;
+        }
+        Ok(())
     }
 
     /// Remove all keys starting with provided prefix, which must end with '_'.

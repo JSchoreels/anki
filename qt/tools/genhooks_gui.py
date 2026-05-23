@@ -146,6 +146,18 @@ hooks = [
         legacy_no_args=True,
     ),
     Hook(
+        name="card_info_will_add_rows",
+        args=[
+            "rows: list[aqt.browser.card_info.CardInfoRow]",
+            "card: Card",
+        ],
+        doc="""Used to append add-on rows to the Card Info table.
+
+        Add-ons should append CardInfoRow instances to rows. The label and value
+        should be preformatted for display.
+        """,
+    ),
+    Hook(
         name="reviewer_will_init_answer_buttons",
         args=[
             "buttons_tuple: tuple[tuple[int, str], ...]",

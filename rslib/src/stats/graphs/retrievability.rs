@@ -28,8 +28,11 @@ impl GraphsContext {
             entry.1 += 1;
             if let Some(state) = card.memory_state {
                 let elapsed_seconds = card.seconds_since_last_review(&timing).unwrap_or_default();
-                let deck_id = card.original_deck_id.or(card.deck_id);
-                let Some(fsrs) = self.fsrs_by_deck.get(&deck_id) else {
+                let Some(preset_id) = self.fsrs_preset_by_card.get(&card.id) else {
+                    entry.0 += 0.0;
+                    continue;
+                };
+                let Some(fsrs) = self.fsrs_by_preset.get(preset_id) else {
                     entry.0 += 0.0;
                     continue;
                 };

@@ -460,6 +460,26 @@ impl Collection {
         }
     }
 
+    pub(crate) fn search_cards_in_fsrs_preset_search_table(
+        &mut self,
+        search: impl TryIntoSearch,
+        use_first_grade_table: bool,
+    ) -> Result<Vec<CardId>> {
+        let top_node = search.try_into_search()?;
+        let mut writer = SqlWriter::new(self, ReturnItemType::Cards)
+            .with_card_id_filter_table("fsrs_preset_search_cids");
+        if use_first_grade_table {
+            writer = writer.with_first_grade_table("fsrs_preset_first_grades");
+        }
+        let (sql, args) = writer.build_query(&top_node, RequiredTable::Cards)?;
+        let mut stmt = self.storage.db.prepare(&sql)?;
+        let ids = stmt
+            .query_map(params_from_iter(args.iter()), |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(AnkiError::from)?;
+        Ok(ids)
+    }
+
     pub(crate) fn all_cards_for_search(&mut self, search: impl TryIntoSearch) -> Result<Vec<Card>> {
         let guard = self.search_cards_into_table(search, SortMode::NoOrder)?;
         guard.col.storage.all_searched_cards()
@@ -707,6 +727,8 @@ mod test {
     use crate::config::BoolKey;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
 
     impl SchedTimingToday {
         pub(crate) fn zero() -> Self {
@@ -1093,6 +1115,64 @@ mod test {
         let filtered = col.search_cards(&query, SortMode::NoOrder)?;
         let expected_match = s90 > threshold;
         assert_eq!(filtered.contains(&card.id), expected_match);
+        Ok(())
+    }
+
+    #[test]
+    fn first_grade_search_matches_first_answer_button() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut notes = (0..4).map(|_| nt.new_note()).collect::<Vec<_>>();
+        for note in &mut notes {
+            col.add_note(note, DeckId(1))?;
+        }
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+
+        add_revlog(&mut col, ids[0], 1_000, 1)?;
+        add_revlog(&mut col, ids[0], 2_000, 4)?;
+        add_revlog(&mut col, ids[1], 500, 0)?;
+        add_revlog(&mut col, ids[1], 1_500, 2)?;
+        add_revlog(&mut col, ids[2], 3_000, 3)?;
+
+        assert_eq!(
+            col.search_cards("firstgrade:1", SortMode::NoOrder)?,
+            vec![ids[0]]
+        );
+        assert_eq!(
+            col.search_cards("firstgrade:2", SortMode::NoOrder)?,
+            vec![ids[1]]
+        );
+        assert_eq!(
+            col.search_cards("firstgrade:3", SortMode::NoOrder)?,
+            vec![ids[2]]
+        );
+        assert_eq!(
+            col.search_cards("firstgrade:4", SortMode::NoOrder)?,
+            Vec::<CardId>::new()
+        );
+        Ok(())
+    }
+
+    fn add_revlog(col: &mut Collection, cid: CardId, id: i64, button: u8) -> Result<()> {
+        col.storage.add_revlog_entry(
+            &RevlogEntry {
+                id: RevlogId(id),
+                cid,
+                usn: Usn(0),
+                button_chosen: button,
+                interval: 1,
+                last_interval: 0,
+                ease_factor: 2500,
+                taken_millis: 0,
+                review_kind: if button == 0 {
+                    RevlogReviewKind::Manual
+                } else {
+                    RevlogReviewKind::Learning
+                },
+            },
+            false,
+        )?;
         Ok(())
     }
 }

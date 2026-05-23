@@ -27,6 +27,10 @@ message ReviewLogs {
 }
 
 message CardStatsResponse {
+  message CardInfoRow {
+    string label = 1;
+    string value = 2;
+  }
   message StatsRevlogEntry {
     int64 time = 1;
     RevlogEntry.ReviewKind review_kind = 2;
@@ -68,6 +72,7 @@ message CardStatsResponse {
   optional string original_deck = 22;
   optional float desired_retention = 23;
   repeated float fsrs_params = 24;
+  repeated CardInfoRow extra_rows = 25;
 }
 
 message GraphsRequest {

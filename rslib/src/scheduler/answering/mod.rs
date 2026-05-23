@@ -15,7 +15,6 @@ use rand::prelude::*;
 use rand::rngs::StdRng;
 use revlog::RevlogEntryPartial;
 
-use super::fsrs::params::ignore_revlogs_before_ms_from_config;
 use super::queue::BuryMode;
 use super::states::load_balancer::LoadBalancerContext;
 use super::states::steps::LearningSteps;
@@ -36,6 +35,9 @@ use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
+use crate::scheduler::fsrs::params_fingerprint;
+use crate::scheduler::fsrs::preset::FsrsPreset;
+use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
 use crate::search::SearchNode;
@@ -73,6 +75,7 @@ struct CardStateUpdater {
     deck: Deck,
     original_deck: Deck,
     config: DeckConfig,
+    fsrs_preset: FsrsPreset,
     timing: SchedTimingToday,
     now: TimestampSecs,
     fuzz_seed: Option<u64>,
@@ -152,7 +155,7 @@ impl CardStateUpdater {
         memory_state
             .map(|state| {
                 fsrs_memory_state_for_params(
-                    self.config.fsrs_params(),
+                    &self.fsrs_preset.params,
                     fsrs::MemoryState {
                         stability: state.stability_internal,
                         difficulty: state.difficulty,
@@ -484,16 +487,19 @@ impl Collection {
                 .get_deck(card.original_deck_id)?
                 .or_not_found(card.original_deck_id)?
         };
+        let home_deck_id = home_deck.id;
+        let home_deck_config_id = home_deck.config_id().or_invalid("home deck is filtered")?;
         let config = self
             .storage
-            .get_deck_config(home_deck.config_id().or_invalid("home deck is filtered")?)?
+            .get_deck_config(home_deck_config_id)?
             .unwrap_or_default();
+        let fsrs_preset = self.fsrs_preset_for_card(&card)?;
 
-        let desired_retention = desired_retention_override
-            .unwrap_or_else(|| home_deck.effective_desired_retention(&config));
+        let desired_retention = desired_retention_override.unwrap_or(fsrs_preset.desired_retention);
         let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
+        let mut elapsed_days_for_log = None;
         let fsrs_next_states = if fsrs_enabled {
-            let params = config.fsrs_params();
+            let params = &fsrs_preset.params;
             let fsrs = FSRS::new(params)?;
             card.decay = Some(get_decay_from_params(params));
             if card.memory_state.is_none() && card.ctype != CardType::New {
@@ -506,10 +512,10 @@ impl Collection {
                     params,
                     revlog,
                     timing.next_day_at,
-                    config.inner.historical_retention,
-                    ignore_revlogs_before_ms_from_config(&config)?,
+                    fsrs_preset.historical_retention,
+                    fsrs_preset.ignore_revlogs_before_ms()?,
                 )?;
-                card.set_memory_state(&fsrs, params, item, config.inner.historical_retention)?;
+                card.set_memory_state(&fsrs, params, item, fsrs_preset.historical_retention)?;
             }
             let last_review_time = if card.last_review_time.is_some() {
                 card.last_review_time
@@ -521,6 +527,7 @@ impl Collection {
                     fsrs_elapsed_days(&card, last_review_time, timing.next_day_at, now)
                 })
                 .unwrap_or_default();
+            elapsed_days_for_log = Some(days_elapsed);
             Some(fsrs.next_states_with_elapsed_days(
                 card.memory_state.map(Into::into),
                 desired_retention,
@@ -529,13 +536,42 @@ impl Collection {
         } else {
             None
         };
+        if let Some(states) = &fsrs_next_states {
+            tracing::debug!(
+                card_id = card.id.0,
+                preset_id = ?fsrs_preset.id,
+                preset_name = fsrs_preset.name.as_str(),
+                fsrs_version = ?fsrs_preset.fsrs_version,
+                params_len = fsrs_preset.params.len(),
+                params_fingerprint = format_args!("{:016x}", params_fingerprint(&fsrs_preset.params)),
+                desired_retention = round_to_two_decimals(desired_retention),
+                desired_retention_overridden = desired_retention_override.is_some(),
+                elapsed_days = elapsed_days_for_log.map(round_to_two_decimals),
+                current_s90 = card.memory_state.map(|state| round_to_two_decimals(state.stability)),
+                current_internal_stability = card
+                    .memory_state
+                    .map(|state| round_to_two_decimals(state.stability_internal)),
+                current_difficulty = card
+                    .memory_state
+                    .map(|state| round_to_two_decimals(state.difficulty)),
+                again_internal_stability = round_to_two_decimals(states.again.memory.stability),
+                hard_internal_stability = round_to_two_decimals(states.hard.memory.stability),
+                good_internal_stability = round_to_two_decimals(states.good.memory.stability),
+                easy_internal_stability = round_to_two_decimals(states.easy.memory.stability),
+                again_interval = round_to_two_decimals(states.again.interval),
+                hard_interval = round_to_two_decimals(states.hard.interval),
+                good_interval = round_to_two_decimals(states.good.interval),
+                easy_interval = round_to_two_decimals(states.easy.interval),
+                "computed FSRS scheduling states"
+            );
+        }
         let desired_retention = fsrs_enabled.then_some(desired_retention);
         let fsrs_short_term_with_steps =
             self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
         let fsrs_learning_queues_disabled =
             fsrs_enabled && self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled);
         let fsrs_allow_short_term = if fsrs_enabled {
-            let params = config.fsrs_params();
+            let params = &fsrs_preset.params;
             if params.len() >= 19 {
                 params[17] > 0.0 && params[18] > 0.0
             } else if params.is_empty() {
@@ -549,8 +585,8 @@ impl Collection {
         };
         let original_deck = self
             .storage
-            .get_deck(home_deck.id)?
-            .or_not_found(home_deck.id)?;
+            .get_deck(home_deck_id)?
+            .or_not_found(home_deck_id)?;
         Ok(CardStateUpdater {
             fuzz_seed: get_fuzz_seed(&card, false),
             review_fuzz_config: self.review_fuzz_config(),
@@ -558,6 +594,7 @@ impl Collection {
             deck,
             original_deck,
             config,
+            fsrs_preset,
             timing,
             now,
             fsrs_next_states,
@@ -772,11 +809,17 @@ pub(crate) mod test {
     use crate::config::BoolKey;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::ReviewMix;
+    use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+    use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+    use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+    use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
     use crate::scheduler::states::LearnState;
     use crate::scheduler::states::NewState;
     use crate::scheduler::states::NormalState;
     use crate::scheduler::states::ReviewState;
     use crate::search::SortMode;
+    use crate::tests::NoteAdder;
 
     fn current_state(col: &mut Collection, card_id: CardId) -> CardState {
         col.get_scheduling_states(card_id).unwrap().current
@@ -912,6 +955,73 @@ pub(crate) mod test {
             "higher desired retention should produce a shorter Good interval"
         );
 
+        col.answer_card(&mut CardAnswer {
+            card_id: card.id,
+            current_state: override_states.current,
+            new_state: override_states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: Some(0.95),
+            from_queue: true,
+        })?;
+
+        let card = col.storage.get_card(card.id)?.unwrap();
+        assert_eq!(card.desired_retention, Some(0.95));
+
+        Ok(())
+    }
+
+    #[test]
+    fn desired_retention_override_takes_precedence_over_addon_preset() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+            config.desired_retention = 0.65;
+        });
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:matched".into(),
+                    name: "Matched".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: low_retention_fsrs7_params(),
+                    desired_retention: 0.8,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "front".into(),
+                    preset_id: "addon:test:matched".into(),
+                }],
+            },
+        )?;
+
+        NoteAdder::basic(&mut col)
+            .fields(&["front", "back"])
+            .add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
+        col.storage.update_card(&card)?;
+
+        let overlay_updater = col.card_state_updater(card.clone(), None)?;
+        assert_eq!(overlay_updater.desired_retention, Some(0.8));
+
+        let override_states =
+            col.get_scheduling_states_with_desired_retention_override(card.id, Some(0.95))?;
         col.answer_card(&mut CardAnswer {
             card_id: card.id,
             current_state: override_states.current,

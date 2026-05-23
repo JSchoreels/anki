@@ -104,6 +104,7 @@ pub enum SearchNode {
         days: u32,
         ease: RatingKind,
     },
+    FirstGrade(u8),
     Tag {
         tag: String,
         mode: FieldSearchMode,
@@ -405,6 +406,7 @@ fn search_node_for_text_with_argument<'a>(
         "edited" => parse_edited(val)?,
         "introduced" => parse_introduced(val)?,
         "rated" => parse_rated(val)?,
+        "firstgrade" => parse_first_grade(val)?,
         "is" => parse_state(val)?,
         "did" => SearchNode::DeckIdsWithoutChildren(check_id_list(val, key)?.into()),
         "mid" => parse_mid(val)?,
@@ -696,6 +698,14 @@ fn parse_rated(s: &str) -> ParseResult<'_, SearchNode> {
     let days = parse_u32(it.next().unwrap(), "rated:")?.max(1);
     let button = parse_answer_button(it.next(), s)?;
     Ok(SearchNode::Rated { days, ease: button })
+}
+
+/// eg firstgrade:1
+fn parse_first_grade(s: &str) -> ParseResult<'_, SearchNode> {
+    let RatingKind::AnswerButton(button) = parse_answer_button(Some(s), s)? else {
+        unreachable!("firstgrade always provides a button")
+    };
+    Ok(SearchNode::FirstGrade(button))
 }
 
 /// eg is:due
@@ -1083,6 +1093,7 @@ mod test {
                 kind: PropertyKind::Ease(3.3)
             })]
         );
+        assert_eq!(parse("firstgrade:1")?, vec![Search(FirstGrade(1))]);
         assert_eq!(
             parse("prop:cdn:abc<=1")?,
             vec![Search(Property {
@@ -1289,6 +1300,14 @@ mod test {
         ));
         assert!(matches!(
             failkind("rated:0:foo"),
+            SearchErrorKind::InvalidAnswerButton { .. }
+        ));
+        assert!(matches!(
+            failkind("firstgrade:0"),
+            SearchErrorKind::InvalidAnswerButton { .. }
+        ));
+        assert!(matches!(
+            failkind("firstgrade:5"),
             SearchErrorKind::InvalidAnswerButton { .. }
         ));
 

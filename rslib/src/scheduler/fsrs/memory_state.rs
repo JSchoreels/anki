@@ -13,7 +13,6 @@ use fsrs::FSRS6_DEFAULT_DECAY;
 use itertools::Either;
 use itertools::Itertools;
 
-use super::params::ignore_revlogs_before_ms_from_config;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
@@ -24,6 +23,8 @@ use crate::scheduler::answering::get_fuzz_seed;
 use crate::scheduler::fsrs::params::include_same_day_for_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
+use crate::scheduler::fsrs::params_fingerprint;
+use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::search::Negated;
@@ -530,10 +531,7 @@ impl Collection {
 
     fn fsrs_params_for_card_id(&mut self, card_id: CardId) -> Result<Vec<f32>> {
         let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
-        let deck_id = card.original_deck_id.or(card.deck_id);
-        let deck = self.get_deck(deck_id)?.or_not_found(card.deck_id)?;
-        let conf_id = DeckConfigId(deck.normal()?.config_id);
-        self.fsrs_params_for_config_id(conf_id)
+        Ok(self.fsrs_preset_for_card(&card)?.params)
     }
 
     fn fsrs_params_for_config_id(&mut self, config_id: DeckConfigId) -> Result<Vec<f32>> {
@@ -644,23 +642,14 @@ impl Collection {
         card: &Card,
         infer_from_current_card_state: bool,
     ) -> Result<ComputedMemoryState> {
-        let deck_id = card.original_deck_id.or(card.deck_id);
-        let deck = self.get_deck(deck_id)?.or_not_found(card.deck_id)?;
-        let conf_id = DeckConfigId(deck.normal()?.config_id);
-        let config = self
-            .storage
-            .get_deck_config(conf_id)?
-            .or_not_found(conf_id)?;
-
-        // Get deck-specific desired retention if available, otherwise use config
-        // default
-        let desired_retention = deck.effective_desired_retention(&config);
-
-        let historical_retention = config.inner.historical_retention;
-        let params = config.fsrs_params();
+        let fsrs_preset = self.fsrs_preset_for_card(card)?;
+        let desired_retention = fsrs_preset.desired_retention;
+        let historical_retention = fsrs_preset.historical_retention;
+        let params = &fsrs_preset.params;
         let decay = get_decay_from_params(params);
         let fsrs = FSRS::new(params)?;
         let mut revlog = self.storage.get_revlog_entries_for_card(card.id)?;
+        let revlog_count = revlog.len();
         revlog.sort_unstable_by_key(|entry| entry.id);
         let item = fsrs_item_for_memory_state(
             &fsrs,
@@ -668,7 +657,7 @@ impl Collection {
             revlog,
             self.timing_today()?.next_day_at,
             historical_retention,
-            ignore_revlogs_before_ms_from_config(&config)?,
+            fsrs_preset.ignore_revlogs_before_ms()?,
         )?;
         let memory_state = if item.is_some() || infer_from_current_card_state {
             let mut card = card.clone();
@@ -677,6 +666,23 @@ impl Collection {
         } else {
             None
         };
+        tracing::debug!(
+            card_id = card.id.0,
+            preset_id = ?fsrs_preset.id,
+            preset_name = fsrs_preset.name.as_str(),
+            fsrs_version = ?fsrs_preset.fsrs_version,
+            params_len = params.len(),
+            params_fingerprint = format_args!("{:016x}", params_fingerprint(params)),
+            desired_retention = round_to_two_decimals(desired_retention),
+            historical_retention = round_to_two_decimals(historical_retention),
+            decay = round_to_two_decimals(decay),
+            revlog_count,
+            computed_s90 = memory_state.map(|state| round_to_two_decimals(state.stability)),
+            computed_internal_stability = memory_state
+                .map(|state| round_to_two_decimals(state.stability_internal)),
+            computed_difficulty = memory_state.map(|state| round_to_two_decimals(state.difficulty)),
+            "computed FSRS memory state"
+        );
 
         Ok(ComputedMemoryState {
             memory_state,

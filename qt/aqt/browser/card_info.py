@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from google.protobuf.json_format import MessageToDict
 
@@ -23,6 +24,12 @@ from aqt.utils import (
     tr,
 )
 from aqt.webview import AnkiWebView, AnkiWebViewKind
+
+
+@dataclass
+class CardInfoRow:
+    label: str
+    value: str
 
 
 class CardInfoDialog(QDialog):

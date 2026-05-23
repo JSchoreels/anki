@@ -57,6 +57,13 @@ with `field_at_index(n.flds, ordinal)`, verifies that the trimmed field text is
 numeric, and then compares it as a real number. This means the field does not
 need to be the notetype's sort field.
 
+The `firstgrade:1..4` card search reads revlog history. It matches cards whose
+first user answer button in `revlog` was the requested grade (`1` Again, `2`
+Hard, `3` Good, `4` Easy). Manual reschedule entries (`ease = 0`) are ignored
+when deciding the first grade. The generated SQL is anchored to the current
+card row (`c.id`) so callers that combine it with `cid:<card id>` can resolve a
+single card without scanning unrelated revlog rows.
+
 Bracketed ranges such as `Frequency:[500,600]`, `Frequency:[500,600[`, and
 `Frequency:]500,600]` are implemented as two comparisons against the same
 resolved field value. `[` and `]` at the lower bound mean inclusive and
@@ -167,6 +174,20 @@ Scope:
 Deck options include an explicit FSRS version selector (`4.5/5/6/7`) stored in
 `deck_config.config.fsrs_version`. Parameter editing and optimization target the
 selected version's parameter array (`fsrs_params_4/5/6/7`).
+
+Runtime FSRS parameter lookup goes through an FSRS preset read model. Built-in
+FSRS presets are derived 1:1 from existing deck config rows, so the current
+database and sync representation remains unchanged. The FSRS preset contains
+only FSRS-specific data: selected version, selected params, desired retention,
+historical retention, and ignore-before date. Existing per-deck desired
+retention overrides are preserved during card resolution. Non-FSRS deck behavior
+continues to come from the card's home deck config.
+
+Add-on FSRS presets and ordered card-matching rules can be provided through the
+synced collection config key `fsrsPresetOverlay`. Add-on preset ids must use the
+`addon:` namespace. Rule searches are evaluated in order, but must not use
+`prop:r`, `prop:s`, or `prop:d`, because those FSRS metrics depend on derived
+FSRS state or the selected FSRS preset.
 
 Deck options also expose the global FSRS short-term toggle (`same-day review`
 behavior for learning/relearning paths) backed by
@@ -345,6 +366,10 @@ Current exact-vs-scalar status:
 - The scheduler's internal stability is stored separately in `card.data.s_int`
   on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
   math use `s_int`; legacy card data without `s_int` treats `s` as both values.
+- Python `Collection.compute_memory_state()` exposes both `stability` (`S90`) and
+  `stability_internal`. Add-ons that write `FSRSMemoryState` back to cards must
+  preserve `stability_internal`; otherwise later scheduling answers will start
+  from the display stability instead of the model's internal state.
 - The Card Info forgetting curve plots retrievability from reconstructed
   review-log memory states. FSRS-7 reconstruction uses fractional same-day
   review deltas from revlog timestamps, matching the scheduler path; FSRS-6
@@ -352,6 +377,11 @@ Current exact-vs-scalar status:
   the card's last review time, Card Info uses the current stored card memory
   state for that newest point, so the curve tooltip and the Card Info stability
   row agree after same-day learning/relearning answers.
+- Card Info resolves the card's current FSRS preset through the card-level FSRS
+  preset resolver before returning preset names, parameters, and retrievability.
+  The GUI `card_info_will_add_rows` hook appends display-only `label`/`value`
+  rows to the Card Info response after the backend stats have been read; these
+  rows are not persisted to collection storage.
 - Add-on helper APIs expose exact interval-at-target-retrievability math:
   - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
   - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
