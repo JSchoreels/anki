@@ -566,7 +566,7 @@ class Browser(QMainWindow):
             prompt = default
         else:
             search = self.col.build_search_string(SearchNode(deck="current"))
-            prompt = ""
+            prompt = search
         if card is not None:
             search = gui_hooks.default_search(search, card)
         self.search_for(search, prompt)

@@ -51,6 +51,10 @@ Search parsing and SQL generation live in `rslib/src/search/`. Arbitrary named
 field searches resolve field names against each notetype, so they read from
 `notes.flds` by field ordinal instead of relying on `notes.sfld`.
 
+When the Qt browser opens without a configured default search, it searches and
+shows `deck:current`, so additional typed terms remain scoped to the currently
+selected deck unless the user edits that scope.
+
 Numeric field comparisons such as `Frequency>500 Frequency<1500` use the same
 per-notetype field-name resolution. The generated SQL reads the matching field
 with `field_at_index(n.flds, ordinal)`, verifies that the trimmed field text is
