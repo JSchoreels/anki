@@ -438,3 +438,64 @@ def test_fsrs_interval_at_retrievability_by_config_batch_helper():
         assert intervals == [10.0, 20.0, 30.0]
     finally:
         collection.scheduler_pb2 = original_scheduler_pb2
+
+
+def test_fsrs_interval_at_retrievability_variable_batch_helper():
+    col = getEmptyCol()
+
+    class VariableBatchRequest:
+        class Item:
+            def __init__(
+                self,
+                *,
+                request_index: int,
+                card_id: int,
+                stability: float,
+                target_retrievability: float,
+            ) -> None:
+                self.request_index = request_index
+                self.card_id = card_id
+                self.stability = stability
+                self.target_retrievability = target_retrievability
+
+    class SchedulerPb2Stub:
+        FsrsIntervalAtRetrievabilityVariableBatchRequest = VariableBatchRequest
+
+    class ResponseItem:
+        def __init__(self, *, request_index: int, interval: float) -> None:
+            self.request_index = request_index
+            self.interval = interval
+
+    class DummyBackend:
+        def __init__(self) -> None:
+            self.batch_args: list[Any] | None = None
+
+        def fsrs_interval_at_retrievability_variable_batch(
+            self,
+            *,
+            items: list[Any],
+        ) -> list[ResponseItem]:
+            self.batch_args = items
+            # Return out of order to verify wrapper reorders by request_index.
+            return [
+                ResponseItem(request_index=1, interval=20.0),
+                ResponseItem(request_index=0, interval=10.0),
+            ]
+
+    backend = DummyBackend()
+    original_scheduler_pb2 = collection.scheduler_pb2
+    try:
+        collection.scheduler_pb2 = SchedulerPb2Stub  # type: ignore[assignment]
+        col._backend = backend  # type: ignore[assignment]
+        intervals = col.fsrs_interval_at_retrievability_variable_batch(
+            [(1001, 9.0, 0.9), (1002, 10.0, 0.8)],
+        )
+
+        assert backend.batch_args is not None
+        assert [item.request_index for item in backend.batch_args] == [0, 1]
+        assert [item.card_id for item in backend.batch_args] == [1001, 1002]
+        assert [item.stability for item in backend.batch_args] == [9.0, 10.0]
+        assert [item.target_retrievability for item in backend.batch_args] == [0.9, 0.8]
+        assert intervals == [10.0, 20.0]
+    finally:
+        collection.scheduler_pb2 = original_scheduler_pb2

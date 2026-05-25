@@ -577,16 +577,41 @@ impl Collection {
         cards: &[(CardId, f32)],
         target_retrievability: f32,
     ) -> Result<Vec<f32>> {
-        cards
+        let cards: Vec<(CardId, f32, f32)> = cards
             .iter()
-            .map(|(card_id, stability)| {
-                self.fsrs_interval_at_retrievability_for_card(
-                    *card_id,
-                    *stability,
-                    target_retrievability,
-                )
-            })
-            .collect()
+            .map(|(card_id, stability)| (*card_id, *stability, target_retrievability))
+            .collect();
+        self.fsrs_interval_at_retrievability_for_card_targets(&cards)
+    }
+
+    pub fn fsrs_interval_at_retrievability_for_card_targets(
+        &mut self,
+        cards: &[(CardId, f32, f32)],
+    ) -> Result<Vec<f32>> {
+        let card_ids: Vec<CardId> = cards.iter().map(|(card_id, _, _)| *card_id).collect();
+        let card_rows = self.all_cards_for_ids(&card_ids, false)?;
+        let presets_by_card = self.fsrs_presets_for_cards(&card_rows)?;
+        let mut fsrs_by_preset_id = HashMap::new();
+        let mut intervals = Vec::with_capacity(cards.len());
+
+        for (card_id, stability, target_retrievability) in cards {
+            let preset = presets_by_card.get(card_id).or_not_found(*card_id)?;
+            if !fsrs_by_preset_id.contains_key(&preset.id) {
+                fsrs_by_preset_id.insert(preset.id.clone(), FSRS::new(&preset.params)?);
+            }
+            let fsrs = fsrs_by_preset_id
+                .get(&preset.id)
+                .expect("FSRS instance inserted");
+            intervals.push(fsrs.interval_at_retrievability(
+                MemoryState {
+                    stability: *stability,
+                    difficulty: 5.0,
+                },
+                target_retrievability.clamp(0.0001, 0.9999),
+            ));
+        }
+
+        Ok(intervals)
     }
 
     pub fn fsrs_interval_at_retrievability_for_configs(
@@ -885,6 +910,10 @@ mod tests {
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::params::tests::convert;
     use crate::scheduler::fsrs::params::tests::revlog;
+    use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+    use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+    use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
     use crate::search::SortMode;
 
     /// Floating point precision can vary between platforms, and each FSRS
@@ -1401,6 +1430,97 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert!((batch[0] - singular_1).abs() < 1e-6);
         assert!((batch[1] - singular_2).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_batch_uses_overlay_presets() -> Result<()> {
+        let mut col = Collection::new();
+        let deck_params = DEFAULT_PARAMETERS.to_vec();
+        set_selected_fsrs_params_for_deck(
+            &mut col,
+            DeckId(1),
+            FsrsVersion::Seven,
+            deck_params.clone(),
+        )?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut tagged_note = nt.new_note();
+        let mut fallback_note = nt.new_note();
+        col.add_note(&mut tagged_note, DeckId(1))?;
+        col.add_note(&mut fallback_note, DeckId(1))?;
+        col.add_tags_to_notes(&[tagged_note.id], "medical")?;
+
+        let addon_params = vec![1.0; 21];
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:medical".into(),
+                    name: "Medical".into(),
+                    fsrs_version: AddonFsrsVersion::Six,
+                    params: addon_params.clone(),
+                    desired_retention: 0.81,
+                    historical_retention: 0.71,
+                    ignore_revlogs_before_date: String::new(),
+                }],
+                rules: vec![crate::scheduler::fsrs::preset::FsrsPresetRule {
+                    search: "tag:medical".into(),
+                    preset_id: "addon:test:medical".into(),
+                }],
+            },
+        )?;
+
+        let cids = col.search_cards("", SortMode::NoOrder)?;
+        let cards = col.all_cards_for_ids(&cids, false)?;
+        let tagged_card = cards
+            .iter()
+            .find(|card| card.note_id == tagged_note.id)
+            .or_not_found(tagged_note.id)?;
+        let fallback_card = cards
+            .iter()
+            .find(|card| card.note_id == fallback_note.id)
+            .or_not_found(fallback_note.id)?;
+        let target_retrievability = 0.9;
+
+        let intervals = col.fsrs_interval_at_retrievability_for_cards(
+            &[(tagged_card.id, 12.0), (fallback_card.id, 24.0)],
+            target_retrievability,
+        )?;
+        let expected_tagged =
+            fsrs_interval_at_retrievability_for_params(&addon_params, 12.0, target_retrievability)?;
+        let expected_fallback =
+            fsrs_interval_at_retrievability_for_params(&deck_params, 24.0, target_retrievability)?;
+
+        assert_eq!(intervals.len(), 2);
+        assert!((intervals[0] - expected_tagged).abs() < 1e-6);
+        assert!((intervals[1] - expected_fallback).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_interval_at_retrievability_variable_batch_uses_item_targets() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+
+        let mut card_ids = col.search_cards("", SortMode::NoOrder)?;
+        card_ids.sort();
+        let cards = vec![(card_ids[0], 12.0, 0.9), (card_ids[1], 12.0, 0.8)];
+
+        let intervals = col.fsrs_interval_at_retrievability_for_card_targets(&cards)?;
+        let singular_1 = col.fsrs_interval_at_retrievability_for_card(card_ids[0], 12.0, 0.9)?;
+        let singular_2 = col.fsrs_interval_at_retrievability_for_card(card_ids[1], 12.0, 0.8)?;
+
+        assert_eq!(intervals.len(), 2);
+        assert!((intervals[0] - singular_1).abs() < 1e-6);
+        assert!((intervals[1] - singular_2).abs() < 1e-6);
+        require!(
+            intervals[0] != intervals[1],
+            "test requires distinct targets"
+        );
         Ok(())
     }
 

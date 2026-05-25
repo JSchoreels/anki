@@ -18,6 +18,8 @@ use anki_proto::scheduler::FsrsIntervalAtRetrievabilityBatchResponse;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityByConfigBatchRequest;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityByConfigBatchResponse;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityResponse;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityVariableBatchRequest;
+use anki_proto::scheduler::FsrsIntervalAtRetrievabilityVariableBatchResponse;
 use anki_proto::scheduler::FsrsNextIntervalRequest;
 use anki_proto::scheduler::FsrsNextIntervalResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
@@ -650,6 +652,36 @@ impl crate::services::SchedulerService for Collection {
             })
             .collect();
         Ok(FsrsIntervalAtRetrievabilityBatchResponse { items })
+    }
+
+    fn fsrs_interval_at_retrievability_variable_batch(
+        &mut self,
+        input: FsrsIntervalAtRetrievabilityVariableBatchRequest,
+    ) -> Result<FsrsIntervalAtRetrievabilityVariableBatchResponse> {
+        let cards: Vec<(CardId, f32, f32)> = input
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.card_id.into(),
+                    item.stability,
+                    item.target_retrievability,
+                )
+            })
+            .collect();
+        let intervals = self.fsrs_interval_at_retrievability_for_card_targets(&cards)?;
+        let items = input
+            .items
+            .into_iter()
+            .zip(intervals)
+            .map(|(item, interval)| {
+                scheduler::fsrs_interval_at_retrievability_variable_batch_response::Item {
+                    request_index: item.request_index,
+                    interval,
+                }
+            })
+            .collect();
+        Ok(FsrsIntervalAtRetrievabilityVariableBatchResponse { items })
     }
 
     fn fsrs_interval_at_retrievability_by_config_batch(

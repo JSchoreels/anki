@@ -389,7 +389,12 @@ Current exact-vs-scalar status:
 - Add-on helper APIs expose exact interval-at-target-retrievability math:
   - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
   - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
+  - `fsrs_interval_at_retrievability_variable_batch([{card_id, stability, target_retrievability}, ...])`
   - `fsrs_interval_at_retrievability_by_config_batch([{request_index, config_id, stability}, ...], target_retrievability)`
-    These call the per-card selected-parameter path used when writing `S90`.
+    The card batch helper resolves card presets with the batch preset resolver
+    and reuses one FSRS instance per resolved preset. The variable card batch
+    helper uses the same preset path while allowing each item to request a
+    different target retrievability. The config batch helper reads deck config
+    parameters directly.
 - Legacy sqlite FSRS helper expressions continue to use stored scalar decay, but
   the standard retrievability search/order paths above no longer depend on them.

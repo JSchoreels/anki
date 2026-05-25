@@ -80,6 +80,9 @@ service SchedulerService {
   rpc FsrsIntervalAtRetrievabilityBatch(
       FsrsIntervalAtRetrievabilityBatchRequest)
       returns (FsrsIntervalAtRetrievabilityBatchResponse);
+  rpc FsrsIntervalAtRetrievabilityVariableBatch(
+      FsrsIntervalAtRetrievabilityVariableBatchRequest)
+      returns (FsrsIntervalAtRetrievabilityVariableBatchResponse);
   rpc FsrsIntervalAtRetrievabilityByConfigBatch(
       FsrsIntervalAtRetrievabilityByConfigBatchRequest)
       returns (FsrsIntervalAtRetrievabilityByConfigBatchResponse);
@@ -620,6 +623,24 @@ message FsrsIntervalAtRetrievabilityBatchRequest {
 message FsrsIntervalAtRetrievabilityBatchResponse {
   message Item {
     int64 card_id = 1;
+    float interval = 2;
+  }
+  repeated Item items = 1;
+}
+
+message FsrsIntervalAtRetrievabilityVariableBatchRequest {
+  message Item {
+    uint32 request_index = 1;
+    int64 card_id = 2;
+    float stability = 3;
+    float target_retrievability = 4;
+  }
+  repeated Item items = 1;
+}
+
+message FsrsIntervalAtRetrievabilityVariableBatchResponse {
+  message Item {
+    uint32 request_index = 1;
     float interval = 2;
   }
   repeated Item items = 1;

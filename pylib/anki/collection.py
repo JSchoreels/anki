@@ -1325,6 +1325,24 @@ class Collection(DeprecatedNamesMixin):
         )
         return {CardId(item.card_id): item.interval for item in resp_items}
 
+    def fsrs_interval_at_retrievability_variable_batch(
+        self, items: Sequence[tuple[CardId, float, float]]
+    ) -> list[float]:
+        req_items = [
+            scheduler_pb2.FsrsIntervalAtRetrievabilityVariableBatchRequest.Item(
+                request_index=i,
+                card_id=card_id,
+                stability=stability,
+                target_retrievability=target_retrievability,
+            )
+            for i, (card_id, stability, target_retrievability) in enumerate(items)
+        ]
+        resp_items = self._backend.fsrs_interval_at_retrievability_variable_batch(
+            items=req_items,
+        )
+        by_index = {item.request_index: item.interval for item in resp_items}
+        return [by_index[i] for i in range(len(items))]
+
     def fsrs_interval_at_retrievability_by_config_batch(
         self, items: Sequence[tuple[int, float]], target_retrievability: float
     ) -> list[float]:
