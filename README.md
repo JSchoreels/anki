@@ -74,7 +74,7 @@ The following add-ons have been adapted for this fork:
 - [Dynamic Desired Retention](https://ankiweb.net/shared/info/160848019?cb=1778705771363):
   add-on for overriding desired retention on cards matched by ordered Anki
   search rules, such as `Frequency<1000`.
-- [FSRS Dynamic Preset Selection](https://github.com/JSchoreels/anki-fsrs-dynamic-preset-selection):
+- [FSRS Dynamic Preset Selection](https://ankiweb.net/shared/info/1798968356?cb=1779797013168):
   add-on for selecting card-specific FSRS presets from ordered Anki search
   rules, decoupling FSRS parameters from deck preset assignment.
 - [AnkiConnect Extended](https://ankiweb.net/shared/info/1635024181?cb=1778339678165):
