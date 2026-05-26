@@ -123,6 +123,7 @@ export async function _updateQA(
     _unusused: unknown,
     onupdate: Callback,
     onshown: Callback,
+    updateContext?: string,
 ): Promise<void> {
     onUpdateHook.length = 0;
     onUpdateHook.push(onupdate);
@@ -160,9 +161,18 @@ export async function _updateQA(
     qa.style.opacity = "1";
 
     await _runHook(onShownHook);
+
+    if (updateContext) {
+        bridgeCommand(`qaUpdated:${updateContext}`);
+    }
 }
 
-export function _showQuestion(q: string, a: string, bodyclass: string): void {
+export function _showQuestion(
+    q: string,
+    a: string,
+    bodyclass: string,
+    updateContext?: string,
+): void {
     _queueAction(() =>
         _updateQA(
             q,
@@ -182,6 +192,7 @@ export function _showQuestion(q: string, a: string, bodyclass: string): void {
                 // preload images
                 allImagesLoaded().then(() => preloadAnswerImages(a));
             },
+            updateContext,
         )
     );
 }
@@ -190,7 +201,11 @@ function scrollToAnswer(): void {
     document.getElementById("answer")?.scrollIntoView();
 }
 
-export function _showAnswer(a: string, bodyclass: string): void {
+export function _showAnswer(
+    a: string,
+    bodyclass?: string | null,
+    updateContext?: string,
+): void {
     _queueAction(() =>
         _updateQA(
             a,
@@ -207,6 +222,7 @@ export function _showAnswer(a: string, bodyclass: string): void {
             function() {
                 /* noop */
             },
+            updateContext,
         )
     );
 }

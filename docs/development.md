@@ -83,6 +83,29 @@ You can also run specific checks. For example, if you see during the checks
 that `check:svelte:editor` is failing, you can use `./ninja check:svelte:editor`
 to re-run that check, or `./ninja check:svelte` to re-run all Svelte checks.
 
+### Known issue: direct Qt pytest imports the wrong Anki package
+
+Running a targeted Qt test directly with `python3 -m pytest qt/tests/...` can
+import a globally installed `anki` package instead of this checkout. A common
+symptom is a collection error in `aqt.mediasrv` before any tests are collected:
+
+```
+assert hasattr(RustBackend, f"{endpoint}_raw")
+```
+
+This happens when the generated backend wrapper from the active Python
+environment does not match this fork's backend endpoints.
+
+Build the local Python and Qt outputs first, then put them on `PYTHONPATH`:
+
+```
+./ninja pylib qt
+PYTHONPATH=pylib:out/pylib:out/qt python3 -m pytest qt/tests/test_reviewer.py
+```
+
+The repo's ninja/just test targets set up the generated outputs for normal test
+runs. Use the explicit `PYTHONPATH` form for one-off targeted Qt pytest commands.
+
 ## Fixing formatting
 
 When formatting issues are reported, they can be fixed with

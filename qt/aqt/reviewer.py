@@ -169,6 +169,9 @@ class Reviewer:
         self._refresh_needed: RefreshNeeded | None = None
         self._v3: V3CardInfo | None = None
         self._desired_retention_override: float | None = None
+        self._qa_update_id = 0
+        self._answer_update_id: int | None = None
+        self._answer_rendered = False
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
         self.bottom = BottomBar(mw, mw.bottomWeb)
         self._card_info = ReviewerCardInfo(self.mw)
@@ -250,6 +253,10 @@ class Reviewer:
             self._showAnswer()
         else:
             self._showQuestion()
+
+    def _next_qa_update_context(self, kind: str) -> str:
+        self._qa_update_id += 1
+        return f"{kind}:{self._qa_update_id}"
 
     # Fetching a card
     ##########################################################################
@@ -421,9 +428,11 @@ class Reviewer:
 
         bodyclass = theme_manager.body_classes_for_card_ord(c.ord)
         a = self.mw.col.media.escape_media_filenames(c.answer())
+        update_context = self._next_qa_update_context("question")
 
         self.web.eval(
-            f"_showQuestion({json.dumps(q)}, {json.dumps(a)}, '{bodyclass}');"
+            f"_showQuestion({json.dumps(q)}, {json.dumps(a)}, "
+            f"{json.dumps(bodyclass)}, {json.dumps(update_context)});"
         )
         self._update_flag_icon()
         self._update_mark_icon()
@@ -506,12 +515,25 @@ class Reviewer:
         av_player.play_tags(sounds)
         a = self._mungeQA(a)
         a = gui_hooks.card_will_show(a, c, "reviewAnswer")
-        # render and update bottom
-        self.web.eval(f"_showAnswer({json.dumps(a)});")
+        self._answer_rendered = False
+        update_context = self._next_qa_update_context("answer")
+        self._answer_update_id = self._qa_update_id
+        self.web.eval(
+            f"_showAnswer({json.dumps(a)}, null, {json.dumps(update_context)});"
+        )
+
+    def _on_answer_rendered(self, update_id: int) -> None:
+        if (
+            self.state != "answer"
+            or self.card is None
+            or self._answer_update_id != update_id
+        ):
+            return
+        self._answer_rendered = True
+        self.web.update()
         self._showEaseButtons()
         self.mw.web.setFocus()
-        # user hook
-        gui_hooks.reviewer_did_show_answer(c)
+        gui_hooks.reviewer_did_show_answer(self.card)
         self._auto_advance_to_question_if_enabled()
 
     def _auto_advance_to_question_if_enabled(self) -> None:
@@ -564,7 +586,7 @@ class Reviewer:
         if self.mw.state != "review":
             # showing resetRequired screen; ignore key
             return
-        if self.state != "answer":
+        if self.state != "answer" or not self._answer_rendered:
             return
         proceed, ease = gui_hooks.reviewer_will_answer_card(
             (True, ease), self, self.card
@@ -718,6 +740,13 @@ class Reviewer:
             self.mw.toolbarWeb.update_background_image()
         elif url == "statesMutated":
             self._states_mutated = True
+        elif url.startswith("qaUpdated:answer:"):
+            try:
+                self._on_answer_rendered(int(url.split(":")[-1]))
+            except ValueError:
+                pass
+        elif url.startswith("qaUpdated:"):
+            self.web.update()
         else:
             print("unrecognized anki link:", url)
 
