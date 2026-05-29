@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 pub(crate) mod batch;
+pub(crate) mod dynamic_desired_retention;
 mod error;
 pub mod memory_state;
 pub mod params;

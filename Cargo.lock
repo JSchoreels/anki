@@ -2255,7 +2255,7 @@ dependencies = [
 [[package]]
 name = "fsrs"
 version = "6.0.0"
-source = "git+https://github.com/JSchoreels/fsrs-rs.git?rev=1b19fce8fef7ce306e5d92f8b94832e799e2a41e#1b19fce8fef7ce306e5d92f8b94832e799e2a41e"
+source = "git+https://github.com/JSchoreels/fsrs-rs.git?branch=feature/fsrs-7-adr#d2936c6997d3e8163b4f9ae0227bdbaa07f6eb48"
 dependencies = [
  "burn",
  "itertools 0.14.0",
@@ -2263,6 +2263,7 @@ dependencies = [
  "ndarray 0.17.2",
  "priority-queue",
  "rand 0.9.4",
+ "rand_distr",
  "rayon",
  "serde",
  "snafu",

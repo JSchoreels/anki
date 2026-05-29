@@ -143,6 +143,10 @@ message DeckConfig {
     repeated float fsrs_params_6 = 6;
     repeated float fsrs_params_7 = 52;
     uint32 fsrs_minimum_interval_secs = 54;
+    bool fsrs_dynamic_desired_retention_enabled = 55;
+    repeated float fsrs_dynamic_desired_retention_params = 56;
+    repeated float fsrs_dynamic_desired_retention_weights = 57;
+    repeated float fsrs_dynamic_desired_retention_avg_drs = 58;
 
     // consider saving remaining ones for fsrs param changes
     reserved 7 to 8;

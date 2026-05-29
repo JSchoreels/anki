@@ -33,6 +33,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
     import ParamsInputRow from "./ParamsInputRow.svelte";
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
+    import DynamicDesiredRetentionPlotModal from "./DynamicDesiredRetentionPlotModal.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
         deltaClass,
@@ -56,6 +57,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         readFsrsSearchSettings,
         withFsrsSearchSettings,
     } from "./fsrs-search-settings";
+    import {
+        costWeightForAverageDr,
+        dynamicDesiredRetentionEnabled,
+        validCalibration,
+        validPolicyParams,
+    } from "./dynamic-desired-retention";
     import {
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
         HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
@@ -947,6 +954,32 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let simulatorModal: Modal;
     let workloadModal: Modal;
+    let dynamicDesiredRetentionPlotModal: Modal;
+    const dynamicDesiredRetentionCalibrationCounts = Array.from(
+        { length: 31 },
+        (_, index) => index + 2,
+    );
+    dynamicDesiredRetentionCalibrationCounts.unshift(0);
+    $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
+        effectiveDesiredRetention,
+        $config.fsrsDynamicDesiredRetentionWeights,
+        $config.fsrsDynamicDesiredRetentionAvgDrs,
+    );
+    $: dynamicDesiredRetentionConfigReady = dynamicDesiredRetentionEnabled($config);
+    $: dynamicDesiredRetentionReady = dynamicDesiredRetentionConfigReady
+        && dynamicDesiredRetentionWeight !== null;
+    $: dynamicDesiredRetentionWarning =
+        $config.fsrsDynamicDesiredRetentionEnabled
+            && (!validPolicyParams($config.fsrsDynamicDesiredRetentionParams)
+                || !validCalibration(
+                    $config.fsrsDynamicDesiredRetentionWeights,
+                    $config.fsrsDynamicDesiredRetentionAvgDrs,
+                ))
+            ? "Dynamic DR requires 15 SSP-MMC parameters and matching calibration arrays."
+            : dynamicDesiredRetentionConfigReady
+                && dynamicDesiredRetentionWeight === null
+              ? "Dynamic DR target is outside the calibrated average DR range."
+            : "";
 </script>
 
 <DynamicallySlottable slotHost={Item} api={{}}>
@@ -1102,6 +1135,58 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ParamsInputRow>
     {/if}
 
+    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
+        <SwitchRow
+            bind:value={$config.fsrsDynamicDesiredRetentionEnabled}
+            defaultValue={false}
+        >
+            <SettingTitle>Dynamic DR (SSP-MMC)</SettingTitle>
+        </SwitchRow>
+
+        {#if $config.fsrsDynamicDesiredRetentionEnabled}
+            <ParamsInputRow
+                bind:value={$config.fsrsDynamicDesiredRetentionParams}
+                defaultValue={[]}
+                validParamCounts={[0, 15]}
+                ariaLabel="Dynamic DR SSP-MMC parameters"
+            >
+                <SettingTitle>SSP-MMC Parameters</SettingTitle>
+            </ParamsInputRow>
+            <ParamsInputRow
+                bind:value={$config.fsrsDynamicDesiredRetentionWeights}
+                defaultValue={[]}
+                validParamCounts={dynamicDesiredRetentionCalibrationCounts}
+                ariaLabel="Dynamic DR calibration weights"
+            >
+                <SettingTitle>Calibration Weights</SettingTitle>
+            </ParamsInputRow>
+            <ParamsInputRow
+                bind:value={$config.fsrsDynamicDesiredRetentionAvgDrs}
+                defaultValue={[]}
+                validParamCounts={dynamicDesiredRetentionCalibrationCounts}
+                ariaLabel="Dynamic DR calibration average desired retentions"
+            >
+                <SettingTitle>Calibration Avg ADR DRs</SettingTitle>
+            </ParamsInputRow>
+            <div class="dynamic-dr-actions">
+                <span>
+                    Weight:
+                    {dynamicDesiredRetentionWeight === null
+                        ? "n/a"
+                        : dynamicDesiredRetentionWeight.toFixed(2)}
+                </span>
+                <button
+                    class="btn btn-outline-primary"
+                    disabled={!dynamicDesiredRetentionReady}
+                    on:click={() => dynamicDesiredRetentionPlotModal?.show()}
+                >
+                    Visualize DR plot
+                </button>
+            </div>
+            <Warning warning={dynamicDesiredRetentionWarning} className="alert-warning" />
+        {/if}
+    {/if}
+
     <ParamsSearchRow bind:value={$config.paramSearch} placeholder={defaultparamSearch}>
         <SettingTitle>Optimize Search Filter</SettingTitle>
     </ParamsSearchRow>
@@ -1176,6 +1261,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {computing}
     {openHelpModal}
     {onPresetChange}
+/>
+
+<DynamicDesiredRetentionPlotModal
+    bind:modal={dynamicDesiredRetentionPlotModal}
+    params={$config.fsrsDynamicDesiredRetentionParams}
+    calibrationWeights={$config.fsrsDynamicDesiredRetentionWeights}
+    calibrationAvgDrs={$config.fsrsDynamicDesiredRetentionAvgDrs}
+    targetAverageDr={effectiveDesiredRetention}
 />
 
 {#if sameDayDecisionComparison}
@@ -1544,6 +1637,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     .optimization-popup-actions {
         padding: 0 1rem 0.25rem;
+    }
+
+    .dynamic-dr-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin: 0.5rem 0 0.75rem;
+        font-size: 0.9rem;
     }
 
     .optimize-delta.better {

@@ -34,7 +34,7 @@ rev = "184b2ca50ed39ca43da13f0b830a463861adb9ca"
 
 [workspace.dependencies.fsrs]
 git = "https://github.com/JSchoreels/fsrs-rs.git"
-rev = "1b19fce8fef7ce306e5d92f8b94832e799e2a41e"
+branch = "feature/fsrs-7-adr"
 
 [workspace.dependencies]
 # local

@@ -32,6 +32,7 @@ use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
 use crate::prelude::*;
+use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionStates;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
@@ -84,6 +85,8 @@ struct CardStateUpdater {
     fsrs_next_states: Option<NextStates>,
     /// Set if FSRS is enabled.
     desired_retention: Option<f32>,
+    /// Set if dynamic DR is enabled; indexed by answer button order.
+    dynamic_desired_retentions: Option<[f32; 4]>,
     fsrs_short_term_with_steps: bool,
     fsrs_learning_queues_disabled: bool,
     fsrs_allow_short_term: bool,
@@ -169,6 +172,7 @@ impl CardStateUpdater {
         &mut self,
         current: CardState,
         next: CardState,
+        rating: Rating,
     ) -> Result<RevlogEntryPartial> {
         let revlog = match next {
             CardState::Normal(normal) => {
@@ -186,14 +190,15 @@ impl CardStateUpdater {
                     }
                 }
                 // apply normal scheduling
-                self.apply_normal_study_state(current, normal)?
+                self.apply_normal_study_state(current, normal, rating)?
             }
             CardState::Filtered(filtered) => {
                 self.ensure_filtered()?;
                 match filtered {
                     FilteredState::Preview(next) => self.apply_preview_state(current, next),
                     FilteredState::Rescheduling(next) => {
-                        let revlog = self.apply_normal_study_state(current, next.original_state)?;
+                        let revlog =
+                            self.apply_normal_study_state(current, next.original_state, rating)?;
                         self.card.original_due = self.card.due;
 
                         revlog
@@ -209,9 +214,13 @@ impl CardStateUpdater {
         &mut self,
         current: CardState,
         next: NormalState,
+        rating: Rating,
     ) -> Result<RevlogEntryPartial> {
         self.card.reps += 1;
-        self.card.desired_retention = self.desired_retention;
+        self.card.desired_retention = self
+            .dynamic_desired_retentions
+            .map(|retentions| retentions[rating.index()])
+            .or(self.desired_retention);
 
         let revlog = match next {
             NormalState::New(next) => self.apply_new_state(current, next),
@@ -251,6 +260,10 @@ impl Rating {
             Rating::Good => 3,
             Rating::Easy => 4,
         }
+    }
+
+    fn index(self) -> usize {
+        self.as_number() as usize - 1
     }
 }
 
@@ -362,7 +375,8 @@ impl Collection {
             answer.current_state,
         );
 
-        let revlog_partial = updater.apply_study_state(current_state, answer.new_state)?;
+        let revlog_partial =
+            updater.apply_study_state(current_state, answer.new_state, answer.rating)?;
         self.add_partial_revlog(revlog_partial, usn, answer)?;
 
         self.update_deck_stats_from_answer(usn, answer, &updater, original.queue)?;
@@ -498,6 +512,7 @@ impl Collection {
         let desired_retention = desired_retention_override.unwrap_or(fsrs_preset.desired_retention);
         let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
         let mut elapsed_days_for_log = None;
+        let mut dynamic_desired_retention = None::<DynamicDesiredRetentionStates>;
         let fsrs_next_states = if fsrs_enabled {
             let params = &fsrs_preset.params;
             let fsrs = FSRS::new(params)?;
@@ -528,11 +543,24 @@ impl Collection {
                 })
                 .unwrap_or_default();
             elapsed_days_for_log = Some(days_elapsed);
-            Some(fsrs.next_states_with_elapsed_days(
-                card.memory_state.map(Into::into),
-                desired_retention,
-                days_elapsed,
-            )?)
+            let current_memory_state = card.memory_state.map(Into::into);
+            if let Some(dynamic_dr) = fsrs_preset.dynamic_desired_retention.as_ref() {
+                let dynamic_states = dynamic_dr.next_states(
+                    &fsrs,
+                    current_memory_state,
+                    desired_retention,
+                    days_elapsed,
+                )?;
+                let states = dynamic_states.states.clone();
+                dynamic_desired_retention = Some(dynamic_states);
+                Some(states)
+            } else {
+                Some(fsrs.next_states_with_elapsed_days(
+                    current_memory_state,
+                    desired_retention,
+                    days_elapsed,
+                )?)
+            }
         } else {
             None
         };
@@ -546,6 +574,10 @@ impl Collection {
                 params_fingerprint = format_args!("{:016x}", params_fingerprint(&fsrs_preset.params)),
                 desired_retention = round_to_two_decimals(desired_retention),
                 desired_retention_overridden = desired_retention_override.is_some(),
+                dynamic_desired_retention = dynamic_desired_retention.is_some(),
+                dynamic_desired_retention_weight = dynamic_desired_retention
+                    .as_ref()
+                    .map(|value| round_to_two_decimals(value.cost_weight)),
                 elapsed_days = elapsed_days_for_log.map(round_to_two_decimals),
                 current_s90 = card.memory_state.map(|state| round_to_two_decimals(state.stability)),
                 current_internal_stability = card
@@ -566,6 +598,8 @@ impl Collection {
             );
         }
         let desired_retention = fsrs_enabled.then_some(desired_retention);
+        let dynamic_desired_retentions =
+            dynamic_desired_retention.map(|value| value.desired_retentions);
         let fsrs_short_term_with_steps =
             self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
         let fsrs_learning_queues_disabled =
@@ -599,6 +633,7 @@ impl Collection {
             now,
             fsrs_next_states,
             desired_retention,
+            dynamic_desired_retentions,
             fsrs_short_term_with_steps,
             fsrs_learning_queues_disabled,
             fsrs_allow_short_term,

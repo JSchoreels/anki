@@ -10,10 +10,12 @@
 
     export let value: number[];
     export let defaultValue: number[];
+    export let validParamCounts = [0, 17, 19, 21, 35];
+    export let ariaLabel = "FSRS Parameters";
 </script>
 
 <slot />
 <ConfigInput>
-    <ParamsInput bind:value />
+    <ParamsInput bind:value {validParamCounts} {ariaLabel} />
     <RevertButton slot="revert" bind:value {defaultValue} />
 </ConfigInput>

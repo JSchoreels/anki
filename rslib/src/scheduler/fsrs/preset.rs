@@ -15,6 +15,7 @@ use crate::deckconfig::DeckConfigId;
 use crate::deckconfig::FsrsVersion;
 use crate::decks::Deck;
 use crate::prelude::*;
+use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetention;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
 use crate::search::FieldSearchMode;
 use crate::search::Node;
@@ -38,6 +39,7 @@ pub(crate) struct FsrsPreset {
     pub fsrs_version: FsrsVersion,
     pub params: Vec<f32>,
     pub desired_retention: f32,
+    pub dynamic_desired_retention: Option<DynamicDesiredRetention>,
     pub historical_retention: f32,
     pub ignore_revlogs_before_date: String,
 }
@@ -102,17 +104,24 @@ pub(crate) struct FsrsPresetRule {
 }
 
 impl FsrsPreset {
-    pub(crate) fn from_deck_config(config: &DeckConfig, deck: &Deck) -> Self {
-        Self {
+    pub(crate) fn from_deck_config(config: &DeckConfig, deck: &Deck) -> Result<Self> {
+        let fsrs_version =
+            FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven);
+        let dynamic_desired_retention = if fsrs_version == FsrsVersion::Seven {
+            DynamicDesiredRetention::from_deck_config(&config.inner)?
+        } else {
+            None
+        };
+        Ok(Self {
             id: FsrsPresetId::DeckConfig(config.id),
             name: config.name.clone(),
-            fsrs_version: FsrsVersion::try_from(config.inner.fsrs_version)
-                .unwrap_or(FsrsVersion::Seven),
+            fsrs_version,
             params: config.fsrs_params().to_vec(),
             desired_retention: deck.effective_desired_retention(config),
+            dynamic_desired_retention,
             historical_retention: config.inner.historical_retention,
             ignore_revlogs_before_date: config.inner.ignore_revlogs_before_date.clone(),
-        }
+        })
     }
 
     pub(crate) fn fsrs(&self) -> Result<FSRS> {
@@ -149,6 +158,7 @@ impl AddonFsrsPreset {
             fsrs_version,
             params: self.params,
             desired_retention: self.desired_retention,
+            dynamic_desired_retention: None,
             historical_retention: self.historical_retention,
             ignore_revlogs_before_date: self.ignore_revlogs_before_date,
         })
@@ -218,7 +228,7 @@ impl Collection {
             let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
             let config_id = deck.config_id().or_invalid("home deck is filtered")?;
             let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
-            presets_by_card.insert(card.id, FsrsPreset::from_deck_config(config, deck));
+            presets_by_card.insert(card.id, FsrsPreset::from_deck_config(config, deck)?);
         }
 
         tracing::debug!(
@@ -316,7 +326,7 @@ impl Collection {
             .storage
             .get_deck_config(config_id)?
             .or_not_found(config_id)?;
-        Ok(FsrsPreset::from_deck_config(&config, deck))
+        FsrsPreset::from_deck_config(&config, deck)
     }
 
     fn fsrs_preset_overlay_cache(&mut self) -> Result<&FsrsPresetOverlayCache> {
@@ -560,6 +570,26 @@ mod test {
         assert_eq!(preset.desired_retention, 0.82);
         assert_eq!(preset.historical_retention, 0.73);
         assert_eq!(preset.ignore_revlogs_before_date, "2024-01-02");
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_desired_retention_is_fsrs7_only() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Six as i32;
+            config.fsrs_dynamic_desired_retention_enabled = true;
+            config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
+            config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+            config.fsrs_dynamic_desired_retention_avg_drs = vec![0.9, 0.8];
+        });
+        NoteAdder::basic(&mut col).add(&mut col);
+
+        let card = col.get_first_card();
+        let preset = col.fsrs_preset_for_card(&card)?;
+
+        assert_eq!(preset.fsrs_version, FsrsVersion::Six);
+        assert!(preset.dynamic_desired_retention.is_none());
         Ok(())
     }
 

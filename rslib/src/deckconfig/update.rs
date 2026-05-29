@@ -55,6 +55,15 @@ pub struct UpdateDeckConfigsRequest {
     pub review_fuzz_config: StoredReviewFuzzConfig,
 }
 
+fn dynamic_dr_config(config: &DeckConfig) -> (bool, &[f32], &[f32], &[f32]) {
+    (
+        config.inner.fsrs_dynamic_desired_retention_enabled,
+        &config.inner.fsrs_dynamic_desired_retention_params,
+        &config.inner.fsrs_dynamic_desired_retention_weights,
+        &config.inner.fsrs_dynamic_desired_retention_avg_drs,
+    )
+}
+
 impl Collection {
     /// Information required for the deck options screen.
     pub fn get_deck_configs_for_update(
@@ -278,6 +287,7 @@ impl Collection {
                 let previous_deck_dr = normal.desired_retention;
                 let previous_dr = previous_deck_dr.or(previous_preset_dr);
                 let previous_easy_days = previous_config.map(|c| &c.inner.easy_days_percentages);
+                let previous_dynamic_dr = previous_config.map(dynamic_dr_config);
 
                 // if a selected (sub)deck, or its old config was removed, update deck to point
                 // to new config
@@ -307,10 +317,12 @@ impl Collection {
                 let current_preset_dr = current_config.map(|c| c.inner.desired_retention);
                 let current_dr = current_deck_dr.or(current_preset_dr);
                 let current_easy_days = current_config.map(|c| &c.inner.easy_days_percentages);
+                let current_dynamic_dr = current_config.map(dynamic_dr_config);
                 if fsrs_toggled
                     || previous_params != current_params
                     || previous_dr != current_dr
                     || (req.fsrs_reschedule && previous_easy_days != current_easy_days)
+                    || (req.fsrs_reschedule && previous_dynamic_dr != current_dynamic_dr)
                     || (req.fsrs_reschedule && review_fuzz_changed)
                 {
                     decks_needing_memory_recompute
