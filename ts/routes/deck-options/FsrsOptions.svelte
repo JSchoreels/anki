@@ -5,6 +5,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import {
         ComputeRetentionProgress,
+        ComputeParamsProgress_Phase,
         type ComputeParamsProgress,
     } from "@generated/anki/collection_pb";
     import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
@@ -957,15 +958,31 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     $: computeParamsProgressString = renderWeightProgress(computeParamsProgress);
+    $: computeParamsProgressPct = renderComputeParamsProgressPct(computeParamsProgress);
     $: totalReviews = computeParamsProgress?.reviews ?? undefined;
 
-    function renderWeightProgress(val: ComputeParamsProgress | undefined): String {
+    function renderComputeParamsProgressPct(
+        val: ComputeParamsProgress | undefined,
+    ): number | undefined {
         if (!val || !val.total) {
+            return undefined;
+        }
+        return Math.min(100, Math.max(0, (val.current / val.total) * 100));
+    }
+
+    function renderWeightProgress(val: ComputeParamsProgress | undefined): String {
+        const pctValue = renderComputeParamsProgressPct(val);
+        if (!val || pctValue === undefined) {
             return "";
         }
-        const pct = ((val.current / val.total) * 100).toFixed(1);
+        const pct = pctValue.toFixed(1);
         if (val instanceof ComputeRetentionProgress) {
             return `${pct}%`;
+        } else if (
+            val.phase ===
+                ComputeParamsProgress_Phase.TRAINING_DYNAMIC_DESIRED_RETENTION
+        ) {
+            return `Training Dynamic DR (SSP-MMC): ${pct}%`;
         } else {
             if (val.current === val.total) {
                 return tr.deckConfigCheckingForImprovement();
@@ -1094,6 +1111,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <div>
         {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
             {computeParamsProgressString}
+            {#if computeParamsProgressPct !== undefined}
+                <div class="progress fsrs-progress" role="progressbar" aria-valuenow={computeParamsProgressPct} aria-valuemin="0" aria-valuemax="100">
+                    <div
+                        class="progress-bar"
+                        style={`width: ${computeParamsProgressPct}%`}
+                    ></div>
+                </div>
+            {/if}
         {:else if totalReviews !== undefined}
             {tr.statisticsReviews({ reviews: totalReviews })}
         {/if}
@@ -1681,6 +1706,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         gap: 0.75rem;
         margin: 0.5rem 0 0.75rem;
         font-size: 0.9rem;
+    }
+
+    .fsrs-progress {
+        width: min(24rem, 100%);
+        height: 0.5rem;
+        margin-top: 0.35rem;
     }
 
     .optimize-delta.better {

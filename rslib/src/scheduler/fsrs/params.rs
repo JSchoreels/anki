@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::iter;
 use std::path::Path;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -106,6 +108,39 @@ struct DynamicDesiredRetentionCalibration {
     params: Vec<f32>,
     weights: Vec<f32>,
     avg_drs: Vec<f32>,
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComputeParamsProgressPhase {
+    #[default]
+    OptimizingFsrsParams = 0,
+    TrainingDynamicDesiredRetention = 1,
+}
+
+impl ComputeParamsProgressPhase {
+    pub(crate) fn from_shared(progress_phase: &SharedComputeParamsProgressPhase) -> Self {
+        match progress_phase.load(Ordering::Acquire) {
+            1 => Self::TrainingDynamicDesiredRetention,
+            _ => Self::OptimizingFsrsParams,
+        }
+    }
+}
+
+pub(crate) type SharedComputeParamsProgressPhase = Arc<AtomicU8>;
+
+pub(crate) fn new_compute_params_progress_phase() -> SharedComputeParamsProgressPhase {
+    Arc::new(AtomicU8::new(
+        ComputeParamsProgressPhase::OptimizingFsrsParams as u8,
+    ))
+}
+
+fn set_compute_params_progress_phase(
+    progress_phase: Option<&SharedComputeParamsProgressPhase>,
+    phase: ComputeParamsProgressPhase,
+) {
+    if let Some(progress_phase) = progress_phase {
+        progress_phase.store(phase as u8, Ordering::Release);
+    }
 }
 
 /// r: retention
@@ -319,6 +354,7 @@ pub(crate) fn compute_params_from_prepared(
         target_counts: _,
     }: PreparedComputeParams,
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
+    progress_phase: Option<SharedComputeParamsProgressPhase>,
     health_check: bool,
 ) -> Result<ComputeFsrsParamsResponse> {
     let fsrs_items = items.len() as u32;
@@ -333,6 +369,10 @@ pub(crate) fn compute_params_from_prepared(
         });
     }
 
+    set_compute_params_progress_phase(
+        progress_phase.as_ref(),
+        ComputeParamsProgressPhase::OptimizingFsrsParams,
+    );
     let input = ComputeParametersInput {
         train_set: items.clone(),
         progress: progress.clone(),
@@ -352,6 +392,7 @@ pub(crate) fn compute_params_from_prepared(
         &simulator_config,
         &params,
         progress,
+        progress_phase.as_ref(),
     )?;
 
     let health_check_items = if include_same_day_reviews {
@@ -401,11 +442,16 @@ fn train_dynamic_desired_retention(
     simulator_config: &SimulatorConfig,
     params: &[f32],
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
+    progress_phase: Option<&SharedComputeParamsProgressPhase>,
 ) -> Result<Option<DynamicDesiredRetentionCalibration>> {
     if !enabled || model_version != ComputeParametersVersion::Fsrs7 {
         return Ok(None);
     }
 
+    set_compute_params_progress_phase(
+        progress_phase,
+        ComputeParamsProgressPhase::TrainingDynamicDesiredRetention,
+    );
     let training_config = CostAdrTrainingConfig {
         progress,
         ..Default::default()
@@ -495,7 +541,9 @@ impl Collection {
                 p.total_presets = total_presets;
             })?;
             let progress = CombinedProgressState::new_shared();
+            let progress_phase = new_compute_params_progress_phase();
             let progress2 = progress.clone();
+            let progress_phase2 = progress_phase.clone();
             let progress_thread = thread::spawn(move || {
                 let mut finished = false;
                 while !finished {
@@ -507,6 +555,7 @@ impl Collection {
                         s.reviews = prepared.target_counts.total_targets as u32;
                         s.long_term_reviews = prepared.target_counts.long_term_targets as u32;
                         s.short_term_reviews = prepared.target_counts.short_term_targets as u32;
+                        s.phase = ComputeParamsProgressPhase::from_shared(&progress_phase);
                         finished = guard.finished();
                     }) {
                         guard.want_abort = true;
@@ -514,11 +563,16 @@ impl Collection {
                     }
                 }
             });
-            Ok((progress2, progress_thread))
+            Ok((progress2, progress_phase2, progress_thread))
         };
 
-        let (progress, progress_thread) = create_progress_thread()?;
-        let output = compute_params_from_prepared(prepared, Some(progress.clone()), health_check);
+        let (progress, progress_phase, progress_thread) = create_progress_thread()?;
+        let output = compute_params_from_prepared(
+            prepared,
+            Some(progress.clone()),
+            Some(progress_phase),
+            health_check,
+        );
         progress_thread.join().ok();
         output
     }
@@ -821,6 +875,7 @@ pub struct ComputeParamsProgress {
     pub current_preset: u32,
     /// Only used in 'compute all params' case
     pub total_presets: u32,
+    pub phase: ComputeParamsProgressPhase,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -840,6 +895,7 @@ pub struct ComputeAllParamsPresetProgress {
     pub short_term_reviews: u32,
     pub finished: bool,
     pub skipped: bool,
+    pub phase: ComputeParamsProgressPhase,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -1168,6 +1224,7 @@ pub(crate) mod tests {
                 items: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },
+            None,
             None,
             false,
         )?;

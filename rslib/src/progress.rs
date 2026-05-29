@@ -229,6 +229,7 @@ pub(crate) fn progress_to_proto(
                     total_presets: progress.total_presets,
                     long_term_reviews: progress.long_term_reviews,
                     short_term_reviews: progress.short_term_reviews,
+                    phase: progress.phase as i32,
                 })
             }
             Progress::ComputeAllParams(progress) => {
@@ -248,6 +249,7 @@ pub(crate) fn progress_to_proto(
                                 short_term_reviews: preset.short_term_reviews,
                                 finished: preset.finished,
                                 skipped: preset.skipped,
+                                phase: preset.phase as i32,
                             },
                         )
                         .collect(),
@@ -430,6 +432,7 @@ mod tests {
                 short_term_reviews: 4,
                 finished: false,
                 skipped: false,
+                phase: Default::default(),
             }],
         });
 
@@ -444,6 +447,10 @@ mod tests {
         assert_eq!(progress.presets[0].reviews, 12);
         assert_eq!(progress.presets[0].long_term_reviews, 8);
         assert_eq!(progress.presets[0].short_term_reviews, 4);
+        assert_eq!(
+            progress.presets[0].phase(),
+            anki_proto::collection::compute_params_progress::Phase::OptimizingFsrsParams
+        );
         assert!(!progress.presets[0].finished);
         assert!(!progress.presets[0].skipped);
     }

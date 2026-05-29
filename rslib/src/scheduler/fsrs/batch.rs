@@ -13,9 +13,12 @@ use rayon::prelude::*;
 
 use crate::prelude::*;
 use crate::scheduler::fsrs::params::compute_params_from_prepared;
+use crate::scheduler::fsrs::params::new_compute_params_progress_phase;
 use crate::scheduler::fsrs::params::ComputeAllParamsPresetProgress;
 use crate::scheduler::fsrs::params::ComputeAllParamsProgress;
+use crate::scheduler::fsrs::params::ComputeParamsProgressPhase;
 use crate::scheduler::fsrs::params::PreparedComputeParams;
+use crate::scheduler::fsrs::params::SharedComputeParamsProgressPhase;
 
 pub(crate) struct ComputeParamsBatchInput {
     pub index: usize,
@@ -33,6 +36,7 @@ struct ComputeParamsBatchJob {
     input: ComputeParamsBatchInput,
     progress_index: usize,
     progress: Arc<std::sync::Mutex<CombinedProgressState>>,
+    progress_phase: SharedComputeParamsProgressPhase,
     done: Arc<AtomicBool>,
 }
 
@@ -93,6 +97,7 @@ impl Collection {
                 input,
                 progress_index,
                 progress: CombinedProgressState::new_shared(),
+                progress_phase: new_compute_params_progress_phase(),
                 done: Arc::new(AtomicBool::new(false)),
             });
         }
@@ -114,6 +119,7 @@ impl Collection {
                             let result = compute_params_from_prepared(
                                 job.input.prepared,
                                 Some(job.progress.clone()),
+                                Some(job.progress_phase.clone()),
                                 false,
                             );
                             job.done.store(true, Ordering::Release);
@@ -153,6 +159,10 @@ impl Collection {
             .iter()
             .map(|job| job.progress.clone())
             .collect::<Vec<_>>();
+        let progress_phases = jobs
+            .iter()
+            .map(|job| job.progress_phase.clone())
+            .collect::<Vec<_>>();
         let done = jobs.iter().map(|job| job.done.clone()).collect::<Vec<_>>();
         let progress_indexes = jobs
             .iter()
@@ -165,15 +175,17 @@ impl Collection {
                 finished = done.iter().all(|done| done.load(Ordering::Acquire));
                 if let Err(_err) = anki_progress.update(false, |state| {
                     state.total_iterations = total_optimizer_jobs;
-                    for ((progress_index, progress), done) in progress_indexes
+                    for (((progress_index, progress), progress_phase), done) in progress_indexes
                         .iter()
                         .zip(progresses.iter())
+                        .zip(progress_phases.iter())
                         .zip(done.iter())
                     {
                         let preset = &mut state.presets[*progress_index];
                         let guard = progress.lock().unwrap();
                         preset.current_iteration = guard.current() as u32;
                         preset.total_iterations = guard.total() as u32;
+                        preset.phase = ComputeParamsProgressPhase::from_shared(progress_phase);
                         preset.finished = done.load(Ordering::Acquire);
                     }
                     state.current_iteration = state
@@ -258,6 +270,7 @@ mod test {
             },
             progress_index: 0,
             progress: CombinedProgressState::new_shared(),
+            progress_phase: new_compute_params_progress_phase(),
             done: Arc::new(AtomicBool::new(false)),
         }
     }

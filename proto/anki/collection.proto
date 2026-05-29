@@ -138,6 +138,10 @@ message Progress {
 }
 
 message ComputeParamsProgress {
+  enum Phase {
+    OPTIMIZING_FSRS_PARAMS = 0;
+    TRAINING_DYNAMIC_DESIRED_RETENTION = 1;
+  }
   // Current iteration
   uint32 current = 1;
   // Total iterations
@@ -152,6 +156,7 @@ message ComputeParamsProgress {
   uint32 long_term_reviews = 6;
   // Targets where delta_t < 1 day (same-day / short-term)
   uint32 short_term_reviews = 7;
+  Phase phase = 8;
 }
 
 message ComputeAllParamsProgress {
@@ -168,6 +173,7 @@ message ComputeAllParamsProgress {
     uint32 short_term_reviews = 6;
     bool finished = 7;
     bool skipped = 8;
+    ComputeParamsProgress.Phase phase = 9;
   }
 }
 
