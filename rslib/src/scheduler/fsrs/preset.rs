@@ -582,6 +582,8 @@ mod test {
             config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
             config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
             config.fsrs_dynamic_desired_retention_avg_drs = vec![0.9, 0.8];
+            config.fsrs_dynamic_desired_retention_min = 0.75;
+            config.fsrs_dynamic_desired_retention_max = 0.95;
         });
         NoteAdder::basic(&mut col).add(&mut col);
 

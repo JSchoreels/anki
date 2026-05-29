@@ -16,6 +16,8 @@ test("dynamic desired retention requires params and calibration", () => {
             fsrsDynamicDesiredRetentionParams: [],
             fsrsDynamicDesiredRetentionWeights: [0, 15],
             fsrsDynamicDesiredRetentionAvgDrs: [0.9, 0.8],
+            fsrsDynamicDesiredRetentionMin: 0.75,
+            fsrsDynamicDesiredRetentionMax: 0.95,
         }),
     ).toBe(false);
 });
@@ -25,7 +27,7 @@ test("cost weight interpolation uses log weight", () => {
 });
 
 test("policy evaluation stays in retention range", () => {
-    const value = evaluateDynamicDesiredRetention(Array(15).fill(0), 10, 5, 64);
-    expect(value).toBeGreaterThanOrEqual(0.3);
-    expect(value).toBeLessThanOrEqual(0.995);
+    const value = evaluateDynamicDesiredRetention(Array(15).fill(0), 10, 5, 64, 0.75, 0.95);
+    expect(value).toBeGreaterThanOrEqual(0.75);
+    expect(value).toBeLessThanOrEqual(0.95);
 });

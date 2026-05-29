@@ -63,6 +63,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dynamicDesiredRetentionEnabled,
         validCalibration,
         validPolicyParams,
+        validRetentionBounds,
     } from "./dynamic-desired-retention";
     import {
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
@@ -135,6 +136,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dynamicDesiredRetentionParams: number[];
         dynamicDesiredRetentionWeights: number[];
         dynamicDesiredRetentionAvgDrs: number[];
+        dynamicDesiredRetentionMin: number;
+        dynamicDesiredRetentionMax: number;
         search: string;
         ignoreRevlogsBeforeMs: bigint;
         current: OptimizationMetrics;
@@ -569,6 +572,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     const dynamicDesiredRetentionAvgDrs = [
                         ...resp.fsrsDynamicDesiredRetentionAvgDrs,
                     ];
+                    const dynamicDesiredRetentionMin =
+                        resp.fsrsDynamicDesiredRetentionMin;
+                    const dynamicDesiredRetentionMax =
+                        resp.fsrsDynamicDesiredRetentionMax;
                     if (alreadyOptimal && dynamicDesiredRetentionParams.length) {
                         $config.fsrsDynamicDesiredRetentionParams =
                             dynamicDesiredRetentionParams;
@@ -576,6 +583,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionWeights;
                         $config.fsrsDynamicDesiredRetentionAvgDrs =
                             dynamicDesiredRetentionAvgDrs;
+                        $config.fsrsDynamicDesiredRetentionMin =
+                            dynamicDesiredRetentionMin;
+                        $config.fsrsDynamicDesiredRetentionMax =
+                            dynamicDesiredRetentionMax;
                     }
 
                     if (!alreadyOptimal) {
@@ -596,6 +607,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionParams,
                             dynamicDesiredRetentionWeights,
                             dynamicDesiredRetentionAvgDrs,
+                            dynamicDesiredRetentionMin,
+                            dynamicDesiredRetentionMax,
                             search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             current: {
@@ -645,6 +658,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 optimizationComparison.dynamicDesiredRetentionWeights;
             $config.fsrsDynamicDesiredRetentionAvgDrs =
                 optimizationComparison.dynamicDesiredRetentionAvgDrs;
+            $config.fsrsDynamicDesiredRetentionMin =
+                optimizationComparison.dynamicDesiredRetentionMin;
+            $config.fsrsDynamicDesiredRetentionMax =
+                optimizationComparison.dynamicDesiredRetentionMax;
         }
         optimized = true;
         closeOptimizationComparison();
@@ -1029,10 +1046,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     $config.fsrsDynamicDesiredRetentionAvgDrs,
                 ))
             ? "Dynamic DR requires 15 SSP-MMC parameters and matching calibration arrays."
+            : $config.fsrsDynamicDesiredRetentionEnabled
+                    && !validRetentionBounds(
+                        $config.fsrsDynamicDesiredRetentionMin,
+                        $config.fsrsDynamicDesiredRetentionMax,
+                    )
+              ? "Dynamic DR requires valid retention bounds."
             : dynamicDesiredRetentionConfigReady
                 && dynamicDesiredRetentionWeight === null
               ? "Dynamic DR target is outside the calibrated average DR range."
             : "";
+
+    function formatDynamicDrBound(value: number): string {
+        return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "n/a";
+    }
 </script>
 
 <DynamicallySlottable slotHost={Item} api={{}}>
@@ -1236,6 +1263,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         ? "n/a"
                         : dynamicDesiredRetentionWeight.toFixed(2)}
                 </span>
+                <span>
+                    Bounds:
+                    {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMin)}
+                    -
+                    {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMax)}
+                </span>
                 <button
                     class="btn btn-outline-primary"
                     disabled={!dynamicDesiredRetentionReady}
@@ -1329,6 +1362,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     params={$config.fsrsDynamicDesiredRetentionParams}
     calibrationWeights={$config.fsrsDynamicDesiredRetentionWeights}
     calibrationAvgDrs={$config.fsrsDynamicDesiredRetentionAvgDrs}
+    retentionMin={$config.fsrsDynamicDesiredRetentionMin}
+    retentionMax={$config.fsrsDynamicDesiredRetentionMax}
     targetAverageDr={effectiveDesiredRetention}
 />
 

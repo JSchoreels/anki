@@ -355,6 +355,8 @@ impl crate::services::SchedulerService for Collection {
                         .fsrs_dynamic_desired_retention_weights,
                     fsrs_dynamic_desired_retention_avg_drs: params
                         .fsrs_dynamic_desired_retention_avg_drs,
+                    fsrs_dynamic_desired_retention_min: params.fsrs_dynamic_desired_retention_min,
+                    fsrs_dynamic_desired_retention_max: params.fsrs_dynamic_desired_retention_max,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -750,6 +752,8 @@ impl crate::services::BackendSchedulerService for Backend {
             fsrs_dynamic_desired_retention_params: Vec::new(),
             fsrs_dynamic_desired_retention_weights: Vec::new(),
             fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
+            fsrs_dynamic_desired_retention_min: 0.0,
+            fsrs_dynamic_desired_retention_max: 0.0,
         })
     }
 

@@ -55,12 +55,14 @@ pub struct UpdateDeckConfigsRequest {
     pub review_fuzz_config: StoredReviewFuzzConfig,
 }
 
-fn dynamic_dr_config(config: &DeckConfig) -> (bool, &[f32], &[f32], &[f32]) {
+fn dynamic_dr_config(config: &DeckConfig) -> (bool, &[f32], &[f32], &[f32], f32, f32) {
     (
         config.inner.fsrs_dynamic_desired_retention_enabled,
         &config.inner.fsrs_dynamic_desired_retention_params,
         &config.inner.fsrs_dynamic_desired_retention_weights,
         &config.inner.fsrs_dynamic_desired_retention_avg_drs,
+        config.inner.fsrs_dynamic_desired_retention_min,
+        config.inner.fsrs_dynamic_desired_retention_max,
     )
 }
 
@@ -498,6 +500,14 @@ impl Collection {
                             .inner
                             .fsrs_dynamic_desired_retention_avg_drs =
                             params.fsrs_dynamic_desired_retention_avg_drs;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_min =
+                            params.fsrs_dynamic_desired_retention_min;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_max =
+                            params.fsrs_dynamic_desired_retention_max;
                     }
                 }
                 Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),

@@ -4,8 +4,8 @@
 export const COST_ADR_PARAMETER_COUNT = 15;
 export const COST_ADR_WEIGHT_MIN = 0;
 export const COST_ADR_WEIGHT_MAX = 1024;
-export const COST_ADR_RETENTION_MIN = 0.3;
-export const COST_ADR_RETENTION_MAX = 0.995;
+export const COST_ADR_DEFAULT_RETENTION_MIN = 0.3;
+export const COST_ADR_DEFAULT_RETENTION_MAX = 0.995;
 const S_MIN = 0.0001;
 const S_MAX = 36500;
 const D_MIN = 1;
@@ -16,12 +16,18 @@ export function dynamicDesiredRetentionEnabled(config: {
     fsrsDynamicDesiredRetentionParams: number[];
     fsrsDynamicDesiredRetentionWeights: number[];
     fsrsDynamicDesiredRetentionAvgDrs: number[];
+    fsrsDynamicDesiredRetentionMin: number;
+    fsrsDynamicDesiredRetentionMax: number;
 }): boolean {
     return config.fsrsDynamicDesiredRetentionEnabled
         && validPolicyParams(config.fsrsDynamicDesiredRetentionParams)
         && validCalibration(
             config.fsrsDynamicDesiredRetentionWeights,
             config.fsrsDynamicDesiredRetentionAvgDrs,
+        )
+        && validRetentionBounds(
+            config.fsrsDynamicDesiredRetentionMin,
+            config.fsrsDynamicDesiredRetentionMax,
         );
 }
 
@@ -35,6 +41,14 @@ export function validCalibration(weights: number[], avgDrs: number[]): boolean {
         && weights.length >= 2
         && weights.every((value) => Number.isFinite(value) && value >= 0)
         && avgDrs.every((value) => Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
+export function validRetentionBounds(retentionMin: number, retentionMax: number): boolean {
+    return Number.isFinite(retentionMin)
+        && Number.isFinite(retentionMax)
+        && retentionMin > 0
+        && retentionMin < retentionMax
+        && retentionMax < 1;
 }
 
 export function costWeightForAverageDr(
@@ -70,15 +84,15 @@ export function evaluateDynamicDesiredRetention(
     stability: number,
     difficulty: number,
     costWeight: number,
+    retentionMin = COST_ADR_DEFAULT_RETENTION_MIN,
+    retentionMax = COST_ADR_DEFAULT_RETENTION_MAX,
 ): number {
     const phi = stateFeatures(stability, difficulty);
     const z = normalizedCostWeight(costWeight);
     const base = dot(params.slice(0, 5), phi);
     const zEffect = softplus(dot(params.slice(5, 10), phi)) * z;
     const z2Effect = softplus(dot(params.slice(10, 15), phi)) * z * z;
-    return COST_ADR_RETENTION_MIN
-        + (COST_ADR_RETENTION_MAX - COST_ADR_RETENTION_MIN)
-            * sigmoid(base - zEffect - z2Effect);
+    return retentionMin + (retentionMax - retentionMin) * sigmoid(base - zEffect - z2Effect);
 }
 
 function stateFeatures(stability: number, difficulty: number): number[] {

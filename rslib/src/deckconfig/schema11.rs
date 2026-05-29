@@ -87,6 +87,10 @@ pub struct DeckConfSchema11 {
     fsrs_dynamic_desired_retention_weights: Vec<f32>,
     #[serde(default)]
     fsrs_dynamic_desired_retention_avg_drs: Vec<f32>,
+    #[serde(default = "default_dynamic_desired_retention_min")]
+    fsrs_dynamic_desired_retention_min: f32,
+    #[serde(default = "default_dynamic_desired_retention_max")]
+    fsrs_dynamic_desired_retention_max: f32,
     #[serde(default)]
     fsrs_version: i32,
     #[serde(default)]
@@ -115,6 +119,14 @@ pub struct DeckConfSchema11 {
 
     #[serde(flatten)]
     other: HashMap<String, Value>,
+}
+
+fn default_dynamic_desired_retention_min() -> f32 {
+    0.30
+}
+
+fn default_dynamic_desired_retention_max() -> f32 {
+    0.995
 }
 #[derive(Serialize_repr, Deserialize_repr, Debug, PartialEq, Eq, Clone)]
 #[repr(u8)]
@@ -329,6 +341,8 @@ impl Default for DeckConfSchema11 {
             fsrs_dynamic_desired_retention_params: vec![],
             fsrs_dynamic_desired_retention_weights: vec![],
             fsrs_dynamic_desired_retention_avg_drs: vec![],
+            fsrs_dynamic_desired_retention_min: default_dynamic_desired_retention_min(),
+            fsrs_dynamic_desired_retention_max: default_dynamic_desired_retention_max(),
             fsrs_version: 0,
             desired_retention: 0.9,
             sm2_retention: 0.9,
@@ -418,6 +432,8 @@ impl From<DeckConfSchema11> for DeckConfig {
                 fsrs_dynamic_desired_retention_params: c.fsrs_dynamic_desired_retention_params,
                 fsrs_dynamic_desired_retention_weights: c.fsrs_dynamic_desired_retention_weights,
                 fsrs_dynamic_desired_retention_avg_drs: c.fsrs_dynamic_desired_retention_avg_drs,
+                fsrs_dynamic_desired_retention_min: c.fsrs_dynamic_desired_retention_min,
+                fsrs_dynamic_desired_retention_max: c.fsrs_dynamic_desired_retention_max,
                 fsrs_version: c.fsrs_version,
                 ignore_revlogs_before_date: c.ignore_revlogs_before_date,
                 easy_days_percentages: c.easy_days_percentages,
@@ -544,6 +560,8 @@ impl From<DeckConfig> for DeckConfSchema11 {
             fsrs_dynamic_desired_retention_params: i.fsrs_dynamic_desired_retention_params,
             fsrs_dynamic_desired_retention_weights: i.fsrs_dynamic_desired_retention_weights,
             fsrs_dynamic_desired_retention_avg_drs: i.fsrs_dynamic_desired_retention_avg_drs,
+            fsrs_dynamic_desired_retention_min: i.fsrs_dynamic_desired_retention_min,
+            fsrs_dynamic_desired_retention_max: i.fsrs_dynamic_desired_retention_max,
             fsrs_version: i.fsrs_version,
             desired_retention: i.desired_retention,
             sm2_retention: i.historical_retention,

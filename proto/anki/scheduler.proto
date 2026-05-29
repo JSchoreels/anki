@@ -408,6 +408,8 @@ message ComputeFsrsParamsResponse {
   repeated float fsrs_dynamic_desired_retention_params = 4;
   repeated float fsrs_dynamic_desired_retention_weights = 5;
   repeated float fsrs_dynamic_desired_retention_avg_drs = 6;
+  float fsrs_dynamic_desired_retention_min = 7;
+  float fsrs_dynamic_desired_retention_max = 8;
 }
 
 message ComputeFsrsParamsBatchRequest {
@@ -436,6 +438,8 @@ message ComputeFsrsParamsBatchResponse {
     repeated float fsrs_dynamic_desired_retention_params = 5;
     repeated float fsrs_dynamic_desired_retention_weights = 6;
     repeated float fsrs_dynamic_desired_retention_avg_drs = 7;
+    float fsrs_dynamic_desired_retention_min = 8;
+    float fsrs_dynamic_desired_retention_max = 9;
   }
 
   repeated Item items = 1;

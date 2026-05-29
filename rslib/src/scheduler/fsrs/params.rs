@@ -37,6 +37,9 @@ use crate::decks::immediate_parent_name;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
+use crate::scheduler::fsrs::dynamic_desired_retention::{
+    valid_retention_bounds, DEFAULT_RETENTION_MAX, DEFAULT_RETENTION_MIN,
+};
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
@@ -108,6 +111,14 @@ struct DynamicDesiredRetentionCalibration {
     params: Vec<f32>,
     weights: Vec<f32>,
     avg_drs: Vec<f32>,
+    retention_min: f32,
+    retention_max: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DynamicDesiredRetentionBounds {
+    retention_min: f32,
+    retention_max: f32,
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,6 +377,8 @@ pub(crate) fn compute_params_from_prepared(
             fsrs_dynamic_desired_retention_params: Vec::new(),
             fsrs_dynamic_desired_retention_weights: Vec::new(),
             fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
+            fsrs_dynamic_desired_retention_min: 0.0,
+            fsrs_dynamic_desired_retention_max: 0.0,
         });
     }
 
@@ -390,6 +403,7 @@ pub(crate) fn compute_params_from_prepared(
         dynamic_desired_retention_enabled,
         model_version,
         &simulator_config,
+        &items,
         &params,
         progress,
         progress_phase.as_ref(),
@@ -431,7 +445,16 @@ pub(crate) fn compute_params_from_prepared(
             .map(|calibration| calibration.weights.clone())
             .unwrap_or_default(),
         fsrs_dynamic_desired_retention_avg_drs: dynamic_desired_retention
-            .map(|calibration| calibration.avg_drs)
+            .as_ref()
+            .map(|calibration| calibration.avg_drs.clone())
+            .unwrap_or_default(),
+        fsrs_dynamic_desired_retention_min: dynamic_desired_retention
+            .as_ref()
+            .map(|calibration| calibration.retention_min)
+            .unwrap_or_default(),
+        fsrs_dynamic_desired_retention_max: dynamic_desired_retention
+            .as_ref()
+            .map(|calibration| calibration.retention_max)
             .unwrap_or_default(),
     })
 }
@@ -440,6 +463,7 @@ fn train_dynamic_desired_retention(
     enabled: bool,
     model_version: ComputeParametersVersion,
     simulator_config: &SimulatorConfig,
+    items: &[FSRSItem],
     params: &[f32],
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
     progress_phase: Option<&SharedComputeParamsProgressPhase>,
@@ -448,11 +472,14 @@ fn train_dynamic_desired_retention(
         return Ok(None);
     }
 
+    let bounds = dynamic_desired_retention_bounds_from_items(params, items)?;
     set_compute_params_progress_phase(
         progress_phase,
         ComputeParamsProgressPhase::TrainingDynamicDesiredRetention,
     );
     let training_config = CostAdrTrainingConfig {
+        retention_min: bounds.retention_min,
+        retention_max: bounds.retention_max,
         progress,
         ..Default::default()
     };
@@ -463,13 +490,84 @@ fn train_dynamic_desired_retention(
             .best_cost_weight_metrics
             .into_iter()
             .map(|point| (point.goal_cost_weight, point.average_desired_retention)),
+        bounds,
     )
     .map(Some)
+}
+
+const DYNAMIC_DR_BOUND_LOWER_QUANTILE: f32 = 0.05;
+const DYNAMIC_DR_BOUND_UPPER_QUANTILE: f32 = 0.95;
+const DYNAMIC_DR_MIN_BOUND_WIDTH: f32 = 0.05;
+
+fn dynamic_desired_retention_bounds_from_items(
+    params: &[f32],
+    items: &[FSRSItem],
+) -> Result<DynamicDesiredRetentionBounds> {
+    let fsrs = FSRS::new(params)?;
+    let mut retrievabilities = Vec::new();
+    for item in items {
+        let Some(current) = item.reviews.last().copied() else {
+            continue;
+        };
+        if item.reviews.len() < 2 || current.delta_t < 1.0 {
+            continue;
+        }
+        let previous = FSRSItem {
+            reviews: item.reviews[..item.reviews.len() - 1].to_vec(),
+        };
+        let memory_state = fsrs.memory_state(previous, None)?;
+        let retrievability = fsrs.current_retrievability(memory_state, current.delta_t);
+        if retrievability.is_finite() && (0.0..=1.0).contains(&retrievability) {
+            retrievabilities.push(retrievability);
+        }
+    }
+    dynamic_desired_retention_bounds_from_retrievabilities(&mut retrievabilities)
+}
+
+fn dynamic_desired_retention_bounds_from_retrievabilities(
+    retrievabilities: &mut [f32],
+) -> Result<DynamicDesiredRetentionBounds> {
+    require!(
+        !retrievabilities.is_empty(),
+        "Dynamic DR bounds require at least one long-term retrievability target"
+    );
+    retrievabilities.sort_by(f32::total_cmp);
+    let lower = quantile(retrievabilities, DYNAMIC_DR_BOUND_LOWER_QUANTILE);
+    let upper = quantile(retrievabilities, DYNAMIC_DR_BOUND_UPPER_QUANTILE);
+    let half_width = ((upper - lower) / 2.0)
+        .max(DYNAMIC_DR_MIN_BOUND_WIDTH / 2.0)
+        .min((DEFAULT_RETENTION_MAX - DEFAULT_RETENTION_MIN) / 2.0);
+    let center = ((lower + upper) / 2.0).clamp(
+        DEFAULT_RETENTION_MIN + half_width,
+        DEFAULT_RETENTION_MAX - half_width,
+    );
+    let bounds = DynamicDesiredRetentionBounds {
+        retention_min: center - half_width,
+        retention_max: center + half_width,
+    };
+    require!(
+        valid_retention_bounds(bounds.retention_min, bounds.retention_max),
+        "Dynamic DR bounds must be valid retention values"
+    );
+    Ok(bounds)
+}
+
+fn quantile(sorted_values: &[f32], quantile: f32) -> f32 {
+    let position = (sorted_values.len() - 1) as f32 * quantile;
+    let lower_index = position.floor() as usize;
+    let upper_index = position.ceil() as usize;
+    if lower_index == upper_index {
+        sorted_values[lower_index]
+    } else {
+        let fraction = position - lower_index as f32;
+        sorted_values[lower_index] * (1.0 - fraction) + sorted_values[upper_index] * fraction
+    }
 }
 
 fn dynamic_desired_retention_calibration_from_parts(
     params: Vec<f32>,
     points: impl IntoIterator<Item = (f32, Option<f32>)>,
+    bounds: DynamicDesiredRetentionBounds,
 ) -> Result<DynamicDesiredRetentionCalibration> {
     let calibration = points
         .into_iter()
@@ -487,6 +585,8 @@ fn dynamic_desired_retention_calibration_from_parts(
         params,
         weights,
         avg_drs,
+        retention_min: bounds.retention_min,
+        retention_max: bounds.retention_max,
     })
 }
 
@@ -530,6 +630,8 @@ impl Collection {
                 fsrs_dynamic_desired_retention_params: Vec::new(),
                 fsrs_dynamic_desired_retention_weights: Vec::new(),
                 fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
+                fsrs_dynamic_desired_retention_min: 0.0,
+                fsrs_dynamic_desired_retention_max: 0.0,
             });
         }
         // adapt the progress handler to our built-in progress handling
@@ -1240,11 +1342,28 @@ pub(crate) mod tests {
         let calibration = dynamic_desired_retention_calibration_from_parts(
             vec![1.0; 15],
             [(0.0, Some(0.9)), (16.0, None), (64.0, Some(0.8))],
+            DynamicDesiredRetentionBounds {
+                retention_min: 0.75,
+                retention_max: 0.95,
+            },
         )?;
 
         assert_eq!(calibration.params, vec![1.0; 15]);
         assert_eq!(calibration.weights, vec![0.0, 64.0]);
         assert_eq!(calibration.avg_drs, vec![0.9, 0.8]);
+        assert_eq!(calibration.retention_min, 0.75);
+        assert_eq!(calibration.retention_max, 0.95);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_desired_retention_bounds_use_robust_retrievability_range() -> Result<()> {
+        let mut retrievabilities = vec![0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.97];
+        let bounds = dynamic_desired_retention_bounds_from_retrievabilities(&mut retrievabilities)?;
+
+        assert!(bounds.retention_min > 0.30);
+        assert!(bounds.retention_max < 0.995);
+        assert!(bounds.retention_min < bounds.retention_max);
         Ok(())
     }
 

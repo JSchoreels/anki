@@ -12,13 +12,15 @@ use crate::prelude::*;
 const COST_ADR_PARAMETER_COUNT: usize = 15;
 const COST_WEIGHT_MIN: f32 = 0.0;
 const COST_WEIGHT_MAX: f32 = 1024.0;
-const RETENTION_MIN: f32 = 0.30;
-const RETENTION_MAX: f32 = 0.995;
+pub(crate) const DEFAULT_RETENTION_MIN: f32 = 0.30;
+pub(crate) const DEFAULT_RETENTION_MAX: f32 = 0.995;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DynamicDesiredRetention {
     policy_params: Vec<f32>,
     calibration: Vec<(f32, f32)>,
+    retention_min: f32,
+    retention_max: f32,
     max_interval_days: f32,
 }
 
@@ -74,10 +76,19 @@ impl DynamicDesiredRetention {
             }),
             "Dynamic DR calibration values must be finite"
         );
+        require!(
+            valid_retention_bounds(
+                config.fsrs_dynamic_desired_retention_min,
+                config.fsrs_dynamic_desired_retention_max
+            ),
+            "Dynamic DR retention bounds must be finite retention values"
+        );
 
         Ok(Some(Self {
             policy_params: config.fsrs_dynamic_desired_retention_params.clone(),
             calibration,
+            retention_min: config.fsrs_dynamic_desired_retention_min,
+            retention_max: config.fsrs_dynamic_desired_retention_max,
             max_interval_days: config.maximum_review_interval as f32,
         }))
     }
@@ -111,8 +122,8 @@ impl DynamicDesiredRetention {
             self.policy_params.clone(),
             COST_WEIGHT_MIN,
             COST_WEIGHT_MAX,
-            RETENTION_MIN,
-            RETENTION_MAX,
+            self.retention_min,
+            self.retention_max,
             Some(self.max_interval_days),
         )
         .map_err(Into::into)
@@ -131,6 +142,14 @@ impl DynamicDesiredRetention {
                 .next_states(fsrs, current_memory_state, cost_weight, days_elapsed)?;
         Ok(dynamic_states_from_cost_adr(states, cost_weight))
     }
+}
+
+pub(crate) fn valid_retention_bounds(retention_min: f32, retention_max: f32) -> bool {
+    retention_min.is_finite()
+        && retention_max.is_finite()
+        && 0.0 < retention_min
+        && retention_min < retention_max
+        && retention_max < 1.0
 }
 
 fn dynamic_states_from_cost_adr(
@@ -192,9 +211,13 @@ mod tests {
         config.inner.fsrs_dynamic_desired_retention_params = vec![0.0; COST_ADR_PARAMETER_COUNT];
         config.inner.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
         config.inner.fsrs_dynamic_desired_retention_avg_drs = vec![0.9, 0.8];
+        config.inner.fsrs_dynamic_desired_retention_min = 0.75;
+        config.inner.fsrs_dynamic_desired_retention_max = 0.95;
 
         let dynamic_dr = DynamicDesiredRetention::from_deck_config(&config.inner)?.unwrap();
         assert!((dynamic_dr.cost_weight_for_average_dr(0.85)? - 3.0).abs() < 1e-5);
+        assert_eq!(dynamic_dr.policy()?.retention_min, 0.75);
+        assert_eq!(dynamic_dr.policy()?.retention_max, 0.95);
         Ok(())
     }
 }

@@ -11,12 +11,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         evaluateDynamicDesiredRetention,
         validCalibration,
         validPolicyParams,
+        validRetentionBounds,
     } from "./dynamic-desired-retention";
 
     export let modal: Modal | null = null;
     export let params: number[] = [];
     export let calibrationWeights: number[] = [];
     export let calibrationAvgDrs: number[] = [];
+    export let retentionMin = 0.3;
+    export let retentionMax = 0.995;
     export let targetAverageDr = 0.9;
 
     let svgElement: SVGSVGElement;
@@ -32,6 +35,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     );
     $: canPlot = validPolicyParams(params)
         && validCalibration(calibrationWeights, calibrationAvgDrs)
+        && validRetentionBounds(retentionMin, retentionMax)
         && inferredWeight !== null;
     $: if (svgElement) {
         renderPlot();
@@ -86,7 +90,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         stability,
                         difficulty,
                         inferredWeight,
-                    ) - 0.3) / 0.695 * 1.6,
+                        retentionMin,
+                        retentionMax,
+                    ) - retentionMin) / (retentionMax - retentionMin) * 1.6,
                     stability,
                     difficulty,
                 });
@@ -95,7 +101,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
 
         const projected = surface.map((row) => row.map(project));
-        const color = d3.scaleSequential(d3.interpolateViridis).domain([0.3, 0.995]);
+        const color = d3.scaleSequential(d3.interpolateViridis).domain([retentionMin, retentionMax]);
         const cells: Cell[] = [];
         for (let y = 0; y < difficultyCount - 1; y++) {
             for (let x = 0; x < stabilityCount - 1; x++) {
@@ -111,6 +117,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     source.stability,
                     source.difficulty,
                     inferredWeight,
+                    retentionMin,
+                    retentionMax,
                 );
                 cells.push({
                     points,
@@ -212,7 +220,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         d3.range(0, 1.01, 0.1).forEach((step) => {
             gradient.append("stop")
                 .attr("offset", `${step * 100}%`)
-                .attr("stop-color", color(0.3 + step * 0.695));
+                .attr("stop-color", color(retentionMin + step * (retentionMax - retentionMin)));
         });
         svg.append("rect")
             .attr("x", x)
@@ -220,13 +228,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             .attr("width", legendWidth)
             .attr("height", legendHeight)
             .attr("fill", `url(#${gradientId})`);
-        svg.append("text").attr("class", "legend-label").attr("x", x).attr("y", y - 6).text("30%");
+        svg.append("text")
+            .attr("class", "legend-label")
+            .attr("x", x)
+            .attr("y", y - 6)
+            .text(formatPercent(retentionMin));
         svg.append("text")
             .attr("class", "legend-label")
             .attr("x", x + legendWidth)
             .attr("y", y - 6)
             .attr("text-anchor", "end")
-            .text("99.5%");
+            .text(formatPercent(retentionMax));
+    }
+
+    function formatPercent(value: number): string {
+        return `${(value * 100).toFixed(1)}%`;
     }
 
     function project(point: Point): ProjectedPoint {
