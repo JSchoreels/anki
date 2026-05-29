@@ -270,7 +270,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <div class="modal" tabindex="-1" use:setupModal>
-    <div class="modal-dialog modal-xl">
+    <div class="modal-dialog dynamic-dr-dialog">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Dynamic DR Plot</h5>
@@ -295,9 +295,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <style>
     .plot {
         width: 100%;
-        height: min(68vh, 620px);
+        aspect-ratio: 1 / 1;
+        max-height: min(72vh, 680px);
         cursor: grab;
         background: var(--canvas);
+    }
+
+    .dynamic-dr-dialog {
+        max-width: min(92vw, 760px);
     }
 
     .plot:active {
