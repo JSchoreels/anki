@@ -9,4 +9,6 @@ Deck config stores Dynamic DR (SSP-MMC) data for FSRS-7 presets:
 
 When FSRS-7 Dynamic DR is enabled, the scheduler interprets the preset desired retention as the target average ADR DR. It interpolates the matching cost weight from the calibration arrays, computes per-answer desired retention from the policy using internal stability and difficulty, and stores the actual chosen answer's desired retention on the card.
 
+When FSRS-7 params are optimized with Dynamic DR enabled, Anki trains the SSP-MMC policy for that preset and stores the policy coefficients plus the cost-weight/average-DR calibration arrays in deck config. When Dynamic DR is disabled, optimization leaves any stored Dynamic DR data unchanged and uses the normal fixed desired-retention scheduler path.
+
 When the feature is disabled, scheduling remains the existing fixed desired-retention path.

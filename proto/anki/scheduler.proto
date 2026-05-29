@@ -398,12 +398,16 @@ message ComputeFsrsParamsRequest {
   bool health_check = 5;
   optional bool include_same_day_reviews = 6;
   optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 7;
+  bool dynamic_desired_retention_enabled = 8;
 }
 
 message ComputeFsrsParamsResponse {
   repeated float params = 1;
   uint32 fsrs_items = 2;
   optional bool health_check_passed = 3;
+  repeated float fsrs_dynamic_desired_retention_params = 4;
+  repeated float fsrs_dynamic_desired_retention_weights = 5;
+  repeated float fsrs_dynamic_desired_retention_avg_drs = 6;
 }
 
 message ComputeFsrsParamsBatchRequest {
@@ -417,6 +421,7 @@ message ComputeFsrsParamsBatchRequest {
     uint32 num_of_relearning_steps = 6;
     optional bool include_same_day_reviews = 7;
     optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 8;
+    bool dynamic_desired_retention_enabled = 9;
   }
 
   repeated Item items = 1;
@@ -428,6 +433,9 @@ message ComputeFsrsParamsBatchResponse {
     string name = 2;
     repeated float params = 3;
     uint32 fsrs_items = 4;
+    repeated float fsrs_dynamic_desired_retention_params = 5;
+    repeated float fsrs_dynamic_desired_retention_weights = 6;
+    repeated float fsrs_dynamic_desired_retention_avg_drs = 7;
   }
 
   repeated Item items = 1;

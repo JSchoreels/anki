@@ -309,6 +309,7 @@ impl crate::services::SchedulerService for Collection {
             health_check: input.health_check,
             include_same_day_reviews: input.include_same_day_reviews,
             model_version_override: input.fsrs_version.map(health_check_model_version),
+            dynamic_desired_retention_enabled: input.dynamic_desired_retention_enabled,
         })
     }
 
@@ -327,6 +328,7 @@ impl crate::services::SchedulerService for Collection {
                 item.num_of_relearning_steps as usize,
                 item.include_same_day_reviews,
                 item.fsrs_version.map(health_check_model_version),
+                item.dynamic_desired_retention_enabled,
             )?;
             response_meta.push((item.id.clone(), item.name.clone()));
             jobs.push(ComputeParamsBatchInput {
@@ -347,6 +349,12 @@ impl crate::services::SchedulerService for Collection {
                     name: name.clone(),
                     params: params.params,
                     fsrs_items: params.fsrs_items,
+                    fsrs_dynamic_desired_retention_params: params
+                        .fsrs_dynamic_desired_retention_params,
+                    fsrs_dynamic_desired_retention_weights: params
+                        .fsrs_dynamic_desired_retention_weights,
+                    fsrs_dynamic_desired_retention_avg_drs: params
+                        .fsrs_dynamic_desired_retention_avg_drs,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -739,6 +747,9 @@ impl crate::services::BackendSchedulerService for Backend {
             params,
             fsrs_items,
             health_check_passed: None,
+            fsrs_dynamic_desired_retention_params: Vec::new(),
+            fsrs_dynamic_desired_retention_weights: Vec::new(),
+            fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
         })
     }
 

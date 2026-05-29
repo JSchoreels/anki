@@ -79,6 +79,9 @@ impl Collection {
                         params: input.prepared.current_params,
                         fsrs_items: 0,
                         health_check_passed: None,
+                        fsrs_dynamic_desired_retention_params: Vec::new(),
+                        fsrs_dynamic_desired_retention_weights: Vec::new(),
+                        fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
                     }),
                 });
                 continue;
@@ -243,6 +246,8 @@ mod test {
                     num_of_relearning_steps: 0,
                     model_version: ComputeParametersVersion::Fsrs7,
                     include_same_day_reviews: true,
+                    dynamic_desired_retention_enabled: false,
+                    simulator_config: Default::default(),
                     items: Vec::new(),
                     target_counts: TrainingTargetCounts {
                         total_targets: reviews,
@@ -290,6 +295,8 @@ mod test {
                     num_of_relearning_steps: 0,
                     model_version: ComputeParametersVersion::Fsrs7,
                     include_same_day_reviews: true,
+                    dynamic_desired_retention_enabled: false,
+                    simulator_config: Default::default(),
                     items: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
                 },
@@ -302,6 +309,8 @@ mod test {
                     num_of_relearning_steps: 0,
                     model_version: ComputeParametersVersion::Fsrs7,
                     include_same_day_reviews: true,
+                    dynamic_desired_retention_enabled: false,
+                    simulator_config: Default::default(),
                     items: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
                 },

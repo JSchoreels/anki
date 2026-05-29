@@ -131,6 +131,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     };
     type OptimizationComparison = {
         optimizedParams: number[];
+        dynamicDesiredRetentionParams: number[];
+        dynamicDesiredRetentionWeights: number[];
+        dynamicDesiredRetentionAvgDrs: number[];
         search: string;
         ignoreRevlogsBeforeMs: bigint;
         current: OptimizationMetrics;
@@ -524,6 +527,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         healthCheck: $healthCheck,
                         includeSameDayReviews: includeSameDayOverride(),
                         fsrsVersion: $config.fsrsVersion,
+                        dynamicDesiredRetentionEnabled:
+                            $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN
+                            && $config.fsrsDynamicDesiredRetentionEnabled,
                     });
 
                     const alreadyOptimal =
@@ -553,6 +559,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         setTimeout(() => alert(message), 200);
                     }
 
+                    const dynamicDesiredRetentionParams = [
+                        ...resp.fsrsDynamicDesiredRetentionParams,
+                    ];
+                    const dynamicDesiredRetentionWeights = [
+                        ...resp.fsrsDynamicDesiredRetentionWeights,
+                    ];
+                    const dynamicDesiredRetentionAvgDrs = [
+                        ...resp.fsrsDynamicDesiredRetentionAvgDrs,
+                    ];
+                    if (alreadyOptimal && dynamicDesiredRetentionParams.length) {
+                        $config.fsrsDynamicDesiredRetentionParams =
+                            dynamicDesiredRetentionParams;
+                        $config.fsrsDynamicDesiredRetentionWeights =
+                            dynamicDesiredRetentionWeights;
+                        $config.fsrsDynamicDesiredRetentionAvgDrs =
+                            dynamicDesiredRetentionAvgDrs;
+                    }
+
                     if (!alreadyOptimal) {
                         const currentMetrics = await evaluateParamsLegacy({
                             search: evaluateSearch,
@@ -568,6 +592,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         });
                         optimizationComparison = {
                             optimizedParams: [...resp.params],
+                            dynamicDesiredRetentionParams,
+                            dynamicDesiredRetentionWeights,
+                            dynamicDesiredRetentionAvgDrs,
                             search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             current: {
@@ -610,6 +637,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return;
         }
         setSelectedFsrsParams(optimizationComparison.optimizedParams);
+        if (optimizationComparison.dynamicDesiredRetentionParams.length) {
+            $config.fsrsDynamicDesiredRetentionParams =
+                optimizationComparison.dynamicDesiredRetentionParams;
+            $config.fsrsDynamicDesiredRetentionWeights =
+                optimizationComparison.dynamicDesiredRetentionWeights;
+            $config.fsrsDynamicDesiredRetentionAvgDrs =
+                optimizationComparison.dynamicDesiredRetentionAvgDrs;
+        }
         optimized = true;
         closeOptimizationComparison();
     }
@@ -689,6 +724,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             healthCheck: false,
             includeSameDayReviews,
             fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+            dynamicDesiredRetentionEnabled: false,
         });
         return {
             label,

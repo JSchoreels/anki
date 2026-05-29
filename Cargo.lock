@@ -2255,7 +2255,7 @@ dependencies = [
 [[package]]
 name = "fsrs"
 version = "6.0.0"
-source = "git+https://github.com/JSchoreels/fsrs-rs.git?branch=feature/fsrs-7-adr#d2936c6997d3e8163b4f9ae0227bdbaa07f6eb48"
+source = "git+https://github.com/JSchoreels/fsrs-rs.git?branch=feature/fsrs-7-adr#e0dda3420bcb4282b2bb34f659d9337fa5f15ef5"
 dependencies = [
  "burn",
  "itertools 0.14.0",
@@ -2265,6 +2265,7 @@ dependencies = [
  "rand 0.9.4",
  "rand_distr",
  "rayon",
+ "roots",
  "serde",
  "snafu",
  "strum 0.27.2",
@@ -5590,6 +5591,12 @@ dependencies = [
  "rmp",
  "serde",
 ]
+
+[[package]]
+name = "roots"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082f11ffa03bbef6c2c6ea6bea1acafaade2fd9050ae0234ab44a2153742b058"
 
 [[package]]
 name = "rsbridge"

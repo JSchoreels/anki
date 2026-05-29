@@ -465,6 +465,7 @@ impl Collection {
                         _ => ComputeParametersVersion::Fsrs6,
                     },
                 ),
+                config.inner.fsrs_dynamic_desired_retention_enabled,
             )?;
             if prepared.target_counts.total_targets == 0 {
                 debug!(preset = config.name, "skipping FSRS preset with no reviews");
@@ -484,6 +485,20 @@ impl Collection {
                     }
                     debug!(preset = output.name, params = ?params.params, "optimized FSRS preset");
                     *selected_fsrs_params_mut(&mut req.configs[output.index]) = params.params;
+                    if !params.fsrs_dynamic_desired_retention_params.is_empty() {
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_params =
+                            params.fsrs_dynamic_desired_retention_params;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_weights =
+                            params.fsrs_dynamic_desired_retention_weights;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_avg_drs =
+                            params.fsrs_dynamic_desired_retention_avg_drs;
+                    }
                 }
                 Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
                 Err(err) => {

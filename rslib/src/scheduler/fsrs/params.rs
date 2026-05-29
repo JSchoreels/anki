@@ -17,12 +17,16 @@ use chrono::NaiveDate;
 use chrono::NaiveTime;
 use fsrs::compute_parameters;
 use fsrs::evaluate_with_time_series_splits;
+use fsrs::extract_simulator_config;
 use fsrs::CombinedProgressState;
 use fsrs::ComputeParametersInput;
 use fsrs::ComputeParametersVersion;
+use fsrs::CostAdrPolicy;
+use fsrs::CostAdrTrainingConfig;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
 use fsrs::ModelEvaluation;
+use fsrs::SimulatorConfig;
 use fsrs::FSRS;
 use itertools::Itertools;
 use prost::Message;
@@ -84,6 +88,7 @@ pub struct ComputeParamsRequest<'t> {
     pub health_check: bool,
     pub include_same_day_reviews: Option<bool>,
     pub model_version_override: Option<ComputeParametersVersion>,
+    pub dynamic_desired_retention_enabled: bool,
 }
 
 pub(crate) struct PreparedComputeParams {
@@ -91,8 +96,16 @@ pub(crate) struct PreparedComputeParams {
     pub num_of_relearning_steps: usize,
     pub model_version: ComputeParametersVersion,
     pub include_same_day_reviews: bool,
+    pub dynamic_desired_retention_enabled: bool,
+    pub simulator_config: SimulatorConfig,
     pub items: Vec<FSRSItem>,
     pub target_counts: TrainingTargetCounts,
+}
+
+struct DynamicDesiredRetentionCalibration {
+    params: Vec<f32>,
+    weights: Vec<f32>,
+    avg_drs: Vec<f32>,
 }
 
 /// r: retention
@@ -300,6 +313,8 @@ pub(crate) fn compute_params_from_prepared(
         num_of_relearning_steps,
         model_version,
         include_same_day_reviews,
+        dynamic_desired_retention_enabled,
+        simulator_config,
         items,
         target_counts: _,
     }: PreparedComputeParams,
@@ -312,12 +327,15 @@ pub(crate) fn compute_params_from_prepared(
             params: current_params,
             fsrs_items,
             health_check_passed: None,
+            fsrs_dynamic_desired_retention_params: Vec::new(),
+            fsrs_dynamic_desired_retention_weights: Vec::new(),
+            fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
         });
     }
 
     let input = ComputeParametersInput {
         train_set: items.clone(),
-        progress,
+        progress: progress.clone(),
         enable_short_term: true,
         enable_sched_penalties: true,
         model_version,
@@ -328,6 +346,13 @@ pub(crate) fn compute_params_from_prepared(
         &current_params,
         compute_parameters(input)?,
     );
+    let dynamic_desired_retention = train_dynamic_desired_retention(
+        dynamic_desired_retention_enabled,
+        model_version,
+        &simulator_config,
+        &params,
+        progress,
+    )?;
 
     let health_check_items = if include_same_day_reviews {
         items.clone()
@@ -356,6 +381,66 @@ pub(crate) fn compute_params_from_prepared(
         params,
         fsrs_items,
         health_check_passed,
+        fsrs_dynamic_desired_retention_params: dynamic_desired_retention
+            .as_ref()
+            .map(|calibration| calibration.params.clone())
+            .unwrap_or_default(),
+        fsrs_dynamic_desired_retention_weights: dynamic_desired_retention
+            .as_ref()
+            .map(|calibration| calibration.weights.clone())
+            .unwrap_or_default(),
+        fsrs_dynamic_desired_retention_avg_drs: dynamic_desired_retention
+            .map(|calibration| calibration.avg_drs)
+            .unwrap_or_default(),
+    })
+}
+
+fn train_dynamic_desired_retention(
+    enabled: bool,
+    model_version: ComputeParametersVersion,
+    simulator_config: &SimulatorConfig,
+    params: &[f32],
+    progress: Option<Arc<Mutex<CombinedProgressState>>>,
+) -> Result<Option<DynamicDesiredRetentionCalibration>> {
+    if !enabled || model_version != ComputeParametersVersion::Fsrs7 {
+        return Ok(None);
+    }
+
+    let training_config = CostAdrTrainingConfig {
+        progress,
+        ..Default::default()
+    };
+    let result = CostAdrPolicy::train_single_user(simulator_config, params, &training_config)?;
+    dynamic_desired_retention_calibration_from_parts(
+        result.policy.coefficients,
+        result
+            .best_cost_weight_metrics
+            .into_iter()
+            .map(|point| (point.goal_cost_weight, point.average_desired_retention)),
+    )
+    .map(Some)
+}
+
+fn dynamic_desired_retention_calibration_from_parts(
+    params: Vec<f32>,
+    points: impl IntoIterator<Item = (f32, Option<f32>)>,
+) -> Result<DynamicDesiredRetentionCalibration> {
+    let calibration = points
+        .into_iter()
+        .filter_map(|(weight, average_desired_retention)| {
+            average_desired_retention.map(|avg_dr| (weight, avg_dr))
+        })
+        .collect::<Vec<_>>();
+    require!(
+        calibration.len() >= 2,
+        "Dynamic DR calibration did not produce enough points"
+    );
+
+    let (weights, avg_drs) = calibration.into_iter().unzip();
+    Ok(DynamicDesiredRetentionCalibration {
+        params,
+        weights,
+        avg_drs,
     })
 }
 
@@ -377,6 +462,7 @@ impl Collection {
             health_check,
             include_same_day_reviews,
             model_version_override,
+            dynamic_desired_retention_enabled,
         } = request;
 
         self.clear_progress();
@@ -387,6 +473,7 @@ impl Collection {
             num_of_relearning_steps,
             include_same_day_reviews,
             model_version_override,
+            dynamic_desired_retention_enabled,
         )?;
 
         if prepared.items.is_empty() {
@@ -394,6 +481,9 @@ impl Collection {
                 params: current_params.to_vec(),
                 fsrs_items: 0,
                 health_check_passed: None,
+                fsrs_dynamic_desired_retention_params: Vec::new(),
+                fsrs_dynamic_desired_retention_weights: Vec::new(),
+                fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
             });
         }
         // adapt the progress handler to our built-in progress handling
@@ -441,9 +531,15 @@ impl Collection {
         num_of_relearning_steps: usize,
         include_same_day_reviews: Option<bool>,
         model_version_override: Option<ComputeParametersVersion>,
+        dynamic_desired_retention_enabled: bool,
     ) -> Result<PreparedComputeParams> {
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
+        let simulator_config = extract_simulator_config(
+            revlogs.iter().cloned().map(Into::into).collect(),
+            timing.next_day_at.into(),
+            true,
+        );
         let model_version = resolved_model_version(current_params, model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
@@ -458,6 +554,8 @@ impl Collection {
             num_of_relearning_steps,
             model_version,
             include_same_day_reviews,
+            dynamic_desired_retention_enabled,
+            simulator_config,
             items,
             target_counts,
         })
@@ -1065,6 +1163,8 @@ pub(crate) mod tests {
                 num_of_relearning_steps: 1,
                 model_version: ComputeParametersVersion::Fsrs7,
                 include_same_day_reviews: true,
+                dynamic_desired_retention_enabled: false,
+                simulator_config: Default::default(),
                 items: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },
@@ -1075,6 +1175,19 @@ pub(crate) mod tests {
         assert_eq!(output.params, current_params);
         assert_eq!(output.fsrs_items, 0);
         assert_eq!(output.health_check_passed, None);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_desired_retention_calibration_keeps_weights_and_avg_drs() -> Result<()> {
+        let calibration = dynamic_desired_retention_calibration_from_parts(
+            vec![1.0; 15],
+            [(0.0, Some(0.9)), (16.0, None), (64.0, Some(0.8))],
+        )?;
+
+        assert_eq!(calibration.params, vec![1.0; 15]);
+        assert_eq!(calibration.weights, vec![0.0, 64.0]);
+        assert_eq!(calibration.avg_drs, vec![0.9, 0.8]);
         Ok(())
     }
 
