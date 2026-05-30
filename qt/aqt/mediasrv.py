@@ -426,6 +426,7 @@ def is_sveltekit_page(path: str) -> bool:
         "card-info",
         "change-notetype",
         "deck-options",
+        "dynamic-desired-retention-plot",
         "import-anki-package",
         "import-csv",
         "import-page",
@@ -806,8 +807,18 @@ def save_custom_colours() -> bytes:
 
 
 def card_stats() -> bytes:
+    start = time.monotonic()
+    hook_count = gui_hooks.card_info_will_add_rows.count()
+    backend_start = time.monotonic()
     raw_output = aqt.mw.col._backend.card_stats_raw(request.data)
-    if gui_hooks.card_info_will_add_rows.count() == 0:
+    backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
+    if hook_count == 0:
+        logger.debug(
+            "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
+            hook_count,
+            backend_elapsed_ms,
+            (time.monotonic() - start) * 1000,
+        )
         return raw_output
 
     response = CardStatsResponse()
@@ -817,11 +828,23 @@ def card_stats() -> bytes:
 
     rows: list[CardInfoRow] = []
     card = aqt.mw.col.get_card(CardId(response.card_id))
+    hook_start = time.monotonic()
     gui_hooks.card_info_will_add_rows(rows, card)
+    hook_elapsed_ms = (time.monotonic() - hook_start) * 1000
 
     for row in rows:
         response.extra_rows.add(label=row.label, value=row.value)
 
+    logger.debug(
+        "card stats served: card_id=%s hook_count=%s extra_rows=%s backend_elapsed_ms=%.1f "
+        "hook_elapsed_ms=%.1f elapsed_ms=%.1f",
+        response.card_id,
+        hook_count,
+        len(rows),
+        backend_elapsed_ms,
+        hook_elapsed_ms,
+        (time.monotonic() - start) * 1000,
+    )
     return response.SerializeToString()
 
 

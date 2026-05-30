@@ -9,6 +9,7 @@ pub(crate) mod writer;
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::time::Instant;
 
 pub use builder::JoinSearches;
 pub use builder::Negated;
@@ -31,6 +32,7 @@ use crate::browser_table::Column;
 use crate::card::Card;
 use crate::card::CardType;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
 use crate::scheduler::timing::SchedTimingToday;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -191,30 +193,62 @@ impl Collection {
     }
 
     fn setup_exact_retrievability_table(&mut self) -> Result<()> {
+        let start = Instant::now();
         self.storage.db.execute_batch(&format!(
             "drop table if exists {EXACT_RETRIEVABILITY_TABLE};\
              create temporary table {EXACT_RETRIEVABILITY_TABLE}(cid integer primary key, r real, s90 real)"
         ))?;
+        let ids_start = Instant::now();
         let ids: Vec<i64> = {
             let mut stmt = self.storage.db.prepare("select id from cards")?;
             let rows = stmt.query_map([], |row| row.get(0))?;
             rows.collect::<std::result::Result<_, _>>()?
         };
+        let ids_elapsed_ms = ids_start.elapsed().as_secs_f64() * 1000.0;
         let timing = self.timing_today()?;
+        let load_start = Instant::now();
+        let cards = ids
+            .into_iter()
+            .map(|cid| {
+                let card_id = CardId(cid);
+                self.storage.get_card(card_id)?.or_not_found(card_id)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
+        let card_count = cards.len();
+        let preset_start = Instant::now();
+        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+        let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
+        let metric_start = Instant::now();
         let mut rows_to_insert = Vec::new();
-        for cid in ids {
-            let card_id = CardId(cid);
-            let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
-            if let Some((r, s90)) = self.exact_fsrs_metrics_for_card(&card, timing)? {
-                rows_to_insert.push((cid, r, s90));
+        for card in cards {
+            let preset = presets_by_card
+                .get(&card.id)
+                .or_invalid("missing FSRS preset for card")?;
+            if let Some((r, s90)) =
+                self.exact_fsrs_metrics_for_card_with_params(&card, timing, &preset.params)?
+            {
+                rows_to_insert.push((card.id.0, r, s90));
             }
         }
+        let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
+        let insert_start = Instant::now();
         let mut insert = self.storage.db.prepare_cached(&format!(
             "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, r, s90) values (?, ?, ?)"
         ))?;
         for (cid, r, s90) in rows_to_insert {
             insert.execute(rusqlite::params![cid, r, s90])?;
         }
+        tracing::debug!(
+            cards = card_count,
+            ids_elapsed_ms,
+            load_elapsed_ms,
+            preset_elapsed_ms,
+            metric_elapsed_ms,
+            insert_elapsed_ms = insert_start.elapsed().as_secs_f64() * 1000.0,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "built exact FSRS retrievability search table"
+        );
         Ok(())
     }
 
@@ -291,32 +325,31 @@ impl Collection {
         }
     }
 
-    fn exact_fsrs_metrics_for_card(
-        &mut self,
+    fn exact_fsrs_metrics_for_card_with_params(
+        &self,
         card: &Card,
         timing: SchedTimingToday,
+        params: &[f32],
     ) -> Result<Option<(f32, f32)>> {
         let Some(state) = card.memory_state else {
             return Ok(None);
         };
         let elapsed_days =
             self.elapsed_seconds_since_last_review_for_card(card, timing) as f32 / 86_400.0;
-        let r = self.fsrs_current_retrievability_for_card(
-            card.id,
-            state.stability_internal,
-            elapsed_days,
-        )?;
+        let r =
+            fsrs_current_retrievability_for_params(params, state.stability_internal, elapsed_days)?;
         Ok(Some((r, state.stability)))
     }
 
-    fn exact_fsrs_metric_for_card(
-        &mut self,
+    fn exact_fsrs_metric_for_card_with_params(
+        &self,
         card: &Card,
         timing: SchedTimingToday,
+        params: &[f32],
         metric: ExactFsrsSortMetric,
     ) -> Result<Option<f32>> {
         Ok(self
-            .exact_fsrs_metrics_for_card(card, timing)?
+            .exact_fsrs_metrics_for_card_with_params(card, timing, params)?
             .map(|(r, s90)| match metric {
                 ExactFsrsSortMetric::Retrievability => r,
                 ExactFsrsSortMetric::StabilityS90 => s90,
@@ -329,12 +362,28 @@ impl Collection {
         metric: ExactFsrsSortMetric,
         reverse: bool,
     ) -> Result<()> {
+        let start = Instant::now();
         let timing = self.timing_today()?;
+        let load_start = Instant::now();
+        let cards = self.all_cards_for_ids(ids, false)?;
+        let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
+        let card_count = cards.len();
+        let preset_start = Instant::now();
+        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+        let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
+        let metric_start = Instant::now();
         let mut with_metric = Vec::with_capacity(ids.len());
-        for &cid in ids.iter() {
-            let card = self.storage.get_card(cid)?.or_not_found(cid)?;
-            with_metric.push((cid, self.exact_fsrs_metric_for_card(&card, timing, metric)?));
+        for card in cards {
+            let preset = presets_by_card
+                .get(&card.id)
+                .or_invalid("missing FSRS preset for card")?;
+            with_metric.push((
+                card.id,
+                self.exact_fsrs_metric_for_card_with_params(&card, timing, &preset.params, metric)?,
+            ));
         }
+        let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
+        let sort_start = Instant::now();
         with_metric.sort_by(|(cid_a, metric_a), (cid_b, metric_b)| {
             let ord = match (metric_a, metric_b) {
                 (Some(a), Some(b)) => a.total_cmp(b),
@@ -348,6 +397,17 @@ impl Collection {
         for (target, (cid, _)) in ids.iter_mut().zip(with_metric.into_iter()) {
             *target = cid;
         }
+        tracing::debug!(
+            ?metric,
+            reverse,
+            cards = card_count,
+            load_elapsed_ms,
+            preset_elapsed_ms,
+            metric_elapsed_ms,
+            sort_elapsed_ms = sort_start.elapsed().as_secs_f64() * 1000.0,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "sorted cards by exact FSRS metric"
+        );
         Ok(())
     }
 
@@ -729,6 +789,11 @@ mod test {
     use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+    use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+    use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+    use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
 
     impl SchedTimingToday {
         pub(crate) fn zero() -> Self {
@@ -844,18 +909,28 @@ mod test {
         set_selected_fsrs7_params_for_deck(col, DeckId(1), params)
     }
 
+    fn fsrs7_sort_params_a() -> Vec<f32> {
+        vec![
+            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
+            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
+            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339, 0.9846, 0.2485,
+            0.6014, 0.0545, 0.2885,
+        ]
+    }
+
+    fn fsrs7_sort_params_b() -> Vec<f32> {
+        vec![
+            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
+            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
+            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.3000, 0.3000, 0.6000, 0.9500, 0.3500,
+            0.9000, 0.1500, 0.9000,
+        ]
+    }
+
     #[test]
     fn browser_retrievability_sort_uses_exact_model_r() -> Result<()> {
         let mut col = Collection::new();
-        set_selected_fsrs7_params(
-            &mut col,
-            vec![
-                0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
-                0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455,
-                0.0022, 0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339,
-                0.9846, 0.2485, 0.6014, 0.0545, 0.2885,
-            ],
-        )?;
+        set_selected_fsrs7_params(&mut col, fsrs7_sort_params_a())?;
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -913,18 +988,8 @@ mod test {
     #[test]
     fn browser_stability_sort_uses_exact_model_s90() -> Result<()> {
         let mut col = Collection::new();
-        let params_a = vec![
-            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
-            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
-            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339, 0.9846, 0.2485,
-            0.6014, 0.0545, 0.2885,
-        ];
-        let params_b = vec![
-            0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
-            0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
-            0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.3000, 0.3000, 0.6000, 0.9500, 0.3500,
-            0.9000, 0.1500, 0.9000,
-        ];
+        let params_a = fsrs7_sort_params_a();
+        let params_b = fsrs7_sort_params_b();
         set_selected_fsrs7_params_for_deck(&mut col, DeckId(1), params_a)?;
         let second_deck = col.get_or_create_normal_deck("second")?;
         let output = col.get_deck_configs_for_update(second_deck.id)?;
@@ -1019,6 +1084,86 @@ mod test {
             sorted_cards.into_iter().map(|c| c.id).collect::<Vec<_>>(),
             expected
         );
+        Ok(())
+    }
+
+    #[test]
+    fn browser_stability_sort_uses_addon_preset_overlay() -> Result<()> {
+        let mut col = Collection::new();
+        set_selected_fsrs7_params(&mut col, fsrs7_sort_params_a())?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:overlay".into(),
+                    name: "Overlay".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: fsrs7_sort_params_b(),
+                    desired_retention: 0.9,
+                    historical_retention: 0.9,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "overlay".into(),
+                    preset_id: "addon:test:overlay".into(),
+                }],
+            },
+        )?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut default_note = nt.new_note();
+        let mut overlay_note = nt.new_note();
+        default_note.set_field(0, "default")?;
+        overlay_note.set_field(0, "overlay")?;
+        col.add_note(&mut default_note, DeckId(1))?;
+        col.add_note(&mut overlay_note, DeckId(1))?;
+
+        let default_card_id = col.search_cards("default", SortMode::NoOrder)?[0];
+        let overlay_card_id = col.search_cards("overlay", SortMode::NoOrder)?[0];
+        let timing = col.timing_today()?;
+        let s90_default =
+            col.fsrs_interval_at_retrievability_for_card(default_card_id, 30.0, 0.9)?;
+        let s90_overlay =
+            col.fsrs_interval_at_retrievability_for_card(overlay_card_id, 30.0, 0.9)?;
+
+        for (card_id, s90) in [
+            (default_card_id, s90_default),
+            (overlay_card_id, s90_overlay),
+        ] {
+            let mut card = col.storage.get_card(card_id)?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 20;
+            card.due = 0;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: s90,
+                stability_internal: 30.0,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+            col.storage.update_card(&card)?;
+        }
+
+        assert!(
+            (s90_default - s90_overlay).abs() > 0.001,
+            "test requires the overlay preset to change S90"
+        );
+        let expected = if s90_default <= s90_overlay {
+            vec![default_card_id, overlay_card_id]
+        } else {
+            vec![overlay_card_id, default_card_id]
+        };
+
+        let sorted = col.search_cards(
+            "",
+            SortMode::Builtin {
+                column: Column::Stability,
+                reverse: false,
+            },
+        )?;
+        assert_eq!(sorted, expected);
+
         Ok(())
     }
 

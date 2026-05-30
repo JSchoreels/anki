@@ -2,6 +2,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -19,6 +20,8 @@ from aqt.browser.table import Cell, CellRow, Column, ItemId, SearchContext
 from aqt.browser.table.state import ItemState
 from aqt.qt import *
 from aqt.utils import tr
+
+logger = logging.getLogger(__name__)
 
 
 class DataModel(QAbstractTableModel):
@@ -262,6 +265,7 @@ class DataModel(QAbstractTableModel):
             self.end_reset()
 
     def _search_inner(self, context: SearchContext) -> None:
+        start = time.monotonic()
         if context.order is True:
             try:
                 context.order = self.columns[self._state.sort_column]
@@ -270,14 +274,37 @@ class DataModel(QAbstractTableModel):
                 context.order = self.columns["noteCrt"]
             context.reverse = self._state.sort_backwards
         context.addon_metadata = {}
+        hook_start = time.monotonic()
         gui_hooks.browser_will_search(context)
+        hook_elapsed_ms = (time.monotonic() - hook_start) * 1000
+        find_elapsed_ms = 0.0
+        ids_from_hook = context.ids is not None
         if context.ids is None:
+            find_start = time.monotonic()
             context.ids = self._state.find_items(
                 context.search, context.order, context.reverse
             )
+            find_elapsed_ms = (time.monotonic() - find_start) * 1000
+        did_hook_start = time.monotonic()
         gui_hooks.browser_did_search(context)
+        did_hook_elapsed_ms = (time.monotonic() - did_hook_start) * 1000
         self._items = context.ids
         self._rows = {}
+        logger.debug(
+            "browser search completed: search=%r notes_mode=%s order=%r reverse=%s "
+            "ids=%s ids_from_hook=%s will_hook_elapsed_ms=%.1f find_elapsed_ms=%.1f "
+            "did_hook_elapsed_ms=%.1f elapsed_ms=%.1f",
+            context.search[:200],
+            self._state.is_notes_mode(),
+            context.order,
+            context.reverse,
+            len(context.ids),
+            ids_from_hook,
+            hook_elapsed_ms,
+            find_elapsed_ms,
+            did_hook_elapsed_ms,
+            (time.monotonic() - start) * 1000,
+        )
 
     def reverse(self) -> None:
         self.beginResetModel()

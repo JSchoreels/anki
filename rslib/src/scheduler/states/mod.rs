@@ -185,6 +185,8 @@ pub struct SchedulingStates {
     pub hard: CardState,
     pub good: CardState,
     pub easy: CardState,
+    pub dynamic_desired_retentions: Option<[f32; 4]>,
+    pub dynamic_desired_retention_enabled: bool,
 }
 
 impl From<NewState> for CardState {

@@ -28,6 +28,8 @@ use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
+use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
+use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 use crate::search::JoinSearches;
 use crate::search::Negated;
@@ -55,15 +57,29 @@ pub struct UpdateDeckConfigsRequest {
     pub review_fuzz_config: StoredReviewFuzzConfig,
 }
 
-fn dynamic_dr_config(config: &DeckConfig) -> (bool, &[f32], &[f32], &[f32], f32, f32) {
-    (
-        config.inner.fsrs_dynamic_desired_retention_enabled,
-        &config.inner.fsrs_dynamic_desired_retention_params,
-        &config.inner.fsrs_dynamic_desired_retention_weights,
-        &config.inner.fsrs_dynamic_desired_retention_avg_drs,
-        config.inner.fsrs_dynamic_desired_retention_min,
-        config.inner.fsrs_dynamic_desired_retention_max,
-    )
+#[derive(PartialEq)]
+struct DynamicDrConfig<'a> {
+    enabled: bool,
+    params: &'a [f32],
+    weights: &'a [f32],
+    avg_drs: &'a [f32],
+    retention_min: f32,
+    retention_max: f32,
+    fsrs_eq_weights: &'a [f32],
+    fsrs_eq_drs: &'a [f32],
+}
+
+fn dynamic_dr_config(config: &DeckConfig) -> DynamicDrConfig<'_> {
+    DynamicDrConfig {
+        enabled: config.inner.fsrs_dynamic_desired_retention_enabled,
+        params: &config.inner.fsrs_dynamic_desired_retention_params,
+        weights: &config.inner.fsrs_dynamic_desired_retention_weights,
+        avg_drs: &config.inner.fsrs_dynamic_desired_retention_avg_drs,
+        retention_min: config.inner.fsrs_dynamic_desired_retention_min,
+        retention_max: config.inner.fsrs_dynamic_desired_retention_max,
+        fsrs_eq_weights: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_weights,
+        fsrs_eq_drs: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+    }
 }
 
 impl Collection {
@@ -453,13 +469,13 @@ impl Collection {
             let ignore_revlogs_before_ms = ignore_revlogs_before_ms_from_config(config)?;
             let num_of_relearning_steps = config.inner.relearn_steps.len();
             let current_params = config.selected_fsrs_params().to_vec();
-            let prepared = self.prepare_compute_params(
-                &search,
-                ignore_revlogs_before_ms,
-                &current_params,
+            let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
+                search: &search,
+                ignore_revlogs_before: ignore_revlogs_before_ms,
+                current_params: &current_params,
                 num_of_relearning_steps,
-                fsrs7_optimize_include_same_day_reviews(config),
-                Some(
+                include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(config),
+                model_version_override: Some(
                     match FsrsVersion::try_from(config.inner.fsrs_version)
                         .unwrap_or(FsrsVersion::Seven)
                     {
@@ -467,8 +483,12 @@ impl Collection {
                         _ => ComputeParametersVersion::Fsrs6,
                     },
                 ),
-                config.inner.fsrs_dynamic_desired_retention_enabled,
-            )?;
+                dynamic_desired_retention_enabled: config
+                    .inner
+                    .fsrs_dynamic_desired_retention_enabled,
+                dynamic_desired_retention_simulator_options:
+                    DynamicDesiredRetentionSimulatorOptions::default(),
+            })?;
             if prepared.target_counts.total_targets == 0 {
                 debug!(preset = config.name, "skipping FSRS preset with no reviews");
             }
@@ -500,6 +520,14 @@ impl Collection {
                             .inner
                             .fsrs_dynamic_desired_retention_avg_drs =
                             params.fsrs_dynamic_desired_retention_avg_drs;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_fsrs_eq_weights =
+                            params.fsrs_dynamic_desired_retention_fsrs_eq_weights;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_fsrs_eq_drs =
+                            params.fsrs_dynamic_desired_retention_fsrs_eq_drs;
                         req.configs[output.index]
                             .inner
                             .fsrs_dynamic_desired_retention_min =

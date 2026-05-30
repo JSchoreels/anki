@@ -20,6 +20,7 @@ from aqt.mediasrv import (
     _handle_local_file_request,
     ensure_safe_path,
     is_localhost_origin,
+    is_sveltekit_page,
 )
 
 
@@ -101,6 +102,12 @@ class TestIsLocalhostOrigin:
     )
     def test_rejected_origins(self, origin: str) -> None:
         assert is_localhost_origin(origin) is False
+
+
+class TestIsSveltekitPage:
+    def test_dynamic_desired_retention_plot_is_internal_page(self) -> None:
+        assert is_sveltekit_page("dynamic-desired-retention-plot")
+        assert is_sveltekit_page("dynamic-desired-retention-plot/_app/start.js")
 
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:

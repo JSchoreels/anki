@@ -1296,7 +1296,7 @@ mod tests {
 
         assert!((elapsed_secs - 1354.404).abs() < 0.01);
         assert!((internal.stability - 0.14337839).abs() < 1e-6);
-        assert!((s90 - 0.029655233).abs() < 1e-6);
+        assert!((s90 - 0.029642101).abs() < 1e-6);
         assert!((internal.difficulty - 8.743349).abs() < 1e-6);
         Ok(())
     }
@@ -1462,6 +1462,7 @@ mod tests {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
                 }],
                 rules: vec![crate::scheduler::fsrs::preset::FsrsPresetRule {
                     search: "tag:medical".into(),

@@ -7,6 +7,7 @@ import {
     costWeightForAverageDr,
     dynamicDesiredRetentionEnabled,
     evaluateDynamicDesiredRetention,
+    targetDrCalibration,
 } from "./dynamic-desired-retention";
 
 test("dynamic desired retention requires params and calibration", () => {
@@ -24,6 +25,22 @@ test("dynamic desired retention requires params and calibration", () => {
 
 test("cost weight interpolation uses log weight", () => {
     expect(costWeightForAverageDr(0.85, [0, 15], [0.9, 0.8])).toBeCloseTo(3);
+});
+
+test("target calibration prefers fsrs equivalent values", () => {
+    expect(targetDrCalibration([1, 2], [0.7, 0.8], [3, 4], [0.9, 0.95])).toEqual({
+        weights: [3, 4],
+        drs: [0.9, 0.95],
+        label: "FSRS7 Eq. DR",
+    });
+});
+
+test("target calibration uses average adr values without fsrs equivalents", () => {
+    expect(targetDrCalibration([1, 2], [0.7, 0.8], [], [])).toEqual({
+        weights: [1, 2],
+        drs: [0.7, 0.8],
+        label: "Avg ADR DR",
+    });
 });
 
 test("policy evaluation stays in retention range", () => {

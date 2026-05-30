@@ -86,6 +86,8 @@ impl Collection {
                         fsrs_dynamic_desired_retention_params: Vec::new(),
                         fsrs_dynamic_desired_retention_weights: Vec::new(),
                         fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
+                        fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
+                        fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
                         fsrs_dynamic_desired_retention_min: 0.0,
                         fsrs_dynamic_desired_retention_max: 0.0,
                     }),

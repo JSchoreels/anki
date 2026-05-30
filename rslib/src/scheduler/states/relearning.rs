@@ -32,6 +32,8 @@ impl RelearnState {
             hard: self.answer_hard(ctx),
             good: self.answer_good(ctx),
             easy: self.answer_easy(ctx).into(),
+            dynamic_desired_retentions: None,
+            dynamic_desired_retention_enabled: false,
         }
     }
 

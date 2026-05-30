@@ -22,6 +22,7 @@ use anki_proto::scheduler::FsrsIntervalAtRetrievabilityVariableBatchRequest;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityVariableBatchResponse;
 use anki_proto::scheduler::FsrsNextIntervalRequest;
 use anki_proto::scheduler::FsrsNextIntervalResponse;
+use anki_proto::scheduler::FsrsPresetForCardResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
@@ -43,6 +44,10 @@ use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
+use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
+use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
+use crate::scheduler::fsrs::preset::FsrsPreset;
+use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
 use crate::scheduler::states::CardState;
 use crate::scheduler::states::LearnState;
@@ -310,6 +315,9 @@ impl crate::services::SchedulerService for Collection {
             include_same_day_reviews: input.include_same_day_reviews,
             model_version_override: input.fsrs_version.map(health_check_model_version),
             dynamic_desired_retention_enabled: input.dynamic_desired_retention_enabled,
+            dynamic_desired_retention_review_limit: input.dynamic_desired_retention_review_limit,
+            dynamic_desired_retention_max_cost_perday_minutes: input
+                .dynamic_desired_retention_max_cost_perday_minutes,
         })
     }
 
@@ -321,15 +329,21 @@ impl crate::services::SchedulerService for Collection {
         let mut jobs = Vec::with_capacity(input.items.len());
 
         for (index, item) in input.items.into_iter().enumerate() {
-            let prepared = self.prepare_compute_params(
-                &item.search,
-                item.ignore_revlogs_before_ms.into(),
-                &item.current_params,
-                item.num_of_relearning_steps as usize,
-                item.include_same_day_reviews,
-                item.fsrs_version.map(health_check_model_version),
-                item.dynamic_desired_retention_enabled,
-            )?;
+            let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
+                search: &item.search,
+                ignore_revlogs_before: item.ignore_revlogs_before_ms.into(),
+                current_params: &item.current_params,
+                num_of_relearning_steps: item.num_of_relearning_steps as usize,
+                include_same_day_reviews: item.include_same_day_reviews,
+                model_version_override: item.fsrs_version.map(health_check_model_version),
+                dynamic_desired_retention_enabled: item.dynamic_desired_retention_enabled,
+                dynamic_desired_retention_simulator_options:
+                    DynamicDesiredRetentionSimulatorOptions {
+                        review_limit: item.dynamic_desired_retention_review_limit,
+                        max_cost_perday_minutes: item
+                            .dynamic_desired_retention_max_cost_perday_minutes,
+                    },
+            })?;
             response_meta.push((item.id.clone(), item.name.clone()));
             jobs.push(ComputeParamsBatchInput {
                 index,
@@ -355,6 +369,10 @@ impl crate::services::SchedulerService for Collection {
                         .fsrs_dynamic_desired_retention_weights,
                     fsrs_dynamic_desired_retention_avg_drs: params
                         .fsrs_dynamic_desired_retention_avg_drs,
+                    fsrs_dynamic_desired_retention_fsrs_eq_weights: params
+                        .fsrs_dynamic_desired_retention_fsrs_eq_weights,
+                    fsrs_dynamic_desired_retention_fsrs_eq_drs: params
+                        .fsrs_dynamic_desired_retention_fsrs_eq_drs,
                     fsrs_dynamic_desired_retention_min: params.fsrs_dynamic_desired_retention_min,
                     fsrs_dynamic_desired_retention_max: params.fsrs_dynamic_desired_retention_max,
                 })
@@ -594,6 +612,16 @@ impl crate::services::SchedulerService for Collection {
         self.compute_memory_state(input.into())
     }
 
+    fn get_fsrs_preset_for_card(
+        &mut self,
+        input: cards::CardId,
+    ) -> Result<FsrsPresetForCardResponse> {
+        let card_id = input.into();
+        let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+        let preset = self.fsrs_preset_for_card(&card)?;
+        Ok(fsrs_preset_to_proto(preset))
+    }
+
     fn fuzz_delta(&mut self, input: FuzzDeltaRequest) -> Result<FuzzDeltaResponse> {
         Ok(FuzzDeltaResponse {
             delta_days: self.get_fuzz_delta(input.card_id.into(), input.interval)?,
@@ -724,6 +752,59 @@ fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: b
     requested.unwrap_or(stored)
 }
 
+fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
+    let (
+        fsrs_dynamic_desired_retention_enabled,
+        fsrs_dynamic_desired_retention_params,
+        fsrs_dynamic_desired_retention_weights,
+        fsrs_dynamic_desired_retention_avg_drs,
+        fsrs_dynamic_desired_retention_min,
+        fsrs_dynamic_desired_retention_max,
+        fsrs_dynamic_desired_retention_fsrs_eq_weights,
+        fsrs_dynamic_desired_retention_fsrs_eq_drs,
+    ) = if let Some(dynamic_dr) = preset.dynamic_desired_retention {
+        let (weights, avg_drs): (Vec<_>, Vec<_>) = dynamic_dr.calibration().iter().copied().unzip();
+        let (fsrs_eq_weights, fsrs_eq_drs): (Vec<_>, Vec<_>) = dynamic_dr
+            .fsrs_equivalent_calibration()
+            .iter()
+            .copied()
+            .unzip();
+        (
+            true,
+            dynamic_dr.policy_params().to_vec(),
+            weights,
+            avg_drs,
+            dynamic_dr.retention_min(),
+            dynamic_dr.retention_max(),
+            fsrs_eq_weights,
+            fsrs_eq_drs,
+        )
+    } else {
+        (false, vec![], vec![], vec![], 0.0, 0.0, vec![], vec![])
+    };
+
+    FsrsPresetForCardResponse {
+        id: match preset.id {
+            FsrsPresetId::DeckConfig(id) => id.0.to_string(),
+            FsrsPresetId::Addon(id) => id,
+        },
+        name: preset.name,
+        fsrs_version: preset.fsrs_version as i32,
+        params: preset.params,
+        desired_retention: preset.desired_retention,
+        historical_retention: preset.historical_retention,
+        ignore_revlogs_before_date: preset.ignore_revlogs_before_date,
+        fsrs_dynamic_desired_retention_enabled,
+        fsrs_dynamic_desired_retention_params,
+        fsrs_dynamic_desired_retention_weights,
+        fsrs_dynamic_desired_retention_avg_drs,
+        fsrs_dynamic_desired_retention_min,
+        fsrs_dynamic_desired_retention_max,
+        fsrs_dynamic_desired_retention_fsrs_eq_weights,
+        fsrs_dynamic_desired_retention_fsrs_eq_drs,
+    }
+}
+
 fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
     match FsrsVersion::try_from(fsrs_version).unwrap_or(FsrsVersion::Seven) {
         FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
@@ -752,6 +833,8 @@ impl crate::services::BackendSchedulerService for Backend {
             fsrs_dynamic_desired_retention_params: Vec::new(),
             fsrs_dynamic_desired_retention_weights: Vec::new(),
             fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
+            fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
+            fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
             fsrs_dynamic_desired_retention_min: 0.0,
             fsrs_dynamic_desired_retention_max: 0.0,
         })
@@ -808,9 +891,14 @@ fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSR
 mod tests {
     use fsrs::ComputeParametersVersion;
 
+    use super::fsrs_preset_to_proto;
     use super::health_check_model_version;
     use super::selected_short_term_with_steps_for_preview;
     use super::FsrsVersion;
+    use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetention;
+    use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
+    use crate::scheduler::fsrs::preset::FsrsPreset;
+    use crate::scheduler::fsrs::preset::FsrsPresetId;
 
     #[test]
     fn new_card_interval_preview_prefers_explicit_toggle_when_provided() {
@@ -852,5 +940,56 @@ mod tests {
             health_check_model_version(FsrsVersion::Four as i32),
             ComputeParametersVersion::Fsrs6
         );
+    }
+
+    #[test]
+    fn fsrs_preset_response_exposes_dynamic_dr_fields() -> crate::prelude::Result<()> {
+        let dynamic_dr = DynamicDesiredRetention::from_fields(DynamicDesiredRetentionFields {
+            policy_params: vec![1.0; 15],
+            calibration_weights: vec![0.0, 15.0],
+            calibration_avg_drs: vec![0.9, 0.8],
+            fsrs_equivalent_weights: vec![0.0, 15.0],
+            fsrs_equivalent_drs: vec![0.91, 0.82],
+            retention_min: 0.7,
+            retention_max: 0.95,
+            max_interval_days: None,
+        })?;
+        let response = fsrs_preset_to_proto(FsrsPreset {
+            id: FsrsPresetId::Addon("addon:test".into()),
+            name: "Test".into(),
+            fsrs_version: FsrsVersion::Seven,
+            params: vec![0.0; 21],
+            desired_retention: 0.86,
+            dynamic_desired_retention: Some(dynamic_dr),
+            historical_retention: 0.9,
+            ignore_revlogs_before_date: "2024-01-01".into(),
+        });
+
+        assert_eq!(response.id, "addon:test");
+        assert_eq!(response.fsrs_version, FsrsVersion::Seven as i32);
+        assert!(response.fsrs_dynamic_desired_retention_enabled);
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_params,
+            vec![1.0; 15]
+        );
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_weights,
+            vec![0.0, 15.0]
+        );
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_avg_drs,
+            vec![0.9, 0.8]
+        );
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_fsrs_eq_weights,
+            vec![0.0, 15.0]
+        );
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            vec![0.91, 0.82]
+        );
+        assert_eq!(response.fsrs_dynamic_desired_retention_min, 0.7);
+        assert_eq!(response.fsrs_dynamic_desired_retention_max, 0.95);
+        Ok(())
     }
 }

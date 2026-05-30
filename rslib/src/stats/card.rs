@@ -380,6 +380,7 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.9,
                     ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "deck:Default".into(),

@@ -61,6 +61,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         costWeightForAverageDr,
         dynamicDesiredRetentionEnabled,
+        targetDrCalibration,
         validCalibration,
         validPolicyParams,
         validRetentionBounds,
@@ -136,6 +137,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dynamicDesiredRetentionParams: number[];
         dynamicDesiredRetentionWeights: number[];
         dynamicDesiredRetentionAvgDrs: number[];
+        dynamicDesiredRetentionFsrsEqWeights: number[];
+        dynamicDesiredRetentionFsrsEqDrs: number[];
         dynamicDesiredRetentionMin: number;
         dynamicDesiredRetentionMax: number;
         search: string;
@@ -532,8 +535,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         includeSameDayReviews: includeSameDayOverride(),
                         fsrsVersion: $config.fsrsVersion,
                         dynamicDesiredRetentionEnabled:
-                            $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN
-                            && $config.fsrsDynamicDesiredRetentionEnabled,
+                            $config.fsrsVersion ===
+                                DeckConfig_Config_FsrsVersion.SEVEN &&
+                            $config.fsrsDynamicDesiredRetentionEnabled,
                     });
 
                     const alreadyOptimal =
@@ -572,6 +576,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     const dynamicDesiredRetentionAvgDrs = [
                         ...resp.fsrsDynamicDesiredRetentionAvgDrs,
                     ];
+                    const dynamicDesiredRetentionFsrsEqWeights = [
+                        ...resp.fsrsDynamicDesiredRetentionFsrsEqWeights,
+                    ];
+                    const dynamicDesiredRetentionFsrsEqDrs = [
+                        ...resp.fsrsDynamicDesiredRetentionFsrsEqDrs,
+                    ];
                     const dynamicDesiredRetentionMin =
                         resp.fsrsDynamicDesiredRetentionMin;
                     const dynamicDesiredRetentionMax =
@@ -583,6 +593,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionWeights;
                         $config.fsrsDynamicDesiredRetentionAvgDrs =
                             dynamicDesiredRetentionAvgDrs;
+                        $config.fsrsDynamicDesiredRetentionFsrsEqWeights =
+                            dynamicDesiredRetentionFsrsEqWeights;
+                        $config.fsrsDynamicDesiredRetentionFsrsEqDrs =
+                            dynamicDesiredRetentionFsrsEqDrs;
                         $config.fsrsDynamicDesiredRetentionMin =
                             dynamicDesiredRetentionMin;
                         $config.fsrsDynamicDesiredRetentionMax =
@@ -607,6 +621,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionParams,
                             dynamicDesiredRetentionWeights,
                             dynamicDesiredRetentionAvgDrs,
+                            dynamicDesiredRetentionFsrsEqWeights,
+                            dynamicDesiredRetentionFsrsEqDrs,
                             dynamicDesiredRetentionMin,
                             dynamicDesiredRetentionMax,
                             search: evaluateSearch,
@@ -658,6 +674,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 optimizationComparison.dynamicDesiredRetentionWeights;
             $config.fsrsDynamicDesiredRetentionAvgDrs =
                 optimizationComparison.dynamicDesiredRetentionAvgDrs;
+            $config.fsrsDynamicDesiredRetentionFsrsEqWeights =
+                optimizationComparison.dynamicDesiredRetentionFsrsEqWeights;
+            $config.fsrsDynamicDesiredRetentionFsrsEqDrs =
+                optimizationComparison.dynamicDesiredRetentionFsrsEqDrs;
             $config.fsrsDynamicDesiredRetentionMin =
                 optimizationComparison.dynamicDesiredRetentionMin;
             $config.fsrsDynamicDesiredRetentionMax =
@@ -996,10 +1016,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (val instanceof ComputeRetentionProgress) {
             return `${pct}%`;
         } else if (
-            val.phase ===
-                ComputeParamsProgress_Phase.TRAINING_DYNAMIC_DESIRED_RETENTION
+            val.phase === ComputeParamsProgress_Phase.TRAINING_DYNAMIC_DESIRED_RETENTION
         ) {
-            return `Training Dynamic DR (SSP-MMC): ${pct}%`;
+            return `Compute ADR values (SSP-MMC): ${pct}%`;
         } else {
             if (val.current === val.total) {
                 return tr.deckConfigCheckingForImprovement();
@@ -1030,35 +1049,68 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         (_, index) => index + 2,
     );
     dynamicDesiredRetentionCalibrationCounts.unshift(0);
-    $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
-        effectiveDesiredRetention,
+    $: dynamicDesiredRetentionTargetCalibration = targetDrCalibration(
         $config.fsrsDynamicDesiredRetentionWeights,
         $config.fsrsDynamicDesiredRetentionAvgDrs,
+        $config.fsrsDynamicDesiredRetentionFsrsEqWeights,
+        $config.fsrsDynamicDesiredRetentionFsrsEqDrs,
+    );
+    $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
+        effectiveDesiredRetention,
+        dynamicDesiredRetentionTargetCalibration.weights,
+        dynamicDesiredRetentionTargetCalibration.drs,
     );
     $: dynamicDesiredRetentionConfigReady = dynamicDesiredRetentionEnabled($config);
-    $: dynamicDesiredRetentionReady = dynamicDesiredRetentionConfigReady
-        && dynamicDesiredRetentionWeight !== null;
-    $: dynamicDesiredRetentionWarning =
-        $config.fsrsDynamicDesiredRetentionEnabled
-            && (!validPolicyParams($config.fsrsDynamicDesiredRetentionParams)
-                || !validCalibration(
-                    $config.fsrsDynamicDesiredRetentionWeights,
-                    $config.fsrsDynamicDesiredRetentionAvgDrs,
-                ))
-            ? "Dynamic DR requires 15 SSP-MMC parameters and matching calibration arrays."
-            : $config.fsrsDynamicDesiredRetentionEnabled
-                    && !validRetentionBounds(
-                        $config.fsrsDynamicDesiredRetentionMin,
-                        $config.fsrsDynamicDesiredRetentionMax,
-                    )
-              ? "Dynamic DR requires valid retention bounds."
-            : dynamicDesiredRetentionConfigReady
-                && dynamicDesiredRetentionWeight === null
-              ? "Dynamic DR target is outside the calibrated average DR range."
-            : "";
+    $: dynamicDesiredRetentionReady =
+        dynamicDesiredRetentionConfigReady && dynamicDesiredRetentionWeight !== null;
+    $: dynamicDesiredRetentionWarning = dynamicDesiredRetentionWarningMessage(
+        $config,
+        dynamicDesiredRetentionConfigReady,
+        dynamicDesiredRetentionWeight,
+    );
+
+    function dynamicDesiredRetentionWarningMessage(
+        config: DeckConfig_Config,
+        configReady: boolean,
+        weight: number | null,
+    ): string {
+        if (!config.fsrsDynamicDesiredRetentionEnabled) {
+            return "";
+        }
+        if (
+            !validPolicyParams(config.fsrsDynamicDesiredRetentionParams) ||
+            !validCalibration(
+                config.fsrsDynamicDesiredRetentionWeights,
+                config.fsrsDynamicDesiredRetentionAvgDrs,
+            )
+        ) {
+            return "Dynamic DR requires 15 SSP-MMC parameters and matching calibration arrays.";
+        }
+        if (
+            !validRetentionBounds(
+                config.fsrsDynamicDesiredRetentionMin,
+                config.fsrsDynamicDesiredRetentionMax,
+            )
+        ) {
+            return "Dynamic DR requires valid retention bounds.";
+        }
+        if (configReady && weight === null) {
+            return "Dynamic DR target is outside the calibrated average DR range.";
+        }
+        return "";
+    }
 
     function formatDynamicDrBound(value: number): string {
         return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "n/a";
+    }
+
+    function saveDynamicDesiredRetentionPlotTarget(event: CustomEvent<number>): void {
+        effectiveDesiredRetention = event.detail;
+        if ($limits.desiredRetention !== undefined) {
+            desiredRetentionTabs[1].setValue(event.detail);
+        } else {
+            desiredRetentionTabs[0].setValue(event.detail);
+        }
     }
 </script>
 
@@ -1139,7 +1191,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
             {computeParamsProgressString}
             {#if computeParamsProgressPct !== undefined}
-                <div class="progress fsrs-progress" role="progressbar" aria-valuenow={computeParamsProgressPct} aria-valuemin="0" aria-valuemax="100">
+                <div
+                    class="progress fsrs-progress"
+                    role="progressbar"
+                    aria-valuenow={computeParamsProgressPct}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                >
                     <div
                         class="progress-bar"
                         style={`width: ${computeParamsProgressPct}%`}
@@ -1277,7 +1335,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     Visualize DR plot
                 </button>
             </div>
-            <Warning warning={dynamicDesiredRetentionWarning} className="alert-warning" />
+            <Warning
+                warning={dynamicDesiredRetentionWarning}
+                className="alert-warning"
+            />
         {/if}
     {/if}
 
@@ -1362,9 +1423,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     params={$config.fsrsDynamicDesiredRetentionParams}
     calibrationWeights={$config.fsrsDynamicDesiredRetentionWeights}
     calibrationAvgDrs={$config.fsrsDynamicDesiredRetentionAvgDrs}
+    fsrsEquivalentWeights={$config.fsrsDynamicDesiredRetentionFsrsEqWeights}
+    fsrsEquivalentDrs={$config.fsrsDynamicDesiredRetentionFsrsEqDrs}
     retentionMin={$config.fsrsDynamicDesiredRetentionMin}
     retentionMax={$config.fsrsDynamicDesiredRetentionMax}
     targetAverageDr={effectiveDesiredRetention}
+    on:saveTarget={saveDynamicDesiredRetentionPlotTarget}
 />
 
 {#if sameDayDecisionComparison}

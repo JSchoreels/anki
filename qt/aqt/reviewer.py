@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
+import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -58,6 +60,8 @@ from aqt.utils import (
     tooltip,
     tr,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RefreshNeeded(Enum):
@@ -173,6 +177,7 @@ class Reviewer:
         self._answer_update_id: int | None = None
         self._answer_rendered = False
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
+        self._scheduling_states_pending = False
         self.bottom = BottomBar(mw, mw.bottomWeb)
         self._card_info = ReviewerCardInfo(self.mw)
         self._previous_card_info = PreviousReviewerCardInfo(self.mw)
@@ -262,9 +267,11 @@ class Reviewer:
     ##########################################################################
 
     def nextCard(self) -> None:
+        start = time.monotonic()
         self.previous_card = self.card
         self.card = None
         self._v3 = None
+        self._scheduling_states_pending = False
         self._desired_retention_override = None
         self._get_next_v3_card()
 
@@ -279,30 +286,94 @@ class Reviewer:
             self._initWeb()
 
         self._showQuestion()
+        logger.debug(
+            "reviewer nextCard displayed question: previous_card_id=%s card_id=%s elapsed_ms=%.1f",
+            self.previous_card.id if self.previous_card else None,
+            self.card.id if self.card else None,
+            (time.monotonic() - start) * 1000,
+        )
 
     def _get_next_v3_card(self) -> None:
+        start = time.monotonic()
         assert isinstance(self.mw.col.sched, V3Scheduler)
-        if gui_hooks.reviewer_will_compute_desired_retention.count() > 0:
+        queue_hook_count = gui_hooks.reviewer_will_compute_desired_retention.count()
+        queue_start = time.monotonic()
+        if queue_hook_count > 0:
             output = self.mw.col.sched.get_queued_cards_without_states()
         else:
             output = self.mw.col.sched.get_queued_cards()
+        queue_elapsed_ms = (time.monotonic() - queue_start) * 1000
         if not output.cards:
+            logger.debug(
+                "reviewer fetched no queued cards: desired_retention_hooks=%s elapsed_ms=%.1f",
+                queue_hook_count,
+                (time.monotonic() - start) * 1000,
+            )
             return
+        init_hook_count = gui_hooks.reviewer_will_compute_desired_retention.count()
         self._v3 = (
             V3CardInfo.from_queue_without_states(output)
-            if gui_hooks.reviewer_will_compute_desired_retention.count() > 0
+            if init_hook_count > 0
             else V3CardInfo.from_queue(output)
         )
+        self._scheduling_states_pending = init_hook_count > 0
         self.card = Card(self.mw.col, backend_card=self._v3.top_card().card)
-        if gui_hooks.reviewer_will_compute_desired_retention.count() > 0:
+        fill_hook_count = gui_hooks.reviewer_will_compute_desired_retention.count()
+        desired_retention_elapsed_ms = 0.0
+        scheduling_states_elapsed_ms = 0.0
+        if fill_hook_count > 0:
+            desired_retention_start = time.monotonic()
             self._desired_retention_override = (
                 gui_hooks.reviewer_will_compute_desired_retention(None, self, self.card)
             )
+            desired_retention_elapsed_ms = (
+                time.monotonic() - desired_retention_start
+            ) * 1000
+            scheduling_states_start = time.monotonic()
             self._v3.states = self.mw.col.sched.get_scheduling_states(
                 self.card.id,
                 desired_retention_override=self._desired_retention_override,
             )
+            scheduling_states_elapsed_ms = (
+                time.monotonic() - scheduling_states_start
+            ) * 1000
             self._v3.states.current.custom_data = self.card.custom_data
+            self._scheduling_states_pending = False
+        else:
+            self._scheduling_states_pending = False
+        logger.debug(
+            "reviewer fetched queued card: card_id=%s desired_retention_hooks=(queue:%s init:%s fill:%s) "
+            "queue_elapsed_ms=%.1f desired_retention_elapsed_ms=%.1f scheduling_states_elapsed_ms=%.1f "
+            "elapsed_ms=%.1f",
+            self.card.id,
+            queue_hook_count,
+            init_hook_count,
+            fill_hook_count,
+            queue_elapsed_ms,
+            desired_retention_elapsed_ms,
+            scheduling_states_elapsed_ms,
+            (time.monotonic() - start) * 1000,
+        )
+        if self._v3.states.current.WhichOneof("kind") is None:
+            logger.warning(
+                "reviewer fetched queued card with empty scheduling states: "
+                "card_id=%s card_type=%s queue=%s due=%s interval=%s reps=%s lapses=%s "
+                "desired_retention_hooks=(queue:%s init:%s fill:%s) update_state_hooks=%s "
+                "desired_retention_override=%s states=%r",
+                self.card.id,
+                self.card.type,
+                self.card.queue,
+                self.card.due,
+                self.card.ivl,
+                self.card.reps,
+                self.card.lapses,
+                queue_hook_count,
+                init_hook_count,
+                fill_hook_count,
+                gui_hooks.reviewer_will_update_scheduling_states.count(),
+                self._desired_retention_override,
+                self._v3.states,
+            )
         self.card.start_timer()
 
     def get_scheduling_states(self) -> SchedulingStates:
@@ -313,9 +384,69 @@ class Reviewer:
 
     def set_scheduling_states(self, request: SetSchedulingStatesRequest) -> None:
         if request.key != self._state_mutation_key:
+            logger.warning(
+                "ignored custom scheduling state mutation with stale key for card %s",
+                self.card.id if self.card else None,
+            )
             return
 
+        if request.states.current.WhichOneof("kind") is None:
+            logger.warning(
+                "custom scheduling state mutation provided empty states for card %s: %r",
+                self.card.id if self.card else None,
+                request.states,
+            )
+        if request.states.current != self._v3.states.current:
+            logger.warning(
+                "custom scheduling state mutation changed current state for card %s: %r -> %r",
+                self.card.id if self.card else None,
+                self._v3.states.current,
+                request.states.current,
+            )
         self._v3.states = request.states
+
+    def _scheduling_states_are_populated(self) -> bool:
+        return (
+            self._v3 is not None
+            and self._v3.states.current.WhichOneof("kind") is not None
+        )
+
+    def _populate_scheduling_states(self, reason: str) -> bool:
+        if self.card is None or self._v3 is None:
+            return False
+
+        start = time.monotonic()
+        try:
+            sched = cast(V3Scheduler, self.mw.col.sched)
+            states = sched.get_scheduling_states(
+                self.card.id,
+                desired_retention_override=self._desired_retention_override,
+            )
+        except Exception:
+            logger.exception(
+                "failed to populate scheduling states for card %s before %s",
+                self.card.id,
+                reason,
+            )
+            return False
+
+        states.current.custom_data = self.card.custom_data
+        self._v3.states = states
+        self._scheduling_states_pending = False
+        logger.warning(
+            "populated empty reviewer scheduling states for card %s before %s elapsed_ms=%.1f",
+            self.card.id,
+            reason,
+            (time.monotonic() - start) * 1000,
+        )
+        return True
+
+    def _ensure_scheduling_states_ready(self, reason: str) -> bool:
+        if self._scheduling_states_are_populated():
+            return True
+        if self._scheduling_states_pending:
+            return False
+        return self._populate_scheduling_states(reason)
 
     def _run_state_mutation_hook(self) -> None:
         def on_eval(result: Any) -> None:
@@ -404,6 +535,7 @@ class Reviewer:
         return self.typeAnsFilter(self.mw.prepare_card_text_for_display(buf))
 
     def _showQuestion(self) -> None:
+        start = time.monotonic()
         self._reps += 1
         self.state = "question"
         self.typedAnswer: str | None = None
@@ -433,6 +565,12 @@ class Reviewer:
         self.web.eval(
             f"_showQuestion({json.dumps(q)}, {json.dumps(a)}, "
             f"{json.dumps(bodyclass)}, {json.dumps(update_context)});"
+        )
+        logger.debug(
+            "reviewer handed question to webview: card_id=%s update_context=%s elapsed_ms=%.1f",
+            c.id,
+            update_context,
+            (time.monotonic() - start) * 1000,
         )
         self._update_flag_icon()
         self._update_mark_icon()
@@ -583,6 +721,7 @@ class Reviewer:
 
     def _answerCard(self, ease: Literal[1, 2, 3, 4]) -> None:
         "Reschedule card and show next."
+        start = time.monotonic()
         if self.mw.state != "review":
             # showing resetRequired screen; ignore key
             return
@@ -595,19 +734,43 @@ class Reviewer:
             return
 
         sched = cast(V3Scheduler, self.mw.col.sched)
+        if not self._ensure_scheduling_states_ready("answering"):
+            logger.warning(
+                "ignored answer while scheduling states are not ready for card %s",
+                self.card.id if self.card else None,
+            )
+            return
+        build_start = time.monotonic()
         answer = sched.build_answer(
             card=self.card,
             states=self._v3.states,
             rating=self._v3.rating_from_ease(ease),
             desired_retention_override=self._desired_retention_override,
         )
+        logger.debug(
+            "reviewer built answer: card_id=%s ease=%s build_elapsed_ms=%.1f elapsed_ms=%.1f",
+            self.card.id,
+            ease,
+            (time.monotonic() - build_start) * 1000,
+            (time.monotonic() - start) * 1000,
+        )
 
         def after_answer(changes: OpChanges) -> None:
+            after_answer_start = time.monotonic()
+            answered_card_id = self.card.id if self.card else None
             if gui_hooks.reviewer_did_answer_card.count() > 0:
                 self.card.load()
             # v3 scheduler doesn't report this
             suspended = self.card is not None and self.card.queue < 0
             self._after_answering(ease)
+            logger.debug(
+                "reviewer answer operation finished: card_id=%s ease=%s operation_elapsed_ms=%.1f "
+                "after_answer_elapsed_ms=%.1f",
+                answered_card_id,
+                ease,
+                (time.monotonic() - start) * 1000,
+                (time.monotonic() - after_answer_start) * 1000,
+            )
             if sched.state_is_leech(answer.new_state):
                 self.onLeech(suspended)
 
@@ -915,7 +1078,9 @@ timerStopped = false;
         self.bottom.web.eval("showQuestion(%s,%d);" % (json.dumps(middle), maxTime))
 
     def _showEaseButtons(self) -> None:
-        if not self._states_mutated:
+        if not self._states_mutated or not self._ensure_scheduling_states_ready(
+            "answer button rendering"
+        ):
             self.mw.progress.single_shot(50, self._showEaseButtons)
             return
         middle = self._answerButtons()
@@ -971,9 +1136,18 @@ timerStopped = false;
         default = self._defaultEase()
 
         assert isinstance(self.mw.col.sched, V3Scheduler)
+        current_before_hooks = self._v3.states.current.SerializeToString()
+        current_before_hooks_debug = repr(self._v3.states.current)
         self._v3.states = gui_hooks.reviewer_will_update_scheduling_states(
             self._v3.states, self, self.card
         )
+        if self._v3.states.current.SerializeToString() != current_before_hooks:
+            logger.warning(
+                "reviewer_will_update_scheduling_states changed current state for card %s: %s -> %r",
+                self.card.id,
+                current_before_hooks_debug,
+                self._v3.states.current,
+            )
         labels = self.mw.col.sched.describe_next_states(self._v3.states)
 
         def but(i: int, label: str) -> str:

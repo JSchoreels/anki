@@ -27,6 +27,12 @@ The default resolver maps a card to the FSRS preset derived from its home deck
 config. Future add-on sources can provide the same narrow FSRS preset shape
 without pretending to be full deck configs.
 
+Python add-ons can read the resolved preset with
+`Collection.fsrs_preset_for_card(card_id)`. The returned data is read-only and
+uses the same resolver as review scheduling, so it includes add-on overlay
+matches from `fsrsPresetOverlay` and falls back to the card's home deck config
+when no overlay rule matches.
+
 ## Add-on Overlay
 
 Add-ons can provide collection-scoped FSRS presets and ordered card matching

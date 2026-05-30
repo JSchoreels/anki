@@ -87,6 +87,10 @@ pub struct DeckConfSchema11 {
     fsrs_dynamic_desired_retention_weights: Vec<f32>,
     #[serde(default)]
     fsrs_dynamic_desired_retention_avg_drs: Vec<f32>,
+    #[serde(default)]
+    fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec<f32>,
+    #[serde(default)]
+    fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec<f32>,
     #[serde(default = "default_dynamic_desired_retention_min")]
     fsrs_dynamic_desired_retention_min: f32,
     #[serde(default = "default_dynamic_desired_retention_max")]
@@ -341,6 +345,8 @@ impl Default for DeckConfSchema11 {
             fsrs_dynamic_desired_retention_params: vec![],
             fsrs_dynamic_desired_retention_weights: vec![],
             fsrs_dynamic_desired_retention_avg_drs: vec![],
+            fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![],
+            fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![],
             fsrs_dynamic_desired_retention_min: default_dynamic_desired_retention_min(),
             fsrs_dynamic_desired_retention_max: default_dynamic_desired_retention_max(),
             fsrs_version: 0,
@@ -432,6 +438,10 @@ impl From<DeckConfSchema11> for DeckConfig {
                 fsrs_dynamic_desired_retention_params: c.fsrs_dynamic_desired_retention_params,
                 fsrs_dynamic_desired_retention_weights: c.fsrs_dynamic_desired_retention_weights,
                 fsrs_dynamic_desired_retention_avg_drs: c.fsrs_dynamic_desired_retention_avg_drs,
+                fsrs_dynamic_desired_retention_fsrs_eq_weights: c
+                    .fsrs_dynamic_desired_retention_fsrs_eq_weights,
+                fsrs_dynamic_desired_retention_fsrs_eq_drs: c
+                    .fsrs_dynamic_desired_retention_fsrs_eq_drs,
                 fsrs_dynamic_desired_retention_min: c.fsrs_dynamic_desired_retention_min,
                 fsrs_dynamic_desired_retention_max: c.fsrs_dynamic_desired_retention_max,
                 fsrs_version: c.fsrs_version,
@@ -560,6 +570,10 @@ impl From<DeckConfig> for DeckConfSchema11 {
             fsrs_dynamic_desired_retention_params: i.fsrs_dynamic_desired_retention_params,
             fsrs_dynamic_desired_retention_weights: i.fsrs_dynamic_desired_retention_weights,
             fsrs_dynamic_desired_retention_avg_drs: i.fsrs_dynamic_desired_retention_avg_drs,
+            fsrs_dynamic_desired_retention_fsrs_eq_weights: i
+                .fsrs_dynamic_desired_retention_fsrs_eq_weights,
+            fsrs_dynamic_desired_retention_fsrs_eq_drs: i
+                .fsrs_dynamic_desired_retention_fsrs_eq_drs,
             fsrs_dynamic_desired_retention_min: i.fsrs_dynamic_desired_retention_min,
             fsrs_dynamic_desired_retention_max: i.fsrs_dynamic_desired_retention_max,
             fsrs_version: i.fsrs_version,
@@ -594,6 +608,14 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "fsrsParams6",
     "fsrsParams7",
     "fsrsMinimumIntervalSecs",
+    "fsrsDynamicDesiredRetentionEnabled",
+    "fsrsDynamicDesiredRetentionParams",
+    "fsrsDynamicDesiredRetentionWeights",
+    "fsrsDynamicDesiredRetentionAvgDrs",
+    "fsrsDynamicDesiredRetentionFsrsEqWeights",
+    "fsrsDynamicDesiredRetentionFsrsEqDrs",
+    "fsrsDynamicDesiredRetentionMin",
+    "fsrsDynamicDesiredRetentionMax",
     "fsrsVersion",
     "desiredRetention",
     "stopTimerOnAnswer",

@@ -306,7 +306,11 @@ impl Collection {
         };
 
         let state_ctx = ctx.state_context(load_balancer_ctx);
-        Ok(current.next_states(&state_ctx))
+        let mut states = current.next_states(&state_ctx);
+        states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
+        states.dynamic_desired_retention_enabled =
+            ctx.fsrs_preset.dynamic_desired_retention.is_some();
+        Ok(states)
     }
 
     /// Describe the next intervals, to display on the answer buttons.
@@ -545,15 +549,27 @@ impl Collection {
             elapsed_days_for_log = Some(days_elapsed);
             let current_memory_state = card.memory_state.map(Into::into);
             if let Some(dynamic_dr) = fsrs_preset.dynamic_desired_retention.as_ref() {
-                let dynamic_states = dynamic_dr.next_states(
-                    &fsrs,
-                    current_memory_state,
-                    desired_retention,
-                    days_elapsed,
-                )?;
-                let states = dynamic_states.states.clone();
-                dynamic_desired_retention = Some(dynamic_states);
-                Some(states)
+                if dynamic_dr.target_in_dynamic_dr_range(desired_retention)? {
+                    let dynamic_states = dynamic_dr.next_states(
+                        &fsrs,
+                        current_memory_state,
+                        desired_retention,
+                        days_elapsed,
+                    )?;
+                    let states = dynamic_states.states.clone();
+                    dynamic_desired_retention = Some(dynamic_states);
+                    Some(states)
+                } else {
+                    tracing::debug!(
+                        desired_retention = round_to_two_decimals(desired_retention),
+                        "Dynamic DR target outside range; using fixed desired retention"
+                    );
+                    Some(fsrs.next_states_with_elapsed_days(
+                        current_memory_state,
+                        desired_retention,
+                        days_elapsed,
+                    )?)
+                }
             } else {
                 Some(fsrs.next_states_with_elapsed_days(
                     current_memory_state,
@@ -899,6 +915,8 @@ pub(crate) mod test {
                 memory_state: None,
             }
             .into(),
+            dynamic_desired_retentions: None,
+            dynamic_desired_retention_enabled: false,
         };
 
         let labels = col.describe_next_states(&states)?;
@@ -1009,6 +1027,53 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn desired_retention_override_outside_dynamic_dr_range_uses_fixed_dr() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+            config.desired_retention = 0.85;
+            config.fsrs_dynamic_desired_retention_enabled = true;
+            config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
+            config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+            config.fsrs_dynamic_desired_retention_avg_drs = vec![0.8, 0.9];
+            config.fsrs_dynamic_desired_retention_min = 0.75;
+            config.fsrs_dynamic_desired_retention_max = 0.95;
+        });
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
+        col.storage.update_card(&card)?;
+
+        let updater = col.card_state_updater(card.clone(), Some(0.95))?;
+        let fixed_states =
+            col.get_scheduling_states_with_desired_retention_override(card.id, Some(0.95))?;
+        let dynamic_states =
+            col.get_scheduling_states_with_desired_retention_override(card.id, Some(0.85))?;
+
+        assert_eq!(updater.desired_retention, Some(0.95));
+        assert!(updater.dynamic_desired_retentions.is_none());
+        assert!(fixed_states.dynamic_desired_retentions.is_none());
+        assert!(dynamic_states.dynamic_desired_retentions.is_some());
+
+        Ok(())
+    }
+
+    #[test]
     fn desired_retention_override_takes_precedence_over_addon_preset() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
@@ -1028,6 +1093,7 @@ pub(crate) mod test {
                     desired_retention: 0.8,
                     historical_retention: 0.9,
                     ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "front".into(),
@@ -1071,6 +1137,66 @@ pub(crate) mod test {
 
         let card = col.storage.get_card(card.id)?.unwrap();
         assert_eq!(card.desired_retention, Some(0.95));
+
+        Ok(())
+    }
+
+    #[test]
+    fn addon_preset_dynamic_dr_is_exposed_on_scheduling_states() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+            config.desired_retention = 0.65;
+        });
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:matched".into(),
+                    name: "Matched".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: low_retention_fsrs7_params(),
+                    desired_retention: 0.9,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                    fsrs_dynamic_desired_retention_enabled: true,
+                    fsrs_dynamic_desired_retention_params: vec![0.0; 15],
+                    fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
+                    fsrs_dynamic_desired_retention_avg_drs: vec![0.9, 0.8],
+                    fsrs_dynamic_desired_retention_min: 0.75,
+                    fsrs_dynamic_desired_retention_max: 0.95,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "front".into(),
+                    preset_id: "addon:test:matched".into(),
+                }],
+            },
+        )?;
+
+        NoteAdder::basic(&mut col)
+            .fields(&["front", "back"])
+            .add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
+        col.storage.update_card(&card)?;
+
+        let states =
+            col.get_scheduling_states_with_desired_retention_override(card.id, Some(0.9))?;
+
+        assert!(states.dynamic_desired_retention_enabled);
+        assert!(states.dynamic_desired_retentions.is_some());
 
         Ok(())
     }

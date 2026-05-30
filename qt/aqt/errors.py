@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -234,7 +235,20 @@ class ErrorHandler(QObject):
 
     def unload(self) -> None:
         sys.stderr = self._oldstderr
-        sys.excepthook = None
+        for logger in [
+            logging.getLogger(),
+            *logging.Logger.manager.loggerDict.values(),
+        ]:
+            if not isinstance(logger, logging.Logger):
+                continue
+            for handler in logger.handlers:
+                if getattr(handler, "stream", None) is self:
+                    stream_handler = cast(logging.StreamHandler, handler)
+                    stream_handler.acquire()
+                    try:
+                        stream_handler.stream = self._oldstderr
+                    finally:
+                        stream_handler.release()
 
     def write(self, data: str) -> None:
         # dump to stdout

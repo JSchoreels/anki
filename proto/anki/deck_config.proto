@@ -149,6 +149,8 @@ message DeckConfig {
     repeated float fsrs_dynamic_desired_retention_avg_drs = 58;
     float fsrs_dynamic_desired_retention_min = 59;
     float fsrs_dynamic_desired_retention_max = 60;
+    repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 61;
+    repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 62;
 
     // consider saving remaining ones for fsrs param changes
     reserved 7 to 8;

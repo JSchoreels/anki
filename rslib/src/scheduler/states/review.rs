@@ -78,6 +78,8 @@ impl ReviewState {
             easy: self
                 .answer_easy(easy_interval.0, easy_interval.1, ctx)
                 .into(),
+            dynamic_desired_retentions: None,
+            dynamic_desired_retention_enabled: false,
         }
     }
 

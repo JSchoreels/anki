@@ -16,6 +16,8 @@ export function dynamicDesiredRetentionEnabled(config: {
     fsrsDynamicDesiredRetentionParams: number[];
     fsrsDynamicDesiredRetentionWeights: number[];
     fsrsDynamicDesiredRetentionAvgDrs: number[];
+    fsrsDynamicDesiredRetentionFsrsEqWeights?: number[];
+    fsrsDynamicDesiredRetentionFsrsEqDrs?: number[];
     fsrsDynamicDesiredRetentionMin: number;
     fsrsDynamicDesiredRetentionMax: number;
 }): boolean {
@@ -24,6 +26,10 @@ export function dynamicDesiredRetentionEnabled(config: {
         && validCalibration(
             config.fsrsDynamicDesiredRetentionWeights,
             config.fsrsDynamicDesiredRetentionAvgDrs,
+        )
+        && validOptionalCalibration(
+            config.fsrsDynamicDesiredRetentionFsrsEqWeights ?? [],
+            config.fsrsDynamicDesiredRetentionFsrsEqDrs ?? [],
         )
         && validRetentionBounds(
             config.fsrsDynamicDesiredRetentionMin,
@@ -49,6 +55,22 @@ export function validRetentionBounds(retentionMin: number, retentionMax: number)
         && retentionMin > 0
         && retentionMin < retentionMax
         && retentionMax < 1;
+}
+
+export function validOptionalCalibration(weights: number[], drs: number[]): boolean {
+    return weights.length === 0 && drs.length === 0 || validCalibration(weights, drs);
+}
+
+export function targetDrCalibration(
+    avgWeights: number[],
+    avgDrs: number[],
+    fsrsEqWeights: number[],
+    fsrsEqDrs: number[],
+): { weights: number[]; drs: number[]; label: string } {
+    if (validCalibration(fsrsEqWeights, fsrsEqDrs)) {
+        return { weights: fsrsEqWeights, drs: fsrsEqDrs, label: "FSRS7 Eq. DR" };
+    }
+    return { weights: avgWeights, drs: avgDrs, label: "Avg ADR DR" };
 }
 
 export function costWeightForAverageDr(
