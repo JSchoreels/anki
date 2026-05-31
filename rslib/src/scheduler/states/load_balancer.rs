@@ -220,7 +220,7 @@ impl LoadBalancer {
         note_id: Option<NoteId>,
     ) -> Option<u32> {
         // if we're sending a card far out into the future, the need to balance is low
-        if interval as usize > MAX_LOAD_BALANCE_INTERVAL
+        if interval > MAX_LOAD_BALANCE_INTERVAL as f32
             || minimum as usize > MAX_LOAD_BALANCE_INTERVAL
         {
             return None;
@@ -547,6 +547,31 @@ mod test {
         assert!(selected.is_some());
         assert!(selected.unwrap() >= before_days);
         assert!(selected.unwrap() <= after_days);
+    }
+
+    #[test]
+    fn find_interval_skips_fractional_intervals_past_limit() {
+        let dcid = DeckConfigId(1);
+        let config = DeckConfig::default();
+        let review_fuzz_config = ReviewFuzzConfig::default();
+        let cache_days = load_balance_days_for_config(&config, review_fuzz_config);
+
+        let load_balancer = LoadBalancer {
+            days_by_preset: HashMap::from([(
+                dcid,
+                std::iter::repeat_with(LoadBalancerDay::default)
+                    .take(cache_days)
+                    .collect(),
+            )]),
+            easy_days_percentages_by_preset: HashMap::from([(dcid, [EasyDay::Normal; 7])]),
+            review_fuzz_config,
+            next_day_at: TimestampSecs(0),
+        };
+
+        assert_eq!(
+            load_balancer.find_interval(90.1, 1, 36_500, dcid, Some(1), None),
+            None
+        );
     }
 
     #[test]
