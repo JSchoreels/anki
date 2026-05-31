@@ -122,6 +122,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rusqlite",
  "rustls-pemfile 2.2.0",
+ "same-file",
  "scopeguard",
  "serde",
  "serde-aux",
@@ -181,6 +182,7 @@ name = "anki_io"
 version = "0.0.0"
 dependencies = [
  "camino",
+ "rand 0.9.4",
  "snafu",
  "tempfile",
 ]
