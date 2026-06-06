@@ -762,6 +762,7 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
         fsrs_dynamic_desired_retention_max,
         fsrs_dynamic_desired_retention_fsrs_eq_weights,
         fsrs_dynamic_desired_retention_fsrs_eq_drs,
+        fsrs_dynamic_desired_retention_clamp,
     ) = if let Some(dynamic_dr) = preset.dynamic_desired_retention {
         let (weights, avg_drs): (Vec<_>, Vec<_>) = dynamic_dr.calibration().iter().copied().unzip();
         let (fsrs_eq_weights, fsrs_eq_drs): (Vec<_>, Vec<_>) = dynamic_dr
@@ -778,9 +779,20 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
             dynamic_dr.retention_max(),
             fsrs_eq_weights,
             fsrs_eq_drs,
+            dynamic_dr.clamp_target(),
         )
     } else {
-        (false, vec![], vec![], vec![], 0.0, 0.0, vec![], vec![])
+        (
+            false,
+            vec![],
+            vec![],
+            vec![],
+            0.0,
+            0.0,
+            vec![],
+            vec![],
+            false,
+        )
     };
 
     FsrsPresetForCardResponse {
@@ -802,6 +814,7 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
         fsrs_dynamic_desired_retention_max,
         fsrs_dynamic_desired_retention_fsrs_eq_weights,
         fsrs_dynamic_desired_retention_fsrs_eq_drs,
+        fsrs_dynamic_desired_retention_clamp,
     }
 }
 
@@ -820,6 +833,7 @@ impl crate::services::BackendSchedulerService for Backend {
         let fsrs_items = req.items.len() as u32;
         let params = compute_parameters(ComputeParametersInput {
             train_set: req.items.into_iter().map(fsrs_item_proto_to_fsrs).collect(),
+            card_ids: None,
             progress: None,
             enable_short_term: true,
             enable_sched_penalties: true,
@@ -851,6 +865,7 @@ impl crate::services::BackendSchedulerService for Backend {
             .collect();
         let params = benchmark(ComputeParametersInput {
             train_set,
+            card_ids: None,
             progress: None,
             enable_short_term: true,
             enable_sched_penalties: true,
@@ -952,6 +967,7 @@ mod tests {
             fsrs_equivalent_drs: vec![0.91, 0.82],
             retention_min: 0.7,
             retention_max: 0.95,
+            clamp_target: true,
             max_interval_days: None,
         })?;
         let response = fsrs_preset_to_proto(FsrsPreset {
@@ -990,6 +1006,7 @@ mod tests {
         );
         assert_eq!(response.fsrs_dynamic_desired_retention_min, 0.7);
         assert_eq!(response.fsrs_dynamic_desired_retention_max, 0.95);
+        assert!(response.fsrs_dynamic_desired_retention_clamp);
         Ok(())
     }
 }

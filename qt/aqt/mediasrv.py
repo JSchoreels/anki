@@ -558,6 +558,8 @@ def update_deck_configs() -> bytes:
     first_progress_at: float | None = None
     smoothed_remaining: float | None = None
     preset_started_at: dict[str, float] = {}
+    saved_preset_names: set[str] = set()
+    updated_preset_names: set[str] = set()
 
     def format_elapsed_time(seconds: float) -> str:
         seconds = int(max(seconds, 0))
@@ -587,9 +589,54 @@ def update_deck_configs() -> bytes:
         nonlocal first_progress_at, smoothed_remaining, zero_review_skip_logged
         if progress.HasField("compute_memory"):
             val = progress.compute_memory
-            update.max = val.total_cards
-            update.value = val.current_cards
-            update.label = val.label
+            total_presets = max(val.total_presets, 1)
+            current_preset = min(max(val.current_preset, 1), total_presets)
+            update.max = total_presets
+            update.value = current_preset
+            preset_name = val.preset_name or tr.deck_config_shared_preset()
+            if val.saving:
+                update.label = val.label
+                for preset in val.presets:
+                    if not preset.finished or preset.name in saved_preset_names:
+                        continue
+                    saved_preset_names.add(preset.name)
+                    preset_log.append(f"[SAVE] {preset.name}")
+            else:
+                action = "Rescheduling" if val.rescheduling else "Updating"
+                update.label = (
+                    f"Saved optimized presets | {action} preset "
+                    f"{current_preset}/{total_presets}: {preset_name} | {val.label}"
+                )
+                for preset in val.presets:
+                    if not preset.finished or preset.name in updated_preset_names:
+                        continue
+                    updated_preset_names.add(preset.name)
+                    done_action = "rescheduled" if preset.rescheduling else "updated"
+                    preset_log.append(
+                        f"[DONE] {preset.name} - {done_action} "
+                        f"{preset.total_cards} cards"
+                    )
+            update.details = "\n".join(preset_log[-12:]) if preset_log else None
+            update.bars = [
+                ProgressBarUpdate(
+                    label=(
+                        preset.name
+                        if val.saving
+                        else (
+                            f"{preset.name} ({preset.total_cards} cards)"
+                            if preset.total_cards
+                            else f"{preset.name} (waiting)"
+                        )
+                    ),
+                    value=preset.current_cards,
+                    max=max(preset.total_cards, 1),
+                )
+                for preset in sorted(
+                    (preset for preset in val.presets if not preset.finished),
+                    key=lambda preset: preset.total_cards,
+                    reverse=True,
+                )
+            ]
         elif progress.HasField("compute_params"):
             val2 = progress.compute_params
             # prevent an indeterminate progress bar from appearing at the start of each preset

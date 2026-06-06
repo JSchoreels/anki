@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+mod fork_fields;
 mod schema11;
 mod service;
 pub(crate) mod undo;
@@ -16,6 +17,8 @@ pub use anki_proto::deck_config::deck_config::config::QuestionAction;
 pub use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
 pub use anki_proto::deck_config::deck_config::config::ReviewMix;
 pub use anki_proto::deck_config::deck_config::Config as DeckConfigInner;
+pub(crate) use fork_fields::deck_config_inner_for_storage;
+pub(crate) use fork_fields::restore_fork_fields_from_other;
 pub use schema11::DeckConfSchema11;
 pub use schema11::NewCardOrderSchema11;
 pub use update::UpdateDeckConfigsRequest;
@@ -94,6 +97,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     fsrs_dynamic_desired_retention_max: 0.995,
     fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
+    fsrs_dynamic_desired_retention_clamp: false,
     fsrs_version: FsrsVersion::Seven as i32,
     desired_retention: 0.9,
     other: Vec::new(),

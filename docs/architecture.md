@@ -240,6 +240,9 @@ FSRS training-item extraction is model-family-aware:
 - FSRS-6 family keeps the legacy training target rule (`delta_t > 0` only).
 - FSRS-7 includes same-day (`delta_t == 0`) follow-up targets during
   optimization/evaluation item generation.
+- Revlog-derived training items keep an aligned card-id vector after sorting by
+  review id. Anki passes those ids to `fsrs-rs` so FSRS-7 optimization can group
+  surviving prefix items from the same card for windowed training.
 - Optimize progress now reports:
   - total training targets,
   - long-term targets (`delta_t >= 1`),

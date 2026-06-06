@@ -36,10 +36,26 @@ const S_MAX: f32 = 36_500.0;
 const D_MIN: f32 = 1.0;
 const D_MAX: f32 = 10.0;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ComputeMemoryProgress {
     pub current_cards: u32,
     pub total_cards: u32,
+    pub preset_name: String,
+    pub current_preset: u32,
+    pub total_presets: u32,
+    pub rescheduling: bool,
+    pub saving: bool,
+    pub presets: Vec<ComputeMemoryPresetProgress>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ComputeMemoryPresetProgress {
+    pub name: String,
+    pub current_cards: u32,
+    pub total_cards: u32,
+    pub finished: bool,
+    pub rescheduling: bool,
+    pub saving: bool,
 }
 
 struct ComputedMemoryState {
@@ -228,6 +244,9 @@ pub(crate) struct UpdateMemoryStateEntry {
     pub req: Option<UpdateMemoryStateRequest>,
     pub search: SearchNode,
     pub ignore_before: TimestampMillis,
+    pub preset_name: String,
+    pub current_preset: u32,
+    pub total_presets: u32,
 }
 
 trait ChunkIntoVecs<T> {
@@ -254,12 +273,33 @@ impl Collection {
     ) -> Result<()> {
         let timing = self.timing_today()?;
         let usn = self.usn()?;
-        for UpdateMemoryStateEntry {
-            req,
-            search,
-            ignore_before,
-        } in entries
+        let mut preset_progress = entries
+            .iter()
+            .map(|entry| ComputeMemoryPresetProgress {
+                name: entry.preset_name.clone(),
+                rescheduling: entry.req.as_ref().is_some_and(|req| req.reschedule),
+                ..Default::default()
+            })
+            .collect_vec();
+
+        for (
+            entry_index,
+            UpdateMemoryStateEntry {
+                req,
+                search,
+                ignore_before,
+                preset_name,
+                current_preset,
+                total_presets,
+            },
+        ) in entries.into_iter().enumerate()
         {
+            let rescheduling = req.as_ref().is_some_and(|req| req.reschedule);
+            if let Some(progress) = preset_progress.get_mut(entry_index) {
+                progress.name.clone_from(&preset_name);
+                progress.rescheduling = rescheduling;
+            }
+
             let search =
                 SearchBuilder::all([search.into(), SearchNode::State(StateKind::New).negated()]);
             let revlog = self.revlog_for_srs(search)?;
@@ -274,14 +314,23 @@ impl Collection {
                     ignore_before,
                 )?;
 
-                let on_updated_card = self.create_progress_closure(items.len())?;
+                Self::prepare_memory_progress_entry(&mut preset_progress, entry_index, items.len());
+                let on_updated_card = self.create_progress_closure(
+                    preset_progress.clone(),
+                    entry_index,
+                    preset_name.clone(),
+                    current_preset,
+                    total_presets,
+                    false,
+                )?;
 
                 // clear FSRS data if FSRS is disabled
                 self.clear_fsrs_data_for_cards(
-                    items.into_iter().map(|(card_id, _)| card_id),
+                    items.iter().map(|(card_id, _)| *card_id),
                     usn,
                     on_updated_card,
                 )?;
+                Self::finish_memory_progress_entry(&mut preset_progress, entry_index, items.len());
                 continue;
             };
             let fsrs = FSRS::new(&req.params)?;
@@ -296,7 +345,16 @@ impl Collection {
                 ignore_before,
             )?;
 
-            let mut on_updated_card = self.create_progress_closure(items.len())?;
+            Self::prepare_memory_progress_entry(&mut preset_progress, entry_index, items.len());
+            let mut on_updated_card = self.create_progress_closure(
+                preset_progress.clone(),
+                entry_index,
+                preset_name,
+                current_preset,
+                total_presets,
+                req.reschedule,
+            )?;
+            let item_count = items.len();
 
             let (items, cards_without_items): (Vec<(CardId, FsrsItemForMemoryState)>, Vec<CardId>) =
                 items.into_iter().partition_map(|(card_id, item)| {
@@ -432,17 +490,75 @@ impl Collection {
                 usn,
                 on_updated_card,
             )?;
+            Self::finish_memory_progress_entry(&mut preset_progress, entry_index, item_count);
         }
         Ok(())
     }
 
-    fn create_progress_closure(&self, item_count: usize) -> Result<impl FnMut() -> Result<()>> {
+    fn prepare_memory_progress_entry(
+        preset_progress: &mut [ComputeMemoryPresetProgress],
+        entry_index: usize,
+        total_cards: usize,
+    ) {
+        if let Some(progress) = preset_progress.get_mut(entry_index) {
+            progress.total_cards = total_cards as u32;
+            progress.finished = total_cards == 0;
+        }
+    }
+
+    fn finish_memory_progress_entry(
+        preset_progress: &mut [ComputeMemoryPresetProgress],
+        entry_index: usize,
+        total_cards: usize,
+    ) {
+        if let Some(progress) = preset_progress.get_mut(entry_index) {
+            progress.current_cards = total_cards as u32;
+            progress.total_cards = total_cards as u32;
+            progress.finished = true;
+        }
+    }
+
+    fn set_active_memory_progress(progress: &mut ComputeMemoryProgress, active_index: usize) {
+        if let Some(active) = progress.presets.get(active_index) {
+            progress.current_cards = active.current_cards;
+            progress.total_cards = active.total_cards;
+            progress.preset_name.clone_from(&active.name);
+            progress.rescheduling = active.rescheduling;
+            progress.saving = active.saving;
+        }
+    }
+
+    fn create_progress_closure(
+        &self,
+        presets: Vec<ComputeMemoryPresetProgress>,
+        active_index: usize,
+        preset_name: String,
+        current_preset: u32,
+        total_presets: u32,
+        rescheduling: bool,
+    ) -> Result<impl FnMut() -> Result<()>> {
         let mut progress = self.new_progress_handler::<ComputeMemoryProgress>();
         progress.update(false, |s| {
-            s.total_cards = item_count as u32;
-            s.current_cards = 1;
+            s.presets = presets;
+            s.preset_name = preset_name;
+            s.current_preset = current_preset;
+            s.total_presets = total_presets;
+            s.rescheduling = rescheduling;
+            s.saving = false;
+            Self::set_active_memory_progress(s, active_index);
         })?;
-        let on_updated_card = move || progress.update(true, |p| p.current_cards += 1);
+        let on_updated_card = move || {
+            progress.update(true, |p| {
+                if let Some(active) = p.presets.get_mut(active_index) {
+                    active.current_cards = active
+                        .current_cards
+                        .saturating_add(1)
+                        .min(active.total_cards);
+                    active.finished = active.current_cards >= active.total_cards;
+                }
+                Self::set_active_memory_progress(p, active_index);
+            })
+        };
         Ok(on_updated_card)
     }
 
@@ -1736,6 +1852,9 @@ mod tests {
                 req: None,
                 search: SearchNode::WholeCollection,
                 ignore_before: TimestampMillis(0),
+                preset_name: "Default".to_string(),
+                current_preset: 1,
+                total_presets: 1,
             };
             col.transact(Op::UpdateDeckConfig, |col| {
                 col.update_memory_state(vec![entry]).unwrap();

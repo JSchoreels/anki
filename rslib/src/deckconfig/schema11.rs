@@ -15,6 +15,8 @@ use serde_repr::Deserialize_repr;
 use serde_repr::Serialize_repr;
 use serde_tuple::Serialize_tuple;
 
+use super::deck_config_inner_for_storage;
+use super::restore_fork_fields_from_other;
 use super::DeckConfig;
 use super::DeckConfigId;
 use super::DeckConfigInner;
@@ -75,27 +77,35 @@ pub struct DeckConfSchema11 {
     fsrs_params_5: Vec<f32>,
     #[serde(default)]
     fsrs_params_6: Vec<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_params_7: Vec<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_fsrs_minimum_interval_secs")]
     fsrs_minimum_interval_secs: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     fsrs_dynamic_desired_retention_enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_dynamic_desired_retention_params: Vec<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_dynamic_desired_retention_weights: Vec<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_dynamic_desired_retention_avg_drs: Vec<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec<f32>,
-    #[serde(default = "default_dynamic_desired_retention_min")]
+    #[serde(
+        default = "default_dynamic_desired_retention_min",
+        skip_serializing_if = "is_default_dynamic_desired_retention_min"
+    )]
     fsrs_dynamic_desired_retention_min: f32,
-    #[serde(default = "default_dynamic_desired_retention_max")]
+    #[serde(
+        default = "default_dynamic_desired_retention_max",
+        skip_serializing_if = "is_default_dynamic_desired_retention_max"
+    )]
     fsrs_dynamic_desired_retention_max: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    fsrs_dynamic_desired_retention_clamp: bool,
+    #[serde(default, skip_serializing_if = "is_default_fsrs_version")]
     fsrs_version: i32,
     #[serde(default)]
     desired_retention: f32,
@@ -132,6 +142,27 @@ fn default_dynamic_desired_retention_min() -> f32 {
 fn default_dynamic_desired_retention_max() -> f32 {
     0.995
 }
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn is_default_fsrs_minimum_interval_secs(value: &u32) -> bool {
+    *value == 1
+}
+
+fn is_default_dynamic_desired_retention_min(value: &f32) -> bool {
+    (*value - default_dynamic_desired_retention_min()).abs() <= f32::EPSILON
+}
+
+fn is_default_dynamic_desired_retention_max(value: &f32) -> bool {
+    (*value - default_dynamic_desired_retention_max()).abs() <= f32::EPSILON
+}
+
+fn is_default_fsrs_version(value: &i32) -> bool {
+    *value == 0
+}
+
 #[derive(Serialize_repr, Deserialize_repr, Debug, PartialEq, Eq, Clone)]
 #[repr(u8)]
 #[derive(Default)]
@@ -349,6 +380,7 @@ impl Default for DeckConfSchema11 {
             fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![],
             fsrs_dynamic_desired_retention_min: default_dynamic_desired_retention_min(),
             fsrs_dynamic_desired_retention_max: default_dynamic_desired_retention_max(),
+            fsrs_dynamic_desired_retention_clamp: false,
             fsrs_version: 0,
             desired_retention: 0.9,
             sm2_retention: 0.9,
@@ -385,78 +417,82 @@ impl From<DeckConfSchema11> for DeckConfig {
             serde_json::to_vec(&c.other).unwrap_or_default()
         };
 
+        let mut inner = DeckConfigInner {
+            learn_steps: c.new.delays,
+            relearn_steps: c.lapse.delays,
+            new_per_day: c.new.per_day,
+            reviews_per_day: c.rev.per_day,
+            new_per_day_minimum: c.new_per_day_minimum,
+            initial_ease: (c.new.initial_factor as f32) / 1000.0,
+            easy_multiplier: c.rev.ease4,
+            hard_multiplier: c.rev.hard_factor,
+            lapse_multiplier: c.lapse.mult,
+            interval_multiplier: c.rev.ivl_fct,
+            maximum_review_interval: c.rev.max_ivl,
+            minimum_lapse_interval: c.lapse.min_int,
+            graduating_interval_good: c.new.ints.good as u32,
+            graduating_interval_easy: c.new.ints.easy as u32,
+            new_card_insert_order: match c.new.order {
+                NewCardOrderSchema11::Random => NewCardInsertOrder::Random,
+                NewCardOrderSchema11::Due => NewCardInsertOrder::Due,
+            } as i32,
+            new_card_gather_priority: c.new_gather_priority,
+            new_card_sort_order: c.new_sort_order,
+            review_order: c.review_order,
+            new_mix: c.new_mix,
+            interday_learning_mix: c.interday_learning_mix,
+            leech_action: c.lapse.leech_action as i32,
+            leech_threshold: c.lapse.leech_fails,
+            disable_autoplay: !c.autoplay,
+            cap_answer_time_to_secs: c.max_taken.max(0) as u32,
+            show_timer: c.timer != 0,
+            stop_timer_on_answer: c.stop_timer_on_answer,
+            seconds_to_show_question: c.seconds_to_show_question,
+            seconds_to_show_answer: c.seconds_to_show_answer,
+            question_action: c.question_action as i32,
+            answer_action: c.answer_action as i32,
+            wait_for_audio: c.wait_for_audio,
+            skip_question_when_replaying_answer: !c.replayq,
+            bury_new: c.new.bury,
+            bury_reviews: c.rev.bury,
+            bury_interday_learning: c.bury_interday_learning,
+            fsrs_params_4: c.fsrs_params_4,
+            fsrs_params_5: c.fsrs_params_5,
+            fsrs_params_6: c.fsrs_params_6,
+            fsrs_params_7: c.fsrs_params_7,
+            fsrs_minimum_interval_secs: c.fsrs_minimum_interval_secs,
+            fsrs_dynamic_desired_retention_enabled: c.fsrs_dynamic_desired_retention_enabled,
+            fsrs_dynamic_desired_retention_params: c.fsrs_dynamic_desired_retention_params,
+            fsrs_dynamic_desired_retention_weights: c.fsrs_dynamic_desired_retention_weights,
+            fsrs_dynamic_desired_retention_avg_drs: c.fsrs_dynamic_desired_retention_avg_drs,
+            fsrs_dynamic_desired_retention_fsrs_eq_weights: c
+                .fsrs_dynamic_desired_retention_fsrs_eq_weights,
+            fsrs_dynamic_desired_retention_fsrs_eq_drs: c
+                .fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            fsrs_dynamic_desired_retention_min: c.fsrs_dynamic_desired_retention_min,
+            fsrs_dynamic_desired_retention_max: c.fsrs_dynamic_desired_retention_max,
+            fsrs_dynamic_desired_retention_clamp: c.fsrs_dynamic_desired_retention_clamp,
+            fsrs_version: c.fsrs_version,
+            ignore_revlogs_before_date: c.ignore_revlogs_before_date,
+            easy_days_percentages: c.easy_days_percentages,
+            review_fuzz_base: None,
+            review_fuzz_factor_short: None,
+            review_fuzz_factor_mid: None,
+            review_fuzz_factor_long: None,
+            review_fuzz_enabled: None,
+            desired_retention: c.desired_retention,
+            historical_retention: c.sm2_retention,
+            param_search: c.param_search,
+            other: other_bytes,
+        };
+        restore_fork_fields_from_other(&mut inner);
+
         DeckConfig {
             id: c.id,
             name: c.name,
             mtime_secs: c.mtime,
             usn: c.usn,
-            inner: DeckConfigInner {
-                learn_steps: c.new.delays,
-                relearn_steps: c.lapse.delays,
-                new_per_day: c.new.per_day,
-                reviews_per_day: c.rev.per_day,
-                new_per_day_minimum: c.new_per_day_minimum,
-                initial_ease: (c.new.initial_factor as f32) / 1000.0,
-                easy_multiplier: c.rev.ease4,
-                hard_multiplier: c.rev.hard_factor,
-                lapse_multiplier: c.lapse.mult,
-                interval_multiplier: c.rev.ivl_fct,
-                maximum_review_interval: c.rev.max_ivl,
-                minimum_lapse_interval: c.lapse.min_int,
-                graduating_interval_good: c.new.ints.good as u32,
-                graduating_interval_easy: c.new.ints.easy as u32,
-                new_card_insert_order: match c.new.order {
-                    NewCardOrderSchema11::Random => NewCardInsertOrder::Random,
-                    NewCardOrderSchema11::Due => NewCardInsertOrder::Due,
-                } as i32,
-                new_card_gather_priority: c.new_gather_priority,
-                new_card_sort_order: c.new_sort_order,
-                review_order: c.review_order,
-                new_mix: c.new_mix,
-                interday_learning_mix: c.interday_learning_mix,
-                leech_action: c.lapse.leech_action as i32,
-                leech_threshold: c.lapse.leech_fails,
-                disable_autoplay: !c.autoplay,
-                cap_answer_time_to_secs: c.max_taken.max(0) as u32,
-                show_timer: c.timer != 0,
-                stop_timer_on_answer: c.stop_timer_on_answer,
-                seconds_to_show_question: c.seconds_to_show_question,
-                seconds_to_show_answer: c.seconds_to_show_answer,
-                question_action: c.question_action as i32,
-                answer_action: c.answer_action as i32,
-                wait_for_audio: c.wait_for_audio,
-                skip_question_when_replaying_answer: !c.replayq,
-                bury_new: c.new.bury,
-                bury_reviews: c.rev.bury,
-                bury_interday_learning: c.bury_interday_learning,
-                fsrs_params_4: c.fsrs_params_4,
-                fsrs_params_5: c.fsrs_params_5,
-                fsrs_params_6: c.fsrs_params_6,
-                fsrs_params_7: c.fsrs_params_7,
-                fsrs_minimum_interval_secs: c.fsrs_minimum_interval_secs,
-                fsrs_dynamic_desired_retention_enabled: c.fsrs_dynamic_desired_retention_enabled,
-                fsrs_dynamic_desired_retention_params: c.fsrs_dynamic_desired_retention_params,
-                fsrs_dynamic_desired_retention_weights: c.fsrs_dynamic_desired_retention_weights,
-                fsrs_dynamic_desired_retention_avg_drs: c.fsrs_dynamic_desired_retention_avg_drs,
-                fsrs_dynamic_desired_retention_fsrs_eq_weights: c
-                    .fsrs_dynamic_desired_retention_fsrs_eq_weights,
-                fsrs_dynamic_desired_retention_fsrs_eq_drs: c
-                    .fsrs_dynamic_desired_retention_fsrs_eq_drs,
-                fsrs_dynamic_desired_retention_min: c.fsrs_dynamic_desired_retention_min,
-                fsrs_dynamic_desired_retention_max: c.fsrs_dynamic_desired_retention_max,
-                fsrs_version: c.fsrs_version,
-                ignore_revlogs_before_date: c.ignore_revlogs_before_date,
-                easy_days_percentages: c.easy_days_percentages,
-                review_fuzz_base: None,
-                review_fuzz_factor_short: None,
-                review_fuzz_factor_mid: None,
-                review_fuzz_factor_long: None,
-                review_fuzz_enabled: None,
-                desired_retention: c.desired_retention,
-                historical_retention: c.sm2_retention,
-                param_search: c.param_search,
-                other: other_bytes,
-            },
+            inner,
         }
     }
 }
@@ -464,15 +500,16 @@ impl From<DeckConfSchema11> for DeckConfig {
 // latest schema -> schema 11
 impl From<DeckConfig> for DeckConfSchema11 {
     fn from(c: DeckConfig) -> DeckConfSchema11 {
+        let i = deck_config_inner_for_storage(&c.inner);
         // split extra json up
         let mut top_other: HashMap<String, Value>;
         let mut new_other = Default::default();
         let mut rev_other = Default::default();
         let mut lapse_other = Default::default();
-        if c.inner.other.is_empty() {
+        if i.other.is_empty() {
             top_other = Default::default();
         } else {
-            top_other = serde_json::from_slice(&c.inner.other).unwrap_or_default();
+            top_other = serde_json::from_slice(&i.other).unwrap_or_default();
             if let Some(new) = top_other.remove("new") {
                 let val: HashMap<String, Value> = serde_json::from_value(new).unwrap_or_default();
                 new_other = val;
@@ -490,7 +527,6 @@ impl From<DeckConfig> for DeckConfSchema11 {
             }
             top_other.retain(|k, _v| !RESERVED_DECKCONF_KEYS.contains(k));
         }
-        let i = c.inner;
         let new_order = i.new_card_insert_order();
         DeckConfSchema11 {
             id: c.id,
@@ -576,6 +612,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
                 .fsrs_dynamic_desired_retention_fsrs_eq_drs,
             fsrs_dynamic_desired_retention_min: i.fsrs_dynamic_desired_retention_min,
             fsrs_dynamic_desired_retention_max: i.fsrs_dynamic_desired_retention_max,
+            fsrs_dynamic_desired_retention_clamp: i.fsrs_dynamic_desired_retention_clamp,
             fsrs_version: i.fsrs_version,
             desired_retention: i.desired_retention,
             sm2_retention: i.historical_retention,

@@ -265,6 +265,7 @@ mod test {
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
                     items: Vec::new(),
+                    item_card_ids: Vec::new(),
                     target_counts: TrainingTargetCounts {
                         total_targets: reviews,
                         long_term_targets: reviews,
@@ -315,6 +316,7 @@ mod test {
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
                     items: Vec::new(),
+                    item_card_ids: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
                 },
             },
@@ -329,6 +331,7 @@ mod test {
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
                     items: Vec::new(),
+                    item_card_ids: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
                 },
             },

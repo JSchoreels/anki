@@ -179,6 +179,17 @@ def bundle_fcitx(out_dir: Path) -> None:
             )
 
 
+def repair_macos_anki_audio_layout(out_dir: Path) -> None:
+    if sys.platform != "darwin":
+        return
+    audio_dir = get_briefcase_sources_path(out_dir) / "app_packages" / "anki_audio"
+    lib_dir = audio_dir / "lib"
+    libs_dir = audio_dir / "libs"
+    # anki-audio 0.2.0 macOS wheels used lib/, but mpv is linked against libs/.
+    if lib_dir.exists() and not libs_dir.exists():
+        lib_dir.rename(libs_dir)
+
+
 def build(args: argparse.Namespace) -> None:
     version = args.version
     shutil.copytree(app_dir, out_dir, dirs_exist_ok=True)
@@ -204,6 +215,7 @@ def build(args: argparse.Namespace) -> None:
         cwd=out_dir,
     )
     prune_webengine_locales(out_dir)
+    repair_macos_anki_audio_layout(out_dir)
     compile_sources(out_dir, version)
     if not args.skip_fcitx:
         bundle_fcitx(out_dir)  # pragma: no cover

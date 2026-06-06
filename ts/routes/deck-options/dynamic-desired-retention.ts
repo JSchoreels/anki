@@ -101,6 +101,38 @@ export function costWeightForAverageDr(
     return null;
 }
 
+export function supportedTargetRange(
+    weights: number[],
+    avgDrs: number[],
+): { min: number; max: number } | null {
+    if (!validCalibration(weights, avgDrs)) {
+        return null;
+    }
+    return avgDrs.reduce(
+        (range, target) => ({
+            min: Math.min(range.min, target),
+            max: Math.max(range.max, target),
+        }),
+        { min: avgDrs[0], max: avgDrs[0] },
+    );
+}
+
+export function schedulingTargetDr(
+    target: number,
+    weights: number[],
+    avgDrs: number[],
+    clampTarget: boolean,
+): number {
+    if (!clampTarget || costWeightForAverageDr(target, weights, avgDrs) !== null) {
+        return target;
+    }
+    const range = supportedTargetRange(weights, avgDrs);
+    if (range === null) {
+        return target;
+    }
+    return clamp(target, range.min, range.max);
+}
+
 export function evaluateDynamicDesiredRetention(
     params: number[],
     stability: number,

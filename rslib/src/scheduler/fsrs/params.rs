@@ -108,6 +108,7 @@ pub(crate) struct PreparedComputeParams {
     pub dynamic_desired_retention_enabled: bool,
     pub simulator_config: SimulatorConfig,
     pub items: Vec<FSRSItem>,
+    pub item_card_ids: Vec<i64>,
     pub target_counts: TrainingTargetCounts,
 }
 
@@ -189,15 +190,73 @@ fn rmse_adjustment(r: f32, c: u32) -> f32 {
     0.0135 / (r.powf(0.504) - 1.14) + 0.176 / ((c as f32 / 1000.).powf(0.825) + 2.22) + 0.101
 }
 
+#[derive(Clone)]
+struct TrainingItemsForFsrs {
+    items: Vec<FSRSItem>,
+    card_ids: Option<Vec<i64>>,
+}
+
+impl TrainingItemsForFsrs {
+    fn with_card_ids(items: Vec<FSRSItem>, card_ids: Vec<i64>) -> Self {
+        debug_assert_eq!(items.len(), card_ids.len());
+        Self {
+            items,
+            card_ids: Some(card_ids),
+        }
+    }
+
+    fn without_card_ids(items: Vec<FSRSItem>) -> Self {
+        Self {
+            items,
+            card_ids: None,
+        }
+    }
+
+    fn filter_non_same_day_evaluation_targets(self) -> Self {
+        match self.card_ids {
+            Some(card_ids) => {
+                let (items, card_ids) = self
+                    .items
+                    .into_iter()
+                    .zip_eq(card_ids)
+                    .filter(|(item, _)| has_long_term_target(item))
+                    .unzip();
+                Self {
+                    items,
+                    card_ids: Some(card_ids),
+                }
+            }
+            None => Self::without_card_ids(
+                self.items
+                    .into_iter()
+                    .filter(has_long_term_target)
+                    .collect(),
+            ),
+        }
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Self {
+        Self {
+            items: self.items[start..end].to_vec(),
+            card_ids: self.card_ids.as_ref().map(|ids| ids[start..end].to_vec()),
+        }
+    }
+
+    fn target_counts(&self) -> TrainingTargetCounts {
+        training_target_counts_from_items(&self.items)
+    }
+}
+
+fn has_long_term_target(item: &FSRSItem) -> bool {
+    item.reviews
+        .last()
+        .is_some_and(|review| review.delta_t >= 1.0)
+}
+
 fn filter_non_same_day_evaluation_targets(items: Vec<FSRSItem>) -> Vec<FSRSItem> {
-    items
-        .into_iter()
-        .filter(|item| {
-            item.reviews
-                .last()
-                .is_some_and(|review| review.delta_t >= 1.0)
-        })
-        .collect()
+    TrainingItemsForFsrs::without_card_ids(items)
+        .filter_non_same_day_evaluation_targets()
+        .items
 }
 
 fn training_search<'a>(search: &'a str, search_for_training: Option<&'a str>) -> &'a str {
@@ -222,11 +281,7 @@ fn training_target_counts_from_items(items: &[FSRSItem]) -> TrainingTargetCounts
     let total_targets = items.len();
     let long_term_targets = items
         .iter()
-        .filter(|item| {
-            item.reviews
-                .last()
-                .is_some_and(|review| review.delta_t >= 1.0)
-        })
+        .filter(|item| has_long_term_target(item))
         .count();
     let short_term_targets = total_targets.saturating_sub(long_term_targets);
     TrainingTargetCounts {
@@ -257,13 +312,13 @@ fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSR
 }
 
 fn time_series_split_items(
-    sorted_items: Vec<FSRSItem>,
+    sorted_items: TrainingItemsForFsrs,
     n_splits: usize,
-) -> Vec<(Vec<FSRSItem>, Vec<FSRSItem>)> {
-    if sorted_items.is_empty() || n_splits == 0 {
+) -> Vec<(TrainingItemsForFsrs, TrainingItemsForFsrs)> {
+    if sorted_items.items.is_empty() || n_splits == 0 {
         return vec![];
     }
-    let total_items = sorted_items.len();
+    let total_items = sorted_items.items.len();
     let segment_size = total_items / (n_splits + 1);
     if segment_size == 0 {
         return vec![];
@@ -277,8 +332,8 @@ fn time_series_split_items(
                 (i + 2) * segment_size
             };
             (
-                sorted_items[..test_start].to_vec(),
-                sorted_items[test_start..test_end].to_vec(),
+                sorted_items.slice(0, test_start),
+                sorted_items.slice(test_start, test_end),
             )
         })
         .collect()
@@ -287,6 +342,7 @@ fn time_series_split_items(
 fn evaluate_with_time_series_splits_for_targets<F>(
     ComputeParametersInput {
         train_set,
+        card_ids,
         enable_short_term,
         enable_sched_penalties,
         model_version,
@@ -302,7 +358,13 @@ where
     if train_set.is_empty() {
         return Err(fsrs::FSRSError::NotEnoughData.into());
     }
-    let splits = time_series_split_items(train_set, 5);
+    let splits = time_series_split_items(
+        TrainingItemsForFsrs {
+            items: train_set,
+            card_ids,
+        },
+        5,
+    );
     if splits.is_empty() {
         return Err(fsrs::FSRSError::NotEnoughData.into());
     }
@@ -316,7 +378,8 @@ where
 
     for (train_items, test_items) in splits {
         let parameters = compute_parameters(ComputeParametersInput {
-            train_set: train_items,
+            train_set: train_items.items,
+            card_ids: train_items.card_ids,
             progress: None,
             enable_short_term,
             enable_sched_penalties,
@@ -324,6 +387,7 @@ where
             num_relearning_steps,
         })?;
         let eval_items = test_items
+            .items
             .into_iter()
             .filter(|item| include_target(item))
             .collect_vec();
@@ -354,6 +418,7 @@ where
 fn evaluate_from_training_to_external_targets(
     ComputeParametersInput {
         train_set,
+        card_ids,
         enable_short_term,
         enable_sched_penalties,
         model_version,
@@ -367,6 +432,7 @@ fn evaluate_from_training_to_external_targets(
     }
     let parameters = compute_parameters(ComputeParametersInput {
         train_set,
+        card_ids,
         progress: None,
         enable_short_term,
         enable_sched_penalties,
@@ -385,6 +451,7 @@ pub(crate) fn compute_params_from_prepared(
         dynamic_desired_retention_enabled,
         simulator_config,
         items,
+        item_card_ids,
         target_counts: _,
     }: PreparedComputeParams,
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
@@ -413,6 +480,7 @@ pub(crate) fn compute_params_from_prepared(
     );
     let input = ComputeParametersInput {
         train_set: items.clone(),
+        card_ids: Some(item_card_ids.clone()),
         progress: progress.clone(),
         enable_short_term: true,
         enable_sched_penalties: true,
@@ -435,14 +503,16 @@ pub(crate) fn compute_params_from_prepared(
     )?;
 
     let health_check_items = if include_same_day_reviews {
-        items.clone()
+        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone())
     } else {
-        filter_non_same_day_evaluation_targets(items.clone())
+        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone())
+            .filter_non_same_day_evaluation_targets()
     };
-    let health_check_passed = if health_check && health_check_items.len() > 300 {
+    let health_check_passed = if health_check && health_check_items.items.len() > 300 {
         evaluate_with_time_series_splits(
             ComputeParametersInput {
-                train_set: health_check_items.clone(),
+                train_set: health_check_items.items.clone(),
+                card_ids: health_check_items.card_ids.clone(),
                 progress: None,
                 enable_short_term: true,
                 enable_sched_penalties: true,
@@ -452,7 +522,7 @@ pub(crate) fn compute_params_from_prepared(
             |_| true,
         )
         .ok()
-        .map(|eval| health_check_passed_for_evaluated_targets(eval, &health_check_items))
+        .map(|eval| health_check_passed_for_evaluated_targets(eval, &health_check_items.items))
     } else {
         None
     };
@@ -812,12 +882,14 @@ impl Collection {
         let model_version = resolved_model_version(current_params, model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
-        let (items, target_counts) = fsrs_items_for_training(
+        let training_items = fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
             include_same_day_reviews,
         );
+        let target_counts = training_items.target_counts();
+        let TrainingItemsForFsrs { items, card_ids } = training_items;
         Ok(PreparedComputeParams {
             current_params: current_params.to_vec(),
             num_of_relearning_steps,
@@ -826,6 +898,7 @@ impl Collection {
             dynamic_desired_retention_enabled,
             simulator_config,
             items,
+            item_card_ids: card_ids.unwrap_or_default(),
             target_counts,
         })
     }
@@ -920,13 +993,13 @@ impl Collection {
             include_same_day_training_entries(model_version, include_same_day_reviews_for_training);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
-        let (training_items, _target_counts) = fsrs_items_for_training(
+        let training_items = fsrs_items_for_training(
             training_revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
             include_same_day_reviews_for_training,
         );
-        let (evaluation_base_items, _target_counts) = fsrs_items_for_training(
+        let evaluation_base_items = fsrs_items_for_training(
             evaluation_revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
@@ -935,9 +1008,9 @@ impl Collection {
         let evaluation_items = if include_same_day_reviews {
             evaluation_base_items
         } else {
-            filter_non_same_day_evaluation_targets(evaluation_base_items)
+            evaluation_base_items.filter_non_same_day_evaluation_targets()
         };
-        let target_counts = training_target_counts_from_items(&evaluation_items);
+        let target_counts = evaluation_items.target_counts();
         let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
@@ -949,19 +1022,21 @@ impl Collection {
         let eval = if uses_external_evaluation(training_search, search) {
             evaluate_from_training_to_external_targets(
                 ComputeParametersInput {
-                    train_set: training_items,
+                    train_set: training_items.items,
+                    card_ids: training_items.card_ids,
                     progress: None,
                     enable_short_term: true,
                     enable_sched_penalties: true,
                     model_version,
                     num_relearning_steps: Some(num_of_relearning_steps),
                 },
-                evaluation_items,
+                evaluation_items.items,
             )?
         } else if include_same_day_reviews == include_same_day_reviews_for_training {
             evaluate_with_time_series_splits(
                 ComputeParametersInput {
-                    train_set: evaluation_items,
+                    train_set: evaluation_items.items,
+                    card_ids: evaluation_items.card_ids,
                     progress: None,
                     enable_short_term: true,
                     enable_sched_penalties: true,
@@ -980,7 +1055,8 @@ impl Collection {
         } else {
             evaluate_with_time_series_splits_for_targets(
                 ComputeParametersInput {
-                    train_set: training_items,
+                    train_set: training_items.items,
+                    card_ids: training_items.card_ids,
                     progress: None,
                     enable_short_term: true,
                     enable_sched_penalties: true,
@@ -1024,7 +1100,7 @@ impl Collection {
         let model_version = model_version_for_params(params);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
-        let (items, _target_counts) = fsrs_items_for_training(
+        let items = fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
@@ -1033,14 +1109,14 @@ impl Collection {
         let items = if include_same_day_reviews {
             items
         } else {
-            filter_non_same_day_evaluation_targets(items)
+            items.filter_non_same_day_evaluation_targets()
         };
-        let target_counts = training_target_counts_from_items(&items);
+        let target_counts = items.target_counts();
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
         let fsrs = FSRS::new(params)?;
-        Ok(fsrs.evaluate(items, |ip| {
+        Ok(fsrs.evaluate(items.items, |ip| {
             anki_progress
                 .update(false, |p| {
                     p.total_iterations = ip.total as u32;
@@ -1126,12 +1202,12 @@ fn fsrs_items_for_training(
     next_day_at: TimestampSecs,
     review_revlogs_before: TimestampMillis,
     include_same_day: bool,
-) -> (Vec<FSRSItem>, TrainingTargetCounts) {
+) -> TrainingItemsForFsrs {
     let mut revlogs = revlogs
         .into_iter()
         .chunk_by(|r| r.cid)
         .into_iter()
-        .filter_map(|(_cid, entries)| {
+        .filter_map(|(cid, entries)| {
             reviews_for_fsrs(
                 entries.collect(),
                 next_day_at,
@@ -1139,15 +1215,22 @@ fn fsrs_items_for_training(
                 review_revlogs_before,
                 include_same_day,
             )
+            .map(|reviews| {
+                reviews
+                    .fsrs_items
+                    .into_iter()
+                    .map(move |(revlog_id, item)| (revlog_id, cid, item))
+            })
         })
-        .flat_map(|i| i.fsrs_items)
+        .flatten()
         .collect_vec();
     // Sort by RevlogId
-    revlogs.sort_by_key(|(revlog_id, _)| revlog_id.0);
-    // Extract only the FSRSItems after sorting
-    let revlogs = revlogs.into_iter().map(|(_, item)| item).collect_vec();
-    let target_counts = training_target_counts_from_items(&revlogs);
-    (revlogs, target_counts)
+    revlogs.sort_by_key(|(revlog_id, _, _)| revlog_id.0);
+    let (card_ids, items) = revlogs
+        .into_iter()
+        .map(|(_, card_id, item)| (card_id.0, item))
+        .unzip();
+    TrainingItemsForFsrs::with_card_ids(items, card_ids)
 }
 
 pub(crate) struct ReviewsForFsrs {
@@ -1437,6 +1520,7 @@ pub(crate) mod tests {
                 dynamic_desired_retention_enabled: false,
                 simulator_config: Default::default(),
                 items: vec![],
+                item_card_ids: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },
             None,
@@ -1826,6 +1910,7 @@ pub(crate) mod tests {
         let err = evaluate_with_time_series_splits(
             ComputeParametersInput {
                 train_set: filtered,
+                card_ids: None,
                 progress: None,
                 enable_short_term: true,
                 enable_sched_penalties: true,
@@ -1917,14 +2002,14 @@ pub(crate) mod tests {
                 ..revlog(RevlogReviewKind::Review, 1)
             },
         ];
-        let (items, _review_count) = fsrs_items_for_training(
+        let items = fsrs_items_for_training(
             revlogs,
             NEXT_DAY_AT,
             TimestampMillis(0),
             include_same_day_training_entries(ComputeParametersVersion::Fsrs7, None),
         );
         assert_eq!(
-            items,
+            items.items,
             vec![
                 FSRSItem {
                     reviews: vec![review(0), review_f(1.0 / 86_400_000.0)],
@@ -1938,6 +2023,7 @@ pub(crate) mod tests {
                 },
             ]
         );
+        assert_eq!(items.card_ids, Some(vec![1, 1]));
     }
 
     #[test]
@@ -1956,22 +2042,24 @@ pub(crate) mod tests {
                 ..revlog(RevlogReviewKind::Review, 2)
             },
         ];
-        let (_items, fsrs6_counts) = fsrs_items_for_training(
+        let fsrs6_items = fsrs_items_for_training(
             revlogs.clone(),
             NEXT_DAY_AT,
             TimestampMillis(0),
             include_same_day_training_entries(ComputeParametersVersion::Fsrs6, None),
         );
+        let fsrs6_counts = fsrs6_items.target_counts();
         assert_eq!(fsrs6_counts.total_targets, 1);
         assert_eq!(fsrs6_counts.long_term_targets, 1);
         assert_eq!(fsrs6_counts.short_term_targets, 0);
 
-        let (_items, fsrs7_counts) = fsrs_items_for_training(
+        let fsrs7_items = fsrs_items_for_training(
             revlogs,
             NEXT_DAY_AT,
             TimestampMillis(0),
             include_same_day_training_entries(ComputeParametersVersion::Fsrs7, None),
         );
+        let fsrs7_counts = fsrs7_items.target_counts();
         assert_eq!(fsrs7_counts.total_targets, 2);
         assert_eq!(fsrs7_counts.long_term_targets, 1);
         assert_eq!(fsrs7_counts.short_term_targets, 1);
@@ -2214,6 +2302,7 @@ pub(crate) mod tests {
         let err = super::evaluate_from_training_to_external_targets(
             ComputeParametersInput {
                 train_set: vec![],
+                card_ids: None,
                 progress: None,
                 enable_short_term: true,
                 enable_sched_penalties: true,
@@ -2238,6 +2327,7 @@ pub(crate) mod tests {
                 train_set: vec![FSRSItem {
                     reviews: vec![review(0), review(2)],
                 }],
+                card_ids: None,
                 progress: None,
                 enable_short_term: true,
                 enable_sched_penalties: true,

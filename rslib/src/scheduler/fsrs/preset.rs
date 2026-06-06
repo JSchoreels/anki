@@ -102,6 +102,8 @@ pub(crate) struct AddonFsrsPreset {
     pub fsrs_dynamic_desired_retention_min: f32,
     #[serde(default)]
     pub fsrs_dynamic_desired_retention_max: f32,
+    #[serde(default)]
+    pub fsrs_dynamic_desired_retention_clamp: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -181,6 +183,7 @@ impl AddonFsrsPreset {
                     fsrs_equivalent_drs: self.fsrs_dynamic_desired_retention_fsrs_eq_drs,
                     retention_min: self.fsrs_dynamic_desired_retention_min,
                     retention_max: self.fsrs_dynamic_desired_retention_max,
+                    clamp_target: self.fsrs_dynamic_desired_retention_clamp,
                     max_interval_days: None,
                 },
             )?)
@@ -648,6 +651,7 @@ mod test {
             fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.91, 0.82],
             fsrs_dynamic_desired_retention_min: 0.3,
             fsrs_dynamic_desired_retention_max: 0.995,
+            fsrs_dynamic_desired_retention_clamp: false,
         }
         .into_fsrs_preset()?;
 

@@ -186,6 +186,21 @@ message ComputeMemoryProgress {
   uint32 current_cards = 1;
   uint32 total_cards = 2;
   string label = 3;
+  string preset_name = 4;
+  uint32 current_preset = 5;
+  uint32 total_presets = 6;
+  bool rescheduling = 7;
+  repeated Preset presets = 8;
+  bool saving = 9;
+
+  message Preset {
+    string name = 1;
+    uint32 current_cards = 2;
+    uint32 total_cards = 3;
+    bool finished = 4;
+    bool rescheduling = 5;
+    bool saving = 6;
+  }
 }
 
 message CreateBackupRequest {

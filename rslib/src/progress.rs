@@ -262,12 +262,39 @@ pub(crate) fn progress_to_proto(
                 })
             }
             Progress::ComputeMemory(progress) => {
+                let label = if progress.saving {
+                    tr.deck_config_saving_optimized_presets(
+                        progress.current_cards,
+                        progress.total_cards,
+                    )
+                } else if progress.rescheduling {
+                    tr.deck_config_rescheduling_cards(progress.current_cards, progress.total_cards)
+                } else {
+                    tr.deck_config_updating_cards(progress.current_cards, progress.total_cards)
+                };
                 Value::ComputeMemory(anki_proto::collection::ComputeMemoryProgress {
                     current_cards: progress.current_cards,
                     total_cards: progress.total_cards,
-                    label: tr
-                        .deck_config_updating_cards(progress.current_cards, progress.total_cards)
-                        .into(),
+                    label: label.into(),
+                    preset_name: progress.preset_name,
+                    current_preset: progress.current_preset,
+                    total_presets: progress.total_presets,
+                    rescheduling: progress.rescheduling,
+                    saving: progress.saving,
+                    presets: progress
+                        .presets
+                        .into_iter()
+                        .map(
+                            |preset| anki_proto::collection::compute_memory_progress::Preset {
+                                name: preset.name,
+                                current_cards: preset.current_cards,
+                                total_cards: preset.total_cards,
+                                finished: preset.finished,
+                                rescheduling: preset.rescheduling,
+                                saving: preset.saving,
+                            },
+                        )
+                        .collect(),
                 })
             }
             Progress::DownloadUpdate(progress) => {
@@ -453,5 +480,82 @@ mod tests {
         );
         assert!(!progress.presets[0].finished);
         assert!(!progress.presets[0].skipped);
+    }
+
+    #[test]
+    fn compute_memory_progress_maps_to_proto() {
+        let progress = Progress::ComputeMemory(ComputeMemoryProgress {
+            current_cards: 7,
+            total_cards: 20,
+            preset_name: "Default".to_string(),
+            current_preset: 2,
+            total_presets: 5,
+            rescheduling: true,
+            saving: false,
+            presets: vec![
+                crate::scheduler::fsrs::memory_state::ComputeMemoryPresetProgress {
+                    name: "Default".to_string(),
+                    current_cards: 7,
+                    total_cards: 20,
+                    finished: false,
+                    rescheduling: true,
+                    saving: false,
+                },
+            ],
+        });
+
+        let proto = progress_to_proto(Some(progress), &I18n::template_only());
+        let Some(Value::ComputeMemory(progress)) = proto.value else {
+            panic!("expected compute_memory progress");
+        };
+
+        assert_eq!(progress.current_cards, 7);
+        assert_eq!(progress.total_cards, 20);
+        assert_eq!(progress.preset_name, "Default");
+        assert_eq!(progress.current_preset, 2);
+        assert_eq!(progress.total_presets, 5);
+        assert!(progress.rescheduling);
+        assert!(!progress.saving);
+        assert_eq!(progress.presets[0].name, "Default");
+        assert_eq!(progress.presets[0].current_cards, 7);
+        assert_eq!(progress.presets[0].total_cards, 20);
+        assert!(!progress.presets[0].finished);
+        assert!(progress.presets[0].rescheduling);
+        assert!(!progress.presets[0].saving);
+        assert_eq!(progress.label, "Rescheduling cards: 7/20...");
+    }
+
+    #[test]
+    fn compute_memory_progress_maps_saving_to_proto() {
+        let progress = Progress::ComputeMemory(ComputeMemoryProgress {
+            current_cards: 3,
+            total_cards: 5,
+            preset_name: "Default".to_string(),
+            current_preset: 3,
+            total_presets: 5,
+            saving: true,
+            presets: vec![
+                crate::scheduler::fsrs::memory_state::ComputeMemoryPresetProgress {
+                    name: "Default".to_string(),
+                    current_cards: 1,
+                    total_cards: 1,
+                    finished: true,
+                    saving: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+
+        let proto = progress_to_proto(Some(progress), &I18n::template_only());
+        let Some(Value::ComputeMemory(progress)) = proto.value else {
+            panic!("expected compute_memory progress");
+        };
+
+        assert_eq!(progress.current_cards, 3);
+        assert_eq!(progress.total_cards, 5);
+        assert!(progress.saving);
+        assert!(progress.presets[0].saving);
+        assert_eq!(progress.label, "Saving optimized presets: 3/5...");
     }
 }

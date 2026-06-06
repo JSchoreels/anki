@@ -61,6 +61,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         costWeightForAverageDr,
         dynamicDesiredRetentionEnabled,
+        schedulingTargetDr,
         targetDrCalibration,
         validCalibration,
         validPolicyParams,
@@ -1055,8 +1056,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $config.fsrsDynamicDesiredRetentionFsrsEqWeights,
         $config.fsrsDynamicDesiredRetentionFsrsEqDrs,
     );
-    $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
+    $: dynamicDesiredRetentionSchedulingTarget = schedulingTargetDr(
         effectiveDesiredRetention,
+        dynamicDesiredRetentionTargetCalibration.weights,
+        dynamicDesiredRetentionTargetCalibration.drs,
+        $config.fsrsDynamicDesiredRetentionClamp,
+    );
+    $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
+        dynamicDesiredRetentionSchedulingTarget,
         dynamicDesiredRetentionTargetCalibration.weights,
         dynamicDesiredRetentionTargetCalibration.drs,
     );
@@ -1095,7 +1102,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return "Dynamic DR requires valid retention bounds.";
         }
         if (configReady && weight === null) {
-            return "Dynamic DR target is outside the calibrated average DR range.";
+            return "Dynamic DR target is outside the calibrated target range.";
         }
         return "";
     }
@@ -1290,6 +1297,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SwitchRow>
 
         {#if $config.fsrsDynamicDesiredRetentionEnabled}
+            <SwitchRow
+                bind:value={$config.fsrsDynamicDesiredRetentionClamp}
+                defaultValue={false}
+            >
+                <SettingTitle>Clamp Unsupported Dynamic DR Targets</SettingTitle>
+            </SwitchRow>
             <ParamsInputRow
                 bind:value={$config.fsrsDynamicDesiredRetentionParams}
                 defaultValue={[]}

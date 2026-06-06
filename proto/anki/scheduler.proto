@@ -611,6 +611,7 @@ message FsrsPresetForCardResponse {
   float fsrs_dynamic_desired_retention_max = 13;
   repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 14;
   repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 15;
+  bool fsrs_dynamic_desired_retention_clamp = 16;
 }
 
 message FuzzDeltaRequest {

@@ -25,6 +25,8 @@ use crate::config::StringKey;
 use crate::decks::NormalDeck;
 use crate::prelude::*;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
+use crate::scheduler::fsrs::memory_state::ComputeMemoryPresetProgress;
+use crate::scheduler::fsrs::memory_state::ComputeMemoryProgress;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
@@ -67,6 +69,7 @@ struct DynamicDrConfig<'a> {
     retention_max: f32,
     fsrs_eq_weights: &'a [f32],
     fsrs_eq_drs: &'a [f32],
+    clamp: bool,
 }
 
 fn dynamic_dr_config(config: &DeckConfig) -> DynamicDrConfig<'_> {
@@ -79,6 +82,7 @@ fn dynamic_dr_config(config: &DeckConfig) -> DynamicDrConfig<'_> {
         retention_max: config.inner.fsrs_dynamic_desired_retention_max,
         fsrs_eq_weights: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_weights,
         fsrs_eq_drs: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+        clamp: config.inner.fsrs_dynamic_desired_retention_clamp,
     }
 }
 
@@ -253,12 +257,54 @@ impl Collection {
             self.compute_all_params(&mut req)?;
         }
 
+        let config_count = req.configs.len();
+        let mut save_progress = if req.mode == UpdateDeckConfigsMode::ComputeAllParams {
+            let mut progress = self.new_progress_handler::<ComputeMemoryProgress>();
+            progress.set(ComputeMemoryProgress {
+                current_cards: 0,
+                total_cards: config_count as u32,
+                current_preset: 0,
+                total_presets: config_count as u32,
+                saving: true,
+                presets: req
+                    .configs
+                    .iter()
+                    .map(|config| ComputeMemoryPresetProgress {
+                        name: config.name.clone(),
+                        total_cards: 1,
+                        saving: true,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })?;
+            Some(progress)
+        } else {
+            None
+        };
+
         // add/update provided configs
-        for conf in &mut req.configs {
+        for (idx, conf) in req.configs.iter_mut().enumerate() {
             // check the provided parameters are valid before we save them
             FSRS::new(conf.fsrs_params())?;
             self.add_or_update_deck_config(conf)?;
             configs_after_update.insert(conf.id, conf.clone());
+            if let Some(progress) = &mut save_progress {
+                progress.update(false, |state| {
+                    state.current_cards = idx as u32 + 1;
+                    state.total_cards = config_count as u32;
+                    state.current_preset = idx as u32 + 1;
+                    state.total_presets = config_count as u32;
+                    state.preset_name.clone_from(&conf.name);
+                    state.saving = true;
+                    if let Some(preset) = state.presets.get_mut(idx) {
+                        preset.current_cards = 1;
+                        preset.total_cards = 1;
+                        preset.finished = true;
+                        preset.saving = true;
+                    }
+                })?;
+            }
         }
 
         // get selected deck and possibly children
@@ -356,9 +402,11 @@ impl Collection {
         }
 
         if !decks_needing_memory_recompute.is_empty() {
+            let total_presets = decks_needing_memory_recompute.len() as u32;
             let input: Vec<UpdateMemoryStateEntry> = decks_needing_memory_recompute
                 .into_iter()
-                .map(|(conf_id, search)| {
+                .enumerate()
+                .map(|(idx, (conf_id, search))| {
                     let config = configs_after_update.get(&conf_id);
                     let params = config.and_then(|c| {
                         if req.fsrs {
@@ -381,6 +429,11 @@ impl Collection {
                         ignore_before: config
                             .map(ignore_revlogs_before_ms_from_config)
                             .unwrap_or(Ok(0.into()))?,
+                        preset_name: config
+                            .map(|config| config.name.clone())
+                            .unwrap_or_else(|| "Preset".to_string()),
+                        current_preset: idx as u32 + 1,
+                        total_presets,
                     })
                 })
                 .collect::<Result<_>>()?;

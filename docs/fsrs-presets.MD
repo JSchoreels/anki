@@ -110,3 +110,25 @@ single-preset optimization. After preparation, jobs are balanced by training
 target count and run on Rayon worker lanes. Progress is reported with the same
 `ComputeAllParamsProgress` payload used by deck-options Optimize All, including
 per-preset review counts and iteration progress.
+
+After deck-options Optimize All finishes parameter optimization, Anki reports a
+short per-preset save phase while writing the optimized deck configs. It then
+updates each affected preset's card memory state from the final saved config.
+If "Reschedule cards on change" is enabled, that same pass also updates due
+dates and writes rescheduled review-log entries. The progress payload includes
+the active preset name, preset index, and per-preset counts so the UI can show
+the save and update/reschedule stages in the same multi-lane progress view used
+by parameter optimization.
+
+## Fork-Owned Storage
+
+Fork-owned FSRS preset fields are stored in deck config `other` under the
+`jschoreels.fsrs` key. This includes FSRS-7 params, the selected FSRS version,
+minimum FSRS interval, Dynamic DR fields, and legacy deck-level review-fuzz
+fields.
+
+Older fork builds wrote those values to numbered `DeckConfig.Config` protobuf
+fields `47-63`. Current code still reads those legacy fields, but normal deck
+config writes migrate the values into `other["jschoreels.fsrs"]` and clear the
+numbered fork fields before encoding. This avoids collisions if upstream later
+assigns one of those protobuf field numbers to a different setting.

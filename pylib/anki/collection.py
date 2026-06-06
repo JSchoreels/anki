@@ -155,6 +155,7 @@ class AddonFsrsPreset:
     )
     fsrs_dynamic_desired_retention_min: float = 0.0
     fsrs_dynamic_desired_retention_max: float = 0.0
+    fsrs_dynamic_desired_retention_clamp: bool = False
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> AddonFsrsPreset:
@@ -190,6 +191,9 @@ class AddonFsrsPreset:
             fsrs_dynamic_desired_retention_max=data.get(
                 "fsrs_dynamic_desired_retention_max", 0.0
             ),
+            fsrs_dynamic_desired_retention_clamp=data.get(
+                "fsrs_dynamic_desired_retention_clamp", False
+            ),
         )
 
 
@@ -218,6 +222,7 @@ class ResolvedFsrsPreset:
     )
     fsrs_dynamic_desired_retention_min: float = 0.0
     fsrs_dynamic_desired_retention_max: float = 0.0
+    fsrs_dynamic_desired_retention_clamp: bool = False
 
 
 def _fsrs_version_name(version: int) -> FsrsPresetVersion:
@@ -1405,6 +1410,9 @@ class Collection(DeprecatedNamesMixin):
             ),
             fsrs_dynamic_desired_retention_max=(
                 resp.fsrs_dynamic_desired_retention_max
+            ),
+            fsrs_dynamic_desired_retention_clamp=(
+                resp.fsrs_dynamic_desired_retention_clamp
             ),
         )
 

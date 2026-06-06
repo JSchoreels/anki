@@ -22,6 +22,7 @@ pub(crate) struct DynamicDesiredRetention {
     fsrs_equivalent_calibration: Vec<(f32, f32)>,
     retention_min: f32,
     retention_max: f32,
+    clamp_target: bool,
     max_interval_days: Option<f32>,
 }
 
@@ -33,6 +34,7 @@ pub(crate) struct DynamicDesiredRetentionFields {
     pub fsrs_equivalent_drs: Vec<f32>,
     pub retention_min: f32,
     pub retention_max: f32,
+    pub clamp_target: bool,
     pub max_interval_days: Option<f32>,
 }
 
@@ -59,6 +61,7 @@ impl DynamicDesiredRetention {
             fsrs_equivalent_drs: config.fsrs_dynamic_desired_retention_fsrs_eq_drs.clone(),
             retention_min: config.fsrs_dynamic_desired_retention_min,
             retention_max: config.fsrs_dynamic_desired_retention_max,
+            clamp_target: config.fsrs_dynamic_desired_retention_clamp,
             max_interval_days: Some(config.maximum_review_interval as f32),
         })
         .map(Some)
@@ -73,6 +76,7 @@ impl DynamicDesiredRetention {
             fsrs_equivalent_drs,
             retention_min,
             retention_max,
+            clamp_target,
             max_interval_days,
         } = fields;
         require!(
@@ -129,6 +133,7 @@ impl DynamicDesiredRetention {
             fsrs_equivalent_calibration,
             retention_min,
             retention_max,
+            clamp_target,
             max_interval_days,
         })
     }
@@ -165,6 +170,31 @@ impl DynamicDesiredRetention {
             && self.calibration_pair_for_target_dr(target).is_some())
     }
 
+    pub(crate) fn scheduling_target(&self, target: f32) -> Result<Option<f32>> {
+        require!(
+            target.is_finite() && (0.0..=1.0).contains(&target),
+            "Dynamic DR target must be a retention value"
+        );
+        if self.target_in_dynamic_dr_range(target)? {
+            return Ok(Some(target));
+        }
+        if !self.clamp_target {
+            return Ok(None);
+        }
+        let Some((min_target, max_target)) = self.supported_target_range() else {
+            return Ok(None);
+        };
+        let clamped = target.clamp(min_target, max_target);
+        if self.retention_min <= clamped
+            && clamped <= self.retention_max
+            && self.calibration_pair_for_target_dr(clamped).is_some()
+        {
+            Ok(Some(clamped))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn policy_params(&self) -> &[f32] {
         &self.policy_params
     }
@@ -183,6 +213,18 @@ impl DynamicDesiredRetention {
 
     pub(crate) fn retention_max(&self) -> f32 {
         self.retention_max
+    }
+
+    pub(crate) fn clamp_target(&self) -> bool {
+        self.clamp_target
+    }
+
+    pub(crate) fn supported_target_range(&self) -> Option<(f32, f32)> {
+        let mut targets = self.target_calibration().iter().map(|(_, dr)| *dr);
+        let first = targets.next()?;
+        Some(targets.fold((first, first), |(min, max), target| {
+            (min.min(target), max.max(target))
+        }))
     }
 
     fn calibration_pair_for_target_dr(&self, target: f32) -> Option<((f32, f32), (f32, f32))> {
@@ -303,6 +345,7 @@ mod tests {
         assert!(dynamic_dr.target_in_dynamic_dr_range(0.85)?);
         assert!(!dynamic_dr.target_in_dynamic_dr_range(0.70)?);
         assert!(!dynamic_dr.target_in_dynamic_dr_range(0.99)?);
+        assert_eq!(dynamic_dr.scheduling_target(0.70)?, None);
         assert_eq!(dynamic_dr.policy()?.retention_min, 0.75);
         assert_eq!(dynamic_dr.policy()?.retention_max, 0.95);
         Ok(())
@@ -324,6 +367,25 @@ mod tests {
 
         assert!((dynamic_dr.cost_weight_for_average_dr(0.8)? - 7.0).abs() < 1e-5);
         assert!(!dynamic_dr.target_in_dynamic_dr_range(0.74)?);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduling_target_can_clamp_to_supported_range() -> Result<()> {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_dynamic_desired_retention_enabled = true;
+        config.inner.fsrs_dynamic_desired_retention_params = vec![0.0; COST_ADR_PARAMETER_COUNT];
+        config.inner.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+        config.inner.fsrs_dynamic_desired_retention_avg_drs = vec![0.9, 0.8];
+        config.inner.fsrs_dynamic_desired_retention_min = 0.75;
+        config.inner.fsrs_dynamic_desired_retention_max = 0.95;
+        config.inner.fsrs_dynamic_desired_retention_clamp = true;
+
+        let dynamic_dr = DynamicDesiredRetention::from_deck_config(&config.inner)?.unwrap();
+
+        assert_eq!(dynamic_dr.scheduling_target(0.70)?, Some(0.8));
+        assert_eq!(dynamic_dr.scheduling_target(0.99)?, Some(0.9));
+        assert_eq!(dynamic_dr.scheduling_target(0.85)?, Some(0.85));
         Ok(())
     }
 }

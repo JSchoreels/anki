@@ -7,6 +7,7 @@ import {
     costWeightForAverageDr,
     dynamicDesiredRetentionEnabled,
     evaluateDynamicDesiredRetention,
+    schedulingTargetDr,
     targetDrCalibration,
 } from "./dynamic-desired-retention";
 
@@ -41,6 +42,12 @@ test("target calibration uses average adr values without fsrs equivalents", () =
         drs: [0.7, 0.8],
         label: "Avg ADR DR",
     });
+});
+
+test("scheduling target clamps to calibrated range when enabled", () => {
+    expect(schedulingTargetDr(0.7, [0, 15], [0.9, 0.8], true)).toBe(0.8);
+    expect(schedulingTargetDr(0.95, [0, 15], [0.9, 0.8], true)).toBe(0.9);
+    expect(schedulingTargetDr(0.7, [0, 15], [0.9, 0.8], false)).toBe(0.7);
 });
 
 test("policy evaluation stays in retention range", () => {

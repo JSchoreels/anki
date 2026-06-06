@@ -370,7 +370,12 @@ class SimpleProcessPlayer(Player):
             # should we abort playing?
             if self._terminate_flag:
                 self._process.terminate()
-                self._process.wait(1)
+                try:
+                    self._process.wait(1)
+                except subprocess.TimeoutExpired:
+                    print("player did not terminate, killing it")
+                    self._process.kill()
+                    self._process.wait()
                 try:
                     if self._process.stdin:
                         self._process.stdin.close()

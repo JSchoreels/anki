@@ -4,9 +4,19 @@
 import os
 import platform
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+
+def _copy_macos_library_files(lib_files: Sequence[Path], dst_dir: Path) -> None:
+    """Copy dylibs to the directory mpv is linked against."""
+    lib_dst_dir = dst_dir / "libs"
+    lib_dst_dir.mkdir(exist_ok=True)
+    for lib_file in lib_files:
+        if lib_file.exists():
+            shutil.copy2(lib_file, lib_dst_dir / lib_file.name)
 
 
 class CustomBuildHook(BuildHookInterface):
@@ -61,10 +71,6 @@ class CustomBuildHook(BuildHookInterface):
             if src_file.exists():
                 shutil.copy2(src_file, dst_dir / src_file.name)
 
-        # Copy library files (for macOS) - preserve directory structure
+        # Copy library files (for macOS)
         if lib_files:
-            lib_dst_dir = dst_dir / lib_dir.name  # Use same dir name (lib or libs)
-            lib_dst_dir.mkdir(exist_ok=True)
-            for lib_file in lib_files:
-                if lib_file.exists():
-                    shutil.copy2(lib_file, lib_dst_dir / lib_file.name)
+            _copy_macos_library_files(lib_files, dst_dir)

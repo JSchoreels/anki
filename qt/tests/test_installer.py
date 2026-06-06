@@ -22,6 +22,7 @@ from tools.build_installer import (
     main,
     normalize_wheel_path,
     package,
+    repair_macos_anki_audio_layout,
 )
 
 support_dir = Path(__file__).parent / "support"
@@ -238,6 +239,21 @@ def test_bundle_fcitx_skipped_if_not_linux(
         mock.assert_called_once()
     else:
         mock.assert_not_called()
+
+
+def test_repair_macos_anki_audio_layout_renames_lib_to_libs(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("sys.platform", "darwin")
+    audio_dir = get_briefcase_sources_path(tmp_path) / "app_packages" / "anki_audio"
+    lib_dir = audio_dir / "lib"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / "libass.9.dylib").touch()
+
+    repair_macos_anki_audio_layout(tmp_path)
+
+    assert (audio_dir / "libs" / "libass.9.dylib").exists()
+    assert not lib_dir.exists()
 
 
 def test_build_and_package(out_dir: Path, cmd_args: argparse.Namespace) -> None:
