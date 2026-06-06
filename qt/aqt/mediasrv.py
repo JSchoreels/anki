@@ -545,7 +545,7 @@ def get_deck_configs_for_update() -> bytes:
     return aqt.mw.col._backend.get_deck_configs_for_update_raw(request.data)
 
 
-def update_deck_configs() -> bytes:
+def update_deck_configs() -> bytes:  # complexipy: ignore
     # the regular change tracking machinery expects to be started on the main
     # thread and uses a callback on success, so we need to run this op on
     # main, and return immediately from the web request
@@ -585,58 +585,138 @@ def update_deck_configs() -> bytes:
                 completed_reviews += preset.reviews * preset.current / preset.total
         return total_reviews, completed_reviews
 
-    def on_progress(progress: Progress, update: ProgressUpdate) -> None:
+    def update_all_params_progress(val: Any, update: ProgressUpdate) -> None:
         nonlocal first_progress_at, smoothed_remaining, zero_review_skip_logged
-        if progress.HasField("compute_memory"):
-            val = progress.compute_memory
-            total_presets = max(val.total_presets, 1)
-            current_preset = min(max(val.current_preset, 1), total_presets)
-            update.max = total_presets
-            update.value = current_preset
-            preset_name = val.preset_name or tr.deck_config_shared_preset()
-            if val.saving:
-                update.label = val.label
-                for preset in val.presets:
-                    if not preset.finished or preset.name in saved_preset_names:
-                        continue
-                    saved_preset_names.add(preset.name)
-                    preset_log.append(f"[SAVE] {preset.name}")
+        now = time.monotonic()
+        if first_progress_at is None:
+            first_progress_at = now
+        update.max = max(val.total, 1)
+        update.value = val.current
+        pct = str(int(val.current / val.total * 100) if val.total > 0 else 0)
+        total_reviews, completed_reviews = review_weighted_progress(val)
+        elapsed = now - first_progress_at
+        label_parts = [
+            f"Optimizing presets: {val.current}/{val.total} ({pct}%)",
+            f"elapsed: {format_elapsed_time(elapsed)}",
+        ]
+        if 0 < completed_reviews < total_reviews:
+            remaining = (
+                elapsed * (total_reviews - completed_reviews) / completed_reviews
+            )
+            if smoothed_remaining is None:
+                smoothed_remaining = remaining
             else:
-                action = "Rescheduling" if val.rescheduling else "Updating"
-                update.label = (
-                    f"Saved optimized presets | {action} preset "
-                    f"{current_preset}/{total_presets}: {preset_name} | {val.label}"
+                smoothed_remaining = smoothed_remaining * 0.85 + remaining * 0.15
+            label_parts.append(f"remaining: {format_elapsed_time(smoothed_remaining)}")
+        update.label = " | ".join(label_parts)
+        skipped_count = sum(1 for param_preset in val.presets if param_preset.skipped)
+        if skipped_count and not zero_review_skip_logged:
+            preset_log.append(f"[SKIP] {skipped_count} Presets with 0 reviews")
+            zero_review_skip_logged = True
+        for param_preset in val.presets:
+            if (
+                not param_preset.finished
+                and not param_preset.skipped
+                and param_preset.total > 0
+            ):
+                preset_started_at.setdefault(param_preset.name, now)
+            if param_preset.name in completed_preset_names:
+                continue
+            if param_preset.skipped:
+                completed_preset_names.add(param_preset.name)
+            elif param_preset.finished:
+                started_at = preset_started_at.get(param_preset.name, first_progress_at)
+                duration = format_elapsed_time(now - started_at)
+                preset_log.append(
+                    f"[DONE] {param_preset.name} - {duration} "
+                    f"({param_preset.reviews} reviews, "
+                    f"long-term: {param_preset.long_term_reviews}, "
+                    f"same-day: {param_preset.short_term_reviews})"
                 )
-                for preset in val.presets:
-                    if not preset.finished or preset.name in updated_preset_names:
-                        continue
-                    updated_preset_names.add(preset.name)
-                    done_action = "rescheduled" if preset.rescheduling else "updated"
-                    preset_log.append(
-                        f"[DONE] {preset.name} - {done_action} "
-                        f"{preset.total_cards} cards"
+                completed_preset_names.add(param_preset.name)
+        update.details = "\n".join(preset_log[-12:]) if preset_log else None
+        update.bars = [
+            ProgressBarUpdate(
+                label=f"{param_preset.name} ({param_preset.reviews} reviews)",
+                value=param_preset.current
+                if param_preset.total
+                else int(param_preset.finished),
+                max=max(param_preset.total, 1),
+            )
+            for param_preset in sorted(
+                (
+                    param_preset
+                    for param_preset in val.presets
+                    if not param_preset.finished and param_preset.total > 0
+                ),
+                key=lambda param_preset: param_preset.reviews,
+                reverse=True,
+            )
+        ]
+
+    def update_memory_progress(val: Any, update: ProgressUpdate) -> None:
+        total_presets = max(val.total_presets, 1)
+        current_preset = min(max(val.current_preset, 1), total_presets)
+        update.max = total_presets
+        update.value = current_preset
+        preset_name = val.preset_name or tr.deck_config_shared_preset()
+        if val.saving:
+            update.label = val.label
+            for memory_preset in val.presets:
+                if (
+                    not memory_preset.finished
+                    or memory_preset.name in saved_preset_names
+                ):
+                    continue
+                saved_preset_names.add(memory_preset.name)
+                preset_log.append(f"[SAVE] {memory_preset.name}")
+        else:
+            action = "Rescheduling" if val.rescheduling else "Updating"
+            update.label = (
+                f"Saved optimized presets | {action} preset "
+                f"{current_preset}/{total_presets}: {preset_name} | {val.label}"
+            )
+            for memory_preset in val.presets:
+                if (
+                    not memory_preset.finished
+                    or memory_preset.name in updated_preset_names
+                ):
+                    continue
+                updated_preset_names.add(memory_preset.name)
+                done_action = "rescheduled" if memory_preset.rescheduling else "updated"
+                preset_log.append(
+                    f"[DONE] {memory_preset.name} - {done_action} "
+                    f"{memory_preset.total_cards} cards"
+                )
+        update.details = "\n".join(preset_log[-12:]) if preset_log else None
+        update.bars = [
+            ProgressBarUpdate(
+                label=(
+                    memory_preset.name
+                    if val.saving
+                    else (
+                        f"{memory_preset.name} ({memory_preset.total_cards} cards)"
+                        if memory_preset.total_cards
+                        else f"{memory_preset.name} (waiting)"
                     )
-            update.details = "\n".join(preset_log[-12:]) if preset_log else None
-            update.bars = [
-                ProgressBarUpdate(
-                    label=(
-                        preset.name
-                        if val.saving
-                        else (
-                            f"{preset.name} ({preset.total_cards} cards)"
-                            if preset.total_cards
-                            else f"{preset.name} (waiting)"
-                        )
-                    ),
-                    value=preset.current_cards,
-                    max=max(preset.total_cards, 1),
-                )
-                for preset in sorted(
-                    (preset for preset in val.presets if not preset.finished),
-                    key=lambda preset: preset.total_cards,
-                    reverse=True,
-                )
-            ]
+                ),
+                value=memory_preset.current_cards,
+                max=max(memory_preset.total_cards, 1),
+            )
+            for memory_preset in sorted(
+                (
+                    memory_preset
+                    for memory_preset in val.presets
+                    if not memory_preset.finished
+                ),
+                key=lambda memory_preset: memory_preset.total_cards,
+                reverse=True,
+            )
+        ]
+
+    def on_progress(progress: Progress, update: ProgressUpdate) -> None:
+        if progress.HasField("compute_memory"):
+            update_memory_progress(progress.compute_memory, update)
         elif progress.HasField("compute_params"):
             val2 = progress.compute_params
             # prevent an indeterminate progress bar from appearing at the start of each preset
@@ -659,69 +739,7 @@ def update_deck_configs() -> bytes:
 
             update.label = label + "\n" + reviews
         elif progress.HasField("compute_all_params"):
-            val3 = progress.compute_all_params
-            now = time.monotonic()
-            if first_progress_at is None:
-                first_progress_at = now
-            update.max = max(val3.total, 1)
-            update.value = val3.current
-            pct = str(int(val3.current / val3.total * 100) if val3.total > 0 else 0)
-            total_reviews, completed_reviews = review_weighted_progress(val3)
-            elapsed = now - first_progress_at
-            label_parts = [
-                f"Optimizing presets: {val3.current}/{val3.total} ({pct}%)",
-                f"elapsed: {format_elapsed_time(elapsed)}",
-            ]
-            if 0 < completed_reviews < total_reviews:
-                remaining = (
-                    elapsed * (total_reviews - completed_reviews) / completed_reviews
-                )
-                if smoothed_remaining is None:
-                    smoothed_remaining = remaining
-                else:
-                    smoothed_remaining = smoothed_remaining * 0.85 + remaining * 0.15
-                label_parts.append(
-                    f"remaining: {format_elapsed_time(smoothed_remaining)}"
-                )
-            update.label = " | ".join(label_parts)
-            skipped_count = sum(1 for preset in val3.presets if preset.skipped)
-            if skipped_count and not zero_review_skip_logged:
-                preset_log.append(f"[SKIP] {skipped_count} Presets with 0 reviews")
-                zero_review_skip_logged = True
-            for preset in val3.presets:
-                if not preset.finished and not preset.skipped and preset.total > 0:
-                    preset_started_at.setdefault(preset.name, now)
-                if preset.name in completed_preset_names:
-                    continue
-                if preset.skipped:
-                    completed_preset_names.add(preset.name)
-                elif preset.finished:
-                    started_at = preset_started_at.get(preset.name, first_progress_at)
-                    duration = format_elapsed_time(now - started_at)
-                    preset_log.append(
-                        f"[DONE] {preset.name} - {duration} "
-                        f"({preset.reviews} reviews, "
-                        f"long-term: {preset.long_term_reviews}, "
-                        f"same-day: {preset.short_term_reviews})"
-                    )
-                    completed_preset_names.add(preset.name)
-            update.details = "\n".join(preset_log[-12:]) if preset_log else None
-            update.bars = [
-                ProgressBarUpdate(
-                    label=f"{preset.name} ({preset.reviews} reviews)",
-                    value=preset.current if preset.total else int(preset.finished),
-                    max=max(preset.total, 1),
-                )
-                for preset in sorted(
-                    (
-                        preset
-                        for preset in val3.presets
-                        if not preset.finished and preset.total > 0
-                    ),
-                    key=lambda preset: preset.reviews,
-                    reverse=True,
-                )
-            ]
+            update_all_params_progress(progress.compute_all_params, update)
         else:
             return
         if update.user_wants_abort:

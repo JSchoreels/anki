@@ -253,6 +253,7 @@ fn has_long_term_target(item: &FSRSItem) -> bool {
         .is_some_and(|review| review.delta_t >= 1.0)
 }
 
+#[cfg(test)]
 fn filter_non_same_day_evaluation_targets(items: Vec<FSRSItem>) -> Vec<FSRSItem> {
     TrainingItemsForFsrs::without_card_ids(items)
         .filter_non_same_day_evaluation_targets()
