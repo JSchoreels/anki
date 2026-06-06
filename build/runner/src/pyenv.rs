@@ -154,8 +154,10 @@ fn codesign_anki_audio_files(audio_dir: &Utf8Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir() -> camino::Utf8PathBuf {
         let unique = SystemTime::now()
