@@ -225,6 +225,13 @@ class ResolvedFsrsPreset:
     fsrs_dynamic_desired_retention_clamp: bool = False
 
 
+@dataclass
+class FsrsDesiredRetentionForInterval:
+    interval_target_desired_retention: float
+    dynamic_desired_retention_enabled: bool = False
+    dynamic_desired_retentions: Sequence[float] = field(default_factory=list)
+
+
 def _fsrs_version_name(version: int) -> FsrsPresetVersion:
     versions: tuple[FsrsPresetVersion, ...] = ("seven", "six", "five", "four")
     return versions[version]
@@ -1457,6 +1464,34 @@ class Collection(DeprecatedNamesMixin):
             items=req_items,
         )
         by_index = {item.request_index: item.interval for item in resp_items}
+        return [by_index[i] for i in range(len(items))]
+
+    def fsrs_desired_retention_for_intervals_batch(
+        self, items: Sequence[tuple[CardId, float]]
+    ) -> list[FsrsDesiredRetentionForInterval]:
+        req_items = [
+            scheduler_pb2.FsrsDesiredRetentionForIntervalsBatchRequest.Item(
+                request_index=i,
+                card_id=card_id,
+                desired_retention=desired_retention,
+            )
+            for i, (card_id, desired_retention) in enumerate(items)
+        ]
+        resp_items = self._backend.fsrs_desired_retention_for_intervals_batch(
+            items=req_items,
+        )
+        by_index = {
+            item.request_index: FsrsDesiredRetentionForInterval(
+                interval_target_desired_retention=(
+                    item.interval_target_desired_retention
+                ),
+                dynamic_desired_retention_enabled=(
+                    item.dynamic_desired_retention_enabled
+                ),
+                dynamic_desired_retentions=item.dynamic_desired_retentions,
+            )
+            for item in resp_items
+        }
         return [by_index[i] for i in range(len(items))]
 
     def fsrs_interval_at_retrievability_by_config_batch(

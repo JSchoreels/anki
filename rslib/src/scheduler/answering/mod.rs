@@ -725,7 +725,7 @@ impl Collection {
     }
 }
 
-fn fsrs_elapsed_days(
+pub(crate) fn fsrs_elapsed_days(
     card: &Card,
     last_review_time: TimestampSecs,
     next_day_at: TimestampSecs,

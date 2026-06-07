@@ -13,6 +13,8 @@ use anki_proto::scheduler::ComputeOptimalRetentionResponse;
 use anki_proto::scheduler::FsrsBenchmarkResponse;
 use anki_proto::scheduler::FsrsCurrentRetrievabilityRequest;
 use anki_proto::scheduler::FsrsCurrentRetrievabilityResponse;
+use anki_proto::scheduler::FsrsDesiredRetentionForIntervalsBatchRequest;
+use anki_proto::scheduler::FsrsDesiredRetentionForIntervalsBatchResponse;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityBatchRequest;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityBatchResponse;
 use anki_proto::scheduler::FsrsIntervalAtRetrievabilityByConfigBatchRequest;
@@ -720,6 +722,35 @@ impl crate::services::SchedulerService for Collection {
             })
             .collect();
         Ok(FsrsIntervalAtRetrievabilityVariableBatchResponse { items })
+    }
+
+    fn fsrs_desired_retention_for_intervals_batch(
+        &mut self,
+        input: FsrsDesiredRetentionForIntervalsBatchRequest,
+    ) -> Result<FsrsDesiredRetentionForIntervalsBatchResponse> {
+        let cards: Vec<(CardId, f32)> = input
+            .items
+            .iter()
+            .map(|item| (item.card_id.into(), item.desired_retention))
+            .collect();
+        let targets = self.fsrs_desired_retention_for_intervals(&cards)?;
+        let items = input
+            .items
+            .into_iter()
+            .zip(targets)
+            .map(|(item, target)| {
+                scheduler::fsrs_desired_retention_for_intervals_batch_response::Item {
+                    request_index: item.request_index,
+                    interval_target_desired_retention: target.interval_target_desired_retention,
+                    dynamic_desired_retentions: target
+                        .dynamic_desired_retentions
+                        .map(|retentions| retentions.to_vec())
+                        .unwrap_or_default(),
+                    dynamic_desired_retention_enabled: target.dynamic_desired_retention_enabled,
+                }
+            })
+            .collect();
+        Ok(FsrsDesiredRetentionForIntervalsBatchResponse { items })
     }
 
     fn fsrs_interval_at_retrievability_by_config_batch(

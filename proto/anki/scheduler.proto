@@ -84,6 +84,9 @@ service SchedulerService {
   rpc FsrsIntervalAtRetrievabilityVariableBatch(
       FsrsIntervalAtRetrievabilityVariableBatchRequest)
       returns (FsrsIntervalAtRetrievabilityVariableBatchResponse);
+  rpc FsrsDesiredRetentionForIntervalsBatch(
+      FsrsDesiredRetentionForIntervalsBatchRequest)
+      returns (FsrsDesiredRetentionForIntervalsBatchResponse);
   rpc FsrsIntervalAtRetrievabilityByConfigBatch(
       FsrsIntervalAtRetrievabilityByConfigBatchRequest)
       returns (FsrsIntervalAtRetrievabilityByConfigBatchResponse);
@@ -684,6 +687,25 @@ message FsrsIntervalAtRetrievabilityVariableBatchResponse {
   message Item {
     uint32 request_index = 1;
     float interval = 2;
+  }
+  repeated Item items = 1;
+}
+
+message FsrsDesiredRetentionForIntervalsBatchRequest {
+  message Item {
+    uint32 request_index = 1;
+    int64 card_id = 2;
+    float desired_retention = 3;
+  }
+  repeated Item items = 1;
+}
+
+message FsrsDesiredRetentionForIntervalsBatchResponse {
+  message Item {
+    uint32 request_index = 1;
+    float interval_target_desired_retention = 2;
+    repeated float dynamic_desired_retentions = 3;
+    bool dynamic_desired_retention_enabled = 4;
   }
   repeated Item items = 1;
 }
