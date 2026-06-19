@@ -93,6 +93,10 @@ pub struct DeckConfSchema11 {
     fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fsrs_dynamic_desired_retention_fixed_target_weights: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fsrs_dynamic_desired_retention_fixed_target_drs: Vec<f32>,
     #[serde(
         default = "default_dynamic_desired_retention_min",
         skip_serializing_if = "is_default_dynamic_desired_retention_min"
@@ -378,6 +382,8 @@ impl Default for DeckConfSchema11 {
             fsrs_dynamic_desired_retention_avg_drs: vec![],
             fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![],
             fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![],
+            fsrs_dynamic_desired_retention_fixed_target_weights: vec![],
+            fsrs_dynamic_desired_retention_fixed_target_drs: vec![],
             fsrs_dynamic_desired_retention_min: default_dynamic_desired_retention_min(),
             fsrs_dynamic_desired_retention_max: default_dynamic_desired_retention_max(),
             fsrs_dynamic_desired_retention_clamp: false,
@@ -469,6 +475,10 @@ impl From<DeckConfSchema11> for DeckConfig {
                 .fsrs_dynamic_desired_retention_fsrs_eq_weights,
             fsrs_dynamic_desired_retention_fsrs_eq_drs: c
                 .fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            fsrs_dynamic_desired_retention_fixed_target_weights: c
+                .fsrs_dynamic_desired_retention_fixed_target_weights,
+            fsrs_dynamic_desired_retention_fixed_target_drs: c
+                .fsrs_dynamic_desired_retention_fixed_target_drs,
             fsrs_dynamic_desired_retention_min: c.fsrs_dynamic_desired_retention_min,
             fsrs_dynamic_desired_retention_max: c.fsrs_dynamic_desired_retention_max,
             fsrs_dynamic_desired_retention_clamp: c.fsrs_dynamic_desired_retention_clamp,
@@ -610,6 +620,10 @@ impl From<DeckConfig> for DeckConfSchema11 {
                 .fsrs_dynamic_desired_retention_fsrs_eq_weights,
             fsrs_dynamic_desired_retention_fsrs_eq_drs: i
                 .fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            fsrs_dynamic_desired_retention_fixed_target_weights: i
+                .fsrs_dynamic_desired_retention_fixed_target_weights,
+            fsrs_dynamic_desired_retention_fixed_target_drs: i
+                .fsrs_dynamic_desired_retention_fixed_target_drs,
             fsrs_dynamic_desired_retention_min: i.fsrs_dynamic_desired_retention_min,
             fsrs_dynamic_desired_retention_max: i.fsrs_dynamic_desired_retention_max,
             fsrs_dynamic_desired_retention_clamp: i.fsrs_dynamic_desired_retention_clamp,

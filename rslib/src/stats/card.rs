@@ -386,6 +386,7 @@ mod test {
                     search: "deck:Default".into(),
                     preset_id: "addon:test:card-info".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 

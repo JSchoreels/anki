@@ -14,6 +14,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         calibrationAvgDrs: number[];
         fsrsEquivalentWeights: number[];
         fsrsEquivalentDrs: number[];
+        fixedTargetWeights?: number[];
+        fixedTargetDrs?: number[];
         retentionMin: number;
         retentionMax: number;
         targetAverageDr: number;
@@ -58,6 +60,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         calibrationAvgDrs={payload.calibrationAvgDrs}
         fsrsEquivalentWeights={payload.fsrsEquivalentWeights}
         fsrsEquivalentDrs={payload.fsrsEquivalentDrs}
+        fixedTargetWeights={payload.fixedTargetWeights ?? []}
+        fixedTargetDrs={payload.fixedTargetDrs ?? []}
         retentionMin={payload.retentionMin}
         retentionMax={payload.retentionMax}
         targetAverageDr={payload.targetAverageDr}

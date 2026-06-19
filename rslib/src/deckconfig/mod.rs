@@ -97,6 +97,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     fsrs_dynamic_desired_retention_max: 0.995,
     fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
+    fsrs_dynamic_desired_retention_fixed_target_weights: Vec::new(),
+    fsrs_dynamic_desired_retention_fixed_target_drs: Vec::new(),
     fsrs_dynamic_desired_retention_clamp: false,
     fsrs_version: FsrsVersion::Seven as i32,
     desired_retention: 0.9,

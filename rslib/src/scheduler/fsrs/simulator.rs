@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,20 +10,39 @@ use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
 use fsrs::simulate;
+use fsrs::simulate_summary;
+use fsrs::simulate_summary_with_card_update_fn;
+use fsrs::simulate_with_card_update_fn;
+use fsrs::CostAdrPolicy;
+use fsrs::SimulatorCardUpdateFn;
+use fsrs::SimulatorCardUpdatePhase;
 use fsrs::SimulatorConfig;
 use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Itertools;
+use rayon::prelude::*;
 
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
+use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetention;
+use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
 use crate::scheduler::fsrs::memory_state::memory_state_from_sm2_with_params;
-use crate::scheduler::fsrs::params::reviews_for_fsrs;
+use crate::scheduler::fsrs::preset::FsrsPreset;
+use crate::scheduler::fsrs::preset::FsrsPresetId;
+use crate::scheduler::fsrs::preset::FsrsPresetSimulatorRule;
+use crate::scheduler::fsrs::review_time_model::build_help_me_decide_review_time_model_from_revlogs;
+use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
+use crate::scheduler::fsrs::review_time_model::HelpMeDecideReviewTimeModel;
+use crate::scheduler::fsrs::review_time_model::R_BUCKET_COUNT;
+use crate::scheduler::fsrs::review_time_model::S_BUCKET_COUNT_FOR_UI;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::parse_easy_days_percentages;
 use crate::search::SortMode;
+
+const WORKLOAD_MIN_DR: u32 = 30;
+const WORKLOAD_MAX_DR: u32 = 99;
 
 fn create_review_priority_fn(
     review_order: ReviewCardOrder,
@@ -96,12 +116,6 @@ pub(crate) fn is_included_card(c: &Card) -> bool {
         && c.ctype != CardType::New
 }
 
-const R_BUCKET_COUNT: usize = 20;
-const MAX_TAKEN_MILLIS: u32 = 1_200_000;
-const S_BUCKET_COUNT_FOR_UI: usize = 1;
-const MIN_REPS_FOR_REGRESSION: f32 = 2.0;
-const MAX_REPS_FOR_REGRESSION: f32 = 30.0;
-
 fn help_me_decide_timing_line(
     total_elapsed_ms: u128,
     review_time_model_elapsed_ms: u128,
@@ -113,668 +127,471 @@ fn help_me_decide_timing_line(
     )
 }
 
-fn include_repetitions_in_regression(repetitions: f32) -> bool {
-    (MIN_REPS_FOR_REGRESSION..=MAX_REPS_FOR_REGRESSION).contains(&repetitions)
-}
-
-fn consume_review_repetition(prior_review_repetitions: &mut u32, is_review: bool) -> Option<f32> {
-    if !is_review {
-        return None;
-    }
-    let repetitions = *prior_review_repetitions as f32;
-    *prior_review_repetitions += 1;
-    Some(repetitions)
+#[derive(Clone)]
+struct SimulationDynamicDesiredRetention {
+    dynamic_desired_retention: DynamicDesiredRetention,
+    policy: CostAdrPolicy,
 }
 
 #[derive(Clone)]
-struct HelpMeDecideReviewTimeModel {
-    // Per-rating linear models:
-    // seconds = a + b * (1 - retrievability) + c * stability + d * repetitions + e * difficulty
-    coeffs: [[f32; 5]; 4],
-    // per-group fallback if regression is not applicable / prediction is invalid
-    group_fallback: [f32; 4],
-    // per-group representative stability used for flattened output
-    group_mean_stability: [f32; 4],
-    // per-group representative repetitions used for cost prediction
-    group_mean_repetitions: [f32; 4],
-    // per-group representative difficulty used for flattened output
-    group_mean_difficulty: [f32; 4],
-    // sample count per R bucket (all grades combined)
-    sample_counts: [u32; R_BUCKET_COUNT],
-    // Markov transition probabilities P(next_grade | current_grade), flattened row-wise for UI.
-    transition_probs: [[f32; 4]; 4],
-    transition_counts: [[u32; 4]; 4],
-    // P(Hard/Good/Easy | R bucket) + bucket sample size.
-    success_grade_probs_by_r_bucket: [[f32; 3]; R_BUCKET_COUNT],
-    success_grade_counts_by_r_bucket: [u32; R_BUCKET_COUNT],
-    // predicted next-grade weights from transition matrix steady-state.
-    grade_weights: [f32; 4],
+struct SimulationPreset {
+    parameters: Option<Arc<Vec<f32>>>,
+    dynamic_desired_retention: Option<SimulationDynamicDesiredRetention>,
 }
 
-impl HelpMeDecideReviewTimeModel {
-    const AGAIN_GROUP: usize = 0;
-    const HARD_GROUP: usize = 1;
-    const GOOD_GROUP: usize = 2;
-    const EASY_GROUP: usize = 3;
+#[derive(Clone)]
+struct SimulationPresetForTarget {
+    parameters: Option<Arc<Vec<f32>>>,
+    dynamic_desired_retention: Option<SimulationDynamicDesiredRetentionForTarget>,
+}
 
-    fn group_index_from_grade(grade: usize) -> Option<usize> {
-        if (1..=4).contains(&grade) {
-            Some(grade - 1)
-        } else {
-            None
-        }
+#[derive(Clone)]
+struct SimulationDynamicDesiredRetentionForTarget {
+    policy: CostAdrPolicy,
+    cost_weight: f32,
+}
+
+#[derive(Clone)]
+struct SimulationPresetRoute {
+    card_ids: Option<HashSet<i64>>,
+    min_reps: Option<u32>,
+    max_reps: Option<u32>,
+    min_interval_days: Option<f32>,
+    max_interval_days: Option<f32>,
+    preset: SimulationPreset,
+}
+
+struct SimulationPresetRouter {
+    fallback: SimulationPreset,
+    presets_by_card: HashMap<i64, SimulationPreset>,
+    routes: Vec<SimulationPresetRoute>,
+}
+
+fn simulation_dynamic_desired_retention(
+    req: &SimulateFsrsReviewRequest,
+) -> Result<Option<SimulationDynamicDesiredRetention>> {
+    if !req.simulate_dynamic_desired_retention {
+        return Ok(None);
+    }
+    if req.fsrs_dynamic_desired_retention_params.is_empty() {
+        return Ok(None);
     }
 
-    fn r_bucket(retrievability: f32) -> usize {
-        let clamped = retrievability.clamp(0.0, 1.0);
-        let base_index = ((clamped * 100.0).min(99.9999) / 5.0).floor() as usize;
-        // Bucket 0 represents [95%,100%], bucket 1 [90%,95%), etc.
-        R_BUCKET_COUNT.saturating_sub(1 + base_index)
+    let dynamic_desired_retention =
+        DynamicDesiredRetention::from_fields(DynamicDesiredRetentionFields {
+            policy_params: req.fsrs_dynamic_desired_retention_params.clone(),
+            calibration_weights: req.fsrs_dynamic_desired_retention_weights.clone(),
+            calibration_avg_drs: req.fsrs_dynamic_desired_retention_avg_drs.clone(),
+            fsrs_equivalent_weights: req.fsrs_dynamic_desired_retention_fsrs_eq_weights.clone(),
+            fsrs_equivalent_drs: req.fsrs_dynamic_desired_retention_fsrs_eq_drs.clone(),
+            fixed_target_weights: req
+                .fsrs_dynamic_desired_retention_fixed_target_weights
+                .clone(),
+            fixed_target_drs: req.fsrs_dynamic_desired_retention_fixed_target_drs.clone(),
+            retention_min: req.fsrs_dynamic_desired_retention_min,
+            retention_max: req.fsrs_dynamic_desired_retention_max,
+            clamp_target: req.fsrs_dynamic_desired_retention_clamp,
+            max_interval_days: Some(req.max_interval as f32),
+        })?;
+    let policy = dynamic_desired_retention.policy()?;
+
+    Ok(Some(SimulationDynamicDesiredRetention {
+        dynamic_desired_retention,
+        policy,
+    }))
+}
+
+impl SimulationDynamicDesiredRetention {
+    fn from_dynamic_desired_retention(
+        dynamic_desired_retention: DynamicDesiredRetention,
+    ) -> Result<Self> {
+        let policy = dynamic_desired_retention.policy()?;
+
+        Ok(Self {
+            dynamic_desired_retention,
+            policy,
+        })
     }
 
-    fn from_samples(
-        samples: &[(f32, f32, f32, f32, usize, f32)],
-        transition_counts: [[u32; 4]; 4],
-        enforce_monotonic_success_grade_probs: bool,
-        default_review_costs: [f32; 4],
-    ) -> Self {
-        let mut sample_counts = [0u32; R_BUCKET_COUNT];
-        let mut success_grade_counts_by_r_bucket = [[0u32; 3]; R_BUCKET_COUNT];
-        let mut group_sum = [0.0f32; 4];
-        let mut group_count = [0u32; 4];
-        let mut sum_y = [0.0f32; 4];
-        let mut group_sum_stability = [0.0f32; 4];
-        let mut group_sum_repetitions = [0.0f32; 4];
-        let mut group_sum_difficulty = [0.0f32; 4];
-        let mut sum_x1 = [0.0f32; 4];
-        let mut sum_x2 = [0.0f32; 4];
-        let mut sum_x3 = [0.0f32; 4];
-        let mut sum_x4 = [0.0f32; 4];
-        let mut sum_x1x1 = [0.0f32; 4];
-        let mut sum_x2x2 = [0.0f32; 4];
-        let mut sum_x3x3 = [0.0f32; 4];
-        let mut sum_x4x4 = [0.0f32; 4];
-        let mut sum_x1x2 = [0.0f32; 4];
-        let mut sum_x1x3 = [0.0f32; 4];
-        let mut sum_x1x4 = [0.0f32; 4];
-        let mut sum_x2x3 = [0.0f32; 4];
-        let mut sum_x2x4 = [0.0f32; 4];
-        let mut sum_x3x4 = [0.0f32; 4];
-        let mut sum_x1y = [0.0f32; 4];
-        let mut sum_x2y = [0.0f32; 4];
-        let mut sum_x3y = [0.0f32; 4];
-        let mut sum_x4y = [0.0f32; 4];
-
-        for (retrievability, stability, repetitions, difficulty, grade, seconds) in samples {
-            let Some(group_idx) = Self::group_index_from_grade(*grade) else {
-                continue;
-            };
-            let rb = Self::r_bucket(*retrievability);
-            sample_counts[rb] += 1;
-            if (2..=4).contains(grade) {
-                success_grade_counts_by_r_bucket[rb][*grade - 2] += 1;
-            }
-            group_sum[group_idx] += *seconds;
-            group_count[group_idx] += 1;
-            group_sum_stability[group_idx] += *stability;
-            group_sum_repetitions[group_idx] += *repetitions;
-            group_sum_difficulty[group_idx] += *difficulty;
-            let x1 = 1.0 - retrievability.clamp(0.0, 1.0);
-            let x2 = stability.max(0.0);
-            let x3 = repetitions.max(0.0);
-            let x4 = difficulty.max(0.0);
-            let y = *seconds;
-            sum_x1[group_idx] += x1;
-            sum_x2[group_idx] += x2;
-            sum_x3[group_idx] += x3;
-            sum_x4[group_idx] += x4;
-            sum_y[group_idx] += y;
-            sum_x1x1[group_idx] += x1 * x1;
-            sum_x2x2[group_idx] += x2 * x2;
-            sum_x3x3[group_idx] += x3 * x3;
-            sum_x4x4[group_idx] += x4 * x4;
-            sum_x1x2[group_idx] += x1 * x2;
-            sum_x1x3[group_idx] += x1 * x3;
-            sum_x1x4[group_idx] += x1 * x4;
-            sum_x2x3[group_idx] += x2 * x3;
-            sum_x2x4[group_idx] += x2 * x4;
-            sum_x3x4[group_idx] += x3 * x4;
-            sum_x1y[group_idx] += x1 * y;
-            sum_x2y[group_idx] += x2 * y;
-            sum_x3y[group_idx] += x3 * y;
-            sum_x4y[group_idx] += x4 * y;
-        }
-
-        let mut coeffs = [[0.0f32; 5]; 4];
-        let mut group_fallback = [0.0f32; 4];
-        let mut group_mean_stability = [0.0f32; 4];
-        let mut group_mean_repetitions = [0.0f32; 4];
-        let mut group_mean_difficulty = [0.0f32; 4];
-        for g in 0..4 {
-            let fallback = if group_count[g] > 0 {
-                group_sum[g] / group_count[g] as f32
-            } else {
-                default_review_costs[g]
-            };
-            group_fallback[g] = fallback;
-            group_mean_stability[g] = if group_count[g] > 0 {
-                group_sum_stability[g] / group_count[g] as f32
-            } else {
-                0.0
-            };
-            group_mean_repetitions[g] = if group_count[g] > 0 {
-                group_sum_repetitions[g] / group_count[g] as f32
-            } else {
-                0.0
-            };
-            group_mean_difficulty[g] = if group_count[g] > 0 {
-                group_sum_difficulty[g] / group_count[g] as f32
-            } else {
-                0.0
-            };
-            if group_count[g] >= 5 {
-                let n = group_count[g] as f32;
-                let matrix = [
-                    [n, sum_x1[g], sum_x2[g], sum_x3[g], sum_x4[g]],
-                    [
-                        sum_x1[g],
-                        sum_x1x1[g],
-                        sum_x1x2[g],
-                        sum_x1x3[g],
-                        sum_x1x4[g],
-                    ],
-                    [
-                        sum_x2[g],
-                        sum_x1x2[g],
-                        sum_x2x2[g],
-                        sum_x2x3[g],
-                        sum_x2x4[g],
-                    ],
-                    [
-                        sum_x3[g],
-                        sum_x1x3[g],
-                        sum_x2x3[g],
-                        sum_x3x3[g],
-                        sum_x3x4[g],
-                    ],
-                    [
-                        sum_x4[g],
-                        sum_x1x4[g],
-                        sum_x2x4[g],
-                        sum_x3x4[g],
-                        sum_x4x4[g],
-                    ],
-                ];
-                let vector = [sum_y[g], sum_x1y[g], sum_x2y[g], sum_x3y[g], sum_x4y[g]];
-                if let Some(solution) = Self::solve_5x5(matrix, vector) {
-                    coeffs[g] = solution;
-                    continue;
-                }
-            }
-            coeffs[g] = [fallback, 0.0, 0.0, 0.0, 0.0];
-        }
-
-        let transition_probs = Self::transition_probabilities_from_counts(transition_counts);
-        let grade_weights = Self::stationary_distribution(transition_probs)
-            .unwrap_or_else(|| Self::grade_weights_from_counts(group_count));
-        let (success_grade_probs_by_r_bucket, success_grade_counts_by_r_bucket) =
-            Self::success_grade_probs_by_r_bucket(
-                success_grade_counts_by_r_bucket,
-                enforce_monotonic_success_grade_probs,
-            );
-        Self {
-            coeffs,
-            group_fallback,
-            group_mean_stability,
-            group_mean_repetitions,
-            group_mean_difficulty,
-            sample_counts,
-            transition_probs,
-            transition_counts,
-            success_grade_probs_by_r_bucket,
-            success_grade_counts_by_r_bucket,
-            grade_weights,
-        }
-    }
-
-    fn grade_weights_from_counts(group_count: [u32; 4]) -> [f32; 4] {
-        let total = group_count.iter().sum::<u32>();
-        if total == 0 {
-            return [0.25; 4];
-        }
-        group_count.map(|count| count as f32 / total as f32)
-    }
-
-    fn transition_probabilities_from_counts(counts: [[u32; 4]; 4]) -> [[f32; 4]; 4] {
-        let mut probs = [[0.0; 4]; 4];
-        let mut global_next = [0u32; 4];
-        for row in counts {
-            for (idx, count) in row.into_iter().enumerate() {
-                global_next[idx] += count;
-            }
-        }
-        let global_total = global_next.iter().sum::<u32>();
-        let global_fallback = if global_total == 0 {
-            [0.25; 4]
-        } else {
-            global_next.map(|count| count as f32 / global_total as f32)
+    fn for_target(
+        &self,
+        desired_retention: f32,
+    ) -> Result<Option<SimulationDynamicDesiredRetentionForTarget>> {
+        let Some(target) = self
+            .dynamic_desired_retention
+            .scheduling_target(desired_retention)?
+        else {
+            return Ok(None);
         };
+        let cost_weight = self
+            .dynamic_desired_retention
+            .cost_weight_for_average_dr(target)?;
+        Ok(Some(SimulationDynamicDesiredRetentionForTarget {
+            policy: self.policy.clone(),
+            cost_weight,
+        }))
+    }
+}
 
-        for row_idx in 0..4 {
-            let row_total = counts[row_idx].iter().sum::<u32>();
-            if row_total == 0 {
-                probs[row_idx] = global_fallback;
-            } else {
-                probs[row_idx] = counts[row_idx].map(|count| count as f32 / row_total as f32);
-            }
+impl SimulationPreset {
+    fn for_target(&self, desired_retention: f32) -> Result<SimulationPresetForTarget> {
+        Ok(SimulationPresetForTarget {
+            parameters: self.parameters.clone(),
+            dynamic_desired_retention: self
+                .dynamic_desired_retention
+                .as_ref()
+                .map(|dynamic| dynamic.for_target(desired_retention))
+                .transpose()?
+                .flatten(),
+        })
+    }
+}
+
+impl SimulationPresetForTarget {
+    fn apply_before_memory_update(&self, card: &mut fsrs::Card, desired_retention: f32) {
+        if let Some(parameters) = &self.parameters {
+            card.parameters = parameters.clone();
         }
-        probs
+        card.desired_retention = desired_retention;
     }
 
-    fn stationary_distribution(transition_probs: [[f32; 4]; 4]) -> Option<[f32; 4]> {
-        let mut dist = [0.25f32; 4];
-        for _ in 0..128 {
-            let mut next = [0.0f32; 4];
-            for from in 0..4 {
-                for to in 0..4 {
-                    next[to] += dist[from] * transition_probs[from][to];
-                }
-            }
-            let sum = next.iter().sum::<f32>();
-            if !sum.is_finite() || sum <= f32::EPSILON {
-                return None;
-            }
-            for v in &mut next {
-                *v /= sum;
-            }
-            let delta = (0..4).map(|i| (next[i] - dist[i]).abs()).sum::<f32>();
-            dist = next;
-            if delta <= 1e-6 {
-                break;
-            }
-        }
-        if dist.iter().all(|v| v.is_finite() && *v >= 0.0) {
-            Some(dist)
-        } else {
-            None
-        }
-    }
-
-    fn success_grade_probs_by_r_bucket(
-        counts: [[u32; 3]; R_BUCKET_COUNT],
-        enforce_monotonic: bool,
-    ) -> ([[f32; 3]; R_BUCKET_COUNT], [u32; R_BUCKET_COUNT]) {
-        let mut raw_probs = [[0.0f32; 3]; R_BUCKET_COUNT];
-        let mut totals = [0u32; R_BUCKET_COUNT];
-        for (rb, row) in counts.into_iter().enumerate() {
-            let row_total = row.iter().sum::<u32>();
-            totals[rb] = row_total;
-            // Laplace smoothing to avoid zero probabilities in geometric blend.
-            let denom = row_total as f32 + 3.0;
-            raw_probs[rb] = row.map(|count| (count as f32 + 1.0) / denom);
-        }
-
-        // Reliability shrinkage for sparse low-R buckets:
-        // blend bucket-local estimate with a distance-weighted neighborhood prior.
-        const SHRINK_K: f32 = 100.0;
-        let mut probs = [[0.0f32; 3]; R_BUCKET_COUNT];
-        for rb in 0..R_BUCKET_COUNT {
-            let mut prior = [0.0f32; 3];
-            let mut prior_weight = 0.0f32;
-            for nb in 0..R_BUCKET_COUNT {
-                let distance = (rb as i32 - nb as i32).unsigned_abs() as f32;
-                let kernel = 1.0 / (1.0 + distance);
-                let weight = kernel * (totals[nb] as f32 + 1.0);
-                for (g, value) in prior.iter_mut().enumerate() {
-                    *value += raw_probs[nb][g] * weight;
-                }
-                prior_weight += weight;
-            }
-            if prior_weight > f32::EPSILON {
-                for value in &mut prior {
-                    *value /= prior_weight;
-                }
-            } else {
-                prior = [1.0 / 3.0; 3];
-            }
-
-            let local_weight = totals[rb] as f32 / (totals[rb] as f32 + SHRINK_K);
-            let mut blended = [0.0f32; 3];
-            for g in 0..3 {
-                blended[g] = local_weight * raw_probs[rb][g] + (1.0 - local_weight) * prior[g];
-            }
-            probs[rb] = Self::normalize_triplet(blended);
-        }
-
-        if enforce_monotonic {
-            let mut hard = [0.0f32; R_BUCKET_COUNT];
-            let mut easy = [0.0f32; R_BUCKET_COUNT];
-            let mut weights = [0.0f32; R_BUCKET_COUNT];
-            for rb in 0..R_BUCKET_COUNT {
-                hard[rb] = probs[rb][0];
-                easy[rb] = probs[rb][2];
-                weights[rb] = totals[rb] as f32 + 1.0;
-            }
-            let hard = Self::isotonic_increasing(hard, weights);
-            let neg_easy = easy.map(|v| -v);
-            let neg_easy = Self::isotonic_increasing(neg_easy, weights);
-            let easy = neg_easy.map(|v| -v);
-            for rb in 0..R_BUCKET_COUNT {
-                let mut h = hard[rb].clamp(0.0, 1.0);
-                let mut e = easy[rb].clamp(0.0, 1.0);
-                if h + e >= 0.999 {
-                    let scale = 0.999 / (h + e);
-                    h *= scale;
-                    e *= scale;
-                }
-                let g = 1.0 - h - e;
-                probs[rb] = Self::normalize_triplet([h, g.max(0.0), e]);
-            }
-        }
-        (probs, totals)
-    }
-
-    fn isotonic_increasing(
-        values: [f32; R_BUCKET_COUNT],
-        weights: [f32; R_BUCKET_COUNT],
-    ) -> [f32; R_BUCKET_COUNT] {
-        let mut starts: Vec<usize> = Vec::with_capacity(R_BUCKET_COUNT);
-        let mut ends: Vec<usize> = Vec::with_capacity(R_BUCKET_COUNT);
-        let mut sums: Vec<f32> = Vec::with_capacity(R_BUCKET_COUNT);
-        let mut ws: Vec<f32> = Vec::with_capacity(R_BUCKET_COUNT);
-
-        for i in 0..R_BUCKET_COUNT {
-            starts.push(i);
-            ends.push(i);
-            sums.push(values[i] * weights[i]);
-            ws.push(weights[i]);
-            while sums.len() >= 2 {
-                let n = sums.len();
-                let avg_prev = sums[n - 2] / ws[n - 2];
-                let avg_curr = sums[n - 1] / ws[n - 1];
-                if avg_prev <= avg_curr {
-                    break;
-                }
-                let merged_sum = sums[n - 2] + sums[n - 1];
-                let merged_w = ws[n - 2] + ws[n - 1];
-                sums[n - 2] = merged_sum;
-                ws[n - 2] = merged_w;
-                ends[n - 2] = ends[n - 1];
-                sums.pop();
-                ws.pop();
-                starts.pop();
-                ends.pop();
-            }
-        }
-
-        let mut out = [0.0f32; R_BUCKET_COUNT];
-        for block in 0..sums.len() {
-            let avg = sums[block] / ws[block];
-            for value in out.iter_mut().take(ends[block] + 1).skip(starts[block]) {
-                *value = avg;
-            }
-        }
-        out
-    }
-
-    fn normalize_triplet(values: [f32; 3]) -> [f32; 3] {
-        let sum = values.iter().sum::<f32>();
-        if !sum.is_finite() || sum <= f32::EPSILON {
-            [1.0 / 3.0; 3]
-        } else {
-            [values[0] / sum, values[1] / sum, values[2] / sum]
-        }
-    }
-
-    fn blend_weight_for_r_bucket(&self, r_bucket: usize) -> f32 {
-        let r_count = self.success_grade_counts_by_r_bucket[r_bucket] as f32;
-        let t_count = self
-            .transition_counts
-            .iter()
-            .flatten()
-            .copied()
-            .sum::<u32>() as f32;
-        let r_conf = r_count / (r_count + 20.0);
-        let t_conf = t_count / (t_count + 50.0);
-        let denom = r_conf + t_conf;
-        if denom <= f32::EPSILON {
-            0.5
-        } else {
-            (t_conf / denom).clamp(0.0, 1.0)
-        }
-    }
-
-    fn solve_5x5(matrix: [[f32; 5]; 5], vector: [f32; 5]) -> Option<[f32; 5]> {
-        let mut m = [[0.0f32; 6]; 5];
-        for row in 0..5 {
-            for col in 0..5 {
-                m[row][col] = matrix[row][col];
-            }
-            m[row][5] = vector[row];
-        }
-
-        for pivot in 0..5 {
-            let mut best = pivot;
-            for row in (pivot + 1)..5 {
-                if m[row][pivot].abs() > m[best][pivot].abs() {
-                    best = row;
-                }
-            }
-            if m[best][pivot].abs() <= 1e-8 {
-                return None;
-            }
-            if best != pivot {
-                m.swap(best, pivot);
-            }
-            let pivot_value = m[pivot][pivot];
-            for value in m[pivot].iter_mut().skip(pivot) {
-                *value /= pivot_value;
-            }
-            let pivot_row = m[pivot];
-            for (row, row_values) in m.iter_mut().enumerate() {
-                if row == pivot {
-                    continue;
-                }
-                let factor = row_values[pivot];
-                if factor.abs() <= f32::EPSILON {
-                    continue;
-                }
-                for (col, value) in row_values.iter_mut().enumerate().skip(pivot) {
-                    *value -= factor * pivot_row[col];
-                }
-            }
-        }
-
-        let solution = [m[0][5], m[1][5], m[2][5], m[3][5], m[4][5]];
-        if solution.iter().all(|v| v.is_finite()) {
-            Some(solution)
-        } else {
-            None
-        }
-    }
-
-    fn predict_seconds_for_group(
+    fn desired_retention_after_memory_update(
         &self,
-        group_idx: usize,
-        retrievability: f32,
-        stability: f32,
-        difficulty: f32,
+        card: &fsrs::Card,
+        desired_retention: f32,
     ) -> f32 {
-        let [a, b, c, d, e] = self.coeffs[group_idx];
-        let x1 = 1.0 - retrievability.clamp(0.0, 1.0);
-        let x2 = stability.max(0.0);
-        let x3 = self.group_mean_repetitions[group_idx];
-        let x4 = difficulty.max(0.0);
-        let predicted = a + b * x1 + c * x2 + d * x3 + e * x4;
-        if predicted.is_finite() && predicted > 0.0 {
-            predicted
-        } else {
-            self.group_fallback[group_idx]
+        self.dynamic_desired_retention
+            .as_ref()
+            .map(|dynamic| {
+                dynamic.policy.evaluate_retention(
+                    card.stability,
+                    card.difficulty,
+                    dynamic.cost_weight,
+                )
+            })
+            .unwrap_or(desired_retention)
+    }
+
+    fn apply_after_memory_update(&self, card: &mut fsrs::Card, desired_retention: f32) {
+        if let Some(parameters) = &self.parameters {
+            card.parameters = parameters.clone();
         }
+        card.desired_retention =
+            self.desired_retention_after_memory_update(card, desired_retention);
+    }
+}
+
+impl SimulationPresetRoute {
+    fn matches_card(&self, card_id: i64) -> bool {
+        self.card_ids
+            .as_ref()
+            .map_or(true, |card_ids| card_ids.contains(&card_id))
     }
 
-    fn review_cost_for_rating(
-        &self,
-        retrievability: f32,
-        stability: f32,
-        difficulty: f32,
-        rating: usize,
-    ) -> f32 {
-        let Some(group_idx) = Self::group_index_from_grade(rating) else {
-            return 0.0;
-        };
-        self.predict_seconds_for_group(group_idx, retrievability, stability, difficulty)
+    fn matches_reps(&self, reps: u32) -> bool {
+        self.min_reps.map_or(true, |min| reps >= min)
+            && self.max_reps.map_or(true, |max| reps <= max)
     }
 
-    #[cfg(test)]
-    fn cost_for(
-        &self,
-        retrievability: f32,
-        stability: f32,
-        repetitions: f32,
-        difficulty: f32,
-        grade: usize,
-    ) -> f32 {
-        let Some(group_idx) = Self::group_index_from_grade(grade) else {
-            return 0.0;
-        };
-        let [a, b, c, d, e] = self.coeffs[group_idx];
-        let x1 = 1.0 - retrievability.clamp(0.0, 1.0);
-        let x2 = stability.max(0.0);
-        let x3 = repetitions.max(0.0);
-        let x4 = difficulty.max(0.0);
-        let predicted = a + b * x1 + c * x2 + d * x3 + e * x4;
-        if predicted.is_finite() && predicted > 0.0 {
-            predicted
-        } else {
-            self.group_fallback[group_idx]
+    fn matches_interval(&self, interval: f32) -> bool {
+        if (self.min_interval_days.is_some() || self.max_interval_days.is_some())
+            && !interval.is_finite()
+        {
+            return false;
         }
+        self.min_interval_days.map_or(true, |min| interval >= min)
+            && self.max_interval_days.map_or(true, |max| interval <= max)
     }
 
-    fn coeffs_for_group(&self, group_idx: usize) -> [f32; 5] {
-        self.coeffs[group_idx]
+    fn matches_state(&self, card_id: i64, reps: u32, interval: f32) -> bool {
+        self.matches_card(card_id) && self.matches_reps(reps) && self.matches_interval(interval)
     }
 
-    fn grade_flattened(&self) -> [Vec<f32>; 4] {
-        let mut again = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
-        let mut hard = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
-        let mut good = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
-        let mut easy = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
-        for rb in 0..R_BUCKET_COUNT {
-            let retrievability = (1.0 - ((rb as f32 + 0.5) * 0.05)).clamp(0.0, 1.0);
-            again.push(self.predict_seconds_for_group(
-                Self::AGAIN_GROUP,
-                retrievability,
-                self.group_mean_stability[Self::AGAIN_GROUP],
-                self.group_mean_difficulty[Self::AGAIN_GROUP],
-            ));
-            hard.push(self.predict_seconds_for_group(
-                Self::HARD_GROUP,
-                retrievability,
-                self.group_mean_stability[Self::HARD_GROUP],
-                self.group_mean_difficulty[Self::HARD_GROUP],
-            ));
-            good.push(self.predict_seconds_for_group(
-                Self::GOOD_GROUP,
-                retrievability,
-                self.group_mean_stability[Self::GOOD_GROUP],
-                self.group_mean_difficulty[Self::GOOD_GROUP],
-            ));
-            easy.push(self.predict_seconds_for_group(
-                Self::EASY_GROUP,
-                retrievability,
-                self.group_mean_stability[Self::EASY_GROUP],
-                self.group_mean_difficulty[Self::EASY_GROUP],
-            ));
+    fn for_target(&self, desired_retention: f32) -> Result<SimulationPresetRouteForTarget> {
+        Ok(SimulationPresetRouteForTarget {
+            card_ids: self.card_ids.clone(),
+            min_reps: self.min_reps,
+            max_reps: self.max_reps,
+            min_interval_days: self.min_interval_days,
+            max_interval_days: self.max_interval_days,
+            preset: self.preset.for_target(desired_retention)?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct SimulationPresetRouteForTarget {
+    card_ids: Option<HashSet<i64>>,
+    min_reps: Option<u32>,
+    max_reps: Option<u32>,
+    min_interval_days: Option<f32>,
+    max_interval_days: Option<f32>,
+    preset: SimulationPresetForTarget,
+}
+
+impl SimulationPresetRouteForTarget {
+    fn matches(&self, card: &fsrs::Card) -> bool {
+        if (self.min_interval_days.is_some() || self.max_interval_days.is_some())
+            && !card.interval.is_finite()
+        {
+            return false;
         }
-        [again, hard, good, easy]
+        self.card_ids
+            .as_ref()
+            .map_or(true, |card_ids| card_ids.contains(&card.id))
+            && self.min_reps.map_or(true, |min| card.reps >= min)
+            && self.max_reps.map_or(true, |max| card.reps <= max)
+            && self
+                .min_interval_days
+                .map_or(true, |min| card.interval >= min)
+            && self
+                .max_interval_days
+                .map_or(true, |max| card.interval <= max)
     }
+}
 
-    fn sample_counts_flattened(&self) -> Vec<u32> {
-        let mut counts = Vec::with_capacity(R_BUCKET_COUNT * S_BUCKET_COUNT_FOR_UI);
-        for rb in 0..R_BUCKET_COUNT {
-            counts.push(self.sample_counts[rb]);
-        }
-        counts
-    }
-
-    fn grade_weights(&self) -> [f32; 4] {
-        self.grade_weights
-    }
-
-    fn transition_probs_flattened(&self) -> Vec<f32> {
-        self.transition_probs
+impl SimulationPresetRouter {
+    fn preset_for_card_state(&self, card_id: i64, reps: u32, interval: f32) -> &SimulationPreset {
+        self.routes
             .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect_vec()
+            .find(|route| route.matches_state(card_id, reps, interval))
+            .map(|route| &route.preset)
+            .or_else(|| self.presets_by_card.get(&card_id))
+            .unwrap_or(&self.fallback)
     }
 
-    fn transition_counts_flattened(&self) -> Vec<u32> {
-        self.transition_counts
-            .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect_vec()
-    }
-
-    fn success_review_rating_prob(&self, fallback: [f32; 3]) -> [f32; 3] {
-        let [again, hard, good, easy] = self.grade_weights;
-        let success = hard + good + easy;
-        if success <= 1e-6 || !again.is_finite() {
-            return fallback;
-        }
-        let mut out = [hard / success, good / success, easy / success];
-        let sum = out.iter().sum::<f32>();
-        if !sum.is_finite() || sum <= f32::EPSILON {
-            fallback
-        } else {
-            out.iter_mut().for_each(|v| *v /= sum);
-            out
-        }
-    }
-
-    fn success_review_rating_prob_for_retrievability(
+    fn parameters_for_card_state(
         &self,
-        retrievability: f32,
-        fallback: [f32; 3],
-        blend_alpha_override: Option<f32>,
-    ) -> [f32; 3] {
-        let rb = Self::r_bucket(retrievability);
-        let pr = self.success_grade_probs_by_r_bucket[rb];
-        let pt = self.success_review_rating_prob(fallback);
-        let alpha = blend_alpha_override
-            .map(|v| v.clamp(0.0, 1.0))
-            .unwrap_or_else(|| self.blend_weight_for_r_bucket(rb));
-        let mut scores = [0.0f32; 3];
-        for i in 0..3 {
-            scores[i] = pr[i].powf(1.0 - alpha) * pt[i].powf(alpha);
-        }
-        let sum = scores.iter().sum::<f32>();
-        if !sum.is_finite() || sum <= f32::EPSILON {
-            fallback
-        } else {
-            scores.map(|v| v / sum)
-        }
+        card_id: i64,
+        reps: u32,
+        interval: f32,
+    ) -> Option<Arc<Vec<f32>>> {
+        self.preset_for_card_state(card_id, reps, interval)
+            .parameters
+            .clone()
     }
 
-    fn success_grade_probs_flattened(&self) -> Vec<f32> {
-        self.success_grade_probs_by_r_bucket
+    fn card_update_fn(&self, desired_retention: f32) -> Result<SimulatorCardUpdateFn> {
+        let fallback = self.fallback.for_target(desired_retention)?;
+        let presets_by_card = self
+            .presets_by_card
             .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect_vec()
+            .map(|(card_id, preset)| Ok((*card_id, preset.for_target(desired_retention)?)))
+            .collect::<Result<HashMap<_, _>>>()?;
+        let routes = self
+            .routes
+            .iter()
+            .map(|route| route.for_target(desired_retention))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SimulatorCardUpdateFn::new(move |card, phase| {
+            let preset = routes
+                .iter()
+                .find(|route| route.matches(card))
+                .map(|route| &route.preset)
+                .or_else(|| presets_by_card.get(&card.id))
+                .unwrap_or(&fallback);
+            match phase {
+                SimulatorCardUpdatePhase::BeforeMemoryUpdate => {
+                    preset.apply_before_memory_update(card, desired_retention);
+                }
+                SimulatorCardUpdatePhase::AfterMemoryUpdate => {
+                    preset.apply_after_memory_update(card, desired_retention);
+                }
+            }
+        }))
     }
 
-    fn success_grade_counts_flattened(&self) -> Vec<u32> {
-        self.success_grade_counts_by_r_bucket.to_vec()
+    fn card_update_fn_for_simulation(
+        &self,
+        desired_retention: f32,
+    ) -> Result<Option<SimulatorCardUpdateFn>> {
+        if self.routes.is_empty() {
+            self.static_dynamic_desired_retention_card_update_fn(desired_retention)
+        } else {
+            self.card_update_fn(desired_retention).map(Some)
+        }
     }
+
+    fn static_dynamic_desired_retention_card_update_fn(
+        &self,
+        desired_retention: f32,
+    ) -> Result<Option<SimulatorCardUpdateFn>> {
+        let fallback = self.fallback.for_target(desired_retention)?;
+        let presets_by_card = self
+            .presets_by_card
+            .iter()
+            .map(|(card_id, preset)| Ok((*card_id, preset.for_target(desired_retention)?)))
+            .collect::<Result<HashMap<_, _>>>()?;
+        if fallback.dynamic_desired_retention.is_none()
+            && presets_by_card
+                .values()
+                .all(|preset| preset.dynamic_desired_retention.is_none())
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(SimulatorCardUpdateFn::new(
+            move |card, phase| match phase {
+                SimulatorCardUpdatePhase::BeforeMemoryUpdate => {
+                    card.desired_retention = desired_retention;
+                }
+                SimulatorCardUpdatePhase::AfterMemoryUpdate => {
+                    let preset = presets_by_card.get(&card.id).unwrap_or(&fallback);
+                    card.desired_retention =
+                        preset.desired_retention_after_memory_update(card, desired_retention);
+                }
+            },
+        )))
+    }
+}
+
+fn simulation_fallback_preset(req: &SimulateFsrsReviewRequest) -> Result<SimulationPreset> {
+    Ok(SimulationPreset {
+        parameters: None,
+        dynamic_desired_retention: simulation_dynamic_desired_retention(req)?,
+    })
+}
+
+fn simulation_preset_from_fsrs_preset(
+    preset: FsrsPreset,
+    max_interval: u32,
+    apply_dynamic_desired_retention: bool,
+) -> Result<SimulationPreset> {
+    let dynamic_desired_retention = if apply_dynamic_desired_retention {
+        preset
+            .dynamic_desired_retention
+            .map(|dynamic| {
+                SimulationDynamicDesiredRetention::from_dynamic_desired_retention(
+                    dynamic.with_max_interval_days(Some(max_interval as f32)),
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(SimulationPreset {
+        parameters: Some(Arc::new(normalized_fsrs_parameters(&preset.params)?)),
+        dynamic_desired_retention,
+    })
+}
+
+fn simulation_preset_route(
+    rule: FsrsPresetSimulatorRule,
+    preset: FsrsPreset,
+    max_interval: u32,
+    card_ids: Option<HashSet<i64>>,
+    apply_dynamic_desired_retention: bool,
+) -> Result<SimulationPresetRoute> {
+    Ok(SimulationPresetRoute {
+        card_ids,
+        min_reps: rule.min_reps,
+        max_reps: rule.max_reps,
+        min_interval_days: rule.min_interval_days,
+        max_interval_days: rule.max_interval_days,
+        preset: simulation_preset_from_fsrs_preset(
+            preset,
+            max_interval,
+            apply_dynamic_desired_retention,
+        )?,
+    })
+}
+
+fn simulation_addon_preset_for_card(
+    card_id: CardId,
+    preset: FsrsPreset,
+    max_interval: u32,
+    apply_dynamic_desired_retention: bool,
+) -> Result<Option<(i64, SimulationPreset)>> {
+    if !matches!(preset.id, FsrsPresetId::Addon(_)) {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        card_id.0,
+        simulation_preset_from_fsrs_preset(preset, max_interval, apply_dynamic_desired_retention)?,
+    )))
 }
 
 impl Collection {
+    fn simulation_route_card_ids(
+        &mut self,
+        rule: &FsrsPresetSimulatorRule,
+        included_card_ids: &HashSet<CardId>,
+        search_cache: &mut HashMap<String, HashSet<i64>>,
+    ) -> Result<Option<HashSet<i64>>> {
+        let Some(search) = rule.search.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(card_ids) = search_cache.get(search) {
+            return Ok(Some(card_ids.clone()));
+        }
+
+        let card_ids = self
+            .search_cards(search, SortMode::NoOrder)?
+            .into_iter()
+            .filter(|card_id| included_card_ids.contains(card_id))
+            .map(|card_id| card_id.0)
+            .collect::<HashSet<_>>();
+        search_cache.insert(search.clone(), card_ids.clone());
+        Ok(Some(card_ids))
+    }
+
+    fn simulation_preset_router(
+        &mut self,
+        req: &SimulateFsrsReviewRequest,
+        cards: &[Card],
+    ) -> Result<Option<SimulationPresetRouter>> {
+        let apply_dynamic_desired_retention = req.simulate_dynamic_desired_retention;
+        let mut fallback = simulation_fallback_preset(req)?;
+        let presets_by_card = self
+            .fsrs_presets_for_cards(cards)?
+            .into_iter()
+            .filter_map(|(card_id, preset)| {
+                simulation_addon_preset_for_card(
+                    card_id,
+                    preset,
+                    req.max_interval,
+                    apply_dynamic_desired_retention,
+                )
+                .transpose()
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        let included_card_ids = cards.iter().map(|card| card.id).collect::<HashSet<_>>();
+        let mut search_cache = HashMap::new();
+        let mut routes = Vec::new();
+        for (rule, preset) in self.fsrs_preset_simulator_rules()? {
+            let card_ids =
+                self.simulation_route_card_ids(&rule, &included_card_ids, &mut search_cache)?;
+            routes.push(simulation_preset_route(
+                rule,
+                preset,
+                req.max_interval,
+                card_ids,
+                apply_dynamic_desired_retention,
+            )?);
+        }
+        if !presets_by_card.is_empty() || !routes.is_empty() {
+            fallback.parameters = Some(Arc::new(normalized_fsrs_parameters(&req.params)?));
+        }
+        if fallback.dynamic_desired_retention.is_none()
+            && presets_by_card.is_empty()
+            && routes.is_empty()
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(SimulationPresetRouter {
+            fallback,
+            presets_by_card,
+            routes,
+        }))
+    }
+
     fn build_help_me_decide_review_time_model(
         &mut self,
         req: &SimulateFsrsReviewRequest,
         default_review_costs: [f32; 4],
     ) -> Result<HelpMeDecideReviewTimeModel> {
-        let fsrs = FSRS::new(&req.params)?;
         let next_day_at = self.timing_today()?.next_day_at;
         let guard = self.search_cards_into_table(&req.search, SortMode::NoOrder)?;
         let revlogs = guard
@@ -782,99 +599,33 @@ impl Collection {
             .storage
             .get_revlog_entries_for_searched_cards_in_card_order()?;
         drop(guard);
-
-        let mut samples = Vec::new();
-        let mut transition_counts = [[0u32; 4]; 4];
-
-        for (_cid, group) in &revlogs.into_iter().chunk_by(|r| r.cid) {
-            let entries = group.collect_vec();
-            let Some(output) =
-                reviews_for_fsrs(entries, next_day_at, false, TimestampMillis(0), false)
-            else {
-                continue;
-            };
-            if !output.revlogs_complete {
-                continue;
-            }
-            let Some((_, item)) = output.fsrs_items.last() else {
-                continue;
-            };
-            let item = item.clone();
-            let states = fsrs.historical_memory_states(item.clone(), None)?;
-            if output.filtered_revlogs.len() != item.reviews.len()
-                || states.len() != item.reviews.len()
-            {
-                continue;
-            }
-
-            let mut prior_review_repetitions = output
-                .filtered_revlogs
-                .first()
-                .map(|entry| (entry.review_kind == crate::revlog::RevlogReviewKind::Review) as u32)
-                .unwrap_or(0);
-            let mut previous_review_grade: Option<usize> =
-                output.filtered_revlogs.first().and_then(|entry| {
-                    let grade = entry.button_chosen as usize;
-                    if entry.review_kind == crate::revlog::RevlogReviewKind::Review
-                        && (1..=4).contains(&grade)
-                    {
-                        Some(grade)
-                    } else {
-                        None
-                    }
-                });
-            for idx in 1..output.filtered_revlogs.len() {
-                let entry = &output.filtered_revlogs[idx];
-                let Some(repetitions) = consume_review_repetition(
-                    &mut prior_review_repetitions,
-                    entry.review_kind == crate::revlog::RevlogReviewKind::Review,
-                ) else {
-                    continue;
-                };
-                if entry.taken_millis == 0 || entry.taken_millis >= MAX_TAKEN_MILLIS {
-                    continue;
-                }
-                let grade = entry.button_chosen as usize;
-                if !(1..=4).contains(&grade) {
-                    continue;
-                }
-                if let Some(prev_grade) = previous_review_grade {
-                    transition_counts[prev_grade - 1][grade - 1] += 1;
-                }
-                previous_review_grade = Some(grade);
-                let previous_state = states[idx - 1];
-                let retrievability =
-                    fsrs.current_retrievability(previous_state, item.reviews[idx].delta_t);
-                let stability = previous_state.stability;
-                let difficulty = previous_state.difficulty;
-                if !include_repetitions_in_regression(repetitions) {
-                    continue;
-                }
-                let seconds = entry.taken_millis as f32 / 1000.0;
-                samples.push((
-                    retrievability,
-                    stability,
-                    repetitions,
-                    difficulty,
-                    grade,
-                    seconds,
-                ));
-            }
-        }
-
-        Ok(HelpMeDecideReviewTimeModel::from_samples(
-            &samples,
-            transition_counts,
+        build_help_me_decide_review_time_model_from_revlogs(
+            &revlogs,
+            &req.params,
+            next_day_at,
             req.help_me_decide_enforce_monotonic_success_grade_probs
                 .unwrap_or(false),
             default_review_costs,
-        ))
+        )
     }
 
     pub fn simulate_request_to_config(
         &mut self,
         req: &SimulateFsrsReviewRequest,
     ) -> Result<(SimulatorConfig, Vec<fsrs::Card>)> {
+        let (config, cards, _) = self.simulate_request_to_config_inner(req, false)?;
+        Ok((config, cards))
+    }
+
+    fn simulate_request_to_config_inner(
+        &mut self,
+        req: &SimulateFsrsReviewRequest,
+        with_preset_router: bool,
+    ) -> Result<(
+        SimulatorConfig,
+        Vec<fsrs::Card>,
+        Option<SimulationPresetRouter>,
+    )> {
         let guard = self.search_cards_into_table(&req.search, SortMode::NoOrder)?;
         let revlogs = guard
             .col
@@ -892,32 +643,50 @@ impl Collection {
                 self.storage.update_card(c)?;
             }
         }
+        let preset_router = if with_preset_router {
+            let included_cards = cards
+                .iter()
+                .filter(|card| is_included_card(card))
+                .cloned()
+                .collect_vec();
+            self.simulation_preset_router(req, &included_cards)?
+        } else {
+            None
+        };
         let days_elapsed = self.timing_today().unwrap().days_elapsed as i32;
         let new_cards = cards
             .iter()
             .filter(|c| c.ctype == CardType::New && c.queue != CardQueue::Suspended)
             .count()
             + req.deck_size as usize;
-        let fsrs = FSRS::new(&req.params)?;
         let filled_params = normalized_fsrs_parameters(&req.params)?;
         let shared_parameters = Arc::new(filled_params);
         let mut converted_cards = cards
             .into_iter()
             .filter(is_included_card)
             .filter_map(|mut c| {
+                let card_parameters = preset_router
+                    .as_ref()
+                    .and_then(|router| {
+                        router.parameters_for_card_state(c.id.0, c.reps, c.interval as f32)
+                    })
+                    .unwrap_or_else(|| shared_parameters.clone());
                 let memory_state = match c.memory_state {
                     Some(state) => state,
                     // cards that lack memory states after compute_memory_state have no FSRS items,
                     // implying a truncated or ignored revlog
-                    None => memory_state_from_sm2_with_params(
-                        &fsrs,
-                        &req.params,
-                        c.ease_factor(),
-                        c.interval as f32,
-                        req.historical_retention,
-                    )
-                    .ok()?
-                    .into(),
+                    None => {
+                        let fsrs = FSRS::new(&card_parameters).ok()?;
+                        memory_state_from_sm2_with_params(
+                            &fsrs,
+                            &card_parameters,
+                            c.ease_factor(),
+                            c.interval as f32,
+                            req.historical_retention,
+                        )
+                        .ok()?
+                        .into()
+                    }
                 };
                 // Simulator DR should reflect the request, regardless of any
                 // stale per-card desired retention persisted on cards.
@@ -927,7 +696,7 @@ impl Collection {
                     days_elapsed,
                     memory_state,
                     req.desired_retention,
-                    &shared_parameters,
+                    &card_parameters,
                 )
             })
             .collect_vec();
@@ -943,6 +712,7 @@ impl Collection {
                 last_date: f32::NEG_INFINITY, // Treated as a new card in simulation
                 due: ((introduced_today_count + i) / req.new_limit as usize) as f32,
                 interval: f32::NEG_INFINITY,
+                reps: 0,
                 lapses: 0,
                 desired_retention: req.desired_retention,
                 parameters: shared_parameters.clone(),
@@ -1002,20 +772,20 @@ impl Collection {
             relearning_step_count: req.relearning_step_count as usize,
         };
 
-        Ok((config, converted_cards))
+        Ok((config, converted_cards, preset_router))
     }
 
     pub fn simulate_review(
         &mut self,
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsReviewResponse> {
-        let (config, cards) = self.simulate_request_to_config(&req)?;
-        let result = simulate(
+        let (config, cards, preset_router) = self.simulate_request_to_config_inner(&req, true)?;
+        let result = simulate_workload_for_desired_retention(
             &config,
             &req.params,
+            &cards,
             req.desired_retention,
-            None,
-            Some(cards),
+            preset_router.as_ref(),
         )?;
         Ok(SimulateFsrsReviewResponse {
             accumulated_knowledge_acquisition: result.memorized_cnt_per_day,
@@ -1038,7 +808,8 @@ impl Collection {
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsWorkloadResponse> {
         let total_start = Instant::now();
-        let (mut config, cards) = self.simulate_request_to_config(&req)?;
+        let (mut config, cards, preset_router) =
+            self.simulate_request_to_config_inner(&req, true)?;
         let default_review_costs = config.state_rating_costs[1];
         let review_time_model_start = Instant::now();
         let model = self.build_help_me_decide_review_time_model(&req, default_review_costs)?;
@@ -1047,48 +818,23 @@ impl Collection {
             model.grade_flattened();
         let review_time_sample_counts = model.sample_counts_flattened();
         let model = Arc::new(model);
-        let review_cost_model = model.clone();
-        config.review_rating_cost_fn = Some(fsrs::ReviewRatingCostFn::new(
-            move |card, rating, retrievability| {
-                review_cost_model.review_cost_for_rating(
-                    retrievability,
-                    card.stability,
-                    card.difficulty,
-                    rating,
-                )
-            },
-        ));
+        install_review_time_cost_fn(&mut config, model.clone());
         let workload_sweep_start = Instant::now();
-        let mut dr_workload = HashMap::with_capacity(99);
-        let base_review_rating_prob = config.review_rating_prob;
-        let blend_alpha_override = req.help_me_decide_transition_blend_alpha;
-        for dr in 1u32..=99u32 {
-            let desired_retention = dr as f32 / 100.;
-            config.review_rating_prob = model.success_review_rating_prob_for_retrievability(
-                desired_retention,
-                base_review_rating_prob,
-                blend_alpha_override,
-            );
-            let result = simulate_workload_for_desired_retention(
-                &config,
-                &req.params,
-                &cards,
-                desired_retention,
-            )?;
-            dr_workload.insert(
-                dr,
-                (
-                    *result.memorized_cnt_per_day.last().unwrap_or(&0.),
-                    result.cost_per_day.iter().sum::<f32>(),
-                    result.review_cnt_per_day.iter().sum::<usize>() as u32
-                        + result.learn_cnt_per_day.iter().sum::<usize>() as u32,
-                ),
-            );
-        }
+        let dr_workload = simulate_workload_sweep(
+            &mut config,
+            &req.params,
+            &cards,
+            preset_router.as_ref(),
+            model.as_ref(),
+            req.help_me_decide_transition_blend_alpha,
+            req.days_to_simulate as usize,
+        )?;
         let workload_sweep_elapsed_ms = workload_sweep_start.elapsed().as_millis();
         let reviewless_end_memorized = cards
             .iter()
             .fold(0., |p, c| p + c.retention_on(req.days_to_simulate as f32));
+        let reviewless_end_weighted_memorized =
+            weighted_memorized_for_cards(&cards, req.days_to_simulate as f32);
         let total_elapsed_ms = total_start.elapsed().as_millis();
         eprintln!(
             "{}",
@@ -1100,9 +846,17 @@ impl Collection {
         );
         Ok(SimulateFsrsWorkloadResponse {
             reviewless_end_memorized,
-            memorized: dr_workload.iter().map(|(k, v)| (*k, v.0)).collect(),
-            cost: dr_workload.iter().map(|(k, v)| (*k, v.1)).collect(),
-            review_count: dr_workload.iter().map(|(k, v)| (*k, v.2)).collect(),
+            reviewless_end_weighted_memorized,
+            memorized: dr_workload.iter().map(|(k, v)| (*k, v.memorized)).collect(),
+            cost: dr_workload.iter().map(|(k, v)| (*k, v.cost)).collect(),
+            review_count: dr_workload
+                .iter()
+                .map(|(k, v)| (*k, v.review_count))
+                .collect(),
+            weighted_memorized: dr_workload
+                .iter()
+                .map(|(k, v)| (*k, v.weighted_memorized))
+                .collect(),
             review_time_r_bucket_count: R_BUCKET_COUNT as u32,
             review_time_s_bucket_count: S_BUCKET_COUNT_FOR_UI as u32,
             review_time_again_seconds,
@@ -1131,6 +885,170 @@ impl Collection {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct WorkloadSweepPoint {
+    memorized: f32,
+    weighted_memorized: f32,
+    cost: f32,
+    review_count: u32,
+}
+
+fn simulate_workload_sweep(
+    config: &mut SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    preset_router: Option<&SimulationPresetRouter>,
+    model: &HelpMeDecideReviewTimeModel,
+    blend_alpha_override: Option<f32>,
+    days_to_simulate: usize,
+) -> Result<HashMap<u32, WorkloadSweepPoint>> {
+    if config.post_scheduling_fn.is_some() {
+        simulate_workload_sweep_sequential(
+            config,
+            params,
+            cards,
+            preset_router,
+            model,
+            blend_alpha_override,
+            days_to_simulate,
+        )
+    } else {
+        simulate_workload_sweep_parallel(
+            config,
+            params,
+            cards,
+            preset_router,
+            model,
+            blend_alpha_override,
+            days_to_simulate,
+        )
+    }
+}
+
+fn simulate_workload_sweep_sequential(
+    config: &mut SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    preset_router: Option<&SimulationPresetRouter>,
+    model: &HelpMeDecideReviewTimeModel,
+    blend_alpha_override: Option<f32>,
+    days_to_simulate: usize,
+) -> Result<HashMap<u32, WorkloadSweepPoint>> {
+    let mut dr_workload = HashMap::with_capacity(workload_dr_count());
+    let base_review_rating_prob = config.review_rating_prob;
+    for dr in WORKLOAD_MIN_DR..=WORKLOAD_MAX_DR {
+        let desired_retention = dr as f32 / 100.;
+        config.review_rating_prob = model.success_review_rating_prob_for_retrievability(
+            desired_retention,
+            base_review_rating_prob,
+            blend_alpha_override,
+        );
+        dr_workload.insert(
+            dr,
+            simulate_workload_sweep_point(
+                config,
+                params,
+                cards,
+                preset_router,
+                desired_retention,
+                days_to_simulate,
+            )?,
+        );
+    }
+    Ok(dr_workload)
+}
+
+fn simulate_workload_sweep_parallel(
+    config: &SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    preset_router: Option<&SimulationPresetRouter>,
+    model: &HelpMeDecideReviewTimeModel,
+    blend_alpha_override: Option<f32>,
+    days_to_simulate: usize,
+) -> Result<HashMap<u32, WorkloadSweepPoint>> {
+    let base_review_rating_prob = config.review_rating_prob;
+    (WORKLOAD_MIN_DR..=WORKLOAD_MAX_DR)
+        .into_par_iter()
+        .map(|dr| {
+            let desired_retention = dr as f32 / 100.;
+            let review_rating_prob = model.success_review_rating_prob_for_retrievability(
+                desired_retention,
+                base_review_rating_prob,
+                blend_alpha_override,
+            );
+            let config = simulator_config_for_review_rating_prob(config, review_rating_prob);
+            Ok((
+                dr,
+                simulate_workload_sweep_point(
+                    &config,
+                    params,
+                    cards,
+                    preset_router,
+                    desired_retention,
+                    days_to_simulate,
+                )?,
+            ))
+        })
+        .collect()
+}
+
+fn workload_dr_count() -> usize {
+    (WORKLOAD_MAX_DR - WORKLOAD_MIN_DR + 1) as usize
+}
+
+fn simulator_config_for_review_rating_prob(
+    config: &SimulatorConfig,
+    review_rating_prob: [f32; 3],
+) -> SimulatorConfig {
+    SimulatorConfig {
+        deck_size: config.deck_size,
+        learn_span: config.learn_span,
+        max_cost_perday: config.max_cost_perday,
+        max_ivl: config.max_ivl,
+        first_rating_prob: config.first_rating_prob,
+        review_rating_prob,
+        learn_limit: config.learn_limit,
+        review_limit: config.review_limit,
+        new_cards_ignore_review_limit: config.new_cards_ignore_review_limit,
+        suspend_after_lapses: config.suspend_after_lapses,
+        post_scheduling_fn: None,
+        review_priority_fn: config.review_priority_fn.clone(),
+        review_rating_cost_fn: config.review_rating_cost_fn.clone(),
+        learning_step_transitions: config.learning_step_transitions,
+        relearning_step_transitions: config.relearning_step_transitions,
+        state_rating_costs: config.state_rating_costs,
+        learning_step_count: config.learning_step_count,
+        relearning_step_count: config.relearning_step_count,
+    }
+}
+
+fn simulate_workload_sweep_point(
+    config: &SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    preset_router: Option<&SimulationPresetRouter>,
+    desired_retention: f32,
+    days_to_simulate: usize,
+) -> Result<WorkloadSweepPoint> {
+    let result = simulate_workload_summary_for_desired_retention(
+        config,
+        params,
+        cards,
+        desired_retention,
+        preset_router,
+    )?;
+    Ok(WorkloadSweepPoint {
+        memorized: result.memorized,
+        weighted_memorized: weighted_memorized_for_cards(
+            &result.cards,
+            simulation_end_date(days_to_simulate),
+        ),
+        cost: result.cost,
+        review_count: result.review_count as u32 + result.learn_count as u32,
+    })
+}
+
 fn apply_simulation_desired_retention(card: &mut Card, desired_retention: f32) {
     card.desired_retention = Some(desired_retention);
 }
@@ -1146,9 +1064,24 @@ fn simulate_workload_for_desired_retention(
     params: &[f32],
     cards: &[fsrs::Card],
     desired_retention: f32,
+    preset_router: Option<&SimulationPresetRouter>,
 ) -> Result<fsrs::SimulationResult> {
     let mut cards_for_dr = cards.to_vec();
     apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
+    if let Some(preset_router) = preset_router {
+        if let Some(card_update_fn) =
+            preset_router.card_update_fn_for_simulation(desired_retention)?
+        {
+            return Ok(simulate_with_card_update_fn(
+                config,
+                params,
+                desired_retention,
+                None,
+                Some(cards_for_dr),
+                &card_update_fn,
+            )?);
+        }
+    }
     Ok(simulate(
         config,
         params,
@@ -1156,6 +1089,54 @@ fn simulate_workload_for_desired_retention(
         None,
         Some(cards_for_dr),
     )?)
+}
+
+fn simulate_workload_summary_for_desired_retention(
+    config: &SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    desired_retention: f32,
+    preset_router: Option<&SimulationPresetRouter>,
+) -> Result<fsrs::SimulationSummaryResult> {
+    let mut cards_for_dr = cards.to_vec();
+    apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
+    if let Some(preset_router) = preset_router {
+        if let Some(card_update_fn) =
+            preset_router.card_update_fn_for_simulation(desired_retention)?
+        {
+            return Ok(simulate_summary_with_card_update_fn(
+                config,
+                params,
+                desired_retention,
+                None,
+                Some(cards_for_dr),
+                &card_update_fn,
+            )?);
+        }
+    }
+    Ok(simulate_summary(
+        config,
+        params,
+        desired_retention,
+        None,
+        Some(cards_for_dr),
+    )?)
+}
+
+fn stability_weight(stability: f32) -> f32 {
+    1.0 - ((-8.0 / 365.0) * stability).exp()
+}
+
+fn simulation_end_date(learn_span: usize) -> f32 {
+    learn_span.saturating_sub(1) as f32
+}
+
+fn weighted_memorized_for_cards(cards: &[fsrs::Card], date: f32) -> f32 {
+    cards
+        .iter()
+        .filter(|card| card.stability.is_finite() && card.stability > 0.0)
+        .map(|card| card.retention_on(date) * stability_weight(card.stability))
+        .sum()
 }
 
 impl Card {
@@ -1187,6 +1168,7 @@ impl Card {
                     last_date,
                     due: relative_due as f32,
                     interval: card.interval as f32,
+                    reps: card.reps,
                     lapses: card.lapses,
                     desired_retention: card.desired_retention.unwrap_or(default_desired_retention),
                     parameters: parameters.clone(),
@@ -1200,6 +1182,7 @@ impl Card {
                 last_date: 0.0,
                 due: 0.0,
                 interval: card.interval as f32,
+                reps: card.reps,
                 lapses: card.lapses,
                 desired_retention: card.desired_retention.unwrap_or(default_desired_retention),
                 parameters: parameters.clone(),
@@ -1239,7 +1222,12 @@ fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use anki_proto::scheduler::SimulateFsrsReviewRequest;
     use fsrs::Card as SimCard;
+    use fsrs::SimulatorCardUpdatePhase;
     use fsrs::SimulatorConfig;
     use fsrs::DEFAULT_PARAMETERS;
 
@@ -1247,9 +1235,26 @@ mod tests {
     use super::apply_simulation_desired_retention_to_cards;
     use super::create_review_priority_fn;
     use super::simulate_workload_for_desired_retention;
-    use super::HelpMeDecideReviewTimeModel;
+    use super::simulation_dynamic_desired_retention;
+    use super::simulation_fallback_preset;
+    use super::SimulationPreset;
+    use super::SimulationPresetRoute;
+    use super::SimulationPresetRouter;
     use crate::card::Card;
     use crate::deckconfig::ReviewCardOrder;
+    use crate::prelude::*;
+    use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+    use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+    use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+    use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::scheduler::fsrs::preset::FsrsPresetSimulatorRule;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+    use crate::scheduler::fsrs::review_time_model::consume_review_repetition;
+    use crate::scheduler::fsrs::review_time_model::include_repetitions_in_regression;
+    use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
+    use crate::scheduler::fsrs::review_time_model::HelpMeDecideReviewTimeModel;
+    use crate::scheduler::fsrs::review_time_model::R_BUCKET_COUNT;
+    use crate::tests::NoteAdder;
 
     fn no_transitions() -> [[u32; 4]; 4] {
         [[0u32; 4]; 4]
@@ -1296,6 +1301,444 @@ mod tests {
     }
 
     #[test]
+    fn weighted_memorized_for_cards_uses_retrievability_times_stability_weight() {
+        let parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
+        let high_stability = SimCard {
+            id: 1,
+            stability: 365.0,
+            last_date: 0.0,
+            parameters: parameters.clone(),
+            ..Default::default()
+        };
+        let low_stability = SimCard {
+            id: 2,
+            stability: 1.0,
+            last_date: 0.0,
+            parameters,
+            ..Default::default()
+        };
+        let never_learned = SimCard {
+            id: 3,
+            stability: f32::NEG_INFINITY,
+            ..Default::default()
+        };
+        let result = fsrs::SimulationResult {
+            memorized_cnt_per_day: Vec::new(),
+            review_cnt_per_day: Vec::new(),
+            learn_cnt_per_day: Vec::new(),
+            cost_per_day: Vec::new(),
+            correct_cnt_per_day: Vec::new(),
+            introduced_cnt_per_day: Vec::new(),
+            cards: vec![high_stability, low_stability, never_learned],
+        };
+
+        let end_date = 9.0;
+        let expected = result.cards[0].retention_on(end_date)
+            * super::stability_weight(result.cards[0].stability)
+            + result.cards[1].retention_on(end_date)
+                * super::stability_weight(result.cards[1].stability);
+        let weighted_memorized =
+            super::weighted_memorized_for_cards(&result.cards, super::simulation_end_date(10));
+
+        assert!((weighted_memorized - expected).abs() < 1e-6);
+        assert!(super::stability_weight(365.0) > 0.99);
+        assert!(super::stability_weight(1.0) < 0.03);
+    }
+
+    #[test]
+    fn parallel_workload_sweep_matches_sequential_sweep() {
+        let model = Arc::new(synthetic_fail_model());
+        let cards = vec![SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 10.0,
+            last_date: -1.0,
+            due: 0.0,
+            interval: 1.0,
+            reps: 2,
+            lapses: 0,
+            desired_retention: 0.85,
+            parameters: Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        }];
+        let config = || {
+            let mut config = SimulatorConfig {
+                deck_size: 1,
+                learn_span: 7,
+                learn_limit: 0,
+                review_limit: 9999,
+                review_rating_prob: [0.0, 1.0, 0.0],
+                ..Default::default()
+            };
+            install_review_time_cost_fn(&mut config, model.clone());
+            config
+        };
+        let mut sequential_config = config();
+        let parallel_config = config();
+
+        let sequential = super::simulate_workload_sweep_sequential(
+            &mut sequential_config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            None,
+            model.as_ref(),
+            None,
+            7,
+        )
+        .unwrap();
+        let parallel = super::simulate_workload_sweep_parallel(
+            &parallel_config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            None,
+            model.as_ref(),
+            None,
+            7,
+        )
+        .unwrap();
+
+        assert_eq!(parallel, sequential);
+        assert_eq!(parallel.len(), super::workload_dr_count());
+        assert!(!parallel.contains_key(&(super::WORKLOAD_MIN_DR - 1)));
+        assert!(parallel.contains_key(&super::WORKLOAD_MIN_DR));
+        assert!(parallel.contains_key(&super::WORKLOAD_MAX_DR));
+    }
+
+    fn dynamic_desired_retention_request() -> SimulateFsrsReviewRequest {
+        SimulateFsrsReviewRequest {
+            simulate_dynamic_desired_retention: true,
+            fsrs_dynamic_desired_retention_params: vec![0.0; 15],
+            fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
+            fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
+            fsrs_dynamic_desired_retention_min: 0.75,
+            fsrs_dynamic_desired_retention_max: 0.95,
+            max_interval: 36500,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dynamic_desired_retention_request_builds_simulation_policy() {
+        let request = dynamic_desired_retention_request();
+        let dynamic_desired_retention = simulation_dynamic_desired_retention(&request)
+            .unwrap()
+            .unwrap();
+
+        assert!(dynamic_desired_retention
+            .dynamic_desired_retention
+            .scheduling_target(0.85)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn dynamic_desired_retention_empty_request_has_no_fallback_policy() {
+        let request = SimulateFsrsReviewRequest {
+            simulate_dynamic_desired_retention: true,
+            ..Default::default()
+        };
+
+        assert!(simulation_dynamic_desired_retention(&request)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn simulator_preset_router_uses_addon_overlay_dynamic_preset_for_matching_cards() -> Result<()>
+    {
+        let mut col = Collection::new();
+        let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
+        NoteAdder::basic(&mut col)
+            .fields(&["other", "back"])
+            .add(&mut col);
+        col.add_tags_to_notes(&[tagged_note.id], "adr")?;
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:adr".into(),
+                    name: "ADR".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: DEFAULT_PARAMETERS.to_vec(),
+                    desired_retention: 0.85,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                    fsrs_dynamic_desired_retention_enabled: true,
+                    fsrs_dynamic_desired_retention_params: vec![0.0; 15],
+                    fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
+                    fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
+                    fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![0.0, 15.0],
+                    fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.95, 0.75],
+                    fsrs_dynamic_desired_retention_min: 0.75,
+                    fsrs_dynamic_desired_retention_max: 0.95,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "tag:adr".into(),
+                    preset_id: "addon:test:adr".into(),
+                }],
+                simulator_rules: Vec::new(),
+            },
+        )?;
+        let cards = col.all_cards_for_search("")?;
+        let request = SimulateFsrsReviewRequest {
+            simulate_dynamic_desired_retention: true,
+            params: DEFAULT_PARAMETERS.to_vec(),
+            max_interval: 36500,
+            ..Default::default()
+        };
+
+        let router = col.simulation_preset_router(&request, &cards)?.unwrap();
+        let tagged_card_id = cards
+            .iter()
+            .find(|card| card.note_id == tagged_note.id)
+            .unwrap()
+            .id
+            .0;
+
+        assert!(router.fallback.dynamic_desired_retention.is_none());
+        assert!(router.routes.is_empty());
+        assert_eq!(router.presets_by_card.len(), 1);
+        assert!(router.presets_by_card.contains_key(&tagged_card_id));
+
+        let update_fn = router.card_update_fn(0.9)?;
+        let dynamic_for_target = router
+            .presets_by_card
+            .get(&tagged_card_id)
+            .unwrap()
+            .dynamic_desired_retention
+            .as_ref()
+            .unwrap()
+            .for_target(0.9)?
+            .unwrap();
+        assert!((dynamic_for_target.cost_weight - 1.0).abs() < 1e-5);
+        let mut card = SimCard {
+            id: tagged_card_id,
+            difficulty: 5.0,
+            stability: 10.0,
+            interval: 10.0,
+            desired_retention: 0.9,
+            parameters: Arc::new(vec![0.0; DEFAULT_PARAMETERS.len()]),
+            ..Default::default()
+        };
+
+        update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
+        assert_eq!(card.parameters.as_slice(), DEFAULT_PARAMETERS.as_slice());
+
+        update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
+        let expected = dynamic_for_target.policy.evaluate_retention(
+            card.stability,
+            card.difficulty,
+            dynamic_for_target.cost_weight,
+        );
+        assert!((card.desired_retention - expected).abs() < 1e-6);
+
+        Ok(())
+    }
+
+    #[test]
+    fn simulator_preset_router_uses_addon_params_when_dynamic_dr_toggle_is_off() -> Result<()> {
+        let mut col = Collection::new();
+        let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
+        NoteAdder::basic(&mut col)
+            .fields(&["other", "back"])
+            .add(&mut col);
+        col.add_tags_to_notes(&[tagged_note.id], "fixed")?;
+        let addon_params = vec![1.0; DEFAULT_PARAMETERS.len()];
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:fixed".into(),
+                    name: "Fixed".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: addon_params.clone(),
+                    desired_retention: 0.85,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                    fsrs_dynamic_desired_retention_enabled: true,
+                    fsrs_dynamic_desired_retention_params: vec![0.0; 15],
+                    fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
+                    fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
+                    fsrs_dynamic_desired_retention_min: 0.75,
+                    fsrs_dynamic_desired_retention_max: 0.95,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "tag:fixed".into(),
+                    preset_id: "addon:test:fixed".into(),
+                }],
+                simulator_rules: Vec::new(),
+            },
+        )?;
+        let cards = col.all_cards_for_search("")?;
+        let request = SimulateFsrsReviewRequest {
+            simulate_dynamic_desired_retention: false,
+            params: DEFAULT_PARAMETERS.to_vec(),
+            max_interval: 36500,
+            ..Default::default()
+        };
+
+        let router = col.simulation_preset_router(&request, &cards)?.unwrap();
+        let tagged_card_id = cards
+            .iter()
+            .find(|card| card.note_id == tagged_note.id)
+            .unwrap()
+            .id
+            .0;
+
+        let preset = router.presets_by_card.get(&tagged_card_id).unwrap();
+        assert_eq!(preset.parameters.as_ref().unwrap().as_slice(), addon_params);
+        assert!(preset.dynamic_desired_retention.is_none());
+
+        let update_fn = router.card_update_fn(0.9)?;
+        let mut card = SimCard {
+            id: tagged_card_id,
+            difficulty: 5.0,
+            stability: 10.0,
+            interval: 10.0,
+            desired_retention: 0.75,
+            parameters: Arc::new(DEFAULT_PARAMETERS.to_vec()),
+            ..Default::default()
+        };
+
+        update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
+        assert_eq!(card.parameters.as_slice(), addon_params);
+
+        update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
+        assert_eq!(card.parameters.as_slice(), addon_params);
+        assert_eq!(card.desired_retention, 0.9);
+
+        Ok(())
+    }
+
+    #[test]
+    fn simulator_preset_router_scopes_simulator_rule_search() -> Result<()> {
+        let mut col = Collection::new();
+        let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
+        NoteAdder::basic(&mut col)
+            .fields(&["other", "back"])
+            .add(&mut col);
+        col.add_tags_to_notes(&[tagged_note.id], "route")?;
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:route".into(),
+                    name: "Route".into(),
+                    fsrs_version: AddonFsrsVersion::Six,
+                    params: vec![1.0; 21],
+                    desired_retention: 0.85,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
+                }],
+                rules: Vec::new(),
+                simulator_rules: vec![FsrsPresetSimulatorRule {
+                    preset_id: "addon:test:route".into(),
+                    search: Some("tag:route".into()),
+                    min_interval_days: Some(30.0),
+                    ..Default::default()
+                }],
+            },
+        )?;
+        let cards = col.all_cards_for_search("")?;
+        let request = SimulateFsrsReviewRequest {
+            simulate_dynamic_desired_retention: false,
+            params: DEFAULT_PARAMETERS.to_vec(),
+            max_interval: 36500,
+            ..Default::default()
+        };
+
+        let router = col.simulation_preset_router(&request, &cards)?.unwrap();
+        let tagged_card_id = cards
+            .iter()
+            .find(|card| card.note_id == tagged_note.id)
+            .unwrap()
+            .id
+            .0;
+        let untagged_card_id = cards
+            .iter()
+            .find(|card| card.note_id != tagged_note.id)
+            .unwrap()
+            .id
+            .0;
+
+        let tagged_young = router
+            .parameters_for_card_state(tagged_card_id, 0, 10.0)
+            .unwrap();
+        let tagged_mature = router
+            .parameters_for_card_state(tagged_card_id, 0, 30.0)
+            .unwrap();
+        let untagged_mature = router
+            .parameters_for_card_state(untagged_card_id, 0, 30.0)
+            .unwrap();
+
+        assert_eq!(tagged_young.as_slice(), DEFAULT_PARAMETERS.as_slice());
+        assert_eq!(tagged_mature.as_slice(), vec![1.0; 21].as_slice());
+        assert_eq!(untagged_mature.as_slice(), DEFAULT_PARAMETERS.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn simulator_preset_router_applies_dynamic_rule_by_reps() {
+        let request = dynamic_desired_retention_request();
+        let dynamic_desired_retention = simulation_dynamic_desired_retention(&request)
+            .unwrap()
+            .unwrap();
+        let dynamic_for_target = dynamic_desired_retention.for_target(0.85).unwrap().unwrap();
+        let fallback_parameters = Arc::new(vec![0.0; DEFAULT_PARAMETERS.len()]);
+        let routed_parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
+        let router = SimulationPresetRouter {
+            fallback: SimulationPreset {
+                parameters: Some(fallback_parameters.clone()),
+                dynamic_desired_retention: None,
+            },
+            presets_by_card: HashMap::new(),
+            routes: vec![SimulationPresetRoute {
+                card_ids: None,
+                min_reps: Some(1),
+                max_reps: None,
+                min_interval_days: Some(5.0),
+                max_interval_days: Some(20.0),
+                preset: SimulationPreset {
+                    parameters: Some(routed_parameters.clone()),
+                    dynamic_desired_retention: Some(dynamic_desired_retention),
+                },
+            }],
+        };
+        let update_fn = router.card_update_fn(0.85).unwrap();
+        let mut card = SimCard {
+            difficulty: 5.0,
+            stability: 10.0,
+            reps: 0,
+            interval: 10.0,
+            ..Default::default()
+        };
+
+        update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
+        assert_eq!(card.desired_retention, 0.85);
+
+        card.reps = 1;
+        update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
+        assert!(Arc::ptr_eq(&card.parameters, &routed_parameters));
+
+        update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
+        let expected = dynamic_for_target.policy.evaluate_retention(
+            card.stability,
+            card.difficulty,
+            dynamic_for_target.cost_weight,
+        );
+        assert!((card.desired_retention - expected).abs() < 1e-6);
+
+        card.interval = 30.0;
+        update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
+        assert!(Arc::ptr_eq(&card.parameters, &fallback_parameters));
+        update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
+        assert_eq!(card.desired_retention, 0.85);
+    }
+
+    #[test]
     fn review_priority_fn_reflects_review_order() {
         let short_low_r = SimCard {
             id: 1,
@@ -1304,6 +1747,7 @@ mod tests {
             last_date: -5.0,
             due: -1.0,
             interval: 5.0,
+            reps: 0,
             lapses: 0,
             desired_retention: 0.9,
             parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
@@ -1315,6 +1759,7 @@ mod tests {
             last_date: -5.0,
             due: -5.0,
             interval: 50.0,
+            reps: 0,
             lapses: 0,
             desired_retention: 0.9,
             parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
@@ -1346,6 +1791,7 @@ mod tests {
             last_date: -10.0,
             due: -1.0,
             interval: 10.0,
+            reps: 0,
             lapses: 0,
             desired_retention: 0.9,
             parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
@@ -1357,6 +1803,7 @@ mod tests {
             last_date: -50.0,
             due: -5.0,
             interval: 50.0,
+            reps: 0,
             lapses: 0,
             desired_retention: 0.9,
             parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
@@ -1388,6 +1835,7 @@ mod tests {
             &DEFAULT_PARAMETERS,
             &cards,
             0.9,
+            None,
         )
         .unwrap();
         let descending = simulate_workload_for_desired_retention(
@@ -1395,6 +1843,7 @@ mod tests {
             &DEFAULT_PARAMETERS,
             &cards,
             0.9,
+            None,
         )
         .unwrap();
 
@@ -1473,6 +1922,33 @@ mod tests {
         let low_reps = model.cost_for(0.8, 7.0, 1.0, 6.0, 1);
         let high_reps = model.cost_for(0.8, 7.0, 4.0, 6.0, 1);
         assert!(high_reps > low_reps);
+    }
+
+    #[test]
+    fn review_time_model_review_cost_uses_card_repetitions() {
+        let model = synthetic_fail_model();
+        let low_reps = model.review_cost_for_rating(0.8, 7.0, 1.0, 6.0, 1);
+        let high_reps = model.review_cost_for_rating(0.8, 7.0, 4.0, 6.0, 1);
+        assert!(high_reps > low_reps);
+    }
+
+    #[test]
+    fn review_time_cost_fn_uses_simulated_card_repetitions() {
+        let mut config = SimulatorConfig::default();
+        install_review_time_cost_fn(&mut config, Arc::new(synthetic_fail_model()));
+        let cost_fn = config.review_rating_cost_fn.as_ref().unwrap();
+        let low_reps = SimCard {
+            stability: 7.0,
+            difficulty: 6.0,
+            reps: 1,
+            ..Default::default()
+        };
+        let high_reps = SimCard {
+            reps: 4,
+            ..low_reps.clone()
+        };
+
+        assert!(cost_fn(&high_reps, 1, 0.8) > cost_fn(&low_reps, 1, 0.8));
     }
 
     #[test]
@@ -1630,7 +2106,7 @@ mod tests {
             [1.0, 1.0, 1.0, 1.0],
         );
         let probs = model.success_grade_probs_flattened();
-        for rb in 1..super::R_BUCKET_COUNT {
+        for rb in 1..R_BUCKET_COUNT {
             let hard_prev = probs[(rb - 1) * 3];
             let hard_cur = probs[rb * 3];
             let easy_prev = probs[(rb - 1) * 3 + 2];
@@ -1644,33 +2120,33 @@ mod tests {
 
     #[test]
     fn repetition_filter_for_regression_is_2_to_30_inclusive() {
-        assert!(!super::include_repetitions_in_regression(1.0));
-        assert!(super::include_repetitions_in_regression(2.0));
-        assert!(super::include_repetitions_in_regression(30.0));
-        assert!(!super::include_repetitions_in_regression(31.0));
+        assert!(!include_repetitions_in_regression(1.0));
+        assert!(include_repetitions_in_regression(2.0));
+        assert!(include_repetitions_in_regression(30.0));
+        assert!(!include_repetitions_in_regression(31.0));
     }
 
     #[test]
     fn review_repetition_counter_uses_review_events_only() {
         let mut prior_review_repetitions = 0;
         assert_eq!(
-            super::consume_review_repetition(&mut prior_review_repetitions, false),
+            consume_review_repetition(&mut prior_review_repetitions, false),
             None
         );
         assert_eq!(
-            super::consume_review_repetition(&mut prior_review_repetitions, true),
+            consume_review_repetition(&mut prior_review_repetitions, true),
             Some(0.0)
         );
         assert_eq!(
-            super::consume_review_repetition(&mut prior_review_repetitions, false),
+            consume_review_repetition(&mut prior_review_repetitions, false),
             None
         );
         assert_eq!(
-            super::consume_review_repetition(&mut prior_review_repetitions, true),
+            consume_review_repetition(&mut prior_review_repetitions, true),
             Some(1.0)
         );
         assert_eq!(
-            super::consume_review_repetition(&mut prior_review_repetitions, true),
+            consume_review_repetition(&mut prior_review_repetitions, true),
             Some(2.0)
         );
     }
@@ -1702,18 +2178,29 @@ mod tests {
             last_date: -10.0,
             due: 0.0,
             interval: 10.0,
+            reps: 0,
             lapses: 0,
             desired_retention: 0.95,
             parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
         };
         let cards = vec![card];
 
-        let low_dr =
-            simulate_workload_for_desired_retention(&config, &DEFAULT_PARAMETERS, &cards, 0.6)
-                .unwrap();
-        let high_dr =
-            simulate_workload_for_desired_retention(&config, &DEFAULT_PARAMETERS, &cards, 0.9)
-                .unwrap();
+        let low_dr = simulate_workload_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.6,
+            None,
+        )
+        .unwrap();
+        let high_dr = simulate_workload_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.9,
+            None,
+        )
+        .unwrap();
 
         let low_reviews = low_dr.review_cnt_per_day.iter().sum::<usize>();
         let high_reviews = high_dr.review_cnt_per_day.iter().sum::<usize>();
@@ -1727,6 +2214,276 @@ mod tests {
             low_interval > high_interval,
             "lower DR should produce longer intervals when existing cards are overridden per DR"
         );
+    }
+
+    #[test]
+    fn dynamic_desired_retention_out_of_range_uses_fixed_workload_simulation() {
+        let config = SimulatorConfig {
+            deck_size: 1,
+            learn_span: 365,
+            learn_limit: 0,
+            review_limit: 9999,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        let card = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 100.0,
+            last_date: -10.0,
+            due: 0.0,
+            interval: 10.0,
+            reps: 0,
+            lapses: 0,
+            desired_retention: 0.9,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let cards = vec![card];
+        let request = dynamic_desired_retention_request();
+        let preset_router = SimulationPresetRouter {
+            fallback: simulation_fallback_preset(&request).unwrap(),
+            presets_by_card: HashMap::new(),
+            routes: Vec::new(),
+        };
+
+        let fixed = simulate_workload_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.95,
+            None,
+        )
+        .unwrap();
+        let dynamic_fallback = simulate_workload_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.95,
+            Some(&preset_router),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fixed.review_cnt_per_day,
+            dynamic_fallback.review_cnt_per_day
+        );
+        assert_eq!(fixed.learn_cnt_per_day, dynamic_fallback.learn_cnt_per_day);
+        assert_eq!(fixed.cost_per_day, dynamic_fallback.cost_per_day);
+    }
+
+    #[test]
+    fn dynamic_desired_retention_toggle_changes_workload_simulation() {
+        let config = SimulatorConfig {
+            deck_size: 1,
+            learn_span: 1,
+            learn_limit: 0,
+            review_limit: 9999,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        let card = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 10.0,
+            last_date: -1.0,
+            due: 0.0,
+            interval: 1.0,
+            reps: 0,
+            lapses: 0,
+            desired_retention: 0.85,
+            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let cards = vec![card];
+        let request = SimulateFsrsReviewRequest {
+            fsrs_dynamic_desired_retention_fixed_target_weights: vec![1024.0],
+            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.9],
+            ..dynamic_desired_retention_request()
+        };
+        let preset_router = SimulationPresetRouter {
+            fallback: simulation_fallback_preset(&request).unwrap(),
+            presets_by_card: HashMap::new(),
+            routes: Vec::new(),
+        };
+        let dynamic_for_target = preset_router
+            .fallback
+            .dynamic_desired_retention
+            .as_ref()
+            .unwrap()
+            .for_target(0.85)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dynamic_for_target.cost_weight, 1024.0);
+        assert!(
+            dynamic_for_target
+                .policy
+                .evaluate_retention(10.0, 5.0, dynamic_for_target.cost_weight)
+                < 0.85
+        );
+
+        let fixed = simulate_workload_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.85,
+            None,
+        )
+        .unwrap();
+        let dynamic = simulate_workload_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &cards,
+            0.85,
+            Some(&preset_router),
+        )
+        .unwrap();
+
+        assert_ne!(fixed.cards[0].interval, dynamic.cards[0].interval);
+    }
+
+    fn simulate_summary_with_full_router_update_fn(
+        config: &SimulatorConfig,
+        params: &[f32],
+        cards: &[SimCard],
+        desired_retention: f32,
+        preset_router: &SimulationPresetRouter,
+    ) -> fsrs::SimulationSummaryResult {
+        let mut cards_for_dr = cards.to_vec();
+        super::apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
+        let card_update_fn = preset_router.card_update_fn(desired_retention).unwrap();
+        fsrs::simulate_summary_with_card_update_fn(
+            config,
+            params,
+            desired_retention,
+            None,
+            Some(cards_for_dr),
+            &card_update_fn,
+        )
+        .unwrap()
+    }
+
+    fn assert_summary_result_matches(
+        left: &fsrs::SimulationSummaryResult,
+        right: &fsrs::SimulationSummaryResult,
+    ) {
+        assert_eq!(left.memorized, right.memorized);
+        assert_eq!(left.review_count, right.review_count);
+        assert_eq!(left.learn_count, right.learn_count);
+        assert_eq!(left.cost, right.cost);
+        assert_eq!(left.cards.len(), right.cards.len());
+    }
+
+    #[test]
+    fn fixed_no_route_preset_router_skips_card_update_fn_without_changing_summary() {
+        let config = SimulatorConfig {
+            deck_size: 1,
+            learn_span: 30,
+            learn_limit: 0,
+            review_limit: 9999,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        let parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
+        let card = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 10.0,
+            last_date: -1.0,
+            due: 0.0,
+            interval: 1.0,
+            reps: 1,
+            lapses: 0,
+            desired_retention: 0.8,
+            parameters: parameters.clone(),
+        };
+        let router = SimulationPresetRouter {
+            fallback: SimulationPreset {
+                parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
+                dynamic_desired_retention: None,
+            },
+            presets_by_card: HashMap::from([(
+                1,
+                SimulationPreset {
+                    parameters: Some(parameters),
+                    dynamic_desired_retention: None,
+                },
+            )]),
+            routes: Vec::new(),
+        };
+
+        assert!(router.card_update_fn_for_simulation(0.9).unwrap().is_none());
+        let fast = super::simulate_workload_summary_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &[card.clone()],
+            0.9,
+            Some(&router),
+        )
+        .unwrap();
+        let full = simulate_summary_with_full_router_update_fn(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &[card],
+            0.9,
+            &router,
+        );
+
+        assert_summary_result_matches(&fast, &full);
+    }
+
+    #[test]
+    fn dynamic_no_route_preset_router_uses_static_adr_update_fn_without_changing_summary() {
+        let config = SimulatorConfig {
+            deck_size: 1,
+            learn_span: 30,
+            learn_limit: 0,
+            review_limit: 9999,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        let card = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 10.0,
+            last_date: -1.0,
+            due: 0.0,
+            interval: 1.0,
+            reps: 1,
+            lapses: 0,
+            desired_retention: 0.8,
+            parameters: Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let request = SimulateFsrsReviewRequest {
+            fsrs_dynamic_desired_retention_fixed_target_weights: vec![1024.0],
+            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.9],
+            ..dynamic_desired_retention_request()
+        };
+        let router = SimulationPresetRouter {
+            fallback: simulation_fallback_preset(&request).unwrap(),
+            presets_by_card: HashMap::new(),
+            routes: Vec::new(),
+        };
+
+        assert!(router
+            .card_update_fn_for_simulation(0.85)
+            .unwrap()
+            .is_some());
+        let fast = super::simulate_workload_summary_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &[card.clone()],
+            0.85,
+            Some(&router),
+        )
+        .unwrap();
+        let full = simulate_summary_with_full_router_update_fn(
+            &config,
+            &DEFAULT_PARAMETERS,
+            &[card],
+            0.85,
+            &router,
+        );
+
+        assert_summary_result_matches(&fast, &full);
     }
 
     #[test]

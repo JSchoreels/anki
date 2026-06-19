@@ -153,6 +153,12 @@ class AddonFsrsPreset:
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Sequence[float] = field(
         default_factory=list
     )
+    fsrs_dynamic_desired_retention_fixed_target_weights: Sequence[float] = field(
+        default_factory=list
+    )
+    fsrs_dynamic_desired_retention_fixed_target_drs: Sequence[float] = field(
+        default_factory=list
+    )
     fsrs_dynamic_desired_retention_min: float = 0.0
     fsrs_dynamic_desired_retention_max: float = 0.0
     fsrs_dynamic_desired_retention_clamp: bool = False
@@ -184,6 +190,12 @@ class AddonFsrsPreset:
             ),
             fsrs_dynamic_desired_retention_fsrs_eq_drs=data.get(
                 "fsrs_dynamic_desired_retention_fsrs_eq_drs", []
+            ),
+            fsrs_dynamic_desired_retention_fixed_target_weights=data.get(
+                "fsrs_dynamic_desired_retention_fixed_target_weights", []
+            ),
+            fsrs_dynamic_desired_retention_fixed_target_drs=data.get(
+                "fsrs_dynamic_desired_retention_fixed_target_drs", []
             ),
             fsrs_dynamic_desired_retention_min=data.get(
                 "fsrs_dynamic_desired_retention_min", 0.0
@@ -218,6 +230,12 @@ class ResolvedFsrsPreset:
         default_factory=list
     )
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Sequence[float] = field(
+        default_factory=list
+    )
+    fsrs_dynamic_desired_retention_fixed_target_weights: Sequence[float] = field(
+        default_factory=list
+    )
+    fsrs_dynamic_desired_retention_fixed_target_drs: Sequence[float] = field(
         default_factory=list
     )
     fsrs_dynamic_desired_retention_min: float = 0.0
@@ -1411,6 +1429,12 @@ class Collection(DeprecatedNamesMixin):
             ),
             fsrs_dynamic_desired_retention_fsrs_eq_drs=(
                 resp.fsrs_dynamic_desired_retention_fsrs_eq_drs
+            ),
+            fsrs_dynamic_desired_retention_fixed_target_weights=(
+                resp.fsrs_dynamic_desired_retention_fixed_target_weights
+            ),
+            fsrs_dynamic_desired_retention_fixed_target_drs=(
+                resp.fsrs_dynamic_desired_retention_fixed_target_drs
             ),
             fsrs_dynamic_desired_retention_min=(
                 resp.fsrs_dynamic_desired_retention_min

@@ -106,27 +106,36 @@ Data flow:
    - `Easy`
      using `time = a + b * (1 - R) + c * S + d * reps + e * D`.
 5. During `simulate_workload`, each DR sweep updates review costs from those
-   fitted models and then runs simulation to accumulate `daily_time_cost`.
-6. The workload response includes a flattened matrix for UI inspection:
+   fitted models and then runs a summary simulation over DR targets `30..99`.
+   The summary path skips daily memorized curve range-filling and computes the
+   final retained-knowledge values from final simulated card states.
+   It also computes end-of-run weighted retained-knowledge scores,
+   `sum(R * f(S))`, where `R` is each final simulated card's retrievability on
+   the last simulated day and `f(S) = 1 - exp((-8 / 365) * S)`. The same
+   weighted score is computed for the reviewless end state so weighted
+   efficiency can use net gain over the no-review baseline.
+6. The workload response includes workload summary metrics keyed by swept DR:
+   - `memorized`
+   - `weighted_memorized`
+   - `reviewless_end_weighted_memorized`
+   - `cost`
+   - `review_count`
+7. The workload response also includes a flattened review-time matrix for UI
+   inspection:
    - `review_time_again_seconds`
    - `review_time_hard_seconds`
    - `review_time_good_seconds`
    - `review_time_easy_seconds`
    - `review_time_sample_counts` (raw per-cell sample counts)
-     and the fitted coefficients:
    - `review_time_again_coeffs`
    - `review_time_hard_coeffs`
    - `review_time_good_coeffs`
    - `review_time_easy_coeffs`
-     and empirical grade weights:
    - `review_time_grade_weights`
-     and grade transition data:
    - `review_time_transition_probs` (4x4, row-major `P(next|current)`)
    - `review_time_transition_counts` (4x4, row-major raw counts)
-     and retrievability-conditioned success-grade data:
    - `review_time_success_grade_probs` (R-bucket x 3, row-major `P(Hard/Good/Easy|R)`)
    - `review_time_success_grade_counts` (R-bucket sample counts)
-     with bucket dimensions:
    - `review_time_r_bucket_count`
    - `review_time_s_bucket_count` (fixed to `1`, UI compatibility)
 
@@ -146,6 +155,8 @@ Scope:
     with model form: `time = a + b * (1 - R) + c * S + d * reps + e * D`.
     These predicted costs are also injected into simulator review costs during
     each DR sweep, so `Time` and `Memorized/Time` charts use the same model.
+    The workload graph also exposes an absolute `R*f(S)` chart and a
+    `Net R*f(S)/t` chart based on weighted score above the reviewless baseline.
     The workload response also exposes fitted coefficients:
   - `review_time_again_coeffs` (`a,b,c,d,e`)
   - `review_time_hard_coeffs` (`a,b,c,d,e`)

@@ -69,6 +69,8 @@ struct DynamicDrConfig<'a> {
     retention_max: f32,
     fsrs_eq_weights: &'a [f32],
     fsrs_eq_drs: &'a [f32],
+    fixed_target_weights: &'a [f32],
+    fixed_target_drs: &'a [f32],
     clamp: bool,
 }
 
@@ -82,6 +84,10 @@ fn dynamic_dr_config(config: &DeckConfig) -> DynamicDrConfig<'_> {
         retention_max: config.inner.fsrs_dynamic_desired_retention_max,
         fsrs_eq_weights: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_weights,
         fsrs_eq_drs: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+        fixed_target_weights: &config
+            .inner
+            .fsrs_dynamic_desired_retention_fixed_target_weights,
+        fixed_target_drs: &config.inner.fsrs_dynamic_desired_retention_fixed_target_drs,
         clamp: config.inner.fsrs_dynamic_desired_retention_clamp,
     }
 }
@@ -581,6 +587,14 @@ impl Collection {
                             .inner
                             .fsrs_dynamic_desired_retention_fsrs_eq_drs =
                             params.fsrs_dynamic_desired_retention_fsrs_eq_drs;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_fixed_target_weights =
+                            params.fsrs_dynamic_desired_retention_fixed_target_weights;
+                        req.configs[output.index]
+                            .inner
+                            .fsrs_dynamic_desired_retention_fixed_target_drs =
+                            params.fsrs_dynamic_desired_retention_fixed_target_drs;
                         req.configs[output.index]
                             .inner
                             .fsrs_dynamic_desired_retention_min =

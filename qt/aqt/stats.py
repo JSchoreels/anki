@@ -137,8 +137,12 @@ class NewDeckStats(QDialog):
 
         return False
 
+    def _graphs_page_path(self) -> str:
+        deck_id = int(self.deck_chooser.selected_deck_id)
+        return f"graphs?currentDeckId={deck_id}"
+
     def refresh(self) -> None:
-        self.form.web.load_sveltekit_page("graphs")
+        self.form.web.load_sveltekit_page(self._graphs_page_path())
 
 
 class DeckStats(QDialog):

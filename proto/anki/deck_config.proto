@@ -152,6 +152,8 @@ message DeckConfig {
     repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 61;
     repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 62;
     bool fsrs_dynamic_desired_retention_clamp = 63;
+    repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 64;
+    repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 65;
 
     // consider saving remaining ones for fsrs param changes
     reserved 7 to 8;

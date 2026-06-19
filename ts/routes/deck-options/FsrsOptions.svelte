@@ -64,6 +64,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         schedulingTargetDr,
         targetDrCalibration,
         validCalibration,
+        validOptionalFixedTargetCalibration,
         validPolicyParams,
         validRetentionBounds,
     } from "./dynamic-desired-retention";
@@ -140,6 +141,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dynamicDesiredRetentionAvgDrs: number[];
         dynamicDesiredRetentionFsrsEqWeights: number[];
         dynamicDesiredRetentionFsrsEqDrs: number[];
+        dynamicDesiredRetentionFixedTargetWeights: number[];
+        dynamicDesiredRetentionFixedTargetDrs: number[];
         dynamicDesiredRetentionMin: number;
         dynamicDesiredRetentionMax: number;
         search: string;
@@ -324,6 +327,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         helpMeDecideTransitionBlendAlpha: HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
         helpMeDecideEnforceMonotonicSuccessGradeProbs:
             HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
+        fsrsDynamicDesiredRetentionParams: $config.fsrsDynamicDesiredRetentionParams,
+        fsrsDynamicDesiredRetentionWeights: $config.fsrsDynamicDesiredRetentionWeights,
+        fsrsDynamicDesiredRetentionAvgDrs: $config.fsrsDynamicDesiredRetentionAvgDrs,
+        fsrsDynamicDesiredRetentionFsrsEqWeights:
+            $config.fsrsDynamicDesiredRetentionFsrsEqWeights,
+        fsrsDynamicDesiredRetentionFsrsEqDrs:
+            $config.fsrsDynamicDesiredRetentionFsrsEqDrs,
+        fsrsDynamicDesiredRetentionFixedTargetWeights:
+            $config.fsrsDynamicDesiredRetentionFixedTargetWeights,
+        fsrsDynamicDesiredRetentionFixedTargetDrs:
+            $config.fsrsDynamicDesiredRetentionFixedTargetDrs,
+        fsrsDynamicDesiredRetentionMin: $config.fsrsDynamicDesiredRetentionMin,
+        fsrsDynamicDesiredRetentionMax: $config.fsrsDynamicDesiredRetentionMax,
+        fsrsDynamicDesiredRetentionClamp: $config.fsrsDynamicDesiredRetentionClamp,
     });
 
     $: void loadNewCardIntervals(
@@ -583,6 +600,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     const dynamicDesiredRetentionFsrsEqDrs = [
                         ...resp.fsrsDynamicDesiredRetentionFsrsEqDrs,
                     ];
+                    const dynamicDesiredRetentionFixedTargetWeights = [
+                        ...resp.fsrsDynamicDesiredRetentionFixedTargetWeights,
+                    ];
+                    const dynamicDesiredRetentionFixedTargetDrs = [
+                        ...resp.fsrsDynamicDesiredRetentionFixedTargetDrs,
+                    ];
                     const dynamicDesiredRetentionMin =
                         resp.fsrsDynamicDesiredRetentionMin;
                     const dynamicDesiredRetentionMax =
@@ -598,6 +621,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionFsrsEqWeights;
                         $config.fsrsDynamicDesiredRetentionFsrsEqDrs =
                             dynamicDesiredRetentionFsrsEqDrs;
+                        $config.fsrsDynamicDesiredRetentionFixedTargetWeights =
+                            dynamicDesiredRetentionFixedTargetWeights;
+                        $config.fsrsDynamicDesiredRetentionFixedTargetDrs =
+                            dynamicDesiredRetentionFixedTargetDrs;
                         $config.fsrsDynamicDesiredRetentionMin =
                             dynamicDesiredRetentionMin;
                         $config.fsrsDynamicDesiredRetentionMax =
@@ -624,6 +651,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionAvgDrs,
                             dynamicDesiredRetentionFsrsEqWeights,
                             dynamicDesiredRetentionFsrsEqDrs,
+                            dynamicDesiredRetentionFixedTargetWeights,
+                            dynamicDesiredRetentionFixedTargetDrs,
                             dynamicDesiredRetentionMin,
                             dynamicDesiredRetentionMax,
                             search: evaluateSearch,
@@ -679,6 +708,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 optimizationComparison.dynamicDesiredRetentionFsrsEqWeights;
             $config.fsrsDynamicDesiredRetentionFsrsEqDrs =
                 optimizationComparison.dynamicDesiredRetentionFsrsEqDrs;
+            $config.fsrsDynamicDesiredRetentionFixedTargetWeights =
+                optimizationComparison.dynamicDesiredRetentionFixedTargetWeights;
+            $config.fsrsDynamicDesiredRetentionFixedTargetDrs =
+                optimizationComparison.dynamicDesiredRetentionFixedTargetDrs;
             $config.fsrsDynamicDesiredRetentionMin =
                 optimizationComparison.dynamicDesiredRetentionMin;
             $config.fsrsDynamicDesiredRetentionMax =
@@ -1055,17 +1088,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $config.fsrsDynamicDesiredRetentionAvgDrs,
         $config.fsrsDynamicDesiredRetentionFsrsEqWeights,
         $config.fsrsDynamicDesiredRetentionFsrsEqDrs,
+        $config.fsrsDynamicDesiredRetentionFixedTargetWeights,
+        $config.fsrsDynamicDesiredRetentionFixedTargetDrs,
     );
     $: dynamicDesiredRetentionSchedulingTarget = schedulingTargetDr(
         effectiveDesiredRetention,
         dynamicDesiredRetentionTargetCalibration.weights,
         dynamicDesiredRetentionTargetCalibration.drs,
         $config.fsrsDynamicDesiredRetentionClamp,
+        dynamicDesiredRetentionTargetCalibration.fixedTarget,
+        $config.fsrsDynamicDesiredRetentionMin,
     );
     $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
         dynamicDesiredRetentionSchedulingTarget,
         dynamicDesiredRetentionTargetCalibration.weights,
         dynamicDesiredRetentionTargetCalibration.drs,
+        dynamicDesiredRetentionTargetCalibration.fixedTarget,
+        $config.fsrsDynamicDesiredRetentionMin,
     );
     $: dynamicDesiredRetentionConfigReady = dynamicDesiredRetentionEnabled($config);
     $: dynamicDesiredRetentionReady =
@@ -1089,6 +1128,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             !validCalibration(
                 config.fsrsDynamicDesiredRetentionWeights,
                 config.fsrsDynamicDesiredRetentionAvgDrs,
+            ) ||
+            !validOptionalFixedTargetCalibration(
+                config.fsrsDynamicDesiredRetentionFixedTargetWeights,
+                config.fsrsDynamicDesiredRetentionFixedTargetDrs,
             )
         ) {
             return "Dynamic DR requires 15 SSP-MMC parameters and matching calibration arrays.";
@@ -1438,6 +1481,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     calibrationAvgDrs={$config.fsrsDynamicDesiredRetentionAvgDrs}
     fsrsEquivalentWeights={$config.fsrsDynamicDesiredRetentionFsrsEqWeights}
     fsrsEquivalentDrs={$config.fsrsDynamicDesiredRetentionFsrsEqDrs}
+    fixedTargetWeights={$config.fsrsDynamicDesiredRetentionFixedTargetWeights}
+    fixedTargetDrs={$config.fsrsDynamicDesiredRetentionFixedTargetDrs}
     retentionMin={$config.fsrsDynamicDesiredRetentionMin}
     retentionMax={$config.fsrsDynamicDesiredRetentionMax}
     targetAverageDr={effectiveDesiredRetention}

@@ -32,6 +32,7 @@ export interface Point {
     timeCost: number;
     count: number;
     memorized: number;
+    weightedMemorized?: number;
     label: number;
     labelName?: string;
 }
@@ -39,6 +40,8 @@ export interface Point {
 export type WorkloadPoint = Point & {
     learnSpan: number;
     reviewless_end_memorized: number;
+    reviewless_end_weighted_memorized: number;
+    weightedMemorized: number;
 };
 
 export enum SimulateSubgraph {
@@ -49,9 +52,11 @@ export enum SimulateSubgraph {
 
 export enum SimulateWorkloadSubgraph {
     ratio,
+    weightedRatio,
     time,
     count,
     memorized,
+    weightedMemorized,
 }
 
 export function renderWorkloadChart(
@@ -60,8 +65,11 @@ export function renderWorkloadChart(
     data: WorkloadPoint[],
     subgraph: SimulateWorkloadSubgraph,
 ) {
-    const xMin = 1;
-    const xMax = 99;
+    const dataXMin = min(data, (d) => d.x) ?? 1;
+    const dataXMax = max(data, (d) => d.x) ?? 99;
+    const singleX = dataXMin === dataXMax;
+    const xMin = singleX ? Math.max(1, dataXMin - 1) : dataXMin;
+    const xMax = singleX ? Math.min(99, dataXMax + 1) : dataXMax;
 
     const x = scaleLinear()
         .domain([xMin, xMax])
@@ -71,6 +79,13 @@ export function renderWorkloadChart(
         [SimulateWorkloadSubgraph.ratio]: data.map((d) => ({
             ...d,
             y: (60 * 60 * (d.memorized - d.reviewless_end_memorized))
+                / d.timeCost,
+        })),
+        [SimulateWorkloadSubgraph.weightedRatio]: data.map((d) => ({
+            ...d,
+            y: (60
+                * 60
+                * (d.weightedMemorized - d.reviewless_end_weighted_memorized))
                 / d.timeCost,
         })),
         [SimulateWorkloadSubgraph.time]: data.map((d) => ({
@@ -84,6 +99,10 @@ export function renderWorkloadChart(
         [SimulateWorkloadSubgraph.memorized]: data.map((d) => ({
             ...d,
             y: d.memorized,
+        })),
+        [SimulateWorkloadSubgraph.weightedMemorized]: data.map((d) => ({
+            ...d,
+            y: d.weightedMemorized,
         })),
     }[subgraph].filter((point) => point !== undefined);
 
@@ -103,6 +122,10 @@ export function renderWorkloadChart(
     const formatY: (value: number) => string = {
         [SimulateWorkloadSubgraph.ratio]: (value: number) =>
             tr.deckConfigFsrsSimulatorRatioTooltip2({ time: value.toFixed(2) }),
+        [SimulateWorkloadSubgraph.weightedRatio]: (value: number) =>
+            tr.deckConfigFsrsSimulatorWeightedRatioTooltip({
+                time: value.toFixed(2),
+            }),
         [SimulateWorkloadSubgraph.time]: (value: number) =>
             tr.statisticsMinutesPerDay({
                 count: parseFloat((value / 60).toPrecision(2)),
@@ -110,6 +133,10 @@ export function renderWorkloadChart(
         [SimulateWorkloadSubgraph.count]: (value: number) => tr.statisticsReviewsPerDay({ count: Math.round(value) }),
         [SimulateWorkloadSubgraph.memorized]: (value: number) =>
             tr.statisticsMemorized({ memorized: Math.round(value).toFixed(0) }),
+        [SimulateWorkloadSubgraph.weightedMemorized]: (value: number) =>
+            tr.deckConfigFsrsSimulatorWeightedMemorizedTooltip({
+                memorized: value.toFixed(2),
+            }),
     }[subgraph];
 
     function formatX(dr: number) {
@@ -127,7 +154,14 @@ export function renderWorkloadChart(
         .attr("stroke", "black")
         .attr("stroke-width", 1);
 
-    const startMemorized = subgraph_data[0]?.reviewless_end_memorized ?? 0;
+    const baseline = {
+        [SimulateWorkloadSubgraph.memorized]: subgraph_data[0]?.reviewless_end_memorized,
+        [SimulateWorkloadSubgraph.weightedMemorized]: subgraph_data[0]?.reviewless_end_weighted_memorized,
+        [SimulateWorkloadSubgraph.ratio]: undefined,
+        [SimulateWorkloadSubgraph.weightedRatio]: undefined,
+        [SimulateWorkloadSubgraph.time]: undefined,
+        [SimulateWorkloadSubgraph.count]: undefined,
+    }[subgraph];
 
     return _renderSimulationChart(
         svgElem,
@@ -141,11 +175,7 @@ export function renderWorkloadChart(
         xTickFormat,
         (svg, x, y) => {
             svg.selectAll("line")
-                .data(
-                    subgraph == SimulateWorkloadSubgraph.memorized
-                        ? [startMemorized]
-                        : [],
-                )
+                .data(baseline === undefined ? [] : [baseline])
                 .enter()
                 .attr("x1", x(xMin))
                 .attr("x2", x(xMax))
@@ -155,7 +185,7 @@ export function renderWorkloadChart(
                 .attr("stroke-dasharray", "5,5")
                 .attr("stroke-width", 1);
         },
-        subgraph == SimulateWorkloadSubgraph.memorized ? startMemorized : 0,
+        baseline ?? 0,
     );
 }
 

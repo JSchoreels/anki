@@ -545,7 +545,11 @@ deck-config-save-options-to-preset-confirm = Overwrite the options in your curre
 # specific date.
 deck-config-fsrs-simulator-radio-memorized = Memorized
 deck-config-fsrs-simulator-radio-efficiency = Efficiency
+deck-config-fsrs-simulator-radio-weighted-memorized = R*f(S)
+deck-config-fsrs-simulator-radio-weighted-efficiency = Net R*f(S)/t
 deck-config-fsrs-simulator-ratio-tooltip2 = { $time } memorized cards per hour
+deck-config-fsrs-simulator-weighted-memorized-tooltip = { $memorized } R*f(S)
+deck-config-fsrs-simulator-weighted-ratio-tooltip = { $time } net R*f(S) per hour
 
 ## Messages related to the FSRS scheduler’s health check. The health check determines whether the correlation between FSRS predictions and your memory is good or bad. It can be optionally triggered as part of the "Optimize" function.
 

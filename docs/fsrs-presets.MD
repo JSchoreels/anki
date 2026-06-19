@@ -56,6 +56,16 @@ rules through the synced config key `fsrsPresetOverlay`. The value is JSON:
             "search": "tag:medical",
             "preset_id": "addon:example:medical"
         }
+    ],
+    "simulator_rules": [
+        {
+            "preset_id": "addon:example:medical",
+            "search": "deck:\"Medical\" firstgrade:1",
+            "min_reps": 3,
+            "max_reps": 7,
+            "min_interval_days": 10,
+            "max_interval_days": 30
+        }
     ]
 }
 ```
@@ -66,6 +76,12 @@ matching rule assigns the card's FSRS preset. Cards that do not match any rule
 use the built-in `deck-config:<id>` FSRS preset derived from their home deck
 config.
 
+FSRS-7 add-on presets may include Dynamic DR policy fields. Current policies
+should include `fsrs_dynamic_desired_retention_fixed_target_weights` and
+`fsrs_dynamic_desired_retention_fixed_target_drs`; Anki uses those arrays before
+the older `fsrs_dynamic_desired_retention_fsrs_eq_*` fallback when mapping a
+fixed desired-retention target to an ADR cost weight.
+
 During review, an explicit desired retention override supplied by the reviewer
 scheduling hook takes precedence over the matched preset's desired retention.
 The overlay value is used only when no review-time override is provided.
@@ -74,6 +90,26 @@ Rule searches must not use FSRS metric properties (`prop:r`, `prop:s`, or
 `prop:d`). Those properties already depend on FSRS state or need an FSRS preset
 to compute, so allowing them in source-selection rules would couple source
 resolution to derived FSRS data.
+
+`simulator_rules` are optional, ordered, simulator-only routes that allow the
+FSRS simulator to switch add-on presets without calling back into Python or
+running collection searches inside the simulation loop. They reference the same
+overlay presets as `rules`, and currently support `min_reps`, `max_reps`,
+`min_interval_days`, `max_interval_days`, and an optional `search` selector.
+The selector is resolved once against the real starting cards, and matching then
+uses that fixed card-id set plus the simulated state bounds. Repetition bounds
+are evaluated against the simulated card's current repetition count; interval
+bounds are evaluated against the card's current simulated interval before that
+review is answered, matching persisted interval-style preset discrimination. The
+first matching simulator rule supplies the simulated card's FSRS params and, if
+available, Dynamic DR policy for that repetition. Cards that do not match a
+simulator rule use their starting-card add-on Dynamic DR preset from `rules`,
+when one matched, otherwise the simulator request's fallback preset. The normal
+`rules` searches are resolved once for the real starting cards; `simulator_rules`
+are only for preset changes caused by simulated state changes after that. Add-ons
+that discriminate by persisted interval should emit simulator rules by splitting
+the stable part into `search`, such as deck and `firstgrade:`, and the dynamic
+interval part into `min_interval_days`/`max_interval_days`.
 
 When `fsrsPresetOverlay` is created, updated, deleted, undone, or redone, Anki
 invalidates the in-memory FSRS preset overlay cache. The cache is rebuilt from
@@ -128,7 +164,7 @@ minimum FSRS interval, Dynamic DR fields, and legacy deck-level review-fuzz
 fields.
 
 Older fork builds wrote those values to numbered `DeckConfig.Config` protobuf
-fields `47-63`. Current code still reads those legacy fields, but normal deck
+fields `47-65`. Current code still reads those legacy fields, but normal deck
 config writes migrate the values into `other["jschoreels.fsrs"]` and clear the
 numbered fork fields before encoding. This avoids collisions if upstream later
 assigns one of those protobuf field numbers to a different setting.

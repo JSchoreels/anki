@@ -42,6 +42,8 @@ use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MAX;
 use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MIN;
+use crate::scheduler::fsrs::review_time_model::build_help_me_decide_review_time_model_from_revlogs;
+use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
@@ -129,6 +131,8 @@ struct DynamicDesiredRetentionCalibration {
     avg_drs: Vec<f32>,
     fsrs_eq_weights: Vec<f32>,
     fsrs_eq_drs: Vec<f32>,
+    fixed_target_weights: Vec<f32>,
+    fixed_target_drs: Vec<f32>,
     retention_min: f32,
     retention_max: f32,
 }
@@ -470,6 +474,8 @@ pub(crate) fn compute_params_from_prepared(
             fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
             fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
             fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
+            fsrs_dynamic_desired_retention_fixed_target_weights: Vec::new(),
+            fsrs_dynamic_desired_retention_fixed_target_drs: Vec::new(),
             fsrs_dynamic_desired_retention_min: 0.0,
             fsrs_dynamic_desired_retention_max: 0.0,
         });
@@ -552,6 +558,14 @@ pub(crate) fn compute_params_from_prepared(
             .as_ref()
             .map(|calibration| calibration.fsrs_eq_drs.clone())
             .unwrap_or_default(),
+        fsrs_dynamic_desired_retention_fixed_target_weights: dynamic_desired_retention
+            .as_ref()
+            .map(|calibration| calibration.fixed_target_weights.clone())
+            .unwrap_or_default(),
+        fsrs_dynamic_desired_retention_fixed_target_drs: dynamic_desired_retention
+            .as_ref()
+            .map(|calibration| calibration.fixed_target_drs.clone())
+            .unwrap_or_default(),
         fsrs_dynamic_desired_retention_min: dynamic_desired_retention
             .as_ref()
             .map(|calibration| calibration.retention_min)
@@ -599,12 +613,17 @@ fn train_dynamic_desired_retention(
         &result.baseline_metrics,
         &calibration_points,
     );
+    let fixed_target_points = result
+        .efficient_fixed_desired_retention_points(&training_config.baseline_desired_retentions);
     dynamic_desired_retention_calibration_from_parts(
         result.policy.coefficients,
         calibration_points
             .into_iter()
             .map(|point| (point.goal_cost_weight, point.average_desired_retention)),
         fsrs_equivalent_points,
+        fixed_target_points
+            .into_iter()
+            .map(|point| (point.goal_cost_weight, point.desired_retention)),
         bounds,
     )
     .map(Some)
@@ -665,6 +684,23 @@ fn shape_simulator_config_for_dynamic_desired_retention(
     Ok(())
 }
 
+fn install_dynamic_desired_retention_review_time_cost_fn(
+    config: &mut SimulatorConfig,
+    revlogs: &[RevlogEntry],
+    params: &[f32],
+    next_day_at: TimestampSecs,
+) -> Result<()> {
+    let review_time_model = build_help_me_decide_review_time_model_from_revlogs(
+        revlogs,
+        params,
+        next_day_at,
+        false,
+        config.state_rating_costs[1],
+    )?;
+    install_review_time_cost_fn(config, Arc::new(review_time_model));
+    Ok(())
+}
+
 fn real_day(timestamp_millis: i64, day_cutoff: i64) -> i64 {
     (timestamp_millis / 1000 - day_cutoff) / 86400
 }
@@ -673,6 +709,7 @@ fn dynamic_desired_retention_calibration_from_parts(
     params: Vec<f32>,
     points: impl IntoIterator<Item = (f32, Option<f32>)>,
     fsrs_equivalent_points: impl IntoIterator<Item = (f32, f32)>,
+    fixed_target_points: impl IntoIterator<Item = (f32, f32)>,
     bounds: DynamicDesiredRetentionBounds,
 ) -> Result<DynamicDesiredRetentionCalibration> {
     let calibration = points
@@ -688,12 +725,15 @@ fn dynamic_desired_retention_calibration_from_parts(
 
     let (weights, avg_drs) = calibration.into_iter().unzip();
     let (fsrs_eq_weights, fsrs_eq_drs) = fsrs_equivalent_points.into_iter().unzip();
+    let (fixed_target_weights, fixed_target_drs) = fixed_target_points.into_iter().unzip();
     Ok(DynamicDesiredRetentionCalibration {
         params,
         weights,
         avg_drs,
         fsrs_eq_weights,
         fsrs_eq_drs,
+        fixed_target_weights,
+        fixed_target_drs,
         retention_min: bounds.retention_min,
         retention_max: bounds.retention_max,
     })
@@ -802,6 +842,8 @@ impl Collection {
                 fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
                 fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
                 fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
+                fsrs_dynamic_desired_retention_fixed_target_weights: Vec::new(),
+                fsrs_dynamic_desired_retention_fixed_target_drs: Vec::new(),
                 fsrs_dynamic_desired_retention_min: 0.0,
                 fsrs_dynamic_desired_retention_max: 0.0,
             });
@@ -878,6 +920,12 @@ impl Collection {
                 &revlogs,
                 timing.next_day_at.into(),
                 dynamic_desired_retention_simulator_options,
+            )?;
+            install_dynamic_desired_retention_review_time_cost_fn(
+                &mut simulator_config,
+                &revlogs,
+                current_params,
+                timing.next_day_at,
             )?;
         }
         let model_version = resolved_model_version(current_params, model_version_override);
@@ -1541,6 +1589,7 @@ pub(crate) mod tests {
             vec![1.0; 15],
             [(0.0, Some(0.9)), (16.0, None), (64.0, Some(0.8))],
             [(0.0, 0.91), (64.0, 0.81)],
+            [(16.0, 0.9), (64.0, 0.8)],
             DynamicDesiredRetentionBounds {
                 retention_min: 0.75,
                 retention_max: 0.95,
@@ -1552,6 +1601,8 @@ pub(crate) mod tests {
         assert_eq!(calibration.avg_drs, vec![0.9, 0.8]);
         assert_eq!(calibration.fsrs_eq_weights, vec![0.0, 64.0]);
         assert_eq!(calibration.fsrs_eq_drs, vec![0.91, 0.81]);
+        assert_eq!(calibration.fixed_target_weights, vec![16.0, 64.0]);
+        assert_eq!(calibration.fixed_target_drs, vec![0.9, 0.8]);
         assert_eq!(calibration.retention_min, 0.75);
         assert_eq!(calibration.retention_max, 0.95);
         Ok(())
@@ -1620,6 +1671,29 @@ pub(crate) mod tests {
 
         assert_eq!(config.review_limit, 123);
         assert_eq!(config.max_cost_perday, 45.0 * 60.0);
+    }
+
+    #[test]
+    fn dynamic_desired_retention_installs_review_time_cost_fn() -> Result<()> {
+        let mut config = SimulatorConfig {
+            state_rating_costs: [
+                [1.0, 2.0, 3.0, 4.0],
+                [11.0, 12.0, 13.0, 14.0],
+                [21.0, 22.0, 23.0, 24.0],
+            ],
+            ..Default::default()
+        };
+
+        install_dynamic_desired_retention_review_time_cost_fn(
+            &mut config,
+            &[],
+            &fsrs::DEFAULT_PARAMETERS,
+            NEXT_DAY_AT,
+        )?;
+
+        let cost_fn = config.review_rating_cost_fn.as_ref().unwrap();
+        assert_eq!(cost_fn(&fsrs::Card::default(), 3, 0.8), 13.0);
+        Ok(())
     }
 
     #[macro_export]

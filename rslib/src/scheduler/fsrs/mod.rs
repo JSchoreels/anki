@@ -9,6 +9,7 @@ pub mod params;
 pub(crate) mod preset;
 pub mod rescheduler;
 pub mod retention;
+pub(crate) mod review_time_model;
 pub mod simulator;
 pub mod try_collect;
 

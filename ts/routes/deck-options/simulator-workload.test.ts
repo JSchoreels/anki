@@ -53,3 +53,81 @@ test("workload request keeps Help Me Decide menu settings", () => {
     expect(request.params).toStrictEqual([1, 2, 3]);
     expect(request.search).toBe("deck:\"Default\" preset:\"Preset \\\"A\\\"\" -is:suspended");
 });
+
+test("workload request enables ADR for dynamic presets", () => {
+    const baseRequest = new SimulateFsrsReviewRequest({
+        simulateDynamicDesiredRetention: true,
+    });
+    const config = new DeckConfig({
+        name: "Dynamic",
+        config: {
+            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+            fsrsParams7: [1, 2, 3],
+            desiredRetention: 0.9,
+            fsrsDynamicDesiredRetentionEnabled: true,
+            fsrsDynamicDesiredRetentionParams: Array(15).fill(0),
+            fsrsDynamicDesiredRetentionWeights: [0, 15],
+            fsrsDynamicDesiredRetentionAvgDrs: [0.8, 0.9],
+            fsrsDynamicDesiredRetentionFixedTargetWeights: [64, 16],
+            fsrsDynamicDesiredRetentionFixedTargetDrs: [0.8, 0.9],
+            fsrsDynamicDesiredRetentionMin: 0.75,
+            fsrsDynamicDesiredRetentionMax: 0.95,
+        },
+    });
+
+    const request = workloadRequestForPreset(baseRequest, "Default", config);
+
+    expect(request.simulateDynamicDesiredRetention).toBe(true);
+    expect(request.params).toStrictEqual([1, 2, 3]);
+    expect(request.fsrsDynamicDesiredRetentionParams).toHaveLength(15);
+    expect(request.fsrsDynamicDesiredRetentionWeights).toStrictEqual([0, 15]);
+    expect(request.fsrsDynamicDesiredRetentionAvgDrs).toStrictEqual([0.8, 0.9]);
+    expect(request.fsrsDynamicDesiredRetentionFixedTargetWeights).toStrictEqual([64, 16]);
+    expect(request.fsrsDynamicDesiredRetentionFixedTargetDrs).toStrictEqual([0.8, 0.9]);
+    expect(request.fsrsDynamicDesiredRetentionMin).toBe(0.75);
+    expect(request.fsrsDynamicDesiredRetentionMax).toBe(0.95);
+});
+
+test("workload request disables ADR when Help Me Decide toggle is off", () => {
+    const baseRequest = new SimulateFsrsReviewRequest({
+        simulateDynamicDesiredRetention: false,
+    });
+    const config = new DeckConfig({
+        name: "Dynamic",
+        config: {
+            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+            fsrsParams7: [1, 2, 3],
+            desiredRetention: 0.9,
+            fsrsDynamicDesiredRetentionEnabled: true,
+            fsrsDynamicDesiredRetentionParams: Array(15).fill(0),
+            fsrsDynamicDesiredRetentionWeights: [0, 15],
+            fsrsDynamicDesiredRetentionAvgDrs: [0.8, 0.9],
+            fsrsDynamicDesiredRetentionFixedTargetWeights: [64, 16],
+            fsrsDynamicDesiredRetentionFixedTargetDrs: [0.8, 0.9],
+            fsrsDynamicDesiredRetentionMin: 0.75,
+            fsrsDynamicDesiredRetentionMax: 0.95,
+        },
+    });
+
+    const request = workloadRequestForPreset(baseRequest, "Default", config);
+
+    expect(request.simulateDynamicDesiredRetention).toBe(false);
+});
+
+test("workload request preserves ADR flag for FSRS7 overlay routes", () => {
+    const baseRequest = new SimulateFsrsReviewRequest({
+        simulateDynamicDesiredRetention: true,
+    });
+    const config = new DeckConfig({
+        name: "Overlay",
+        config: {
+            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+            fsrsParams7: [1, 2, 3],
+            desiredRetention: 0.9,
+        },
+    });
+
+    const request = workloadRequestForPreset(baseRequest, "Default", config);
+
+    expect(request.simulateDynamicDesiredRetention).toBe(true);
+});

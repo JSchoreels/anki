@@ -34,6 +34,10 @@ struct ForkDeckConfigFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_dynamic_desired_retention_fsrs_eq_drs: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    fsrs_dynamic_desired_retention_fixed_target_weights: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fsrs_dynamic_desired_retention_fixed_target_drs: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_dynamic_desired_retention_min: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_dynamic_desired_retention_max: Option<f32>,
@@ -79,6 +83,12 @@ impl ForkDeckConfigFields {
             fsrs_dynamic_desired_retention_fsrs_eq_drs: non_empty_vec(
                 &config.fsrs_dynamic_desired_retention_fsrs_eq_drs,
             ),
+            fsrs_dynamic_desired_retention_fixed_target_weights: non_empty_vec(
+                &config.fsrs_dynamic_desired_retention_fixed_target_weights,
+            ),
+            fsrs_dynamic_desired_retention_fixed_target_drs: non_empty_vec(
+                &config.fsrs_dynamic_desired_retention_fixed_target_drs,
+            ),
             fsrs_dynamic_desired_retention_min: non_default_f32(
                 config.fsrs_dynamic_desired_retention_min,
                 DYNAMIC_DR_MIN_DEFAULT,
@@ -123,6 +133,12 @@ impl ForkDeckConfigFields {
         }
         if let Some(value) = self.fsrs_dynamic_desired_retention_fsrs_eq_drs {
             config.fsrs_dynamic_desired_retention_fsrs_eq_drs = value;
+        }
+        if let Some(value) = self.fsrs_dynamic_desired_retention_fixed_target_weights {
+            config.fsrs_dynamic_desired_retention_fixed_target_weights = value;
+        }
+        if let Some(value) = self.fsrs_dynamic_desired_retention_fixed_target_drs {
+            config.fsrs_dynamic_desired_retention_fixed_target_drs = value;
         }
         if let Some(value) = self.fsrs_dynamic_desired_retention_min {
             config.fsrs_dynamic_desired_retention_min = value;
@@ -220,6 +236,12 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
         .fsrs_dynamic_desired_retention_fsrs_eq_weights
         .clear();
     config.fsrs_dynamic_desired_retention_fsrs_eq_drs.clear();
+    config
+        .fsrs_dynamic_desired_retention_fixed_target_weights
+        .clear();
+    config
+        .fsrs_dynamic_desired_retention_fixed_target_drs
+        .clear();
     config.fsrs_dynamic_desired_retention_min = 0.0;
     config.fsrs_dynamic_desired_retention_max = 0.0;
     config.fsrs_dynamic_desired_retention_clamp = false;
@@ -264,6 +286,8 @@ mod tests {
             fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
             fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![3.0],
             fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.85],
+            fsrs_dynamic_desired_retention_fixed_target_weights: vec![4.0],
+            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.86],
             fsrs_dynamic_desired_retention_min: 0.31,
             fsrs_dynamic_desired_retention_max: 0.96,
             fsrs_dynamic_desired_retention_clamp: true,

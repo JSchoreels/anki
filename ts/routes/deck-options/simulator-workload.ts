@@ -19,6 +19,10 @@ function selectedFsrsParams(config: DeckConfig_Config): number[] {
     }
 }
 
+function supportsDynamicDesiredRetentionSimulation(config: DeckConfig_Config): boolean {
+    return config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN;
+}
+
 function workloadSearchForPreset(
     deckNameForSearch: string,
     presetName: string,
@@ -39,5 +43,31 @@ export function workloadRequestForPreset(
     request.historicalRetention = inner.historicalRetention;
     request.learningStepCount = inner.learnSteps.length;
     request.relearningStepCount = inner.relearnSteps.length;
+    request.simulateDynamicDesiredRetention = baseRequest.simulateDynamicDesiredRetention
+        && supportsDynamicDesiredRetentionSimulation(inner);
+    request.fsrsDynamicDesiredRetentionParams = [
+        ...inner.fsrsDynamicDesiredRetentionParams,
+    ];
+    request.fsrsDynamicDesiredRetentionWeights = [
+        ...inner.fsrsDynamicDesiredRetentionWeights,
+    ];
+    request.fsrsDynamicDesiredRetentionAvgDrs = [
+        ...inner.fsrsDynamicDesiredRetentionAvgDrs,
+    ];
+    request.fsrsDynamicDesiredRetentionFsrsEqWeights = [
+        ...inner.fsrsDynamicDesiredRetentionFsrsEqWeights,
+    ];
+    request.fsrsDynamicDesiredRetentionFsrsEqDrs = [
+        ...inner.fsrsDynamicDesiredRetentionFsrsEqDrs,
+    ];
+    request.fsrsDynamicDesiredRetentionFixedTargetWeights = [
+        ...(inner.fsrsDynamicDesiredRetentionFixedTargetWeights ?? []),
+    ];
+    request.fsrsDynamicDesiredRetentionFixedTargetDrs = [
+        ...(inner.fsrsDynamicDesiredRetentionFixedTargetDrs ?? []),
+    ];
+    request.fsrsDynamicDesiredRetentionMin = inner.fsrsDynamicDesiredRetentionMin;
+    request.fsrsDynamicDesiredRetentionMax = inner.fsrsDynamicDesiredRetentionMax;
+    request.fsrsDynamicDesiredRetentionClamp = inner.fsrsDynamicDesiredRetentionClamp;
     return request;
 }

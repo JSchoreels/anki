@@ -375,6 +375,10 @@ impl crate::services::SchedulerService for Collection {
                         .fsrs_dynamic_desired_retention_fsrs_eq_weights,
                     fsrs_dynamic_desired_retention_fsrs_eq_drs: params
                         .fsrs_dynamic_desired_retention_fsrs_eq_drs,
+                    fsrs_dynamic_desired_retention_fixed_target_weights: params
+                        .fsrs_dynamic_desired_retention_fixed_target_weights,
+                    fsrs_dynamic_desired_retention_fixed_target_drs: params
+                        .fsrs_dynamic_desired_retention_fixed_target_drs,
                     fsrs_dynamic_desired_retention_min: params.fsrs_dynamic_desired_retention_min,
                     fsrs_dynamic_desired_retention_max: params.fsrs_dynamic_desired_retention_max,
                 })
@@ -793,11 +797,18 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
         fsrs_dynamic_desired_retention_max,
         fsrs_dynamic_desired_retention_fsrs_eq_weights,
         fsrs_dynamic_desired_retention_fsrs_eq_drs,
+        fsrs_dynamic_desired_retention_fixed_target_weights,
+        fsrs_dynamic_desired_retention_fixed_target_drs,
         fsrs_dynamic_desired_retention_clamp,
     ) = if let Some(dynamic_dr) = preset.dynamic_desired_retention {
         let (weights, avg_drs): (Vec<_>, Vec<_>) = dynamic_dr.calibration().iter().copied().unzip();
         let (fsrs_eq_weights, fsrs_eq_drs): (Vec<_>, Vec<_>) = dynamic_dr
             .fsrs_equivalent_calibration()
+            .iter()
+            .copied()
+            .unzip();
+        let (fixed_target_weights, fixed_target_drs): (Vec<_>, Vec<_>) = dynamic_dr
+            .fixed_target_calibration()
             .iter()
             .copied()
             .unzip();
@@ -810,6 +821,8 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
             dynamic_dr.retention_max(),
             fsrs_eq_weights,
             fsrs_eq_drs,
+            fixed_target_weights,
+            fixed_target_drs,
             dynamic_dr.clamp_target(),
         )
     } else {
@@ -820,6 +833,8 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
             vec![],
             0.0,
             0.0,
+            vec![],
+            vec![],
             vec![],
             vec![],
             false,
@@ -845,6 +860,8 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
         fsrs_dynamic_desired_retention_max,
         fsrs_dynamic_desired_retention_fsrs_eq_weights,
         fsrs_dynamic_desired_retention_fsrs_eq_drs,
+        fsrs_dynamic_desired_retention_fixed_target_weights,
+        fsrs_dynamic_desired_retention_fixed_target_drs,
         fsrs_dynamic_desired_retention_clamp,
     }
 }
@@ -880,6 +897,8 @@ impl crate::services::BackendSchedulerService for Backend {
             fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
             fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
             fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
+            fsrs_dynamic_desired_retention_fixed_target_weights: Vec::new(),
+            fsrs_dynamic_desired_retention_fixed_target_drs: Vec::new(),
             fsrs_dynamic_desired_retention_min: 0.0,
             fsrs_dynamic_desired_retention_max: 0.0,
         })
@@ -996,6 +1015,8 @@ mod tests {
             calibration_avg_drs: vec![0.9, 0.8],
             fsrs_equivalent_weights: vec![0.0, 15.0],
             fsrs_equivalent_drs: vec![0.91, 0.82],
+            fixed_target_weights: vec![16.0, 4.0],
+            fixed_target_drs: vec![0.8, 0.9],
             retention_min: 0.7,
             retention_max: 0.95,
             clamp_target: true,
@@ -1034,6 +1055,14 @@ mod tests {
         assert_eq!(
             response.fsrs_dynamic_desired_retention_fsrs_eq_drs,
             vec![0.91, 0.82]
+        );
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_fixed_target_weights,
+            vec![16.0, 4.0]
+        );
+        assert_eq!(
+            response.fsrs_dynamic_desired_retention_fixed_target_drs,
+            vec![0.8, 0.9]
         );
         assert_eq!(response.fsrs_dynamic_desired_retention_min, 0.7);
         assert_eq!(response.fsrs_dynamic_desired_retention_max, 0.95);

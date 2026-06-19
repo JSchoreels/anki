@@ -20,6 +20,7 @@ pub(crate) struct DynamicDesiredRetention {
     policy_params: Vec<f32>,
     calibration: Vec<(f32, f32)>,
     fsrs_equivalent_calibration: Vec<(f32, f32)>,
+    fixed_target_calibration: Vec<(f32, f32)>,
     retention_min: f32,
     retention_max: f32,
     clamp_target: bool,
@@ -32,6 +33,8 @@ pub(crate) struct DynamicDesiredRetentionFields {
     pub calibration_avg_drs: Vec<f32>,
     pub fsrs_equivalent_weights: Vec<f32>,
     pub fsrs_equivalent_drs: Vec<f32>,
+    pub fixed_target_weights: Vec<f32>,
+    pub fixed_target_drs: Vec<f32>,
     pub retention_min: f32,
     pub retention_max: f32,
     pub clamp_target: bool,
@@ -59,6 +62,12 @@ impl DynamicDesiredRetention {
                 .fsrs_dynamic_desired_retention_fsrs_eq_weights
                 .clone(),
             fsrs_equivalent_drs: config.fsrs_dynamic_desired_retention_fsrs_eq_drs.clone(),
+            fixed_target_weights: config
+                .fsrs_dynamic_desired_retention_fixed_target_weights
+                .clone(),
+            fixed_target_drs: config
+                .fsrs_dynamic_desired_retention_fixed_target_drs
+                .clone(),
             retention_min: config.fsrs_dynamic_desired_retention_min,
             retention_max: config.fsrs_dynamic_desired_retention_max,
             clamp_target: config.fsrs_dynamic_desired_retention_clamp,
@@ -74,6 +83,8 @@ impl DynamicDesiredRetention {
             calibration_avg_drs,
             fsrs_equivalent_weights,
             fsrs_equivalent_drs,
+            fixed_target_weights,
+            fixed_target_drs,
             retention_min,
             retention_max,
             clamp_target,
@@ -123,6 +134,21 @@ impl DynamicDesiredRetention {
             "Dynamic DR FSRS equivalent calibration values must be finite"
         );
         require!(
+            fixed_target_weights.len() == fixed_target_drs.len(),
+            "Dynamic DR fixed target calibration arrays must match"
+        );
+        let mut fixed_target_calibration = fixed_target_weights
+            .into_iter()
+            .zip(fixed_target_drs)
+            .collect::<Vec<_>>();
+        fixed_target_calibration.sort_by(|a, b| a.1.total_cmp(&b.1));
+        require!(
+            fixed_target_calibration.iter().all(|(weight, dr)| {
+                weight.is_finite() && *weight >= 0.0 && dr.is_finite() && (0.0..=1.0).contains(dr)
+            }),
+            "Dynamic DR fixed target calibration values must be finite"
+        );
+        require!(
             valid_retention_bounds(retention_min, retention_max),
             "Dynamic DR retention bounds must be finite retention values"
         );
@@ -131,6 +157,7 @@ impl DynamicDesiredRetention {
             policy_params,
             calibration,
             fsrs_equivalent_calibration,
+            fixed_target_calibration,
             retention_min,
             retention_max,
             clamp_target,
@@ -143,6 +170,14 @@ impl DynamicDesiredRetention {
             target.is_finite() && (0.0..=1.0).contains(&target),
             "Dynamic DR target must be a retention value"
         );
+        require!(
+            self.retention_min <= target && target <= self.retention_max,
+            "Dynamic DR target is outside the configured retention bounds"
+        );
+
+        if !self.fixed_target_calibration.is_empty() {
+            return self.cost_weight_for_fixed_target_dr(target);
+        }
 
         if let Some(((left_weight, left_dr), (right_weight, right_dr))) =
             self.calibration_pair_for_target_dr(target)
@@ -165,9 +200,16 @@ impl DynamicDesiredRetention {
             target.is_finite() && (0.0..=1.0).contains(&target),
             "Dynamic DR target must be a retention value"
         );
-        Ok(self.retention_min <= target
-            && target <= self.retention_max
-            && self.calibration_pair_for_target_dr(target).is_some())
+        if !(self.retention_min <= target && target <= self.retention_max) {
+            return Ok(false);
+        }
+        if !self.fixed_target_calibration.is_empty() {
+            return Ok(self
+                .fixed_target_calibration
+                .iter()
+                .any(|(_, dr)| target < *dr || dynamic_dr_close(target, *dr)));
+        }
+        Ok(self.calibration_pair_for_target_dr(target).is_some())
     }
 
     pub(crate) fn scheduling_target(&self, target: f32) -> Result<Option<f32>> {
@@ -207,6 +249,10 @@ impl DynamicDesiredRetention {
         &self.fsrs_equivalent_calibration
     }
 
+    pub(crate) fn fixed_target_calibration(&self) -> &[(f32, f32)] {
+        &self.fixed_target_calibration
+    }
+
     pub(crate) fn retention_min(&self) -> f32 {
         self.retention_min
     }
@@ -220,11 +266,33 @@ impl DynamicDesiredRetention {
     }
 
     pub(crate) fn supported_target_range(&self) -> Option<(f32, f32)> {
+        if !self.fixed_target_calibration.is_empty() {
+            let max_target = self
+                .fixed_target_calibration
+                .iter()
+                .map(|(_, dr)| *dr)
+                .max_by(f32::total_cmp)?;
+            return Some((self.retention_min, max_target));
+        }
         let mut targets = self.target_calibration().iter().map(|(_, dr)| *dr);
         let first = targets.next()?;
         Some(targets.fold((first, first), |(min, max), target| {
             (min.min(target), max.max(target))
         }))
+    }
+
+    fn cost_weight_for_fixed_target_dr(&self, target: f32) -> Result<f32> {
+        if let Some(weight) = self
+            .fixed_target_calibration
+            .iter()
+            .find_map(|(weight, dr)| {
+                (target < *dr || dynamic_dr_close(target, *dr)).then_some(*weight)
+            })
+        {
+            Ok(weight)
+        } else {
+            invalid_input!("Dynamic DR target is outside the fixed target calibration range")
+        }
     }
 
     fn calibration_pair_for_target_dr(&self, target: f32) -> Option<((f32, f32), (f32, f32))> {
@@ -255,6 +323,12 @@ impl DynamicDesiredRetention {
         .map_err(Into::into)
     }
 
+    pub(crate) fn with_max_interval_days(&self, max_interval_days: Option<f32>) -> Self {
+        let mut value = self.clone();
+        value.max_interval_days = max_interval_days;
+        value
+    }
+
     pub(crate) fn next_states(
         &self,
         fsrs: &fsrs::FSRS,
@@ -276,6 +350,11 @@ pub(crate) fn valid_retention_bounds(retention_min: f32, retention_max: f32) -> 
         && 0.0 < retention_min
         && retention_min < retention_max
         && retention_max < 1.0
+}
+
+fn dynamic_dr_close(left: f32, right: f32) -> bool {
+    let scale = left.abs().max(right.abs()).max(1.0);
+    (left - right).abs() <= 1e-6 * scale
 }
 
 fn dynamic_states_from_cost_adr(
@@ -367,6 +446,31 @@ mod tests {
 
         assert!((dynamic_dr.cost_weight_for_average_dr(0.8)? - 7.0).abs() < 1e-5);
         assert!(!dynamic_dr.target_in_dynamic_dr_range(0.74)?);
+        Ok(())
+    }
+
+    #[test]
+    fn cost_weight_prefers_fixed_target_calibration() -> Result<()> {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_dynamic_desired_retention_enabled = true;
+        config.inner.fsrs_dynamic_desired_retention_params = vec![0.0; COST_ADR_PARAMETER_COUNT];
+        config.inner.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+        config.inner.fsrs_dynamic_desired_retention_avg_drs = vec![0.9, 0.8];
+        config.inner.fsrs_dynamic_desired_retention_fsrs_eq_weights = vec![0.0, 15.0];
+        config.inner.fsrs_dynamic_desired_retention_fsrs_eq_drs = vec![0.95, 0.75];
+        config
+            .inner
+            .fsrs_dynamic_desired_retention_fixed_target_weights = vec![64.0, 16.0];
+        config.inner.fsrs_dynamic_desired_retention_fixed_target_drs = vec![0.8, 0.9];
+        config.inner.fsrs_dynamic_desired_retention_min = 0.75;
+        config.inner.fsrs_dynamic_desired_retention_max = 0.95;
+
+        let dynamic_dr = DynamicDesiredRetention::from_deck_config(&config.inner)?.unwrap();
+
+        assert_eq!(dynamic_dr.cost_weight_for_average_dr(0.79)?, 64.0);
+        assert_eq!(dynamic_dr.cost_weight_for_average_dr(0.85)?, 16.0);
+        assert_eq!(dynamic_dr.supported_target_range(), Some((0.75, 0.9)));
+        assert!(!dynamic_dr.target_in_dynamic_dr_range(0.91)?);
         Ok(())
     }
 

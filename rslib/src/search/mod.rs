@@ -1108,6 +1108,7 @@ mod test {
                     search: "overlay".into(),
                     preset_id: "addon:test:overlay".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 

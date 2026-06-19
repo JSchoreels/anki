@@ -18,6 +18,8 @@ export function dynamicDesiredRetentionEnabled(config: {
     fsrsDynamicDesiredRetentionAvgDrs: number[];
     fsrsDynamicDesiredRetentionFsrsEqWeights?: number[];
     fsrsDynamicDesiredRetentionFsrsEqDrs?: number[];
+    fsrsDynamicDesiredRetentionFixedTargetWeights?: number[];
+    fsrsDynamicDesiredRetentionFixedTargetDrs?: number[];
     fsrsDynamicDesiredRetentionMin: number;
     fsrsDynamicDesiredRetentionMax: number;
 }): boolean {
@@ -30,6 +32,10 @@ export function dynamicDesiredRetentionEnabled(config: {
         && validOptionalCalibration(
             config.fsrsDynamicDesiredRetentionFsrsEqWeights ?? [],
             config.fsrsDynamicDesiredRetentionFsrsEqDrs ?? [],
+        )
+        && validOptionalFixedTargetCalibration(
+            config.fsrsDynamicDesiredRetentionFixedTargetWeights ?? [],
+            config.fsrsDynamicDesiredRetentionFixedTargetDrs ?? [],
         )
         && validRetentionBounds(
             config.fsrsDynamicDesiredRetentionMin,
@@ -61,24 +67,62 @@ export function validOptionalCalibration(weights: number[], drs: number[]): bool
     return weights.length === 0 && drs.length === 0 || validCalibration(weights, drs);
 }
 
+export function validFixedTargetCalibration(weights: number[], drs: number[]): boolean {
+    return weights.length === drs.length
+        && weights.length >= 1
+        && weights.every((value) => Number.isFinite(value) && value >= 0)
+        && drs.every((value) => Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
+export function validOptionalFixedTargetCalibration(
+    weights: number[],
+    drs: number[],
+): boolean {
+    return weights.length === 0 && drs.length === 0
+        || validFixedTargetCalibration(weights, drs);
+}
+
 export function targetDrCalibration(
     avgWeights: number[],
     avgDrs: number[],
     fsrsEqWeights: number[],
     fsrsEqDrs: number[],
-): { weights: number[]; drs: number[]; label: string } {
-    if (validCalibration(fsrsEqWeights, fsrsEqDrs)) {
-        return { weights: fsrsEqWeights, drs: fsrsEqDrs, label: "FSRS7 Eq. DR" };
+    fixedTargetWeights: number[] = [],
+    fixedTargetDrs: number[] = [],
+): { weights: number[]; drs: number[]; label: string; fixedTarget: boolean } {
+    if (validFixedTargetCalibration(fixedTargetWeights, fixedTargetDrs)) {
+        return {
+            weights: fixedTargetWeights,
+            drs: fixedTargetDrs,
+            label: "Fixed target DR",
+            fixedTarget: true,
+        };
     }
-    return { weights: avgWeights, drs: avgDrs, label: "Avg ADR DR" };
+    if (validCalibration(fsrsEqWeights, fsrsEqDrs)) {
+        return {
+            weights: fsrsEqWeights,
+            drs: fsrsEqDrs,
+            label: "FSRS7 Eq. DR",
+            fixedTarget: false,
+        };
+    }
+    return { weights: avgWeights, drs: avgDrs, label: "Avg ADR DR", fixedTarget: false };
 }
 
 export function costWeightForAverageDr(
     target: number,
     weights: number[],
     avgDrs: number[],
+    fixedTarget = false,
+    retentionMin?: number,
 ): number | null {
-    if (!Number.isFinite(target) || !validCalibration(weights, avgDrs)) {
+    if (!Number.isFinite(target)) {
+        return null;
+    }
+    if (fixedTarget) {
+        return costWeightForFixedTargetDr(target, weights, avgDrs, retentionMin);
+    }
+    if (!validCalibration(weights, avgDrs)) {
         return null;
     }
     const calibration = weights
@@ -101,10 +145,40 @@ export function costWeightForAverageDr(
     return null;
 }
 
+function costWeightForFixedTargetDr(
+    target: number,
+    weights: number[],
+    drs: number[],
+    retentionMin?: number,
+): number | null {
+    if (!validFixedTargetCalibration(weights, drs)) {
+        return null;
+    }
+    if (retentionMin !== undefined && target < retentionMin && !close(target, retentionMin)) {
+        return null;
+    }
+    const calibration = weights
+        .map((weight, index) => ({ weight, dr: drs[index] }))
+        .sort((a, b) => a.dr - b.dr);
+    const point = calibration.find(({ dr }) => target <= dr || close(target, dr));
+    return point?.weight ?? null;
+}
+
 export function supportedTargetRange(
     weights: number[],
     avgDrs: number[],
+    fixedTarget = false,
+    retentionMin?: number,
 ): { min: number; max: number } | null {
+    if (fixedTarget) {
+        if (!validFixedTargetCalibration(weights, avgDrs)) {
+            return null;
+        }
+        return {
+            min: retentionMin ?? Math.min(...avgDrs),
+            max: Math.max(...avgDrs),
+        };
+    }
     if (!validCalibration(weights, avgDrs)) {
         return null;
     }
@@ -122,11 +196,16 @@ export function schedulingTargetDr(
     weights: number[],
     avgDrs: number[],
     clampTarget: boolean,
+    fixedTarget = false,
+    retentionMin?: number,
 ): number {
-    if (!clampTarget || costWeightForAverageDr(target, weights, avgDrs) !== null) {
+    if (
+        !clampTarget
+        || costWeightForAverageDr(target, weights, avgDrs, fixedTarget, retentionMin) !== null
+    ) {
         return target;
     }
-    const range = supportedTargetRange(weights, avgDrs);
+    const range = supportedTargetRange(weights, avgDrs, fixedTarget, retentionMin);
     if (range === null) {
         return target;
     }
@@ -190,4 +269,9 @@ function softplus(value: number): number {
 
 function clamp(value: number, min: number, max: number): number {
     return Math.min(max, Math.max(min, value));
+}
+
+function close(left: number, right: number): boolean {
+    const scale = Math.max(Math.abs(left), Math.abs(right), 1);
+    return Math.abs(left - right) <= 1e-6 * scale;
 }

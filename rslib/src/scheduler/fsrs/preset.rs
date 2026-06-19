@@ -49,6 +49,7 @@ pub(crate) struct FsrsPreset {
 pub(crate) struct FsrsPresetOverlayCache {
     presets: HashMap<String, FsrsPreset>,
     rules: Vec<ResolvedFsrsPresetRule>,
+    simulator_rules: Vec<FsrsPresetSimulatorRule>,
     card_to_preset: HashMap<CardId, String>,
     cards_without_preset: HashSet<CardId>,
 }
@@ -73,6 +74,8 @@ pub(crate) struct FsrsPresetOverlay {
     pub presets: Vec<AddonFsrsPreset>,
     #[serde(default)]
     pub rules: Vec<FsrsPresetRule>,
+    #[serde(default)]
+    pub simulator_rules: Vec<FsrsPresetSimulatorRule>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -99,6 +102,10 @@ pub(crate) struct AddonFsrsPreset {
     #[serde(default)]
     pub fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec<f32>,
     #[serde(default)]
+    pub fsrs_dynamic_desired_retention_fixed_target_weights: Vec<f32>,
+    #[serde(default)]
+    pub fsrs_dynamic_desired_retention_fixed_target_drs: Vec<f32>,
+    #[serde(default)]
     pub fsrs_dynamic_desired_retention_min: f32,
     #[serde(default)]
     pub fsrs_dynamic_desired_retention_max: f32,
@@ -120,6 +127,21 @@ pub(crate) enum AddonFsrsVersion {
 pub(crate) struct FsrsPresetRule {
     pub search: String,
     pub preset_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct FsrsPresetSimulatorRule {
+    pub preset_id: String,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub min_reps: Option<u32>,
+    #[serde(default)]
+    pub max_reps: Option<u32>,
+    #[serde(default)]
+    pub min_interval_days: Option<f32>,
+    #[serde(default)]
+    pub max_interval_days: Option<f32>,
 }
 
 impl FsrsPreset {
@@ -181,6 +203,8 @@ impl AddonFsrsPreset {
                     calibration_avg_drs: self.fsrs_dynamic_desired_retention_avg_drs,
                     fsrs_equivalent_weights: self.fsrs_dynamic_desired_retention_fsrs_eq_weights,
                     fsrs_equivalent_drs: self.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+                    fixed_target_weights: self.fsrs_dynamic_desired_retention_fixed_target_weights,
+                    fixed_target_drs: self.fsrs_dynamic_desired_retention_fixed_target_drs,
                     retention_min: self.fsrs_dynamic_desired_retention_min,
                     retention_max: self.fsrs_dynamic_desired_retention_max,
                     clamp_target: self.fsrs_dynamic_desired_retention_clamp,
@@ -365,6 +389,24 @@ impl Collection {
             .get_deck_config(config_id)?
             .or_not_found(config_id)?;
         FsrsPreset::from_deck_config(&config, deck)
+    }
+
+    pub(crate) fn fsrs_preset_simulator_rules(
+        &mut self,
+    ) -> Result<Vec<(FsrsPresetSimulatorRule, FsrsPreset)>> {
+        let cache = self.fsrs_preset_overlay_cache()?;
+        cache
+            .simulator_rules
+            .iter()
+            .map(|rule| {
+                let preset = cache
+                    .presets
+                    .get(&rule.preset_id)
+                    .or_invalid("FSRS simulator preset rule references an unknown preset")?
+                    .clone();
+                Ok((rule.clone(), preset))
+            })
+            .collect()
     }
 
     fn fsrs_preset_overlay_cache(&mut self) -> Result<&FsrsPresetOverlayCache> {
@@ -564,10 +606,43 @@ impl Collection {
                 node,
             });
         }
+        for rule in &overlay.simulator_rules {
+            require!(
+                presets.contains_key(&rule.preset_id),
+                "FSRS simulator preset rule references an unknown preset"
+            );
+            if let Some(search) = rule.search.as_ref() {
+                let node = search.try_into_search()?;
+                require!(
+                    !node_uses_exact_fsrs_metric(&node),
+                    "FSRS simulator preset rule searches must not use prop:r, prop:s, or prop:d"
+                );
+            }
+            require!(
+                rule.min_reps
+                    .zip(rule.max_reps)
+                    .map_or(true, |(min, max)| min <= max),
+                "FSRS simulator preset rule has invalid rep bounds"
+            );
+            require!(
+                rule.min_interval_days
+                    .into_iter()
+                    .chain(rule.max_interval_days)
+                    .all(|value| value.is_finite()),
+                "FSRS simulator preset rule has invalid interval bounds"
+            );
+            require!(
+                rule.min_interval_days
+                    .zip(rule.max_interval_days)
+                    .map_or(true, |(min, max)| min <= max),
+                "FSRS simulator preset rule has invalid interval bounds"
+            );
+        }
 
         Ok(FsrsPresetOverlayCache {
             presets,
             rules,
+            simulator_rules: overlay.simulator_rules,
             card_to_preset: HashMap::new(),
             cards_without_preset: HashSet::new(),
         })
@@ -649,14 +724,139 @@ mod test {
             fsrs_dynamic_desired_retention_avg_drs: vec![0.9, 0.8],
             fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![0.0, 15.0],
             fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.91, 0.82],
+            fsrs_dynamic_desired_retention_fixed_target_weights: vec![64.0, 16.0],
+            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.8, 0.9],
             fsrs_dynamic_desired_retention_min: 0.3,
             fsrs_dynamic_desired_retention_max: 0.995,
             fsrs_dynamic_desired_retention_clamp: false,
         }
         .into_fsrs_preset()?;
 
-        assert!(preset.dynamic_desired_retention.is_some());
+        let dynamic_dr = preset.dynamic_desired_retention.unwrap();
+        assert_eq!(
+            dynamic_dr.fixed_target_calibration(),
+            &[(64.0, 0.8), (16.0, 0.9)]
+        );
         Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_exposes_simulator_rules() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:rep-route".into(),
+                    name: "Rep Route".into(),
+                    fsrs_version: AddonFsrsVersion::Six,
+                    params: vec![1.0; 21],
+                    desired_retention: 0.81,
+                    historical_retention: 0.71,
+                    ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
+                }],
+                rules: Vec::new(),
+                simulator_rules: vec![FsrsPresetSimulatorRule {
+                    preset_id: "addon:test:rep-route".into(),
+                    search: Some("tag:medical".into()),
+                    min_reps: Some(3),
+                    max_reps: Some(7),
+                    min_interval_days: Some(10.0),
+                    max_interval_days: Some(30.0),
+                }],
+            },
+        )?;
+
+        let routes = col.fsrs_preset_simulator_rules()?;
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].0.search.as_deref(), Some("tag:medical"));
+        assert_eq!(routes[0].0.min_reps, Some(3));
+        assert_eq!(routes[0].0.max_reps, Some(7));
+        assert_eq!(routes[0].0.min_interval_days, Some(10.0));
+        assert_eq!(routes[0].0.max_interval_days, Some(30.0));
+        assert_eq!(
+            routes[0].1.id,
+            FsrsPresetId::Addon("addon:test:rep-route".into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_rejects_invalid_simulator_rule_bounds() {
+        let mut col = Collection::new();
+        let result = col.build_fsrs_preset_overlay_cache_from_overlay(FsrsPresetOverlay {
+            presets: vec![AddonFsrsPreset {
+                id: "addon:test:rep-route".into(),
+                name: "Rep Route".into(),
+                fsrs_version: AddonFsrsVersion::Six,
+                params: vec![1.0; 21],
+                desired_retention: 0.81,
+                historical_retention: 0.71,
+                ignore_revlogs_before_date: String::new(),
+                ..Default::default()
+            }],
+            rules: Vec::new(),
+            simulator_rules: vec![FsrsPresetSimulatorRule {
+                preset_id: "addon:test:rep-route".into(),
+                min_reps: Some(8),
+                max_reps: Some(7),
+                ..Default::default()
+            }],
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_rejects_invalid_simulator_rule_interval_bounds() {
+        let mut col = Collection::new();
+        let result = col.build_fsrs_preset_overlay_cache_from_overlay(FsrsPresetOverlay {
+            presets: vec![AddonFsrsPreset {
+                id: "addon:test:interval-route".into(),
+                name: "Interval Route".into(),
+                fsrs_version: AddonFsrsVersion::Six,
+                params: vec![1.0; 21],
+                desired_retention: 0.81,
+                historical_retention: 0.71,
+                ignore_revlogs_before_date: String::new(),
+                ..Default::default()
+            }],
+            rules: Vec::new(),
+            simulator_rules: vec![FsrsPresetSimulatorRule {
+                preset_id: "addon:test:interval-route".into(),
+                min_interval_days: Some(30.0),
+                max_interval_days: Some(10.0),
+                ..Default::default()
+            }],
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_rejects_invalid_simulator_rule_search() {
+        let mut col = Collection::new();
+        let result = col.build_fsrs_preset_overlay_cache_from_overlay(FsrsPresetOverlay {
+            presets: vec![AddonFsrsPreset {
+                id: "addon:test:route".into(),
+                name: "Route".into(),
+                fsrs_version: AddonFsrsVersion::Six,
+                params: vec![1.0; 21],
+                desired_retention: 0.81,
+                historical_retention: 0.71,
+                ignore_revlogs_before_date: String::new(),
+                ..Default::default()
+            }],
+            rules: Vec::new(),
+            simulator_rules: vec![FsrsPresetSimulatorRule {
+                preset_id: "addon:test:route".into(),
+                search: Some("prop:r>0.9".into()),
+                ..Default::default()
+            }],
+        });
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -701,6 +901,7 @@ mod test {
                         preset_id: "addon:test:second".into(),
                     },
                 ],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -738,6 +939,7 @@ mod test {
                             search: search.into(),
                             preset_id: "addon:test:first".into(),
                         }],
+                        simulator_rules: Vec::new(),
                     },
                 )
                 .is_err());
@@ -768,6 +970,7 @@ mod test {
                         search: "front".into(),
                         preset_id: "addon:test:missing".into(),
                     }],
+                    simulator_rules: Vec::new(),
                 },
             )
             .is_err());
@@ -832,6 +1035,7 @@ mod test {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:medical".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -861,6 +1065,7 @@ mod test {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:tagged".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -900,6 +1105,7 @@ mod test {
                     search: "front".into(),
                     preset_id: "addon:test:front".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -937,6 +1143,7 @@ mod test {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:tagged".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -999,6 +1206,7 @@ mod test {
                         preset_id: "addon:test:second".into(),
                     },
                 ],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -1046,6 +1254,7 @@ mod test {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:tagged".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -1098,6 +1307,7 @@ mod test {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:tagged".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
         col.fsrs_preset_overlay_cache()?;

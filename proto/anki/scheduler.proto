@@ -420,6 +420,8 @@ message ComputeFsrsParamsResponse {
   float fsrs_dynamic_desired_retention_max = 8;
   repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 9;
   repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 10;
+  repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 11;
+  repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 12;
 }
 
 message ComputeFsrsParamsBatchRequest {
@@ -454,6 +456,8 @@ message ComputeFsrsParamsBatchResponse {
     float fsrs_dynamic_desired_retention_max = 9;
     repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 10;
     repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 11;
+    repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 12;
+    repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 13;
   }
 
   repeated Item items = 1;
@@ -507,6 +511,17 @@ message SimulateFsrsReviewRequest {
   optional float review_fuzz_factor_long = 19;
   optional float help_me_decide_transition_blend_alpha = 21;
   optional bool help_me_decide_enforce_monotonic_success_grade_probs = 22;
+  bool simulate_dynamic_desired_retention = 23;
+  repeated float fsrs_dynamic_desired_retention_params = 24;
+  repeated float fsrs_dynamic_desired_retention_weights = 25;
+  repeated float fsrs_dynamic_desired_retention_avg_drs = 26;
+  float fsrs_dynamic_desired_retention_min = 27;
+  float fsrs_dynamic_desired_retention_max = 28;
+  repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 29;
+  repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 30;
+  bool fsrs_dynamic_desired_retention_clamp = 31;
+  repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 32;
+  repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 33;
 }
 
 message SimulateFsrsReviewResponse {
@@ -537,6 +552,10 @@ message SimulateFsrsWorkloadResponse {
   repeated uint32 review_time_transition_counts = 18;
   repeated float review_time_success_grade_probs = 19;
   repeated uint32 review_time_success_grade_counts = 20;
+  // Sum of end-of-simulation retrievability weighted by stability, using
+  // 1 - exp((-8 / 365) * S).
+  map<uint32, float> weighted_memorized = 21;
+  float reviewless_end_weighted_memorized = 22;
 }
 
 message ComputeOptimalRetentionResponse {
@@ -615,6 +634,8 @@ message FsrsPresetForCardResponse {
   repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 14;
   repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 15;
   bool fsrs_dynamic_desired_retention_clamp = 16;
+  repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 17;
+  repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 18;
 }
 
 message FuzzDeltaRequest {

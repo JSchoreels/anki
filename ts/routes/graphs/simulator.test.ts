@@ -46,7 +46,9 @@ test("renderWorkloadChart handles sparse workload data without throwing", () => 
             timeCost: 100,
             count: 10,
             memorized: 50,
+            weightedMemorized: 12,
             reviewless_end_memorized: 20,
+            reviewless_end_weighted_memorized: 8,
             label: 1,
             learnSpan: 365,
         },
@@ -63,7 +65,9 @@ test("renderWorkloadChart labels workload curves by preset name", () => {
             timeCost: 100,
             count: 10,
             memorized: 50,
+            weightedMemorized: 12,
             reviewless_end_memorized: 20,
+            reviewless_end_weighted_memorized: 8,
             label: 1001,
             labelName: "Child preset",
             learnSpan: 365,
@@ -73,4 +77,38 @@ test("renderWorkloadChart labels workload curves by preset name", () => {
     renderWorkloadChart(svg, bounds, points, SimulateWorkloadSubgraph.memorized);
 
     expect(svg.querySelector(".legend text")?.textContent).toBe("Child preset");
+});
+
+test("renderWorkloadChart handles weighted workload metrics", () => {
+    const points: WorkloadPoint[] = [
+        {
+            x: 90,
+            timeCost: 100,
+            count: 10,
+            memorized: 50,
+            weightedMemorized: 12,
+            reviewless_end_memorized: 20,
+            reviewless_end_weighted_memorized: 8,
+            label: 1001,
+            labelName: "Child preset",
+            learnSpan: 365,
+        },
+    ];
+
+    expect(() =>
+        renderWorkloadChart(
+            makeSvg(),
+            bounds,
+            points,
+            SimulateWorkloadSubgraph.weightedMemorized,
+        )
+    ).not.toThrow();
+    expect(() =>
+        renderWorkloadChart(
+            makeSvg(),
+            bounds,
+            points,
+            SimulateWorkloadSubgraph.weightedRatio,
+        )
+    ).not.toThrow();
 });

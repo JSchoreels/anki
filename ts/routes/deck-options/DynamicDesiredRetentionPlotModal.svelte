@@ -12,6 +12,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         evaluateDynamicDesiredRetention,
         targetDrCalibration,
         validCalibration,
+        validFixedTargetCalibration,
         validPolicyParams,
         validRetentionBounds,
     } from "./dynamic-desired-retention";
@@ -23,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let calibrationAvgDrs: number[] = [];
     export let fsrsEquivalentWeights: number[] = [];
     export let fsrsEquivalentDrs: number[] = [];
+    export let fixedTargetWeights: number[] = [];
+    export let fixedTargetDrs: number[] = [];
     export let retentionMin = 0.3;
     export let retentionMax = 0.995;
     export let targetAverageDr = 0.9;
@@ -46,17 +49,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         calibrationAvgDrs,
         fsrsEquivalentWeights,
         fsrsEquivalentDrs,
+        fixedTargetWeights,
+        fixedTargetDrs,
     );
-    $: hasTargetCalibration = validCalibration(
-        targetCalibration.weights,
-        targetCalibration.drs,
-    );
-    $: selectorMin = hasTargetCalibration ? Math.min(...targetCalibration.drs) : 0;
+    $: hasTargetCalibration = targetCalibration.fixedTarget
+        ? validFixedTargetCalibration(targetCalibration.weights, targetCalibration.drs)
+        : validCalibration(targetCalibration.weights, targetCalibration.drs);
+    $: selectorMin = hasTargetCalibration
+        ? targetCalibration.fixedTarget
+            ? retentionMin
+            : Math.min(...targetCalibration.drs)
+        : 0;
     $: selectorMax = hasTargetCalibration ? Math.max(...targetCalibration.drs) : 1;
     $: inferredWeight = costWeightForAverageDr(
         draftTargetDr,
         targetCalibration.weights,
         targetCalibration.drs,
+        targetCalibration.fixedTarget,
+        retentionMin,
     );
     $: canPlot = canPlotWithWeight(inferredWeight);
     $: if (svgElement) {
@@ -95,6 +105,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             draftTargetDr,
             targetCalibration.weights,
             targetCalibration.drs,
+            targetCalibration.fixedTarget,
+            retentionMin,
         );
         const svg = d3.select(svgElement);
         svg.selectAll("*").remove();

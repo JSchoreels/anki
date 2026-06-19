@@ -1681,6 +1681,7 @@ mod tests {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:medical".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -1808,6 +1809,7 @@ mod tests {
                     search: "tag:medical".into(),
                     preset_id: "addon:test:medical".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 

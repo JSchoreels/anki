@@ -1151,6 +1151,7 @@ pub(crate) mod test {
                     search: "front".into(),
                     preset_id: "addon:test:matched".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 
@@ -1225,6 +1226,7 @@ pub(crate) mod test {
                     search: "front".into(),
                     preset_id: "addon:test:matched".into(),
                 }],
+                simulator_rules: Vec::new(),
             },
         )?;
 

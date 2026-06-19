@@ -37,7 +37,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { runWithBackendProgress } from "@tslib/progress";
     import {
         DeckConfig_Config_LeechAction,
+        DeckConfig_Config_FsrsVersion,
         type DeckConfig,
+        type DeckConfig_Config,
     } from "@generated/anki/deck_config_pb";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
@@ -108,6 +110,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let enforceMonotonicSuccessGradeProbs =
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs ??
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT;
+    let simulateDynamicDesiredRetention =
+        simulateFsrsRequest.simulateDynamicDesiredRetention;
+    let dynamicDesiredRetentionAvailable = false;
 
     $: daysToSimulate = 365;
     $: deckSize = 0;
@@ -149,25 +154,58 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsRequest.helpMeDecideTransitionBlendAlpha = transitionBlendAlpha;
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs =
             enforceMonotonicSuccessGradeProbs;
+        simulateFsrsRequest.simulateDynamicDesiredRetention =
+            simulateDynamicDesiredRetention && dynamicDesiredRetentionAvailable;
+    }
+
+    function subtreeConfigs(): DeckConfig[] {
+        const subtreeIds = new Set(state.getSubtreeConfigIds());
+        return Array.from(subtreeIds)
+            .map((id) => state.getConfigById(id))
+            .filter((config): config is DeckConfig => config !== undefined);
     }
 
     function workloadRequests(): {
         name: string;
         request: SimulateFsrsReviewRequest;
     }[] {
-        const subtreeIds = new Set(state.getSubtreeConfigIds());
-        return Array.from(subtreeIds)
-            .map((id) => state.getConfigById(id))
-            .filter((config): config is DeckConfig => config !== undefined)
+        return subtreeConfigs()
             .sort((a, b) => a.name.localeCompare(b.name))
-            .map((config) => ({
-                name: config.name,
-                request: workloadRequestForPreset(
+            .map((config) => {
+                const request = workloadRequestForPreset(
                     simulateFsrsRequest,
                     state.getCurrentDeckNameForSearch(),
                     config,
-                ),
-            }));
+                );
+                return {
+                    name: workloadRunName(config.name, request),
+                    request,
+                };
+            });
+    }
+
+    function workloadRunName(
+        presetName: string,
+        request: SimulateFsrsReviewRequest,
+    ): string {
+        return `${presetName} (${request.simulateDynamicDesiredRetention ? "ADR" : "Fixed DR"})`;
+    }
+
+    function supportsDynamicDesiredRetentionSimulation(
+        config: DeckConfig_Config | undefined,
+    ): boolean {
+        return config?.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN;
+    }
+
+    function hasDynamicDesiredRetention(config: DeckConfig): boolean {
+        return supportsDynamicDesiredRetentionSimulation(config.config);
+    }
+
+    $: dynamicDesiredRetentionAvailable = workload
+        ? Boolean($config) && subtreeConfigs().some(hasDynamicDesiredRetention)
+        : supportsDynamicDesiredRetentionSimulation($config);
+    $: if (!dynamicDesiredRetentionAvailable) {
+        simulateDynamicDesiredRetention = false;
     }
 
     function renderRetentionProgress(
@@ -308,8 +346,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 x: parseInt(dr),
                                 timeCost: response.cost[dr],
                                 memorized: v,
+                                weightedMemorized: response.weightedMemorized[dr],
                                 reviewless_end_memorized:
                                     response.reviewlessEndMemorized,
+                                reviewless_end_weighted_memorized:
+                                    response.reviewlessEndWeightedMemorized,
                                 count: response.reviewCount[dr],
                                 label,
                                 labelName: name,
@@ -645,12 +686,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     group.map((p) => p.memorized),
                     windowSize,
                 );
+                const smoothedWeightedMemorized = movingAverage(
+                    group.map((p) => p.weightedMemorized ?? 0),
+                    windowSize,
+                );
 
                 return group.map((p, i) => ({
                     ...p,
                     timeCost: smoothedTimeCost[i],
                     count: smoothedCount[i],
                     memorized: smoothedMemorized[i],
+                    weightedMemorized:
+                        p.weightedMemorized === undefined
+                            ? undefined
+                            : smoothedWeightedMemorized[i],
                 }));
             });
         }
@@ -803,6 +852,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             on:click={() => openHelpModal("simulateFsrsReview")}
                         >
                             {tr.deckConfigSmoothGraph()}
+                        </SettingTitle>
+                    </SwitchRow>
+
+                    <SwitchRow
+                        bind:value={simulateDynamicDesiredRetention}
+                        defaultValue={false}
+                        disabled={!dynamicDesiredRetentionAvailable}
+                    >
+                        <SettingTitle
+                            on:click={() => openHelpModal("simulateFsrsReview")}
+                        >
+                            Use Dynamic DR (ADR)
                         </SettingTitle>
                     </SwitchRow>
 
@@ -981,6 +1042,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         bind:group={simulateWorkloadSubgraph}
                                     />
                                     {tr.deckConfigFsrsSimulatorRadioMemorized()}
+                                </label>
+                                <label>
+                                    <input
+                                        type="radio"
+                                        value={SimulateWorkloadSubgraph.weightedMemorized}
+                                        bind:group={simulateWorkloadSubgraph}
+                                    />
+                                    {tr.deckConfigFsrsSimulatorRadioWeightedMemorized()}
+                                </label>
+                                <label>
+                                    <input
+                                        type="radio"
+                                        value={SimulateWorkloadSubgraph.weightedRatio}
+                                        bind:group={simulateWorkloadSubgraph}
+                                    />
+                                    {tr.deckConfigFsrsSimulatorRadioWeightedEfficiency()}
                                 </label>
                             {/if}
                         </InputBox>
