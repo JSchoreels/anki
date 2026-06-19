@@ -2257,6 +2257,7 @@ dependencies = [
 [[package]]
 name = "fsrs"
 version = "6.0.0"
+source = "git+https://github.com/JSchoreels/fsrs-rs.git?rev=4ab8833e059e77d24512772bfd18d43c991b7896#4ab8833e059e77d24512772bfd18d43c991b7896"
 dependencies = [
  "burn",
  "itertools 0.14.0",
