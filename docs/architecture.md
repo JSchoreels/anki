@@ -120,6 +120,16 @@ Data flow:
    - `reviewless_end_weighted_memorized`
    - `cost`
    - `review_count`
+     When the workload modal's split-by-preset toggle is enabled, the response
+     also includes `preset_workload` entries. Review count, learn count, and time
+     cost are attributed to the preset active for the simulated card at each
+     review event, so cards that switch preset mid-simulation contribute earlier
+     reps to the earlier preset and later reps to the later preset. Memorized and
+     weighted memorized are end-state card metrics, so they are attributed to the
+     card's final active preset. Efficiency for split curves uses per-preset
+     reviewless baselines, so each preset subtracts only the no-review end-state
+     contribution of cards attributed to that preset instead of subtracting the
+     all-card baseline.
 7. The workload response also includes a flattened review-time matrix for UI
    inspection:
    - `review_time_again_seconds`

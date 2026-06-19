@@ -3,20 +3,25 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
+use anki_proto::scheduler::SimulateFsrsPresetWorkload;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
 use fsrs::simulate;
 use fsrs::simulate_summary;
+use fsrs::simulate_summary_with_card_update_and_event_fn;
 use fsrs::simulate_summary_with_card_update_fn;
 use fsrs::simulate_with_card_update_fn;
 use fsrs::CostAdrPolicy;
+use fsrs::SimulationEvent;
 use fsrs::SimulatorCardUpdateFn;
 use fsrs::SimulatorCardUpdatePhase;
 use fsrs::SimulatorConfig;
+use fsrs::SimulatorEventFn;
 use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Itertools;
@@ -135,12 +140,14 @@ struct SimulationDynamicDesiredRetention {
 
 #[derive(Clone)]
 struct SimulationPreset {
+    name: String,
     parameters: Option<Arc<Vec<f32>>>,
     dynamic_desired_retention: Option<SimulationDynamicDesiredRetention>,
 }
 
 #[derive(Clone)]
 struct SimulationPresetForTarget {
+    name: String,
     parameters: Option<Arc<Vec<f32>>>,
     dynamic_desired_retention: Option<SimulationDynamicDesiredRetentionForTarget>,
 }
@@ -236,6 +243,7 @@ impl SimulationDynamicDesiredRetention {
 impl SimulationPreset {
     fn for_target(&self, desired_retention: f32) -> Result<SimulationPresetForTarget> {
         Ok(SimulationPresetForTarget {
+            name: self.name.clone(),
             parameters: self.parameters.clone(),
             dynamic_desired_retention: self
                 .dynamic_desired_retention
@@ -371,6 +379,19 @@ impl SimulationPresetRouter {
             .clone()
     }
 
+    fn active_preset_name_for_card(&self, card: &fsrs::Card) -> &str {
+        self.routes
+            .iter()
+            .find(|route| route.matches_state(card.id, card.reps, card.interval))
+            .map(|route| route.preset.name.as_str())
+            .or_else(|| {
+                self.presets_by_card
+                    .get(&card.id)
+                    .map(|preset| preset.name.as_str())
+            })
+            .unwrap_or(&self.fallback.name)
+    }
+
     fn card_update_fn(&self, desired_retention: f32) -> Result<SimulatorCardUpdateFn> {
         let fallback = self.fallback.for_target(desired_retention)?;
         let presets_by_card = self
@@ -447,6 +468,11 @@ impl SimulationPresetRouter {
 
 fn simulation_fallback_preset(req: &SimulateFsrsReviewRequest) -> Result<SimulationPreset> {
     Ok(SimulationPreset {
+        name: if req.workload_preset_label.is_empty() {
+            "Preset".to_string()
+        } else {
+            req.workload_preset_label.clone()
+        },
         parameters: None,
         dynamic_desired_retention: simulation_dynamic_desired_retention(req)?,
     })
@@ -470,6 +496,7 @@ fn simulation_preset_from_fsrs_preset(
         None
     };
     Ok(SimulationPreset {
+        name: preset.name,
         parameters: Some(Arc::new(normalized_fsrs_parameters(&preset.params)?)),
         dynamic_desired_retention,
     })
@@ -819,16 +846,19 @@ impl Collection {
         let review_time_sample_counts = model.sample_counts_flattened();
         let model = Arc::new(model);
         install_review_time_cost_fn(&mut config, model.clone());
+        let fallback_preset_name = workload_preset_label(&req);
         let workload_sweep_start = Instant::now();
-        let dr_workload = simulate_workload_sweep(
-            &mut config,
-            &req.params,
-            &cards,
-            preset_router.as_ref(),
-            model.as_ref(),
-            req.help_me_decide_transition_blend_alpha,
-            req.days_to_simulate as usize,
-        )?;
+        let sweep_context = WorkloadSweepContext {
+            params: &req.params,
+            cards: &cards,
+            preset_router: preset_router.as_ref(),
+            model: model.as_ref(),
+            blend_alpha_override: req.help_me_decide_transition_blend_alpha,
+            days_to_simulate: req.days_to_simulate as usize,
+            split_workload_by_preset: req.split_workload_by_preset,
+            fallback_preset_name: &fallback_preset_name,
+        };
+        let dr_workload = simulate_workload_sweep(&mut config, &sweep_context)?;
         let workload_sweep_elapsed_ms = workload_sweep_start.elapsed().as_millis();
         let reviewless_end_memorized = cards
             .iter()
@@ -881,8 +911,65 @@ impl Collection {
             review_time_transition_counts: model.transition_counts_flattened(),
             review_time_success_grade_probs: model.success_grade_probs_flattened(),
             review_time_success_grade_counts: model.success_grade_counts_flattened(),
+            preset_workload: preset_workload_response(&dr_workload),
         })
     }
+}
+
+fn workload_preset_label(req: &SimulateFsrsReviewRequest) -> String {
+    if req.workload_preset_label.is_empty() {
+        "Preset".to_string()
+    } else {
+        req.workload_preset_label.clone()
+    }
+}
+
+fn preset_workload_response(
+    dr_workload: &HashMap<u32, WorkloadSweepPoint>,
+) -> Vec<SimulateFsrsPresetWorkload> {
+    let mut names = dr_workload
+        .values()
+        .flat_map(|point| point.preset_workload.keys().cloned())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect_vec();
+    names.sort();
+
+    names
+        .into_iter()
+        .map(|name| {
+            let mut cost = HashMap::new();
+            let mut review_count = HashMap::new();
+            let mut learn_count = HashMap::new();
+            let mut memorized = HashMap::new();
+            let mut weighted_memorized = HashMap::new();
+            let mut reviewless_end_memorized = HashMap::new();
+            let mut reviewless_end_weighted_memorized = HashMap::new();
+            for (dr, workload) in dr_workload {
+                if let Some(point) = workload.preset_workload.get(&name) {
+                    cost.insert(*dr, point.cost);
+                    review_count.insert(*dr, point.review_count);
+                    learn_count.insert(*dr, point.learn_count);
+                    memorized.insert(*dr, point.memorized);
+                    weighted_memorized.insert(*dr, point.weighted_memorized);
+                }
+                if let Some(point) = workload.preset_reviewless_workload.get(&name) {
+                    reviewless_end_memorized.insert(*dr, point.memorized);
+                    reviewless_end_weighted_memorized.insert(*dr, point.weighted_memorized);
+                }
+            }
+            SimulateFsrsPresetWorkload {
+                name,
+                cost,
+                review_count,
+                learn_count,
+                memorized,
+                weighted_memorized,
+                reviewless_end_memorized,
+                reviewless_end_weighted_memorized,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, PartialEq)]
@@ -891,68 +978,63 @@ struct WorkloadSweepPoint {
     weighted_memorized: f32,
     cost: f32,
     review_count: u32,
+    preset_workload: HashMap<String, PresetWorkloadPoint>,
+    preset_reviewless_workload: HashMap<String, PresetReviewlessWorkloadPoint>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PresetWorkloadPoint {
+    memorized: f32,
+    weighted_memorized: f32,
+    cost: f32,
+    review_count: u32,
+    learn_count: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PresetReviewlessWorkloadPoint {
+    memorized: f32,
+    weighted_memorized: f32,
+}
+
+struct WorkloadSweepContext<'a> {
+    params: &'a [f32],
+    cards: &'a [fsrs::Card],
+    preset_router: Option<&'a SimulationPresetRouter>,
+    model: &'a HelpMeDecideReviewTimeModel,
+    blend_alpha_override: Option<f32>,
+    days_to_simulate: usize,
+    split_workload_by_preset: bool,
+    fallback_preset_name: &'a str,
 }
 
 fn simulate_workload_sweep(
     config: &mut SimulatorConfig,
-    params: &[f32],
-    cards: &[fsrs::Card],
-    preset_router: Option<&SimulationPresetRouter>,
-    model: &HelpMeDecideReviewTimeModel,
-    blend_alpha_override: Option<f32>,
-    days_to_simulate: usize,
+    context: &WorkloadSweepContext,
 ) -> Result<HashMap<u32, WorkloadSweepPoint>> {
     if config.post_scheduling_fn.is_some() {
-        simulate_workload_sweep_sequential(
-            config,
-            params,
-            cards,
-            preset_router,
-            model,
-            blend_alpha_override,
-            days_to_simulate,
-        )
+        simulate_workload_sweep_sequential(config, context)
     } else {
-        simulate_workload_sweep_parallel(
-            config,
-            params,
-            cards,
-            preset_router,
-            model,
-            blend_alpha_override,
-            days_to_simulate,
-        )
+        simulate_workload_sweep_parallel(config, context)
     }
 }
 
 fn simulate_workload_sweep_sequential(
     config: &mut SimulatorConfig,
-    params: &[f32],
-    cards: &[fsrs::Card],
-    preset_router: Option<&SimulationPresetRouter>,
-    model: &HelpMeDecideReviewTimeModel,
-    blend_alpha_override: Option<f32>,
-    days_to_simulate: usize,
+    context: &WorkloadSweepContext,
 ) -> Result<HashMap<u32, WorkloadSweepPoint>> {
     let mut dr_workload = HashMap::with_capacity(workload_dr_count());
     let base_review_rating_prob = config.review_rating_prob;
     for dr in WORKLOAD_MIN_DR..=WORKLOAD_MAX_DR {
         let desired_retention = dr as f32 / 100.;
-        config.review_rating_prob = model.success_review_rating_prob_for_retrievability(
+        config.review_rating_prob = context.model.success_review_rating_prob_for_retrievability(
             desired_retention,
             base_review_rating_prob,
-            blend_alpha_override,
+            context.blend_alpha_override,
         );
         dr_workload.insert(
             dr,
-            simulate_workload_sweep_point(
-                config,
-                params,
-                cards,
-                preset_router,
-                desired_retention,
-                days_to_simulate,
-            )?,
+            simulate_workload_sweep_point(config, context, desired_retention)?,
         );
     }
     Ok(dr_workload)
@@ -960,34 +1042,22 @@ fn simulate_workload_sweep_sequential(
 
 fn simulate_workload_sweep_parallel(
     config: &SimulatorConfig,
-    params: &[f32],
-    cards: &[fsrs::Card],
-    preset_router: Option<&SimulationPresetRouter>,
-    model: &HelpMeDecideReviewTimeModel,
-    blend_alpha_override: Option<f32>,
-    days_to_simulate: usize,
+    context: &WorkloadSweepContext,
 ) -> Result<HashMap<u32, WorkloadSweepPoint>> {
     let base_review_rating_prob = config.review_rating_prob;
     (WORKLOAD_MIN_DR..=WORKLOAD_MAX_DR)
         .into_par_iter()
         .map(|dr| {
             let desired_retention = dr as f32 / 100.;
-            let review_rating_prob = model.success_review_rating_prob_for_retrievability(
+            let review_rating_prob = context.model.success_review_rating_prob_for_retrievability(
                 desired_retention,
                 base_review_rating_prob,
-                blend_alpha_override,
+                context.blend_alpha_override,
             );
             let config = simulator_config_for_review_rating_prob(config, review_rating_prob);
             Ok((
                 dr,
-                simulate_workload_sweep_point(
-                    &config,
-                    params,
-                    cards,
-                    preset_router,
-                    desired_retention,
-                    days_to_simulate,
-                )?,
+                simulate_workload_sweep_point(&config, context, desired_retention)?,
             ))
         })
         .collect()
@@ -1025,27 +1095,46 @@ fn simulator_config_for_review_rating_prob(
 
 fn simulate_workload_sweep_point(
     config: &SimulatorConfig,
-    params: &[f32],
-    cards: &[fsrs::Card],
-    preset_router: Option<&SimulationPresetRouter>,
+    context: &WorkloadSweepContext,
     desired_retention: f32,
-    days_to_simulate: usize,
 ) -> Result<WorkloadSweepPoint> {
-    let result = simulate_workload_summary_for_desired_retention(
-        config,
-        params,
-        cards,
-        desired_retention,
-        preset_router,
-    )?;
+    let (result, preset_workload) = if context.split_workload_by_preset {
+        simulate_workload_split_summary_for_desired_retention(
+            config,
+            context.params,
+            context.cards,
+            desired_retention,
+            context.preset_router,
+            context.days_to_simulate,
+            context.fallback_preset_name,
+        )?
+    } else {
+        (
+            simulate_workload_summary_for_desired_retention(
+                config,
+                context.params,
+                context.cards,
+                desired_retention,
+                context.preset_router,
+            )?,
+            HashMap::new(),
+        )
+    };
     Ok(WorkloadSweepPoint {
         memorized: result.memorized,
         weighted_memorized: weighted_memorized_for_cards(
             &result.cards,
-            simulation_end_date(days_to_simulate),
+            simulation_end_date(context.days_to_simulate),
         ),
         cost: result.cost,
         review_count: result.review_count as u32 + result.learn_count as u32,
+        preset_workload,
+        preset_reviewless_workload: preset_reviewless_workload_for_cards(
+            context.cards,
+            context.preset_router,
+            context.fallback_preset_name,
+            simulation_end_date(context.days_to_simulate),
+        ),
     })
 }
 
@@ -1121,6 +1210,151 @@ fn simulate_workload_summary_for_desired_retention(
         None,
         Some(cards_for_dr),
     )?)
+}
+
+fn simulate_workload_split_summary_for_desired_retention(
+    config: &SimulatorConfig,
+    params: &[f32],
+    cards: &[fsrs::Card],
+    desired_retention: f32,
+    preset_router: Option<&SimulationPresetRouter>,
+    days_to_simulate: usize,
+    fallback_preset_name: &str,
+) -> Result<(
+    fsrs::SimulationSummaryResult,
+    HashMap<String, PresetWorkloadPoint>,
+)> {
+    let mut cards_for_dr = cards.to_vec();
+    apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
+    let preset_workload = Arc::new(Mutex::new(HashMap::<String, PresetWorkloadPoint>::new()));
+    let event_fn = preset_workload_event_fn(
+        desired_retention,
+        preset_router,
+        fallback_preset_name,
+        preset_workload.clone(),
+    )?;
+    let card_update_fn = preset_router
+        .map(|router| router.card_update_fn_for_simulation(desired_retention))
+        .transpose()?
+        .flatten();
+    let result = simulate_summary_with_card_update_and_event_fn(
+        config,
+        params,
+        desired_retention,
+        None,
+        Some(cards_for_dr),
+        card_update_fn.as_ref(),
+        &event_fn,
+    )?;
+    drop(event_fn);
+
+    let mut preset_workload = Arc::try_unwrap(preset_workload)
+        .unwrap_or_else(|_| unreachable!("simulation event recorder should not be shared"))
+        .into_inner()
+        .unwrap_or_else(|err| err.into_inner());
+    add_final_preset_memorized(
+        &mut preset_workload,
+        &result.cards,
+        preset_router,
+        fallback_preset_name,
+        simulation_end_date(days_to_simulate),
+    );
+
+    Ok((result, preset_workload))
+}
+
+fn preset_workload_event_fn(
+    desired_retention: f32,
+    preset_router: Option<&SimulationPresetRouter>,
+    fallback_preset_name: &str,
+    preset_workload: Arc<Mutex<HashMap<String, PresetWorkloadPoint>>>,
+) -> Result<SimulatorEventFn> {
+    let fallback_name = preset_router
+        .map(|router| router.fallback.name.clone())
+        .unwrap_or_else(|| fallback_preset_name.to_string());
+    let presets_by_card = preset_router
+        .map(|router| {
+            router
+                .presets_by_card
+                .iter()
+                .map(|(card_id, preset)| (*card_id, preset.name.clone()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let routes = preset_router
+        .map(|router| {
+            router
+                .routes
+                .iter()
+                .map(|route| route.for_target(desired_retention))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(SimulatorEventFn::new(
+        move |card, event: SimulationEvent| {
+            let preset_name = routes
+                .iter()
+                .find(|route| route.matches(card))
+                .map(|route| route.preset.name.as_str())
+                .or_else(|| presets_by_card.get(&card.id).map(String::as_str))
+                .unwrap_or(&fallback_name);
+            let mut preset_workload = preset_workload
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let point = preset_workload.entry(preset_name.to_string()).or_default();
+            point.cost += event.cost;
+            if event.is_learn {
+                point.learn_count += 1;
+            } else {
+                point.review_count += 1;
+            }
+        },
+    ))
+}
+
+fn add_final_preset_memorized(
+    preset_workload: &mut HashMap<String, PresetWorkloadPoint>,
+    cards: &[fsrs::Card],
+    preset_router: Option<&SimulationPresetRouter>,
+    fallback_preset_name: &str,
+    date: f32,
+) {
+    for card in cards {
+        if !(card.stability.is_finite() && card.stability > 0.0) {
+            continue;
+        }
+        let preset_name = preset_router
+            .map(|router| router.active_preset_name_for_card(card))
+            .unwrap_or(fallback_preset_name);
+        let point = preset_workload.entry(preset_name.to_string()).or_default();
+        let retrievability = card.retention_on(date);
+        point.memorized += retrievability;
+        point.weighted_memorized += retrievability * stability_weight(card.stability);
+    }
+}
+
+fn preset_reviewless_workload_for_cards(
+    cards: &[fsrs::Card],
+    preset_router: Option<&SimulationPresetRouter>,
+    fallback_preset_name: &str,
+    date: f32,
+) -> HashMap<String, PresetReviewlessWorkloadPoint> {
+    let mut workload = HashMap::<String, PresetReviewlessWorkloadPoint>::new();
+    for card in cards {
+        if !(card.stability.is_finite() && card.stability > 0.0) {
+            continue;
+        }
+        let preset_name = preset_router
+            .map(|router| router.active_preset_name_for_card(card))
+            .unwrap_or(fallback_preset_name);
+        let point = workload.entry(preset_name.to_string()).or_default();
+        let retrievability = card.retention_on(date);
+        point.memorized += retrievability;
+        point.weighted_memorized += retrievability * stability_weight(card.stability);
+    }
+    workload
 }
 
 fn stability_weight(stability: f32) -> f32 {
@@ -1374,27 +1608,20 @@ mod tests {
         };
         let mut sequential_config = config();
         let parallel_config = config();
+        let context = super::WorkloadSweepContext {
+            params: &DEFAULT_PARAMETERS,
+            cards: &cards,
+            preset_router: None,
+            model: model.as_ref(),
+            blend_alpha_override: None,
+            days_to_simulate: 7,
+            split_workload_by_preset: false,
+            fallback_preset_name: "Preset",
+        };
 
-        let sequential = super::simulate_workload_sweep_sequential(
-            &mut sequential_config,
-            &DEFAULT_PARAMETERS,
-            &cards,
-            None,
-            model.as_ref(),
-            None,
-            7,
-        )
-        .unwrap();
-        let parallel = super::simulate_workload_sweep_parallel(
-            &parallel_config,
-            &DEFAULT_PARAMETERS,
-            &cards,
-            None,
-            model.as_ref(),
-            None,
-            7,
-        )
-        .unwrap();
+        let sequential =
+            super::simulate_workload_sweep_sequential(&mut sequential_config, &context).unwrap();
+        let parallel = super::simulate_workload_sweep_parallel(&parallel_config, &context).unwrap();
 
         assert_eq!(parallel, sequential);
         assert_eq!(parallel.len(), super::workload_dr_count());
@@ -1691,6 +1918,7 @@ mod tests {
         let routed_parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
         let router = SimulationPresetRouter {
             fallback: SimulationPreset {
+                name: "Fallback".into(),
                 parameters: Some(fallback_parameters.clone()),
                 dynamic_desired_retention: None,
             },
@@ -1702,6 +1930,7 @@ mod tests {
                 min_interval_days: Some(5.0),
                 max_interval_days: Some(20.0),
                 preset: SimulationPreset {
+                    name: "Routed".into(),
                     parameters: Some(routed_parameters.clone()),
                     dynamic_desired_retention: Some(dynamic_desired_retention),
                 },
@@ -2397,12 +2626,14 @@ mod tests {
         };
         let router = SimulationPresetRouter {
             fallback: SimulationPreset {
+                name: "Fallback".into(),
                 parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
                 dynamic_desired_retention: None,
             },
             presets_by_card: HashMap::from([(
                 1,
                 SimulationPreset {
+                    name: "Card preset".into(),
                     parameters: Some(parameters),
                     dynamic_desired_retention: None,
                 },
@@ -2414,7 +2645,7 @@ mod tests {
         let fast = super::simulate_workload_summary_for_desired_retention(
             &config,
             &DEFAULT_PARAMETERS,
-            &[card.clone()],
+            std::slice::from_ref(&card),
             0.9,
             Some(&router),
         )
@@ -2470,7 +2701,7 @@ mod tests {
         let fast = super::simulate_workload_summary_for_desired_retention(
             &config,
             &DEFAULT_PARAMETERS,
-            &[card.clone()],
+            std::slice::from_ref(&card),
             0.85,
             Some(&router),
         )
@@ -2484,6 +2715,86 @@ mod tests {
         );
 
         assert_summary_result_matches(&fast, &full);
+    }
+
+    #[test]
+    fn split_workload_attributes_reviews_to_active_preset_at_each_rep() {
+        let config = SimulatorConfig {
+            deck_size: 1,
+            learn_span: 90,
+            learn_limit: 0,
+            review_limit: 9999,
+            review_rating_prob: [0.0, 1.0, 0.0],
+            ..Default::default()
+        };
+        let card = SimCard {
+            id: 1,
+            difficulty: 5.0,
+            stability: 5.0,
+            last_date: -1.0,
+            due: 0.0,
+            interval: 1.0,
+            reps: 1,
+            lapses: 0,
+            desired_retention: 0.9,
+            parameters: Arc::new(DEFAULT_PARAMETERS.to_vec()),
+        };
+        let router = SimulationPresetRouter {
+            fallback: SimulationPreset {
+                name: "Fallback".into(),
+                parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
+                dynamic_desired_retention: None,
+            },
+            presets_by_card: HashMap::new(),
+            routes: vec![SimulationPresetRoute {
+                card_ids: None,
+                min_reps: Some(2),
+                max_reps: None,
+                min_interval_days: None,
+                max_interval_days: None,
+                preset: SimulationPreset {
+                    name: "Routed".into(),
+                    parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
+                    dynamic_desired_retention: None,
+                },
+            }],
+        };
+
+        let (result, split) = super::simulate_workload_split_summary_for_desired_retention(
+            &config,
+            &DEFAULT_PARAMETERS,
+            std::slice::from_ref(&card),
+            0.9,
+            Some(&router),
+            90,
+            "Fallback",
+        )
+        .unwrap();
+
+        assert!(split["Fallback"].review_count > 0);
+        assert!(split["Routed"].review_count > 0);
+        assert_eq!(
+            split.values().map(|point| point.review_count).sum::<u32>(),
+            result.review_count as u32
+        );
+        assert_eq!(
+            split.values().map(|point| point.learn_count).sum::<u32>(),
+            result.learn_count as u32
+        );
+        assert!((split.values().map(|point| point.cost).sum::<f32>() - result.cost).abs() < 1e-3);
+
+        let reviewless_split = super::preset_reviewless_workload_for_cards(
+            std::slice::from_ref(&card),
+            Some(&router),
+            "Fallback",
+            super::simulation_end_date(90),
+        );
+        let reviewless_total = reviewless_split
+            .values()
+            .map(|point| point.memorized)
+            .sum::<f32>();
+        let global_reviewless = card.retention_on(super::simulation_end_date(90));
+        assert!((reviewless_total - global_reviewless).abs() < 1e-6);
     }
 
     #[test]

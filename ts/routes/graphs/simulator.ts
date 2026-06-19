@@ -65,8 +65,9 @@ export function renderWorkloadChart(
     data: WorkloadPoint[],
     subgraph: SimulateWorkloadSubgraph,
 ) {
-    const dataXMin = min(data, (d) => d.x) ?? 1;
-    const dataXMax = max(data, (d) => d.x) ?? 99;
+    const validData = data.filter((d): d is WorkloadPoint => d !== undefined);
+    const dataXMin = min(validData, (d) => d.x) ?? 1;
+    const dataXMax = max(validData, (d) => d.x) ?? 99;
     const singleX = dataXMin === dataXMax;
     const xMin = singleX ? Math.max(1, dataXMin - 1) : dataXMin;
     const xMax = singleX ? Math.min(99, dataXMax + 1) : dataXMax;
@@ -76,31 +77,31 @@ export function renderWorkloadChart(
         .range([bounds.marginLeft, bounds.width - bounds.marginRight]);
 
     const subgraph_data = {
-        [SimulateWorkloadSubgraph.ratio]: data.map((d) => ({
+        [SimulateWorkloadSubgraph.ratio]: validData.map((d) => ({
             ...d,
             y: (60 * 60 * (d.memorized - d.reviewless_end_memorized))
                 / d.timeCost,
         })),
-        [SimulateWorkloadSubgraph.weightedRatio]: data.map((d) => ({
+        [SimulateWorkloadSubgraph.weightedRatio]: validData.map((d) => ({
             ...d,
             y: (60
                 * 60
                 * (d.weightedMemorized - d.reviewless_end_weighted_memorized))
                 / d.timeCost,
         })),
-        [SimulateWorkloadSubgraph.time]: data.map((d) => ({
+        [SimulateWorkloadSubgraph.time]: validData.map((d) => ({
             ...d,
             y: d.timeCost / d.learnSpan,
         })),
-        [SimulateWorkloadSubgraph.count]: data.map((d) => ({
+        [SimulateWorkloadSubgraph.count]: validData.map((d) => ({
             ...d,
             y: d.count / d.learnSpan,
         })),
-        [SimulateWorkloadSubgraph.memorized]: data.map((d) => ({
+        [SimulateWorkloadSubgraph.memorized]: validData.map((d) => ({
             ...d,
             y: d.memorized,
         })),
-        [SimulateWorkloadSubgraph.weightedMemorized]: data.map((d) => ({
+        [SimulateWorkloadSubgraph.weightedMemorized]: validData.map((d) => ({
             ...d,
             y: d.weightedMemorized,
         })),

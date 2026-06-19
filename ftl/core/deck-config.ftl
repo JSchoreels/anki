@@ -547,6 +547,7 @@ deck-config-fsrs-simulator-radio-memorized = Memorized
 deck-config-fsrs-simulator-radio-efficiency = Efficiency
 deck-config-fsrs-simulator-radio-weighted-memorized = R*f(S)
 deck-config-fsrs-simulator-radio-weighted-efficiency = Net R*f(S)/t
+deck-config-fsrs-simulator-split-by-preset = Split by active preset
 deck-config-fsrs-simulator-ratio-tooltip2 = { $time } memorized cards per hour
 deck-config-fsrs-simulator-weighted-memorized-tooltip = { $memorized } R*f(S)
 deck-config-fsrs-simulator-weighted-ratio-tooltip = { $time } net R*f(S) per hour

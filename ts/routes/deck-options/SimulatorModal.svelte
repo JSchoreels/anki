@@ -112,6 +112,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT;
     let simulateDynamicDesiredRetention =
         simulateFsrsRequest.simulateDynamicDesiredRetention;
+    let splitWorkloadByPreset = simulateFsrsRequest.splitWorkloadByPreset;
     let dynamicDesiredRetentionAvailable = false;
 
     $: daysToSimulate = 365;
@@ -156,6 +157,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             enforceMonotonicSuccessGradeProbs;
         simulateFsrsRequest.simulateDynamicDesiredRetention =
             simulateDynamicDesiredRetention && dynamicDesiredRetentionAvailable;
+        simulateFsrsRequest.splitWorkloadByPreset = workload && splitWorkloadByPreset;
     }
 
     function subtreeConfigs(): DeckConfig[] {
@@ -336,26 +338,59 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                 points = points.concat(
                     responses.flatMap(({ name, response }) => {
-                        labelOffset += 1;
-                        const label = runNumber * 1000 + labelOffset;
-                        return Object.entries(response.memorized)
-                            .filter(
-                                ([dr]) => response.reviewCount[dr] || response.cost[dr],
-                            )
-                            .map(([dr, v]) => ({
-                                x: parseInt(dr),
-                                timeCost: response.cost[dr],
-                                memorized: v,
-                                weightedMemorized: response.weightedMemorized[dr],
-                                reviewless_end_memorized:
-                                    response.reviewlessEndMemorized,
-                                reviewless_end_weighted_memorized:
-                                    response.reviewlessEndWeightedMemorized,
-                                count: response.reviewCount[dr],
-                                label,
-                                labelName: name,
-                                learnSpan: simulateFsrsRequest.daysToSimulate,
-                            }));
+                        const workloads = response.presetWorkload.length
+                            ? response.presetWorkload.map((preset) => ({
+                                  name: `${preset.name} (${name})`,
+                                  memorized: preset.memorized,
+                                  weightedMemorized: preset.weightedMemorized,
+                                  reviewlessEndMemorized: preset.reviewlessEndMemorized,
+                                  reviewlessEndWeightedMemorized:
+                                      preset.reviewlessEndWeightedMemorized,
+                                  cost: preset.cost,
+                                  reviewCount: preset.reviewCount,
+                                  learnCount: preset.learnCount,
+                              }))
+                            : [
+                                  {
+                                      name,
+                                      memorized: response.memorized,
+                                      weightedMemorized: response.weightedMemorized,
+                                      reviewlessEndMemorized: {},
+                                      reviewlessEndWeightedMemorized: {},
+                                      cost: response.cost,
+                                      reviewCount: response.reviewCount,
+                                      learnCount: {},
+                                  },
+                              ];
+                        return workloads.flatMap((workload) => {
+                            labelOffset += 1;
+                            const label = runNumber * 1000 + labelOffset;
+                            return Object.entries(workload.memorized)
+                                .filter(
+                                    ([dr]) =>
+                                        workload.reviewCount[dr] ||
+                                        workload.learnCount[dr] ||
+                                        workload.cost[dr],
+                                )
+                                .map(([dr, v]) => ({
+                                    x: parseInt(dr),
+                                    timeCost: workload.cost[dr],
+                                    memorized: v,
+                                    weightedMemorized: workload.weightedMemorized[dr],
+                                    reviewless_end_memorized:
+                                        workload.reviewlessEndMemorized[dr] ??
+                                        response.reviewlessEndMemorized,
+                                    reviewless_end_weighted_memorized:
+                                        workload.reviewlessEndWeightedMemorized[dr] ??
+                                        response.reviewlessEndWeightedMemorized,
+                                    count:
+                                        (workload.reviewCount[dr] ?? 0) +
+                                        (workload.learnCount[dr] ?? 0),
+                                    label,
+                                    labelName: workload.name,
+                                    learnSpan: simulateFsrsRequest.daysToSimulate,
+                                }));
+                        });
                     }),
                 );
 
@@ -868,6 +903,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     </SwitchRow>
 
                     {#if workload}
+                        <SwitchRow
+                            bind:value={splitWorkloadByPreset}
+                            defaultValue={false}
+                        >
+                            <SettingTitle
+                                on:click={() => openHelpModal("simulateFsrsReview")}
+                            >
+                                {tr.deckConfigFsrsSimulatorSplitByPreset()}
+                            </SettingTitle>
+                        </SwitchRow>
+
                         <SpinBoxFloatRow
                             bind:value={transitionBlendAlpha}
                             defaultValue={HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT}

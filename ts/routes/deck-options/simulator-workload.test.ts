@@ -52,6 +52,7 @@ test("workload request keeps Help Me Decide menu settings", () => {
     expect(request.reviewFuzzFactorLong).toBe(0.1);
     expect(request.params).toStrictEqual([1, 2, 3]);
     expect(request.search).toBe("deck:\"Default\" preset:\"Preset \\\"A\\\"\" -is:suspended");
+    expect(request.workloadPresetLabel).toBe("Preset \"A\"");
 });
 
 test("workload request enables ADR for dynamic presets", () => {

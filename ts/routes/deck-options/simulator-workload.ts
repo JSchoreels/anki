@@ -40,6 +40,7 @@ export function workloadRequestForPreset(
     request.params = selectedFsrsParams(inner);
     request.desiredRetention = inner.desiredRetention;
     request.search = workloadSearchForPreset(deckNameForSearch, config.name);
+    request.workloadPresetLabel = config.name;
     request.historicalRetention = inner.historicalRetention;
     request.learningStepCount = inner.learnSteps.length;
     request.relearningStepCount = inner.relearnSteps.length;

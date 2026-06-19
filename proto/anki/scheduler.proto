@@ -522,6 +522,8 @@ message SimulateFsrsReviewRequest {
   bool fsrs_dynamic_desired_retention_clamp = 31;
   repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 32;
   repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 33;
+  bool split_workload_by_preset = 34;
+  string workload_preset_label = 35;
 }
 
 message SimulateFsrsReviewResponse {
@@ -556,6 +558,22 @@ message SimulateFsrsWorkloadResponse {
   // 1 - exp((-8 / 365) * S).
   map<uint32, float> weighted_memorized = 21;
   float reviewless_end_weighted_memorized = 22;
+  repeated SimulateFsrsPresetWorkload preset_workload = 23;
+}
+
+message SimulateFsrsPresetWorkload {
+  string name = 1;
+  map<uint32, float> cost = 2;
+  map<uint32, uint32> review_count = 3;
+  map<uint32, uint32> learn_count = 4;
+  // End-of-simulation card memorized values attributed to the card's final
+  // active preset.
+  map<uint32, float> memorized = 5;
+  map<uint32, float> weighted_memorized = 6;
+  // Reviewless end-of-simulation baselines attributed to the card's active
+  // preset before simulated reviews.
+  map<uint32, float> reviewless_end_memorized = 7;
+  map<uint32, float> reviewless_end_weighted_memorized = 8;
 }
 
 message ComputeOptimalRetentionResponse {
