@@ -2,15 +2,17 @@
 
 Releases are managed by two GitHub Actions workflows under `.github/workflows/`:
 
-1. **`prepare-release.yml`** — Run first. Validates the version, checks that CI
-   passed, updates `.version`, and pushes everything to the dispatching branch
-   in a single commit. CI then runs automatically on the resulting commit (for
-   `release/**` branches). The CI check can be skipped with `skip-ci-check`.
+1. **`prepare-release.yml`** — Run first. Validates the version, waits for CI to
+   pass on the dispatching commit, updates `.version`, and pushes everything to
+   the dispatching branch in a single commit. CI then runs automatically on the
+   resulting commit (for `release/**` branches). The CI check can be skipped
+   with `skip-ci-check`.
 
-2. **`release.yml`** — Run after CI passes on the prepared commit. Builds
-   installers and wheels for all platforms (Linux x86/ARM, macOS Intel/ARM,
-   Windows), and can optionally sign macOS/Windows artifacts, create a draft
-   GitHub release, publish wheels to TestPyPI, and publish wheels to PyPI.
+2. **`release.yml`** — Run after CI has started on the prepared commit. The
+   workflow waits for CI to pass before building installers and wheels for all
+   platforms (Linux x86/ARM, macOS Intel/ARM, Windows), and can optionally sign
+   macOS/Windows artifacts, create a draft GitHub release, publish wheels to
+   TestPyPI, and publish wheels to PyPI.
 
 Both workflows are `workflow_dispatch` and share a `release` concurrency group so
 they cannot run simultaneously.
@@ -231,7 +233,7 @@ signed and published:
 | `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires passing CI unless skipped, no duplicate final tag/release, and `version` matching `.version`. Unsigned draft releases append the GitHub run number to the GitHub release/tag version, while the app keeps the base `+fsrs7` version. |
 | `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                                                                                                  |
 | `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI unless skipped, and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. Public releases should use `sign=true`.                                                                                                     |
-| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`.                                                                                                                                                                                                             |
+| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases from non-main branches where CI was run via `workflow_dispatch`. When not skipped, release workflows wait up to 90 minutes for matching push or workflow-dispatch CI to pass.                                                                                                |
 | `version`          | For `draft-release` or `publish-pypi`: must match `.version`. Unsigned draft releases resolve to a suffixed GitHub release/tag version before packaging, but write the base local version into the app. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).            |
 
 ```{mermaid}

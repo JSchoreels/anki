@@ -39,6 +39,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let draftTargetDr = targetAverageDr;
     let syncedTargetDr = targetAverageDr;
     let projectionScale = 190;
+    let selectorMin = 0;
 
     $: if (targetAverageDr !== syncedTargetDr) {
         syncedTargetDr = targetAverageDr;
@@ -55,11 +56,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: hasTargetCalibration = targetCalibration.fixedTarget
         ? validFixedTargetCalibration(targetCalibration.weights, targetCalibration.drs)
         : validCalibration(targetCalibration.weights, targetCalibration.drs);
-    $: selectorMin = hasTargetCalibration
-        ? targetCalibration.fixedTarget
-            ? retentionMin
-            : Math.min(...targetCalibration.drs)
-        : 0;
+    $: if (!hasTargetCalibration) {
+        selectorMin = 0;
+    } else if (targetCalibration.fixedTarget) {
+        selectorMin = retentionMin;
+    } else {
+        selectorMin = Math.min(...targetCalibration.drs);
+    }
     $: selectorMax = hasTargetCalibration ? Math.max(...targetCalibration.drs) : 1;
     $: inferredWeight = costWeightForAverageDr(
         draftTargetDr,
