@@ -47,6 +47,7 @@ use crate::types::Usn;
 pub(crate) struct CardFixStats {
     pub new_cards_fixed: usize,
     pub other_cards_fixed: usize,
+    pub fsrs_stability_fixed: usize,
     pub last_review_time_fixed: usize,
 }
 
@@ -400,6 +401,7 @@ impl super::SqliteStorage {
             .db
             .prepare(include_str!("fix_ordinal.sql"))?
             .execute(params![mtime, usn])?;
+        let fsrs_stability_cnt = self.fix_zero_fsrs_stability(mtime, usn)?;
         let mut last_review_time_cnt = 0;
         let revlog = self.get_all_revlog_entries_in_card_order()?;
         let last_revlog_info = get_last_revlog_info(&revlog);
@@ -418,8 +420,37 @@ impl super::SqliteStorage {
         Ok(CardFixStats {
             new_cards_fixed: new_cnt,
             other_cards_fixed: other_cnt,
+            fsrs_stability_fixed: fsrs_stability_cnt,
             last_review_time_fixed: last_review_time_cnt,
         })
+    }
+
+    fn fix_zero_fsrs_stability(&self, mtime: TimestampSecs, usn: Usn) -> Result<usize> {
+        let card_ids: Vec<CardId> = self
+            .db
+            .prepare(
+                "select id from cards where
+                    data like '%\"s\":0,%' or data like '%\"s\":0.0,%' or
+                    data like '%\"s\":0}' or data like '%\"s\":0.0}'",
+            )?
+            .query_and_then([], |row| Ok(CardId(row.get(0)?)))?
+            .collect::<Result<_>>()?;
+        let mut fixed = 0;
+        for card_id in card_ids {
+            let Some(mut card) = self.get_card(card_id)? else {
+                continue;
+            };
+            let Some(memory_state) = card.memory_state else {
+                continue;
+            };
+            if memory_state.stability == 0.0 {
+                card.mtime = mtime;
+                card.usn = usn;
+                self.update_card(&card)?;
+                fixed += 1;
+            }
+        }
+        Ok(fixed)
     }
 
     pub(crate) fn delete_orphaned_cards(&self) -> Result<usize> {

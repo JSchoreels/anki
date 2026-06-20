@@ -168,6 +168,7 @@ impl Collection {
         let CardFixStats {
             new_cards_fixed,
             other_cards_fixed,
+            fsrs_stability_fixed,
             last_review_time_fixed,
         } = self.storage.fix_card_properties(
             timing.days_elapsed,
@@ -176,7 +177,7 @@ impl Collection {
             self.scheduler_version() == SchedulerVersion::V1,
         )?;
         out.card_position_too_high = new_cards_fixed;
-        out.card_properties_invalid += other_cards_fixed;
+        out.card_properties_invalid += other_cards_fixed + fsrs_stability_fixed;
         out.card_last_review_time_empty = last_review_time_fixed;
 
         // Trigger one-way sync if last_review_time was updated to avoid conflicts
@@ -539,6 +540,38 @@ mod test {
             col.storage.db_scalar::<u32>("select count(*) from cards")?,
             0
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn repairs_zero_fsrs_stability_in_card_data() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+
+        col.storage.db.execute(
+            r#"update cards set data='{"s":0.0,"s_int":0.0005,"d":9.932}' where id=?"#,
+            rusqlite::params![cid],
+        )?;
+
+        let out = col.check_database()?;
+        assert_eq!(
+            out,
+            CheckDatabaseOutput {
+                card_properties_invalid: 1,
+                ..Default::default()
+            }
+        );
+        let data: String = col.storage.db.query_row(
+            "select data from cards where id=?",
+            rusqlite::params![cid],
+            |row| row.get(0),
+        )?;
+        assert_eq!(data, r#"{"s":0.0001,"s_int":0.0005,"d":9.932}"#);
+        assert_eq!(col.check_database()?, Default::default());
 
         Ok(())
     }

@@ -390,7 +390,11 @@ Current exact-vs-scalar status:
   `FSRS::current_retrievability` and the stored `S90`.
 - `card.data.s` stores `S90` (the interval at 90% retrievability), so
   `prop:s`, the browser stability column, and Card Info all use the same
-  stability value across FSRS-6 and FSRS-7.
+  stability value across FSRS-6 and FSRS-7. When a positive FSRS stability value
+  would round to zero in card data, it is persisted as `0.0001` so legacy
+  clients that only read `s` do not see an invalid zero stability. Check
+  Database rewrites existing FSRS memory states with zero `s` through the same
+  nonzero persistence rule.
 - The scheduler's internal stability is stored separately in `card.data.s_int`
   on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
   math use `s_int`; legacy card data without `s_int` treats `s` as both values.

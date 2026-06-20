@@ -14,6 +14,8 @@ use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::serde::default_on_invalid;
 
+const MIN_PERSISTED_FSRS_STABILITY: f32 = 0.0001;
+
 /// Helper for serdeing the card data column.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -100,10 +102,13 @@ impl CardData {
 
     pub(crate) fn convert_to_json(&mut self) -> Result<String> {
         if let Some(v) = &mut self.fsrs_stability {
-            round_to_places(v, 4)
+            round_fsrs_stability(v)
         }
         if let Some(v) = &mut self.fsrs_stability_internal {
-            round_to_places(v, 4)
+            round_fsrs_stability(v)
+        }
+        if self.fsrs_difficulty.is_some() && self.fsrs_stability == Some(0.0) {
+            self.fsrs_stability = Some(MIN_PERSISTED_FSRS_STABILITY);
         }
         if let Some(v) = &mut self.fsrs_difficulty {
             round_to_places(v, 3)
@@ -121,6 +126,14 @@ impl CardData {
 fn round_to_places(value: &mut f32, decimal_places: u32) {
     let factor = 10_f32.powi(decimal_places as i32);
     *value = (*value * factor).round() / factor;
+}
+
+fn round_fsrs_stability(value: &mut f32) {
+    let was_positive = *value > 0.0;
+    round_to_places(value, 4);
+    if was_positive && *value == 0.0 {
+        *value = MIN_PERSISTED_FSRS_STABILITY;
+    }
 }
 
 impl FromSql for CardData {
@@ -208,6 +221,34 @@ mod test {
         assert_eq!(
             data.convert_to_json().unwrap(),
             r#"{"s":0.0001,"s_int":0.0001,"d":1.0}"#
+        );
+    }
+
+    #[test]
+    fn compact_floats_preserves_tiny_positive_fsrs_stability() {
+        let mut data = CardData {
+            fsrs_stability: Some(0.00001),
+            fsrs_stability_internal: Some(0.0005),
+            fsrs_difficulty: Some(9.932),
+            ..Default::default()
+        };
+        assert_eq!(
+            data.convert_to_json().unwrap(),
+            r#"{"s":0.0001,"s_int":0.0005,"d":9.932}"#
+        );
+    }
+
+    #[test]
+    fn compact_floats_repairs_zero_fsrs_memory_stability() {
+        let mut data = CardData {
+            fsrs_stability: Some(0.0),
+            fsrs_stability_internal: Some(0.0005),
+            fsrs_difficulty: Some(9.932),
+            ..Default::default()
+        };
+        assert_eq!(
+            data.convert_to_json().unwrap(),
+            r#"{"s":0.0001,"s_int":0.0005,"d":9.932}"#
         );
     }
 
