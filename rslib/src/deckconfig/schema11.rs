@@ -294,6 +294,8 @@ pub struct LapseConfSchema11 {
     #[serde(deserialize_with = "default_on_invalid")]
     leech_action: LeechAction,
     leech_fails: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    leech_only_if_young: bool,
     min_int: u32,
     mult: f32,
 
@@ -335,6 +337,7 @@ impl Default for LapseConfSchema11 {
             delays: vec![10.0],
             leech_action: LeechAction::default(),
             leech_fails: 8,
+            leech_only_if_young: false,
             min_int: 1,
             mult: 0.0,
             other: Default::default(),
@@ -449,6 +452,7 @@ impl From<DeckConfSchema11> for DeckConfig {
             interday_learning_mix: c.interday_learning_mix,
             leech_action: c.lapse.leech_action as i32,
             leech_threshold: c.lapse.leech_fails,
+            leech_only_if_young: c.lapse.leech_only_if_young,
             disable_autoplay: !c.autoplay,
             cap_answer_time_to_secs: c.max_taken.max(0) as u32,
             show_timer: c.timer != 0,
@@ -595,6 +599,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
                     _ => LeechAction::Suspend,
                 },
                 leech_fails: i.leech_threshold,
+                leech_only_if_young: i.leech_only_if_young,
                 min_int: i.minimum_lapse_interval,
                 mult: i.lapse_multiplier,
                 other: lapse_other,
@@ -690,7 +695,7 @@ static RESERVED_DECKCONF_REV_KEYS: Set<&'static str> = phf_set! {
 };
 
 static RESERVED_DECKCONF_LAPSE_KEYS: Set<&'static str> = phf_set! {
-    "leechFails", "mult", "leechAction", "delays", "minInt"
+    "leechFails", "mult", "leechAction", "leechOnlyIfYoung", "delays", "minInt"
 };
 
 #[cfg(test)]

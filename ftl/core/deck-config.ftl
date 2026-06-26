@@ -105,6 +105,11 @@ deck-config-leech-action-tooltip =
     
     `Suspend Card`: In addition to tagging the note, hide the card until it is
     manually unsuspended.
+deck-config-leech-only-if-young = Only mark if young again
+deck-config-leech-only-if-young-tooltip =
+    If enabled, cards are only marked as leeches at the configured threshold
+    when pressing `Again` makes the card young again:
+    stability under 21 days with FSRS, or interval under 21 days without FSRS.
 
 ## Burying section
 

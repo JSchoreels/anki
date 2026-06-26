@@ -43,6 +43,9 @@ use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
 use crate::search::SearchNode;
 
+const AUTO_SUSPEND_TAG: &str = "auto-suspend";
+const LEECH_TAG: &str = "leech";
+
 #[derive(Copy, Clone)]
 pub enum Rating {
     Again,
@@ -99,8 +102,26 @@ impl CardStateUpdater {
     pub(crate) fn state_context<'a>(
         &'a self,
         load_balancer_ctx: Option<LoadBalancerContext<'a>>,
-    ) -> StateContext<'a> {
-        StateContext {
+    ) -> Result<StateContext<'a>> {
+        let fsrs_again_s90 = if self.config.inner.leech_only_if_young {
+            self.fsrs_next_states
+                .as_ref()
+                .map(|states| {
+                    fsrs_memory_state_for_params(
+                        &self.fsrs_preset.params,
+                        fsrs::MemoryState {
+                            stability: states.again.memory.stability,
+                            difficulty: states.again.memory.difficulty,
+                        },
+                    )
+                    .map(|state| state.stability)
+                })
+                .transpose()?
+        } else {
+            None
+        };
+
+        Ok(StateContext {
             fuzz_factor: get_fuzz_factor(self.fuzz_seed),
             steps: self.learn_steps(),
             graduating_interval_good: self.config.inner.graduating_interval_good,
@@ -113,6 +134,8 @@ impl CardStateUpdater {
             maximum_review_interval: self.config.inner.maximum_review_interval,
             fsrs_minimum_interval_secs: self.config.inner.fsrs_minimum_interval_secs,
             leech_threshold: self.config.inner.leech_threshold,
+            leech_only_if_young: self.config.inner.leech_only_if_young,
+            fsrs_again_s90,
             load_balancer_ctx: load_balancer_ctx
                 .map(|load_balancer_ctx| load_balancer_ctx.set_fuzz_seed(self.fuzz_seed)),
             relearn_steps: self.relearn_steps(),
@@ -132,7 +155,7 @@ impl CardStateUpdater {
             fsrs_short_term_with_steps_enabled: self.fsrs_short_term_with_steps,
             fsrs_learning_queues_disabled: self.fsrs_learning_queues_disabled,
             fsrs_allow_short_term: self.fsrs_allow_short_term,
-        }
+        })
     }
 
     fn learn_steps(&self) -> LearningSteps<'_> {
@@ -305,7 +328,7 @@ impl Collection {
             None
         };
 
-        let state_ctx = ctx.state_context(load_balancer_ctx);
+        let state_ctx = ctx.state_context(load_balancer_ctx)?;
         let mut states = current.next_states(&state_ctx);
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
@@ -401,7 +424,7 @@ impl Collection {
 
         self.update_card_inner(&mut card, original, usn)?;
         if answer.new_state.leeched() {
-            self.add_leech_tag(card.note_id)?;
+            self.add_leech_tags(card.note_id, card.queue == CardQueue::Suspended)?;
         }
 
         if card.queue == CardQueue::Review {
@@ -684,8 +707,13 @@ impl Collection {
         Ok(self.storage.get_deck_config(config_id)?.unwrap_or_default())
     }
 
-    fn add_leech_tag(&mut self, nid: NoteId) -> Result<()> {
-        self.add_tags_to_notes_inner(&[nid], "leech")?;
+    fn add_leech_tags(&mut self, nid: NoteId, auto_suspended: bool) -> Result<()> {
+        let tags = if auto_suspended {
+            format!("{LEECH_TAG} {AUTO_SUSPEND_TAG}")
+        } else {
+            LEECH_TAG.to_string()
+        };
+        self.add_tags_to_notes_inner(&[nid], &tags)?;
         Ok(())
     }
 
@@ -869,6 +897,7 @@ pub(crate) mod test {
     use crate::card::FsrsMemoryState;
     use crate::config::BoolKey;
     use crate::deckconfig::FsrsVersion;
+    use crate::deckconfig::LeechAction;
     use crate::deckconfig::ReviewMix;
     use crate::scheduler::fsrs::preset::AddonFsrsPreset;
     use crate::scheduler::fsrs::preset::AddonFsrsVersion;
@@ -893,6 +922,30 @@ pub(crate) mod test {
             0.2524, 2.6739, 0.5529, 1.3967, 2.5000, 0.9966, 0.0630, 0.2528, 0.6248, 0.9734, 0.1204,
             0.6260, 0.1575, 0.4048,
         ]
+    }
+
+    fn add_due_review_card(
+        col: &mut Collection,
+        interval: u32,
+        lapses: u32,
+        memory_state: Option<FsrsMemoryState>,
+    ) -> Result<CardId> {
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = interval;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.lapses = lapses;
+        card.memory_state = memory_state;
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-(interval as i64) * 86_400));
+        col.storage.update_card(&card)?;
+        col.clear_study_queues();
+
+        Ok(card.id)
     }
 
     #[test]
@@ -972,6 +1025,38 @@ pub(crate) mod test {
 
         // Verify that the desired retention is from the deck, not the config
         assert_eq!(updater.desired_retention, Some(0.85));
+
+        Ok(())
+    }
+
+    #[test]
+    fn leech_only_if_young_gates_sm2_tagging_and_suspension() -> Result<()> {
+        let answer_with_lapse_multiplier = |lapse_multiplier: f32| -> Result<(Card, Vec<String>)> {
+            let mut col = Collection::new();
+            col.update_default_deck_config(|config| {
+                config.leech_action = LeechAction::Suspend as i32;
+                config.leech_threshold = 2;
+                config.leech_only_if_young = true;
+                config.lapse_multiplier = lapse_multiplier;
+            });
+            add_due_review_card(&mut col, 100, 1, None)?;
+
+            let post_answer = col.answer_again();
+            let card = col.storage.get_card(post_answer.card_id)?.unwrap();
+            let tags = col.storage.get_note(card.note_id)?.unwrap().tags;
+            Ok((card, tags))
+        };
+
+        let (mature_card, mature_tags) = answer_with_lapse_multiplier(0.5)?;
+        assert_eq!(mature_card.interval, 50);
+        assert_ne!(mature_card.queue, CardQueue::Suspended);
+        assert!(mature_tags.is_empty());
+
+        let (young_card, young_tags) = answer_with_lapse_multiplier(0.1)?;
+        assert_eq!(young_card.interval, 10);
+        assert_eq!(young_card.queue, CardQueue::Suspended);
+        assert!(young_tags.iter().any(|tag| tag == LEECH_TAG));
+        assert!(young_tags.iter().any(|tag| tag == AUTO_SUSPEND_TAG));
 
         Ok(())
     }

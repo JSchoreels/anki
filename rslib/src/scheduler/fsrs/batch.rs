@@ -266,6 +266,7 @@ mod test {
                     include_same_day_reviews: true,
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
+                    existing_card_input: None,
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
                     target_counts: TrainingTargetCounts {
@@ -317,6 +318,7 @@ mod test {
                     include_same_day_reviews: true,
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
+                    existing_card_input: None,
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
@@ -332,6 +334,7 @@ mod test {
                     include_same_day_reviews: true,
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
+                    existing_card_input: None,
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),

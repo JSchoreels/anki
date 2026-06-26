@@ -59,6 +59,108 @@ export enum SimulateWorkloadSubgraph {
     weightedMemorized,
 }
 
+type WorkloadComparisonMode = "fixed" | "adr";
+
+function workloadComparisonLabel(
+    labelName: string | undefined,
+): { family: string; mode: WorkloadComparisonMode } | undefined {
+    if (!labelName) {
+        return undefined;
+    }
+
+    const match = labelName.match(/\s+\((Fixed DR|ADR)\)(\))?$/);
+    if (!match) {
+        return undefined;
+    }
+
+    return {
+        family: labelName.replace(/\s+\((Fixed DR|ADR)\)(\))?$/, "$2"),
+        mode: match[1] === "ADR" ? "adr" : "fixed",
+    };
+}
+
+function cheapestAdrCostForMemorizedTarget(
+    adrPoints: WorkloadPoint[],
+    targetMemorized: number,
+): number | undefined {
+    const eligibleCosts = adrPoints
+        .filter(
+            (point) =>
+                Number.isFinite(point.timeCost)
+                && Number.isFinite(point.memorized)
+                && point.memorized >= targetMemorized,
+        )
+        .map((point) => point.timeCost);
+
+    return min(eligibleCosts);
+}
+
+export function workloadSameMemorizedSavings(data: WorkloadPoint[]): TableDatum[] {
+    const curves = new Map<string, { fixed: WorkloadPoint[]; adr: WorkloadPoint[] }>();
+
+    for (const point of data) {
+        if (!point) {
+            continue;
+        }
+        const label = workloadComparisonLabel(point.labelName);
+        if (!label) {
+            continue;
+        }
+        const curve = curves.get(label.family) ?? { fixed: [], adr: [] };
+        curve[label.mode].push(point);
+        curves.set(label.family, curve);
+    }
+
+    const savings: number[] = [];
+    for (const { fixed, adr } of curves.values()) {
+        if (fixed.length === 0 || adr.length === 0) {
+            continue;
+        }
+        for (const fixedPoint of fixed) {
+            if (
+                !Number.isFinite(fixedPoint.timeCost)
+                || fixedPoint.timeCost <= 0
+                || !Number.isFinite(fixedPoint.memorized)
+            ) {
+                continue;
+            }
+            const adrCost = cheapestAdrCostForMemorizedTarget(
+                adr,
+                fixedPoint.memorized,
+            );
+            if (adrCost === undefined) {
+                continue;
+            }
+            savings.push((fixedPoint.timeCost - adrCost) / fixedPoint.timeCost);
+        }
+    }
+
+    if (savings.length === 0) {
+        return [];
+    }
+
+    const formatter = createLocaleNumberFormat({
+        style: "percent",
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+    });
+    const average = sumBy(savings) / savings.length;
+    const best = max(savings)!;
+    const worst = min(savings)!;
+    const improved = savings.filter((saving) => saving > 0).length;
+
+    return [
+        {
+            label: "ADR same-memorized saving",
+            value: `${formatter.format(average)} average (${improved}/${savings.length} fixed-DR targets cheaper)`,
+        },
+        {
+            label: "ADR same-memorized range",
+            value: `${formatter.format(worst)} to ${formatter.format(best)}`,
+        },
+    ];
+}
+
 export function renderWorkloadChart(
     svgElem: SVGElement,
     bounds: GraphBounds,
@@ -79,8 +181,7 @@ export function renderWorkloadChart(
     const subgraph_data = {
         [SimulateWorkloadSubgraph.ratio]: validData.map((d) => ({
             ...d,
-            y: (60 * 60 * (d.memorized - d.reviewless_end_memorized))
-                / d.timeCost,
+            y: (60 * 60 * (d.memorized - d.reviewless_end_memorized)) / d.timeCost,
         })),
         [SimulateWorkloadSubgraph.weightedRatio]: validData.map((d) => ({
             ...d,
@@ -427,11 +528,7 @@ function _renderSimulationChart<
                 const label = groupLabels.get(Number(key)) ?? `#${key}`;
                 tooltipContent += `<span style="color:${
                     color[(parseInt(key) - 1) % color.length]
-                }">■</span> ${label}: ${
-                    formatY(
-                        value,
-                    )
-                }<br>`;
+                }">■</span> ${label}: ${formatY(value)}<br>`;
             }
         }
 

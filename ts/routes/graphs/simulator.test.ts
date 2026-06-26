@@ -5,7 +5,12 @@
 import { expect, test } from "vitest";
 
 import type { GraphBounds } from "./graph-helpers";
-import { renderWorkloadChart, SimulateWorkloadSubgraph, type WorkloadPoint } from "./simulator";
+import {
+    renderWorkloadChart,
+    SimulateWorkloadSubgraph,
+    type WorkloadPoint,
+    workloadSameMemorizedSavings,
+} from "./simulator";
 
 function makeSvg(): SVGElement {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -29,6 +34,25 @@ const bounds: GraphBounds = {
     marginTop: 20,
     marginBottom: 25,
 };
+
+function workloadPoint(
+    labelName: string,
+    memorized: number,
+    timeCost: number,
+): WorkloadPoint {
+    return {
+        x: memorized,
+        timeCost,
+        count: 10,
+        memorized,
+        weightedMemorized: memorized,
+        reviewless_end_memorized: 0,
+        reviewless_end_weighted_memorized: 0,
+        label: labelName.includes("ADR") ? 2 : 1,
+        labelName,
+        learnSpan: 365,
+    };
+}
 
 test("renderWorkloadChart handles empty memorized data without throwing", () => {
     const svg = makeSvg();
@@ -111,4 +135,27 @@ test("renderWorkloadChart handles weighted workload metrics", () => {
             SimulateWorkloadSubgraph.weightedRatio,
         )
     ).not.toThrow();
+});
+
+test("workloadSameMemorizedSavings compares ADR cost against fixed DR memory targets", () => {
+    const table = workloadSameMemorizedSavings([
+        workloadPoint("Yomitan (Fixed DR)", 50, 100),
+        workloadPoint("Yomitan (Fixed DR)", 80, 200),
+        workloadPoint("Yomitan (ADR)", 50, 80),
+        workloadPoint("Yomitan (ADR)", 80, 160),
+    ]);
+
+    expect(table).toHaveLength(2);
+    expect(table[0].label).toBe("ADR same-memorized saving");
+    expect(table[0].value).toContain("20.0%");
+    expect(table[0].value).toContain("2/2");
+});
+
+test("workloadSameMemorizedSavings pairs nested preset workload labels", () => {
+    const table = workloadSameMemorizedSavings([
+        workloadPoint("Young cards (Yomitan (Fixed DR))", 60, 100),
+        workloadPoint("Young cards (Yomitan (ADR))", 60, 90),
+    ]);
+
+    expect(table[0].value).toContain("10.0%");
 });

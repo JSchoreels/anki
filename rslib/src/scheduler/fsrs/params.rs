@@ -36,14 +36,17 @@ use fsrs::FSRS;
 use itertools::Itertools;
 use prost::Message;
 
+use crate::card::Card;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MAX;
 use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MIN;
+use crate::scheduler::fsrs::memory_state::fsrs_items_for_memory_states;
 use crate::scheduler::fsrs::review_time_model::build_help_me_decide_review_time_model_from_revlogs;
 use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
+use crate::scheduler::fsrs::simulator::is_included_card;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
@@ -109,9 +112,20 @@ pub(crate) struct PreparedComputeParams {
     pub include_same_day_reviews: bool,
     pub dynamic_desired_retention_enabled: bool,
     pub simulator_config: SimulatorConfig,
+    pub existing_card_input: Option<ExistingCardInput>,
     pub items: Vec<FSRSItem>,
     pub item_card_ids: Vec<i64>,
     pub target_counts: TrainingTargetCounts,
+}
+
+pub(crate) struct ExistingCardInput {
+    pub cards: Vec<Card>,
+    pub revlogs: Vec<RevlogEntry>,
+    pub next_day_at: TimestampSecs,
+    pub days_elapsed: i32,
+    pub ignore_revlogs_before: TimestampMillis,
+    pub historical_retention: f32,
+    pub desired_retention: f32,
 }
 
 pub(crate) struct PrepareComputeParamsInput<'a> {
@@ -122,6 +136,8 @@ pub(crate) struct PrepareComputeParamsInput<'a> {
     pub include_same_day_reviews: Option<bool>,
     pub model_version_override: Option<ComputeParametersVersion>,
     pub dynamic_desired_retention_enabled: bool,
+    pub historical_retention: f32,
+    pub desired_retention: f32,
     pub dynamic_desired_retention_simulator_options: DynamicDesiredRetentionSimulatorOptions,
 }
 
@@ -455,6 +471,7 @@ pub(crate) fn compute_params_from_prepared(
         include_same_day_reviews,
         dynamic_desired_retention_enabled,
         simulator_config,
+        existing_card_input,
         items,
         item_card_ids,
         target_counts: _,
@@ -499,11 +516,15 @@ pub(crate) fn compute_params_from_prepared(
         &current_params,
         compute_parameters(input)?,
     );
+    let existing_cards = existing_card_input
+        .map(|input| existing_cards_for_dynamic_desired_retention(input, &params))
+        .transpose()?
+        .unwrap_or_default();
     let dynamic_desired_retention = train_dynamic_desired_retention(
         dynamic_desired_retention_enabled,
         model_version,
         &simulator_config,
-        &items,
+        &existing_cards,
         &params,
         progress,
         progress_phase.as_ref(),
@@ -581,7 +602,7 @@ fn train_dynamic_desired_retention(
     enabled: bool,
     model_version: ComputeParametersVersion,
     simulator_config: &SimulatorConfig,
-    _items: &[FSRSItem],
+    existing_cards: &[fsrs::Card],
     params: &[f32],
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
     progress_phase: Option<&SharedComputeParamsProgressPhase>,
@@ -601,13 +622,34 @@ fn train_dynamic_desired_retention(
         progress,
         ..Default::default()
     };
-    let result = CostAdrPolicy::train_single_user(simulator_config, params, &training_config)?;
-    let calibration_points = result.policy.calibrate_average_desired_retention_range(
-        simulator_config,
-        params,
-        DYNAMIC_DR_CALIBRATION_POINT_COUNT,
-        training_config.simulation_seed,
-    )?;
+    let result = if existing_cards.is_empty() {
+        CostAdrPolicy::train_single_user(simulator_config, params, &training_config)?
+    } else {
+        CostAdrPolicy::train_single_user_with_existing_cards(
+            simulator_config,
+            params,
+            &training_config,
+            existing_cards,
+        )?
+    };
+    let calibration_points = if existing_cards.is_empty() {
+        result.policy.calibrate_average_desired_retention_range(
+            simulator_config,
+            params,
+            DYNAMIC_DR_CALIBRATION_POINT_COUNT,
+            training_config.simulation_seed,
+        )?
+    } else {
+        result
+            .policy
+            .calibrate_average_desired_retention_range_with_existing_cards(
+                simulator_config,
+                params,
+                DYNAMIC_DR_CALIBRATION_POINT_COUNT,
+                training_config.simulation_seed,
+                existing_cards,
+            )?
+    };
     let fsrs_equivalent_points = fsrs_equivalent_desired_retention_points(
         &training_config.baseline_desired_retentions,
         &result.baseline_metrics,
@@ -627,6 +669,48 @@ fn train_dynamic_desired_retention(
         bounds,
     )
     .map(Some)
+}
+
+fn existing_cards_for_dynamic_desired_retention(
+    input: ExistingCardInput,
+    params: &[f32],
+) -> Result<Vec<fsrs::Card>> {
+    let fsrs = FSRS::new(params)?;
+    let mut items_by_card = fsrs_items_for_memory_states(
+        &fsrs,
+        params,
+        input.revlogs,
+        input.next_day_at,
+        input.historical_retention,
+        input.ignore_revlogs_before,
+    )?
+    .into_iter()
+    .collect::<HashMap<_, _>>();
+    let shared_params = Arc::new(params.to_vec());
+    let converted_cards = input
+        .cards
+        .into_iter()
+        .filter(is_included_card)
+        .map(|mut card| -> Result<Option<fsrs::Card>> {
+            let item = items_by_card.remove(&card.id).flatten();
+            card.set_memory_state(&fsrs, params, item, input.historical_retention)?;
+            let Some(memory_state) = card.memory_state else {
+                return Ok(None);
+            };
+            card.desired_retention = Some(input.desired_retention);
+            Ok(Card::convert_with_options(
+                card,
+                input.days_elapsed,
+                memory_state,
+                input.desired_retention,
+                &shared_params,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(converted_cards)
 }
 
 const DYNAMIC_DR_CALIBRATION_POINT_COUNT: usize = 16;
@@ -826,6 +910,8 @@ impl Collection {
             include_same_day_reviews,
             model_version_override,
             dynamic_desired_retention_enabled,
+            historical_retention: 0.9,
+            desired_retention: 0.9,
             dynamic_desired_retention_simulator_options: DynamicDesiredRetentionSimulatorOptions {
                 review_limit: dynamic_desired_retention_review_limit,
                 max_cost_perday_minutes: dynamic_desired_retention_max_cost_perday_minutes,
@@ -905,6 +991,8 @@ impl Collection {
             include_same_day_reviews,
             model_version_override,
             dynamic_desired_retention_enabled,
+            historical_retention,
+            desired_retention,
             dynamic_desired_retention_simulator_options,
         } = input;
         let timing = self.timing_today()?;
@@ -931,6 +1019,24 @@ impl Collection {
         let model_version = resolved_model_version(current_params, model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
+        let existing_card_input = if dynamic_desired_retention_enabled
+            && model_version == ComputeParametersVersion::Fsrs7
+        {
+            let guard = self.search_cards_into_table(search, SortMode::NoOrder)?;
+            let cards = guard.col.storage.all_searched_cards()?;
+            drop(guard);
+            Some(ExistingCardInput {
+                cards,
+                revlogs: revlogs.clone(),
+                next_day_at: timing.next_day_at,
+                days_elapsed: timing.days_elapsed as i32,
+                ignore_revlogs_before,
+                historical_retention,
+                desired_retention,
+            })
+        } else {
+            None
+        };
         let training_items = fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
@@ -946,6 +1052,7 @@ impl Collection {
             include_same_day_reviews,
             dynamic_desired_retention_enabled,
             simulator_config,
+            existing_card_input,
             items,
             item_card_ids: card_ids.unwrap_or_default(),
             target_counts,
@@ -1568,6 +1675,7 @@ pub(crate) mod tests {
                 include_same_day_reviews: true,
                 dynamic_desired_retention_enabled: false,
                 simulator_config: Default::default(),
+                existing_card_input: None,
                 items: vec![],
                 item_card_ids: vec![],
                 target_counts: TrainingTargetCounts::default(),

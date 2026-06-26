@@ -3,6 +3,7 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
+    import { DeckConfig_Config_LeechAction } from "@generated/anki/deck_config_pb";
     import * as tr from "@generated/ftl";
     import { HelpPage } from "@tslib/help-page";
     import type Carousel from "bootstrap/js/dist/carousel";
@@ -69,6 +70,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         leechAction: {
             title: tr.schedulingLeechAction(),
             help: tr.deckConfigLeechActionTooltip(),
+            url: HelpPage.Leeches.waiting,
+        },
+        leechOnlyIfYoung: {
+            title: tr.deckConfigLeechOnlyIfYoung(),
+            help: tr.deckConfigLeechOnlyIfYoungTooltip(),
             url: HelpPage.Leeches.waiting,
         },
     };
@@ -195,5 +201,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </EnumSelectorRow>
         </Item>
+
+        {#if $config.leechAction === DeckConfig_Config_LeechAction.SUSPEND}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.leechOnlyIfYoung}
+                    defaultValue={defaults.leechOnlyIfYoung}
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("leechOnlyIfYoung"),
+                            )}
+                    >
+                        {settings.leechOnlyIfYoung.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

@@ -153,7 +153,10 @@ mod test {
             );
 
             let note = col.storage.get_note(nid)?.unwrap();
-            assert_eq!(note.tags, vec!["leech".to_string()]);
+            assert_eq!(
+                note.tags,
+                vec!["auto-suspend".to_string(), "leech".to_string()]
+            );
             assert!(!col.storage.all_tags()?.is_empty());
 
             let deck = col.get_deck(DeckId(1))?.unwrap();

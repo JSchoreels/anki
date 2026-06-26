@@ -20,6 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         renderWorkloadChart,
         type Point,
         type WorkloadPoint,
+        workloadSameMemorizedSavings,
     } from "../graphs/simulator";
     import type {
         ComputeOptimalRetentionResponse,
@@ -394,12 +395,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }),
                 );
 
-                tableData = renderWorkloadChart(
-                    svg as SVGElement,
-                    bounds,
-                    points as WorkloadPoint[],
-                    simulateWorkloadSubgraph,
-                );
+                tableData = [
+                    ...renderWorkloadChart(
+                        svg as SVGElement,
+                        bounds,
+                        points as WorkloadPoint[],
+                        simulateWorkloadSubgraph,
+                    ),
+                    ...workloadSameMemorizedSavings(points as WorkloadPoint[]),
+                ];
             }
         }
     }
@@ -741,13 +745,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         const render_function = workload ? renderWorkloadChart : renderSimulationChart;
 
-        tableData = render_function(
+        const chartTableData = render_function(
             svg as SVGElement,
             bounds,
             // This cast shouldn't matter because we aren't switching between modes in the same modal
             pointsToRender as WorkloadPoint[],
             (workload ? simulateWorkloadSubgraph : simulateSubgraph) as any as never,
         );
+        tableData = workload
+            ? [
+                  ...chartTableData,
+                  ...workloadSameMemorizedSavings(pointsToRender as WorkloadPoint[]),
+              ]
+            : chartTableData;
     }
 
     $: easyDayPercentages = [...$config.easyDaysPercentages];

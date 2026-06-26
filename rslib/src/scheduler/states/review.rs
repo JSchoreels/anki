@@ -18,6 +18,7 @@ pub const MINIMUM_EASE_FACTOR: f32 = 1.3;
 pub const EASE_FACTOR_AGAIN_DELTA: f32 = -0.2;
 pub const EASE_FACTOR_HARD_DELTA: f32 = -0.15;
 pub const EASE_FACTOR_EASY_DELTA: f32 = 0.15;
+const YOUNG_LEECH_THRESHOLD_DAYS: u32 = 21;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReviewState {
@@ -109,10 +110,12 @@ impl ReviewState {
 
     fn answer_again(self, ctx: &StateContext) -> CardState {
         let lapses = self.lapses + 1;
-        let leeched = leech_threshold_met(lapses, ctx.leech_threshold);
         let (scheduled_days, fuzz_delta_days, memory_state) = self.failing_review_interval(ctx);
+        let stored_scheduled_days = scheduled_days.round().max(1.0) as u32;
+        let leeched = leech_threshold_met(lapses, ctx.leech_threshold)
+            && leech_young_enough(stored_scheduled_days, ctx);
         let again_review = ReviewState {
-            scheduled_days: scheduled_days.round().max(1.0) as u32,
+            scheduled_days: stored_scheduled_days,
             fuzz_delta_days,
             elapsed_days: 0,
             ease_factor: (self.ease_factor + EASE_FACTOR_AGAIN_DELTA).max(MINIMUM_EASE_FACTOR),
@@ -344,6 +347,17 @@ fn leech_threshold_met(lapses: u32, threshold: u32) -> bool {
     }
 }
 
+fn leech_young_enough(scheduled_days: u32, ctx: &StateContext) -> bool {
+    if !ctx.leech_only_if_young {
+        true
+    } else if ctx.fsrs_next_states.is_some() {
+        ctx.fsrs_again_s90
+            .is_some_and(|stability| stability < YOUNG_LEECH_THRESHOLD_DAYS as f32)
+    } else {
+        scheduled_days < YOUNG_LEECH_THRESHOLD_DAYS
+    }
+}
+
 /// Transform the provided hard/good/easy interval.
 /// - Apply configured interval multiplier if not FSRS.
 /// - Apply fuzz.
@@ -405,6 +419,50 @@ mod test {
         assert!(leech_threshold_met(1, 1));
         assert!(leech_threshold_met(2, 1));
         assert!(leech_threshold_met(3, 1));
+    }
+
+    #[test]
+    fn leech_only_if_young_uses_sm2_interval() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.leech_threshold = 2;
+        ctx.leech_only_if_young = true;
+        let state = ReviewState {
+            scheduled_days: 100,
+            elapsed_days: 100,
+            lapses: 1,
+            ..Default::default()
+        };
+
+        ctx.lapse_multiplier = 0.5;
+        assert!(!state.answer_again(&ctx).leeched());
+
+        ctx.lapse_multiplier = 0.1;
+        assert!(state.answer_again(&ctx).leeched());
+    }
+
+    #[test]
+    fn leech_only_if_young_uses_fsrs_stability() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.leech_threshold = 2;
+        ctx.leech_only_if_young = true;
+        ctx.fsrs_next_states = Some(NextStates {
+            again: fsrs_item_state(10.0),
+            hard: fsrs_item_state(11.0),
+            good: fsrs_item_state(12.0),
+            easy: fsrs_item_state(13.0),
+        });
+        let state = ReviewState {
+            scheduled_days: 100,
+            elapsed_days: 100,
+            lapses: 1,
+            ..Default::default()
+        };
+
+        ctx.fsrs_again_s90 = Some(21.0);
+        assert!(!state.answer_again(&ctx).leeched());
+
+        ctx.fsrs_again_s90 = Some(20.99);
+        assert!(state.answer_again(&ctx).leeched());
     }
 
     fn fsrs_item_state(interval: f32) -> ItemState {

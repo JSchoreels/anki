@@ -71,6 +71,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     interday_learning_mix: ReviewMix::MixWithReviews as i32,
     leech_action: LeechAction::TagOnly as i32,
     leech_threshold: 8,
+    leech_only_if_young: false,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,

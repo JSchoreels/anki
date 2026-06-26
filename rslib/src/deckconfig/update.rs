@@ -545,6 +545,8 @@ impl Collection {
                 dynamic_desired_retention_enabled: config
                     .inner
                     .fsrs_dynamic_desired_retention_enabled,
+                historical_retention: config.inner.historical_retention,
+                desired_retention: config.inner.desired_retention,
                 dynamic_desired_retention_simulator_options:
                     DynamicDesiredRetentionSimulatorOptions::default(),
             })?;
