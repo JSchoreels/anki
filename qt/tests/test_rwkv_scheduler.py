@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -312,6 +313,39 @@ def test_reviewer_rwkv_enabled_without_interval_keeps_scheduler_interval() -> No
     assert diagnostics.retrievability_source == "FSRS (RWKV interval unavailable)"
 
 
+def test_reviewer_rwkv_uses_resolved_fsrs_preset_for_card() -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer(resolved_preset_id="addon:test:medical")
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, card)
+
+    assert runtime.query_inputs[0].identity.preset_id == _expected_preset_hash(
+        "addon:test:medical"
+    )
+
+
+def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=card,
+        fallback_source="FSRS",
+    ) == [
+        ("RWKV computed R", "45%"),
+        ("Retrievability source", "RWKV"),
+    ]
+    assert runtime.query_inputs[0].current_normal_state_kind == "review"
+    assert runtime.query_inputs[0].current_elapsed_days == 7
+
+
 def test_reviewer_rwkv_prediction_is_a_query_until_review_recorded() -> None:
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
@@ -541,10 +575,23 @@ class _SharedReviewRuntime:
         )
 
 
-def _rwkv_reviewer(*, rwkv_review_enabled: bool = True) -> SimpleNamespace:
+def _rwkv_reviewer(
+    *,
+    rwkv_review_enabled: bool = True,
+    resolved_preset_id: str | None = "1000",
+) -> SimpleNamespace:
+    states = SchedulingStates()
+    states.current.normal.review.elapsed_days = 7
+
     class Scheduler:
+        def __init__(self) -> None:
+            self.states = states
+
         def _timing_today(self) -> SimpleNamespace:
             return SimpleNamespace(days_elapsed=42)
+
+        def get_scheduling_states(self, card_id: int) -> SchedulingStates:
+            return self.states
 
     class Decks:
         def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
@@ -553,17 +600,24 @@ def _rwkv_reviewer(*, rwkv_review_enabled: bool = True) -> SimpleNamespace:
                 "rwkvReviewEnabled": rwkv_review_enabled,
             }
 
-    states = SchedulingStates()
-    states.current.normal.review.elapsed_days = 7
+    col = SimpleNamespace(
+        sched=Scheduler(),
+        decks=Decks(),
+    )
+    if resolved_preset_id is not None:
+        col.fsrs_preset_for_card = lambda card_id: SimpleNamespace(
+            id=resolved_preset_id
+        )
+
     return SimpleNamespace(
         _v3=SimpleNamespace(states=states),
-        mw=SimpleNamespace(
-            col=SimpleNamespace(
-                sched=Scheduler(),
-                decks=Decks(),
-            )
-        ),
+        mw=SimpleNamespace(col=col),
     )
+
+
+def _expected_preset_hash(preset_id: str) -> int:
+    digest = hashlib.blake2b(preset_id.encode("utf8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") & ((1 << 63) - 1)
 
 
 def _rwkv_card(

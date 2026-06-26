@@ -224,18 +224,16 @@ class TestEditorPageCSP:
 
 
 class TestCardStats:
-    def test_card_info_includes_live_rwkv_diagnostics(
+    def test_card_info_includes_rwkv_diagnostics_without_reviewer_cache(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import aqt
-        from anki.scheduler.v3 import SchedulingState, SchedulingStates
         from anki.stats_pb2 import CardStatsResponse
         from aqt.mediasrv import app, card_stats
         from aqt.rwkv_scheduler import (
             RwkvIntervalOverride,
             RwkvReviewPrediction,
             set_reviewer_backend,
-            update_reviewer_scheduling_states,
         )
 
         card = SimpleNamespace(id=123, did=10)
@@ -283,13 +281,9 @@ class TestCardStats:
         mw = SimpleNamespace(col=collection)
         reviewer = SimpleNamespace(mw=mw)
         mw.reviewer = reviewer
-        states = SchedulingStates()
-        states.good.CopyFrom(SchedulingState())
-        states.good.normal.review.scheduled_days = 3
 
         previous = set_reviewer_backend(Backend())
         try:
-            update_reviewer_scheduling_states(states, reviewer, card)
             monkeypatch.setattr(aqt, "mw", mw)
             with app.test_request_context(data=b""):
                 raw_output = card_stats()

@@ -1277,6 +1277,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     <Warning warning={lastOptimizationWarning} className="alert-warning" />
 
+    <SwitchRow
+        bind:value={$config.rwkvReviewEnabled}
+        defaultValue={defaults.rwkvReviewEnabled}
+    >
+        <SettingTitle on:click={() => openHelpModal("rwkvReview")}>
+            {tr.deckConfigRwkvReviewEnabled()}
+        </SettingTitle>
+    </SwitchRow>
+
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
         <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>
             <SettingTitle>Include same-day reviews in FSRS-7</SettingTitle>

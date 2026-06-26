@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from errno import EPROTOTYPE
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import flask
@@ -875,11 +876,15 @@ def save_custom_colours() -> bytes:
 def card_stats() -> bytes:
     start = time.monotonic()
     hook_count = gui_hooks.card_info_will_add_rows.count()
-    reviewer = getattr(aqt.mw, "reviewer", None)
+    reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
     backend_start = time.monotonic()
     raw_output = aqt.mw.col._backend.card_stats_raw(request.data)
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
-    if hook_count == 0 and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer):
+    if (
+        hook_count == 0
+        and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer)
+        and not aqt.rwkv_scheduler.has_reviewer_backend()
+    ):
         logger.debug(
             "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
             hook_count,

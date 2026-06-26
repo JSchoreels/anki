@@ -76,6 +76,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             sched: HelpItemScheduler.FSRS,
             global: true,
         },
+        rwkvReview: {
+            title: tr.deckConfigRwkvReviewEnabled(),
+            help: tr.deckConfigRwkvReviewEnabledTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
     };
     const helpSections: HelpItem[] = Object.values(settings);
 

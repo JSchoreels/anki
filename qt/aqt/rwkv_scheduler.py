@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Protocol
 
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
@@ -326,6 +328,10 @@ def has_reviewer_prediction(reviewer: object) -> bool:
     )
 
 
+def has_reviewer_backend() -> bool:
+    return configure_reviewer_backend_from_environment()
+
+
 def rwkv_card_info_rows(
     *,
     reviewer: object,
@@ -337,6 +343,12 @@ def rwkv_card_info_rows(
         card,
         fallback_source=fallback_source,
     )
+    if diagnostics is None:
+        diagnostics = _queried_card_info_diagnostics(
+            reviewer,
+            card,
+            fallback_source=fallback_source,
+        )
     if diagnostics is None:
         return []
 
@@ -376,7 +388,7 @@ def rwkv_review_identity(
         card_id=card_id,
         note_id=_int_attr(card, "nid"),
         deck_id=deck_id,
-        preset_id=_preset_id(reviewer, deck_id),
+        preset_id=_preset_id(reviewer, card_id, deck_id),
     )
 
 
@@ -522,6 +534,86 @@ def _current_reviewer_prediction(
     return prediction
 
 
+def _queried_card_info_diagnostics(
+    reviewer: object,
+    card: object,
+    *,
+    fallback_source: str,
+) -> RwkvReviewerDiagnostics | None:
+    if _reviewer_backend is None:
+        return None
+
+    card_id = _card_id(card)
+    if card_id is None:
+        return None
+
+    try:
+        context = _card_info_reviewer_context(reviewer, card)
+        review_enabled = rwkv_review_enabled(context, card)
+        prediction = _reviewer_backend.predict_review(
+            reviewer=context,
+            card=card,
+        )
+        if prediction is None:
+            return None
+
+        _validate_prediction(prediction)
+        reviewer_prediction = RwkvReviewerPrediction(
+            card_id=card_id,
+            retrievability=prediction.retrievability,
+            review_enabled=review_enabled,
+            interval_override_used=(
+                review_enabled
+                and _has_interval_overrides(prediction.interval_overrides)
+            ),
+        )
+        return RwkvReviewerDiagnostics(
+            retrievability=reviewer_prediction.retrievability,
+            retrievability_source=_retrievability_source(
+                reviewer_prediction,
+                fallback_source,
+            ),
+        )
+    except Exception:
+        logger.exception("RWKV card info prediction failed")
+        return None
+
+
+def _card_info_reviewer_context(reviewer: object, card: object) -> object:
+    states = _scheduling_states_for_card(reviewer, card)
+    if states is None:
+        return reviewer
+
+    return SimpleNamespace(
+        mw=getattr(reviewer, "mw", None),
+        _v3=SimpleNamespace(states=states),
+    )
+
+
+def _scheduling_states_for_card(
+    reviewer: object,
+    card: object,
+) -> SchedulingStates | None:
+    card_id = _card_id(card)
+    if card_id is None:
+        return None
+
+    mw = getattr(reviewer, "mw", None)
+    col = getattr(mw, "col", None)
+    sched = getattr(col, "sched", None)
+    get_scheduling_states = getattr(sched, "get_scheduling_states", None)
+    if not callable(get_scheduling_states):
+        return None
+
+    try:
+        states = get_scheduling_states(card_id)
+    except Exception:
+        logger.debug("failed to read scheduling states for RWKV card info")
+        return None
+
+    return states if isinstance(states, SchedulingStates) else None
+
+
 def _retrievability_source(
     prediction: RwkvReviewerPrediction,
     fallback_source: str,
@@ -557,7 +649,15 @@ def _deck_id(card: object) -> int | None:
     return _int_attr(card, "did")
 
 
-def _preset_id(reviewer: object, deck_id: int | None) -> int | None:
+def _preset_id(
+    reviewer: object,
+    card_id: int,
+    deck_id: int | None,
+) -> int | None:
+    resolved_preset_id = _resolved_fsrs_preset_id(reviewer, card_id)
+    if resolved_preset_id is not None:
+        return _stable_preset_id(resolved_preset_id)
+
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if isinstance(deck_config, dict):
         value = deck_config.get("id")
@@ -565,6 +665,30 @@ def _preset_id(reviewer: object, deck_id: int | None) -> int | None:
             return value
 
     return None
+
+
+def _resolved_fsrs_preset_id(reviewer: object, card_id: int) -> str | None:
+    mw = getattr(reviewer, "mw", None)
+    col = getattr(mw, "col", None)
+    fsrs_preset_for_card = getattr(col, "fsrs_preset_for_card", None)
+    if not callable(fsrs_preset_for_card):
+        return None
+
+    try:
+        preset_id = getattr(fsrs_preset_for_card(card_id), "id", None)
+    except Exception:
+        logger.debug("failed to resolve FSRS preset for RWKV review input")
+        return None
+
+    return preset_id if isinstance(preset_id, str) and preset_id else None
+
+
+def _stable_preset_id(preset_id: str) -> int:
+    if preset_id.isdecimal():
+        return int(preset_id)
+
+    digest = hashlib.blake2b(preset_id.encode("utf8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") & ((1 << 63) - 1)
 
 
 def _deck_config_for_deck_id(
