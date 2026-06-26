@@ -17,6 +17,7 @@ from typing import Any, Literal, Match, Union, cast
 import aqt
 import aqt.browser
 import aqt.operations
+import aqt.rwkv_scheduler
 from anki.cards import Card, CardId
 from anki.collection import Config, OpChanges, OpChangesWithCount
 from anki.lang import with_collapsed_whitespace
@@ -198,6 +199,7 @@ class Reviewer:
         self.web.set_bridge_command(self._linkHandler, self)
         self.bottom.web.set_bridge_command(self._linkHandler, ReviewerBottomBar(self))
         self._state_mutation_js = self.mw.col.get_config("cardStateCustomizer")
+        aqt.rwkv_scheduler.configure_reviewer_backend_from_environment()
         self._reps = None
         self._refresh_needed = RefreshNeeded.QUEUES
         self.refresh_if_needed()
@@ -781,6 +783,7 @@ class Reviewer:
 
     def _after_answering(self, ease: Literal[1, 2, 3, 4]) -> None:
         gui_hooks.reviewer_did_answer_card(self, self.card, ease)
+        aqt.rwkv_scheduler.record_reviewer_answer(self, self.card, ease)
         self._answeredIds.append(self.card.id)
         if not self.check_timebox():
             self.nextCard()
@@ -1138,6 +1141,9 @@ timerStopped = false;
         assert isinstance(self.mw.col.sched, V3Scheduler)
         current_before_hooks = self._v3.states.current.SerializeToString()
         current_before_hooks_debug = repr(self._v3.states.current)
+        self._v3.states = aqt.rwkv_scheduler.update_reviewer_scheduling_states(
+            self._v3.states, self, self.card
+        )
         self._v3.states = gui_hooks.reviewer_will_update_scheduling_states(
             self._v3.states, self, self.card
         )

@@ -12,6 +12,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
+    import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
@@ -89,6 +90,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigCustomSchedulingTooltip(),
             url: "https://faqs.ankiweb.net/the-2021-scheduler.html#add-ons-and-custom-scheduling",
             global: true,
+        },
+        rwkvReview: {
+            title: tr.deckConfigRwkvReviewEnabled(),
+            help: tr.deckConfigRwkvReviewEnabledTooltip(),
         },
     };
     const helpSections: HelpItem[] = Object.values(settings);
@@ -344,6 +349,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 ></Warning>
             </Item>
         {/if}
+
+        <Item>
+            <SwitchRow
+                bind:value={$config.rwkvReviewEnabled}
+                defaultValue={defaults.rwkvReviewEnabled}
+            >
+                <SettingTitle
+                    on:click={() =>
+                        openHelpModal(Object.keys(settings).indexOf("rwkvReview"))}
+                >
+                    {settings.rwkvReview.title}
+                </SettingTitle>
+            </SwitchRow>
+        </Item>
 
         <Item>
             <CardStateCustomizer

@@ -55,6 +55,8 @@ struct ForkDeckConfigFields {
     review_fuzz_factor_long: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review_fuzz_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_enabled: Option<bool>,
 }
 
 impl ForkDeckConfigFields {
@@ -106,6 +108,7 @@ impl ForkDeckConfigFields {
             review_fuzz_factor_mid: config.review_fuzz_factor_mid,
             review_fuzz_factor_long: config.review_fuzz_factor_long,
             review_fuzz_enabled: config.review_fuzz_enabled,
+            rwkv_review_enabled: true_only(config.rwkv_review_enabled),
         }
     }
 
@@ -166,6 +169,9 @@ impl ForkDeckConfigFields {
         }
         if let Some(value) = self.review_fuzz_enabled {
             config.review_fuzz_enabled = Some(value);
+        }
+        if let Some(value) = self.rwkv_review_enabled {
+            config.rwkv_review_enabled = value;
         }
     }
 
@@ -251,6 +257,7 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.review_fuzz_factor_mid = None;
     config.review_fuzz_factor_long = None;
     config.review_fuzz_enabled = None;
+    config.rwkv_review_enabled = false;
 }
 
 fn non_empty_vec(values: &[f32]) -> Option<Vec<f32>> {
@@ -297,6 +304,7 @@ mod tests {
             review_fuzz_factor_mid: Some(0.1),
             review_fuzz_factor_long: Some(0.05),
             review_fuzz_enabled: Some(false),
+            rwkv_review_enabled: true,
             ..Default::default()
         }
     }
@@ -314,6 +322,7 @@ mod tests {
             .is_empty());
         assert_eq!(storage_config.fsrs_version, FsrsVersion::Seven as i32);
         assert_eq!(storage_config.review_fuzz_base, None);
+        assert!(!storage_config.rwkv_review_enabled);
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
         assert!(other.get(FORK_FIELDS_KEY).is_some());
@@ -339,6 +348,7 @@ mod tests {
         );
         assert_eq!(decoded.fsrs_version, config.fsrs_version);
         assert_eq!(decoded.review_fuzz_base, config.review_fuzz_base);
+        assert_eq!(decoded.rwkv_review_enabled, config.rwkv_review_enabled);
     }
 
     #[test]

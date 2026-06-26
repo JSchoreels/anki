@@ -115,6 +115,8 @@ pub struct DeckConfSchema11 {
     desired_retention: f32,
     #[serde(default)]
     ignore_revlogs_before_date: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    rwkv_review_enabled: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
     #[serde(default)]
@@ -395,6 +397,7 @@ impl Default for DeckConfSchema11 {
             sm2_retention: 0.9,
             param_search: "".to_string(),
             ignore_revlogs_before_date: "".to_string(),
+            rwkv_review_enabled: false,
             easy_days_percentages: vec![1.0; 7],
         }
     }
@@ -453,6 +456,7 @@ impl From<DeckConfSchema11> for DeckConfig {
             leech_action: c.lapse.leech_action as i32,
             leech_threshold: c.lapse.leech_fails,
             leech_only_if_young: c.lapse.leech_only_if_young,
+            rwkv_review_enabled: c.rwkv_review_enabled,
             disable_autoplay: !c.autoplay,
             cap_answer_time_to_secs: c.max_taken.max(0) as u32,
             show_timer: c.timer != 0,
@@ -637,6 +641,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
             sm2_retention: i.historical_retention,
             param_search: i.param_search,
             ignore_revlogs_before_date: i.ignore_revlogs_before_date,
+            rwkv_review_enabled: i.rwkv_review_enabled,
             easy_days_percentages: i.easy_days_percentages,
         }
     }
@@ -683,6 +688,7 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "sm2Retention",
     "weightSearch",
     "ignoreRevlogsBeforeDate",
+    "rwkvReviewEnabled",
     "easyDaysPercentages",
 };
 

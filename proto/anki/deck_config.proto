@@ -188,6 +188,7 @@ message DeckConfig {
     LeechAction leech_action = 21;
     uint32 leech_threshold = 22;
     bool leech_only_if_young = 66;
+    bool rwkv_review_enabled = 67;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

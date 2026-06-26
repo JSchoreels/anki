@@ -82,10 +82,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 label: tr2.cardStatsFsrsDifficulty(),
                 value: `${difficulty}%`,
             });
-            if (stats.fsrsRetrievability) {
+            if (stats.fsrsRetrievability != null) {
                 const retrievability = (stats.fsrsRetrievability * 100).toFixed(0);
                 statsRows.push({
-                    label: tr2.cardStatsFsrsRetrievability(),
+                    label: tr2.cardStatsFsrsComputedR(),
                     value: `${retrievability}%`,
                 });
             }

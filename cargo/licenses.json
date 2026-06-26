@@ -2048,6 +2048,14 @@
     "repository": "https://github.com/rust-itertools/itertools"
   },
   {
+    "authors": "bluss",
+    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "itertools",
+    "repository": "https://github.com/rust-itertools/itertools"
+  },
+  {
     "authors": "David Tolnay <dtolnay@gmail.com>",
     "description": "Fast integer primitive to string conversion",
     "license": "Apache-2.0 OR MIT",
@@ -4296,6 +4304,14 @@
     "repository": "https://github.com/unicode-rs/unicode-width"
   },
   {
+    "authors": "kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
+    "description": "Determine displayed width of `char` and `str` types according to Unicode Standard Annex #11 rules.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "unicode-width",
+    "repository": "https://github.com/unicode-rs/unicode-width"
+  },
+  {
     "authors": "erick.tryzelaar <erick.tryzelaar@gmail.com>|kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
     "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31.",
     "license": "Apache-2.0 OR MIT",
@@ -4821,6 +4837,14 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "windows-strings",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "authors": "Microsoft",
+    "description": "Rust for Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-sys",
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {

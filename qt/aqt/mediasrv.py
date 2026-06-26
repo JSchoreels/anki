@@ -29,6 +29,7 @@ from waitress.server import create_server
 import aqt
 import aqt.main
 import aqt.operations
+import aqt.rwkv_scheduler
 from anki import hooks
 from anki.cards import CardId
 from anki.collection import OpChanges, OpChangesOnly, Progress, SearchNode
@@ -874,10 +875,11 @@ def save_custom_colours() -> bytes:
 def card_stats() -> bytes:
     start = time.monotonic()
     hook_count = gui_hooks.card_info_will_add_rows.count()
+    reviewer = getattr(aqt.mw, "reviewer", None)
     backend_start = time.monotonic()
     raw_output = aqt.mw.col._backend.card_stats_raw(request.data)
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
-    if hook_count == 0:
+    if hook_count == 0 and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer):
         logger.debug(
             "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
             hook_count,
@@ -893,6 +895,13 @@ def card_stats() -> bytes:
 
     rows: list[CardInfoRow] = []
     card = aqt.mw.col.get_card(CardId(response.card_id))
+    for label, value in aqt.rwkv_scheduler.rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=card,
+        fallback_source=_card_stats_fallback_retrievability_source(response),
+    ):
+        rows.append(CardInfoRow(label=label, value=value))
+
     hook_start = time.monotonic()
     gui_hooks.card_info_will_add_rows(rows, card)
     hook_elapsed_ms = (time.monotonic() - hook_start) * 1000
@@ -911,6 +920,10 @@ def card_stats() -> bytes:
         (time.monotonic() - start) * 1000,
     )
     return response.SerializeToString()
+
+
+def _card_stats_fallback_retrievability_source(response: CardStatsResponse) -> str:
+    return "FSRS" if response.HasField("memory_state") else "SM2"
 
 
 post_handler_list = [

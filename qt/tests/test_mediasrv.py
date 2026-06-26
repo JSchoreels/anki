@@ -224,6 +224,86 @@ class TestEditorPageCSP:
 
 
 class TestCardStats:
+    def test_card_info_includes_live_rwkv_diagnostics(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aqt
+        from anki.scheduler.v3 import SchedulingState, SchedulingStates
+        from anki.stats_pb2 import CardStatsResponse
+        from aqt.mediasrv import app, card_stats
+        from aqt.rwkv_scheduler import (
+            RwkvIntervalOverride,
+            RwkvReviewPrediction,
+            set_reviewer_backend,
+            update_reviewer_scheduling_states,
+        )
+
+        card = SimpleNamespace(id=123, did=10)
+        response = CardStatsResponse(card_id=123)
+
+        class Backend:
+            def predict_review(
+                self,
+                *,
+                reviewer: object,
+                card: object,
+            ) -> RwkvReviewPrediction:
+                return RwkvReviewPrediction(
+                    retrievability=0.61,
+                    interval_overrides=RwkvIntervalOverride(good=4),
+                )
+
+            def review_answered(
+                self,
+                *,
+                reviewer: object,
+                card: object,
+                ease: int,
+            ) -> None:
+                pass
+
+        class RawBackend:
+            def card_stats_raw(self, data: bytes) -> bytes:
+                return response.SerializeToString()
+
+        class Decks:
+            def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+                assert deck_id == 10
+                return {"id": 1, "rwkvReviewEnabled": True}
+
+        class Collection:
+            _backend = RawBackend()
+            decks = Decks()
+
+            def get_card(self, card_id: int) -> object:
+                assert card_id == 123
+                return card
+
+        collection = Collection()
+        mw = SimpleNamespace(col=collection)
+        reviewer = SimpleNamespace(mw=mw)
+        mw.reviewer = reviewer
+        states = SchedulingStates()
+        states.good.CopyFrom(SchedulingState())
+        states.good.normal.review.scheduled_days = 3
+
+        previous = set_reviewer_backend(Backend())
+        try:
+            update_reviewer_scheduling_states(states, reviewer, card)
+            monkeypatch.setattr(aqt, "mw", mw)
+            with app.test_request_context(data=b""):
+                raw_output = card_stats()
+        finally:
+            set_reviewer_backend(previous)
+
+        output = CardStatsResponse()
+        output.ParseFromString(raw_output)
+
+        assert [(row.label, row.value) for row in output.extra_rows] == [
+            ("RWKV computed R", "61%"),
+            ("Retrievability source", "RWKV"),
+        ]
+
     def test_card_info_hook_can_append_rows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
