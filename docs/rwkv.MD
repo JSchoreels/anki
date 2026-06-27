@@ -63,14 +63,16 @@ FSRS retrievability.
 
 After an answer is applied on desktop, the reviewer updates the in-memory RWKV
 state. Every `rwkv_review_refresh_interval` answered reviews, it refreshes the
-transient RWKV score map and re-sorts the existing review entries in the active
-queue. It does not synchronously rebuild the whole RWKV queue map after every
-answer when the refresh interval is greater than `1`, as that can be too
-expensive for large deck trees; the map is fully re-gathered on the next normal
-queue refresh. Due post-answer refreshes run as a background collection task
-after Anki has finished the answer operation bookkeeping, and the next card is
-fetched only after that refresh completes. Skipped post-answer refreshes fetch
-the next card immediately.
+transient RWKV score map and invalidates the active queue so the next queue
+build admits cards from the full scored candidate set. This matters when the
+first queue was built before RWKV scores were ready, or when a refreshed score
+map makes a card outside the previous review-limit slice more urgent. It does
+not synchronously refresh scores after every answer when the refresh interval
+is greater than `1`, as that can be too expensive for large deck trees. Due
+post-answer refreshes run as a background collection task after Anki has
+finished the answer operation bookkeeping, and the next card is fetched only
+after that refresh completes. Skipped post-answer refreshes fetch the next card
+immediately.
 
 When `rwkv_review_refresh_on_exit` is enabled, leaving the reviewer after at
 least one answered card also starts a background RWKV queue-score refresh. This

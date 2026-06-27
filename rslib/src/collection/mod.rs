@@ -19,7 +19,6 @@ use anki_io::create_dir_all;
 
 use crate::browser_table;
 use crate::card::CardId;
-use crate::deckconfig::ReviewCardOrder;
 use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::error::Result;
@@ -256,18 +255,7 @@ impl Collection {
         }
 
         let days_elapsed = self.timing_today()?.days_elapsed;
-        let can_resort_existing_queue =
-            self.state.card_queues.is_some() && self.get_current_deck()?.id == deck_id;
-        if can_resort_existing_queue {
-            let descending = self.rwkv_review_scores_descending(deck_id)?;
-            self.state
-                .card_queues
-                .as_mut()
-                .unwrap()
-                .resort_review_entries_by_retrievability(&scores, descending);
-        } else {
-            self.state.card_queues = None;
-        }
+        self.state.card_queues = None;
 
         self.state.rwkv_review_queue_scores = Some(RwkvReviewQueueScores {
             deck_id,
@@ -275,19 +263,6 @@ impl Collection {
             scores,
         });
         Ok(())
-    }
-
-    fn rwkv_review_scores_descending(&self, deck_id: DeckId) -> Result<bool> {
-        let Some(deck) = self.storage.get_deck(deck_id)? else {
-            return Ok(false);
-        };
-        let Some(config_id) = deck.config_id() else {
-            return Ok(false);
-        };
-        let Some(config) = self.storage.get_deck_config(config_id)? else {
-            return Ok(false);
-        };
-        Ok(config.inner.review_order() == ReviewCardOrder::RetrievabilityDescending)
     }
 
     pub(crate) fn rwkv_review_queue_scores(

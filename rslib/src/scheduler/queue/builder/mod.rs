@@ -1023,7 +1023,7 @@ mod test {
     }
 
     #[test]
-    fn rwkv_score_update_resorts_existing_review_queue_without_rebuild() -> Result<()> {
+    fn rwkv_score_update_rebuilds_review_queue_with_new_scores() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_current_deck(deck.id)?;
@@ -1066,13 +1066,13 @@ mod test {
             HashMap::from([(first, 0.90), (second, 0.05), (future, 0.01)]),
         )?;
 
-        assert_eq!(col.queued_card_ids(10)?, vec![second, first]);
-        assert_eq!(col.counts(), [0, 0, 2]);
+        assert_eq!(col.queued_card_ids(10)?, vec![future, second, first]);
+        assert_eq!(col.counts(), [0, 0, 3]);
         Ok(())
     }
 
     #[test]
-    fn rwkv_score_update_preserves_displayed_review_queue_head() -> Result<()> {
+    fn rwkv_score_update_rebuilds_displayed_review_queue_head() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_current_deck(deck.id)?;
@@ -1103,7 +1103,7 @@ mod test {
 
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.90), (second, 0.05)]))?;
 
-        assert_eq!(col.queued_card_ids(10)?, vec![first, second]);
+        assert_eq!(col.queued_card_ids(10)?, vec![second, first]);
         Ok(())
     }
 
