@@ -334,6 +334,11 @@ deck-config-rwkv-review-refresh-on-exit = RWKV refresh on reviewer exit
 deck-config-rwkv-review-refresh-on-exit-tooltip =
     When enabled, Anki refreshes RWKV queue scores in the background after you
     leave the reviewer, if at least one card was answered.
+deck-config-rwkv-review-allow-same-day-review = Allow same-day RWKV re-review
+deck-config-rwkv-review-allow-same-day-review-tooltip =
+    When enabled, RWKV may select a review card again after it was already
+    answered today, if its RWKV retrievability is at or below the target
+    retention. When disabled, answered cards wait until tomorrow.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 

@@ -33,7 +33,7 @@ git = "https://github.com/ankitects/linkcheck.git"
 rev = "184b2ca50ed39ca43da13f0b830a463861adb9ca"
 
 [workspace.dependencies.fsrs]
-git = "file:///Users/jschoreels/workspace/fsrs-rs"
+git = "https://github.com/JSchoreels/fsrs-rs.git"
 rev = "97ee2aa7d7fd3f2049e337a860a733010d92ad8f"
 
 [workspace.dependencies]
