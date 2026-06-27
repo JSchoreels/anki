@@ -4,6 +4,9 @@
 import { defineConfig } from "@playwright/test";
 
 const MEDIASRV_PORT = process.env.ANKI_API_PORT ?? "40000";
+const ANKI_E2E_SEED_REVIEW_CARDS = process.env.ANKI_E2E_SEED_REVIEW_CARDS ?? "";
+const ANKI_E2E_FAKE_RWKV_BACKEND = process.env.ANKI_E2E_FAKE_RWKV_BACKEND ?? "";
+const ANKI_E2E_SEED_REVIEWS_PER_CARD = process.env.ANKI_E2E_SEED_REVIEWS_PER_CARD ?? "";
 
 const PYENV_PYTHON = process.platform === "win32"
     ? "out\\pyenv\\Scripts\\python.exe"
@@ -31,6 +34,11 @@ export default defineConfig({
         reuseExistingServer: process.env.ANKI_E2E_REUSE_SERVER === "1",
         stdout: "pipe",
         stderr: "pipe",
-        env: { ANKI_API_PORT: MEDIASRV_PORT },
+        env: {
+            ANKI_API_PORT: MEDIASRV_PORT,
+            ANKI_E2E_SEED_REVIEW_CARDS,
+            ANKI_E2E_FAKE_RWKV_BACKEND,
+            ANKI_E2E_SEED_REVIEWS_PER_CARD,
+        },
     },
 });

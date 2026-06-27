@@ -4,6 +4,8 @@
 mod answering;
 mod states;
 
+use std::collections::HashMap;
+
 use anki_proto::cards;
 use anki_proto::generic;
 use anki_proto::scheduler;
@@ -25,9 +27,13 @@ use anki_proto::scheduler::FsrsIntervalAtRetrievabilityVariableBatchResponse;
 use anki_proto::scheduler::FsrsNextIntervalRequest;
 use anki_proto::scheduler::FsrsNextIntervalResponse;
 use anki_proto::scheduler::FsrsPresetForCardResponse;
+use anki_proto::scheduler::FsrsPresetIdsForCardsResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
+use anki_proto::scheduler::RwkvCardInfoScoreRequest;
+use anki_proto::scheduler::RwkvReviewQueueScoresRequest;
+use anki_proto::scheduler::RwkvStatsGraphScoresRequest;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
@@ -46,6 +52,7 @@ use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
+use crate::scheduler::fsrs::params::fsrs_review_retrievability_predictions;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
@@ -349,7 +356,11 @@ impl crate::services::SchedulerService for Collection {
                             .dynamic_desired_retention_max_cost_perday_minutes,
                     },
             })?;
-            response_meta.push((item.id.clone(), item.name.clone()));
+            response_meta.push((
+                item.id.clone(),
+                item.name.clone(),
+                prepared.fsrs_prediction_sources.clone(),
+            ));
             jobs.push(ComputeParamsBatchInput {
                 index,
                 name: item.name,
@@ -361,8 +372,26 @@ impl crate::services::SchedulerService for Collection {
             .compute_params_batch(jobs)?
             .into_iter()
             .map(|output| {
-                let (id, name) = &response_meta[output.index];
+                let (id, name, prediction_sources) = &response_meta[output.index];
                 let params = output.result?;
+                match fsrs_review_retrievability_predictions(&params.params, prediction_sources)
+                    .and_then(|predictions| {
+                        self.storage.set_fsrs_review_retrievability_predictions(
+                            &predictions,
+                            "fsrs_optimization",
+                        )
+                    }) {
+                    Ok(stored) => tracing::debug!(
+                        predictions = stored,
+                        preset = name,
+                        "stored FSRS review retrievability cache"
+                    ),
+                    Err(err) => tracing::warn!(
+                        ?err,
+                        preset = name,
+                        "failed to store FSRS review retrievability cache"
+                    ),
+                }
                 Ok(scheduler::compute_fsrs_params_batch_response::Item {
                     id: id.clone(),
                     name: name.clone(),
@@ -792,6 +821,66 @@ impl crate::services::SchedulerService for Collection {
             .collect();
         Ok(FsrsIntervalAtRetrievabilityByConfigBatchResponse { items })
     }
+
+    fn set_rwkv_review_queue_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
+        let mut scores = HashMap::with_capacity(input.scores.len());
+        for score in input.scores {
+            require!(
+                score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
+                "invalid RWKV retrievability"
+            );
+            scores.insert(score.card_id.into(), score.retrievability);
+        }
+        self.set_rwkv_review_queue_scores(input.deck_id.into(), scores)
+    }
+
+    fn set_rwkv_stats_graph_scores(&mut self, input: RwkvStatsGraphScoresRequest) -> Result<()> {
+        let mut scores = HashMap::with_capacity(input.scores.len());
+        for score in input.scores {
+            require!(
+                score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
+                "invalid RWKV retrievability"
+            );
+            scores.insert(score.card_id.into(), score.retrievability);
+        }
+        self.set_rwkv_stats_graph_scores(input.search, scores)
+    }
+
+    fn set_rwkv_card_info_score(&mut self, input: RwkvCardInfoScoreRequest) -> Result<()> {
+        if let Some(retrievability) = input.retrievability {
+            require!(
+                retrievability.is_finite() && (0.0..=1.0).contains(&retrievability),
+                "invalid RWKV retrievability"
+            );
+        }
+        self.set_rwkv_card_info_score(input.card_id.into(), input.retrievability)
+    }
+
+    fn get_fsrs_preset_ids_for_cards(
+        &mut self,
+        input: cards::CardIds,
+    ) -> Result<FsrsPresetIdsForCardsResponse> {
+        let mut cards = Vec::with_capacity(input.cids.len());
+        for cid in input.cids {
+            let card_id = CardId(cid);
+            cards.push(self.storage.get_card(card_id)?.or_not_found(card_id)?);
+        }
+
+        let presets = self.fsrs_presets_for_cards(&cards)?;
+        let items = cards
+            .into_iter()
+            .filter_map(|card| {
+                presets.get(&card.id).map(|preset| {
+                    scheduler::fsrs_preset_ids_for_cards_response::Item {
+                        card_id: card.id.0,
+                        preset_id: fsrs_preset_id_to_string(preset.id.clone()),
+                    }
+                })
+            })
+            .collect();
+
+        Ok(FsrsPresetIdsForCardsResponse { items })
+    }
 }
 
 fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: bool) -> bool {
@@ -853,10 +942,7 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
     };
 
     FsrsPresetForCardResponse {
-        id: match preset.id {
-            FsrsPresetId::DeckConfig(id) => id.0.to_string(),
-            FsrsPresetId::Addon(id) => id,
-        },
+        id: fsrs_preset_id_to_string(preset.id),
         name: preset.name,
         fsrs_version: preset.fsrs_version as i32,
         params: preset.params,
@@ -874,6 +960,13 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
         fsrs_dynamic_desired_retention_fixed_target_weights,
         fsrs_dynamic_desired_retention_fixed_target_drs,
         fsrs_dynamic_desired_retention_clamp,
+    }
+}
+
+fn fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
+    match id {
+        FsrsPresetId::DeckConfig(id) => id.0.to_string(),
+        FsrsPresetId::Addon(id) => id,
     }
 }
 

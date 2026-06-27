@@ -554,6 +554,9 @@ class AnkiQt(QMainWindow):
 
         refresh_reviewer_on_day_rollover_change()
         gui_hooks.profile_did_open()
+        from aqt import rwkv_scheduler
+
+        rwkv_scheduler.prepare_rwkv_state_cache_on_startup(self)
         self.maybe_auto_sync_on_open_close(_onsuccess)
 
     def unloadProfile(self, onsuccess: Callable) -> None:

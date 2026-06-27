@@ -37,6 +37,8 @@ pub const DEFAULT_REVIEW_FUZZ_FACTOR_SHORT: f32 = 0.15;
 pub const DEFAULT_REVIEW_FUZZ_FACTOR_MID: f32 = 0.10;
 pub const DEFAULT_REVIEW_FUZZ_FACTOR_LONG: f32 = 0.05;
 pub const DEFAULT_REVIEW_FUZZ_ENABLED: bool = true;
+pub(crate) const DEFAULT_RWKV_REVIEW_BATCH_SIZE: u32 = 512;
+pub(crate) const DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL: u32 = 1;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct DeckConfig {
@@ -73,6 +75,9 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     leech_threshold: 8,
     leech_only_if_young: false,
     rwkv_review_enabled: false,
+    rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
+    rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
+    rwkv_review_refresh_on_exit: false,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,
@@ -323,6 +328,18 @@ pub(crate) fn ensure_deck_config_values_valid(config: &mut DeckConfigInner) {
         36_500 * 86_400,
     );
     ensure_u32_valid(
+        &mut config.rwkv_review_batch_size,
+        default.rwkv_review_batch_size,
+        64,
+        2048,
+    );
+    ensure_u32_valid(
+        &mut config.rwkv_review_refresh_interval,
+        default.rwkv_review_refresh_interval,
+        1,
+        10_000,
+    );
+    ensure_u32_valid(
         &mut config.minimum_lapse_interval,
         default.minimum_lapse_interval,
         1,
@@ -400,5 +417,18 @@ mod tests {
         config.inner.fsrs_params_6 = vec![2.0_f32; 21];
 
         assert_eq!(config.fsrs_params(), &[2.0_f32; 21]);
+    }
+
+    #[test]
+    fn invalid_rwkv_batch_size_uses_default() {
+        let mut config = DeckConfig::default().inner;
+        config.rwkv_review_batch_size = 4096;
+
+        ensure_deck_config_values_valid(&mut config);
+
+        assert_eq!(
+            config.rwkv_review_batch_size,
+            DEFAULT_RWKV_REVIEW_BATCH_SIZE
+        );
     }
 }

@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use anki_proto::stats::graphs_response::retrievability::Series;
 use anki_proto::stats::graphs_response::Retrievability;
 
 use crate::prelude::TimestampSecs;
@@ -8,62 +9,94 @@ use crate::scheduler::timing::SchedTimingToday;
 use crate::stats::graphs::eases::percent_to_bin;
 use crate::stats::graphs::GraphsContext;
 
+#[derive(Default)]
+struct RetrievabilitySeries {
+    output: Series,
+    scored_cards: usize,
+    note_retrievability: std::collections::HashMap<i64, (f32, u32)>,
+}
+
+impl RetrievabilitySeries {
+    fn record(&mut self, note_id: i64, retrievability: Option<f32>) {
+        let entry = self.note_retrievability.entry(note_id).or_insert((0.0, 0));
+        entry.1 += 1;
+
+        let Some(retrievability) = retrievability else {
+            return;
+        };
+
+        *self
+            .output
+            .retrievability
+            .entry(percent_to_bin(retrievability * 100.0, 1))
+            .or_default() += 1;
+        self.output.sum_by_card += retrievability;
+        self.scored_cards += 1;
+        entry.0 += retrievability;
+    }
+
+    fn finish(mut self) -> (Series, bool) {
+        if self.scored_cards != 0 {
+            self.output.average = self.output.sum_by_card * 100.0 / self.scored_cards as f32;
+        }
+        self.output.sum_by_note = self
+            .note_retrievability
+            .values()
+            .map(|(sum, count)| sum / *count as f32)
+            .sum();
+        (self.output, self.scored_cards != 0)
+    }
+}
+
 impl GraphsContext {
     /// (SM-2, FSRS)
     pub(super) fn retrievability(&self) -> Retrievability {
-        let mut retrievability = Retrievability::default();
-        let mut card_with_retrievability_count: usize = 0;
+        let mut active = RetrievabilitySeries::default();
+        let mut fsrs_series = RetrievabilitySeries::default();
+        let mut rwkv_series = RetrievabilitySeries::default();
         let timing = SchedTimingToday {
             days_elapsed: self.days_elapsed,
             now: TimestampSecs::now(),
             next_day_at: self.next_day_start,
         };
-        // note id -> (sum, count)
-        let mut note_retrievability: std::collections::HashMap<i64, (f32, u32)> =
-            std::collections::HashMap::new();
-        for card in &self.cards {
-            let entry = note_retrievability
-                .entry(card.note_id.0)
-                .or_insert((0.0, 0));
-            entry.1 += 1;
-            if let Some(state) = card.memory_state {
-                let elapsed_seconds = card.seconds_since_last_review(&timing).unwrap_or_default();
-                let Some(preset_id) = self.fsrs_preset_by_card.get(&card.id) else {
-                    entry.0 += 0.0;
-                    continue;
-                };
-                let Some(fsrs) = self.fsrs_by_preset.get(preset_id) else {
-                    entry.0 += 0.0;
-                    continue;
-                };
-                let r =
-                    fsrs.current_retrievability(state.into(), elapsed_seconds as f32 / 86_400.0);
 
-                *retrievability
-                    .retrievability
-                    .entry(percent_to_bin(r * 100.0, 1))
-                    .or_insert_with(Default::default) += 1;
-                retrievability.sum_by_card += r;
-                card_with_retrievability_count += 1;
-                entry.0 += r;
-            } else {
-                entry.0 += 0.0;
-            }
+        for card in &self.cards {
+            let rwkv_retrievability = self
+                .rwkv_stats_scores
+                .as_ref()
+                .and_then(|scores| scores.get(&card.id))
+                .copied();
+            let fsrs_retrievability = card.memory_state.and_then(|state| {
+                let elapsed_seconds = card.seconds_since_last_review(&timing).unwrap_or_default();
+                let preset_id = self.fsrs_preset_by_card.get(&card.id)?;
+                let fsrs = self.fsrs_by_preset.get(preset_id)?;
+                Some(fsrs.current_retrievability(state.into(), elapsed_seconds as f32 / 86_400.0))
+            });
+
+            fsrs_series.record(card.note_id.0, fsrs_retrievability);
+            rwkv_series.record(card.note_id.0, rwkv_retrievability);
+            active.record(card.note_id.0, rwkv_retrievability.or(fsrs_retrievability));
         }
-        if card_with_retrievability_count != 0 {
-            retrievability.average =
-                retrievability.sum_by_card * 100.0 / card_with_retrievability_count as f32;
+
+        let (active, _) = active.finish();
+        let (fsrs, has_fsrs) = fsrs_series.finish();
+        let (rwkv, has_rwkv) = rwkv_series.finish();
+
+        Retrievability {
+            retrievability: active.retrievability,
+            average: active.average,
+            sum_by_card: active.sum_by_card,
+            sum_by_note: active.sum_by_note,
+            fsrs: has_fsrs.then_some(fsrs),
+            rwkv: has_rwkv.then_some(rwkv),
         }
-        retrievability.sum_by_note = note_retrievability
-            .values()
-            .map(|(sum, count)| sum / *count as f32)
-            .sum();
-        retrievability
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
     use anki_proto::deck_config::UpdateDeckConfigsMode;
     use fsrs::MemoryState;
@@ -148,6 +181,40 @@ mod tests {
         ) * 100.0;
 
         assert_eq!(format!("{actual:.3}"), format!("{expected:.3}"));
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_graph_uses_rwkv_scores_for_matching_search() -> Result<()> {
+        let mut col = Collection::new();
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        let timing = col.timing_today()?;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 42.0,
+            stability_internal: 42.0,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(timing.now);
+        col.storage.update_card(&card)?;
+        col.set_rwkv_stats_graph_scores("".into(), HashMap::from([(cid, 0.25)]))?;
+
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        let fsrs_retrievability = retrievability.fsrs.as_ref().unwrap();
+        let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
+
+        assert_eq!(format!("{:.1}", retrievability.average), "25.0");
+        assert_eq!(retrievability.retrievability.get(&25), Some(&1));
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
+        assert_eq!(rwkv_retrievability.retrievability.get(&25), Some(&1));
+        assert_eq!(format!("{:.1}", fsrs_retrievability.average), "100.0");
+        assert_eq!(fsrs_retrievability.retrievability.get(&99), Some(&1));
         Ok(())
     }
 }

@@ -15,6 +15,9 @@ def undo(*, parent: QWidget) -> None:
     "Undo the last operation, and refresh the UI."
 
     def on_success(out: OpChangesAfterUndo) -> None:
+        from aqt import rwkv_scheduler
+
+        rwkv_scheduler.record_collection_undo(out)
         gui_hooks.state_did_undo(out)
         tooltip(tr.undo_action_undone(action=out.operation), parent=parent)
 
@@ -31,6 +34,9 @@ def redo(*, parent: QWidget) -> None:
     "Redo the last operation, and refresh the UI."
 
     def on_success(out: OpChangesAfterUndo) -> None:
+        from aqt import rwkv_scheduler
+
+        rwkv_scheduler.record_collection_redo(out)
         tooltip(tr.undo_action_redone(action=out.operation), parent=parent)
 
     CollectionOp(parent, lambda col: col.redo()).success(on_success).run_in_background()

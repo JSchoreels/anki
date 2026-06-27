@@ -16,6 +16,9 @@ use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 
+pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
+    "search_stats_fsrs_review_retrievability";
+
 pub(crate) struct StudiedToday {
     pub cards: u32,
     pub seconds: f64,
@@ -46,6 +49,46 @@ fn row_to_revlog_entry(row: &Row) -> Result<RevlogEntry> {
 }
 
 impl SqliteStorage {
+    pub(crate) fn set_fsrs_review_retrievability_predictions(
+        &self,
+        rows: &[(RevlogId, f32)],
+        source: &str,
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
+                revlog_id INTEGER PRIMARY KEY,
+                prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "
+        ))?;
+
+        let updated_at = TimestampMillis::now().0;
+        let mut stored = 0;
+        let mut stmt = self.db.prepare_cached(&format!(
+            "
+            INSERT OR REPLACE INTO {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                (revlog_id, prediction, source, updated_at)
+            VALUES (?, ?, ?, ?)
+            "
+        ))?;
+
+        for (revlog_id, prediction) in rows {
+            if revlog_id.0 > 0 && prediction.is_finite() && (0.0..=1.0).contains(prediction) {
+                stmt.execute(params![revlog_id, prediction, source, updated_at])?;
+                stored += 1;
+            }
+        }
+
+        Ok(stored)
+    }
+
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {
         self.db
             .prepare(include_str!("fix_props.sql"))?

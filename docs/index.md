@@ -12,6 +12,7 @@ build
 contributing
 testing-coverage
 architecture
+rwkv
 protobuf
 ```
 

@@ -2,6 +2,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -139,7 +140,10 @@ class NewDeckStats(QDialog):
 
     def _graphs_page_path(self) -> str:
         deck_id = int(self.deck_chooser.selected_deck_id)
-        return f"graphs?currentDeckId={deck_id}"
+        path = f"graphs?currentDeckId={deck_id}"
+        if os.environ.get("ANKI_GRAPHS_DEBUG") == "1":
+            path += "&graphDebug=1"
+        return path
 
     def refresh(self) -> None:
         self.form.web.load_sveltekit_page(self._graphs_page_path())

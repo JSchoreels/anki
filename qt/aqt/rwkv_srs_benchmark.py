@@ -4,22 +4,30 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
+import time
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 from aqt.rwkv_scheduler import (
     RwkvIntervalOverride,
     RwkvRecallPoint,
+    RwkvReviewCandidate,
     RwkvReviewerBackend,
     RwkvReviewInput,
     RwkvReviewPrediction,
+    RwkvReviewPredictionRequest,
+    RwkvReviewTransition,
+    RwkvStatefulReviewerBackend,
     interval_from_recall_curve,
     rwkv_review_identity,
     rwkv_review_input,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
@@ -53,6 +61,15 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         self._max_interval_days = max_interval_days
         self._curves: dict[int, object] = {}
 
+    def warm_up(self, reviews: Sequence[RwkvReviewInput]) -> None:
+        for review_input in reviews:
+            if review_input.ease is None:
+                continue
+
+            curve = self._process.process_row(self._row_builder.row_for(review_input))
+            if curve is not None:
+                self._curves[review_input.identity.card_id] = curve
+
     def predict_review(
         self,
         *,
@@ -76,6 +93,50 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
                 good=self._good_interval_override(review_input)
             ),
         )
+
+    def predict_reviews(
+        self,
+        candidates: Sequence[RwkvReviewCandidate],
+    ) -> Sequence[RwkvReviewPrediction | None]:
+        inputs_by_index: list[tuple[int, RwkvReviewInput]] = []
+        rows = []
+        predictions: list[RwkvReviewPrediction | None] = [None] * len(candidates)
+
+        for index, candidate in enumerate(candidates):
+            identity = rwkv_review_identity(candidate.reviewer, candidate.card)
+            if identity is None:
+                continue
+
+            review_input = rwkv_review_input(
+                reviewer=candidate.reviewer,
+                card=candidate.card,
+                identity=identity,
+                ease=None,
+            )
+            inputs_by_index.append((index, review_input))
+            rows.append(self._row_builder.row_for(review_input))
+
+        if not rows:
+            return predictions
+
+        imm_predict_many = getattr(self._process, "imm_predict_many", None)
+        probabilities = (
+            imm_predict_many(rows)
+            if callable(imm_predict_many)
+            else [self._process.imm_predict(row) for row in rows]
+        )
+
+        for (index, review_input), probability in zip(
+            inputs_by_index, probabilities, strict=True
+        ):
+            predictions[index] = RwkvReviewPrediction(
+                retrievability=_probability_as_float(probability),
+                interval_overrides=RwkvIntervalOverride(
+                    good=self._good_interval_override(review_input)
+                ),
+            )
+
+        return predictions
 
     def review_answered(
         self,
@@ -118,6 +179,186 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         )
 
 
+class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
+    """RWKV backend using Anki's embedded Rust inference-only runner."""
+
+    def __init__(
+        self,
+        *,
+        model_path: str | Path,
+        device: str = "cpu",
+        dtype: str = "float",
+        target_retention: float = 0.9,
+        max_interval_days: int = 36500,
+    ) -> None:
+        del device, dtype
+        super().__init__(
+            _RustRwkvRuntime(
+                model_path=Path(model_path),
+                target_retention=target_retention,
+                max_interval_days=max_interval_days,
+            ),
+        )
+
+
+class _RustRwkvRuntime:
+    def __init__(
+        self,
+        *,
+        model_path: Path,
+        target_retention: float,
+        max_interval_days: int,
+    ) -> None:
+        from anki import _rsbridge
+
+        rwkv_inference = getattr(_rsbridge, "RwkvInference")
+        self._process = rwkv_inference(
+            str(model_path),
+            target_retention,
+            max_interval_days,
+        )
+
+    def review(
+        self,
+        *,
+        review_input: RwkvReviewInput,
+        card_state: object | None,
+        note_state: object | None,
+        deck_state: object | None,
+        preset_state: object | None,
+        global_state: object | None,
+    ) -> RwkvReviewTransition:
+        identity = review_input.identity
+        (
+            retrievability,
+            good_interval,
+            next_card_state,
+            next_note_state,
+            next_deck_state,
+            next_preset_state,
+            next_global_state,
+        ) = self._process.review(
+            identity.card_id,
+            identity.note_id,
+            identity.deck_id,
+            identity.preset_id,
+            review_input.is_query,
+            review_input.ease,
+            review_input.duration_millis,
+            review_input.card_type,
+            review_input.day_offset,
+            review_input.current_elapsed_days,
+            review_input.current_elapsed_seconds,
+            _state_bytes(card_state),
+            _state_bytes(note_state),
+            _state_bytes(deck_state),
+            _state_bytes(preset_state),
+            _state_bytes(global_state),
+        )
+
+        return RwkvReviewTransition(
+            prediction=RwkvReviewPrediction(
+                retrievability=float(retrievability),
+                interval_overrides=RwkvIntervalOverride(good=good_interval),
+            ),
+            card_state=next_card_state,
+            note_state=next_note_state,
+            deck_state=next_deck_state,
+            preset_state=next_preset_state,
+            global_state=next_global_state,
+        )
+
+    def predict_many(
+        self,
+        requests: Sequence[RwkvReviewPredictionRequest],
+    ) -> Sequence[RwkvReviewPrediction | None]:
+        predict_many = getattr(self._process, "predict_many", None)
+        if not callable(predict_many):
+            return [
+                self.review(
+                    review_input=request.review_input,
+                    card_state=request.card_state,
+                    note_state=request.note_state,
+                    deck_state=request.deck_state,
+                    preset_state=request.preset_state,
+                    global_state=request.global_state,
+                ).prediction
+                for request in requests
+            ]
+
+        build_start = time.monotonic()
+        rows = [
+            (
+                request.review_input.identity.card_id,
+                request.review_input.identity.note_id,
+                request.review_input.identity.deck_id,
+                request.review_input.identity.preset_id,
+                request.review_input.is_query,
+                request.review_input.ease,
+                request.review_input.duration_millis,
+                request.review_input.card_type,
+                request.review_input.day_offset,
+                request.review_input.current_elapsed_days,
+                request.review_input.current_elapsed_seconds,
+                _state_bytes(request.card_state),
+                _state_bytes(request.note_state),
+                _state_bytes(request.deck_state),
+                _state_bytes(request.preset_state),
+                _state_bytes(request.global_state),
+            )
+            for request in requests
+        ]
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust batch bridge started: requests=%s build_elapsed_ms=%.1f",
+            len(requests),
+            build_elapsed_ms,
+        )
+        outputs = predict_many(rows)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(requests):
+            raise ValueError("RWKV Rust batch prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust batch predicted: requests=%s "
+            "build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
+            len(requests),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+
+        return [
+            RwkvReviewPrediction(
+                retrievability=float(retrievability),
+                interval_overrides=RwkvIntervalOverride(good=good_interval),
+            )
+            for retrievability, good_interval in outputs
+        ]
+
+    def snapshot(self, review_input: RwkvReviewInput) -> object:
+        return self._process.state_for_card(review_input.identity.card_id)
+
+    def restore(self, state: object | None) -> None:
+        if state is not None:
+            self._process.restore_state(state)
+
+    def cache_state(self) -> bytes:
+        return bytes(self._process.cache_state())
+
+    def restore_cache_state(self, state: bytes) -> None:
+        self._process.restore_cache_state(state)
+
+
+def _state_bytes(state: object | None) -> bytes | None:
+    if state is None:
+        return None
+    if isinstance(state, bytes):
+        return state
+    raise TypeError("RWKV Rust state must be bytes")
+
+
 class SrsBenchmarkReviewRowBuilder:
     def __init__(self, row_factory: Callable[[dict[str, object]], object]) -> None:
         self._row_factory = row_factory
@@ -156,12 +397,7 @@ def _load_srs_benchmark_process(
     import torch  # type: ignore[import-not-found]
     from rwkv.run_as_rnn import RNNProcess  # type: ignore[import-not-found]
 
-    torch_dtype = {
-        "float": torch.float32,
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-    }[dtype]
+    torch_dtype = _torch_dtype(torch, dtype)
     return (
         RNNProcess(
             path=model_path,
@@ -170,6 +406,15 @@ def _load_srs_benchmark_process(
         ),
         lambda row: pd.Series(row, dtype="float64"),
     )
+
+
+def _torch_dtype(torch: Any, dtype: str) -> Any:
+    return {
+        "float": torch.float32,
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+    }[dtype]
 
 
 def _install_srs_benchmark_import_shims() -> None:

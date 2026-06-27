@@ -206,6 +206,27 @@ impl Collection {
         };
         let ids_elapsed_ms = ids_start.elapsed().as_secs_f64() * 1000.0;
         let timing = self.timing_today()?;
+        let rwkv_stats_scores = self
+            .rwkv_stats_graph_scores_for_day(timing.days_elapsed)
+            .cloned();
+        let rwkv_card_info_scores = self
+            .rwkv_card_info_scores_for_day(timing.days_elapsed)
+            .cloned();
+        let rwkv_review_queue_scores = self
+            .rwkv_review_queue_scores_for_day(timing.days_elapsed)
+            .cloned();
+        let rwkv_stats_scores_count = rwkv_stats_scores
+            .as_ref()
+            .map(|scores| scores.len())
+            .unwrap_or(0);
+        let rwkv_card_info_scores_count = rwkv_card_info_scores
+            .as_ref()
+            .map(|scores| scores.len())
+            .unwrap_or(0);
+        let rwkv_review_queue_scores_count = rwkv_review_queue_scores
+            .as_ref()
+            .map(|scores| scores.len())
+            .unwrap_or(0);
         let load_start = Instant::now();
         let cards = ids
             .into_iter()
@@ -221,14 +242,37 @@ impl Collection {
         let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
         let metric_start = Instant::now();
         let mut rows_to_insert = Vec::new();
+        let mut rwkv_rows = 0;
         for card in cards {
+            let rwkv_r = rwkv_card_info_scores
+                .as_ref()
+                .and_then(|scores| scores.get(&card.id))
+                .copied()
+                .or_else(|| {
+                    rwkv_review_queue_scores
+                        .as_ref()
+                        .and_then(|scores| scores.get(&card.id))
+                        .copied()
+                })
+                .or_else(|| {
+                    rwkv_stats_scores
+                        .as_ref()
+                        .and_then(|scores| scores.get(&card.id))
+                        .copied()
+                });
             let preset = presets_by_card
                 .get(&card.id)
                 .or_invalid("missing FSRS preset for card")?;
             if let Some((r, s90)) =
                 self.exact_fsrs_metrics_for_card_with_params(&card, timing, &preset.params)?
             {
-                rows_to_insert.push((card.id.0, r, s90));
+                if rwkv_r.is_some() {
+                    rwkv_rows += 1;
+                }
+                rows_to_insert.push((card.id.0, rwkv_r.unwrap_or(r), Some(s90)));
+            } else if let Some(r) = rwkv_r {
+                rwkv_rows += 1;
+                rows_to_insert.push((card.id.0, r, None));
             }
         }
         let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
@@ -245,9 +289,13 @@ impl Collection {
             load_elapsed_ms,
             preset_elapsed_ms,
             metric_elapsed_ms,
+            rwkv_stats_scores = rwkv_stats_scores_count,
+            rwkv_card_info_scores = rwkv_card_info_scores_count,
+            rwkv_review_queue_scores = rwkv_review_queue_scores_count,
+            rwkv_rows,
             insert_elapsed_ms = insert_start.elapsed().as_secs_f64() * 1000.0,
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
-            "built exact FSRS retrievability search table"
+            "built exact retrievability search table"
         );
         Ok(())
     }
@@ -775,6 +823,8 @@ fn prepare_sort(col: &mut Collection, column: Column, item_type: ReturnItemType)
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
     use anki_proto::deck_config::UpdateDeckConfigsMode;
     use anki_proto::search::browser_columns::Sorting;
@@ -1218,6 +1268,167 @@ mod test {
 
         let filtered_cards = col.all_cards_for_search(&query)?;
         assert_eq!(filtered_cards.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_property_filter_prefers_available_rwkv_r() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+
+        let timing = col.timing_today()?;
+        let mut card1 = col.storage.get_card(ids[0])?.unwrap();
+        let mut card2 = col.storage.get_card(ids[1])?.unwrap();
+        for card in [&mut card1, &mut card2] {
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 1;
+            card.due = 0;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 1.0,
+                stability_internal: 1.0,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-100 * 86_400));
+        }
+        col.storage.update_card(&card1)?;
+        col.storage.update_card(&card2)?;
+
+        let fsrs_r = col.fsrs_current_retrievability_for_card(card1.id, 1.0, 100.0)?;
+        assert!(
+            fsrs_r < 0.9,
+            "test requires FSRS retrievability below threshold, got {fsrs_r}"
+        );
+        col.set_rwkv_stats_graph_scores("deck:current".into(), HashMap::from([(card1.id, 0.95)]))?;
+
+        let filtered = col.search_cards("prop:r>0.9", SortMode::NoOrder)?;
+        assert_eq!(filtered, vec![card1.id]);
+
+        let fallback_filtered = col.search_cards("prop:r<0.9", SortMode::NoOrder)?;
+        assert_eq!(fallback_filtered, vec![card2.id]);
+
+        let filtered_cards = col.all_cards_for_search("prop:r>0.9")?;
+        assert_eq!(
+            filtered_cards
+                .into_iter()
+                .map(|card| card.id)
+                .collect::<Vec<_>>(),
+            vec![card1.id]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_property_filter_uses_card_info_rwkv_r() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+
+        let timing = col.timing_today()?;
+        let mut card1 = col.storage.get_card(ids[0])?.unwrap();
+        let mut card2 = col.storage.get_card(ids[1])?.unwrap();
+        for card in [&mut card1, &mut card2] {
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 1;
+            card.due = 0;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 1.0,
+                stability_internal: 1.0,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-100 * 86_400));
+        }
+        col.storage.update_card(&card1)?;
+        col.storage.update_card(&card2)?;
+
+        let fsrs_r = col.fsrs_current_retrievability_for_card(card1.id, 1.0, 100.0)?;
+        assert!(
+            fsrs_r < 0.9,
+            "test requires FSRS retrievability below threshold, got {fsrs_r}"
+        );
+
+        col.set_rwkv_card_info_score(card1.id, Some(0.95))?;
+        assert_eq!(
+            col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            vec![card1.id]
+        );
+
+        col.set_rwkv_card_info_score(card1.id, None)?;
+        assert_eq!(
+            col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            Vec::<CardId>::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_property_filter_prefers_card_info_rwkv_r() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+
+        let timing = col.timing_today()?;
+        let mut card1 = col.storage.get_card(ids[0])?.unwrap();
+        let mut card2 = col.storage.get_card(ids[1])?.unwrap();
+        for card in [&mut card1, &mut card2] {
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 1;
+            card.due = 0;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 1.0,
+                stability_internal: 1.0,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-100 * 86_400));
+        }
+        col.storage.update_card(&card1)?;
+        col.storage.update_card(&card2)?;
+
+        let fsrs_r = col.fsrs_current_retrievability_for_card(card1.id, 1.0, 100.0)?;
+        assert!(
+            fsrs_r < 0.6,
+            "test requires FSRS retrievability below threshold, got {fsrs_r}"
+        );
+
+        col.set_rwkv_stats_graph_scores(
+            "deck:current".into(),
+            HashMap::from([(card1.id, 0.55), (card2.id, 0.56)]),
+        )?;
+        col.set_rwkv_review_queue_scores(DeckId(1), HashMap::from([(card1.id, 0.57)]))?;
+        col.set_rwkv_card_info_score(card1.id, Some(0.83))?;
+
+        assert_eq!(
+            col.search_cards("prop:r>=0.55 prop:r<0.6", SortMode::NoOrder)?,
+            vec![card2.id]
+        );
+        assert_eq!(
+            col.search_cards("prop:r>0.8", SortMode::NoOrder)?,
+            vec![card1.id]
+        );
         Ok(())
     }
 

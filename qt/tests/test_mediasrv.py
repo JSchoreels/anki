@@ -224,8 +224,22 @@ class TestEditorPageCSP:
 
 
 class TestCardStats:
+    @pytest.mark.parametrize(
+        "deck_config",
+        [
+            {"id": 1, "rwkvReviewEnabled": True},
+            {
+                "id": 1,
+                "other": {
+                    "jschoreels.fsrs": {
+                        "rwkv_review_enabled": True,
+                    },
+                },
+            },
+        ],
+    )
     def test_card_info_includes_rwkv_diagnostics_without_reviewer_cache(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, deck_config: dict[str, object]
     ) -> None:
         import aqt
         from anki.stats_pb2 import CardStatsResponse
@@ -267,7 +281,7 @@ class TestCardStats:
         class Decks:
             def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
                 assert deck_id == 10
-                return {"id": 1, "rwkvReviewEnabled": True}
+                return deck_config
 
         class Collection:
             _backend = RawBackend()
@@ -296,6 +310,54 @@ class TestCardStats:
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "61%"),
             ("Retrievability source", "RWKV"),
+        ]
+
+    def test_card_info_reports_rwkv_unavailable_when_backend_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aqt
+        from anki.stats_pb2 import CardStatsResponse
+        from aqt.mediasrv import app, card_stats
+        from aqt.rwkv_scheduler import set_reviewer_backend
+
+        card = SimpleNamespace(id=123, did=10)
+        response = CardStatsResponse(card_id=123)
+        response.memory_state.stability = 1.0
+
+        class RawBackend:
+            def card_stats_raw(self, data: bytes) -> bytes:
+                return response.SerializeToString()
+
+        class Decks:
+            def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+                assert deck_id == 10
+                return {"id": 1, "rwkvReviewEnabled": True}
+
+        class Collection:
+            _backend = RawBackend()
+            decks = Decks()
+
+            def get_card(self, card_id: int) -> object:
+                assert card_id == 123
+                return card
+
+        monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
+        monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
+        monkeypatch.setattr("aqt.rwkv_scheduler.embedded_rwkv_model_path", lambda: None)
+        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=Collection()))
+        previous = set_reviewer_backend(None)
+        try:
+            with app.test_request_context(data=b""):
+                raw_output = card_stats()
+        finally:
+            set_reviewer_backend(previous)
+
+        output = CardStatsResponse()
+        output.ParseFromString(raw_output)
+
+        assert [(row.label, row.value) for row in output.extra_rows] == [
+            ("RWKV computed R", "Unavailable"),
+            ("Retrievability source", "FSRS (RWKV backend unavailable)"),
         ]
 
     def test_card_info_hook_can_append_rows(

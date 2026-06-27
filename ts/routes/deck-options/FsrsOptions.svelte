@@ -8,6 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ComputeParamsProgress_Phase,
         type ComputeParamsProgress,
     } from "@generated/anki/collection_pb";
+    import { Empty } from "@generated/anki/generic_pb";
     import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
     import {
         computeFsrsParams,
@@ -18,6 +19,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         setWantsAbort,
     } from "@generated/backend";
     import * as tr from "@generated/ftl";
+    import { postProto } from "@generated/post";
     import { runWithBackendProgress } from "@tslib/progress";
 
     import SettingTitle from "$lib/components/SettingTitle.svelte";
@@ -34,6 +36,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
     import ParamsInputRow from "./ParamsInputRow.svelte";
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
+    import RwkvBatchSizeRow from "./RwkvBatchSizeRow.svelte";
     import DynamicDesiredRetentionPlotModal from "./DynamicDesiredRetentionPlotModal.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
@@ -130,6 +133,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let computingParams = false;
     let checkingParams = false;
     let checkingHealth = false;
+    let buildingRwkvStateCache = false;
+    let forceBuildingRwkvStateCache = false;
     type OptimizationMetrics = {
         logLoss: number;
         rmseBins: number;
@@ -1067,6 +1072,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         state.save(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS);
     }
 
+    async function buildRwkvStateCache(): Promise<void> {
+        buildingRwkvStateCache = true;
+        try {
+            await postProto("buildRwkvStateCache", new Empty({}), Empty);
+        } finally {
+            buildingRwkvStateCache = false;
+        }
+    }
+
+    async function forceBuildRwkvStateCache(): Promise<void> {
+        forceBuildingRwkvStateCache = true;
+        try {
+            await postProto("forceBuildRwkvStateCache", new Empty({}), Empty);
+        } finally {
+            forceBuildingRwkvStateCache = false;
+        }
+    }
+
     function showSimulatorModal(modal: Modal) {
         if (selectedFsrsParams($config).toString() === initialParams.toString()) {
             modal?.show();
@@ -1285,6 +1308,64 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {tr.deckConfigRwkvReviewEnabled()}
         </SettingTitle>
     </SwitchRow>
+
+    {#if $config.rwkvReviewEnabled}
+        <RwkvBatchSizeRow
+            bind:value={$config.rwkvReviewBatchSize}
+            defaultValue={defaults.rwkvReviewBatchSize}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvBatchSize")}>
+                {tr.deckConfigRwkvReviewBatchSize()}
+            </SettingTitle>
+        </RwkvBatchSizeRow>
+
+        <SpinBoxFloatRow
+            bind:value={$config.rwkvReviewRefreshInterval}
+            defaultValue={defaults.rwkvReviewRefreshInterval}
+            min={1}
+            max={10000}
+            step={1}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvRefreshInterval")}>
+                {tr.deckConfigRwkvReviewRefreshInterval()}
+            </SettingTitle>
+        </SpinBoxFloatRow>
+
+        <SwitchRow
+            bind:value={$config.rwkvReviewRefreshOnExit}
+            defaultValue={defaults.rwkvReviewRefreshOnExit}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvRefreshOnExit")}>
+                {tr.deckConfigRwkvReviewRefreshOnExit()}
+            </SettingTitle>
+        </SwitchRow>
+
+        <div class="d-flex flex-wrap gap-2">
+            <button
+                class="btn btn-outline-primary"
+                disabled={buildingRwkvStateCache || forceBuildingRwkvStateCache}
+                on:click={() => buildRwkvStateCache()}
+            >
+                {#if buildingRwkvStateCache}
+                    Starting RWKV state cache build...
+                {:else}
+                    Build RWKV state cache
+                {/if}
+            </button>
+
+            <button
+                class="btn btn-outline-primary"
+                disabled={buildingRwkvStateCache || forceBuildingRwkvStateCache}
+                on:click={() => forceBuildRwkvStateCache()}
+            >
+                {#if forceBuildingRwkvStateCache}
+                    Starting full RWKV state cache rebuild...
+                {:else}
+                    Force rebuild RWKV state cache
+                {/if}
+            </button>
+        </div>
+    {/if}
 
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
         <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>

@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashSet;
+
 use super::DueCard;
 use super::NewCard;
 use super::QueueBuilder;
@@ -22,6 +24,18 @@ struct DueCardForRetrievabilitySort {
 
 impl QueueBuilder {
     pub(super) fn gather_cards(&mut self, col: &mut Collection) -> Result<()> {
+        if self.context.sort_options.uses_rwkv_review_order() {
+            self.gather_intraday_learning_cards(col)?;
+            self.gather_due_cards(col, DueCardKind::Learning)?;
+            if self.context.uses_rwkv_review_order() {
+                self.gather_review_cards_with_rwkv_retrievability(col)?;
+            } else {
+                self.gather_due_review_cards_without_rwkv_scores(col, &HashSet::new())?;
+            }
+            self.gather_new_cards(col)?;
+            return Ok(());
+        }
+
         if self.context.non_news_sorted_by_retrievability() {
             self.gather_due_non_new_cards_with_exact_retrievability(col)?;
             self.gather_new_cards(col)?;
@@ -34,6 +48,93 @@ impl QueueBuilder {
         self.gather_new_cards(col)?;
 
         Ok(())
+    }
+
+    fn gather_review_cards_with_rwkv_retrievability(&mut self, col: &mut Collection) -> Result<()> {
+        if self.limits.root_limit_reached(LimitKind::Review) {
+            return Ok(());
+        }
+
+        let scores = self.context.rwkv_review_queue_scores.as_ref().unwrap();
+        let scored_ids: Vec<_> = scores.keys().copied().collect();
+        let mut scored_cards = Vec::with_capacity(scores.len());
+        let mut scored_card_ids = HashSet::with_capacity(scores.len());
+        col.storage
+            .for_each_review_card_in_active_decks_with_ids(&scored_ids, |card| {
+                if let Some(score) = scores
+                    .get(&card.id)
+                    .copied()
+                    .filter(|score| score.is_finite())
+                {
+                    scored_card_ids.insert(card.id);
+                    scored_cards.push((card, score));
+                }
+                Ok(true)
+            })?;
+
+        let descending = matches!(
+            self.context.sort_options.review_order,
+            ReviewCardOrder::RetrievabilityDescending
+        );
+        scored_cards.sort_by(|(card_a, score_a), (card_b, score_b)| {
+            let ord = score_a.total_cmp(score_b);
+            let ord = if descending { ord.reverse() } else { ord };
+            ord.then_with(|| card_a.id.cmp(&card_b.id))
+        });
+
+        for (card, _) in scored_cards {
+            if self.limits.root_limit_reached(LimitKind::Review) {
+                break;
+            }
+            if !self
+                .limits
+                .limit_reached(card.current_deck_id, LimitKind::Review)?
+                && self.add_due_card(card)
+            {
+                self.limits
+                    .decrement_deck_and_parent_limits(card.current_deck_id, LimitKind::Review)?;
+            }
+        }
+
+        self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)
+    }
+
+    fn gather_due_review_cards_without_rwkv_scores(
+        &mut self,
+        col: &mut Collection,
+        scored_card_ids: &HashSet<CardId>,
+    ) -> Result<()> {
+        if self.limits.root_limit_reached(LimitKind::Review) {
+            return Ok(());
+        }
+
+        col.storage.for_each_due_card_in_active_decks(
+            self.context.timing,
+            // RWKV already handled the scored cards above. Keep the unscored
+            // fallback cheap instead of invoking FSRS retrievability ordering.
+            ReviewCardOrder::Day,
+            DueCardKind::Review,
+            self.context.fsrs,
+            |card| {
+                if scored_card_ids.contains(&card.id) {
+                    return Ok(true);
+                }
+                if self.limits.root_limit_reached(LimitKind::Review) {
+                    return Ok(false);
+                }
+                if !self
+                    .limits
+                    .limit_reached(card.current_deck_id, LimitKind::Review)?
+                    && self.add_due_card(card)
+                {
+                    self.limits.decrement_deck_and_parent_limits(
+                        card.current_deck_id,
+                        LimitKind::Review,
+                    )?;
+                }
+                Ok(true)
+            },
+        )
     }
 
     fn gather_due_non_new_cards_with_exact_retrievability(

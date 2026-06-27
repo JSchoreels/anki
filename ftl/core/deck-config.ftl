@@ -319,6 +319,21 @@ deck-config-rwkv-review-enabled-tooltip =
     When a desktop RWKV backend is configured, use its review-time
     retrievability and interval predictions for this preset. Other clients
     continue to use SM2 or FSRS.
+deck-config-rwkv-review-batch-size = RWKV batch size
+deck-config-rwkv-review-batch-size-tooltip =
+    Number of cards scored per RWKV model call. 512 is recommended for CPU;
+    larger values can improve throughput but use more memory.
+deck-config-rwkv-review-batch-size-current = { $cards } cards per batch
+deck-config-rwkv-review-batch-size-memory = ~{ $memory } state memory
+deck-config-rwkv-review-batch-size-recommended = recommended
+deck-config-rwkv-review-refresh-interval = RWKV refresh interval
+deck-config-rwkv-review-refresh-interval-tooltip =
+    Number of answered reviews between RWKV queue rescoring runs. 1 updates the
+    queue after every answer; larger values reduce review-time rescoring work.
+deck-config-rwkv-review-refresh-on-exit = RWKV refresh on reviewer exit
+deck-config-rwkv-review-refresh-on-exit-tooltip =
+    When enabled, Anki refreshes RWKV queue scores in the background after you
+    leave the reviewer, if at least one card was answered.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 

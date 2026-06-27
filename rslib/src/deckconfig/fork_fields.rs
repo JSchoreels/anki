@@ -8,8 +8,11 @@ use serde_json::Value;
 
 use super::DeckConfigInner;
 use super::FsrsVersion;
+use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 
-const FORK_FIELDS_KEY: &str = "jschoreels.fsrs";
+const FSRS_FORK_FIELDS_KEY: &str = "jschoreels.fsrs";
+const RWKV_FORK_FIELDS_KEY: &str = "jschoreels.rwkv";
 const FSRS_MINIMUM_INTERVAL_SECS_DEFAULT: u32 = 1;
 const DYNAMIC_DR_MIN_DEFAULT: f32 = 0.30;
 const DYNAMIC_DR_MAX_DEFAULT: f32 = 0.995;
@@ -55,8 +58,6 @@ struct ForkDeckConfigFields {
     review_fuzz_factor_long: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review_fuzz_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rwkv_review_enabled: Option<bool>,
 }
 
 impl ForkDeckConfigFields {
@@ -108,7 +109,6 @@ impl ForkDeckConfigFields {
             review_fuzz_factor_mid: config.review_fuzz_factor_mid,
             review_fuzz_factor_long: config.review_fuzz_factor_long,
             review_fuzz_enabled: config.review_fuzz_enabled,
-            rwkv_review_enabled: true_only(config.rwkv_review_enabled),
         }
     }
 
@@ -170,8 +170,57 @@ impl ForkDeckConfigFields {
         if let Some(value) = self.review_fuzz_enabled {
             config.review_fuzz_enabled = Some(value);
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|value| value.as_object().map(Map::is_empty))
+            .unwrap_or(true)
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct RwkvDeckConfigFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_batch_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_refresh_interval: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_refresh_on_exit: Option<bool>,
+}
+
+impl RwkvDeckConfigFields {
+    fn from_config(config: &DeckConfigInner) -> Self {
+        Self {
+            rwkv_review_enabled: true_only(config.rwkv_review_enabled),
+            rwkv_review_batch_size: non_default(
+                config.rwkv_review_batch_size,
+                DEFAULT_RWKV_REVIEW_BATCH_SIZE,
+            ),
+            rwkv_review_refresh_interval: non_default(
+                config.rwkv_review_refresh_interval,
+                DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
+            ),
+            rwkv_review_refresh_on_exit: true_only(config.rwkv_review_refresh_on_exit),
+        }
+    }
+
+    fn apply_to_config(self, config: &mut DeckConfigInner) {
         if let Some(value) = self.rwkv_review_enabled {
             config.rwkv_review_enabled = value;
+        }
+        if let Some(value) = self.rwkv_review_batch_size {
+            config.rwkv_review_batch_size = value;
+        }
+        if let Some(value) = self.rwkv_review_refresh_interval {
+            config.rwkv_review_refresh_interval = value;
+        }
+        if let Some(value) = self.rwkv_review_refresh_on_exit {
+            config.rwkv_review_refresh_on_exit = value;
         }
     }
 
@@ -187,6 +236,12 @@ pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
     if let Some(fields) = fork_fields_from_other(&config.other) {
         fields.apply_to_config(config);
     }
+    if let Some(fields) = legacy_rwkv_fields_from_fsrs_other(&config.other) {
+        fields.apply_to_config(config);
+    }
+    if let Some(fields) = rwkv_fields_from_other(&config.other) {
+        fields.apply_to_config(config);
+    }
 
     if config.fsrs_minimum_interval_secs == 0 {
         config.fsrs_minimum_interval_secs = FSRS_MINIMUM_INTERVAL_SECS_DEFAULT;
@@ -197,31 +252,58 @@ pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
     if config.fsrs_dynamic_desired_retention_max == 0.0 {
         config.fsrs_dynamic_desired_retention_max = DYNAMIC_DR_MAX_DEFAULT;
     }
+    if config.rwkv_review_batch_size == 0 {
+        config.rwkv_review_batch_size = DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+    }
+    if config.rwkv_review_refresh_interval == 0 {
+        config.rwkv_review_refresh_interval = DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
+    }
 }
 
 pub(crate) fn deck_config_inner_for_storage(config: &DeckConfigInner) -> DeckConfigInner {
     let mut storage_config = config.clone();
     let fields = ForkDeckConfigFields::from_config(&storage_config);
-    storage_config.other = other_with_fork_fields(&storage_config.other, fields);
+    let rwkv_fields = RwkvDeckConfigFields::from_config(&storage_config);
+    storage_config.other = other_with_fork_fields(&storage_config.other, fields, rwkv_fields);
     clear_numbered_fork_fields(&mut storage_config);
     storage_config
 }
 
 fn fork_fields_from_other(other: &[u8]) -> Option<ForkDeckConfigFields> {
     let value: Value = serde_json::from_slice(other).ok()?;
-    serde_json::from_value(value.get(FORK_FIELDS_KEY)?.clone()).ok()
+    serde_json::from_value(value.get(FSRS_FORK_FIELDS_KEY)?.clone()).ok()
 }
 
-fn other_with_fork_fields(other: &[u8], fields: ForkDeckConfigFields) -> Vec<u8> {
+fn rwkv_fields_from_other(other: &[u8]) -> Option<RwkvDeckConfigFields> {
+    let value: Value = serde_json::from_slice(other).ok()?;
+    serde_json::from_value(value.get(RWKV_FORK_FIELDS_KEY)?.clone()).ok()
+}
+
+fn legacy_rwkv_fields_from_fsrs_other(other: &[u8]) -> Option<RwkvDeckConfigFields> {
+    let value: Value = serde_json::from_slice(other).ok()?;
+    serde_json::from_value(value.get(FSRS_FORK_FIELDS_KEY)?.clone()).ok()
+}
+
+fn other_with_fork_fields(
+    other: &[u8],
+    fields: ForkDeckConfigFields,
+    rwkv_fields: RwkvDeckConfigFields,
+) -> Vec<u8> {
     let mut object = serde_json::from_slice::<Value>(other)
         .ok()
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
 
     if fields.is_empty() {
-        object.remove(FORK_FIELDS_KEY);
+        object.remove(FSRS_FORK_FIELDS_KEY);
     } else if let Ok(value) = serde_json::to_value(fields) {
-        object.insert(FORK_FIELDS_KEY.to_string(), value);
+        object.insert(FSRS_FORK_FIELDS_KEY.to_string(), value);
+    }
+
+    if rwkv_fields.is_empty() {
+        object.remove(RWKV_FORK_FIELDS_KEY);
+    } else if let Ok(value) = serde_json::to_value(rwkv_fields) {
+        object.insert(RWKV_FORK_FIELDS_KEY.to_string(), value);
     }
 
     if object.is_empty() {
@@ -258,6 +340,9 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.review_fuzz_factor_long = None;
     config.review_fuzz_enabled = None;
     config.rwkv_review_enabled = false;
+    config.rwkv_review_batch_size = 0;
+    config.rwkv_review_refresh_interval = 0;
+    config.rwkv_review_refresh_on_exit = false;
 }
 
 fn non_empty_vec(values: &[f32]) -> Option<Vec<f32>> {
@@ -279,6 +364,7 @@ fn true_only(value: bool) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use prost::Message;
+    use serde_json::json;
     use serde_json::Value;
 
     use super::*;
@@ -305,6 +391,9 @@ mod tests {
             review_fuzz_factor_long: Some(0.05),
             review_fuzz_enabled: Some(false),
             rwkv_review_enabled: true,
+            rwkv_review_batch_size: 1024,
+            rwkv_review_refresh_interval: 5,
+            rwkv_review_refresh_on_exit: true,
             ..Default::default()
         }
     }
@@ -323,9 +412,25 @@ mod tests {
         assert_eq!(storage_config.fsrs_version, FsrsVersion::Seven as i32);
         assert_eq!(storage_config.review_fuzz_base, None);
         assert!(!storage_config.rwkv_review_enabled);
+        assert_eq!(storage_config.rwkv_review_batch_size, 0);
+        assert_eq!(storage_config.rwkv_review_refresh_interval, 0);
+        assert!(!storage_config.rwkv_review_refresh_on_exit);
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
-        assert!(other.get(FORK_FIELDS_KEY).is_some());
+        let fsrs_other = other.get(FSRS_FORK_FIELDS_KEY).unwrap();
+        assert!(fsrs_other.get("rwkv_review_enabled").is_none());
+        assert!(fsrs_other.get("rwkv_review_batch_size").is_none());
+        assert!(fsrs_other.get("rwkv_review_refresh_interval").is_none());
+        assert!(fsrs_other.get("rwkv_review_refresh_on_exit").is_none());
+        assert_eq!(
+            other.get(RWKV_FORK_FIELDS_KEY),
+            Some(&json!({
+                "rwkv_review_enabled": true,
+                "rwkv_review_batch_size": 1024,
+                "rwkv_review_refresh_interval": 5,
+                "rwkv_review_refresh_on_exit": true,
+            }))
+        );
     }
 
     #[test]
@@ -349,6 +454,18 @@ mod tests {
         assert_eq!(decoded.fsrs_version, config.fsrs_version);
         assert_eq!(decoded.review_fuzz_base, config.review_fuzz_base);
         assert_eq!(decoded.rwkv_review_enabled, config.rwkv_review_enabled);
+        assert_eq!(
+            decoded.rwkv_review_batch_size,
+            config.rwkv_review_batch_size
+        );
+        assert_eq!(
+            decoded.rwkv_review_refresh_interval,
+            config.rwkv_review_refresh_interval
+        );
+        assert_eq!(
+            decoded.rwkv_review_refresh_on_exit,
+            config.rwkv_review_refresh_on_exit
+        );
     }
 
     #[test]
@@ -359,5 +476,81 @@ mod tests {
         assert_eq!(config.fsrs_params_7, vec![0.1; 35]);
         assert_eq!(config.fsrs_version, FsrsVersion::Six as i32);
         assert_eq!(config.fsrs_dynamic_desired_retention_min, 0.31);
+    }
+
+    #[test]
+    fn default_rwkv_batch_size_is_restored_from_cleared_storage_field() {
+        let mut config = DeckConfigInner {
+            rwkv_review_batch_size: 0,
+            rwkv_review_refresh_interval: 0,
+            ..Default::default()
+        };
+
+        restore_fork_fields_from_other(&mut config);
+
+        assert_eq!(
+            config.rwkv_review_batch_size,
+            DEFAULT_RWKV_REVIEW_BATCH_SIZE
+        );
+        assert_eq!(
+            config.rwkv_review_refresh_interval,
+            DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn legacy_rwkv_fields_under_fsrs_key_remain_readable() {
+        let mut config = DeckConfigInner {
+            other: serde_json::to_vec(&json!({
+                FSRS_FORK_FIELDS_KEY: {
+                    "rwkv_review_enabled": true,
+                    "rwkv_review_batch_size": 1024,
+                    "rwkv_review_refresh_interval": 7,
+                    "rwkv_review_refresh_on_exit": true,
+                },
+            }))
+            .unwrap(),
+            rwkv_review_batch_size: 0,
+            rwkv_review_refresh_interval: 0,
+            ..Default::default()
+        };
+
+        restore_fork_fields_from_other(&mut config);
+
+        assert!(config.rwkv_review_enabled);
+        assert_eq!(config.rwkv_review_batch_size, 1024);
+        assert_eq!(config.rwkv_review_refresh_interval, 7);
+        assert!(config.rwkv_review_refresh_on_exit);
+    }
+
+    #[test]
+    fn rwkv_key_takes_precedence_over_legacy_fsrs_key() {
+        let mut config = DeckConfigInner {
+            other: serde_json::to_vec(&json!({
+                FSRS_FORK_FIELDS_KEY: {
+                    "rwkv_review_enabled": true,
+                    "rwkv_review_batch_size": 1024,
+                    "rwkv_review_refresh_interval": 7,
+                    "rwkv_review_refresh_on_exit": true,
+                },
+                RWKV_FORK_FIELDS_KEY: {
+                    "rwkv_review_enabled": false,
+                    "rwkv_review_batch_size": 256,
+                    "rwkv_review_refresh_interval": 3,
+                    "rwkv_review_refresh_on_exit": false,
+                },
+            }))
+            .unwrap(),
+            rwkv_review_batch_size: 0,
+            rwkv_review_refresh_interval: 0,
+            ..Default::default()
+        };
+
+        restore_fork_fields_from_other(&mut config);
+
+        assert!(!config.rwkv_review_enabled);
+        assert_eq!(config.rwkv_review_batch_size, 256);
+        assert_eq!(config.rwkv_review_refresh_interval, 3);
+        assert!(!config.rwkv_review_refresh_on_exit);
     }
 }

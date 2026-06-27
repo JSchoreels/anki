@@ -9,6 +9,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         graphs,
         setGraphPreferences,
     } from "@generated/backend";
+    import { tick } from "svelte";
     import type { Writable } from "svelte/store";
 
     import { autoSavingPrefs } from "$lib/sveltelib/preferences";
@@ -33,6 +34,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let updateScheduled = false;
     $: scheduleSourceDataUpdate($search, $days);
 
+    function graphDebugLoggingEnabled(): boolean {
+        return (
+            typeof location !== "undefined" &&
+            new URLSearchParams(location.search).has("graphDebug")
+        );
+    }
+
+    function formatGraphDetails(details: Record<string, unknown>): string {
+        return JSON.stringify(details);
+    }
+
+    function logGraphTiming(message: string, details: Record<string, unknown>): void {
+        const text = `${message}: ${formatGraphDetails(details)}`;
+        if (graphDebugLoggingEnabled()) {
+            console.warn(text);
+        } else {
+            console.debug(text);
+        }
+    }
+
     function graphData(search: string, days: number): Promise<GraphsResponse> {
         const key = `${days}\0${search}`;
         if (inFlightGraphs && inFlightKey === key) {
@@ -40,7 +61,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
 
         inFlightKey = key;
+        const start = performance.now();
+        logGraphTiming("graphs request started", { search, days });
         inFlightGraphs = graphs({ search, days }).finally(() => {
+            logGraphTiming("graphs request finished", {
+                search,
+                days,
+                elapsedMs: performance.now() - start,
+            });
             if (inFlightKey === key) {
                 inFlightGraphs = null;
             }
@@ -73,14 +101,63 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (requestId !== activeRequestId) {
             return;
         }
+        const start = performance.now();
+        let applied = false;
+        let slowTimer: number | undefined;
         loading = true;
+        if (graphDebugLoggingEnabled()) {
+            const slowTimerDetails = (): Record<string, unknown> => ({
+                search,
+                days,
+                requestId,
+                activeRequestId,
+                elapsedMs: performance.now() - start,
+            });
+            slowTimer = window.setTimeout(() => {
+                console.warn(
+                    `graphs frontend still loading: ${formatGraphDetails(
+                        slowTimerDetails(),
+                    )}`,
+                );
+            }, 2000);
+        }
         try {
             const data = await graphData(search, days);
+            logGraphTiming("graphs data received", {
+                search,
+                days,
+                requestId,
+                activeRequestId,
+                elapsedMs: performance.now() - start,
+            });
             if (requestId === activeRequestId) {
+                const applyStart = performance.now();
                 sourceData = data;
+                loading = false;
+                await tick();
+                applied = true;
+                logGraphTiming("graphs data applied", {
+                    search,
+                    days,
+                    requestId,
+                    requestElapsedMs: applyStart - start,
+                    applyElapsedMs: performance.now() - applyStart,
+                    elapsedMs: performance.now() - start,
+                });
+            } else {
+                logGraphTiming("graphs data ignored", {
+                    search,
+                    days,
+                    requestId,
+                    activeRequestId,
+                    elapsedMs: performance.now() - start,
+                });
             }
         } finally {
-            if (requestId === activeRequestId) {
+            if (slowTimer != null) {
+                window.clearTimeout(slowTimer);
+            }
+            if (!applied && requestId === activeRequestId) {
                 loading = false;
             }
         }

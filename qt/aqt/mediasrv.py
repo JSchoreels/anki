@@ -36,7 +36,7 @@ from anki.cards import CardId
 from anki.collection import OpChanges, OpChangesOnly, Progress, SearchNode
 from anki.decks import UpdateDeckConfigs
 from anki.scheduler.v3 import SchedulingStatesWithContext, SetSchedulingStatesRequest
-from anki.stats_pb2 import CardStatsResponse
+from anki.stats_pb2 import CardStatsResponse, GraphsRequest
 from anki.utils import dev_mode
 from aqt import gui_hooks
 from aqt.changenotetype import ChangeNotetypeDialog
@@ -864,6 +864,19 @@ def deck_options_ready() -> bytes:
     return b""
 
 
+def build_rwkv_state_cache() -> bytes:
+    aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(aqt.mw)
+    return b""
+
+
+def force_build_rwkv_state_cache() -> bytes:
+    aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        aqt.mw,
+        force_rebuild=True,
+    )
+    return b""
+
+
 def save_custom_colours() -> bytes:
     colors = [
         QColorDialog.customColor(i).name(QColor.NameFormat.HexRgb)
@@ -880,26 +893,33 @@ def card_stats() -> bytes:
     backend_start = time.monotonic()
     raw_output = aqt.mw.col._backend.card_stats_raw(request.data)
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
-    if (
-        hook_count == 0
-        and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer)
-        and not aqt.rwkv_scheduler.has_reviewer_backend()
-    ):
-        logger.debug(
-            "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
-            hook_count,
-            backend_elapsed_ms,
-            (time.monotonic() - start) * 1000,
-        )
-        return raw_output
+    response: CardStatsResponse | None = None
+    card: Any | None = None
+    rwkv_review_enabled = False
+    if hook_count == 0 and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer):
+        response = CardStatsResponse()
+        response.ParseFromString(raw_output)
+        card = aqt.mw.col.get_card(CardId(response.card_id))
+        rwkv_review_enabled = aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card)
+        if not rwkv_review_enabled:
+            logger.debug(
+                "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
+                hook_count,
+                backend_elapsed_ms,
+                (time.monotonic() - start) * 1000,
+            )
+            return raw_output
+        aqt.rwkv_scheduler.has_reviewer_backend()
 
-    response = CardStatsResponse()
-    response.ParseFromString(raw_output)
+    if response is None:
+        response = CardStatsResponse()
+        response.ParseFromString(raw_output)
 
     from aqt.browser.card_info import CardInfoRow
 
     rows: list[CardInfoRow] = []
-    card = aqt.mw.col.get_card(CardId(response.card_id))
+    if card is None:
+        card = aqt.mw.col.get_card(CardId(response.card_id))
     for label, value in aqt.rwkv_scheduler.rwkv_card_info_rows(
         reviewer=reviewer,
         card=card,
@@ -931,6 +951,33 @@ def _card_stats_fallback_retrievability_source(response: CardStatsResponse) -> s
     return "FSRS" if response.HasField("memory_state") else "SM2"
 
 
+def graphs() -> bytes:
+    start = time.monotonic()
+    request_proto = GraphsRequest()
+    request_proto.ParseFromString(request.data)
+    reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
+    prepare_start = time.monotonic()
+    aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
+        reviewer,
+        request_proto.search,
+    )
+    prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
+    backend_start = time.monotonic()
+    output = raw_backend_request("graphs")()
+    backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
+    logger.debug(
+        "graphs served: search=%r days=%s prepare_elapsed_ms=%.1f "
+        "backend_elapsed_ms=%.1f response_bytes=%s elapsed_ms=%.1f",
+        request_proto.search,
+        request_proto.days,
+        prepare_elapsed_ms,
+        backend_elapsed_ms,
+        len(output),
+        (time.monotonic() - start) * 1000,
+    )
+    return output
+
+
 post_handler_list = [
     congrats_info,
     get_deck_configs_for_update,
@@ -946,8 +993,11 @@ post_handler_list = [
     search_in_browser,
     deck_options_require_close,
     deck_options_ready,
+    build_rwkv_state_cache,
+    force_build_rwkv_state_cache,
     save_custom_colours,
     card_stats,
+    graphs,
 ]
 
 
@@ -970,7 +1020,6 @@ exposed_backend_list = [
     "get_change_notetype_info",
     # StatsService
     "get_review_logs",
-    "graphs",
     "get_graph_preferences",
     "set_graph_preferences",
     # TagsService

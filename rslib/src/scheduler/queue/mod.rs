@@ -38,6 +38,7 @@ pub(crate) struct CardQueues {
     /// counts are zero. Ensures we don't show a newly-due learning card after a
     /// user returns from editing a review card.
     current_learning_cutoff: TimestampSecs,
+    shown_top_card: Option<CardId>,
     non_news_sorted_by_retrievability: bool,
     pub(crate) load_balancer: Option<LoadBalancer>,
 }
@@ -103,6 +104,9 @@ impl Collection {
         } else {
             queues.iter().take(fetch_limit).collect()
         };
+        if fetch_limit == 1 && !intraday_learning_only {
+            queues.mark_top_card_shown(entries.first().map(QueueEntry::card_id));
+        }
         let cards: Vec<_> = entries
             .into_iter()
             .map(|entry| {
@@ -153,6 +157,10 @@ fn new_scheduling_context(col: &mut Collection, card: &Card) -> Result<Schedulin
 }
 
 impl CardQueues {
+    fn mark_top_card_shown(&mut self, card_id: Option<CardId>) {
+        self.shown_top_card = card_id;
+    }
+
     /// An iterator over the card queues, in the order the cards will
     /// be presented.
     fn iter(&self) -> impl Iterator<Item = QueueEntry> + '_ {
@@ -178,8 +186,10 @@ impl CardQueues {
             // under normal circumstances this should not go below 0, but currently
             // the Python unit tests answer learning cards before they're due
             self.counts.learning = self.counts.learning.saturating_sub(1);
+            self.shown_top_card = None;
             Ok(entry.into())
         } else if self.main.front().filter(|e| e.id == id).is_some() {
+            self.shown_top_card = None;
             Ok(self.pop_main().unwrap().into())
         } else {
             invalid_input!("not at top of queue")
@@ -187,6 +197,7 @@ impl CardQueues {
     }
 
     fn push_undo_entry(&mut self, entry: QueueEntry) {
+        self.shown_top_card = None;
         match entry {
             QueueEntry::IntradayLearning(entry) => self.push_intraday_learning(entry),
             QueueEntry::Main(entry) => self.push_main(entry),

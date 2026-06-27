@@ -29,6 +29,7 @@ struct GraphsContext {
     cards: Vec<Card>,
     fsrs_by_preset: HashMap<FsrsPresetId, FSRS>,
     fsrs_preset_by_card: HashMap<CardId, FsrsPresetId>,
+    rwkv_stats_scores: Option<HashMap<CardId, f32>>,
     next_day_start: TimestampSecs,
     days_elapsed: u32,
     local_offset_secs: i64,
@@ -42,10 +43,15 @@ impl Collection {
     ) -> Result<anki_proto::stats::GraphsResponse> {
         let guard = self.search_cards_into_table(search, SortMode::NoOrder)?;
         let all = search.trim().is_empty();
-        guard.col.graph_data(all, days)
+        guard.col.graph_data(search, all, days)
     }
 
-    fn graph_data(&mut self, all: bool, days: u32) -> Result<anki_proto::stats::GraphsResponse> {
+    fn graph_data(
+        &mut self,
+        search: &str,
+        all: bool,
+        days: u32,
+    ) -> Result<anki_proto::stats::GraphsResponse> {
         let timing = self.timing_today()?;
         let revlog_start = if days > 0 {
             timing
@@ -63,16 +69,21 @@ impl Collection {
                 .get_revlog_entries_for_searched_cards_after_stamp(revlog_start)?
         };
         let cards = self.storage.all_searched_cards()?;
-        let cards_with_memory_state: Vec<Card> = cards
+        let rwkv_stats_scores = self.rwkv_stats_scores_for_graphs(search, timing.days_elapsed);
+        let fsrs_cards: Vec<Card> = cards
             .iter()
             .filter(|card| card.memory_state.is_some())
             .cloned()
             .collect();
         let fsrs_preset_start = std::time::Instant::now();
-        let fsrs_presets_by_card = self.fsrs_presets_for_cards(&cards_with_memory_state)?;
+        let fsrs_presets_by_card = self.fsrs_presets_for_cards(&fsrs_cards)?;
         tracing::debug!(
             searched_cards = cards.len(),
-            cards_with_memory_state = cards_with_memory_state.len(),
+            rwkv_scored_cards = rwkv_stats_scores
+                .as_ref()
+                .map(|scores| scores.len())
+                .unwrap_or_default(),
+            fsrs_cards = fsrs_cards.len(),
             elapsed_ms = fsrs_preset_start.elapsed().as_secs_f64() * 1000.0,
             "resolved FSRS presets for stats graphs"
         );
@@ -100,6 +111,7 @@ impl Collection {
             cards,
             fsrs_by_preset,
             fsrs_preset_by_card,
+            rwkv_stats_scores,
             next_day_start: timing.next_day_at,
             local_offset_secs,
         };
@@ -122,6 +134,14 @@ impl Collection {
             fsrs: self.get_config_bool(BoolKey::Fsrs),
         };
         Ok(resp)
+    }
+
+    fn rwkv_stats_scores_for_graphs(
+        &self,
+        search: &str,
+        days_elapsed: u32,
+    ) -> Option<HashMap<CardId, f32>> {
+        self.rwkv_stats_graph_scores(search, days_elapsed).cloned()
     }
 
     pub(crate) fn get_graph_preferences(&self) -> anki_proto::stats::GraphPreferences {

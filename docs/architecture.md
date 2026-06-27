@@ -343,14 +343,24 @@ backend scheduling/evaluation behavior.
 ## FSRS Retrievability Reads
 
 Retrievability shown in these backend paths is computed from the selected deck
-FSRS parameter array via `FSRS::current_retrievability`:
+FSRS parameter array via `FSRS::current_retrievability`, unless a desktop-only
+RWKV score map has been prepared:
 
 - Card info stats (`rslib/src/stats/card.rs`)
 - Browser `Retrievability` column (`rslib/src/browser_table.rs`)
-- Stats retrievability graph (`rslib/src/stats/graphs/retrievability.rs`)
+- Stats retrievability graph (`rslib/src/stats/graphs/retrievability.rs`),
+  which uses RWKV scores for cards present in the transient stats score map and
+  falls back to FSRS for the rest
 
 For FSRS-7, this uses the native forgetting-curve mixture (no scalar decay
 approximation).
+
+FSRS optimization also populates a local review-time prediction cache in the
+collection table `search_stats_fsrs_review_retrievability`. Rows are keyed by
+`revlog.id` and store the pre-answer predicted retrievability computed with the
+optimized parameter array returned by that optimization run. This table is a
+local derived cache for calibration-style consumers; it is not card state and
+should not be used for current retrievability ordering/search.
 
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
 stored scalar decay from `card.data` for ordering/search expressions.
@@ -387,7 +397,11 @@ Current exact-vs-scalar status:
   - Filtered deck retrievability order (`ascending` / `descending`)
 - `prop:r` filtering is exact-model-based. Search builds a temporary
   `search_exact_retrievability` table (`cid`, `r`, `s90`) from
-  `FSRS::current_retrievability` and the stored `S90`.
+  `FSRS::current_retrievability` and the stored `S90`. If a desktop RWKV score
+  map is available for the current scheduler day, `r` is taken from RWKV for
+  cards in that map, and from FSRS for the remaining cards. For cards with
+  multiple current-day RWKV scores, search prefers the Card Info score, then
+  the active review-queue score, then the stats graph score.
 - `card.data.s` stores `S90` (the interval at 90% retrievability), so
   `prop:s`, the browser stability column, and Card Info all use the same
   stability value across FSRS-6 and FSRS-7. When a positive FSRS stability value

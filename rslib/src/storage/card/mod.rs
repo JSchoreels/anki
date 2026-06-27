@@ -318,6 +318,44 @@ impl super::SqliteStorage {
         Ok(())
     }
 
+    /// Call func() for each requested review card in the active decks,
+    /// including cards whose due day is in the future.
+    pub(crate) fn for_each_review_card_in_active_decks_with_ids<F>(
+        &self,
+        card_ids: &[CardId],
+        mut func: F,
+    ) -> Result<()>
+    where
+        F: FnMut(DueCard) -> Result<bool>,
+    {
+        if card_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut ids = String::new();
+        ids_to_string(&mut ids, card_ids);
+        let sql =
+            include_str!("review_cards_in_active_decks_with_ids.sql").replace("CARD_IDS", &ids);
+        let mut stmt = self.db.prepare(&sql)?;
+        let mut rows = stmt.query(params![CardQueue::Review as i8])?;
+        while let Some(row) = rows.next()? {
+            if !func(DueCard {
+                id: row.get(0)?,
+                note_id: row.get(1)?,
+                due: row.get(2).ok().unwrap_or_default(),
+                mtime: row.get(4)?,
+                current_deck_id: row.get(5)?,
+                original_deck_id: row.get(6)?,
+                reps: row.get(7)?,
+                kind: DueCardKind::Review,
+            })? {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Call func() for each new card in the provided deck, stopping when it
     /// returns or no more cards found.
     pub(crate) fn for_each_new_card_in_deck<F>(

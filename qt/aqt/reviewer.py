@@ -9,6 +9,7 @@ import random
 import re
 import time
 from collections.abc import Callable, Generator, Sequence
+from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
@@ -217,14 +218,29 @@ class Reviewer:
 
     def cleanup(self) -> None:
         gui_hooks.reviewer_will_end()
+        if (
+            self._answeredIds
+            and aqt.rwkv_scheduler.reviewer_queue_order_refresh_on_exit_enabled(self)
+        ):
+            self._prepare_rwkv_queue_order_on_exit()
         self.card = None
         self.auto_advance_enabled = False
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed is RefreshNeeded.QUEUES:
-            self.nextCard()
-            self.mw.fade_in_webview()
-            self._refresh_needed = None
+            if aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
+                self._refresh_needed = None
+                if self.card is None:
+                    self._prepare_rwkv_queue_order_then_next_card(fade_after=True)
+                else:
+                    self.nextCard()
+                    self.mw.fade_in_webview()
+                    self._prepare_rwkv_queue_order_then_next_card()
+            else:
+                aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
+                self.nextCard()
+                self.mw.fade_in_webview()
+                self._refresh_needed = None
         elif self._refresh_needed is RefreshNeeded.NOTE_TEXT:
             self._redraw_current_card()
             self.mw.fade_in_webview()
@@ -541,6 +557,8 @@ class Reviewer:
         self._reps += 1
         self.state = "question"
         self.typedAnswer: str | None = None
+        self._answer_update_id = None
+        self._answer_rendered = False
         c = self.card
         # grab the question and play audio
         q = c.question()
@@ -785,8 +803,108 @@ class Reviewer:
         gui_hooks.reviewer_did_answer_card(self, self.card, ease)
         aqt.rwkv_scheduler.record_reviewer_answer(self, self.card, ease)
         self._answeredIds.append(self.card.id)
-        if not self.check_timebox():
+        if self.check_timebox():
+            return
+
+        rwkv_queue_order_enabled = aqt.rwkv_scheduler.reviewer_queue_order_enabled(self)
+        if (
+            rwkv_queue_order_enabled
+            and aqt.rwkv_scheduler.reviewer_queue_order_refresh_due(self)
+        ):
+            queued_at = time.monotonic()
+            self.mw.taskman.run_on_main(
+                lambda: self._prepare_rwkv_queue_order_then_next_card(queued_at)
+            )
+        elif rwkv_queue_order_enabled:
             self.nextCard()
+        else:
+            aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
+            self.nextCard()
+
+    def _prepare_rwkv_queue_order_then_next_card(
+        self, queued_at: float | None = None, *, fade_after: bool = False
+    ) -> None:
+        answered_card_id = self.card.id if self.card else None
+        start = time.monotonic()
+        logger.debug(
+            "reviewer RWKV queue order refresh starting: answered_card_id=%s "
+            "main_delay_ms=%.1f",
+            answered_card_id,
+            ((start - queued_at) * 1000) if queued_at is not None else 0.0,
+        )
+
+        def prepare() -> None:
+            prepare_start = time.monotonic()
+            logger.debug(
+                "reviewer RWKV queue order background prepare starting: "
+                "answered_card_id=%s background_delay_ms=%.1f",
+                answered_card_id,
+                (prepare_start - start) * 1000,
+            )
+            aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
+            logger.debug(
+                "reviewer RWKV queue order background prepare finished: "
+                "answered_card_id=%s prepare_elapsed_ms=%.1f",
+                answered_card_id,
+                (time.monotonic() - prepare_start) * 1000,
+            )
+
+        def done(future: Future[None]) -> None:
+            try:
+                future.result()
+            except Exception:
+                logger.exception("RWKV review queue refresh failed")
+
+            logger.debug(
+                "reviewer RWKV queue order refresh finished: answered_card_id=%s elapsed_ms=%.1f",
+                answered_card_id,
+                (time.monotonic() - start) * 1000,
+            )
+            if fade_after and self.card is None:
+                self.nextCard()
+                self.mw.fade_in_webview()
+            elif (
+                self.state == "transition"
+                and self.card is not None
+                and self.card.id == answered_card_id
+            ):
+                self.nextCard()
+
+        self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
+
+    def _prepare_rwkv_queue_order_on_exit(self) -> None:
+        start = time.monotonic()
+        answered_count = len(self._answeredIds)
+        logger.debug(
+            "reviewer RWKV queue order exit refresh starting: answered_count=%s",
+            answered_count,
+        )
+
+        def prepare() -> None:
+            prepare_start = time.monotonic()
+            aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
+            logger.debug(
+                "reviewer RWKV queue order exit background prepare finished: "
+                "answered_count=%s prepare_elapsed_ms=%.1f",
+                answered_count,
+                (time.monotonic() - prepare_start) * 1000,
+            )
+
+        def done(future: Future[None]) -> None:
+            try:
+                future.result()
+            except Exception:
+                logger.exception("RWKV review queue exit refresh failed")
+                return
+
+            logger.debug(
+                "reviewer RWKV queue order exit refresh finished: "
+                "answered_count=%s elapsed_ms=%.1f",
+                answered_count,
+                (time.monotonic() - start) * 1000,
+            )
+
+        self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
 
     # Handlers
     ############################################################
@@ -1022,9 +1140,19 @@ class Reviewer:
         return self.mw.col.extract_cloze_for_typing(txt, idx) or None
 
     def _getTypedAnswer(self) -> None:
-        self.web.evalWithCallback("getTypedAnswer();", self._onTypedAnswer)
+        card_id = self.card.id if self.card else None
+        self.web.evalWithCallback(
+            "getTypedAnswer();",
+            lambda val: self._onTypedAnswer(val, card_id),
+        )
 
-    def _onTypedAnswer(self, val: str | None) -> None:
+    def _onTypedAnswer(self, val: str | None, card_id: CardId | None = None) -> None:
+        if self.state != "question" or self.card is None:
+            return
+        if card_id is None:
+            card_id = self.card.id
+        if self.card.id != card_id:
+            return
         self.typedAnswer = val or ""
         self._showAnswer()
 

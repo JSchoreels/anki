@@ -18,6 +18,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         value: string | number | bigint;
     }
 
+    const rwkvComputedRLabel = "RWKV computed R";
+
     function formatStability(stabilityDays: number): string {
         let value = timeSpan(stabilityDays * 86400, false, false);
         if (stabilityDays > 31) {
@@ -34,6 +36,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
         const statsRows: StatsRow[] = [];
+        const rwkvComputedRRow = stats.extraRows.find(
+            (row) => row.label === rwkvComputedRLabel,
+        );
+        let movedRwkvComputedRRow = false;
 
         statsRows.push({ label: tr2.cardStatsAdded(), value: dateString(stats.added) });
 
@@ -88,6 +94,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     label: tr2.cardStatsFsrsComputedR(),
                     value: `${retrievability}%`,
                 });
+                if (rwkvComputedRRow != null) {
+                    statsRows.push(rwkvComputedRRow);
+                    movedRwkvComputedRRow = true;
+                }
             }
         } else {
             if (stats.ease) {
@@ -124,6 +134,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         statsRows.push({ label: tr2.cardStatsPreset(), value: stats.preset });
 
         for (const row of stats.extraRows) {
+            if (movedRwkvComputedRRow && row === rwkvComputedRRow) {
+                continue;
+            }
             statsRows.push({ label: row.label, value: row.value });
         }
 

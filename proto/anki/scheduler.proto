@@ -90,6 +90,19 @@ service SchedulerService {
   rpc FsrsIntervalAtRetrievabilityByConfigBatch(
       FsrsIntervalAtRetrievabilityByConfigBatchRequest)
       returns (FsrsIntervalAtRetrievabilityByConfigBatchResponse);
+  // Installs a transient desktop-only RWKV retrievability map used by review
+  // queue ordering. Empty scores clear the map.
+  rpc SetRwkvReviewQueueScores(RwkvReviewQueueScoresRequest)
+      returns (generic.Empty);
+  // Installs a transient desktop-only RWKV retrievability map used by stats
+  // graphs. Scores are scoped to the supplied search.
+  rpc SetRwkvStatsGraphScores(RwkvStatsGraphScoresRequest)
+      returns (generic.Empty);
+  // Installs or clears a transient desktop-only RWKV retrievability score
+  // computed while rendering card info.
+  rpc SetRwkvCardInfoScore(RwkvCardInfoScoreRequest) returns (generic.Empty);
+  rpc GetFsrsPresetIdsForCards(cards.CardIds)
+      returns (FsrsPresetIdsForCardsResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -656,6 +669,14 @@ message FsrsPresetForCardResponse {
   repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 18;
 }
 
+message FsrsPresetIdsForCardsResponse {
+  message Item {
+    int64 card_id = 1;
+    string preset_id = 2;
+  }
+  repeated Item items = 1;
+}
+
 message FuzzDeltaRequest {
   int64 card_id = 1;
   uint32 interval = 2;
@@ -765,4 +786,27 @@ message FsrsIntervalAtRetrievabilityByConfigBatchResponse {
     float interval = 2;
   }
   repeated Item items = 1;
+}
+
+message RwkvReviewQueueScoresRequest {
+  message Score {
+    int64 card_id = 1;
+    float retrievability = 2;
+  }
+  int64 deck_id = 1;
+  repeated Score scores = 2;
+}
+
+message RwkvStatsGraphScoresRequest {
+  message Score {
+    int64 card_id = 1;
+    float retrievability = 2;
+  }
+  string search = 1;
+  repeated Score scores = 2;
+}
+
+message RwkvCardInfoScoreRequest {
+  int64 card_id = 1;
+  optional float retrievability = 2;
 }

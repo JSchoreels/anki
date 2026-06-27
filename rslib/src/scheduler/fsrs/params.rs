@@ -115,6 +115,7 @@ pub(crate) struct PreparedComputeParams {
     pub existing_card_input: Option<ExistingCardInput>,
     pub items: Vec<FSRSItem>,
     pub item_card_ids: Vec<i64>,
+    pub fsrs_prediction_sources: Vec<FsrsReviewPredictionSource>,
     pub target_counts: TrainingTargetCounts,
 }
 
@@ -214,14 +215,20 @@ fn rmse_adjustment(r: f32, c: u32) -> f32 {
 struct TrainingItemsForFsrs {
     items: Vec<FSRSItem>,
     card_ids: Option<Vec<i64>>,
+    prediction_sources: Vec<FsrsReviewPredictionSource>,
 }
 
 impl TrainingItemsForFsrs {
-    fn with_card_ids(items: Vec<FSRSItem>, card_ids: Vec<i64>) -> Self {
+    fn with_card_ids(
+        items: Vec<FSRSItem>,
+        card_ids: Vec<i64>,
+        prediction_sources: Vec<FsrsReviewPredictionSource>,
+    ) -> Self {
         debug_assert_eq!(items.len(), card_ids.len());
         Self {
             items,
             card_ids: Some(card_ids),
+            prediction_sources,
         }
     }
 
@@ -229,6 +236,7 @@ impl TrainingItemsForFsrs {
         Self {
             items,
             card_ids: None,
+            prediction_sources: Vec::new(),
         }
     }
 
@@ -244,6 +252,7 @@ impl TrainingItemsForFsrs {
                 Self {
                     items,
                     card_ids: Some(card_ids),
+                    prediction_sources: Vec::new(),
                 }
             }
             None => Self::without_card_ids(
@@ -259,12 +268,19 @@ impl TrainingItemsForFsrs {
         Self {
             items: self.items[start..end].to_vec(),
             card_ids: self.card_ids.as_ref().map(|ids| ids[start..end].to_vec()),
+            prediction_sources: Vec::new(),
         }
     }
 
     fn target_counts(&self) -> TrainingTargetCounts {
         training_target_counts_from_items(&self.items)
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct FsrsReviewPredictionSource {
+    reviews: Vec<FSRSReview>,
+    targets: Vec<(RevlogId, usize)>,
 }
 
 fn has_long_term_target(item: &FSRSItem) -> bool {
@@ -383,6 +399,7 @@ where
         TrainingItemsForFsrs {
             items: train_set,
             card_ids,
+            prediction_sources: Vec::new(),
         },
         5,
     );
@@ -474,6 +491,7 @@ pub(crate) fn compute_params_from_prepared(
         existing_card_input,
         items,
         item_card_ids,
+        fsrs_prediction_sources: _,
         target_counts: _,
     }: PreparedComputeParams,
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
@@ -531,9 +549,9 @@ pub(crate) fn compute_params_from_prepared(
     )?;
 
     let health_check_items = if include_same_day_reviews {
-        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone())
+        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone(), Vec::new())
     } else {
-        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone())
+        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone(), Vec::new())
             .filter_non_same_day_evaluation_targets()
     };
     let health_check_passed = if health_check && health_check_items.items.len() > 300 {
@@ -934,6 +952,7 @@ impl Collection {
                 fsrs_dynamic_desired_retention_max: 0.0,
             });
         }
+        let fsrs_prediction_sources = prepared.fsrs_prediction_sources.clone();
         // adapt the progress handler to our built-in progress handling
 
         let create_progress_thread = || -> Result<_> {
@@ -976,7 +995,29 @@ impl Collection {
             health_check,
         );
         progress_thread.join().ok();
-        output
+        let output = output?;
+        if let Err(err) = self
+            .store_fsrs_review_retrievability_predictions(&output.params, &fsrs_prediction_sources)
+        {
+            tracing::warn!(?err, "failed to store FSRS review retrievability cache");
+        }
+        Ok(output)
+    }
+
+    fn store_fsrs_review_retrievability_predictions(
+        &mut self,
+        params: &[f32],
+        sources: &[FsrsReviewPredictionSource],
+    ) -> Result<()> {
+        let predictions = fsrs_review_retrievability_predictions(params, sources)?;
+        let stored = self
+            .storage
+            .set_fsrs_review_retrievability_predictions(&predictions, "fsrs_optimization")?;
+        tracing::debug!(
+            predictions = stored,
+            "stored FSRS review retrievability cache"
+        );
+        Ok(())
     }
 
     pub(crate) fn prepare_compute_params(
@@ -1044,7 +1085,11 @@ impl Collection {
             include_same_day_reviews,
         );
         let target_counts = training_items.target_counts();
-        let TrainingItemsForFsrs { items, card_ids } = training_items;
+        let TrainingItemsForFsrs {
+            items,
+            card_ids,
+            prediction_sources,
+        } = training_items;
         Ok(PreparedComputeParams {
             current_params: current_params.to_vec(),
             num_of_relearning_steps,
@@ -1055,6 +1100,7 @@ impl Collection {
             existing_card_input,
             items,
             item_card_ids: card_ids.unwrap_or_default(),
+            fsrs_prediction_sources: prediction_sources,
             target_counts,
         })
     }
@@ -1359,6 +1405,7 @@ fn fsrs_items_for_training(
     review_revlogs_before: TimestampMillis,
     include_same_day: bool,
 ) -> TrainingItemsForFsrs {
+    let mut prediction_sources = Vec::new();
     let mut revlogs = revlogs
         .into_iter()
         .chunk_by(|r| r.cid)
@@ -1372,6 +1419,13 @@ fn fsrs_items_for_training(
                 include_same_day,
             )
             .map(|reviews| {
+                if let Some(source) = fsrs_prediction_source_from_filtered_revlogs(
+                    &reviews.filtered_revlogs,
+                    next_day_at,
+                    include_same_day,
+                ) {
+                    prediction_sources.push(source);
+                }
                 reviews
                     .fsrs_items
                     .into_iter()
@@ -1386,7 +1440,69 @@ fn fsrs_items_for_training(
         .into_iter()
         .map(|(_, card_id, item)| (card_id.0, item))
         .unzip();
-    TrainingItemsForFsrs::with_card_ids(items, card_ids)
+    TrainingItemsForFsrs::with_card_ids(items, card_ids, prediction_sources)
+}
+
+fn fsrs_prediction_source_from_filtered_revlogs(
+    entries: &[RevlogEntry],
+    next_day_at: TimestampSecs,
+    include_same_day: bool,
+) -> Option<FsrsReviewPredictionSource> {
+    let delta_ts = fsrs_review_delta_ts(entries, next_day_at, include_same_day);
+    let reviews = entries
+        .iter()
+        .zip(delta_ts.iter())
+        .map(|(entry, &delta_t)| FSRSReview {
+            rating: entry.button_chosen as u32,
+            delta_t,
+        })
+        .collect_vec();
+    let targets = entries
+        .iter()
+        .zip(delta_ts.iter())
+        .enumerate()
+        .filter_map(|(idx, (entry, &delta_t))| {
+            let keep_for_training = delta_t > 0.0 || include_same_day;
+            (idx >= 1 && keep_for_training).then_some((entry.id, idx))
+        })
+        .collect_vec();
+
+    (!targets.is_empty()).then_some(FsrsReviewPredictionSource { reviews, targets })
+}
+
+pub(crate) fn fsrs_review_retrievability_predictions(
+    params: &[f32],
+    sources: &[FsrsReviewPredictionSource],
+) -> Result<Vec<(RevlogId, f32)>> {
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let fsrs = FSRS::new(params)?;
+    let mut predictions = Vec::new();
+    for source in sources {
+        let item = FSRSItem {
+            reviews: source.reviews.clone(),
+        };
+        let memory_states = fsrs.historical_memory_states(item, None)?;
+        for &(revlog_id, review_index) in &source.targets {
+            let Some(previous_state) = review_index
+                .checked_sub(1)
+                .and_then(|index| memory_states.get(index))
+            else {
+                continue;
+            };
+            let Some(review) = source.reviews.get(review_index) else {
+                continue;
+            };
+            let prediction = fsrs.current_retrievability(*previous_state, review.delta_t);
+            if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
+                predictions.push((revlog_id, prediction));
+            }
+        }
+    }
+
+    Ok(predictions)
 }
 
 pub(crate) struct ReviewsForFsrs {
@@ -1495,20 +1611,7 @@ pub(crate) fn reviews_for_fsrs(
     // Filter out unwanted entries
     entries.retain(|entry| entry.has_rating_and_affects_scheduling());
 
-    // Compute delta_t for each entry
-    let delta_ts = iter::once(0.0f32)
-        .chain(entries.iter().tuple_windows().map(|(previous, current)| {
-            let elapsed_days =
-                previous.days_elapsed(next_day_at) - current.days_elapsed(next_day_at);
-            if include_same_day_training_entries {
-                // FSRS-7 accepts fractional elapsed days; use revlog timestamps directly.
-                let elapsed_millis = current.id.0.saturating_sub(previous.id.0).max(1) as f32;
-                elapsed_millis / 86_400_000.0
-            } else {
-                elapsed_days as f32
-            }
-        }))
-        .collect_vec();
+    let delta_ts = fsrs_review_delta_ts(&entries, next_day_at, include_same_day_training_entries);
 
     let items = if training {
         // Convert the remaining entries into separate FSRSItems, where each item
@@ -1556,6 +1659,26 @@ pub(crate) fn reviews_for_fsrs(
             filtered_revlogs: entries,
         })
     }
+}
+
+fn fsrs_review_delta_ts(
+    entries: &[RevlogEntry],
+    next_day_at: TimestampSecs,
+    include_same_day_training_entries: bool,
+) -> Vec<f32> {
+    iter::once(0.0f32)
+        .chain(entries.iter().tuple_windows().map(|(previous, current)| {
+            let elapsed_days =
+                previous.days_elapsed(next_day_at) - current.days_elapsed(next_day_at);
+            if include_same_day_training_entries {
+                // FSRS-7 accepts fractional elapsed days; use revlog timestamps directly.
+                let elapsed_millis = current.id.0.saturating_sub(previous.id.0).max(1) as f32;
+                elapsed_millis / 86_400_000.0
+            } else {
+                elapsed_days as f32
+            }
+        }))
+        .collect_vec()
 }
 
 impl RevlogEntry {
@@ -1678,6 +1801,7 @@ pub(crate) mod tests {
                 existing_card_input: None,
                 items: vec![],
                 item_card_ids: vec![],
+                fsrs_prediction_sources: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },
             None,

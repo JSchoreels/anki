@@ -92,10 +92,18 @@ message GraphsResponse {
     float average = 2;
   }
   message Retrievability {
+    message Series {
+      map<uint32, uint32> retrievability = 1;
+      float average = 2;
+      float sum_by_card = 3;
+      float sum_by_note = 4;
+    }
     map<uint32, uint32> retrievability = 1;
     float average = 2;
     float sum_by_card = 3;
     float sum_by_note = 4;
+    Series fsrs = 5;
+    Series rwkv = 6;
   }
   message FutureDue {
     map<int32, uint32> future_due = 1;

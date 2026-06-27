@@ -21,6 +21,8 @@ use super::DeckConfig;
 use super::DeckConfigId;
 use super::DeckConfigInner;
 use super::NewCardInsertOrder;
+use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 use super::INITIAL_EASE_FACTOR_THOUSANDS;
 use crate::serde::default_on_invalid;
 use crate::timestamp::TimestampSecs;
@@ -117,6 +119,18 @@ pub struct DeckConfSchema11 {
     ignore_revlogs_before_date: String,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_enabled: bool,
+    #[serde(
+        default = "default_rwkv_review_batch_size",
+        skip_serializing_if = "is_default_or_zero_rwkv_review_batch_size"
+    )]
+    rwkv_review_batch_size: u32,
+    #[serde(
+        default = "default_rwkv_review_refresh_interval",
+        skip_serializing_if = "is_default_or_zero_rwkv_review_refresh_interval"
+    )]
+    rwkv_review_refresh_interval: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    rwkv_review_refresh_on_exit: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
     #[serde(default)]
@@ -155,6 +169,22 @@ fn is_false(value: &bool) -> bool {
 
 fn is_default_fsrs_minimum_interval_secs(value: &u32) -> bool {
     *value == 1
+}
+
+fn default_rwkv_review_batch_size() -> u32 {
+    DEFAULT_RWKV_REVIEW_BATCH_SIZE
+}
+
+fn is_default_or_zero_rwkv_review_batch_size(value: &u32) -> bool {
+    *value == 0 || *value == default_rwkv_review_batch_size()
+}
+
+fn default_rwkv_review_refresh_interval() -> u32 {
+    DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL
+}
+
+fn is_default_or_zero_rwkv_review_refresh_interval(value: &u32) -> bool {
+    *value == 0 || *value == default_rwkv_review_refresh_interval()
 }
 
 fn is_default_dynamic_desired_retention_min(value: &f32) -> bool {
@@ -398,6 +428,9 @@ impl Default for DeckConfSchema11 {
             param_search: "".to_string(),
             ignore_revlogs_before_date: "".to_string(),
             rwkv_review_enabled: false,
+            rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
+            rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
+            rwkv_review_refresh_on_exit: false,
             easy_days_percentages: vec![1.0; 7],
         }
     }
@@ -457,6 +490,9 @@ impl From<DeckConfSchema11> for DeckConfig {
             leech_threshold: c.lapse.leech_fails,
             leech_only_if_young: c.lapse.leech_only_if_young,
             rwkv_review_enabled: c.rwkv_review_enabled,
+            rwkv_review_batch_size: c.rwkv_review_batch_size,
+            rwkv_review_refresh_interval: c.rwkv_review_refresh_interval,
+            rwkv_review_refresh_on_exit: c.rwkv_review_refresh_on_exit,
             disable_autoplay: !c.autoplay,
             cap_answer_time_to_secs: c.max_taken.max(0) as u32,
             show_timer: c.timer != 0,
@@ -642,6 +678,9 @@ impl From<DeckConfig> for DeckConfSchema11 {
             param_search: i.param_search,
             ignore_revlogs_before_date: i.ignore_revlogs_before_date,
             rwkv_review_enabled: i.rwkv_review_enabled,
+            rwkv_review_batch_size: i.rwkv_review_batch_size,
+            rwkv_review_refresh_interval: i.rwkv_review_refresh_interval,
+            rwkv_review_refresh_on_exit: i.rwkv_review_refresh_on_exit,
             easy_days_percentages: i.easy_days_percentages,
         }
     }
@@ -689,6 +728,9 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "weightSearch",
     "ignoreRevlogsBeforeDate",
     "rwkvReviewEnabled",
+    "rwkvReviewBatchSize",
+    "rwkvReviewRefreshInterval",
+    "rwkvReviewRefreshOnExit",
     "easyDaysPercentages",
 };
 
@@ -768,5 +810,75 @@ mod test {
                 _unused: 0
             }
         );
+    }
+
+    #[test]
+    fn rwkv_batch_size_defaults_and_omits_default() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewBatchSize").is_none());
+
+        let decoded: DeckConfSchema11 = serde_json::from_value(serialized)?;
+        assert_eq!(
+            decoded.rwkv_review_batch_size,
+            DEFAULT_RWKV_REVIEW_BATCH_SIZE
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn non_default_rwkv_batch_size_serializes_for_legacy_json() -> Result<()> {
+        let config = DeckConfSchema11 {
+            rwkv_review_batch_size: 1024,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewBatchSize"], json!(1024));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_refresh_interval_defaults_and_omits_default() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewRefreshInterval").is_none());
+
+        let decoded: DeckConfSchema11 = serde_json::from_value(serialized)?;
+        assert_eq!(
+            decoded.rwkv_review_refresh_interval,
+            DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn non_default_rwkv_refresh_interval_serializes_for_legacy_json() -> Result<()> {
+        let config = DeckConfSchema11 {
+            rwkv_review_refresh_interval: 5,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewRefreshInterval"], json!(5));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_refresh_on_exit_omits_default_and_serializes_enabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewRefreshOnExit").is_none());
+
+        let config = DeckConfSchema11 {
+            rwkv_review_refresh_on_exit: true,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewRefreshOnExit"], json!(true));
+
+        Ok(())
     }
 }
