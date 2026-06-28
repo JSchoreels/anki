@@ -274,8 +274,9 @@ impl Collection {
             let parent_limits = self
                 .get_config_bool(BoolKey::ApplyAllParentLimits)
                 .then(Default::default);
-            let counts = self.due_counts(days_elapsed, learn_cutoff)?;
             let dconf = self.storage.get_deck_config_map()?;
+            let mut counts = self.due_counts(days_elapsed, learn_cutoff)?;
+            self.apply_rwkv_review_queue_counts(&mut counts, &decks_map, &dconf, timing_at_stamp)?;
             add_counts(&mut tree, &counts);
             let limits = remaining_limits_map(
                 decks_map.values(),
@@ -342,8 +343,13 @@ impl Collection {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::card::CardQueue;
+    use crate::card::CardType;
     use crate::deckconfig::DeckConfigId;
+    use crate::deckconfig::ReviewCardOrder;
     use crate::error::Result;
 
     #[test]
@@ -470,6 +476,111 @@ mod test {
         assert_eq!(parent.total_including_children, 8);
         assert_eq!(parent.total_in_deck, 2);
 
+        Ok(())
+    }
+
+    fn add_review_card(
+        col: &mut Collection,
+        deck_id: DeckId,
+        due: i32,
+        desired_retention: f32,
+        last_review_time: Option<TimestampSecs>,
+    ) -> Result<CardId> {
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "foo")?;
+        col.add_note(&mut note, deck_id)?;
+        let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.due = due;
+        card.interval = 1;
+        card.desired_retention = Some(desired_retention);
+        card.last_review_time = last_review_time;
+        col.storage.update_card(&card)?;
+        Ok(card.id)
+    }
+
+    fn enable_rwkv_review_counts(
+        col: &mut Collection,
+        deck: &mut Deck,
+        allow_same_day_review: bool,
+    ) -> Result<()> {
+        let mut conf = DeckConfig::default();
+        conf.inner.review_order = ReviewCardOrder::RetrievabilityAscending as i32;
+        conf.inner.rwkv_review_enabled = true;
+        conf.inner.rwkv_review_instant_order_enabled = true;
+        conf.inner.rwkv_review_allow_same_day_review = allow_same_day_review;
+        col.add_or_update_deck_config(&mut conf)?;
+        deck.normal_mut().unwrap().config_id = conf.id.0;
+        col.add_or_update_deck(deck)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_exclude_ineligible_scored_reviews() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+        let timing = col.timing_today()?;
+
+        let high_r_due =
+            add_review_card(&mut col, deck.id, timing.days_elapsed as i32, 0.75, None)?;
+        add_review_card(&mut col, deck.id, timing.days_elapsed as i32, 0.75, None)?;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(high_r_due, 0.80)]))?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 1);
+        assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_include_future_eligible_scored_reviews() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+        let timing = col.timing_today()?;
+
+        let future_low_r = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(future_low_r, 0.20)]))?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 1);
+        assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_follow_same_day_toggle() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        let timing = col.timing_today()?;
+
+        let reviewed_today = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            Some(timing.now),
+        )?;
+        enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(reviewed_today, 0.20)]))?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 0);
+        assert_eq!(tree.children[0].review_uncapped, 0);
+
+        enable_rwkv_review_counts(&mut col, &mut deck, true)?;
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 1);
+        assert_eq!(tree.children[0].review_uncapped, 1);
         Ok(())
     }
 }

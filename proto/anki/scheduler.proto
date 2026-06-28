@@ -101,6 +101,20 @@ service SchedulerService {
   // Installs or clears a transient desktop-only RWKV retrievability score
   // computed while rendering card info.
   rpc SetRwkvCardInfoScore(RwkvCardInfoScoreRequest) returns (generic.Empty);
+  // Returns the active transient desktop-only RWKV retrievability score for a
+  // card, if one has been installed for the current scheduler day.
+  rpc GetRwkvRetrievabilityScore(cards.CardId)
+      returns (RwkvRetrievabilityScoreResponse);
+  // Applies desktop-computed RWKV reschedule intervals and S90 values.
+  rpc ApplyRwkvReviewReschedule(RwkvReviewRescheduleRequest)
+      returns (collection.OpChangesWithCount);
+  rpc RwkvReviewInputRowsForCards(RwkvReviewInputRowsForCardsRequest)
+      returns (RwkvReviewInputRowsForCardsResponse);
+  rpc RwkvReviewInputRowsForSearch(RwkvReviewInputRowsForSearchRequest)
+      returns (RwkvReviewInputRowsForCardsResponse);
+  rpc RwkvReviewInputRowsForDeckReviewQueue(
+      RwkvReviewInputRowsForDeckReviewQueueRequest)
+      returns (RwkvReviewInputRowsForCardsResponse);
   rpc GetFsrsPresetIdsForCards(cards.CardIds)
       returns (FsrsPresetIdsForCardsResponse);
 }
@@ -809,4 +823,65 @@ message RwkvStatsGraphScoresRequest {
 message RwkvCardInfoScoreRequest {
   int64 card_id = 1;
   optional float retrievability = 2;
+}
+
+message RwkvRetrievabilityScoreResponse {
+  optional float retrievability = 1;
+}
+
+message RwkvReviewRescheduleRequest {
+  message Item {
+    int64 card_id = 1;
+    uint32 interval_days = 2;
+    uint32 elapsed_days = 3;
+    float s90 = 4;
+  }
+  repeated Item items = 1;
+}
+
+message RwkvReviewInputRowsForCardsRequest {
+  repeated int64 card_ids = 1;
+  bool include_suspended_review = 2;
+  bool include_disabled_decks = 3;
+}
+
+message RwkvReviewInputRowsForSearchRequest {
+  string search = 1;
+  bool include_suspended_review = 2;
+  bool include_disabled_decks = 3;
+}
+
+message RwkvReviewInputRowsForDeckReviewQueueRequest {
+  int64 deck_id = 1;
+  bool include_disabled_decks = 2;
+}
+
+message RwkvReviewInputRowsForCardsResponse {
+  message Row {
+    int64 card_id = 1;
+    int64 note_id = 2;
+    int64 deck_id = 3;
+    string preset_id = 4;
+    sint32 card_type = 5;
+    sint32 card_queue = 6;
+    sint32 card_due = 7;
+    uint32 interval_days = 8;
+    uint32 ease_factor = 9;
+    uint32 reps = 10;
+    uint32 lapses = 11;
+    uint32 day_offset = 12;
+    string current_state_kind = 13;
+    string current_normal_state_kind = 14;
+    optional uint32 current_elapsed_days = 15;
+    optional uint32 current_elapsed_seconds = 16;
+    float target_retention = 17;
+    uint32 batch_size = 18;
+  }
+
+  repeated Row rows = 1;
+  uint32 loaded_cards = 2;
+  uint32 cards_with_supported_state = 3;
+  uint32 disabled_config_cards = 4;
+  uint32 deck_configs = 5;
+  uint32 searched_cards = 6;
 }

@@ -42,6 +42,8 @@ use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
 use crate::search::SearchNode;
+use crate::storage::FsrsReviewRetrievabilityCacheRow;
+use crate::storage::FsrsReviewRetrievabilitySampleRole;
 
 const AUTO_SUSPEND_TAG: &str = "auto-suspend";
 const LEECH_TAG: &str = "leech";
@@ -88,6 +90,8 @@ struct CardStateUpdater {
     fsrs_next_states: Option<NextStates>,
     /// Set if FSRS is enabled.
     desired_retention: Option<f32>,
+    /// Set if FSRS has a pre-answer retrievability for this review.
+    fsrs_review_retrievability: Option<f32>,
     /// Set if dynamic DR is enabled; indexed by answer button order.
     dynamic_desired_retentions: Option<[f32; 4]>,
     fsrs_short_term_with_steps: bool,
@@ -404,7 +408,20 @@ impl Collection {
 
         let revlog_partial =
             updater.apply_study_state(current_state, answer.new_state, answer.rating)?;
-        self.add_partial_revlog(revlog_partial, usn, answer)?;
+        let revlog_id = self.add_partial_revlog(revlog_partial, usn, answer)?;
+        if let Some(prediction) = updater.fsrs_review_retrievability {
+            if let Err(err) = self.storage.set_fsrs_review_retrievability_predictions(
+                &[FsrsReviewRetrievabilityCacheRow {
+                    revlog_id,
+                    prediction,
+                    sample_role: FsrsReviewRetrievabilitySampleRole::PostOptimization,
+                    fold_index: -1,
+                }],
+                "fsrs_review",
+            ) {
+                tracing::warn!(?err, "failed to store FSRS review retrievability cache");
+            }
+        }
 
         self.update_deck_stats_from_answer(usn, answer, &updater, original.queue)?;
         self.maybe_bury_siblings(&original, &updater.config)?;
@@ -471,7 +488,7 @@ impl Collection {
         partial: RevlogEntryPartial,
         usn: Usn,
         answer: &CardAnswer,
-    ) -> Result<()> {
+    ) -> Result<RevlogId> {
         let revlog = partial.into_revlog_entry(
             usn,
             answer.card_id,
@@ -479,8 +496,7 @@ impl Collection {
             answer.answered_at,
             answer.milliseconds_taken,
         );
-        self.add_revlog_entry_undoable(revlog)?;
-        Ok(())
+        self.add_revlog_entry_undoable(revlog)
     }
 
     fn update_deck_stats_from_answer(
@@ -539,6 +555,7 @@ impl Collection {
         let desired_retention = desired_retention_override.unwrap_or(fsrs_preset.desired_retention);
         let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
         let mut elapsed_days_for_log = None;
+        let mut fsrs_review_retrievability = None;
         let mut dynamic_desired_retention = None::<DynamicDesiredRetentionStates>;
         let fsrs_next_states = if fsrs_enabled {
             let params = &fsrs_preset.params;
@@ -571,6 +588,11 @@ impl Collection {
                 .unwrap_or_default();
             elapsed_days_for_log = Some(days_elapsed);
             let current_memory_state = card.memory_state.map(Into::into);
+            fsrs_review_retrievability = current_memory_state
+                .map(|state| fsrs.current_retrievability(state, days_elapsed))
+                .filter(|retrievability| {
+                    retrievability.is_finite() && (0.0..=1.0).contains(retrievability)
+                });
             if let Some(dynamic_dr) = fsrs_preset.dynamic_desired_retention.as_ref() {
                 if let Some(scheduling_desired_retention) =
                     dynamic_dr.scheduling_target(desired_retention)?
@@ -682,6 +704,7 @@ impl Collection {
             now,
             fsrs_next_states,
             desired_retention,
+            fsrs_review_retrievability,
             dynamic_desired_retentions,
             fsrs_short_term_with_steps,
             fsrs_learning_queues_disabled,

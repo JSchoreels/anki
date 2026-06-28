@@ -2,7 +2,13 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 use std::collections::HashMap;
 
+use crate::deckconfig::DeckConfig;
+use crate::deckconfig::DeckConfigId;
+use crate::deckconfig::ReviewCardOrder;
 use crate::prelude::*;
+use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
+use crate::scheduler::rwkv::rwkv_review_score_eligible;
+use crate::scheduler::timing::SchedTimingToday;
 
 #[derive(Debug)]
 pub(crate) struct DueCounts {
@@ -36,6 +42,63 @@ impl Collection {
         learn_cutoff: u32,
     ) -> Result<HashMap<DeckId, DueCounts>> {
         self.storage.due_counts(days_elapsed, learn_cutoff)
+    }
+
+    pub(crate) fn apply_rwkv_review_queue_counts(
+        &mut self,
+        counts: &mut HashMap<DeckId, DueCounts>,
+        decks: &HashMap<DeckId, Deck>,
+        configs: &HashMap<DeckConfigId, DeckConfig>,
+        timing: SchedTimingToday,
+    ) -> Result<()> {
+        let Some((score_deck_id, scores)) =
+            self.rwkv_review_queue_scores_for_day(timing.days_elapsed)
+        else {
+            return Ok(());
+        };
+
+        let allow_same_day_review = match decks
+            .get(&score_deck_id)
+            .and_then(|deck| deck.config_id())
+            .and_then(|config_id| configs.get(&config_id))
+        {
+            Some(config)
+                if config.inner.rwkv_review_enabled
+                    && config.inner.rwkv_review_instant_order_enabled
+                    && matches!(
+                        config.inner.review_order(),
+                        ReviewCardOrder::RetrievabilityAscending
+                            | ReviewCardOrder::RetrievabilityDescending
+                    ) =>
+            {
+                config.inner.rwkv_review_allow_same_day_review
+            }
+            _ => return Ok(()),
+        };
+
+        let scored_ids: Vec<_> = scores.keys().copied().collect();
+        let metadata = rwkv_review_candidate_metadata(self, &scored_ids, timing)?;
+        for (card_id, score) in scores {
+            let Some(metadata) = metadata.get(&card_id) else {
+                continue;
+            };
+
+            let rwkv_due = rwkv_review_score_eligible(score, metadata, allow_same_day_review);
+            if rwkv_due == metadata.fsrs_due_today {
+                continue;
+            }
+
+            let Some(counts) = counts.get_mut(&metadata.current_deck_id) else {
+                continue;
+            };
+            if rwkv_due {
+                counts.review = counts.review.saturating_add(1);
+            } else {
+                counts.review = counts.review.saturating_sub(1);
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn counts_for_deck_today(

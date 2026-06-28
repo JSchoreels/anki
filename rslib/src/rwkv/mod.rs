@@ -14,6 +14,8 @@ const HEADS: usize = 4;
 const HEAD_SIZE: usize = D_MODEL / HEADS;
 const HEAD_DIM: usize = 4 * D_MODEL;
 const NUM_CURVES: usize = 128;
+const ANSWER_EASES: [u8; 4] = [1, 2, 3, 4];
+const S90_TARGET_RETENTION: f32 = 0.9;
 
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
@@ -54,6 +56,7 @@ pub struct ReviewInput {
     pub day_offset: Option<i64>,
     pub current_elapsed_days: Option<i64>,
     pub current_elapsed_seconds: Option<i64>,
+    pub target_retentions: [Option<f32>; 4],
 }
 
 pub struct ReviewState<'a> {
@@ -66,7 +69,10 @@ pub struct ReviewState<'a> {
 
 pub struct ReviewOutput {
     pub retrievability: f32,
-    pub good_interval: Option<u32>,
+    pub current_interval: Option<u32>,
+    pub current_s90: Option<u32>,
+    pub intervals: [Option<u32>; 4],
+    pub s90s: [Option<u32>; 4],
     pub card_state: Vec<u8>,
     pub deck_state: Vec<u8>,
     pub note_state: Vec<u8>,
@@ -89,13 +95,17 @@ pub struct ReviewStateOwned {
 
 pub struct ReviewPredictionOutput {
     pub retrievability: f32,
-    pub good_interval: Option<u32>,
+    pub current_interval: Option<u32>,
+    pub current_s90: Option<u32>,
+    pub intervals: [Option<u32>; 4],
+    pub s90s: [Option<u32>; 4],
 }
 
 pub struct RwkvInference {
     model: SrsModel,
     features: FeatureState,
     curves: HashMap<i64, ReviewCurve>,
+    warm_up_states: ReviewStateMaps,
     target_retention: f32,
     max_interval_days: u32,
 }
@@ -107,10 +117,17 @@ pub struct RwkvInferenceState {
     curve: Option<ReviewCurve>,
 }
 
+pub struct RwkvWarmUpSnapshot {
+    pub card_states: Vec<(i64, Vec<u8>)>,
+    pub note_states: Vec<(i64, Vec<u8>)>,
+    pub deck_states: Vec<(i64, Vec<u8>)>,
+    pub preset_states: Vec<(i64, Vec<u8>)>,
+    pub global_state: Option<Vec<u8>>,
+}
+
 struct ReviewPredictionWorkItem {
     features: Vec<f32>,
     state: SrsStateOwned,
-    good_interval: Option<u32>,
 }
 
 impl RwkvInference {
@@ -119,6 +136,7 @@ impl RwkvInference {
             model: SrsModel::load(&path)?,
             features: FeatureState::default(),
             curves: HashMap::new(),
+            warm_up_states: ReviewStateMaps::default(),
             target_retention,
             max_interval_days,
         })
@@ -129,18 +147,30 @@ impl RwkvInference {
         input: ReviewInput,
         state: ReviewState<'_>,
     ) -> io::Result<ReviewOutput> {
-        let heads = self.review_heads(&input, state)?;
+        let heads = self.review_heads(&input, &state)?;
 
         if !input.is_query {
             self.features.store_review(&input);
             self.curves.insert(input.card_id, heads.curve.clone());
         }
 
-        let good_interval = self.good_interval(input.card_id);
+        let answer_heads = if input.is_query {
+            Some(self.answer_heads(&input, &state)?)
+        } else {
+            None
+        };
+        let (intervals, s90s) = answer_heads
+            .as_ref()
+            .map(|heads| self.answer_intervals(&input, heads))
+            .unwrap_or(([None; 4], [None; 4]));
+        let (current_interval, current_s90) = self.current_intervals(&input, &heads);
 
         Ok(ReviewOutput {
             retrievability: heads.retrievability,
-            good_interval,
+            current_interval,
+            current_s90,
+            intervals,
+            s90s,
             card_state: serialize_module_state(&heads.next_state.card),
             deck_state: serialize_module_state(&heads.next_state.deck),
             note_state: serialize_module_state(&heads.next_state.note),
@@ -153,8 +183,8 @@ impl RwkvInference {
         &mut self,
         requests: Vec<ReviewPredictionRequest>,
     ) -> io::Result<Vec<ReviewPredictionOutput>> {
-        let mut work_items = Vec::with_capacity(requests.len());
-        for request in requests {
+        let mut work_items = Vec::with_capacity(requests.len() * (1 + ANSWER_EASES.len()));
+        for request in &requests {
             if !request.input.is_query {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -162,38 +192,121 @@ impl RwkvInference {
                 ));
             }
 
-            work_items.push(ReviewPredictionWorkItem {
-                state: request.state.deserialize()?,
-                features: self.features.features_for(&request.input),
-                good_interval: self.good_interval(request.input.card_id),
-            });
+            work_items.push(self.prediction_work_item(&request.input, &request.state)?);
+            for ease in ANSWER_EASES {
+                work_items.push(self.prediction_work_item(
+                    &simulated_answer_input(&request.input, ease),
+                    &request.state,
+                )?);
+            }
         }
 
-        Ok(self
-            .model
-            .review_many(&work_items)
-            .into_iter()
-            .zip(work_items)
-            .map(|(heads, item)| ReviewPredictionOutput {
-                retrievability: heads.retrievability,
-                good_interval: item.good_interval,
+        let heads = self.model.review_many(&work_items);
+        let chunk_size = 1 + ANSWER_EASES.len();
+        Ok(heads
+            .chunks_exact(chunk_size)
+            .zip(requests)
+            .map(|(heads, request)| {
+                let query_heads = &heads[0];
+                let answer_heads = &heads[1..];
+                let (intervals, s90s) = self.answer_intervals(&request.input, answer_heads);
+                let (current_interval, current_s90) =
+                    self.current_intervals(&request.input, query_heads);
+                ReviewPredictionOutput {
+                    retrievability: query_heads.retrievability,
+                    current_interval,
+                    current_s90,
+                    intervals,
+                    s90s,
+                }
             })
             .collect())
+    }
+
+    pub fn predict_retrievability_many(
+        &mut self,
+        requests: Vec<ReviewPredictionRequest>,
+    ) -> io::Result<Vec<f32>> {
+        let mut work_items = Vec::with_capacity(requests.len());
+        for request in &requests {
+            if !request.input.is_query {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV batched retrievability prediction only supports query inputs",
+                ));
+            }
+
+            work_items.push(self.prediction_work_item(&request.input, &request.state)?);
+        }
+
+        Ok(self.model.review_retrievability_many(&work_items))
+    }
+
+    pub fn warm_up_reviews(
+        &mut self,
+        reviews: Vec<ReviewInput>,
+        record_predictions: bool,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        let mut predictions = vec![];
+        for (index, input) in reviews.into_iter().enumerate() {
+            if input.ease.is_none() {
+                continue;
+            }
+
+            if record_predictions {
+                let mut query_input = input.clone();
+                query_input.is_query = true;
+                query_input.ease = None;
+                query_input.duration_millis = None;
+                let features = self.features.features_for(&query_input);
+                let query_heads = self
+                    .model
+                    .review(&features, self.warm_up_states.state_ref(&query_input));
+                predictions.push((index, query_heads.retrievability));
+            }
+
+            let features = self.features.features_for(&input);
+            let heads = self
+                .model
+                .review(&features, self.warm_up_states.state_ref(&input));
+            self.features.store_review(&input);
+            self.curves.insert(input.card_id, heads.curve.clone());
+            self.warm_up_states.store(&input, heads.next_state);
+        }
+
+        Ok(predictions)
+    }
+
+    pub fn warm_up_snapshot(&self) -> RwkvWarmUpSnapshot {
+        RwkvWarmUpSnapshot {
+            card_states: serialize_state_map(&self.warm_up_states.card),
+            note_states: serialize_state_map(&self.warm_up_states.note),
+            deck_states: serialize_state_map(&self.warm_up_states.deck),
+            preset_states: serialize_state_map(&self.warm_up_states.preset),
+            global_state: self
+                .warm_up_states
+                .global
+                .as_ref()
+                .map(serialize_module_state),
+        }
+    }
+
+    pub fn reset_warm_up_state(&mut self) {
+        self.warm_up_states = ReviewStateMaps::default();
     }
 
     fn review_heads(
         &mut self,
         input: &ReviewInput,
-        state: ReviewState<'_>,
+        state: &ReviewState<'_>,
     ) -> io::Result<ReviewHeads> {
         let card_state = deserialize_module_state(state.card)?;
         let deck_state = deserialize_module_state(state.deck)?;
         let note_state = deserialize_module_state(state.note)?;
         let preset_state = deserialize_module_state(state.preset)?;
         let global_state = deserialize_module_state(state.global)?;
-        let features = self.features.features_for(input);
-        Ok(self.model.review(
-            &features,
+        self.review_heads_for_state(
+            input,
             SrsStateRef {
                 card: card_state.as_ref(),
                 deck: deck_state.as_ref(),
@@ -201,13 +314,74 @@ impl RwkvInference {
                 preset: preset_state.as_ref(),
                 global: global_state.as_ref(),
             },
-        ))
+        )
     }
 
-    fn good_interval(&self, card_id: i64) -> Option<u32> {
-        self.curves.get(&card_id).and_then(|curve| {
-            good_interval_for_curve(curve, self.target_retention, self.max_interval_days)
+    fn review_heads_for_state(
+        &mut self,
+        input: &ReviewInput,
+        state: SrsStateRef<'_>,
+    ) -> io::Result<ReviewHeads> {
+        let features = self.features.features_for(input);
+        Ok(self.model.review(&features, state))
+    }
+
+    fn prediction_work_item(
+        &mut self,
+        input: &ReviewInput,
+        state: &ReviewStateOwned,
+    ) -> io::Result<ReviewPredictionWorkItem> {
+        Ok(ReviewPredictionWorkItem {
+            state: state.deserialize()?,
+            features: self.features.features_for(input),
         })
+    }
+
+    fn answer_heads(
+        &mut self,
+        input: &ReviewInput,
+        state: &ReviewState<'_>,
+    ) -> io::Result<[ReviewHeads; 4]> {
+        let mut heads = Vec::with_capacity(ANSWER_EASES.len());
+        for ease in ANSWER_EASES {
+            heads.push(self.review_heads(&simulated_answer_input(input, ease), state)?);
+        }
+
+        match heads.try_into() {
+            Ok(heads) => Ok(heads),
+            Err(_) => unreachable!("answer head count should be fixed"),
+        }
+    }
+
+    fn answer_intervals(
+        &self,
+        input: &ReviewInput,
+        answer_heads: &[ReviewHeads],
+    ) -> ([Option<u32>; 4], [Option<u32>; 4]) {
+        let mut intervals = [None; 4];
+        let mut s90s = [None; 4];
+
+        for (index, heads) in answer_heads.iter().enumerate().take(4) {
+            let target_retention = input.target_retentions[index].unwrap_or(self.target_retention);
+            intervals[index] =
+                interval_for_curve(&heads.curve, target_retention, self.max_interval_days);
+            s90s[index] =
+                interval_for_curve(&heads.curve, S90_TARGET_RETENTION, self.max_interval_days);
+        }
+
+        (intervals, s90s)
+    }
+
+    fn current_intervals(
+        &self,
+        input: &ReviewInput,
+        heads: &ReviewHeads,
+    ) -> (Option<u32>, Option<u32>) {
+        let target_retention = input.target_retentions[2].unwrap_or(self.target_retention);
+        (
+            interval_for_curve(&heads.curve, target_retention, self.max_interval_days),
+            interval_for_curve(&heads.curve, S90_TARGET_RETENTION, self.max_interval_days),
+        )
     }
 
     pub fn state_for_card(&self, card_id: i64) -> RwkvInferenceState {
@@ -257,6 +431,13 @@ impl RwkvInference {
         self.curves = curves;
         Ok(())
     }
+}
+
+fn simulated_answer_input(input: &ReviewInput, ease: u8) -> ReviewInput {
+    let mut input = input.clone();
+    input.is_query = false;
+    input.ease = Some(ease);
+    input
 }
 
 impl ReviewStateOwned {
@@ -952,6 +1133,13 @@ impl SrsModel {
             .collect()
     }
 
+    fn review_retrievability_many(&self, items: &[ReviewPredictionWorkItem]) -> Vec<f32> {
+        items
+            .par_iter()
+            .map(|item| self.review_retrievability_features(&item.features, item.state.as_ref()))
+            .collect()
+    }
+
     fn review_features(&self, features: &[f32], state: SrsStateRef<'_>) -> ReviewHeads {
         let mut x = self.features_0.apply(features);
         silu_in_place(&mut x);
@@ -998,6 +1186,27 @@ impl SrsModel {
             },
             next_state,
         }
+    }
+
+    fn review_retrievability_features(&self, features: &[f32], state: SrsStateRef<'_>) -> f32 {
+        let mut x = self.features_0.apply(features);
+        silu_in_place(&mut x);
+        x = self.features_norm.apply(&x);
+        x = self.features_3.apply(&x);
+        silu_in_place(&mut x);
+
+        let (x, _) = self.modules[0].run(&x, state.card);
+        let (x, _) = self.modules[1].run(&x, state.deck);
+        let (x, _) = self.modules[2].run(&x, state.note);
+        let (x, _) = self.modules[3].run(&x, state.preset);
+        let (x, _) = self.modules[4].run(&x, state.global);
+
+        let x = self.prehead_norm.apply(&x);
+        let mut head_p = self.head_p_0.apply(&x);
+        relu_in_place(&mut head_p);
+        let logits = self.p_linear.apply(&head_p);
+        let probabilities = softmax(&logits);
+        1.0 - probabilities[0]
     }
 }
 
@@ -1061,6 +1270,50 @@ struct SrsState {
     note: ModuleState,
     preset: ModuleState,
     global: ModuleState,
+}
+
+#[derive(Default)]
+struct ReviewStateMaps {
+    card: HashMap<i64, ModuleState>,
+    note: HashMap<i64, ModuleState>,
+    deck: HashMap<i64, ModuleState>,
+    preset: HashMap<i64, ModuleState>,
+    global: Option<ModuleState>,
+}
+
+impl ReviewStateMaps {
+    fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
+        SrsStateRef {
+            card: self.card.get(&input.card_id),
+            note: input.note_id.and_then(|id| self.note.get(&id)),
+            deck: input.deck_id.and_then(|id| self.deck.get(&id)),
+            preset: input.preset_id.and_then(|id| self.preset.get(&id)),
+            global: self.global.as_ref(),
+        }
+    }
+
+    fn store(&mut self, input: &ReviewInput, state: SrsState) {
+        self.card.insert(input.card_id, state.card);
+        if let Some(note_id) = input.note_id {
+            self.note.insert(note_id, state.note);
+        }
+        if let Some(deck_id) = input.deck_id {
+            self.deck.insert(deck_id, state.deck);
+        }
+        if let Some(preset_id) = input.preset_id {
+            self.preset.insert(preset_id, state.preset);
+        }
+        self.global = Some(state.global);
+    }
+}
+
+fn serialize_state_map(states: &HashMap<i64, ModuleState>) -> Vec<(i64, Vec<u8>)> {
+    let mut states: Vec<_> = states
+        .iter()
+        .map(|(key, state)| (*key, serialize_module_state(state)))
+        .collect();
+    states.sort_by_key(|(key, _)| *key);
+    states
 }
 
 fn serialize_module_state(state: &ModuleState) -> Vec<u8> {
@@ -1176,7 +1429,7 @@ fn write_f32_slice(out: &mut Vec<u8>, values: &[f32]) {
     }
 }
 
-fn good_interval_for_curve(
+fn interval_for_curve(
     curve: &ReviewCurve,
     target_retention: f32,
     max_interval_days: u32,
@@ -1202,7 +1455,7 @@ fn good_interval_for_curve(
                     previous_day as f32
                         + span as f32 * (previous_retrievability - target_retention) / denominator
                 };
-                return Some(interpolated.round().clamp(1.0, max_interval_days as f32) as u32);
+                return Some(clamped_interval_days(interpolated, max_interval_days));
             }
         } else if retrievability <= target_retention {
             return Some(day.clamp(1, max_interval_days));
@@ -1227,6 +1480,10 @@ fn interval_search_days(max_interval_days: u32) -> Vec<u32> {
     }
     days.push(max_interval_days);
     days
+}
+
+fn clamped_interval_days(elapsed_days: f32, max_interval_days: u32) -> u32 {
+    elapsed_days.ceil().clamp(1.0, max_interval_days as f32) as u32
 }
 
 fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
@@ -1859,6 +2116,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clamped_interval_days_rounds_up_to_target_crossing() {
+        assert_eq!(clamped_interval_days(1.0, 10), 1);
+        assert_eq!(clamped_interval_days(1.1, 10), 2);
+        assert_eq!(clamped_interval_days(12.0, 10), 10);
+    }
+
+    #[test]
+    fn simulated_answer_input_preserves_review_context() {
+        let input = ReviewInput {
+            card_id: 123,
+            note_id: Some(456),
+            deck_id: Some(789),
+            preset_id: Some(10),
+            is_query: true,
+            ease: None,
+            duration_millis: None,
+            card_type: Some(2),
+            day_offset: Some(42),
+            current_elapsed_days: Some(3),
+            current_elapsed_seconds: Some(259_200),
+            target_retentions: [Some(0.81), Some(0.82), Some(0.83), Some(0.84)],
+        };
+
+        let good = simulated_answer_input(&input, 3);
+
+        assert!(!good.is_query);
+        assert_eq!(good.ease, Some(3));
+        assert_eq!(good.card_id, input.card_id);
+        assert_eq!(good.current_elapsed_days, input.current_elapsed_days);
+        assert_eq!(good.target_retentions, input.target_retentions);
+    }
+
+    #[test]
     fn feature_state_for_card_restores_review_mutations() {
         let mut features = FeatureState::default();
         let before = features.state_for_card(123);
@@ -1874,6 +2164,7 @@ mod tests {
             day_offset: Some(42),
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
+            target_retentions: [None; 4],
         };
 
         features.store_review(&input);

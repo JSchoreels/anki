@@ -14,6 +14,7 @@ pub mod fsrs;
 pub mod new;
 pub(crate) mod queue;
 mod reviews;
+pub(crate) mod rwkv;
 mod service;
 pub mod states;
 pub mod timespan;

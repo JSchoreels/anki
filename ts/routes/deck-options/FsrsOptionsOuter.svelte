@@ -81,6 +81,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigRwkvReviewEnabledTooltip(),
             sched: HelpItemScheduler.FSRS,
         },
+        rwkvInstantOrder: {
+            title: tr.deckConfigRwkvReviewInstantOrder(),
+            help: tr.deckConfigRwkvReviewInstantOrderTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
         rwkvBatchSize: {
             title: tr.deckConfigRwkvReviewBatchSize(),
             help: tr.deckConfigRwkvReviewBatchSizeTooltip(),
@@ -94,6 +99,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvRefreshOnExit: {
             title: tr.deckConfigRwkvReviewRefreshOnExit(),
             help: tr.deckConfigRwkvReviewRefreshOnExitTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
+        rwkvAllowSameDayReview: {
+            title: tr.deckConfigRwkvReviewAllowSameDayReview(),
+            help: tr.deckConfigRwkvReviewAllowSameDayReviewTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
+        rwkvDynamicPresetReplay: {
+            title: tr.deckConfigRwkvReviewDynamicPresetReplay(),
+            help: tr.deckConfigRwkvReviewDynamicPresetReplayTooltip(),
             sched: HelpItemScheduler.FSRS,
         },
     };

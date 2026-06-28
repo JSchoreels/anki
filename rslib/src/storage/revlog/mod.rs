@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 
 use rusqlite::params;
@@ -10,6 +11,7 @@ use rusqlite::types::ValueRef;
 use rusqlite::OptionalExtension;
 use rusqlite::Row;
 
+use super::ids_to_string;
 use super::SqliteStorage;
 use crate::error::Result;
 use crate::prelude::*;
@@ -18,6 +20,31 @@ use crate::revlog::RevlogReviewKind;
 
 pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_fsrs_review_retrievability";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FsrsReviewRetrievabilitySampleRole {
+    FinalFit,
+    ValidationFold,
+    PostOptimization,
+}
+
+impl FsrsReviewRetrievabilitySampleRole {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::FinalFit => "final_fit",
+            Self::ValidationFold => "validation_fold",
+            Self::PostOptimization => "post_optimization",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FsrsReviewRetrievabilityCacheRow {
+    pub revlog_id: RevlogId,
+    pub prediction: f32,
+    pub sample_role: FsrsReviewRetrievabilitySampleRole,
+    pub fold_index: i32,
+}
 
 pub(crate) struct StudiedToday {
     pub cards: u32,
@@ -49,39 +76,75 @@ fn row_to_revlog_entry(row: &Row) -> Result<RevlogEntry> {
 }
 
 impl SqliteStorage {
+    fn ensure_fsrs_review_retrievability_cache_schema(&self) -> Result<()> {
+        let table_info = self
+            .db
+            .prepare(&format!(
+                "PRAGMA table_info({FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE})"
+            ))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let has_sample_role = table_info.iter().any(|col| col == "sample_role");
+        let has_fold_index = table_info.iter().any(|col| col == "fold_index");
+        if !table_info.is_empty() && (!has_sample_role || !has_fold_index) {
+            self.db.execute_batch(&format!(
+                "DROP TABLE IF EXISTS {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE};"
+            ))?;
+        }
+
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
+                revlog_id INTEGER NOT NULL,
+                prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                sample_role TEXT NOT NULL DEFAULT 'final_fit'
+                    CHECK(sample_role IN ('final_fit', 'validation_fold', 'post_optimization')),
+                fold_index INTEGER NOT NULL DEFAULT -1,
+                PRIMARY KEY (revlog_id, sample_role, fold_index, source)
+            );
+            CREATE INDEX IF NOT EXISTS ix_fsrs_review_retrievability_role_revlog
+                ON {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} (sample_role, revlog_id);
+            "
+        ))?;
+        Ok(())
+    }
+
     pub(crate) fn set_fsrs_review_retrievability_predictions(
         &self,
-        rows: &[(RevlogId, f32)],
+        rows: &[FsrsReviewRetrievabilityCacheRow],
         source: &str,
     ) -> Result<usize> {
         if rows.is_empty() {
             return Ok(0);
         }
 
-        self.db.execute_batch(&format!(
-            "
-            CREATE TABLE IF NOT EXISTS {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
-                revlog_id INTEGER PRIMARY KEY,
-                prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
-                source TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            )
-            "
-        ))?;
+        self.ensure_fsrs_review_retrievability_cache_schema()?;
 
         let updated_at = TimestampMillis::now().0;
         let mut stored = 0;
         let mut stmt = self.db.prepare_cached(&format!(
             "
             INSERT OR REPLACE INTO {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
-                (revlog_id, prediction, source, updated_at)
-            VALUES (?, ?, ?, ?)
+                (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+            VALUES (?, ?, ?, ?, ?, ?)
             "
         ))?;
 
-        for (revlog_id, prediction) in rows {
-            if revlog_id.0 > 0 && prediction.is_finite() && (0.0..=1.0).contains(prediction) {
-                stmt.execute(params![revlog_id, prediction, source, updated_at])?;
+        for row in rows {
+            if row.revlog_id.0 > 0
+                && row.prediction.is_finite()
+                && (0.0..=1.0).contains(&row.prediction)
+            {
+                stmt.execute(params![
+                    row.revlog_id,
+                    row.prediction,
+                    source,
+                    updated_at,
+                    row.sample_role.as_str(),
+                    row.fold_index
+                ])?;
                 stored += 1;
             }
         }
@@ -144,6 +207,40 @@ impl SqliteStorage {
             .query_row([card_id], |row| row.get(0))
             .optional()
             .map_err(Into::into)
+    }
+
+    pub(crate) fn times_of_last_review(
+        &self,
+        card_ids: &[CardId],
+    ) -> Result<HashMap<CardId, TimestampSecs>> {
+        if card_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut ids = String::new();
+        ids_to_string(&mut ids, card_ids);
+        let sql = format!(
+            "select id, \
+             (select revlog.id / 1000 \
+                from revlog \
+               where cid = cards.id \
+                 and ease between 1 and 4 \
+                 and (type != 3 or factor != 0) \
+               order by revlog.id desc \
+               limit 1) \
+             from cards \
+             where id in {ids}"
+        );
+        let mut review_times = HashMap::new();
+        let mut stmt = self.db.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            if let Some(last_review_time) = row.get::<_, Option<TimestampSecs>>(1)? {
+                review_times.insert(row.get(0)?, last_review_time);
+            }
+        }
+
+        Ok(review_times)
     }
 
     /// Only intended to be used by the undo code, as Anki can not sync revlog

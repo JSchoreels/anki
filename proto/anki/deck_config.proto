@@ -192,6 +192,9 @@ message DeckConfig {
     uint32 rwkv_review_batch_size = 68;
     uint32 rwkv_review_refresh_interval = 69;
     bool rwkv_review_refresh_on_exit = 70;
+    bool rwkv_review_allow_same_day_review = 71;
+    bool rwkv_review_instant_order_enabled = 72;
+    bool rwkv_review_dynamic_preset_replay = 73;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

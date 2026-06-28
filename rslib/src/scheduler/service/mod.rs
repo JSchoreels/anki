@@ -32,7 +32,13 @@ use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
+use anki_proto::scheduler::RwkvRetrievabilityScoreResponse;
+use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
+use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
+use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
+use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
 use anki_proto::scheduler::RwkvReviewQueueScoresRequest;
+use anki_proto::scheduler::RwkvReviewRescheduleRequest;
 use anki_proto::scheduler::RwkvStatsGraphScoresRequest;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
@@ -52,13 +58,15 @@ use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
-use crate::scheduler::fsrs::params::fsrs_review_retrievability_predictions;
+use crate::scheduler::fsrs::params::fsrs_review_retrievability_cache_rows;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
+use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
+use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
 use crate::scheduler::states::CardState;
 use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
@@ -359,7 +367,7 @@ impl crate::services::SchedulerService for Collection {
             response_meta.push((
                 item.id.clone(),
                 item.name.clone(),
-                prepared.fsrs_prediction_sources.clone(),
+                FsrsReviewPredictionContext::from_prepared(&prepared),
             ));
             jobs.push(ComputeParamsBatchInput {
                 index,
@@ -374,7 +382,7 @@ impl crate::services::SchedulerService for Collection {
             .map(|output| {
                 let (id, name, prediction_sources) = &response_meta[output.index];
                 let params = output.result?;
-                match fsrs_review_retrievability_predictions(&params.params, prediction_sources)
+                match fsrs_review_retrievability_cache_rows(&params.params, prediction_sources)
                     .and_then(|predictions| {
                         self.storage.set_fsrs_review_retrievability_predictions(
                             &predictions,
@@ -854,6 +862,54 @@ impl crate::services::SchedulerService for Collection {
             );
         }
         self.set_rwkv_card_info_score(input.card_id.into(), input.retrievability)
+    }
+
+    fn get_rwkv_retrievability_score(
+        &mut self,
+        input: cards::CardId,
+    ) -> Result<RwkvRetrievabilityScoreResponse> {
+        let days_elapsed = self.timing_today()?.days_elapsed;
+        Ok(RwkvRetrievabilityScoreResponse {
+            retrievability: self.rwkv_retrievability_score_for_day(input.into(), days_elapsed),
+        })
+    }
+
+    fn apply_rwkv_review_reschedule(
+        &mut self,
+        input: RwkvReviewRescheduleRequest,
+    ) -> Result<anki_proto::collection::OpChangesWithCount> {
+        let items = input
+            .items
+            .into_iter()
+            .map(|item| RwkvReviewRescheduleItem {
+                card_id: item.card_id.into(),
+                interval_days: item.interval_days,
+                elapsed_days: item.elapsed_days,
+                s90: item.s90,
+            })
+            .collect();
+        self.apply_rwkv_review_reschedule(items).map(Into::into)
+    }
+
+    fn rwkv_review_input_rows_for_cards(
+        &mut self,
+        input: RwkvReviewInputRowsForCardsRequest,
+    ) -> Result<RwkvReviewInputRowsForCardsResponse> {
+        Collection::rwkv_review_input_rows_for_cards(self, input)
+    }
+
+    fn rwkv_review_input_rows_for_search(
+        &mut self,
+        input: RwkvReviewInputRowsForSearchRequest,
+    ) -> Result<RwkvReviewInputRowsForCardsResponse> {
+        Collection::rwkv_review_input_rows_for_search(self, input)
+    }
+
+    fn rwkv_review_input_rows_for_deck_review_queue(
+        &mut self,
+        input: RwkvReviewInputRowsForDeckReviewQueueRequest,
+    ) -> Result<RwkvReviewInputRowsForCardsResponse> {
+        Collection::rwkv_review_input_rows_for_deck_review_queue(self, input)
     }
 
     fn get_fsrs_preset_ids_for_cards(

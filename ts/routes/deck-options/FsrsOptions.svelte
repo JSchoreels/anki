@@ -135,6 +135,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let checkingHealth = false;
     let buildingRwkvStateCache = false;
     let forceBuildingRwkvStateCache = false;
+    let reschedulingRwkvReviewCards = false;
     type OptimizationMetrics = {
         logLoss: number;
         rmseBins: number;
@@ -1075,6 +1076,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function buildRwkvStateCache(): Promise<void> {
         buildingRwkvStateCache = true;
         try {
+            await saveRwkvDeckOptions();
             await postProto("buildRwkvStateCache", new Empty({}), Empty);
         } finally {
             buildingRwkvStateCache = false;
@@ -1084,10 +1086,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function forceBuildRwkvStateCache(): Promise<void> {
         forceBuildingRwkvStateCache = true;
         try {
+            await saveRwkvDeckOptions();
             await postProto("forceBuildRwkvStateCache", new Empty({}), Empty);
         } finally {
             forceBuildingRwkvStateCache = false;
         }
+    }
+
+    async function rescheduleRwkvReviewCards(): Promise<void> {
+        reschedulingRwkvReviewCards = true;
+        try {
+            await saveRwkvDeckOptions();
+            await postProto("rescheduleRwkvReviewCards", new Empty({}), Empty);
+        } finally {
+            reschedulingRwkvReviewCards = false;
+        }
+    }
+
+    async function saveRwkvDeckOptions(): Promise<void> {
+        await commitEditing();
+        await state.save(UpdateDeckConfigsMode.NORMAL);
     }
 
     function showSimulatorModal(modal: Modal) {
@@ -1310,6 +1328,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </SwitchRow>
 
     {#if $config.rwkvReviewEnabled}
+        <SwitchRow
+            bind:value={$config.rwkvReviewInstantOrderEnabled}
+            defaultValue={defaults.rwkvReviewInstantOrderEnabled}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvInstantOrder")}>
+                {tr.deckConfigRwkvReviewInstantOrder()}
+            </SettingTitle>
+        </SwitchRow>
+
         <RwkvBatchSizeRow
             bind:value={$config.rwkvReviewBatchSize}
             defaultValue={defaults.rwkvReviewBatchSize}
@@ -1340,10 +1367,30 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </SettingTitle>
         </SwitchRow>
 
+        <SwitchRow
+            bind:value={$config.rwkvReviewAllowSameDayReview}
+            defaultValue={defaults.rwkvReviewAllowSameDayReview}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvAllowSameDayReview")}>
+                {tr.deckConfigRwkvReviewAllowSameDayReview()}
+            </SettingTitle>
+        </SwitchRow>
+
+        <SwitchRow
+            bind:value={$config.rwkvReviewDynamicPresetReplay}
+            defaultValue={defaults.rwkvReviewDynamicPresetReplay}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvDynamicPresetReplay")}>
+                {tr.deckConfigRwkvReviewDynamicPresetReplay()}
+            </SettingTitle>
+        </SwitchRow>
+
         <div class="d-flex flex-wrap gap-2">
             <button
                 class="btn btn-outline-primary"
-                disabled={buildingRwkvStateCache || forceBuildingRwkvStateCache}
+                disabled={buildingRwkvStateCache ||
+                    forceBuildingRwkvStateCache ||
+                    reschedulingRwkvReviewCards}
                 on:click={() => buildRwkvStateCache()}
             >
                 {#if buildingRwkvStateCache}
@@ -1355,13 +1402,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             <button
                 class="btn btn-outline-primary"
-                disabled={buildingRwkvStateCache || forceBuildingRwkvStateCache}
+                disabled={buildingRwkvStateCache ||
+                    forceBuildingRwkvStateCache ||
+                    reschedulingRwkvReviewCards}
                 on:click={() => forceBuildRwkvStateCache()}
             >
                 {#if forceBuildingRwkvStateCache}
                     Starting full RWKV state cache rebuild...
                 {:else}
                     Force rebuild RWKV state cache
+                {/if}
+            </button>
+
+            <button
+                class="btn btn-outline-primary"
+                disabled={buildingRwkvStateCache ||
+                    forceBuildingRwkvStateCache ||
+                    reschedulingRwkvReviewCards}
+                on:click={() => rescheduleRwkvReviewCards()}
+            >
+                {#if reschedulingRwkvReviewCards}
+                    Starting RWKV reschedule...
+                {:else}
+                    Reschedule & update RWKV memory state
                 {/if}
             </button>
         </div>

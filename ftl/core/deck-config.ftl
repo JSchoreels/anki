@@ -319,6 +319,11 @@ deck-config-rwkv-review-enabled-tooltip =
     When a desktop RWKV backend is configured, use its review-time
     retrievability and interval predictions for this preset. Other clients
     continue to use SM2 or FSRS.
+deck-config-rwkv-review-instant-order = Use RWKV-Instant for R ordering
+deck-config-rwkv-review-instant-order-tooltip =
+    When the review sort order is retrievability, use RWKV-Instant
+    retrievability scores for review queue ordering. RWKV-Curve intervals are
+    still used while RWKV review is enabled, even when this is disabled.
 deck-config-rwkv-review-batch-size = RWKV batch size
 deck-config-rwkv-review-batch-size-tooltip =
     Number of cards scored per RWKV model call. 512 is recommended for CPU;
@@ -339,6 +344,13 @@ deck-config-rwkv-review-allow-same-day-review-tooltip =
     When enabled, RWKV may select a review card again after it was already
     answered today, if its RWKV retrievability is at or below the target
     retention. When disabled, answered cards wait until tomorrow.
+deck-config-rwkv-review-dynamic-preset-replay = Dynamic RWKV preset replay
+deck-config-rwkv-review-dynamic-preset-replay-tooltip =
+    When enabled, RWKV state-cache building resolves add-on preset overlays and
+    re-evaluates dynamic preset rules during historical replay, so cards can
+    move between preset streams as their interval or repetition count changes.
+    Leave this disabled unless you use dynamic presets that can change a card's
+    preset during its lifetime.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 

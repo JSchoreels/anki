@@ -12,6 +12,8 @@ use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
 use crate::scheduler::queue::DueCardKind;
+use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
+use crate::scheduler::rwkv::rwkv_review_score_eligible;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::card::NewCardSorting;
 
@@ -57,7 +59,7 @@ impl QueueBuilder {
 
         let scores = self.context.rwkv_review_queue_scores.as_ref().unwrap();
         let scored_ids: Vec<_> = scores.keys().copied().collect();
-        let mut scored_cards = Vec::with_capacity(scores.len());
+        let mut scored_candidates = Vec::with_capacity(scores.len());
         let mut scored_card_ids = HashSet::with_capacity(scores.len());
         col.storage
             .for_each_review_card_in_active_decks_with_ids(&scored_ids, |card| {
@@ -67,10 +69,25 @@ impl QueueBuilder {
                     .filter(|score| score.is_finite())
                 {
                     scored_card_ids.insert(card.id);
-                    scored_cards.push((card, score));
+                    scored_candidates.push((card, score));
                 }
                 Ok(true)
             })?;
+        let scored_candidate_ids: Vec<_> =
+            scored_candidates.iter().map(|(card, _)| card.id).collect();
+        let candidate_metadata =
+            rwkv_review_candidate_metadata(col, &scored_candidate_ids, self.context.timing)?;
+        let mut scored_cards = Vec::with_capacity(scored_candidates.len());
+        for (card, score) in scored_candidates {
+            let metadata = candidate_metadata.get(&card.id).or_not_found(card.id)?;
+            if rwkv_review_score_eligible(
+                score,
+                metadata,
+                self.context.sort_options.rwkv_review_allow_same_day_review,
+            ) {
+                scored_cards.push((card, score));
+            }
+        }
 
         let descending = matches!(
             self.context.sort_options.review_order,
@@ -248,6 +265,7 @@ impl QueueBuilder {
             return Ok(());
         }
         if self.context.fsrs
+            && !self.context.sort_options.rwkv_review_enabled
             && matches!(
                 self.context.sort_options.review_order,
                 ReviewCardOrder::RetrievabilityAscending
@@ -258,7 +276,7 @@ impl QueueBuilder {
         }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
-            self.context.sort_options.review_order,
+            self.context.sort_options.gather_review_order(),
             kind,
             self.context.fsrs,
             |card| {

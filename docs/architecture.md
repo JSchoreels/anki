@@ -357,10 +357,14 @@ approximation).
 
 FSRS optimization also populates a local review-time prediction cache in the
 collection table `search_stats_fsrs_review_retrievability`. Rows are keyed by
-`revlog.id` and store the pre-answer predicted retrievability computed with the
-optimized parameter array returned by that optimization run. This table is a
-local derived cache for calibration-style consumers; it is not card state and
-should not be used for current retrievability ordering/search.
+`revlog.id`, role, fold, and source. `final_fit` rows store the pre-answer
+predicted retrievability computed with the optimized parameter array returned
+by that optimization run. `validation_fold` rows store out-of-sample
+predictions from the expanding time-series folds used for calibration
+consumers, and `post_optimization` rows store pre-answer predictions for later
+reviews. This table is a local derived cache for calibration-style consumers;
+it is not card state and should not be used for current retrievability
+ordering/search.
 
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
 stored scalar decay from `card.data` for ordering/search expressions.

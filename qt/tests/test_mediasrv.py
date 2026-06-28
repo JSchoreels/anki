@@ -262,7 +262,12 @@ class TestCardStats:
             ) -> RwkvReviewPrediction:
                 return RwkvReviewPrediction(
                     retrievability=0.61,
-                    interval_overrides=RwkvIntervalOverride(good=4),
+                    interval_overrides=RwkvIntervalOverride(
+                        again=1,
+                        hard=2,
+                        good=4,
+                        easy=8,
+                    ),
                 )
 
             def review_answered(

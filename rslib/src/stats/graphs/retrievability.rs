@@ -62,7 +62,7 @@ impl GraphsContext {
 
         for card in &self.cards {
             let rwkv_retrievability = self
-                .rwkv_stats_scores
+                .rwkv_retrievability_scores
                 .as_ref()
                 .and_then(|scores| scores.get(&card.id))
                 .copied();
@@ -215,6 +215,51 @@ mod tests {
         assert_eq!(rwkv_retrievability.retrievability.get(&25), Some(&1));
         assert_eq!(format!("{:.1}", fsrs_retrievability.average), "100.0");
         assert_eq!(fsrs_retrievability.retrievability.get(&99), Some(&1));
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_graph_uses_active_rwkv_score_precedence() -> Result<()> {
+        let mut col = Collection::new();
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        let timing = col.timing_today()?;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 42.0,
+            stability_internal: 42.0,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(timing.now);
+        col.storage.update_card(&card)?;
+
+        col.set_rwkv_stats_graph_scores("".into(), HashMap::from([(cid, 0.25)]))?;
+        col.set_rwkv_review_queue_scores(DeckId(1), HashMap::from([(cid, 0.57)]))?;
+        col.set_rwkv_card_info_score(cid, Some(0.83))?;
+
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
+        assert_eq!(format!("{:.1}", retrievability.average), "83.0");
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "83.0");
+
+        col.set_rwkv_card_info_score(cid, None)?;
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
+        assert_eq!(format!("{:.1}", retrievability.average), "57.0");
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "57.0");
+
+        col.set_rwkv_review_queue_scores(DeckId(1), HashMap::new())?;
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
+        assert_eq!(format!("{:.1}", retrievability.average), "25.0");
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
         Ok(())
     }
 }

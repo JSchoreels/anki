@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import struct
 import sys
 import time
 import types
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from aqt.rwkv_scheduler import (
+    RwkvBackendCacheSnapshot,
     RwkvIntervalOverride,
     RwkvRecallPoint,
     RwkvReviewCandidate,
@@ -22,12 +25,18 @@ from aqt.rwkv_scheduler import (
     RwkvReviewPredictionRequest,
     RwkvReviewTransition,
     RwkvStatefulReviewerBackend,
+    RwkvWarmUpProgress,
+    RwkvWarmUpProgressCallback,
     interval_from_recall_curve,
     rwkv_review_identity,
     rwkv_review_input,
 )
 
 logger = logging.getLogger(__name__)
+
+_PACKED_PREDICTION_REQUEST_MAGIC = b"ARWKVPR1"
+_PACKED_PREDICTION_REQUEST_HEADER = struct.Struct("<8sI")
+_PACKED_PREDICTION_REQUEST_ROW = struct.Struct("<IqqqqBBqqqqqffff")
 
 
 class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
@@ -61,14 +70,53 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         self._max_interval_days = max_interval_days
         self._curves: dict[int, object] = {}
 
-    def warm_up(self, reviews: Sequence[RwkvReviewInput]) -> None:
-        for review_input in reviews:
+    def warm_up(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        *,
+        review_ids: Sequence[int] | None = None,
+        prediction_recorder: Callable[[int, float], None] | None = None,
+        progress: RwkvWarmUpProgressCallback | None = None,
+    ) -> None:
+        total = len(reviews)
+        report_every = _warmup_progress_interval(total)
+        _report_warmup_progress(progress, processed=0, total=total)
+
+        for processed, review_input in enumerate(reviews, start=1):
             if review_input.ease is None:
+                if processed == total or processed % report_every == 0:
+                    _report_warmup_progress(
+                        progress,
+                        processed=processed,
+                        total=total,
+                    )
                 continue
+
+            if prediction_recorder is not None and review_ids is not None:
+                review_id = (
+                    review_ids[processed - 1]
+                    if processed - 1 < len(review_ids)
+                    else None
+                )
+                if isinstance(review_id, int):
+                    probability = self._process.imm_predict(
+                        self._row_builder.row_for(
+                            replace(
+                                review_input,
+                                is_query=True,
+                                ease=None,
+                                duration_millis=None,
+                            )
+                        )
+                    )
+                    prediction_recorder(review_id, _probability_as_float(probability))
 
             curve = self._process.process_row(self._row_builder.row_for(review_input))
             if curve is not None:
                 self._curves[review_input.identity.card_id] = curve
+
+            if processed == total or processed % report_every == 0:
+                _report_warmup_progress(progress, processed=processed, total=total)
 
     def predict_review(
         self,
@@ -87,11 +135,14 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             ease=None,
         )
         probability = self._process.imm_predict(self._row_builder.row_for(review_input))
+        intervals = self._interval_overrides(review_input)
+        s90s = self._s90_overrides(review_input)
         return RwkvReviewPrediction(
             retrievability=_probability_as_float(probability),
-            interval_overrides=RwkvIntervalOverride(
-                good=self._good_interval_override(review_input)
-            ),
+            current_interval=intervals.good,
+            current_s90=s90s.good,
+            interval_overrides=intervals,
+            s90_overrides=s90s,
         )
 
     def predict_reviews(
@@ -129,11 +180,14 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         for (index, review_input), probability in zip(
             inputs_by_index, probabilities, strict=True
         ):
+            intervals = self._interval_overrides(review_input)
+            s90s = self._s90_overrides(review_input)
             predictions[index] = RwkvReviewPrediction(
                 retrievability=_probability_as_float(probability),
-                interval_overrides=RwkvIntervalOverride(
-                    good=self._good_interval_override(review_input)
-                ),
+                current_interval=intervals.good,
+                current_s90=s90s.good,
+                interval_overrides=intervals,
+                s90_overrides=s90s,
             )
 
         return predictions
@@ -159,24 +213,66 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         if curve is not None:
             self._curves[identity.card_id] = curve
 
-    def _good_interval_override(self, review_input: RwkvReviewInput) -> int | None:
+    def _interval_overrides(
+        self, review_input: RwkvReviewInput
+    ) -> RwkvIntervalOverride:
+        return self._curve_interval_overrides(
+            review_input,
+            review_input.target_retentions,
+        )
+
+    def _s90_overrides(self, review_input: RwkvReviewInput) -> RwkvIntervalOverride:
+        return self._curve_interval_overrides(
+            review_input,
+            (0.9, 0.9, 0.9, 0.9),
+        )
+
+    def _curve_interval_overrides(
+        self,
+        review_input: RwkvReviewInput,
+        target_retentions: tuple[float | None, ...],
+    ) -> RwkvIntervalOverride:
         curve = self._curves.get(review_input.identity.card_id)
         if curve is None:
-            return None
+            return RwkvIntervalOverride()
 
-        return interval_from_recall_curve(
-            [
-                RwkvRecallPoint(
-                    elapsed_days=day,
-                    retrievability=_probability_as_float(
-                        self._process.predict_func(curve, day * 86_400)
-                    ),
-                )
-                for day in _interval_search_days(self._max_interval_days)
-            ],
-            target_retention=self._target_retention,
-            max_interval_days=self._max_interval_days,
+        points = [
+            RwkvRecallPoint(
+                elapsed_days=day,
+                retrievability=_probability_as_float(
+                    self._process.predict_func(curve, day * 86_400)
+                ),
+            )
+            for day in _interval_search_days(self._max_interval_days)
+        ]
+
+        intervals = [
+            interval_from_recall_curve(
+                points,
+                target_retention=_valid_target_retention(
+                    target_retention,
+                    fallback=self._target_retention,
+                ),
+                max_interval_days=self._max_interval_days,
+            )
+            for target_retention in target_retentions
+        ]
+        return RwkvIntervalOverride(
+            again=intervals[0],
+            hard=intervals[1],
+            good=intervals[2],
+            easy=intervals[3],
         )
+
+
+def _valid_target_retention(value: object, *, fallback: float) -> float:
+    if (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and 0 <= value <= 1
+    ):
+        return float(value)
+    return fallback
 
 
 class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
@@ -231,7 +327,10 @@ class _RustRwkvRuntime:
         identity = review_input.identity
         (
             retrievability,
-            good_interval,
+            current_interval,
+            current_s90,
+            intervals,
+            s90s,
             next_card_state,
             next_note_state,
             next_deck_state,
@@ -249,6 +348,7 @@ class _RustRwkvRuntime:
             review_input.day_offset,
             review_input.current_elapsed_days,
             review_input.current_elapsed_seconds,
+            *review_input.target_retentions,
             _state_bytes(card_state),
             _state_bytes(note_state),
             _state_bytes(deck_state),
@@ -259,7 +359,10 @@ class _RustRwkvRuntime:
         return RwkvReviewTransition(
             prediction=RwkvReviewPrediction(
                 retrievability=float(retrievability),
-                interval_overrides=RwkvIntervalOverride(good=good_interval),
+                current_interval=_optional_interval(current_interval),
+                current_s90=_optional_interval(current_s90),
+                interval_overrides=_interval_override_from_tuple(intervals),
+                s90_overrides=_interval_override_from_tuple(s90s),
             ),
             card_state=next_card_state,
             note_state=next_note_state,
@@ -267,6 +370,57 @@ class _RustRwkvRuntime:
             preset_state=next_preset_state,
             global_state=next_global_state,
         )
+
+    def warm_up_reviews(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        *,
+        review_ids: Sequence[int] | None = None,
+        prediction_recorder: Callable[[int, float], None] | None = None,
+        progress: RwkvWarmUpProgressCallback | None = None,
+    ) -> RwkvBackendCacheSnapshot:
+        total = len(reviews)
+        report_every = _warmup_progress_interval(total)
+        _report_warmup_progress(progress, processed=0, total=total)
+        record_predictions = prediction_recorder is not None and review_ids is not None
+        processed = 0
+
+        while processed < total:
+            chunk = reviews[processed : processed + report_every]
+            predictions = self._process.warm_up_reviews(
+                [_review_input_row(review_input) for review_input in chunk],
+                record_predictions,
+            )
+            if record_predictions:
+                for index, retrievability in predictions:
+                    review_index = processed + int(index)
+                    if 0 <= review_index < len(review_ids):
+                        prediction_recorder(review_ids[review_index], retrievability)
+
+            processed += len(chunk)
+            _report_warmup_progress(progress, processed=processed, total=total)
+
+        (
+            card_states,
+            note_states,
+            deck_states,
+            preset_states,
+            global_state,
+            runtime_state,
+        ) = self._process.warm_up_snapshot()
+        return RwkvBackendCacheSnapshot(
+            card_states=dict(card_states),
+            note_states=dict(note_states),
+            deck_states=dict(deck_states),
+            preset_states=dict(preset_states),
+            global_state=global_state,
+            runtime_state=runtime_state,
+        )
+
+    def reset_warm_up_state(self) -> None:
+        reset = getattr(self._process, "reset_warm_up_state", None)
+        if callable(reset):
+            reset()
 
     def predict_many(
         self,
@@ -300,6 +454,7 @@ class _RustRwkvRuntime:
                 request.review_input.day_offset,
                 request.review_input.current_elapsed_days,
                 request.review_input.current_elapsed_seconds,
+                *request.review_input.target_retentions,
                 _state_bytes(request.card_state),
                 _state_bytes(request.note_state),
                 _state_bytes(request.deck_state),
@@ -332,10 +487,66 @@ class _RustRwkvRuntime:
         return [
             RwkvReviewPrediction(
                 retrievability=float(retrievability),
-                interval_overrides=RwkvIntervalOverride(good=good_interval),
+                current_interval=_optional_interval(current_interval),
+                current_s90=_optional_interval(current_s90),
+                interval_overrides=_interval_override_from_tuple(intervals),
+                s90_overrides=_interval_override_from_tuple(s90s),
             )
-            for retrievability, good_interval in outputs
+            for retrievability, current_interval, current_s90, intervals, s90s in outputs
         ]
+
+    def predict_retrievability_many(
+        self,
+        requests: Sequence[RwkvReviewPredictionRequest],
+    ) -> Sequence[float]:
+        predict_many_packed = getattr(
+            self._process,
+            "predict_retrievability_many_packed",
+            None,
+        )
+        predict_many_tuple = getattr(self._process, "predict_retrievability_many", None)
+        if not callable(predict_many_packed) and not callable(predict_many_tuple):
+            return [
+                float(prediction.retrievability)
+                if prediction is not None and prediction.retrievability is not None
+                else float("nan")
+                for prediction in self.predict_many(requests)
+            ]
+
+        build_start = time.monotonic()
+        use_packed = not callable(predict_many_tuple) and callable(predict_many_packed)
+        payload = (
+            _packed_prediction_requests(requests)
+            if use_packed
+            else [_prediction_request_row(request) for request in requests]
+        )
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust retrievability batch bridge started: "
+            "requests=%s packed=%s build_elapsed_ms=%.1f",
+            len(requests),
+            use_packed,
+            build_elapsed_ms,
+        )
+        outputs = (
+            predict_many_packed(*payload) if use_packed else predict_many_tuple(payload)
+        )
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(requests):
+            raise ValueError("RWKV Rust retrievability prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust retrievability batch predicted: requests=%s "
+            "packed=%s build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
+            len(requests),
+            use_packed,
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+
+        return [float(retrievability) for retrievability in outputs]
 
     def snapshot(self, review_input: RwkvReviewInput) -> object:
         return self._process.state_for_card(review_input.identity.card_id)
@@ -351,12 +562,204 @@ class _RustRwkvRuntime:
         self._process.restore_cache_state(state)
 
 
+def _review_input_row(
+    review_input: RwkvReviewInput,
+) -> tuple[
+    int,
+    int | None,
+    int | None,
+    int | None,
+    bool,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+]:
+    identity = review_input.identity
+    return (
+        identity.card_id,
+        identity.note_id,
+        identity.deck_id,
+        identity.preset_id,
+        review_input.is_query,
+        review_input.ease,
+        review_input.duration_millis,
+        review_input.card_type,
+        review_input.day_offset,
+        review_input.current_elapsed_days,
+        review_input.current_elapsed_seconds,
+        *review_input.target_retentions,
+    )
+
+
+def _prediction_request_row(
+    request: RwkvReviewPredictionRequest,
+) -> tuple[
+    int,
+    int | None,
+    int | None,
+    int | None,
+    bool,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+    bytes | None,
+    bytes | None,
+    bytes | None,
+    bytes | None,
+    bytes | None,
+]:
+    return (
+        *_review_input_row(request.review_input),
+        _state_bytes(request.card_state),
+        _state_bytes(request.note_state),
+        _state_bytes(request.deck_state),
+        _state_bytes(request.preset_state),
+        _state_bytes(request.global_state),
+    )
+
+
+def _packed_prediction_requests(
+    requests: Sequence[RwkvReviewPredictionRequest],
+) -> tuple[
+    bytes,
+    tuple[
+        list[bytes | None],
+        list[bytes | None],
+        list[bytes | None],
+        list[bytes | None],
+        list[bytes | None],
+    ],
+]:
+    payload = bytearray(
+        _PACKED_PREDICTION_REQUEST_HEADER.pack(
+            _PACKED_PREDICTION_REQUEST_MAGIC,
+            len(requests),
+        )
+    )
+    card_states: list[bytes | None] = []
+    note_states: list[bytes | None] = []
+    deck_states: list[bytes | None] = []
+    preset_states: list[bytes | None] = []
+    global_states: list[bytes | None] = []
+
+    for request in requests:
+        review_input = request.review_input
+        identity = review_input.identity
+        presence = 0
+
+        def optional_i64(value: int | None, bit: int) -> int:
+            nonlocal presence
+            if value is None:
+                return 0
+            presence |= 1 << bit
+            return int(value)
+
+        def optional_f32(value: float | None, bit: int) -> float:
+            nonlocal presence
+            if value is None:
+                return 0.0
+            presence |= 1 << bit
+            return float(value)
+
+        note_id = optional_i64(identity.note_id, 0)
+        deck_id = optional_i64(identity.deck_id, 1)
+        preset_id = optional_i64(identity.preset_id, 2)
+        ease = optional_i64(review_input.ease, 3)
+        duration_millis = optional_i64(review_input.duration_millis, 4)
+        card_type = optional_i64(review_input.card_type, 5)
+        day_offset = optional_i64(review_input.day_offset, 6)
+        current_elapsed_days = optional_i64(review_input.current_elapsed_days, 7)
+        current_elapsed_seconds = optional_i64(review_input.current_elapsed_seconds, 8)
+        target_retention_again = optional_f32(review_input.target_retentions[0], 9)
+        target_retention_hard = optional_f32(review_input.target_retentions[1], 10)
+        target_retention_good = optional_f32(review_input.target_retentions[2], 11)
+        target_retention_easy = optional_f32(review_input.target_retentions[3], 12)
+
+        payload.extend(
+            _PACKED_PREDICTION_REQUEST_ROW.pack(
+                presence,
+                identity.card_id,
+                note_id,
+                deck_id,
+                preset_id,
+                1 if review_input.is_query else 0,
+                ease,
+                duration_millis,
+                card_type,
+                day_offset,
+                current_elapsed_days,
+                current_elapsed_seconds,
+                target_retention_again,
+                target_retention_hard,
+                target_retention_good,
+                target_retention_easy,
+            )
+        )
+
+        card_states.append(_state_bytes(request.card_state))
+        note_states.append(_state_bytes(request.note_state))
+        deck_states.append(_state_bytes(request.deck_state))
+        preset_states.append(_state_bytes(request.preset_state))
+        global_states.append(_state_bytes(request.global_state))
+
+    return (
+        bytes(payload),
+        (card_states, note_states, deck_states, preset_states, global_states),
+    )
+
+
+def _warmup_progress_interval(total: int) -> int:
+    if total <= 0:
+        return 1
+    return max(1, min(1000, total // 100 or 1))
+
+
+def _report_warmup_progress(
+    progress: RwkvWarmUpProgressCallback | None,
+    *,
+    processed: int,
+    total: int,
+) -> None:
+    if progress is not None:
+        progress(RwkvWarmUpProgress(processed_reviews=processed, total_reviews=total))
+
+
 def _state_bytes(state: object | None) -> bytes | None:
     if state is None:
         return None
     if isinstance(state, bytes):
         return state
     raise TypeError("RWKV Rust state must be bytes")
+
+
+def _interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
+    if not isinstance(values, tuple) or len(values) != 4:
+        return RwkvIntervalOverride()
+
+    return RwkvIntervalOverride(
+        again=_optional_interval(values[0]),
+        hard=_optional_interval(values[1]),
+        good=_optional_interval(values[2]),
+        easy=_optional_interval(values[3]),
+    )
+
+
+def _optional_interval(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 class SrsBenchmarkReviewRowBuilder:

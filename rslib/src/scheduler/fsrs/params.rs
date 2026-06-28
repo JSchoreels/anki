@@ -50,6 +50,8 @@ use crate::scheduler::fsrs::simulator::is_included_card;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
+use crate::storage::FsrsReviewRetrievabilityCacheRow;
+use crate::storage::FsrsReviewRetrievabilitySampleRole;
 
 pub(crate) type Params = Vec<f32>;
 
@@ -115,6 +117,7 @@ pub(crate) struct PreparedComputeParams {
     pub existing_card_input: Option<ExistingCardInput>,
     pub items: Vec<FSRSItem>,
     pub item_card_ids: Vec<i64>,
+    pub item_revlog_ids: Vec<RevlogId>,
     pub fsrs_prediction_sources: Vec<FsrsReviewPredictionSource>,
     pub target_counts: TrainingTargetCounts,
 }
@@ -215,19 +218,23 @@ fn rmse_adjustment(r: f32, c: u32) -> f32 {
 struct TrainingItemsForFsrs {
     items: Vec<FSRSItem>,
     card_ids: Option<Vec<i64>>,
+    revlog_ids: Option<Vec<RevlogId>>,
     prediction_sources: Vec<FsrsReviewPredictionSource>,
 }
 
 impl TrainingItemsForFsrs {
-    fn with_card_ids(
+    fn with_card_and_revlog_ids(
         items: Vec<FSRSItem>,
         card_ids: Vec<i64>,
+        revlog_ids: Vec<RevlogId>,
         prediction_sources: Vec<FsrsReviewPredictionSource>,
     ) -> Self {
         debug_assert_eq!(items.len(), card_ids.len());
+        debug_assert_eq!(items.len(), revlog_ids.len());
         Self {
             items,
             card_ids: Some(card_ids),
+            revlog_ids: Some(revlog_ids),
             prediction_sources,
         }
     }
@@ -236,31 +243,38 @@ impl TrainingItemsForFsrs {
         Self {
             items,
             card_ids: None,
+            revlog_ids: None,
             prediction_sources: Vec::new(),
         }
     }
 
     fn filter_non_same_day_evaluation_targets(self) -> Self {
-        match self.card_ids {
-            Some(card_ids) => {
-                let (items, card_ids) = self
+        match (self.card_ids, self.revlog_ids) {
+            (Some(card_ids), Some(revlog_ids)) => {
+                let (items, ids): (Vec<_>, Vec<_>) = self
                     .items
                     .into_iter()
                     .zip_eq(card_ids)
-                    .filter(|(item, _)| has_long_term_target(item))
+                    .zip_eq(revlog_ids)
+                    .filter_map(|((item, card_id), revlog_id)| {
+                        has_long_term_target(&item).then_some((item, (card_id, revlog_id)))
+                    })
                     .unzip();
+                let (card_ids, revlog_ids) = ids.into_iter().unzip();
                 Self {
                     items,
                     card_ids: Some(card_ids),
+                    revlog_ids: Some(revlog_ids),
                     prediction_sources: Vec::new(),
                 }
             }
-            None => Self::without_card_ids(
+            (None, None) => Self::without_card_ids(
                 self.items
                     .into_iter()
                     .filter(has_long_term_target)
                     .collect(),
             ),
+            _ => unreachable!("card ids and revlog ids must be present together"),
         }
     }
 
@@ -268,6 +282,7 @@ impl TrainingItemsForFsrs {
         Self {
             items: self.items[start..end].to_vec(),
             card_ids: self.card_ids.as_ref().map(|ids| ids[start..end].to_vec()),
+            revlog_ids: self.revlog_ids.as_ref().map(|ids| ids[start..end].to_vec()),
             prediction_sources: Vec::new(),
         }
     }
@@ -281,6 +296,29 @@ impl TrainingItemsForFsrs {
 pub(crate) struct FsrsReviewPredictionSource {
     reviews: Vec<FSRSReview>,
     targets: Vec<(RevlogId, usize)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct FsrsReviewPredictionContext {
+    items: Vec<FSRSItem>,
+    card_ids: Vec<i64>,
+    revlog_ids: Vec<RevlogId>,
+    sources: Vec<FsrsReviewPredictionSource>,
+    model_version: ComputeParametersVersion,
+    num_relearning_steps: usize,
+}
+
+impl FsrsReviewPredictionContext {
+    pub(crate) fn from_prepared(prepared: &PreparedComputeParams) -> Self {
+        Self {
+            items: prepared.items.clone(),
+            card_ids: prepared.item_card_ids.clone(),
+            revlog_ids: prepared.item_revlog_ids.clone(),
+            sources: prepared.fsrs_prediction_sources.clone(),
+            model_version: prepared.model_version,
+            num_relearning_steps: prepared.num_of_relearning_steps,
+        }
+    }
 }
 
 fn has_long_term_target(item: &FSRSItem) -> bool {
@@ -399,6 +437,7 @@ where
         TrainingItemsForFsrs {
             items: train_set,
             card_ids,
+            revlog_ids: None,
             prediction_sources: Vec::new(),
         },
         5,
@@ -491,6 +530,7 @@ pub(crate) fn compute_params_from_prepared(
         existing_card_input,
         items,
         item_card_ids,
+        item_revlog_ids,
         fsrs_prediction_sources: _,
         target_counts: _,
     }: PreparedComputeParams,
@@ -549,10 +589,20 @@ pub(crate) fn compute_params_from_prepared(
     )?;
 
     let health_check_items = if include_same_day_reviews {
-        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone(), Vec::new())
+        TrainingItemsForFsrs::with_card_and_revlog_ids(
+            items.clone(),
+            item_card_ids.clone(),
+            item_revlog_ids.clone(),
+            Vec::new(),
+        )
     } else {
-        TrainingItemsForFsrs::with_card_ids(items.clone(), item_card_ids.clone(), Vec::new())
-            .filter_non_same_day_evaluation_targets()
+        TrainingItemsForFsrs::with_card_and_revlog_ids(
+            items.clone(),
+            item_card_ids.clone(),
+            item_revlog_ids.clone(),
+            Vec::new(),
+        )
+        .filter_non_same_day_evaluation_targets()
     };
     let health_check_passed = if health_check && health_check_items.items.len() > 300 {
         evaluate_with_time_series_splits(
@@ -952,7 +1002,7 @@ impl Collection {
                 fsrs_dynamic_desired_retention_max: 0.0,
             });
         }
-        let fsrs_prediction_sources = prepared.fsrs_prediction_sources.clone();
+        let fsrs_prediction_context = FsrsReviewPredictionContext::from_prepared(&prepared);
         // adapt the progress handler to our built-in progress handling
 
         let create_progress_thread = || -> Result<_> {
@@ -997,7 +1047,7 @@ impl Collection {
         progress_thread.join().ok();
         let output = output?;
         if let Err(err) = self
-            .store_fsrs_review_retrievability_predictions(&output.params, &fsrs_prediction_sources)
+            .store_fsrs_review_retrievability_predictions(&output.params, &fsrs_prediction_context)
         {
             tracing::warn!(?err, "failed to store FSRS review retrievability cache");
         }
@@ -1007,9 +1057,9 @@ impl Collection {
     fn store_fsrs_review_retrievability_predictions(
         &mut self,
         params: &[f32],
-        sources: &[FsrsReviewPredictionSource],
+        context: &FsrsReviewPredictionContext,
     ) -> Result<()> {
-        let predictions = fsrs_review_retrievability_predictions(params, sources)?;
+        let predictions = fsrs_review_retrievability_cache_rows(params, context)?;
         let stored = self
             .storage
             .set_fsrs_review_retrievability_predictions(&predictions, "fsrs_optimization")?;
@@ -1088,6 +1138,7 @@ impl Collection {
         let TrainingItemsForFsrs {
             items,
             card_ids,
+            revlog_ids,
             prediction_sources,
         } = training_items;
         Ok(PreparedComputeParams {
@@ -1100,6 +1151,7 @@ impl Collection {
             existing_card_input,
             items,
             item_card_ids: card_ids.unwrap_or_default(),
+            item_revlog_ids: revlog_ids.unwrap_or_default(),
             fsrs_prediction_sources: prediction_sources,
             target_counts,
         })
@@ -1436,11 +1488,12 @@ fn fsrs_items_for_training(
         .collect_vec();
     // Sort by RevlogId
     revlogs.sort_by_key(|(revlog_id, _, _)| revlog_id.0);
-    let (card_ids, items) = revlogs
+    let (revlog_ids, card_items): (Vec<_>, Vec<_>) = revlogs
         .into_iter()
-        .map(|(_, card_id, item)| (card_id.0, item))
+        .map(|(revlog_id, card_id, item)| (revlog_id, (card_id.0, item)))
         .unzip();
-    TrainingItemsForFsrs::with_card_ids(items, card_ids, prediction_sources)
+    let (card_ids, items) = card_items.into_iter().unzip();
+    TrainingItemsForFsrs::with_card_and_revlog_ids(items, card_ids, revlog_ids, prediction_sources)
 }
 
 fn fsrs_prediction_source_from_filtered_revlogs(
@@ -1470,9 +1523,31 @@ fn fsrs_prediction_source_from_filtered_revlogs(
     (!targets.is_empty()).then_some(FsrsReviewPredictionSource { reviews, targets })
 }
 
-pub(crate) fn fsrs_review_retrievability_predictions(
+pub(crate) fn fsrs_review_retrievability_cache_rows(
+    params: &[f32],
+    context: &FsrsReviewPredictionContext,
+) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
+    let mut rows =
+        fsrs_review_retrievability_predictions_for_targets(params, &context.sources, None)?
+            .into_iter()
+            .map(|(revlog_id, prediction)| FsrsReviewRetrievabilityCacheRow {
+                revlog_id,
+                prediction,
+                sample_role: FsrsReviewRetrievabilitySampleRole::FinalFit,
+                fold_index: -1,
+            })
+            .collect_vec();
+    match fsrs_validation_retrievability_cache_rows(context) {
+        Ok(validation_rows) => rows.extend(validation_rows),
+        Err(err) => tracing::debug!(?err, "failed to compute FSRS validation cache rows"),
+    }
+    Ok(rows)
+}
+
+fn fsrs_review_retrievability_predictions_for_targets(
     params: &[f32],
     sources: &[FsrsReviewPredictionSource],
+    target_revlog_ids: Option<&HashSet<RevlogId>>,
 ) -> Result<Vec<(RevlogId, f32)>> {
     if sources.is_empty() {
         return Ok(Vec::new());
@@ -1481,11 +1556,23 @@ pub(crate) fn fsrs_review_retrievability_predictions(
     let fsrs = FSRS::new(params)?;
     let mut predictions = Vec::new();
     for source in sources {
+        if let Some(target_revlog_ids) = target_revlog_ids {
+            if !source
+                .targets
+                .iter()
+                .any(|(revlog_id, _)| target_revlog_ids.contains(revlog_id))
+            {
+                continue;
+            }
+        }
         let item = FSRSItem {
             reviews: source.reviews.clone(),
         };
         let memory_states = fsrs.historical_memory_states(item, None)?;
         for &(revlog_id, review_index) in &source.targets {
+            if target_revlog_ids.is_some_and(|ids| !ids.contains(&revlog_id)) {
+                continue;
+            }
             let Some(previous_state) = review_index
                 .checked_sub(1)
                 .and_then(|index| memory_states.get(index))
@@ -1503,6 +1590,73 @@ pub(crate) fn fsrs_review_retrievability_predictions(
     }
 
     Ok(predictions)
+}
+
+fn fsrs_validation_retrievability_cache_rows(
+    context: &FsrsReviewPredictionContext,
+) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
+    if context.items.is_empty() || context.sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let splits = time_series_split_items(
+        TrainingItemsForFsrs::with_card_and_revlog_ids(
+            context.items.clone(),
+            context.card_ids.clone(),
+            context.revlog_ids.clone(),
+            Vec::new(),
+        ),
+        5,
+    );
+    if splits.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut rows = Vec::new();
+    for (fold_index, (train_items, test_items)) in splits.into_iter().enumerate() {
+        let Some(test_revlog_ids) = test_items.revlog_ids else {
+            continue;
+        };
+        let parameters = match compute_parameters(ComputeParametersInput {
+            train_set: train_items.items,
+            card_ids: train_items.card_ids,
+            progress: None,
+            enable_short_term: true,
+            enable_sched_penalties: true,
+            model_version: context.model_version,
+            num_relearning_steps: Some(context.num_relearning_steps),
+        }) {
+            Ok(parameters) => parameters,
+            Err(err) => {
+                tracing::debug!(?err, fold_index, "skipping FSRS validation cache fold");
+                continue;
+            }
+        };
+        let target_revlog_ids = test_revlog_ids.into_iter().collect::<HashSet<_>>();
+        let predictions = match fsrs_review_retrievability_predictions_for_targets(
+            &parameters,
+            &context.sources,
+            Some(&target_revlog_ids),
+        ) {
+            Ok(predictions) => predictions,
+            Err(err) => {
+                tracing::debug!(
+                    ?err,
+                    fold_index,
+                    "skipping FSRS validation cache fold predictions"
+                );
+                continue;
+            }
+        };
+        rows.extend(predictions.into_iter().map(|(revlog_id, prediction)| {
+            FsrsReviewRetrievabilityCacheRow {
+                revlog_id,
+                prediction,
+                sample_role: FsrsReviewRetrievabilitySampleRole::ValidationFold,
+                fold_index: fold_index as i32,
+            }
+        }));
+    }
+    Ok(rows)
 }
 
 pub(crate) struct ReviewsForFsrs {
@@ -1801,6 +1955,7 @@ pub(crate) mod tests {
                 existing_card_input: None,
                 items: vec![],
                 item_card_ids: vec![],
+                item_revlog_ids: vec![],
                 fsrs_prediction_sources: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },

@@ -877,6 +877,11 @@ def force_build_rwkv_state_cache() -> bytes:
     return b""
 
 
+def reschedule_rwkv_review_cards() -> bytes:
+    aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(aqt.mw)
+    return b""
+
+
 def save_custom_colours() -> bytes:
     colors = [
         QColorDialog.customColor(i).name(QColor.NameFormat.HexRgb)
@@ -995,6 +1000,7 @@ post_handler_list = [
     deck_options_ready,
     build_rwkv_state_cache,
     force_build_rwkv_state_cache,
+    reschedule_rwkv_review_cards,
     save_custom_colours,
     card_stats,
     graphs,

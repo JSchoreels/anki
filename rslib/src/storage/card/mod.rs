@@ -670,6 +670,118 @@ impl super::SqliteStorage {
             .collect()
     }
 
+    pub(crate) fn rwkv_review_input_candidate_cards_for_ids(
+        &self,
+        card_ids: &[CardId],
+        include_suspended_review: bool,
+        enabled_deck_ids: Option<&HashSet<DeckId>>,
+    ) -> Result<Vec<Card>> {
+        if card_ids.is_empty() || enabled_deck_ids.is_some_and(HashSet::is_empty) {
+            return Ok(Vec::new());
+        }
+
+        self.with_searched_cards_table(false, || {
+            self.set_search_table_to_card_ids(card_ids)?;
+            self.rwkv_review_input_candidate_cards_in_search(
+                include_suspended_review,
+                enabled_deck_ids,
+            )
+        })
+    }
+
+    pub(crate) fn rwkv_review_input_candidate_cards_for_deck_review_queue(
+        &self,
+        deck_ids: &[DeckId],
+        enabled_deck_ids: Option<&HashSet<DeckId>>,
+    ) -> Result<(u32, Vec<Card>)> {
+        if deck_ids.is_empty() {
+            return Ok((0, Vec::new()));
+        }
+
+        let mut deck_ids_sql = String::new();
+        let mut sorted_deck_ids: Vec<_> = deck_ids.iter().map(|deck_id| deck_id.0).collect();
+        sorted_deck_ids.sort_unstable();
+        ids_to_string(&mut deck_ids_sql, sorted_deck_ids);
+
+        let searched_cards = self
+            .db
+            .prepare(&format!(
+                "select count() from cards where did in {deck_ids_sql} and queue = ?",
+            ))?
+            .query_row([CardQueue::Review as i8], |row| row.get(0))?;
+
+        if enabled_deck_ids.is_some_and(HashSet::is_empty) {
+            return Ok((searched_cards, Vec::new()));
+        }
+
+        let mut sql = format!(
+            "{} where did in {deck_ids_sql} and type = {} and queue = {}",
+            include_str!("get_card.sql"),
+            CardType::Review as i8,
+            CardQueue::Review as i8,
+        );
+
+        if let Some(enabled_deck_ids) = enabled_deck_ids {
+            let mut enabled_ids: Vec<_> =
+                enabled_deck_ids.iter().map(|deck_id| deck_id.0).collect();
+            enabled_ids.sort_unstable();
+            let mut enabled_ids_sql = String::new();
+            ids_to_string(&mut enabled_ids_sql, enabled_ids);
+            sql.push_str(" and (case when odid != 0 then odid else did end) in ");
+            sql.push_str(&enabled_ids_sql);
+        }
+
+        let cards = self
+            .db
+            .prepare(&sql)?
+            .query_and_then([], |r| row_to_card(r).map_err(Into::into))?
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok((searched_cards, cards))
+    }
+
+    pub(crate) fn rwkv_review_input_candidate_cards_in_search(
+        &self,
+        include_suspended_review: bool,
+        enabled_deck_ids: Option<&HashSet<DeckId>>,
+    ) -> Result<Vec<Card>> {
+        if enabled_deck_ids.is_some_and(HashSet::is_empty) {
+            return Ok(Vec::new());
+        }
+
+        let mut sql = concat!(
+            include_str!("get_card.sql"),
+            " where id in (select cid from search_cids)\n",
+            " and (\n",
+            "   (type = 2 and queue in REVIEW_QUEUES)\n",
+            "   or (type = 1 and queue in (1, 3))\n",
+            "   or (type = 3 and queue in (1, 3))\n",
+            " )\n",
+        )
+        .replace(
+            "REVIEW_QUEUES",
+            if include_suspended_review {
+                "(2, -1)"
+            } else {
+                "(2)"
+            },
+        );
+
+        if let Some(enabled_deck_ids) = enabled_deck_ids {
+            let mut deck_ids: Vec<_> = enabled_deck_ids.iter().map(|deck_id| deck_id.0).collect();
+            deck_ids.sort_unstable();
+            let mut deck_ids_sql = String::new();
+            ids_to_string(&mut deck_ids_sql, deck_ids);
+            sql.push_str(" and (case when odid != 0 then odid else did end) in ");
+            sql.push_str(&deck_ids_sql);
+        }
+
+        self.db
+            .prepare(&sql)?
+            .query_and_then([], |r| row_to_card(r).map_err(Into::into))?
+            .collect()
+    }
+
     pub(crate) fn all_searched_cards_in_search_order(&self) -> Result<Vec<Card>> {
         self.db
             .prepare_cached(concat!(

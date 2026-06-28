@@ -131,6 +131,12 @@ pub struct DeckConfSchema11 {
     rwkv_review_refresh_interval: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_refresh_on_exit: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    rwkv_review_allow_same_day_review: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    rwkv_review_instant_order_enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    rwkv_review_dynamic_preset_replay: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
     #[serde(default)]
@@ -431,6 +437,9 @@ impl Default for DeckConfSchema11 {
             rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
             rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
             rwkv_review_refresh_on_exit: false,
+            rwkv_review_allow_same_day_review: false,
+            rwkv_review_instant_order_enabled: false,
+            rwkv_review_dynamic_preset_replay: false,
             easy_days_percentages: vec![1.0; 7],
         }
     }
@@ -493,6 +502,9 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_batch_size: c.rwkv_review_batch_size,
             rwkv_review_refresh_interval: c.rwkv_review_refresh_interval,
             rwkv_review_refresh_on_exit: c.rwkv_review_refresh_on_exit,
+            rwkv_review_allow_same_day_review: c.rwkv_review_allow_same_day_review,
+            rwkv_review_instant_order_enabled: c.rwkv_review_instant_order_enabled,
+            rwkv_review_dynamic_preset_replay: c.rwkv_review_dynamic_preset_replay,
             disable_autoplay: !c.autoplay,
             cap_answer_time_to_secs: c.max_taken.max(0) as u32,
             show_timer: c.timer != 0,
@@ -681,6 +693,9 @@ impl From<DeckConfig> for DeckConfSchema11 {
             rwkv_review_batch_size: i.rwkv_review_batch_size,
             rwkv_review_refresh_interval: i.rwkv_review_refresh_interval,
             rwkv_review_refresh_on_exit: i.rwkv_review_refresh_on_exit,
+            rwkv_review_allow_same_day_review: i.rwkv_review_allow_same_day_review,
+            rwkv_review_instant_order_enabled: i.rwkv_review_instant_order_enabled,
+            rwkv_review_dynamic_preset_replay: i.rwkv_review_dynamic_preset_replay,
             easy_days_percentages: i.easy_days_percentages,
         }
     }
@@ -731,6 +746,9 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "rwkvReviewBatchSize",
     "rwkvReviewRefreshInterval",
     "rwkvReviewRefreshOnExit",
+    "rwkvReviewAllowSameDayReview",
+    "rwkvReviewInstantOrderEnabled",
+    "rwkvReviewDynamicPresetReplay",
     "easyDaysPercentages",
 };
 
@@ -878,6 +896,54 @@ mod test {
 
         let serialized = serde_json::to_value(config)?;
         assert_eq!(serialized["rwkvReviewRefreshOnExit"], json!(true));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_allow_same_day_review_omits_default_and_serializes_enabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewAllowSameDayReview").is_none());
+
+        let config = DeckConfSchema11 {
+            rwkv_review_allow_same_day_review: true,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewAllowSameDayReview"], json!(true));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_instant_order_omits_default_and_serializes_enabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewInstantOrderEnabled").is_none());
+
+        let config = DeckConfSchema11 {
+            rwkv_review_instant_order_enabled: true,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewInstantOrderEnabled"], json!(true));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_dynamic_preset_replay_omits_default_and_serializes_enabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewDynamicPresetReplay").is_none());
+
+        let config = DeckConfSchema11 {
+            rwkv_review_dynamic_preset_replay: true,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewDynamicPresetReplay"], json!(true));
 
         Ok(())
     }

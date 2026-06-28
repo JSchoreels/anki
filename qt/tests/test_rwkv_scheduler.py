@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import threading
 import time
@@ -15,12 +16,15 @@ from typing import Any
 
 import pytest
 
+from anki import cards_pb2, scheduler_pb2
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from aqt import rwkv_scheduler
 from aqt.rwkv_scheduler import (
+    RwkvBackendCacheSnapshot,
     RwkvIntervalOverride,
     RwkvRecallPoint,
     RwkvReviewCandidate,
+    RwkvReviewerPrediction,
     RwkvReviewIdentity,
     RwkvReviewInput,
     RwkvReviewPrediction,
@@ -35,6 +39,7 @@ from aqt.rwkv_scheduler import (
     interval_from_recall_curve,
     prepare_reviewer_queue_order,
     prepare_stats_retrievability_scores,
+    prewarm_reviewer_queue_score_cache,
     record_collection_redo,
     record_collection_undo,
     record_reviewer_answer,
@@ -50,10 +55,44 @@ from aqt.rwkv_scheduler import (
 @pytest.fixture(autouse=True)
 def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous = set_reviewer_backend(None)
+    previous_warmup_keys = set(rwkv_scheduler._reviewer_backend_warmup_keys)
+    previous_pending_keys = set(rwkv_scheduler._reviewer_backend_warmup_pending_keys)
+    previous_preset_cache = dict(rwkv_scheduler._resolved_preset_id_cache)
+    previous_queue_score_maps = dict(rwkv_scheduler._rwkv_review_queue_score_maps)
+    previous_queue_score_generations = dict(
+        rwkv_scheduler._rwkv_review_queue_score_generations
+    )
+    previous_stats_prepare = dict(rwkv_scheduler._rwkv_stats_prepare_in_flight)
+    previous_score_prewarm = set(rwkv_scheduler._rwkv_score_prewarm_in_flight)
+    rwkv_scheduler._reviewer_backend_warmup_keys.clear()
+    rwkv_scheduler._reviewer_backend_warmup_pending_keys.clear()
+    rwkv_scheduler._resolved_preset_id_cache.clear()
+    rwkv_scheduler._rwkv_review_queue_score_maps.clear()
+    rwkv_scheduler._rwkv_review_queue_score_generations.clear()
+    rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
+    rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
     try:
         yield
     finally:
         set_reviewer_backend(previous)
+        rwkv_scheduler._reviewer_backend_warmup_keys.clear()
+        rwkv_scheduler._reviewer_backend_warmup_keys.update(previous_warmup_keys)
+        rwkv_scheduler._reviewer_backend_warmup_pending_keys.clear()
+        rwkv_scheduler._reviewer_backend_warmup_pending_keys.update(
+            previous_pending_keys
+        )
+        rwkv_scheduler._resolved_preset_id_cache.clear()
+        rwkv_scheduler._resolved_preset_id_cache.update(previous_preset_cache)
+        rwkv_scheduler._rwkv_review_queue_score_maps.clear()
+        rwkv_scheduler._rwkv_review_queue_score_maps.update(previous_queue_score_maps)
+        rwkv_scheduler._rwkv_review_queue_score_generations.clear()
+        rwkv_scheduler._rwkv_review_queue_score_generations.update(
+            previous_queue_score_generations
+        )
+        rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
+        rwkv_scheduler._rwkv_stats_prepare_in_flight.update(previous_stats_prepare)
+        rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
+        rwkv_scheduler._rwkv_score_prewarm_in_flight.update(previous_score_prewarm)
 
 
 def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
@@ -61,12 +100,14 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
         def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
             assert deck_id == 100
             return {
+                "reviewOrder": 7,
                 "other": {
                     "jschoreels.rwkv": {
                         "rwkv_review_enabled": True,
+                        "rwkv_review_instant_order_enabled": True,
                         "rwkv_review_refresh_interval": 3,
                     }
-                }
+                },
             }
 
     reviewer = SimpleNamespace(
@@ -94,6 +135,7 @@ def test_rwkv_queue_refresh_on_exit_uses_nested_config() -> None:
                 "other": {
                     "jschoreels.rwkv": {
                         "rwkv_review_enabled": True,
+                        "rwkv_review_instant_order_enabled": True,
                         "rwkv_review_refresh_on_exit": True,
                     }
                 },
@@ -109,7 +151,9 @@ def test_rwkv_queue_refresh_due_uses_direct_refresh_interval() -> None:
         def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
             assert deck_id == 100
             return {
+                "reviewOrder": 7,
                 "rwkvReviewEnabled": True,
+                "rwkvReviewInstantOrderEnabled": True,
                 "rwkvReviewRefreshInterval": 2,
             }
 
@@ -136,6 +180,7 @@ def test_rwkv_queue_refresh_on_exit_uses_direct_config() -> None:
             return {
                 "reviewOrder": 7,
                 "rwkvReviewEnabled": True,
+                "rwkvReviewInstantOrderEnabled": True,
                 "rwkvReviewRefreshOnExit": True,
             }
 
@@ -250,6 +295,7 @@ def test_apply_review_interval_overrides_changes_only_answer_review_states() -> 
     updated = apply_review_interval_overrides(
         states,
         RwkvIntervalOverride(again=10, hard=20, good=30, easy=40),
+        RwkvIntervalOverride(again=11, hard=22, good=33, easy=44),
     )
 
     assert updated.current.normal.review.scheduled_days == 9
@@ -262,6 +308,12 @@ def test_apply_review_interval_overrides_changes_only_answer_review_states() -> 
     assert updated.hard.normal.review.fuzz_delta_days == 0
     assert updated.good.normal.review.fuzz_delta_days == 0
     assert updated.easy.normal.review.fuzz_delta_days == 0
+    assert updated.again.normal.review.memory_state.stability == pytest.approx(11)
+    assert updated.hard.normal.review.memory_state.stability == pytest.approx(22)
+    assert updated.good.normal.review.memory_state.stability == pytest.approx(33)
+    assert updated.easy.normal.review.memory_state.stability == pytest.approx(44)
+    assert not updated.good.normal.review.memory_state.HasField("stability_internal")
+    assert updated.good.normal.review.memory_state.difficulty == pytest.approx(5.0)
 
     assert states.again.normal.review.scheduled_days == 1
     assert states.hard.normal.review.scheduled_days == 2
@@ -279,14 +331,21 @@ def test_apply_review_interval_overrides_skips_non_review_states() -> None:
     updated = apply_review_interval_overrides(
         states,
         RwkvIntervalOverride(again=10, hard=20, good=30, easy=40),
+        RwkvIntervalOverride(again=11, hard=22, good=33, easy=44),
     )
 
     assert updated.again.normal.learning.scheduled_secs == 60
-    assert updated.hard.normal.relearning.review.scheduled_days == 2
+    assert updated.hard.normal.relearning.review.scheduled_days == 20
+    assert updated.hard.normal.relearning.review.fuzz_delta_days == 0
+    assert (
+        updated.hard.normal.relearning.review.memory_state.stability
+        == pytest.approx(22)
+    )
     assert updated.hard.normal.relearning.learning.scheduled_secs == 120
     assert updated.good.filtered.preview.scheduled_secs == 180
     assert updated.easy.normal.review.scheduled_days == 40
     assert updated.easy.normal.review.fuzz_delta_days == 0
+    assert updated.easy.normal.review.memory_state.stability == pytest.approx(44)
 
 
 def test_apply_review_interval_overrides_rejects_invalid_interval() -> None:
@@ -347,6 +406,152 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
     assert states.good.normal.review.scheduled_days == 3
 
 
+def test_reviewer_rwkv_prediction_overrides_all_grade_intervals_and_s90() -> None:
+    class Backend:
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(
+                retrievability=0.62,
+                interval_overrides=RwkvIntervalOverride(
+                    again=1,
+                    hard=4,
+                    good=9,
+                    easy=18,
+                ),
+                s90_overrides=RwkvIntervalOverride(
+                    again=2,
+                    hard=5,
+                    good=10,
+                    easy=20,
+                ),
+            )
+
+    set_reviewer_backend(Backend())
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.again.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+    states.hard.CopyFrom(_normal_review_state(interval=6, fuzz_delta=6))
+    states.good.CopyFrom(_normal_review_state(interval=12, fuzz_delta=12))
+    states.easy.CopyFrom(_normal_review_state(interval=24, fuzz_delta=24))
+
+    updated = update_reviewer_scheduling_states(states, reviewer, card)
+
+    assert updated.again.normal.review.scheduled_days == 1
+    assert updated.hard.normal.review.scheduled_days == 4
+    assert updated.good.normal.review.scheduled_days == 9
+    assert updated.easy.normal.review.scheduled_days == 18
+    assert updated.again.normal.review.memory_state.stability == pytest.approx(2)
+    assert updated.hard.normal.review.memory_state.stability == pytest.approx(5)
+    assert updated.good.normal.review.memory_state.stability == pytest.approx(10)
+    assert updated.easy.normal.review.memory_state.stability == pytest.approx(20)
+    assert states.again.normal.review.scheduled_days == 3
+    assert states.hard.normal.review.scheduled_days == 6
+    assert states.good.normal.review.scheduled_days == 12
+    assert states.easy.normal.review.scheduled_days == 24
+
+
+def test_rwkv_review_input_uses_preset_desired_retention_for_all_grade_targets() -> (
+    None
+):
+    reviewer = _rwkv_reviewer(preset_desired_retention=0.86)
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert review_input.target_retentions == pytest.approx((0.86, 0.86, 0.86, 0.86))
+
+
+def test_rwkv_review_input_falls_back_to_deck_desired_retention() -> None:
+    reviewer = _rwkv_reviewer(
+        resolved_preset_id=None,
+        deck_desired_retention=0.82,
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert review_input.target_retentions == pytest.approx((0.82, 0.82, 0.82, 0.82))
+
+
+def test_rwkv_review_input_uses_dynamic_desired_retention_per_grade() -> None:
+    reviewer = _rwkv_reviewer(preset_desired_retention=0.86)
+    reviewer._v3.states.dynamic_desired_retention_enabled = True
+    reviewer._v3.states.dynamic_desired_retentions.extend([0.81, 0.82, 0.83, 0.84])
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert review_input.target_retentions == pytest.approx((0.81, 0.82, 0.83, 0.84))
+
+
+def test_record_reviewer_answer_stores_selected_rwkv_s90_on_card() -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.answers: list[tuple[int, int]] = []
+
+        def review_answered(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+            ease: int,
+        ) -> None:
+            self.answers.append((card.id, ease))
+
+    backend = Backend()
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(reviewer.mw.col)))
+    update_calls: list[tuple[object, bool]] = []
+    load_calls: list[int] = []
+    reviewer.mw.col.update_card = (
+        lambda card, skip_undo_entry=False: update_calls.append((card, skip_undo_entry))
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card.load = lambda: load_calls.append(card.id)
+    reviewer._rwkv_review_prediction = RwkvReviewerPrediction(
+        card_id=1,
+        retrievability=0.62,
+        review_enabled=True,
+        interval_override_used=True,
+        s90_overrides=RwkvIntervalOverride(
+            again=2,
+            hard=5,
+            good=10,
+            easy=20,
+        ),
+    )
+
+    record_reviewer_answer(reviewer, card, ease=4)
+
+    assert backend.answers == [(1, 4)]
+    assert load_calls == [1]
+    assert update_calls == [(card, True)]
+    assert card.memory_state.stability == pytest.approx(20)
+    assert not card.memory_state.HasField("stability_internal")
+    assert card.memory_state.difficulty == pytest.approx(5.0)
+
+
 def test_stateful_reviewer_backend_batches_runtime_predictions() -> None:
     class Runtime(_SharedReviewRuntime):
         def __init__(self) -> None:
@@ -362,7 +567,10 @@ def test_stateful_reviewer_backend_batches_runtime_predictions() -> None:
                 RwkvReviewPrediction(
                     retrievability=0.10 * request.review_input.identity.card_id,
                     interval_overrides=RwkvIntervalOverride(
-                        good=10 + request.review_input.identity.card_id
+                        again=7 + request.review_input.identity.card_id,
+                        hard=8 + request.review_input.identity.card_id,
+                        good=10 + request.review_input.identity.card_id,
+                        easy=14 + request.review_input.identity.card_id,
                     ),
                 )
                 for request in requests
@@ -387,12 +595,19 @@ def test_stateful_reviewer_backend_batches_runtime_predictions() -> None:
         pytest.approx(0.20),
         pytest.approx(0.30),
     ]
-    assert [
-        prediction.interval_overrides.good for prediction in predictions if prediction
-    ] == [
-        12,
-        13,
-    ]
+    first, second = [prediction for prediction in predictions if prediction]
+    assert first.interval_overrides == RwkvIntervalOverride(
+        again=9,
+        hard=10,
+        good=12,
+        easy=16,
+    )
+    assert second.interval_overrides == RwkvIntervalOverride(
+        again=10,
+        hard=11,
+        good=13,
+        easy=17,
+    )
     assert runtime.queries == []
     assert [
         (
@@ -512,6 +727,166 @@ def test_rwkv_review_scores_batches_only_prediction_cache_misses() -> None:
     assert runtime.batch_card_ids == [[3]]
 
 
+def test_rwkv_review_scores_use_retrievability_only_batch_path() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retrievability_card_ids: list[list[int]] = []
+
+        def predict_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[RwkvReviewPrediction]:
+            raise AssertionError("score-only batches should not use full predictions")
+
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.retrievability_card_ids.append(
+                [request.review_input.identity.card_id for request in requests]
+            )
+            return [
+                0.10 * request.review_input.identity.card_id for request in requests
+            ]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+
+    scores = rwkv_scheduler._rwkv_review_scores_for_candidates(
+        [
+            RwkvReviewCandidate(
+                reviewer=reviewer,
+                card=_rwkv_card(card_id=2, note_id=20, duration_millis=2345),
+            ),
+            RwkvReviewCandidate(
+                reviewer=reviewer,
+                card=_rwkv_card(card_id=3, note_id=30, duration_millis=3456),
+            ),
+        ],
+        batch_size=512,
+    )
+
+    assert scores == [
+        (2, pytest.approx(0.20)),
+        (3, pytest.approx(0.30)),
+    ]
+    assert runtime.retrievability_card_ids == [[2, 3]]
+
+
+def test_rwkv_review_scores_upscale_default_retrievability_batch_size() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retrievability_card_ids: list[list[int]] = []
+
+        def predict_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[RwkvReviewPrediction]:
+            raise AssertionError("score-only batches should not use full predictions")
+
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.retrievability_card_ids.append(
+                [request.review_input.identity.card_id for request in requests]
+            )
+            return [0.50 for _ in requests]
+
+    def candidates(count: int) -> list[RwkvReviewCandidate]:
+        reviewer = _rwkv_reviewer()
+        return [
+            RwkvReviewCandidate(
+                reviewer=reviewer,
+                card=_rwkv_card(
+                    card_id=card_id,
+                    note_id=card_id * 10,
+                    duration_millis=1000 + card_id,
+                ),
+            )
+            for card_id in range(1, count + 1)
+        ]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+
+    scores = rwkv_scheduler._rwkv_review_scores_for_candidates(
+        candidates(600),
+        batch_size=512,
+    )
+
+    assert len(scores) == 600
+    assert runtime.retrievability_card_ids == [list(range(1, 601))]
+
+    runtime.retrievability_card_ids.clear()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    scores = rwkv_scheduler._rwkv_review_scores_for_candidates(
+        candidates(130),
+        batch_size=64,
+    )
+
+    assert len(scores) == 130
+    assert runtime.retrievability_card_ids == [
+        list(range(1, 65)),
+        list(range(65, 129)),
+        [129, 130],
+    ]
+
+
+def test_rwkv_retrievability_batches_populate_prediction_cache() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retrievability_card_ids: list[list[int]] = []
+
+        def predict_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[RwkvReviewPrediction]:
+            raise AssertionError("score-only batches should not use full predictions")
+
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            card_ids = [request.review_input.identity.card_id for request in requests]
+            self.retrievability_card_ids.append(card_ids)
+            return [0.10 * card_id for card_id in card_ids]
+
+    reviewer = _rwkv_reviewer()
+    candidates = [
+        RwkvReviewCandidate(
+            reviewer=reviewer,
+            card=_rwkv_card(card_id=2, note_id=20, duration_millis=2345),
+        ),
+        RwkvReviewCandidate(
+            reviewer=reviewer,
+            card=_rwkv_card(card_id=3, note_id=30, duration_millis=3456),
+        ),
+    ]
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+
+    first = rwkv_scheduler._rwkv_review_scores_for_candidates(
+        candidates,
+        batch_size=512,
+    )
+    second = rwkv_scheduler._rwkv_review_scores_for_candidates(
+        candidates,
+        batch_size=512,
+    )
+
+    assert first == [(2, pytest.approx(0.20)), (3, pytest.approx(0.30))]
+    assert second == first
+    assert runtime.retrievability_card_ids == [[2, 3]]
+
+
 def test_stateful_reviewer_backend_clears_prediction_cache_after_answer() -> None:
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
@@ -579,6 +954,7 @@ def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
     reviewer = _rwkv_reviewer(
+        rwkv_review_dynamic_preset_replay=True,
         resolved_preset_id="addon:test:current",
         historical_review_rows=[
             (first_review, 1, 10, 100, 2, 1234, 1, 20, 2500),
@@ -606,6 +982,45 @@ def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
         _expected_preset_hash("addon:test:young"),
         _expected_preset_hash("addon:test:mature"),
     ]
+
+
+def test_reviewer_rwkv_warmup_skips_historical_interval_split_rules_by_default() -> (
+    None
+):
+    first_review = (39 * 86_400 + 100) * 1000
+    second_review = (40 * 86_400 + 100) * 1000
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = _RwkvQueueScoreRpc()
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer(
+        rpc=rpc,
+        resolved_preset_id="addon:test:current",
+        historical_review_rows=[
+            (first_review, 1, 10, 100, 2, 1234, 1, 20, 2500),
+            (second_review, 1, 10, 100, 3, 2345, 1, 30, 2400),
+        ],
+    )
+    reviewer.mw.col.get_config = lambda key: {
+        "simulator_rules": [
+            {
+                "preset_id": "addon:test:young",
+                "max_interval_days": 20.0,
+            },
+            {
+                "preset_id": "addon:test:mature",
+                "min_interval_days": 21.0,
+            },
+        ],
+    }
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    assert [item.identity.preset_id for item in runtime.answered_inputs] == [
+        1000,
+        1000,
+    ]
+    assert rpc.preset_id_calls == []
 
 
 def test_reviewer_rwkv_prediction_skips_until_background_warmup_finishes() -> None:
@@ -643,6 +1058,39 @@ def test_reviewer_rwkv_answer_update_skips_until_background_warmup_finishes() ->
 
     assert runtime.reviewed == [(1, 3)]
     assert rpc.card_info_calls == [{"card_id": 1, "retrievability": None}]
+
+
+def test_reviewer_rwkv_answer_stores_sse_review_retrievability_cache(
+    tmp_path,
+) -> None:
+    review_id = (42 * 86_400 + 1000) * 1000
+    rows = [(review_id, 1, 10, 100, 3, 1234, 1, 5, 2500)]
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    rwkv_scheduler._reviewer_backend_warmup_keys.add(key)
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+
+    update_reviewer_scheduling_states(states, reviewer, card)
+    record_reviewer_answer(reviewer, card, ease=3)
+
+    assert runtime.reviewed == [(1, 3)]
+    cache_rows = reviewer.mw.col.rwkv_retrievability_rows
+    assert [
+        (cached_review_id, prediction, source)
+        for cached_review_id, prediction, source, _ in cache_rows
+    ] == [(review_id, pytest.approx(0.45), "rwkv_review")]
+    assert _rwkv_sse_harness_review_retrievability(
+        reviewer.mw.col,
+        [review_id],
+    ) == {
+        "column": "search_stats_rwkv_review_retrievability",
+        "data": [(review_id, pytest.approx(0.45))],
+    }
 
 
 def test_reviewer_rwkv_warmup_reports_review_progress() -> None:
@@ -727,6 +1175,156 @@ def test_reviewer_rwkv_warmup_saves_and_reuses_local_state_cache(
     assert snapshot.global_state == b"global-2"
 
 
+def test_rwkv_model_cache_key_uses_model_content_not_install_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first_model_path = (
+        tmp_path / "first-install" / "rwkv_inference" / "RWKV_trained_on_5000_10000.bin"
+    )
+    second_model_path = (
+        tmp_path
+        / "second-install"
+        / "rwkv_inference"
+        / "RWKV_trained_on_5000_10000.bin"
+    )
+    first_model_path.parent.mkdir(parents=True)
+    second_model_path.parent.mkdir(parents=True)
+    first_model_path.write_bytes(b"same model")
+    second_model_path.write_bytes(b"same model")
+
+    monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
+    monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
+    monkeypatch.setattr(
+        "aqt.rwkv_scheduler.embedded_rwkv_model_path",
+        lambda: first_model_path,
+    )
+    first_key = rwkv_scheduler._rwkv_model_cache_key()
+    monkeypatch.setattr(
+        "aqt.rwkv_scheduler.embedded_rwkv_model_path",
+        lambda: second_model_path,
+    )
+    second_key = rwkv_scheduler._rwkv_model_cache_key()
+
+    assert first_key == second_key
+    assert first_key is not None
+    assert first_key["sha256"] == hashlib.sha256(b"same model").hexdigest()
+    assert "path" not in first_key
+    assert "mtimeNs" not in first_key
+
+
+def test_rwkv_model_cache_key_changes_when_model_content_changes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    model_path = tmp_path / "RWKV_trained_on_5000_10000.bin"
+
+    monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
+    monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
+    monkeypatch.setattr(
+        "aqt.rwkv_scheduler.embedded_rwkv_model_path",
+        lambda: model_path,
+    )
+
+    model_path.write_bytes(b"model one")
+    first_key = rwkv_scheduler._rwkv_model_cache_key()
+    model_path.write_bytes(b"model two")
+    second_key = rwkv_scheduler._rwkv_model_cache_key()
+
+    assert first_key is not None
+    assert second_key is not None
+    assert first_key["size"] == second_key["size"]
+    assert first_key["sha256"] != second_key["sha256"]
+
+
+def test_rwkv_state_cache_restores_legacy_embedded_model_key_after_reinstall(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    model_bytes = b"same bundled model"
+    first_model_path = (
+        tmp_path / "first-install" / "rwkv_inference" / "RWKV_trained_on_5000_10000.bin"
+    )
+    second_model_path = (
+        tmp_path
+        / "second-install"
+        / "rwkv_inference"
+        / "RWKV_trained_on_5000_10000.bin"
+    )
+    first_model_path.parent.mkdir(parents=True)
+    second_model_path.parent.mkdir(parents=True)
+    first_model_path.write_bytes(model_bytes)
+    second_model_path.write_bytes(model_bytes)
+    rows = [
+        ((40 * 86_400 + 100) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        ((41 * 86_400 + 3_700) * 1000, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+
+    monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
+    monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
+    monkeypatch.setattr(
+        "aqt.rwkv_scheduler.embedded_rwkv_model_path",
+        lambda: first_model_path,
+    )
+
+    profile_folder = tmp_path / "profile"
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    reviewer = _rwkv_cache_reviewer(profile_folder=profile_folder, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert runtime.reviewed == [(1, 2), (1, 3)]
+
+    cache_dir = profile_folder / "rwkv-state-cache"
+    metadata_path = cache_dir / "state-v1.meta.json"
+    snapshot_path = cache_dir / "snapshot-v1.bin"
+    legacy_model_key = {
+        "path": str(first_model_path),
+        "size": first_model_path.stat().st_size,
+        "mtimeNs": first_model_path.stat().st_mtime_ns,
+    }
+    current_metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert current_metadata is not None
+    legacy_metadata = {**current_metadata, "model": legacy_model_key}
+    snapshot_metadata, snapshot, history = (
+        rwkv_scheduler._decode_rwkv_state_cache_snapshot_file(
+            snapshot_path.read_bytes()
+        )
+    )
+    assert snapshot_metadata["model"] == current_metadata["model"]
+    snapshot_path.write_bytes(
+        rwkv_scheduler._encode_rwkv_state_cache_snapshot_file(
+            metadata=legacy_metadata,
+            snapshot=snapshot,
+            history=history,
+        )
+    )
+    metadata_path.write_text(
+        json.dumps(legacy_metadata, separators=(",", ":"), sort_keys=True),
+        encoding="utf8",
+    )
+
+    monkeypatch.setattr(
+        "aqt.rwkv_scheduler.embedded_rwkv_model_path",
+        lambda: second_model_path,
+    )
+    restored_runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert restored_runtime.reviewed == []
+    assert restored_runtime.restored_cache_states == [b"runtime-cache"]
+
+    compacted_metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert compacted_metadata is not None
+    assert compacted_metadata["model"] == rwkv_scheduler._rwkv_model_cache_key()
+    compacted_snapshot_metadata, _, _ = (
+        rwkv_scheduler._decode_rwkv_state_cache_snapshot_file(
+            snapshot_path.read_bytes()
+        )
+    )
+    assert compacted_snapshot_metadata["model"] == compacted_metadata["model"]
+
+
 def test_reviewer_rwkv_warmup_cache_replays_only_new_revlogs(
     monkeypatch,
     tmp_path,
@@ -809,6 +1407,188 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     )
 
 
+def test_rwkv_state_cache_build_backfills_missing_review_retrievability_cache(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    reviewer.mw.col.rwkv_retrievability_rows.clear()
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    _attach_progress_taskman(reviewer.mw)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(reviewer.mw)
+
+    assert runtime.reviewed == [(1, 2), (1, 3)]
+    assert [
+        (review_id, prediction, source)
+        for review_id, prediction, source, _ in reviewer.mw.col.rwkv_retrievability_rows
+    ] == [
+        (first_review, pytest.approx(0.45), "rwkv_state_cache_build"),
+        (second_review, pytest.approx(0.45), "rwkv_state_cache_build"),
+    ]
+
+
+def test_rwkv_state_cache_build_backfills_missing_review_cache_when_already_warm(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    reviewer.mw.col.rwkv_retrievability_rows.clear()
+    runtime.reviewed.clear()
+    _attach_progress_taskman(reviewer.mw)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(reviewer.mw)
+
+    assert runtime.reviewed == [(1, 2), (1, 3)]
+    assert [
+        (review_id, prediction, source)
+        for review_id, prediction, source, _ in reviewer.mw.col.rwkv_retrievability_rows
+    ] == [
+        (first_review, pytest.approx(0.45), "rwkv_state_cache_build"),
+        (second_review, pytest.approx(0.45), "rwkv_state_cache_build"),
+    ]
+
+
+def test_rwkv_state_cache_build_satisfies_sse_explicit_revlog_contract(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+
+    assert (
+        rwkv_scheduler.warm_up_rwkv_state(
+            reviewer.mw,
+            force_rebuild=True,
+            require_retrievability_cache=True,
+        )
+        is True
+    )
+
+    assert _rwkv_sse_harness_review_retrievability(
+        reviewer.mw.col,
+        [first_review, second_review],
+    ) == {
+        "column": "search_stats_rwkv_review_retrievability",
+        "data": [
+            (first_review, pytest.approx(0.45)),
+            (second_review, pytest.approx(0.45)),
+        ],
+    }
+    assert _rwkv_sse_harness_review_retrievability(
+        reviewer.mw.col,
+        [first_review, second_review + 1],
+    ) == {"column": None, "data": []}
+
+
+def test_srs_benchmark_state_cache_build_satisfies_sse_explicit_revlog_contract(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from aqt.rwkv_srs_benchmark import SrsBenchmarkRwkvReviewerBackend
+
+    class Probability:
+        def item(self) -> float:
+            return 0.72
+
+    class Process:
+        def __init__(self) -> None:
+            self.query_rows: list[dict[str, object]] = []
+            self.answer_rows: list[dict[str, object]] = []
+
+        def imm_predict(self, row: dict[str, object]) -> Probability:
+            self.query_rows.append(row)
+            return Probability()
+
+        def process_row(self, row: dict[str, object]) -> object:
+            self.answer_rows.append(row)
+            return object()
+
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    process = Process()
+    set_reviewer_backend(SrsBenchmarkRwkvReviewerBackend(process=process))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+
+    assert (
+        rwkv_scheduler.warm_up_rwkv_state(
+            reviewer.mw,
+            force_rebuild=True,
+            require_retrievability_cache=True,
+        )
+        is True
+    )
+
+    assert [row["rating"] for row in process.query_rows] == [1, 1]
+    assert [row["rating"] for row in process.answer_rows] == [2, 3]
+    assert _rwkv_sse_harness_review_retrievability(
+        reviewer.mw.col,
+        [first_review, second_review],
+    ) == {
+        "column": "search_stats_rwkv_review_retrievability",
+        "data": [
+            (first_review, pytest.approx(0.72)),
+            (second_review, pytest.approx(0.72)),
+        ],
+    }
+
+
 def test_rwkv_state_cache_force_rebuild_replays_full_history(
     monkeypatch,
     tmp_path,
@@ -846,6 +1626,157 @@ def test_rwkv_state_cache_force_rebuild_replays_full_history(
 
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert runtime.restored_cache_states[-1] == b"runtime-cache"
+    assert [
+        (review_id, prediction, source)
+        for review_id, prediction, source, _ in reviewer.mw.col.rwkv_retrievability_rows
+    ] == [
+        (first_review, pytest.approx(0.45), "rwkv_state_cache_build"),
+        (second_review, pytest.approx(0.45), "rwkv_state_cache_build"),
+    ]
+
+
+def test_stateful_backend_uses_runtime_bulk_warmup_for_empty_state() -> None:
+    class BulkWarmUpRuntime:
+        def __init__(self) -> None:
+            self.reviews: list[RwkvReviewInput] = []
+
+        def warm_up_reviews(
+            self,
+            reviews: list[RwkvReviewInput],
+            *,
+            review_ids: list[int] | None,
+            prediction_recorder: Any,
+            progress: Any,
+        ) -> RwkvBackendCacheSnapshot:
+            self.reviews = list(reviews)
+            if prediction_recorder is not None and review_ids is not None:
+                prediction_recorder(review_ids[0], 0.31)
+                prediction_recorder(review_ids[1], 0.42)
+            if progress is not None:
+                progress(RwkvWarmUpProgress(processed_reviews=2, total_reviews=2))
+
+            return RwkvBackendCacheSnapshot(
+                card_states={1: b"card-1", 2: b"card-2"},
+                note_states={10: b"note-10", 20: b"note-20"},
+                deck_states={100: b"deck-100"},
+                preset_states={1000: b"preset-1000"},
+                global_state=b"global",
+                runtime_state=b"runtime",
+            )
+
+        def review(self, **kwargs: object) -> RwkvReviewTransition:
+            raise AssertionError("bulk warm-up should replace per-review replay")
+
+    first = RwkvReviewInput(
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        is_query=False,
+        ease=2,
+        duration_millis=1234,
+        card_type=2,
+        card_queue=2,
+        card_due=50,
+        interval_days=4,
+        ease_factor=2500,
+        reps=5,
+        lapses=1,
+        day_offset=42,
+        current_state_kind="normal",
+        current_normal_state_kind="review",
+        current_elapsed_days=7,
+        current_elapsed_seconds=604800,
+    )
+    second = RwkvReviewInput(
+        identity=RwkvReviewIdentity(card_id=2, note_id=20, deck_id=100, preset_id=1000),
+        is_query=False,
+        ease=3,
+        duration_millis=2345,
+        card_type=2,
+        card_queue=2,
+        card_due=50,
+        interval_days=5,
+        ease_factor=2400,
+        reps=6,
+        lapses=1,
+        day_offset=43,
+        current_state_kind="normal",
+        current_normal_state_kind="review",
+        current_elapsed_days=8,
+        current_elapsed_seconds=691200,
+    )
+    runtime = BulkWarmUpRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    recorded: list[tuple[int, float]] = []
+    progress_updates: list[RwkvWarmUpProgress] = []
+
+    backend.warm_up(
+        [first, second],
+        review_ids=[101, 102],
+        prediction_recorder=lambda review_id, retrievability: recorded.append(
+            (review_id, retrievability)
+        ),
+        progress=progress_updates.append,
+    )
+
+    snapshot = backend.cache_snapshot()
+    assert runtime.reviews == [first, second]
+    assert recorded == [(101, 0.31), (102, 0.42)]
+    assert snapshot.card_states == {1: b"card-1", 2: b"card-2"}
+    assert snapshot.note_states == {10: b"note-10", 20: b"note-20"}
+    assert snapshot.deck_states == {100: b"deck-100"}
+    assert snapshot.preset_states == {1000: b"preset-1000"}
+    assert snapshot.global_state == b"global"
+    assert snapshot.runtime_state is None
+    assert progress_updates[-1] == RwkvWarmUpProgress(
+        processed_reviews=2,
+        total_reviews=2,
+    )
+
+
+def test_warmup_capable_backend_records_review_retrievability_cache(tmp_path) -> None:
+    class Backend:
+        def warm_up(
+            self,
+            reviews: list[RwkvReviewInput],
+            *,
+            review_ids: list[int] | None = None,
+            prediction_recorder: Any = None,
+            progress: Any = None,
+        ) -> None:
+            assert [review.identity.card_id for review in reviews] == [1, 2]
+            if prediction_recorder is not None and review_ids is not None:
+                prediction_recorder(review_ids[0], 0.21)
+                prediction_recorder(review_ids[1], 0.32)
+            if progress is not None:
+                progress(RwkvWarmUpProgress(processed_reviews=2, total_reviews=2))
+
+    backend = Backend()
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    progress_labels: list[str] = []
+
+    rwkv_scheduler._warm_up_rwkv_reviews(
+        reviewer,
+        backend,
+        backend.warm_up,
+        [
+            _rwkv_review_input(card_id=1, note_id=10),
+            _rwkv_review_input(card_id=2, note_id=20),
+        ],
+        review_ids=[101, 102],
+        progress=lambda label, value, max_value: progress_labels.append(label),
+        label="Building RWKV state cache",
+    )
+
+    assert [
+        (review_id, prediction, source)
+        for review_id, prediction, source, _ in reviewer.mw.col.rwkv_retrievability_rows
+    ] == [
+        (101, pytest.approx(0.21), "rwkv_state_cache_build"),
+        (102, pytest.approx(0.32), "rwkv_state_cache_build"),
+    ]
+    assert any(
+        label.startswith("Building RWKV state cache: 2/2 reviews")
+        for label in progress_labels
+    )
 
 
 def test_startup_loads_usable_rwkv_state_cache_with_progress(
@@ -1107,6 +2038,196 @@ def test_prepare_reviewer_queue_order_scores_selected_deck_tree_reviews() -> Non
     ] == [(1, pytest.approx(0.80)), (2, pytest.approx(0.20))]
 
 
+def test_prepare_reviewer_queue_order_uses_backend_deck_review_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.68 for _ in requests]
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deck_row_calls: list[dict[str, object]] = []
+
+        def rwkv_review_input_rows_for_deck_review_queue(
+            self,
+            *,
+            deck_id: int,
+            include_disabled_decks: bool,
+        ) -> SimpleNamespace:
+            self.deck_row_calls.append(
+                {
+                    "deck_id": deck_id,
+                    "include_disabled_decks": include_disabled_decks,
+                }
+            )
+            return SimpleNamespace(
+                rows=[
+                    SimpleNamespace(
+                        card_id=1,
+                        note_id=10,
+                        deck_id=100,
+                        preset_id="addon-preset",
+                        card_type=2,
+                        card_queue=2,
+                        card_due=50,
+                        interval_days=4,
+                        ease_factor=2500,
+                        reps=5,
+                        lapses=1,
+                        day_offset=42,
+                        current_state_kind="normal",
+                        current_normal_state_kind="review",
+                        current_elapsed_days=39,
+                        target_retention=0.86,
+                        batch_size=512,
+                    )
+                ],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=2,
+            )
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            raise AssertionError("queue scoring should use backend deck rows")
+
+    class Decks:
+        def get_current_id(self) -> int:
+            return 100
+
+        def deck_and_child_ids(self, deck_id: int) -> list[int]:
+            raise AssertionError("queue scoring should use backend deck rows")
+
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {
+                "id": 1000,
+                "rwkvReviewEnabled": True,
+                "rwkvReviewInstantOrderEnabled": True,
+                "rwkvReviewBatchSize": 64,
+                "reviewOrder": 7,
+            }
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=rpc,
+                db=DB(),
+                decks=Decks(),
+                sched=Scheduler(),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_reviewer_queue_order(reviewer)
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert rpc.deck_row_calls == [{"deck_id": 100, "include_disabled_decks": False}]
+    assert len(rpc.calls) == 1
+    assert rpc.calls[0]["deck_id"] == 100
+    scores = rpc.calls[0]["scores"]
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in scores
+    ] == [
+        (1, pytest.approx(0.68)),
+    ]
+    assert [review_input.identity.card_id for review_input in runtime.query_inputs] == [
+        1
+    ]
+
+
+def test_prepare_reviewer_queue_order_skips_when_instant_order_disabled() -> None:
+    class Backend:
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            raise AssertionError("RWKV-Instant scoring should be disabled")
+
+        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
+            raise AssertionError("unexpected answer update")
+
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+        rwkv_instant_order_enabled=False,
+    )
+    previous_backend = set_reviewer_backend(Backend())
+    try:
+        prepare_reviewer_queue_order(reviewer)
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert len(rpc.calls) == 1
+    assert rpc.calls[0]["deck_id"] == 100
+    assert rpc.calls[0]["scores"] == []
+
+
+def test_refresh_answered_card_queue_score_replaces_stale_score() -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.retrievability_by_card_id = {1: 0.20, 2: 0.40}
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(
+                retrievability=self.retrievability_by_card_id[card.id]
+            )
+
+        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
+            raise AssertionError("unexpected answer update")
+
+    backend = Backend()
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_reviewer_queue_order(reviewer)
+        backend.retrievability_by_card_id[1] = 0.95
+        rwkv_scheduler.refresh_answered_card_queue_score(reviewer, reviewer.cards[1])
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert len(rpc.calls) == 2
+    scores = rpc.calls[1]["scores"]
+    assert isinstance(scores, list)
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in scores
+    ] == [(1, pytest.approx(0.95)), (2, pytest.approx(0.40))]
+
+
 def test_prepare_reviewer_queue_order_reuses_resolved_preset_ids() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -1136,6 +2257,127 @@ def test_prepare_reviewer_queue_order_reuses_resolved_preset_ids() -> None:
 
     assert backend.predicted_card_ids == [1, 2, 1, 2]
     assert rpc.preset_id_calls == [[1, 2]]
+
+
+def test_prewarm_reviewer_queue_score_cache_scores_parent_scope_from_cache() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retrievability_card_ids: list[list[int]] = []
+
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            card_ids = [request.review_input.identity.card_id for request in requests]
+            self.retrievability_card_ids.append(card_ids)
+            return [0.10 * card_id for card_id in card_ids]
+
+    cards = {
+        1: _rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        2: _rwkv_card(card_id=2, note_id=20, duration_millis=1234),
+        3: _rwkv_card(card_id=3, note_id=30, duration_millis=1234),
+    }
+    cards[1].did = 100
+    cards[2].did = 101
+    cards[3].did = 200
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert "queue = ?" in sql
+            assert args == (2,)
+            did_start = sql.index("did in (") + len("did in (")
+            did_end = sql.index(")", did_start)
+            deck_ids = {int(deck_id) for deck_id in sql[did_start:did_end].split(",")}
+            return [
+                card.id
+                for card in cards.values()
+                if card.did in deck_ids and card.queue == 2
+            ]
+
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            assert "from cards" in sql
+            id_start = sql.index("id in (") + len("id in (")
+            id_end = sql.index(")", id_start)
+            card_ids = {int(card_id) for card_id in sql[id_start:id_end].split(",")}
+            data = json.dumps({"lrt": 4 * 86_400})
+            return [
+                (
+                    card.id,
+                    card.nid,
+                    card.did,
+                    0,
+                    card.type,
+                    card.queue,
+                    card.due,
+                    0,
+                    card.ivl,
+                    card.factor,
+                    card.reps,
+                    card.lapses,
+                    data,
+                )
+                for card in cards.values()
+                if card.id in card_ids
+            ]
+
+    class Decks:
+        def get_current_id(self) -> int:
+            return 100
+
+        def get(self, deck_id: int) -> dict[str, object]:
+            names = {
+                10: "Parent",
+                100: "Parent::Child",
+                101: "Parent::Child::Grandchild",
+                200: "Parent::Sibling",
+            }
+            return {"id": deck_id, "name": names[deck_id]}
+
+        def id_for_name(self, name: str, create: bool = True) -> int | None:
+            return {"Parent": 10, "Parent::Child": 100}.get(name)
+
+        def all_names_and_ids(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id=deck_id) for deck_id in (10, 100, 101, 200)]
+
+        def deck_and_child_ids(self, deck_id: int) -> list[int]:
+            if deck_id == 100:
+                return [100, 101]
+            if deck_id == 10:
+                return [10, 100, 101, 200]
+            raise AssertionError(f"unexpected deck {deck_id}")
+
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            return {
+                "id": deck_id * 10,
+                "rwkvReviewEnabled": True,
+                "rwkvReviewInstantOrderEnabled": True,
+                "reviewOrder": 7,
+            }
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    col = SimpleNamespace(
+        _backend=_RwkvQueueScoreRpc(),
+        db=DB(),
+        decks=Decks(),
+        sched=Scheduler(),
+    )
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(col)))
+        prewarm_reviewer_queue_score_cache(reviewer, reason="test")
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert runtime.retrievability_card_ids == [[1, 2], [3]]
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
 
 
 def test_rwkv_resolved_preset_cache_invalidates_selected_cards() -> None:
@@ -1207,8 +2449,15 @@ def test_prepare_stats_retrievability_scores_ignores_review_order() -> None:
     class DB:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
             assert args == ()
+            if "from revlog" in sql:
+                assert "ease between 1 and 4" in sql
+                assert "type in (0, 1, 2, 3)" in sql
+                return []
             assert "from cards" in sql
             assert "id in (1,2,3,4,5)" in sql
+            assert "type = 2 and queue in (2, -1)" in sql
+            assert "type = 1 and queue in (1, 3)" in sql
+            assert "type = 3 and queue in (1, 3)" in sql
             return [
                 (1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, ""),
                 (2, 20, 200, 0, 2, 2, 50, 0, 4, 2500, 5, 1, ""),
@@ -1242,7 +2491,7 @@ def test_prepare_stats_retrievability_scores_ignores_review_order() -> None:
         set_reviewer_backend(previous_backend)
 
     assert backend.predicted_card_ids == [1, 3, 4, 5]
-    assert rpc.preset_id_calls == [[1, 2, 3, 4, 5]]
+    assert rpc.preset_id_calls == [[1, 3, 4, 5]]
     assert rpc.calls == []
     assert len(rpc.stats_calls) == 1
     assert rpc.stats_calls[0]["search"] == "rated:7"
@@ -1256,6 +2505,647 @@ def test_prepare_stats_retrievability_scores_ignores_review_order() -> None:
         (3, pytest.approx(0.25)),
         (4, pytest.approx(0.55)),
         (5, pytest.approx(0.71)),
+    ]
+
+
+def test_stats_graph_scores_build_direct_review_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.64 for _ in requests]
+
+    class Decks:
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {
+                "id": 1000,
+                "rwkvReviewEnabled": True,
+                "desiredRetention": 0.86,
+            }
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            if "from revlog" in sql:
+                return []
+            assert "from cards" in sql
+            data = json.dumps({"lrt": 4 * 86_400})
+            return [(1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data)]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=SimpleNamespace(),
+                db=DB(),
+                decks=Decks(),
+                sched=Scheduler(),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_stats_graph_scheduling_states",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("stats scoring should build RWKV inputs directly")
+        ),
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        scores = rwkv_scheduler._rwkv_stats_graph_scores(
+            reviewer=reviewer, card_ids=[1]
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert scores == [(1, pytest.approx(0.64))]
+    assert len(runtime.query_inputs) == 1
+    review_input = runtime.query_inputs[0]
+    assert review_input.identity == RwkvReviewIdentity(
+        card_id=1,
+        note_id=10,
+        deck_id=100,
+        preset_id=1000,
+    )
+    assert review_input.current_state_kind == "normal"
+    assert review_input.current_normal_state_kind == "review"
+    assert review_input.current_elapsed_days == 39
+    assert review_input.target_retentions == (0.86, 0.86, 0.86, 0.86)
+
+
+def test_stats_graph_scores_use_backend_review_input_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.71 for _ in requests]
+
+    class Rpc:
+        def rwkv_review_input_rows_for_cards(
+            self,
+            *,
+            card_ids: list[int],
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+        ) -> SimpleNamespace:
+            assert card_ids == [1]
+            assert include_suspended_review is True
+            assert include_disabled_decks is False
+            return SimpleNamespace(
+                rows=[
+                    SimpleNamespace(
+                        card_id=1,
+                        note_id=10,
+                        deck_id=100,
+                        preset_id="addon-preset",
+                        card_type=2,
+                        card_queue=2,
+                        card_due=50,
+                        interval_days=4,
+                        ease_factor=2500,
+                        reps=5,
+                        lapses=1,
+                        day_offset=42,
+                        current_state_kind="normal",
+                        current_normal_state_kind="review",
+                        current_elapsed_days=39,
+                        target_retention=0.86,
+                        batch_size=512,
+                    )
+                ],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+            )
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            raise AssertionError("backend row path should not query cards directly")
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=Rpc(),
+                db=DB(),
+                sched=Scheduler(),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_stats_graph_scheduling_states",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("backend rows should build RWKV inputs directly")
+        ),
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        scores = rwkv_scheduler._rwkv_stats_graph_scores(
+            reviewer=reviewer,
+            card_ids=[1],
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert scores == [(1, pytest.approx(0.71))]
+    assert len(runtime.query_inputs) == 1
+    review_input = runtime.query_inputs[0]
+    assert review_input.identity == RwkvReviewIdentity(
+        card_id=1,
+        note_id=10,
+        deck_id=100,
+        preset_id=rwkv_scheduler._stable_preset_id("addon-preset"),
+    )
+    assert review_input.current_state_kind == "normal"
+    assert review_input.current_normal_state_kind == "review"
+    assert review_input.current_elapsed_days == 39
+    assert review_input.current_elapsed_seconds is None
+    assert review_input.target_retentions == (0.86, 0.86, 0.86, 0.86)
+
+
+def test_prepare_stats_uses_backend_search_review_input_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.69 for _ in requests]
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.search_row_calls: list[dict[str, object]] = []
+
+        def rwkv_review_input_rows_for_search(
+            self,
+            *,
+            search: str,
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+        ) -> SimpleNamespace:
+            self.search_row_calls.append(
+                {
+                    "search": search,
+                    "include_suspended_review": include_suspended_review,
+                    "include_disabled_decks": include_disabled_decks,
+                }
+            )
+            return SimpleNamespace(
+                rows=[
+                    SimpleNamespace(
+                        card_id=1,
+                        note_id=10,
+                        deck_id=100,
+                        preset_id="addon-preset",
+                        card_type=2,
+                        card_queue=2,
+                        card_due=50,
+                        interval_days=4,
+                        ease_factor=2500,
+                        reps=5,
+                        lapses=1,
+                        day_offset=42,
+                        current_state_kind="normal",
+                        current_normal_state_kind="review",
+                        current_elapsed_days=39,
+                        target_retention=0.86,
+                        batch_size=512,
+                    )
+                ],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=2,
+            )
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class Collection:
+        def __init__(self, rpc: Rpc) -> None:
+            self._backend = rpc
+            self.db = object()
+            self.sched = Scheduler()
+
+        def find_cards(self, search: str, order: bool = False) -> list[int]:
+            raise AssertionError("stats graph should use backend search rows")
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_stats",
+        lambda reviewer: True,
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert rpc.search_row_calls == [
+        {
+            "search": "rated:7",
+            "include_suspended_review": True,
+            "include_disabled_decks": False,
+        }
+    ]
+    assert len(rpc.stats_calls) == 1
+    scores = rpc.stats_calls[0]["scores"]
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in scores
+    ] == [
+        (1, pytest.approx(0.69)),
+    ]
+    assert [review_input.identity.card_id for review_input in runtime.query_inputs] == [
+        1
+    ]
+
+
+def test_prepare_stats_reuses_fresh_review_queue_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.69 for _ in requests]
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def rwkv_review_input_rows_for_search(
+            self,
+            *,
+            search: str,
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+        ) -> SimpleNamespace:
+            assert search == "rated:7"
+            assert include_suspended_review is True
+            assert include_disabled_decks is False
+            rows = []
+            for card_id in (1, 2):
+                rows.append(
+                    SimpleNamespace(
+                        card_id=card_id,
+                        note_id=card_id * 10,
+                        deck_id=100,
+                        preset_id="addon-preset",
+                        card_type=2,
+                        card_queue=2,
+                        card_due=50,
+                        interval_days=4,
+                        ease_factor=2500,
+                        reps=5,
+                        lapses=1,
+                        day_offset=42,
+                        current_state_kind="normal",
+                        current_normal_state_kind="review",
+                        current_elapsed_days=39,
+                        target_retention=0.86,
+                        batch_size=512,
+                    )
+                )
+            return SimpleNamespace(
+                rows=rows,
+                loaded_cards=2,
+                cards_with_supported_state=2,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=2,
+            )
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class Collection:
+        def __init__(self, rpc: Rpc) -> None:
+            self._backend = rpc
+            self.db = object()
+            self.sched = Scheduler()
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_stats",
+        lambda reviewer: True,
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        rwkv_scheduler._set_rwkv_review_queue_scores(reviewer, 100, [(1, 0.42)])
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert [review_input.identity.card_id for review_input in runtime.query_inputs] == [
+        2
+    ]
+    scores = rpc.stats_calls[0]["scores"]
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in scores
+    ] == [
+        (1, pytest.approx(0.42)),
+        (2, pytest.approx(0.69)),
+    ]
+
+
+def test_prepare_stats_ignores_stale_review_queue_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.69 for _ in requests]
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def rwkv_review_input_rows_for_search(
+            self,
+            *,
+            search: str,
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                rows=[
+                    SimpleNamespace(
+                        card_id=1,
+                        note_id=10,
+                        deck_id=100,
+                        preset_id="addon-preset",
+                        card_type=2,
+                        card_queue=2,
+                        card_due=50,
+                        interval_days=4,
+                        ease_factor=2500,
+                        reps=5,
+                        lapses=1,
+                        day_offset=42,
+                        current_state_kind="normal",
+                        current_normal_state_kind="review",
+                        current_elapsed_days=39,
+                        target_retention=0.86,
+                        batch_size=512,
+                    )
+                ],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class Collection:
+        def __init__(self, rpc: Rpc) -> None:
+            self._backend = rpc
+            self.db = object()
+            self.sched = Scheduler()
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_stats",
+        lambda reviewer: True,
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        rwkv_scheduler._set_rwkv_review_queue_scores(
+            reviewer,
+            100,
+            [(1, 0.42)],
+            fresh_for_backend_state=False,
+        )
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert [review_input.identity.card_id for review_input in runtime.query_inputs] == [
+        1
+    ]
+    scores = rpc.stats_calls[0]["scores"]
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in scores
+    ] == [
+        (1, pytest.approx(0.69)),
+    ]
+
+
+def test_stats_graph_scores_filters_disabled_decks_in_sql() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            self.query_inputs.extend(request.review_input for request in requests)
+            return [0.73 for _ in requests]
+
+    class Decks:
+        def all_names_and_ids(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id=100), SimpleNamespace(id=200)]
+
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            return {
+                "id": deck_id * 10,
+                "rwkvReviewEnabled": deck_id == 100,
+                "desiredRetention": 0.86,
+            }
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class Rpc:
+        def __init__(self) -> None:
+            self.preset_id_calls: list[list[int]] = []
+
+        def get_fsrs_preset_ids_for_cards(
+            self,
+            card_ids: list[int],
+        ) -> SimpleNamespace:
+            self.preset_id_calls.append(card_ids)
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(card_id=card_id, preset_id="1000")
+                    for card_id in card_ids
+                ]
+            )
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            if "from revlog" in sql:
+                return []
+            assert "from cards" in sql
+            assert "id in (1,2)" in sql
+            assert "case when odid != 0 then odid else did end" in sql
+            assert "in (100)" in sql
+            data = json.dumps({"lrt": 4 * 86_400})
+            return [(1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data)]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=rpc,
+                db=DB(),
+                decks=Decks(),
+                sched=Scheduler(),
+            )
+        )
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        scores = rwkv_scheduler._rwkv_stats_graph_scores(
+            reviewer=reviewer,
+            card_ids=[1, 2],
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert scores == [(1, pytest.approx(0.73))]
+    assert [review_input.identity.card_id for review_input in runtime.query_inputs] == [
+        1
+    ]
+    assert rpc.preset_id_calls == [[1]]
+
+
+def test_rwkv_reschedule_items_use_current_interval_and_s90() -> None:
+    class Backend:
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            raise AssertionError("reschedule should batch predictions")
+
+        def predict_reviews(
+            self,
+            candidates: list[RwkvReviewCandidate],
+        ) -> list[RwkvReviewPrediction]:
+            return [
+                RwkvReviewPrediction(
+                    retrievability=0.50,
+                    current_interval=11 + candidate.card.id,
+                    current_s90=21 + candidate.card.id,
+                    interval_overrides=RwkvIntervalOverride(
+                        again=1,
+                        hard=2,
+                        good=999,
+                        easy=4,
+                    ),
+                    s90_overrides=RwkvIntervalOverride(
+                        again=5,
+                        hard=6,
+                        good=999,
+                        easy=8,
+                    ),
+                )
+                for candidate in candidates
+            ]
+
+        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
+            raise AssertionError("unexpected answer update")
+
+    class Decks:
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            if deck_id == 100:
+                return {
+                    "id": 1000,
+                    "rwkvReviewEnabled": True,
+                    "rwkvReviewBatchSize": 64,
+                }
+            if deck_id == 200:
+                return {"id": 2000, "rwkvReviewEnabled": False}
+            raise AssertionError(f"unexpected deck {deck_id}")
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            if "from revlog" in sql:
+                return []
+            assert "from cards" in sql
+            assert "id in (1,2,3)" in sql
+            data = json.dumps({"lrt": 4 * 86_400})
+            return [
+                (1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data),
+                (2, 20, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data),
+                (3, 30, 200, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data),
+            ]
+
+    class Collection:
+        def __init__(self, rpc: _RwkvQueueScoreRpc) -> None:
+            self._backend = rpc
+            self.db = DB()
+            self.decks = Decks()
+            self.sched = Scheduler()
+
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    previous_backend = set_reviewer_backend(Backend())
+    try:
+        items = rwkv_scheduler._rwkv_review_reschedule_items(reviewer, [1, 2, 3])
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert rpc.preset_id_calls == [[1, 2, 3]]
+    assert [
+        (item.card_id, item.interval_days, item.elapsed_days, item.s90)
+        for item in items
+    ] == [
+        (1, 12, 39, 22),
+        (2, 13, 39, 23),
     ]
 
 
@@ -1298,6 +3188,10 @@ def test_prepare_stats_retrievability_scores_waits_for_pending_warmup(
     class DB:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
             assert args == ()
+            if "from revlog" in sql:
+                assert "ease between 1 and 4" in sql
+                assert "type in (0, 1, 2, 3)" in sql
+                return []
             assert "from cards" in sql
             assert "id in (1)" in sql
             return [(1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, "")]
@@ -1344,6 +3238,103 @@ def test_prepare_stats_retrievability_scores_waits_for_pending_warmup(
     ] == [
         (1, pytest.approx(0.64)),
     ]
+
+
+def test_prepare_stats_retrievability_scores_reuses_in_flight_prepare() -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.predict_calls = 0
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def predict_reviews(
+            self,
+            candidates: list[RwkvReviewCandidate],
+        ) -> list[RwkvReviewPrediction]:
+            self.predict_calls += 1
+            self.started.set()
+            assert self.release.wait(timeout=2)
+            return [RwkvReviewPrediction(retrievability=0.64) for _ in candidates]
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            raise AssertionError("stats graph scores should use batch prediction")
+
+        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
+            raise AssertionError("unexpected answer update")
+
+        def state_generation(self) -> int:
+            return 7
+
+    class Decks:
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {"id": 1000, "rwkvReviewEnabled": True}
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            assert "from cards" in sql
+            assert "id in (1)" in sql
+            data = json.dumps({"lrt": 4 * 86_400})
+            return [(1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data)]
+
+    class Collection:
+        def __init__(self, rpc: _RwkvQueueScoreRpc) -> None:
+            self._backend = rpc
+            self.db = DB()
+            self.decks = Decks()
+            self.sched = Scheduler()
+
+        def find_cards(self, search: str, order: bool = False) -> list[int]:
+            assert search == "rated:7"
+            assert order is False
+            return [1]
+
+    backend = Backend()
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    previous_backend = set_reviewer_backend(backend)
+    errors: list[BaseException] = []
+
+    def prepare() -> None:
+        try:
+            prepare_stats_retrievability_scores(reviewer, "rated:7")
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=prepare)
+    second = threading.Thread(target=prepare)
+    try:
+        first.start()
+        assert backend.started.wait(timeout=2)
+        second.start()
+        time.sleep(0.01)
+        backend.release.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+    finally:
+        backend.release.set()
+        set_reviewer_backend(previous_backend)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert backend.predict_calls == 1
+    assert len(rpc.stats_calls) == 1
+    scores = rpc.stats_calls[0]["scores"]
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in scores
+    ] == [(1, pytest.approx(0.64))]
 
 
 def test_prepare_reviewer_queue_order_batches_with_deck_option() -> None:
@@ -1429,6 +3420,53 @@ def test_prepare_reviewer_queue_order_uses_per_card_scheduling_states() -> None:
     assert backend.elapsed_by_card_id == {1: 4, 2: 1}
 
 
+def test_prepare_reviewer_queue_order_uses_unknown_elapsed_without_history() -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.inputs_by_card_id: dict[int, RwkvReviewInput] = {}
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            identity = rwkv_review_identity(reviewer, card)
+            assert identity is not None
+            self.inputs_by_card_id[card.id] = rwkv_review_input(
+                reviewer=reviewer,
+                card=card,
+                identity=identity,
+                ease=None,
+            )
+            return RwkvReviewPrediction(retrievability=0.50)
+
+        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
+            raise AssertionError("unexpected answer update")
+
+    backend = Backend()
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+        latest_review_elapsed_days_by_card={},
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_reviewer_queue_order(reviewer)
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert {
+        card_id: review_input.current_elapsed_days
+        for card_id, review_input in backend.inputs_by_card_id.items()
+    } == {1: None, 2: None}
+    assert {
+        card_id: review_input.current_state_kind
+        for card_id, review_input in backend.inputs_by_card_id.items()
+    } == {1: None, 2: None}
+
+
 def test_prepare_reviewer_queue_order_clears_scores_when_disabled() -> None:
     class Backend:
         def predict_review(
@@ -1489,6 +3527,84 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
     assert runtime.query_inputs[0].current_elapsed_days == 7
     assert rpc.card_info_calls == [
         {"card_id": 1, "retrievability": pytest.approx(0.45)}
+    ]
+
+
+def test_card_info_prefers_active_rwkv_score_over_cached_reviewer_prediction() -> None:
+    rpc = _RwkvQueueScoreRpc()
+    rpc.active_scores[1] = 0.67
+    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer._rwkv_review_prediction = RwkvReviewerPrediction(
+        card_id=1,
+        retrievability=0.83,
+        review_enabled=True,
+        interval_override_used=True,
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=card,
+        fallback_source="FSRS",
+    ) == [
+        ("RWKV computed R", "67%"),
+        ("Retrievability source", "RWKV"),
+    ]
+    assert rpc.active_score_calls == [1]
+    assert rpc.card_info_calls == []
+
+
+def test_card_info_uses_shared_card_row_context_for_rwkv_query() -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.review_inputs: list[RwkvReviewInput] = []
+
+        def predict_reviews(
+            self,
+            candidates: list[RwkvReviewCandidate],
+        ) -> list[RwkvReviewPrediction]:
+            candidate = candidates[0]
+            identity = rwkv_review_identity(candidate.reviewer, candidate.card)
+            assert identity is not None
+            self.review_inputs.append(
+                rwkv_review_input(
+                    reviewer=candidate.reviewer,
+                    card=candidate.card,
+                    identity=identity,
+                    ease=None,
+                )
+            )
+            return [
+                RwkvReviewPrediction(
+                    retrievability=0.61,
+                    interval_overrides=RwkvIntervalOverride(
+                        again=1,
+                        hard=2,
+                        good=4,
+                        easy=8,
+                    ),
+                )
+            ]
+
+    backend = Backend()
+    set_reviewer_backend(backend)
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(reviewer.mw.col)))
+
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=reviewer.cards[2],
+        fallback_source="FSRS",
+    ) == [
+        ("RWKV computed R", "61%"),
+        ("Retrievability source", "RWKV"),
+    ]
+    assert backend.review_inputs[0].current_normal_state_kind == "review"
+    assert backend.review_inputs[0].current_elapsed_days == 1
+    assert backend.review_inputs[0].card_due == 45
+    assert rpc.card_info_calls == [
+        {"card_id": 2, "retrievability": pytest.approx(0.61)}
     ]
 
 
@@ -1564,7 +3680,12 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
         ) -> RwkvReviewPrediction:
             return RwkvReviewPrediction(
                 retrievability=0.66,
-                interval_overrides=RwkvIntervalOverride(good=4),
+                interval_overrides=RwkvIntervalOverride(
+                    again=1,
+                    hard=2,
+                    good=4,
+                    easy=8,
+                ),
             )
 
         def review_answered(
@@ -1674,9 +3795,11 @@ def test_srs_benchmark_backend_warmup_processes_historical_rows() -> None:
 
     class Process:
         def __init__(self) -> None:
+            self.query_rows: list[dict[str, object]] = []
             self.answer_rows: list[dict[str, object]] = []
 
         def imm_predict(self, row: dict[str, object]) -> Probability:
+            self.query_rows.append(row)
             return Probability()
 
         def process_row(self, row: dict[str, object]) -> object:
@@ -1685,6 +3808,8 @@ def test_srs_benchmark_backend_warmup_processes_historical_rows() -> None:
 
     process = Process()
     backend = SrsBenchmarkRwkvReviewerBackend(process=process)
+    recorded: list[tuple[int, float]] = []
+    progress: list[RwkvWarmUpProgress] = []
     backend.warm_up(
         [
             RwkvReviewInput(
@@ -1710,9 +3835,33 @@ def test_srs_benchmark_backend_warmup_processes_historical_rows() -> None:
                 current_elapsed_days=7,
                 current_elapsed_seconds=604800,
             )
-        ]
+        ],
+        review_ids=[123],
+        prediction_recorder=lambda review_id, retrievability: recorded.append(
+            (review_id, retrievability)
+        ),
+        progress=progress.append,
     )
 
+    assert recorded == [(123, pytest.approx(0.72))]
+    assert progress == [
+        RwkvWarmUpProgress(processed_reviews=0, total_reviews=1),
+        RwkvWarmUpProgress(processed_reviews=1, total_reviews=1),
+    ]
+    assert process.query_rows == [
+        {
+            "card_id": 1,
+            "note_id": 10,
+            "deck_id": 100,
+            "preset_id": 1000,
+            "elapsed_days": 7,
+            "elapsed_seconds": 604800,
+            "day_offset": 42,
+            "duration": 0.0,
+            "state": 2,
+            "rating": 1,
+        }
+    ]
     assert len(process.answer_rows) == 1
     assert process.answer_rows[0]["card_id"] == 1
     assert process.answer_rows[0]["rating"] == 3
@@ -1754,7 +3903,7 @@ def test_srs_benchmark_backend_updates_other_card_retrievability() -> None:
     assert after.retrievability == pytest.approx(0.60)
 
 
-def test_srs_benchmark_backend_uses_ahead_curve_for_good_interval() -> None:
+def test_srs_benchmark_backend_uses_ahead_curve_for_interval_overrides() -> None:
     from aqt.rwkv_srs_benchmark import SrsBenchmarkRwkvReviewerBackend
 
     class Probability:
@@ -1788,10 +3937,26 @@ def test_srs_benchmark_backend_uses_ahead_curve_for_good_interval() -> None:
     after = backend.predict_review(reviewer=reviewer, card=card)
 
     assert before is not None
-    assert before.interval_overrides.good is None
+    assert before.current_interval is None
+    assert before.current_s90 is None
+    assert before.interval_overrides == RwkvIntervalOverride()
+    assert before.s90_overrides == RwkvIntervalOverride()
     assert after is not None
     assert after.retrievability == pytest.approx(0.80)
-    assert after.interval_overrides.good == 4
+    assert after.current_interval == 4
+    assert after.current_s90 == 4
+    assert after.interval_overrides == RwkvIntervalOverride(
+        again=4,
+        hard=4,
+        good=4,
+        easy=4,
+    )
+    assert after.s90_overrides == RwkvIntervalOverride(
+        again=4,
+        hard=4,
+        good=4,
+        easy=4,
+    )
 
 
 def test_srs_benchmark_backend_batches_predictions() -> None:
@@ -1851,9 +4016,20 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
         def predict_many(
             self,
             requests: list[tuple[object, ...]],
-        ) -> list[tuple[float, int | None]]:
+        ) -> list[
+            tuple[
+                float,
+                int | None,
+                int | None,
+                tuple[int | None, ...],
+                tuple[int | None, ...],
+            ]
+        ]:
             self.requests.append(requests)
-            return [(0.25, 7), (0.75, None)]
+            return [
+                (0.25, 9, 19, (1, 3, 7, 14), (2, 4, 17, 28)),
+                (0.75, None, None, (None, None, None, None), (None, None, None, None)),
+            ]
 
     process = Process()
     runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
@@ -1883,12 +4059,27 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
         pytest.approx(0.25),
         pytest.approx(0.75),
     ]
-    assert [
-        prediction.interval_overrides.good for prediction in predictions if prediction
-    ] == [
-        7,
-        None,
-    ]
+    first, second = predictions
+    assert first is not None
+    assert first.current_interval == 9
+    assert first.current_s90 == 19
+    assert first.interval_overrides == RwkvIntervalOverride(
+        again=1,
+        hard=3,
+        good=7,
+        easy=14,
+    )
+    assert first.s90_overrides == RwkvIntervalOverride(
+        again=2,
+        hard=4,
+        good=17,
+        easy=28,
+    )
+    assert second is not None
+    assert second.current_interval is None
+    assert second.current_s90 is None
+    assert second.interval_overrides == RwkvIntervalOverride()
+    assert second.s90_overrides == RwkvIntervalOverride()
     assert process.requests == [
         [
             (
@@ -1903,6 +4094,10 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                 42,
                 7,
                 604800,
+                None,
+                None,
+                None,
+                None,
                 b"card-1",
                 b"note-10",
                 b"deck-100",
@@ -1921,6 +4116,10 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                 42,
                 7,
                 604800,
+                None,
+                None,
+                None,
+                None,
                 b"card-2",
                 b"note-20",
                 b"deck-100",
@@ -1929,6 +4128,151 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
             ),
         ]
     ]
+
+
+def test_embedded_rust_runtime_batches_retrievability_bridge_predictions() -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    class Process:
+        def __init__(self) -> None:
+            self.requests: list[list[tuple[object, ...]]] = []
+
+        def predict_retrievability_many(
+            self,
+            requests: list[tuple[object, ...]],
+        ) -> list[float]:
+            self.requests.append(requests)
+            return [0.25, 0.75]
+
+    process = Process()
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = process
+    requests = [
+        RwkvReviewPredictionRequest(
+            review_input=_rwkv_review_input(card_id=1, note_id=10),
+            card_state=b"card-1",
+            note_state=b"note-10",
+            deck_state=b"deck-100",
+            preset_state=b"preset-1000",
+            global_state=b"global",
+        ),
+        RwkvReviewPredictionRequest(
+            review_input=_rwkv_review_input(card_id=2, note_id=20),
+            card_state=b"card-2",
+            note_state=b"note-20",
+            deck_state=b"deck-100",
+            preset_state=b"preset-1000",
+            global_state=b"global",
+        ),
+    ]
+
+    retrievabilities = runtime.predict_retrievability_many(requests)
+
+    assert retrievabilities == [pytest.approx(0.25), pytest.approx(0.75)]
+    assert process.requests == [
+        [
+            (
+                1,
+                10,
+                100,
+                1000,
+                True,
+                None,
+                None,
+                2,
+                42,
+                7,
+                604800,
+                None,
+                None,
+                None,
+                None,
+                b"card-1",
+                b"note-10",
+                b"deck-100",
+                b"preset-1000",
+                b"global",
+            ),
+            (
+                2,
+                20,
+                100,
+                1000,
+                True,
+                None,
+                None,
+                2,
+                42,
+                7,
+                604800,
+                None,
+                None,
+                None,
+                None,
+                b"card-2",
+                b"note-20",
+                b"deck-100",
+                b"preset-1000",
+                b"global",
+            ),
+        ]
+    ]
+
+
+def test_embedded_rust_runtime_prefers_tuple_retrievability_bridge() -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    class Process:
+        def __init__(self) -> None:
+            self.requests: list[list[tuple[object, ...]]] = []
+
+        def predict_retrievability_many_packed(
+            self,
+            requests: bytes,
+            state_columns: tuple[
+                list[bytes | None],
+                list[bytes | None],
+                list[bytes | None],
+                list[bytes | None],
+                list[bytes | None],
+            ],
+        ) -> list[float]:
+            raise AssertionError("packed path should not be used")
+
+        def predict_retrievability_many(
+            self,
+            requests: list[tuple[object, ...]],
+        ) -> list[float]:
+            self.requests.append(requests)
+            return [0.25, 0.75]
+
+    process = Process()
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = process
+    requests = [
+        RwkvReviewPredictionRequest(
+            review_input=_rwkv_review_input(card_id=1, note_id=10),
+            card_state=b"card-1",
+            note_state=b"note-10",
+            deck_state=b"deck-100",
+            preset_state=b"preset-1000",
+            global_state=b"global",
+        ),
+        RwkvReviewPredictionRequest(
+            review_input=_rwkv_review_input(card_id=2, note_id=20),
+            card_state=b"card-2",
+            note_state=b"note-20",
+            deck_state=b"deck-100",
+            preset_state=b"preset-1000",
+            global_state=b"global",
+        ),
+    ]
+
+    retrievabilities = runtime.predict_retrievability_many(requests)
+
+    assert retrievabilities == [pytest.approx(0.25), pytest.approx(0.75)]
+    assert len(process.requests) == 1
+    assert [request[0] for request in process.requests[0]] == [1, 2]
 
 
 def test_configure_reviewer_backend_uses_srs_benchmark_override(monkeypatch) -> None:
@@ -2133,7 +4477,18 @@ class _SharedReviewRuntime:
             return RwkvReviewTransition(
                 prediction=RwkvReviewPrediction(
                     retrievability=0.45 + review_count * 0.10,
-                    interval_overrides=RwkvIntervalOverride(good=5 + review_count),
+                    interval_overrides=RwkvIntervalOverride(
+                        again=2 + review_count,
+                        hard=3 + review_count,
+                        good=5 + review_count,
+                        easy=8 + review_count,
+                    ),
+                    s90_overrides=RwkvIntervalOverride(
+                        again=3 + review_count,
+                        hard=4 + review_count,
+                        good=6 + review_count,
+                        easy=9 + review_count,
+                    ),
                 ),
             )
 
@@ -2221,6 +4576,8 @@ class _RwkvQueueScoreRpc:
         self.stats_calls: list[dict[str, object]] = []
         self.card_info_calls: list[dict[str, object]] = []
         self.preset_id_calls: list[list[int]] = []
+        self.active_scores: dict[int, float] = {}
+        self.active_score_calls: list[int] = []
 
     def set_rwkv_review_queue_scores(
         self,
@@ -2250,6 +4607,25 @@ class _RwkvQueueScoreRpc:
             }
         )
 
+    def _active_score_response(
+        self,
+        card_id: int,
+    ) -> scheduler_pb2.RwkvRetrievabilityScoreResponse:
+        self.active_score_calls.append(card_id)
+        score = self.active_scores.get(card_id)
+        response = scheduler_pb2.RwkvRetrievabilityScoreResponse()
+        if score is not None:
+            response.retrievability = score
+        return response
+
+    def get_rwkv_retrievability_score_raw(self, message: bytes) -> bytes:
+        request = cards_pb2.CardId()
+        request.ParseFromString(message)
+        return self._active_score_response(request.cid).SerializeToString()
+
+    def get_rwkv_retrievability_score(self, card_id: int) -> object:
+        return self._active_score_response(card_id)
+
     def get_fsrs_preset_ids_for_cards(self, cids: list[int]) -> SimpleNamespace:
         self.preset_id_calls.append(list(cids))
         return SimpleNamespace(
@@ -2266,6 +4642,8 @@ def _rwkv_queue_reviewer(
     batch_size: int | None = None,
     card_count: int = 2,
     rwkv_config_in_other: bool = False,
+    rwkv_instant_order_enabled: bool = True,
+    latest_review_elapsed_days_by_card: dict[int, int] | None = None,
 ) -> SimpleNamespace:
     cards = {
         card_id: _rwkv_card(
@@ -2280,6 +4658,9 @@ def _rwkv_queue_reviewer(
     if 2 in cards:
         cards[2].due = 45
 
+    if latest_review_elapsed_days_by_card is None:
+        latest_review_elapsed_days_by_card = {1: 4, 2: 1}
+
     class DB:
         def list(self, sql: str, *args: object) -> list[int]:
             assert "did in (100,101)" in sql
@@ -2289,8 +4670,27 @@ def _rwkv_queue_reviewer(
 
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
             assert args == ()
+            id_prefix = "cid in (" if "from revlog" in sql else "id in ("
+            requested_ids_start = sql.index(id_prefix) + len(id_prefix)
+            requested_ids_end = sql.index(")", requested_ids_start)
+            requested_ids = {
+                int(card_id)
+                for card_id in sql[requested_ids_start:requested_ids_end].split(",")
+            }
+            assert requested_ids <= set(cards)
+            if "from revlog" in sql:
+                assert "ease between 1 and 4" in sql
+                assert "type in (0, 1, 2, 3)" in sql
+                return [
+                    (
+                        card_id,
+                        (43 - elapsed_days) * 86_400 * 1000,
+                    )
+                    for card_id, elapsed_days in latest_review_elapsed_days_by_card.items()
+                    if card_id in requested_ids
+                ]
+
             assert "from cards" in sql
-            assert f"id in ({','.join(str(card_id) for card_id in cards)})" in sql
             return [
                 (
                     card.id,
@@ -2308,6 +4708,7 @@ def _rwkv_queue_reviewer(
                     "",
                 )
                 for card in cards.values()
+                if card.id in requested_ids
             ]
 
     class Decks:
@@ -2325,11 +4726,13 @@ def _rwkv_queue_reviewer(
             }
             if rwkv_config_in_other:
                 nested: dict[str, object] = {"rwkv_review_enabled": True}
+                nested["rwkv_review_instant_order_enabled"] = rwkv_instant_order_enabled
                 if batch_size is not None:
                     nested["rwkv_review_batch_size"] = batch_size
                 config["other"] = {"jschoreels.rwkv": nested}
             else:
                 config["rwkvReviewEnabled"] = True
+                config["rwkvReviewInstantOrderEnabled"] = rwkv_instant_order_enabled
                 if batch_size is not None:
                     config["rwkvReviewBatchSize"] = batch_size
             return config
@@ -2350,13 +4753,16 @@ def _rwkv_queue_reviewer(
             AssertionError("queue scores should bulk-load card rows")
         ),
     )
-    return SimpleNamespace(mw=SimpleNamespace(col=col))
+    return SimpleNamespace(mw=SimpleNamespace(col=col), cards=cards)
 
 
 def _rwkv_reviewer(
     *,
     rwkv_review_enabled: bool = True,
+    rwkv_review_dynamic_preset_replay: bool = False,
     resolved_preset_id: str | None = "1000",
+    preset_desired_retention: float | None = None,
+    deck_desired_retention: float | None = None,
     rpc: _RwkvQueueScoreRpc | None = None,
     historical_review_rows: (
         list[tuple[int, int, int, int, int, int, int, int, int]] | None
@@ -2377,10 +4783,20 @@ def _rwkv_reviewer(
 
     class Decks:
         def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
-            return {
+            return self._config(deck_id)
+
+        def all_config(self) -> list[dict[str, object]]:
+            return [self._config(10)]
+
+        def _config(self, deck_id: int) -> dict[str, object]:
+            config: dict[str, object] = {
                 "id": deck_id * 10,
                 "rwkvReviewEnabled": rwkv_review_enabled,
+                "rwkvReviewDynamicPresetReplay": rwkv_review_dynamic_preset_replay,
             }
+            if deck_desired_retention is not None:
+                config["desiredRetention"] = deck_desired_retention
+            return config
 
     col = SimpleNamespace(
         sched=Scheduler(),
@@ -2392,6 +4808,13 @@ def _rwkv_reviewer(
 
         class DB:
             def all(self, sql: str, *args: object) -> list[tuple[int, ...]]:
+                if "PRAGMA table_info" in sql:
+                    return [
+                        (0, "revlog_id"),
+                        (1, "prediction"),
+                        (2, "source"),
+                        (3, "updated_at"),
+                    ]
                 assert "from revlog r" in sql
                 assert "join cards c" in sql
                 assert args == ()
@@ -2411,7 +4834,8 @@ def _rwkv_reviewer(
         col.db = DB()
     if resolved_preset_id is not None:
         col.fsrs_preset_for_card = lambda card_id: SimpleNamespace(
-            id=resolved_preset_id
+            id=resolved_preset_id,
+            desired_retention=preset_desired_retention,
         )
 
     return SimpleNamespace(
@@ -2426,9 +4850,35 @@ def _rwkv_cache_reviewer(
     rows: list[tuple[int, int, int, int, int, int, int, int, int]],
 ) -> SimpleNamespace:
     states = SchedulingStates()
+    rwkv_retrievability_rows: list[tuple[int, float, str, int]] = []
 
     class DB:
         def all(self, sql: str, *args: object) -> list[tuple[int, ...]]:
+            if "PRAGMA table_info" in sql:
+                if "revlog" in sql:
+                    return [
+                        (0, "id"),
+                        (1, "cid"),
+                        (2, "ease"),
+                        (3, "ivl"),
+                        (4, "lastIvl"),
+                        (5, "time"),
+                        (6, "factor"),
+                        (7, "type"),
+                    ]
+                return [
+                    (0, "revlog_id"),
+                    (1, "prediction"),
+                    (2, "source"),
+                    (3, "updated_at"),
+                ]
+            if "FROM search_stats_rwkv_review_retrievability cache" in sql:
+                requested_ids = _sql_integers_inside_first_in_clause(sql)
+                return [
+                    (review_id, prediction)
+                    for review_id, prediction, _, _ in rwkv_retrievability_rows
+                    if review_id in requested_ids
+                ]
             assert "from revlog r" in sql
             assert "join cards c" in sql
             if args:
@@ -2438,15 +4888,54 @@ def _rwkv_cache_reviewer(
                 return [row for row in rows if row[0] > after_review_id]
             return list(rows)
 
-        def scalar(self, sql: str, *args: object) -> int:
+        def scalar(self, sql: str, *args: object) -> int | None:
             if "select crt from col" in sql:
                 assert args == ()
                 return 12345
             assert "from revlog" in sql
             assert len(args) == 1
+            if "order by id desc" in sql:
+                card_id = args[0]
+                assert isinstance(card_id, int)
+                review_ids = [
+                    row[0]
+                    for row in rows
+                    if row[1] == card_id and 1 <= row[4] <= 4 and row[6] in (0, 1, 2, 3)
+                ]
+                return max(review_ids, default=None)
+
             last_review_id = args[0]
             assert isinstance(last_review_id, int)
+            if "search_stats_rwkv_review_retrievability" in sql:
+                review_ids = {
+                    row[0]
+                    for row in rows
+                    if row[0] <= last_review_id
+                    and 1 <= row[4] <= 4
+                    and row[6] in (0, 1, 2, 3)
+                }
+                return sum(
+                    1
+                    for review_id, prediction, _, _ in rwkv_retrievability_rows
+                    if review_id in review_ids and 0 <= prediction <= 1
+                )
             return sum(1 for row in rows if row[0] <= last_review_id)
+
+        def execute(self, sql: str) -> None:
+            if "DROP TABLE IF EXISTS search_stats_rwkv_review_retrievability" in sql:
+                rwkv_retrievability_rows.clear()
+
+        def executemany(
+            self,
+            sql: str,
+            cache_rows: list[tuple[int, float, str, int]],
+        ) -> None:
+            assert "INSERT OR REPLACE" in sql
+            existing = {row[0]: row for row in rwkv_retrievability_rows}
+            existing.update({row[0]: row for row in cache_rows})
+            rwkv_retrievability_rows[:] = [
+                existing[review_id] for review_id in sorted(existing)
+            ]
 
     class Scheduler:
         def _timing_today(self) -> SimpleNamespace:
@@ -2468,12 +4957,58 @@ def _rwkv_cache_reviewer(
         decks=Decks(),
         path=str(profile_folder / "collection.anki2"),
         fsrs_preset_for_card=lambda card_id: SimpleNamespace(id="1000"),
+        rwkv_retrievability_rows=rwkv_retrievability_rows,
     )
     mw = SimpleNamespace(
         col=col,
         pm=SimpleNamespace(profileFolder=lambda: str(profile_folder)),
     )
     return SimpleNamespace(_v3=SimpleNamespace(states=states), mw=mw)
+
+
+def _rwkv_sse_harness_review_retrievability(
+    col: SimpleNamespace,
+    revlog_ids: list[int],
+) -> dict[str, object]:
+    requested_review_ids = list(dict.fromkeys(revlog_ids))
+    if not requested_review_ids:
+        return {"column": None, "data": []}
+
+    table = "search_stats_rwkv_review_retrievability"
+    reviews = ",".join(str(revlog_id) for revlog_id in requested_review_ids)
+    predictions_by_revlog_id = {
+        row[0]: row[1]
+        for row in col.db.all(f"""
+        SELECT cache.revlog_id, cache.prediction
+        FROM {table} cache
+        WHERE cache.revlog_id IN ({reviews})
+        ORDER BY cache.revlog_id
+        """)
+        if row[0] in requested_review_ids
+        and _rwkv_sse_harness_valid_probability(row[1])
+    }
+
+    if set(requested_review_ids) - set(predictions_by_revlog_id):
+        return {"column": None, "data": []}
+
+    return {
+        "column": table,
+        "data": sorted(predictions_by_revlog_id.items()),
+    }
+
+
+def _rwkv_sse_harness_valid_probability(value: object) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and 0 <= value <= 1
+    )
+
+
+def _sql_integers_inside_first_in_clause(sql: str) -> set[int]:
+    _, _, after_in = sql.partition(" IN (")
+    inside, _, _ = after_in.partition(")")
+    return {int(value.strip()) for value in inside.split(",") if value.strip()}
 
 
 def _attach_progress_taskman(

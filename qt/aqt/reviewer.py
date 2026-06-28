@@ -230,12 +230,10 @@ class Reviewer:
         if self._refresh_needed is RefreshNeeded.QUEUES:
             if aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
                 self._refresh_needed = None
-                if self.card is None:
-                    self._prepare_rwkv_queue_order_then_next_card(fade_after=True)
-                else:
-                    self.nextCard()
-                    self.mw.fade_in_webview()
-                    self._prepare_rwkv_queue_order_then_next_card()
+                self._prepare_rwkv_queue_order_then_next_card(
+                    fade_after=True,
+                    show_next_card=True,
+                )
             else:
                 aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
                 self.nextCard()
@@ -816,15 +814,21 @@ class Reviewer:
                 lambda: self._prepare_rwkv_queue_order_then_next_card(queued_at)
             )
         elif rwkv_queue_order_enabled:
+            aqt.rwkv_scheduler.refresh_answered_card_queue_score(self, self.card)
             self.nextCard()
         else:
             aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
             self.nextCard()
 
     def _prepare_rwkv_queue_order_then_next_card(
-        self, queued_at: float | None = None, *, fade_after: bool = False
+        self,
+        queued_at: float | None = None,
+        *,
+        fade_after: bool = False,
+        show_next_card: bool = False,
     ) -> None:
         answered_card_id = self.card.id if self.card else None
+        initial_state = self.state
         start = time.monotonic()
         logger.debug(
             "reviewer RWKV queue order refresh starting: answered_card_id=%s "
@@ -860,17 +864,36 @@ class Reviewer:
                 answered_card_id,
                 (time.monotonic() - start) * 1000,
             )
-            if fade_after and self.card is None:
+            if show_next_card and self._rwkv_queue_refresh_target_is_current(
+                answered_card_id,
+                initial_state,
+            ):
                 self.nextCard()
-                self.mw.fade_in_webview()
+                if fade_after:
+                    self.mw.fade_in_webview()
             elif (
                 self.state == "transition"
                 and self.card is not None
                 and self.card.id == answered_card_id
             ):
                 self.nextCard()
+            aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
+                self,
+                reason="review queue refresh",
+            )
 
         self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
+
+    def _rwkv_queue_refresh_target_is_current(
+        self,
+        card_id: CardId | None,
+        state: Literal["question", "answer", "transition"] | None,
+    ) -> bool:
+        if self.state != state:
+            return False
+        if card_id is None:
+            return self.card is None
+        return self.card is not None and self.card.id == card_id
 
     def _prepare_rwkv_queue_order_on_exit(self) -> None:
         start = time.monotonic()
@@ -902,6 +925,10 @@ class Reviewer:
                 "answered_count=%s elapsed_ms=%.1f",
                 answered_count,
                 (time.monotonic() - start) * 1000,
+            )
+            aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
+                self,
+                reason="review queue exit refresh",
             )
 
         self.mw.taskman.run_in_background(prepare, done, uses_collection=True)

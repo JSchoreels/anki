@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import aqt.rwkv_scheduler
+from anki.collection import OpChanges
 from aqt.reviewer import RefreshNeeded, Reviewer, SchedulingStates
 
 
@@ -483,6 +484,61 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
     assert reviewer._refresh_needed is None
 
 
+def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_current_card(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], None],
+            on_done: Callable[[Future[None]], None],
+            uses_collection: bool = True,
+        ) -> None:
+            assert uses_collection is True
+            calls.append("background")
+            task()
+            future: Future[None] = Future()
+            future.set_result(None)
+            on_done(future)
+
+    def next_card() -> None:
+        calls.append("next")
+        reviewer.card = SimpleNamespace(id=456)
+        reviewer.state = "question"
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order",
+        lambda reviewer: calls.append("prepare"),
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer.mw = SimpleNamespace(
+        taskman=Taskman(),
+        fade_in_webview=lambda: calls.append("fade"),
+    )
+    reviewer.nextCard = next_card
+
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=True)
+
+    assert calls == ["background", "prepare", "next", "fade"]
+    assert reviewer.card.id == 456
+    assert reviewer._refresh_needed is None
+    assert dirty is False
+
+
 def test_refresh_queues_without_rwkv_queue_order_prepares_before_next_card(
     monkeypatch,
 ) -> None:
@@ -561,7 +617,10 @@ def test_answer_card_updates_rwkv_state_used_by_other_card(
                     prediction=aqt.rwkv_scheduler.RwkvReviewPrediction(
                         retrievability=0.40 + 0.20 * review_count,
                         interval_overrides=aqt.rwkv_scheduler.RwkvIntervalOverride(
-                            good=5 + review_count
+                            again=2 + review_count,
+                            hard=3 + review_count,
+                            good=5 + review_count,
+                            easy=8 + review_count,
                         ),
                     )
                 )

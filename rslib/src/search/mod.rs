@@ -206,15 +206,11 @@ impl Collection {
         };
         let ids_elapsed_ms = ids_start.elapsed().as_secs_f64() * 1000.0;
         let timing = self.timing_today()?;
-        let rwkv_stats_scores = self
-            .rwkv_stats_graph_scores_for_day(timing.days_elapsed)
-            .cloned();
-        let rwkv_card_info_scores = self
-            .rwkv_card_info_scores_for_day(timing.days_elapsed)
-            .cloned();
-        let rwkv_review_queue_scores = self
-            .rwkv_review_queue_scores_for_day(timing.days_elapsed)
-            .cloned();
+        let rwkv_stats_scores = self.rwkv_stats_graph_scores_for_day(timing.days_elapsed);
+        let rwkv_card_info_scores = self.rwkv_card_info_scores_for_day(timing.days_elapsed);
+        let rwkv_review_queue_scores = self.rwkv_review_queue_scores_for_day(timing.days_elapsed);
+        let rwkv_retrievability_scores =
+            self.rwkv_retrievability_scores_for_day(timing.days_elapsed, None);
         let rwkv_stats_scores_count = rwkv_stats_scores
             .as_ref()
             .map(|scores| scores.len())
@@ -225,7 +221,7 @@ impl Collection {
             .unwrap_or(0);
         let rwkv_review_queue_scores_count = rwkv_review_queue_scores
             .as_ref()
-            .map(|scores| scores.len())
+            .map(|(_, scores)| scores.len())
             .unwrap_or(0);
         let load_start = Instant::now();
         let cards = ids
@@ -244,22 +240,10 @@ impl Collection {
         let mut rows_to_insert = Vec::new();
         let mut rwkv_rows = 0;
         for card in cards {
-            let rwkv_r = rwkv_card_info_scores
+            let rwkv_r = rwkv_retrievability_scores
                 .as_ref()
                 .and_then(|scores| scores.get(&card.id))
-                .copied()
-                .or_else(|| {
-                    rwkv_review_queue_scores
-                        .as_ref()
-                        .and_then(|scores| scores.get(&card.id))
-                        .copied()
-                })
-                .or_else(|| {
-                    rwkv_stats_scores
-                        .as_ref()
-                        .and_then(|scores| scores.get(&card.id))
-                        .copied()
-                });
+                .copied();
             let preset = presets_by_card
                 .get(&card.id)
                 .or_invalid("missing FSRS preset for card")?;
