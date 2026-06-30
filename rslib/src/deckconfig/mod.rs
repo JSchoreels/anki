@@ -81,6 +81,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_allow_same_day_review: false,
     rwkv_review_instant_order_enabled: false,
     rwkv_review_dynamic_preset_replay: false,
+    rwkv_review_candidate_refresh_enabled: false,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,

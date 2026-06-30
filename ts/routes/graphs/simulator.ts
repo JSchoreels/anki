@@ -61,6 +61,72 @@ export enum SimulateWorkloadSubgraph {
 
 type WorkloadComparisonMode = "fixed" | "adr";
 
+export function centeredMovingAverage(y: number[], windowSize: number): number[] {
+    const size = Math.max(1, Math.floor(windowSize));
+    if (size <= 1) {
+        return [...y];
+    }
+    const before = Math.floor((size - 1) / 2);
+    const after = size - 1 - before;
+    const result: number[] = [];
+    for (let i = 0; i < y.length; i++) {
+        let sum = 0;
+        let count = 0;
+        for (let j = Math.max(0, i - before); j <= Math.min(y.length - 1, i + after); j++) {
+            sum += y[j];
+            count++;
+        }
+        result.push(sum / count);
+    }
+    return result;
+}
+
+export function smoothPointsByLabel<T extends Point>(
+    points: readonly T[],
+    windowSize: number,
+): T[] {
+    if (windowSize <= 1) {
+        return [...points];
+    }
+
+    const groupedPoints = new Map<number, T[]>();
+    for (const point of points) {
+        const group = groupedPoints.get(point.label) ?? [];
+        group.push(point);
+        groupedPoints.set(point.label, group);
+    }
+
+    return Array.from(groupedPoints.values()).flatMap((group) => {
+        const sorted = [...group].sort((a, b) => a.x - b.x);
+        const smoothedTimeCost = centeredMovingAverage(
+            sorted.map((p) => p.timeCost),
+            windowSize,
+        );
+        const smoothedCount = centeredMovingAverage(
+            sorted.map((p) => p.count),
+            windowSize,
+        );
+        const smoothedMemorized = centeredMovingAverage(
+            sorted.map((p) => p.memorized),
+            windowSize,
+        );
+        const smoothedWeightedMemorized = centeredMovingAverage(
+            sorted.map((p) => p.weightedMemorized ?? 0),
+            windowSize,
+        );
+
+        return sorted.map((point, index) => ({
+            ...point,
+            timeCost: smoothedTimeCost[index],
+            count: smoothedCount[index],
+            memorized: smoothedMemorized[index],
+            weightedMemorized: point.weightedMemorized === undefined
+                ? undefined
+                : smoothedWeightedMemorized[index],
+        })) as T[];
+    });
+}
+
 function workloadComparisonLabel(
     labelName: string | undefined,
 ): { family: string; mode: WorkloadComparisonMode } | undefined {
@@ -167,7 +233,9 @@ export function renderWorkloadChart(
     data: WorkloadPoint[],
     subgraph: SimulateWorkloadSubgraph,
 ) {
-    const validData = data.filter((d): d is WorkloadPoint => d !== undefined);
+    const validData = data
+        .filter((d): d is WorkloadPoint => d !== undefined)
+        .sort((a, b) => a.label - b.label || a.x - b.x);
     const dataXMin = min(validData, (d) => d.x) ?? 1;
     const dataXMax = max(validData, (d) => d.x) ?? 99;
     const singleX = dataXMin === dataXMax;

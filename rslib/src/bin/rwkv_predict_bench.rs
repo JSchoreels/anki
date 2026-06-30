@@ -435,7 +435,7 @@ select
 from revlog r
 join cards c on c.id = r.cid
 where r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
+  and (r.type in (0, 1, 2, 3) or r.type = 4)
 order by r.id, r.cid
 {limit_clause}"
     )
@@ -467,7 +467,7 @@ select
 from cards c
 left join revlog r on r.cid = c.id
   and r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
+  and (r.type in (0, 1, 2, 3) or r.type = 4)
 where c.type = 2
   and c.queue = 2
 group by c.id

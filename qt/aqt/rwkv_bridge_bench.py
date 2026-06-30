@@ -10,15 +10,19 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 from aqt.rwkv_scheduler import (
+    _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR,
     RwkvBackendCacheSnapshot,
     RwkvReviewCandidate,
     RwkvReviewIdentity,
     RwkvReviewInput,
+    RwkvReviewInputBatchBuild,
     RwkvReviewPredictionRequest,
     RwkvStatefulReviewerBackend,
     RwkvStatsGraphCard,
+    _rwkv_review_input_batches_for_deck_review_queue,
     _rwkv_review_input_batches_for_ids,
     _rwkv_review_input_for_stats_graph_card,
     _rwkv_review_scores_for_inputs,
@@ -38,12 +42,21 @@ from aqt.rwkv_srs_benchmark import (
 )
 
 _SECONDS_PER_DAY = 86_400
+_DeckQueueInputSourceRow = tuple[
+    int, int, int, int, int, int, int, int, int, int, int | None
+]
 
 
 def main() -> None:
     args = _parse_args()
     if args.candidate_mode == "score-cache":
         _run_score_cache_benchmark(args)
+        return
+    if args.candidate_mode == "deck-input-cache":
+        _run_deck_input_cache_benchmark(args)
+        return
+    if args.candidate_mode == "future-score":
+        _run_future_score_benchmark(args)
         return
     if args.candidate_mode is not None:
         _run_candidate_benchmark(args)
@@ -163,6 +176,8 @@ def _parse_args() -> argparse.Namespace:
             "row-input",
             "row-input-no-deck-sql",
             "score-cache",
+            "deck-input-cache",
+            "future-score",
         ),
         default=None,
         help="Benchmark stats-card candidate filtering instead of RWKV inference.",
@@ -427,6 +442,191 @@ def _run_score_cache_benchmark(args: argparse.Namespace) -> None:
     print(f"cached_scores={len(cached_scores)}")
 
 
+def _run_deck_input_cache_benchmark(args: argparse.Namespace) -> None:
+    timing = _BenchTiming.today()
+    uri = f"file:{args.collection}?mode=ro&immutable=1"
+    with sqlite3.connect(uri, uri=True) as db:
+        rows = _deck_queue_input_rows(
+            db,
+            limit=args.queries,
+            target_retention=args.target_retention,
+            batch_size=args.batch_size,
+            timing=timing,
+        )
+        searched_cards = _deck_queue_review_card_count(db)
+        deck_configs = len({row.deck_id for row in rows})
+        reviewer = _deck_input_cache_benchmark_reviewer(
+            rows=rows,
+            searched_cards=searched_cards,
+            deck_configs=deck_configs,
+        )
+
+        cold_ms = 0.0
+        cached_ms = 0.0
+        cold_inputs = 0
+        cached_inputs = 0
+        for _ in range(args.repeat):
+            if hasattr(reviewer, _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR):
+                delattr(reviewer, _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR)
+            cold_start = time.monotonic()
+            cold_build = _rwkv_review_input_batches_for_deck_review_queue(
+                reviewer=reviewer,
+                deck_id=100,
+                batch_size_override=args.batch_size,
+            )
+            cold_ms += _elapsed_ms(cold_start)
+            cold_inputs += _input_build_input_count(cold_build)
+
+            cached_start = time.monotonic()
+            cached_build = _rwkv_review_input_batches_for_deck_review_queue(
+                reviewer=reviewer,
+                deck_id=100,
+                batch_size_override=args.batch_size,
+            )
+            cached_ms += _elapsed_ms(cached_start)
+            cached_inputs += _input_build_input_count(cached_build)
+
+    print(f"collection={args.collection}")
+    print(f"candidate_mode={args.candidate_mode}")
+    print(f"requested_cards={args.queries}")
+    print(f"loaded_rows={len(rows)}")
+    print(f"searched_cards={searched_cards}")
+    print(f"repeat={args.repeat}")
+    print(f"cold_input_build_ms={cold_ms:.3f}")
+    print(f"cached_input_build_ms={cached_ms:.3f}")
+    print(f"per_cold_input_build_ms={cold_ms / args.repeat:.3f}")
+    print(f"per_cached_input_build_ms={cached_ms / args.repeat:.3f}")
+    print(f"cold_inputs={cold_inputs}")
+    print(f"cached_inputs={cached_inputs}")
+    print(f"backend_row_calls={reviewer.mw.col._backend.deck_row_calls}")
+
+
+def _run_future_score_benchmark(args: argparse.Namespace) -> None:
+    load_start = time.monotonic()
+    runtime = _RustRwkvRuntime(
+        model_path=args.weights,
+        target_retention=args.target_retention,
+        max_interval_days=args.max_interval_days,
+    )
+    load_ms = _elapsed_ms(load_start)
+
+    workload_start = time.monotonic()
+    workload = _CollectionWorkload.load(
+        args.collection,
+        args.warmup_reviews,
+        args.queries,
+        args.target_retention,
+    )
+    workload_ms = _elapsed_ms(workload_start)
+
+    warmup_start = time.monotonic()
+    snapshot = _warm_up_snapshot(runtime, workload.warmup_reviews)
+    warmup_ms = _elapsed_ms(warmup_start)
+
+    timing = _BenchTiming.today()
+    uri = f"file:{args.collection}?mode=ro&immutable=1"
+    with sqlite3.connect(uri, uri=True) as db:
+        card_ids = [
+            card_id
+            for (card_id,) in db.execute(
+                "select id from cards order by id limit ?",
+                (args.queries,),
+            )
+        ]
+        input_build = _rwkv_review_input_batches_for_ids(
+            reviewer=_benchmark_reviewer(
+                db,
+                args.target_retention,
+                enabled_deck_limit=args.enabled_deck_limit,
+            ),
+            card_ids=card_ids,
+            timing=SimpleNamespace(
+                days_elapsed=timing.days_elapsed,
+                next_day_at=timing.next_day_at,
+            ),
+            reason="future score benchmark",
+            include_suspended_review=True,
+            supported_state_filter=True,
+        )
+
+    inputs_by_card_id = (
+        _input_build_inputs(input_build) if input_build is not None else []
+    )
+    if not inputs_by_card_id:
+        raise ValueError("future score benchmark needs at least one query input")
+
+    answer_source = inputs_by_card_id[0][1]
+    inputs_by_card_id = inputs_by_card_id[1:]
+    answer_input = replace(
+        answer_source,
+        is_query=False,
+        ease=3,
+        duration_millis=1234,
+    )
+
+    backend = RwkvStatefulReviewerBackend(runtime)
+    backend.restore_cache_snapshot(snapshot)
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        baseline_ms = 0.0
+        baseline_scores: list[tuple[int, float]] = []
+        for _ in range(args.repeat):
+            backend.restore_cache_snapshot(snapshot)
+            baseline_start = time.monotonic()
+            backend.review_input_answered(answer_input)
+            baseline_scores = _score_input_batches(
+                _inputs_by_batch_size(inputs_by_card_id, args.batch_size)
+            )
+            baseline_ms += _elapsed_ms(baseline_start)
+
+        native_ms = 0.0
+        native_scores: list[tuple[int, float]] | None = []
+        for _ in range(args.repeat):
+            native_start = time.monotonic()
+            native_scores = backend.predict_retrievability_after_review(
+                answer=answer_input,
+                inputs_by_card_id=inputs_by_card_id,
+                snapshot=snapshot,
+            )
+            native_ms += _elapsed_ms(native_start)
+
+        four_grade_ms = 0.0
+        for _ in range(args.repeat):
+            four_grade_start = time.monotonic()
+            for ease in (1, 2, 3, 4):
+                backend.predict_retrievability_after_review(
+                    answer=replace(answer_input, ease=ease),
+                    inputs_by_card_id=inputs_by_card_id,
+                    snapshot=snapshot,
+                )
+            four_grade_ms += _elapsed_ms(four_grade_start)
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    native_scores = native_scores or []
+    print(f"weights={args.weights}")
+    print(f"collection={args.collection}")
+    print(f"candidate_mode={args.candidate_mode}")
+    print(f"requested_cards={len(card_ids)}")
+    print(f"review_inputs={len(inputs_by_card_id)}")
+    print(f"warmup_reviews={len(workload.warmup_reviews)}")
+    print(f"repeat={args.repeat}")
+    print(f"load_ms={load_ms:.3f}")
+    print(f"workload_ms={workload_ms:.3f}")
+    print(f"warmup_ms={warmup_ms:.3f}")
+    print(f"baseline_after_answer_score_ms={baseline_ms:.3f}")
+    print(f"native_after_answer_score_ms={native_ms:.3f}")
+    print(f"four_grade_native_score_ms={four_grade_ms:.3f}")
+    print(f"per_baseline_after_answer_score_ms={baseline_ms / args.repeat:.3f}")
+    print(f"per_native_after_answer_score_ms={native_ms / args.repeat:.3f}")
+    print(f"per_four_grade_native_score_ms={four_grade_ms / args.repeat:.3f}")
+    print(f"baseline_scores={len(baseline_scores)}")
+    print(f"native_scores={len(native_scores)}")
+    print(f"baseline_checksum={_score_checksum(baseline_scores):.9f}")
+    print(f"native_checksum={_score_checksum(native_scores):.9f}")
+    print(f"max_score_delta={_max_score_delta(baseline_scores, native_scores):.9f}")
+
+
 def _score_input_batches(
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]],
 ) -> list[tuple[int, float]]:
@@ -439,6 +639,40 @@ def _score_input_batches(
         if batch_scores is not None:
             scores.extend(batch_scores)
     return scores
+
+
+def _input_build_inputs(
+    input_build: RwkvReviewInputBatchBuild,
+) -> list[tuple[int, RwkvReviewInput]]:
+    return [
+        item
+        for inputs_by_card_id in input_build.inputs_by_batch_size.values()
+        for item in inputs_by_card_id
+    ]
+
+
+def _inputs_by_batch_size(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    batch_size: int,
+) -> dict[int, list[tuple[int, RwkvReviewInput]]]:
+    return {batch_size: list(inputs_by_card_id)}
+
+
+def _score_checksum(scores: Sequence[tuple[int, float]]) -> float:
+    return sum(retrievability for _, retrievability in scores)
+
+
+def _max_score_delta(
+    left: Sequence[tuple[int, float]],
+    right: Sequence[tuple[int, float]],
+) -> float:
+    right_by_card_id = dict(right)
+    deltas = [
+        abs(retrievability - right_by_card_id[card_id])
+        for card_id, retrievability in left
+        if card_id in right_by_card_id
+    ]
+    return max(deltas, default=float("nan"))
 
 
 def _benchmark_reviewer(
@@ -475,6 +709,167 @@ def _benchmark_reviewer(
                 decks=Decks(),
             )
         )
+    )
+
+
+def _deck_input_cache_benchmark_reviewer(
+    *,
+    rows: Sequence[SimpleNamespace],
+    searched_cards: int,
+    deck_configs: int,
+) -> SimpleNamespace:
+    class Backend:
+        def __init__(self) -> None:
+            self.deck_row_calls = 0
+
+        def rwkv_review_input_rows_for_deck_review_queue(
+            self,
+            *,
+            deck_id: int,
+            include_disabled_decks: bool,
+        ) -> SimpleNamespace:
+            del deck_id, include_disabled_decks
+            self.deck_row_calls += 1
+            return SimpleNamespace(
+                rows=rows,
+                loaded_cards=len(rows),
+                cards_with_supported_state=len(rows),
+                disabled_config_cards=0,
+                deck_configs=deck_configs,
+                searched_cards=searched_cards,
+            )
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            timing = _BenchTiming.today()
+            return SimpleNamespace(
+                days_elapsed=timing.days_elapsed,
+                next_day_at=timing.next_day_at,
+            )
+
+    return SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=Backend(),
+                sched=Scheduler(),
+            )
+        )
+    )
+
+
+def _deck_queue_review_card_count(db: sqlite3.Connection) -> int:
+    (count,) = db.execute(
+        "select count() from cards where type = 2 and queue = 2"
+    ).fetchone()
+    return int(count)
+
+
+def _deck_queue_input_rows(
+    db: sqlite3.Connection,
+    *,
+    limit: int,
+    target_retention: float,
+    batch_size: int,
+    timing: _BenchTiming,
+) -> list[SimpleNamespace]:
+    rows = cast(
+        list[_DeckQueueInputSourceRow],
+        list(
+            db.execute(
+                """
+select
+  c.id,
+  c.nid,
+  case when c.odid != 0 then c.odid else c.did end as current_did,
+  c.type,
+  c.queue,
+  c.due,
+  c.ivl,
+  c.factor,
+  c.reps,
+  c.lapses,
+  max(r.id) as last_review_id
+from cards c
+left join revlog r on r.cid = c.id
+  and r.ease between 1 and 4
+  and r.type in (0, 1, 2, 3)
+where c.type = 2
+  and c.queue = 2
+group by c.id
+order by c.id
+limit ?
+""",
+                (limit,),
+            )
+        ),
+    )
+    return [
+        _deck_queue_input_row(
+            row,
+            target_retention=target_retention,
+            batch_size=batch_size,
+            timing=timing,
+        )
+        for row in rows
+    ]
+
+
+def _deck_queue_input_row(
+    row: _DeckQueueInputSourceRow,
+    *,
+    target_retention: float,
+    batch_size: int,
+    timing: _BenchTiming,
+) -> SimpleNamespace:
+    (
+        card_id,
+        note_id,
+        deck_id,
+        card_type,
+        card_queue,
+        card_due,
+        interval_days,
+        ease_factor,
+        reps,
+        lapses,
+        last_review_id,
+    ) = row
+    elapsed_seconds = (
+        max(timing.now_secs - last_review_id // 1000, 0)
+        if last_review_id is not None
+        else None
+    )
+    elapsed_days = (
+        elapsed_seconds // _SECONDS_PER_DAY if elapsed_seconds is not None else None
+    )
+    return SimpleNamespace(
+        card_id=card_id,
+        note_id=note_id,
+        deck_id=deck_id,
+        preset_id=str(deck_id),
+        card_type=card_type,
+        card_queue=card_queue,
+        card_due=card_due,
+        interval_days=interval_days,
+        ease_factor=ease_factor,
+        reps=reps,
+        lapses=lapses,
+        day_offset=timing.days_elapsed,
+        current_state_kind="normal",
+        current_normal_state_kind="review",
+        current_elapsed_days=elapsed_days,
+        current_elapsed_seconds=elapsed_seconds,
+        target_retention=target_retention,
+        batch_size=batch_size,
+    )
+
+
+def _input_build_input_count(input_build: RwkvReviewInputBatchBuild | None) -> int:
+    if input_build is None:
+        return 0
+    return sum(
+        len(inputs_by_card_id)
+        for inputs_by_card_id in input_build.inputs_by_batch_size.values()
     )
 
 

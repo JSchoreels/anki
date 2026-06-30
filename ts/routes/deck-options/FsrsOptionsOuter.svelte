@@ -86,6 +86,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigRwkvReviewInstantOrderTooltip(),
             sched: HelpItemScheduler.FSRS,
         },
+        rwkvCandidateRefresh: {
+            title: tr.deckConfigRwkvReviewCandidateRefresh(),
+            help: tr.deckConfigRwkvReviewCandidateRefreshTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
         rwkvBatchSize: {
             title: tr.deckConfigRwkvReviewBatchSize(),
             help: tr.deckConfigRwkvReviewBatchSizeTooltip(),

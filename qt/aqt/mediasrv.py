@@ -31,7 +31,7 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
-from anki import hooks
+from anki import decks_pb2, hooks
 from anki.cards import CardId
 from anki.collection import OpChanges, OpChangesOnly, Progress, SearchNode
 from anki.decks import UpdateDeckConfigs
@@ -878,8 +878,38 @@ def force_build_rwkv_state_cache() -> bytes:
 
 
 def reschedule_rwkv_review_cards() -> bytes:
-    aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(aqt.mw)
+    deck_id_request = decks_pb2.DeckId()
+    deck_id_request.ParseFromString(request.data)
+    deck_id = deck_id_request.did or None
+    aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(
+        aqt.mw,
+        deck_id=deck_id,
+    )
     return b""
+
+
+def simulate_rwkv_workload() -> bytes:
+    return aqt.rwkv_scheduler.simulate_rwkv_workload_bytes(request.data)
+
+
+def start_rwkv_workload() -> bytes:
+    return aqt.rwkv_scheduler.start_rwkv_workload_bytes(request.data)
+
+
+def rwkv_workload_result() -> Response | bytes:
+    result = aqt.rwkv_scheduler.rwkv_workload_result_bytes()
+    if result is None:
+        return _text_response(HTTPStatus.ACCEPTED, "")
+    return result
+
+
+def cancel_rwkv_workload() -> bytes:
+    aqt.rwkv_scheduler.cancel_rwkv_workload()
+    return b""
+
+
+def rwkv_workload_progress() -> bytes:
+    return aqt.rwkv_scheduler.rwkv_workload_progress_bytes()
 
 
 def save_custom_colours() -> bytes:
@@ -1001,6 +1031,11 @@ post_handler_list = [
     build_rwkv_state_cache,
     force_build_rwkv_state_cache,
     reschedule_rwkv_review_cards,
+    simulate_rwkv_workload,
+    start_rwkv_workload,
+    rwkv_workload_result,
+    cancel_rwkv_workload,
+    rwkv_workload_progress,
     save_custom_colours,
     card_stats,
     graphs,
@@ -1082,7 +1117,10 @@ def _extract_collection_post_request(path: str) -> DynamicRequest | NotFound:
         # convert bytes/None into response
         def wrapped() -> Response:
             try:
-                if data := handler():
+                data = handler()
+                if isinstance(data, Response):
+                    response = data
+                elif data:
                     response = flask.make_response(data)
                     response.headers["Content-Type"] = "application/binary"
                 else:

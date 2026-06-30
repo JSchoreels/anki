@@ -289,7 +289,8 @@ class Reviewer:
         self._v3 = None
         self._scheduling_states_pending = False
         self._desired_retention_override = None
-        self._get_next_v3_card()
+        if not self._get_rwkv_undo_restored_card():
+            self._get_next_v3_card()
 
         self._previous_card_info.set_card(self.previous_card)
         self._card_info.set_card(self.card)
@@ -391,6 +392,78 @@ class Reviewer:
                 self._v3.states,
             )
         self.card.start_timer()
+
+    def _get_rwkv_undo_restored_card(self) -> bool:
+        while card_id := aqt.rwkv_scheduler.pop_reviewer_undo_card_id(self):
+            try:
+                card = self.mw.col.get_card(CardId(card_id))
+            except Exception:
+                logger.debug(
+                    "failed to load RWKV undo-restored card: card_id=%s", card_id
+                )
+                continue
+
+            desired_retention_hook_count = (
+                gui_hooks.reviewer_will_compute_desired_retention.count()
+            )
+            if desired_retention_hook_count > 0:
+                self._desired_retention_override = (
+                    gui_hooks.reviewer_will_compute_desired_retention(None, self, card)
+                )
+
+            try:
+                sched = cast(V3Scheduler, self.mw.col.sched)
+                states = sched.get_scheduling_states(
+                    card.id,
+                    desired_retention_override=self._desired_retention_override,
+                )
+            except Exception:
+                logger.exception(
+                    "failed to rebuild scheduling states for RWKV undo-restored "
+                    "card: card_id=%s",
+                    card_id,
+                )
+                continue
+
+            states.current.custom_data = card.custom_data
+            context = SchedulingContext(
+                deck_name=self._rwkv_undo_restored_card_deck_name(card),
+                seed=random.getrandbits(64),
+            )
+            queued_cards = QueuedCards(review_count=1)
+            queued_card = queued_cards.cards.add()
+            queued_card.card.CopyFrom(card._to_backend_card())
+            queued_card.queue = QueuedCards.REVIEW
+            queued_card.states.CopyFrom(states)
+            queued_card.context.CopyFrom(context)
+
+            self.card = card
+            self._v3 = V3CardInfo(
+                queued_cards=queued_cards,
+                states=states,
+                context=context,
+            )
+            self._scheduling_states_pending = False
+            self.card.start_timer()
+            logger.debug("reviewer restored RWKV undone card: card_id=%s", card_id)
+            return True
+
+        return False
+
+    def _rwkv_undo_restored_card_deck_name(self, card: Card) -> str:
+        deck_id = card.current_deck_id()
+        name = getattr(self.mw.col.decks, "name", None)
+        if callable(name):
+            try:
+                return name(deck_id, default=True)
+            except Exception:
+                logger.debug(
+                    "failed to resolve deck name for RWKV undo-restored card: "
+                    "card_id=%s deck_id=%s",
+                    card.id,
+                    deck_id,
+                )
+        return ""
 
     def get_scheduling_states(self) -> SchedulingStates:
         return self._v3.states
@@ -597,6 +670,7 @@ class Reviewer:
         # user hook
         gui_hooks.reviewer_did_show_question(c)
         self._auto_advance_to_answer_if_enabled()
+        self._run_after_question_shown_callbacks()
 
     def _auto_advance_to_answer_if_enabled(self) -> None:
         self._clear_auto_advance_timers()
@@ -765,6 +839,7 @@ class Reviewer:
             rating=self._v3.rating_from_ease(ease),
             desired_retention_override=self._desired_retention_override,
         )
+        aqt.rwkv_scheduler.set_answer_rwkv_s90(answer, self, self.card, ease)
         logger.debug(
             "reviewer built answer: card_id=%s ease=%s build_elapsed_ms=%.1f elapsed_ms=%.1f",
             self.card.id,
@@ -776,6 +851,9 @@ class Reviewer:
         def after_answer(changes: OpChanges) -> None:
             after_answer_start = time.monotonic()
             answered_card_id = self.card.id if self.card else None
+            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
+            if callable(update_undo_actions):
+                update_undo_actions()
             if gui_hooks.reviewer_did_answer_card.count() > 0:
                 self.card.load()
             # v3 scheduler doesn't report this
@@ -810,9 +888,14 @@ class Reviewer:
             and aqt.rwkv_scheduler.reviewer_queue_order_refresh_due(self)
         ):
             queued_at = time.monotonic()
-            self.mw.taskman.run_on_main(
-                lambda: self._prepare_rwkv_queue_order_then_next_card(queued_at)
+            answered_card_id = self.card.id
+            self._run_after_next_question_shown(
+                lambda: self._prepare_rwkv_queue_order_then_next_card(
+                    queued_at,
+                    answered_card_id=answered_card_id,
+                )
             )
+            self.nextCard()
         elif rwkv_queue_order_enabled:
             aqt.rwkv_scheduler.refresh_answered_card_queue_score(self, self.card)
             self.nextCard()
@@ -824,10 +907,19 @@ class Reviewer:
         self,
         queued_at: float | None = None,
         *,
+        answered_card_id: CardId | None = None,
         fade_after: bool = False,
         show_next_card: bool = False,
     ) -> None:
-        answered_card_id = self.card.id if self.card else None
+        if not show_next_card:
+            self._prepare_rwkv_queue_order_async(
+                queued_at,
+                answered_card_id=answered_card_id,
+            )
+            return
+
+        if answered_card_id is None:
+            answered_card_id = self.card.id if self.card else None
         initial_state = self.state
         start = time.monotonic()
         logger.debug(
@@ -881,8 +973,128 @@ class Reviewer:
                 self,
                 reason="review queue refresh",
             )
+            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
+            if callable(update_undo_actions):
+                update_undo_actions()
 
         self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
+
+    def _prepare_rwkv_queue_order_async(
+        self,
+        queued_at: float | None = None,
+        *,
+        answered_card_id: CardId | None = None,
+    ) -> None:
+        if answered_card_id is None:
+            answered_card_id = self.card.id if self.card else None
+        start = time.monotonic()
+        logger.debug(
+            "reviewer RWKV queue order async refresh starting: answered_card_id=%s "
+            "main_delay_ms=%.1f",
+            answered_card_id,
+            ((start - queued_at) * 1000) if queued_at is not None else 0.0,
+        )
+
+        def finish(*, installed: bool | None = None) -> None:
+            logger.debug(
+                "reviewer RWKV queue order async refresh finished: "
+                "answered_card_id=%s installed=%s elapsed_ms=%.1f",
+                answered_card_id,
+                installed,
+                (time.monotonic() - start) * 1000,
+            )
+            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
+            if callable(update_undo_actions):
+                update_undo_actions()
+
+        def build_work() -> aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncWork | None:
+            build_start = time.monotonic()
+            work = aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(self)
+            logger.debug(
+                "reviewer RWKV queue order async work prepared: "
+                "answered_card_id=%s work=%s elapsed_ms=%.1f",
+                answered_card_id,
+                work is not None,
+                (time.monotonic() - build_start) * 1000,
+            )
+            return work
+
+        def build_done(
+            future: Future[aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncWork | None],
+        ) -> None:
+            try:
+                work = future.result()
+            except Exception:
+                logger.exception("RWKV review queue async work preparation failed")
+                finish(installed=False)
+                return
+            if work is None:
+                finish(installed=False)
+                return
+
+            def score() -> aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncResult:
+                return aqt.rwkv_scheduler.score_reviewer_queue_order_async_work(work)
+
+            def score_done(
+                score_future: Future[
+                    aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncResult
+                ],
+            ) -> None:
+                try:
+                    result = score_future.result()
+                except Exception:
+                    logger.exception("RWKV review queue async scoring failed")
+                    finish(installed=False)
+                    return
+
+                def install() -> bool:
+                    return aqt.rwkv_scheduler.install_reviewer_queue_order_async_result(
+                        self,
+                        result,
+                    )
+
+                def install_done(install_future: Future[bool]) -> None:
+                    try:
+                        installed = install_future.result()
+                    except Exception:
+                        logger.exception("RWKV review queue async install failed")
+                        finish(installed=False)
+                        return
+                    finish(installed=installed)
+
+                self.mw.taskman.run_in_background(
+                    install,
+                    install_done,
+                    uses_collection=True,
+                )
+
+            self.mw.taskman.run_in_background(
+                score,
+                score_done,
+                uses_collection=False,
+            )
+
+        self.mw.taskman.run_in_background(
+            build_work,
+            build_done,
+            uses_collection=True,
+        )
+
+    def _run_after_next_question_shown(self, callback: Callable[[], None]) -> None:
+        callbacks = getattr(self, "_rwkv_after_question_shown_callbacks", None)
+        if not isinstance(callbacks, list):
+            callbacks = []
+            self._rwkv_after_question_shown_callbacks = callbacks
+        callbacks.append(callback)
+
+    def _run_after_question_shown_callbacks(self) -> None:
+        callbacks = getattr(self, "_rwkv_after_question_shown_callbacks", None)
+        if not isinstance(callbacks, list) or not callbacks:
+            return
+
+        self._rwkv_after_question_shown_callbacks = []
+        for callback in callbacks:
+            callback()
 
     def _rwkv_queue_refresh_target_is_current(
         self,
@@ -930,6 +1142,9 @@ class Reviewer:
                 self,
                 reason="review queue exit refresh",
             )
+            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
+            if callable(update_undo_actions):
+                update_undo_actions()
 
         self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
 

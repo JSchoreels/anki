@@ -20,6 +20,8 @@ use crate::revlog::RevlogReviewKind;
 
 pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_fsrs_review_retrievability";
+pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
+    "search_stats_rwkv_review_retrievability";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FsrsReviewRetrievabilitySampleRole {
@@ -150,6 +152,77 @@ impl SqliteStorage {
         }
 
         Ok(stored)
+    }
+
+    fn ensure_rwkv_review_retrievability_cache_schema(&self) -> Result<()> {
+        let table_info = self
+            .db
+            .prepare(&format!(
+                "PRAGMA table_info({RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE})"
+            ))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let required_columns = ["revlog_id", "prediction", "source", "updated_at"];
+        if !table_info.is_empty()
+            && !required_columns
+                .iter()
+                .all(|required| table_info.iter().any(|column| column == required))
+        {
+            self.db.execute_batch(&format!(
+                "DROP TABLE IF EXISTS {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE};"
+            ))?;
+        }
+
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
+                revlog_id INTEGER PRIMARY KEY,
+                prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            "
+        ))?;
+        Ok(())
+    }
+
+    pub(crate) fn set_rwkv_review_retrievability_predictions(
+        &self,
+        rows: &[(RevlogId, f32)],
+        source: &str,
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        self.ensure_rwkv_review_retrievability_cache_schema()?;
+
+        let updated_at = TimestampMillis::now().0;
+        let mut stored = 0;
+        let mut stmt = self.db.prepare_cached(&format!(
+            "
+            INSERT OR REPLACE INTO {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                (revlog_id, prediction, source, updated_at)
+            VALUES (?, ?, ?, ?)
+            "
+        ))?;
+        for (revlog_id, prediction) in rows {
+            if revlog_id.0 > 0 && prediction.is_finite() && (0.0..=1.0).contains(prediction) {
+                stmt.execute(params![revlog_id, prediction, source, updated_at])?;
+                stored += 1;
+            }
+        }
+        Ok(stored)
+    }
+
+    pub(crate) fn set_rwkv_review_retrievability_prediction(
+        &self,
+        revlog_id: RevlogId,
+        prediction: f32,
+        source: &str,
+    ) -> Result<()> {
+        self.set_rwkv_review_retrievability_predictions(&[(revlog_id, prediction)], source)
+            .map(|_| ())
     }
 
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {

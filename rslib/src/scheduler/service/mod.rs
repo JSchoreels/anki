@@ -39,6 +39,7 @@ use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
 use anki_proto::scheduler::RwkvReviewQueueScoresRequest;
 use anki_proto::scheduler::RwkvReviewRescheduleRequest;
+use anki_proto::scheduler::RwkvReviewRetrievabilityCacheRowsRequest;
 use anki_proto::scheduler::RwkvStatsGraphScoresRequest;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
@@ -872,6 +873,29 @@ impl crate::services::SchedulerService for Collection {
         Ok(RwkvRetrievabilityScoreResponse {
             retrievability: self.rwkv_retrievability_score_for_day(input.into(), days_elapsed),
         })
+    }
+
+    fn set_rwkv_review_retrievability_cache_rows(
+        &mut self,
+        input: RwkvReviewRetrievabilityCacheRowsRequest,
+    ) -> Result<generic::UInt32> {
+        require!(
+            !input.source.is_empty(),
+            "missing RWKV retrievability source"
+        );
+        let mut rows = Vec::with_capacity(input.rows.len());
+        for row in input.rows {
+            require!(row.revlog_id > 0, "invalid RWKV review id");
+            require!(
+                row.prediction.is_finite() && (0.0..=1.0).contains(&row.prediction),
+                "invalid RWKV retrievability"
+            );
+            rows.push((RevlogId(row.revlog_id), row.prediction));
+        }
+        let count = self
+            .storage
+            .set_rwkv_review_retrievability_predictions(&rows, &input.source)?;
+        Ok(generic::UInt32 { val: count as u32 })
     }
 
     fn apply_rwkv_review_reschedule(

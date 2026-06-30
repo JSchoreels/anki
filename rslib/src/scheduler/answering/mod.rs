@@ -27,6 +27,7 @@ use super::timespan::answer_button_time_collapsible;
 use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
 use crate::card::CardType;
+use crate::card::FsrsMemoryState;
 use crate::config::BoolKey;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
@@ -65,6 +66,8 @@ pub struct CardAnswer {
     pub milliseconds_taken: u32,
     pub custom_data: Option<String>,
     pub desired_retention_override: Option<f32>,
+    pub rwkv_s90: Option<f32>,
+    pub rwkv_retrievability: Option<f32>,
     pub from_queue: bool,
 }
 
@@ -422,12 +425,38 @@ impl Collection {
                 tracing::warn!(?err, "failed to store FSRS review retrievability cache");
             }
         }
+        if let Some(prediction) = answer.rwkv_retrievability {
+            require!(
+                prediction.is_finite() && (0.0..=1.0).contains(&prediction),
+                "invalid RWKV retrievability"
+            );
+            if let Err(err) = self.storage.set_rwkv_review_retrievability_prediction(
+                revlog_id,
+                prediction,
+                "rwkv_review",
+            ) {
+                tracing::warn!(?err, "failed to store RWKV review retrievability cache");
+            }
+        }
 
         self.update_deck_stats_from_answer(usn, answer, &updater, original.queue)?;
         self.maybe_bury_siblings(&original, &updater.config)?;
         let timing = updater.timing;
         let deckconfig_id = updater.original_deck.config_id();
         let mut card = updater.into_card();
+        if let Some(rwkv_s90) = answer.rwkv_s90 {
+            require!(rwkv_s90.is_finite() && rwkv_s90 > 0.0, "invalid RWKV S90");
+            match &mut card.memory_state {
+                Some(memory_state) => memory_state.stability = rwkv_s90,
+                None => {
+                    card.memory_state = Some(FsrsMemoryState {
+                        stability: rwkv_s90,
+                        stability_internal: rwkv_s90,
+                        difficulty: 5.0,
+                    });
+                }
+            }
+        }
         if !matches!(
             answer.current_state,
             CardState::Filtered(FilteredState::Preview(_))
@@ -867,6 +896,8 @@ pub mod test_helpers {
                 milliseconds_taken: 0,
                 custom_data: None,
                 desired_retention_override: None,
+                rwkv_s90: None,
+                rwkv_retrievability: None,
                 from_queue: true,
             })?;
             Ok(PostAnswerState {
@@ -922,6 +953,7 @@ pub(crate) mod test {
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::LeechAction;
     use crate::deckconfig::ReviewMix;
+    use crate::ops::Op;
     use crate::scheduler::fsrs::preset::AddonFsrsPreset;
     use crate::scheduler::fsrs::preset::AddonFsrsVersion;
     use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
@@ -969,6 +1001,61 @@ pub(crate) mod test {
         col.clear_study_queues();
 
         Ok(card.id)
+    }
+
+    #[test]
+    fn rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let cid = add_due_review_card(
+            &mut col,
+            10,
+            0,
+            Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                difficulty: 5.0,
+            }),
+        )?;
+
+        let states = col.get_scheduling_states(cid)?;
+        let mut new_state = states.good;
+        let CardState::Normal(NormalState::Review(review)) = &mut new_state else {
+            panic!("expected Good to be a review state");
+        };
+        review.memory_state = Some(FsrsMemoryState {
+            stability: 1.0,
+            stability_internal: 7.0,
+            difficulty: 5.0,
+        });
+
+        col.answer_card(&mut CardAnswer {
+            card_id: cid,
+            current_state: states.current,
+            new_state,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: Some(20.0),
+            rwkv_retrievability: Some(0.62),
+            from_queue: true,
+        })?;
+
+        let card = col.storage.get_card(cid)?.unwrap();
+        let memory_state = card.memory_state.unwrap();
+        assert_eq!(memory_state.stability, 20.0);
+        assert_eq!(memory_state.stability_internal, 7.0);
+        let cached_retrievability: f32 = col.storage.db.query_row(
+            "select prediction from search_stats_rwkv_review_retrievability",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!((cached_retrievability - 0.62).abs() < 1e-6);
+        assert_eq!(col.can_undo(), Some(&Op::AnswerCard));
+
+        Ok(())
     }
 
     #[test]
@@ -1135,6 +1222,8 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: Some(0.95),
+            rwkv_s90: None,
+            rwkv_retrievability: None,
             from_queue: true,
         })?;
 
@@ -1293,6 +1382,8 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: Some(0.95),
+            rwkv_s90: None,
+            rwkv_retrievability: None,
             from_queue: true,
         })?;
 
@@ -1452,6 +1543,8 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
             from_queue: true,
         })?;
 

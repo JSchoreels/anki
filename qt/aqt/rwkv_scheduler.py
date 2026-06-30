@@ -24,7 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple, Protocol, TypeVar, cast
 
-from anki import cards_pb2, deck_config_pb2, scheduler_pb2
+from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.consts import (
     CARD_TYPE_LRN,
     CARD_TYPE_RELEARNING,
@@ -55,30 +55,51 @@ _MAX_RWKV_REVIEW_BATCH_SIZE = 2048
 _MIN_RWKV_REVIEW_REFRESH_INTERVAL = 1
 _MAX_RWKV_REVIEW_REFRESH_INTERVAL = 10_000
 _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
+_RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR = "_rwkv_review_input_batch_cache"
+_RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT = 4
+_RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR = "_rwkv_review_speculative_queue_scores"
+_RWKV_REVIEW_LAST_ANSWER_KEY_ATTR = "_rwkv_review_last_answer_key"
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 30.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
+_RWKV_WORKLOAD_MIN_DR = 30
+_RWKV_WORKLOAD_MAX_DR = 95
+_RWKV_SIMULATOR_BUCKET_COUNT = 20
+_RWKV_SIMULATOR_PRIOR_WEIGHT = 4.0
+_RWKV_SIMULATOR_DEFAULT_GRADE_SECONDS = (8.0, 8.0, 8.0, 8.0)
+_RWKV_SIMULATOR_MAX_TAKEN_MILLIS = 600_000
 _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 5
+_RWKV_STATE_CACHE_VERSION = 7
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
-_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT5\0"
-_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS5\0"
+_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT7\0"
+_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS7\0"
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
 _RWKV_RATING_FIELDS = ("again", "hard", "good", "easy")
+
+
+def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"{prefix}ease between 1 and 4 "
+        f"and ({prefix}type in (0, 1, 2, 3) or {prefix}type = 4)"
+    )
+
+
 _reviewer_backend: RwkvReviewerBackend | None = None
 _reviewer_backend_warmup_keys: set[tuple[int, int]] = set()
 _reviewer_backend_warmup_pending_keys: set[tuple[int, int]] = set()
 _resolved_preset_id_cache: dict[tuple[int, str | None], dict[int, str]] = {}
 _rwkv_review_queue_score_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_score_generations: dict[int, int] = {}
+_RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _rwkv_stats_prepare_lock = threading.Lock()
 _rwkv_stats_prepare_in_flight: dict[RwkvStatsPrepareKey, threading.Event] = {}
 _rwkv_score_prewarm_lock = threading.Lock()
@@ -219,11 +240,54 @@ class RwkvReviewInputBatchBuild:
 
 
 @dataclass(frozen=True)
+class RwkvSpeculativeReviewQueueScores:
+    key: RwkvSpeculativeReviewAnswerKey
+    candidate_card_ids: tuple[int, ...]
+    scores: tuple[tuple[int, float], ...]
+    elapsed_ms: float
+
+
+@dataclass(frozen=True)
+class RwkvReviewQueueOrderAsyncWork:
+    deck_id: int
+    reason: str
+    batch_size: int
+    state_generation: int
+    input_build: RwkvReviewInputBatchBuild
+    inputs_by_card_id: tuple[tuple[int, RwkvReviewInput], ...]
+    predictions: tuple[RwkvReviewPrediction | None, ...]
+    requests_by_index: tuple[RwkvReviewPredictionRequestByIndex, ...]
+    cache_hits: int
+    warmup_elapsed_ms: float
+    build_elapsed_ms: float
+    existing_scores: tuple[tuple[int, float], ...] | None = None
+    candidate_card_ids: tuple[int, ...] = ()
+    fresh_for_backend_state: bool = True
+
+
+@dataclass(frozen=True)
+class RwkvReviewQueueOrderAsyncResult:
+    deck_id: int
+    reason: str
+    state_generation: int
+    scores: tuple[tuple[int, float], ...]
+    input_build: RwkvReviewInputBatchBuild
+    cache_hits: int
+    runtime_requests: int
+    warmup_elapsed_ms: float
+    build_elapsed_ms: float
+    score_elapsed_ms: float
+    existing_scores: tuple[tuple[int, float], ...] | None = None
+    candidate_card_ids: tuple[int, ...] = ()
+    fresh_for_backend_state: bool = True
+
+
+@dataclass(frozen=True)
 class RwkvReviewRescheduleItem:
     card_id: int
     interval_days: int
     elapsed_days: int
-    s90: int
+    s90: float
 
 
 @dataclass(frozen=True)
@@ -317,16 +381,112 @@ class RwkvWarmUpProgress:
     total_reviews: int
 
 
+@dataclass(frozen=True)
+class RwkvWorkloadProgress:
+    current: int
+    total: int
+
+
+@dataclass
+class RwkvWorkloadJob:
+    cancel_event: threading.Event
+    done: bool = False
+    result: bytes | None = None
+    error: str | None = None
+
+
+_rwkv_workload_progress_lock = threading.Lock()
+_rwkv_workload_progress = RwkvWorkloadProgress(current=0, total=0)
+_rwkv_workload_job_lock = threading.Lock()
+_rwkv_workload_job: RwkvWorkloadJob | None = None
+
+
+@dataclass
+class _RwkvSimulationCard:
+    review_input: RwkvReviewInput
+    due_day: int
+    last_review_day: int
+    interval_days: int
+    reps: int
+    lapses: int
+
+
+@dataclass(frozen=True)
+class _RwkvSimulationPoint:
+    memorized: float
+    weighted_memorized: float
+    cost: float
+    review_count: int
+
+
+@dataclass(frozen=True)
+class _RwkvSimulatorReviewModel:
+    grade_seconds: tuple[float, float, float, float]
+    bucket_probabilities: dict[int, tuple[float, float, float, float]]
+    review_time_r_bucket_count: int = 0
+    review_time_s_bucket_count: int = 0
+    review_time_again_seconds: tuple[float, ...] = ()
+    review_time_hard_seconds: tuple[float, ...] = ()
+    review_time_good_seconds: tuple[float, ...] = ()
+    review_time_easy_seconds: tuple[float, ...] = ()
+    review_time_sample_counts: tuple[int, ...] = ()
+    review_time_again_coeffs: tuple[float, ...] = ()
+    review_time_hard_coeffs: tuple[float, ...] = ()
+    review_time_good_coeffs: tuple[float, ...] = ()
+    review_time_easy_coeffs: tuple[float, ...] = ()
+    review_time_grade_weights: tuple[float, ...] = ()
+    review_time_transition_probs: tuple[float, ...] = ()
+    review_time_transition_counts: tuple[int, ...] = ()
+    review_time_success_grade_probs: tuple[float, ...] = ()
+    review_time_success_grade_counts: tuple[int, ...] = ()
+
+    def probabilities_for(
+        self, retrievability: float
+    ) -> tuple[float, float, float, float]:
+        bucket = _rwkv_simulator_bucket(retrievability)
+        return self.bucket_probabilities.get(
+            bucket,
+            _fallback_rwkv_grade_probabilities(retrievability),
+        )
+
+
+class _RwkvSimulatorReviewTimeFields(NamedTuple):
+    r_bucket_count: int
+    s_bucket_count: int
+    again_seconds: tuple[float, ...]
+    hard_seconds: tuple[float, ...]
+    good_seconds: tuple[float, ...]
+    easy_seconds: tuple[float, ...]
+    sample_counts: tuple[int, ...]
+    again_coeffs: tuple[float, ...]
+    hard_coeffs: tuple[float, ...]
+    good_coeffs: tuple[float, ...]
+    easy_coeffs: tuple[float, ...]
+    grade_weights: tuple[float, ...]
+    transition_probs: tuple[float, ...]
+    transition_counts: tuple[int, ...]
+    success_grade_probs: tuple[float, ...]
+    success_grade_counts: tuple[int, ...]
+
+
 RwkvWarmUpProgressCallback = Callable[[RwkvWarmUpProgress], None]
 RwkvStateCacheProgressCallback = Callable[[str, int | None, int | None], None]
+RwkvWorkloadProgressCallback = Callable[[int, int], None]
 RwkvReviewPredictionRequestByIndex = tuple[int, RwkvReviewPredictionRequest]
 RwkvCachedReviewPredictions = tuple[
     list[RwkvReviewPrediction | None],
     list[RwkvReviewPredictionRequestByIndex],
     int,
 ]
+RwkvWorkloadOutput = tuple[
+    float,
+    float,
+    Sequence[tuple[int, float, float, float, int]],
+]
 RwkvStatsPrepareKey = tuple[int, int, int, int, str]
 RwkvScorePrewarmKey = tuple[int, int, int, int, tuple[int, ...]]
+RwkvReviewInputBatchCacheKey = tuple[int, int | None, int, int, int]
+RwkvSpeculativeReviewAnswerKey = tuple[int, int, int | None, int, int]
 
 
 class RwkvReviewerBackend(Protocol):
@@ -848,6 +1008,164 @@ class RwkvStatefulReviewerBackend:
             self._cache_prediction(request.review_input, prediction)
         return predictions
 
+    def predict_review_requests_uncached(
+        self,
+        requests: Sequence[RwkvReviewPredictionRequest],
+    ) -> Sequence[RwkvReviewPrediction | None]:
+        if not requests:
+            return []
+
+        start = time.monotonic()
+        predict_many = getattr(self._runtime, "predict_many", None)
+        if callable(predict_many):
+            logger.debug(
+                "RWKV stateful uncached request batch predict_many started: "
+                "requests=%s runtime=%s",
+                len(requests),
+                type(self._runtime).__name__,
+            )
+            predictions = predict_many(requests)
+            if len(predictions) != len(requests):
+                raise ValueError("RWKV batch prediction count mismatch")
+
+            logger.debug(
+                "RWKV stateful uncached request batch predicted: requests=%s "
+                "runtime=%s elapsed_ms=%.1f",
+                len(requests),
+                type(self._runtime).__name__,
+                (time.monotonic() - start) * 1000,
+            )
+            return predictions
+
+        predictions = [
+            self._runtime.review(
+                review_input=request.review_input,
+                card_state=request.card_state,
+                note_state=request.note_state,
+                deck_state=request.deck_state,
+                preset_state=request.preset_state,
+                global_state=request.global_state,
+            ).prediction
+            for request in requests
+        ]
+        logger.debug(
+            "RWKV stateful uncached request batch predicted via per-card fallback: "
+            "requests=%s runtime=%s elapsed_ms=%.1f",
+            len(requests),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return predictions
+
+    def predict_retrievability_requests_uncached(
+        self,
+        requests: Sequence[RwkvReviewPredictionRequest],
+    ) -> Sequence[RwkvReviewPrediction | None]:
+        if not requests:
+            return []
+
+        predict_retrievability_many = getattr(
+            self._runtime,
+            "predict_retrievability_many",
+            None,
+        )
+        if not callable(predict_retrievability_many):
+            return self.predict_review_requests_uncached(requests)
+
+        start = time.monotonic()
+        retrievabilities = predict_retrievability_many(requests)
+        if len(retrievabilities) != len(requests):
+            raise ValueError("RWKV retrievability batch prediction count mismatch")
+
+        logger.debug(
+            "RWKV stateful uncached request batch predict_retrievability_many "
+            "predicted: requests=%s runtime=%s elapsed_ms=%.1f",
+            len(requests),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return [
+            RwkvReviewPrediction(retrievability=float(retrievability))
+            for retrievability in retrievabilities
+        ]
+
+    def predict_retrievability_after_review(
+        self,
+        *,
+        answer: RwkvReviewInput,
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+        snapshot: RwkvBackendCacheSnapshot,
+    ) -> list[tuple[int, float]] | None:
+        predict_future = getattr(
+            self._runtime,
+            "predict_retrievability_many_after_review",
+            None,
+        )
+        if not callable(predict_future):
+            return None
+        if not inputs_by_card_id:
+            return []
+
+        start = time.monotonic()
+        retrievabilities = predict_future(
+            answer=answer,
+            query_inputs=[review_input for _, review_input in inputs_by_card_id],
+            snapshot=snapshot,
+        )
+        if len(retrievabilities) != len(inputs_by_card_id):
+            raise ValueError("RWKV future retrievability prediction count mismatch")
+
+        scores: list[tuple[int, float]] = []
+        for (card_id, _), retrievability in zip(
+            inputs_by_card_id,
+            retrievabilities,
+            strict=True,
+        ):
+            value = float(retrievability)
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                continue
+            scores.append((card_id, value))
+
+        logger.debug(
+            "RWKV stateful future retrievability predicted: inputs=%s scored=%s "
+            "runtime=%s elapsed_ms=%.1f",
+            len(inputs_by_card_id),
+            len(scores),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return scores
+
+    def simulate_workload(
+        self,
+        *,
+        inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+        snapshot: RwkvBackendCacheSnapshot,
+        min_dr: int,
+        max_dr: int,
+        target_dr_step: int,
+        days_to_simulate: int,
+        review_limit: int,
+        state_update_interval: int,
+        review_model: _RwkvSimulatorReviewModel,
+        progress: RwkvWorkloadProgressCallback | None = None,
+    ) -> object | None:
+        simulate_workload = getattr(self._runtime, "simulate_workload", None)
+        if not callable(simulate_workload):
+            return None
+        return simulate_workload(
+            inputs=inputs,
+            snapshot=snapshot,
+            min_dr=min_dr,
+            max_dr=max_dr,
+            target_dr_step=target_dr_step,
+            days_to_simulate=days_to_simulate,
+            review_limit=review_limit,
+            state_update_interval=state_update_interval,
+            review_model=review_model,
+            progress=progress,
+        )
+
     def review_answered(
         self,
         *,
@@ -885,10 +1203,26 @@ class RwkvStatefulReviewerBackend:
             ),
         )
 
-    def answer_undone(self, counter: int, next_counter: int | None) -> bool:
+    def review_input_answered(self, review_input: RwkvReviewInput) -> None:
+        if review_input.ease is None:
+            return
+
+        identity = review_input.identity
+        before = self._snapshot(identity, review_input)
+        transition = self._runtime.review(
+            review_input=review_input,
+            card_state=before.card_state,
+            note_state=before.note_state,
+            deck_state=before.deck_state,
+            preset_state=before.preset_state,
+            global_state=before.global_state,
+        )
+        self._store_transition(identity, transition)
+
+    def answer_undone(self, counter: int, next_counter: int | None) -> int | None:
         index = _rollback_frame_index(self._undo_frames, counter)
         if index is None:
-            return False
+            return None
 
         frame = self._undo_frames.pop(index)
         self._restore_snapshot(frame.identity, frame.before)
@@ -898,12 +1232,12 @@ class RwkvStatefulReviewerBackend:
                 frame, counter=next_counter if next_counter is not None else counter
             ),
         )
-        return True
+        return frame.identity.card_id
 
-    def answer_redone(self, counter: int, next_counter: int | None) -> bool:
+    def answer_redone(self, counter: int, next_counter: int | None) -> int | None:
         index = _rollback_frame_index(self._redo_frames, counter)
         if index is None:
-            return False
+            return None
 
         frame = self._redo_frames.pop(index)
         self._restore_snapshot(frame.identity, frame.after)
@@ -913,7 +1247,7 @@ class RwkvStatefulReviewerBackend:
                 frame, counter=next_counter if next_counter is not None else counter
             ),
         )
-        return True
+        return frame.identity.card_id
 
     def _store_transition(
         self,
@@ -1031,32 +1365,77 @@ class RwkvStatefulReviewerBackend:
         self._prediction_cache.clear()
 
 
-def record_collection_undo(changes: object) -> None:
+def record_collection_undo(changes: object) -> list[int]:
     """Roll back RWKV state after Anki undoes an answered review."""
 
-    _record_collection_undo_or_redo(changes, redo=False)
+    return _record_collection_undo_or_redo(changes, redo=False)
 
 
-def record_collection_redo(changes: object) -> None:
+def record_collection_redo(changes: object) -> list[int]:
     """Restore RWKV state after Anki redoes an answered review."""
 
-    _record_collection_undo_or_redo(changes, redo=True)
+    return _record_collection_undo_or_redo(changes, redo=True)
 
 
-def _record_collection_undo_or_redo(changes: object, *, redo: bool) -> None:
+def _record_collection_undo_or_redo(changes: object, *, redo: bool) -> list[int]:
     backend = _reviewer_backend
     if backend is None:
-        return
+        return []
 
     counter = _undo_result_counter(changes)
     if counter is None:
-        return
+        return []
 
     next_counter = _undo_result_next_counter(changes)
     handler_name = "answer_redone" if redo else "answer_undone"
     handler = getattr(backend, handler_name, None)
     if callable(handler):
-        handler(counter, next_counter)
+        restored = handler(counter, next_counter)
+        if card_id := _valid_card_id(restored):
+            return [card_id]
+        if isinstance(restored, Sequence) and not isinstance(restored, str):
+            return [
+                card_id
+                for value in restored
+                if (card_id := _valid_card_id(value)) is not None
+            ]
+
+    return []
+
+
+def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> None:
+    valid_card_ids = [
+        card_id for value in card_ids if (card_id := _valid_card_id(value)) is not None
+    ]
+    if not valid_card_ids:
+        return
+
+    queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
+    if not isinstance(queue, list):
+        queue = []
+        setattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, queue)
+    queue.extend(valid_card_ids)
+
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    if not isinstance(answered_ids, list):
+        return
+
+    for card_id in valid_card_ids:
+        for index in range(len(answered_ids) - 1, -1, -1):
+            if answered_ids[index] == card_id:
+                del answered_ids[index]
+                break
+
+
+def pop_reviewer_undo_card_id(reviewer: object) -> int | None:
+    queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
+    if not isinstance(queue, list):
+        return None
+
+    while queue:
+        if card_id := _valid_card_id(queue.pop(0)):
+            return card_id
+    return None
 
 
 def _current_undo_counter(reviewer: object) -> int | None:
@@ -1086,6 +1465,14 @@ def _undo_result_next_counter(changes: object) -> int | None:
 
 def _valid_counter(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _valid_card_id(value: object) -> int | None:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        else None
+    )
 
 
 def _rollback_frame_index(
@@ -1197,58 +1584,27 @@ class _RwkvReviewRetrievabilityCacheWriter:
 
         rows = self._rows
         self._rows = []
+        backend = getattr(self._col, "_backend", None)
+        store_rows = getattr(backend, "set_rwkv_review_retrievability_cache_rows", None)
+        if not callable(store_rows):
+            logger.debug(
+                "RWKV review retrievability cache skipped: backend unavailable"
+            )
+            return
+
         try:
-            _ensure_rwkv_review_retrievability_cache_table(self._col)
-            self._col.db.executemany(
-                f"""
-                INSERT OR REPLACE INTO {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
-                    (revlog_id, prediction, source, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                rows,
+            store_rows(
+                source=self._source,
+                rows=[
+                    scheduler_pb2.RwkvReviewRetrievabilityCacheRowsRequest.Row(
+                        revlog_id=review_id,
+                        prediction=prediction,
+                    )
+                    for review_id, prediction, _, _ in rows
+                ],
             )
         except Exception:
             logger.exception("failed to store RWKV review retrievability cache")
-
-
-def _ensure_rwkv_review_retrievability_cache_table(col: object) -> None:
-    db = getattr(col, "db", None)
-    execute = getattr(db, "execute", None)
-    if not callable(execute):
-        return
-
-    required_columns = {"revlog_id", "prediction", "source", "updated_at"}
-    columns = _rwkv_review_retrievability_cache_columns(col)
-    if columns and not required_columns.issubset(columns):
-        execute(f"DROP TABLE IF EXISTS {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}")
-
-    execute(f"""
-    CREATE TABLE IF NOT EXISTS {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
-        revlog_id INTEGER PRIMARY KEY,
-        prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
-        source TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-    )
-    """)
-
-
-def _rwkv_review_retrievability_cache_columns(col: object) -> set[str]:
-    db = getattr(col, "db", None)
-    all_rows = getattr(db, "all", None)
-    if not callable(all_rows):
-        return set()
-
-    try:
-        rows = all_rows(f"PRAGMA table_info({_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE})")
-    except Exception:
-        logger.debug("failed to inspect RWKV review retrievability cache table")
-        return set()
-
-    return {
-        column_name
-        for row in rows
-        if len(row) > 1 and isinstance((column_name := row[1]), str)
-    }
 
 
 def set_reviewer_backend(
@@ -1405,13 +1761,20 @@ def record_reviewer_answer(
         ) and not _prepare_reviewer_backend_for_review(reviewer):
             logger.debug("RWKV answer update skipped: warm-up pending")
             return
+        before_generation = _reviewer_backend_state_generation()
+        answer_key = _speculative_review_answer_key(
+            reviewer=reviewer,
+            card=card,
+            ease=ease,
+            base_state_generation=before_generation,
+        )
         _reviewer_backend.review_answered(
             reviewer=reviewer,
             card=card,
             ease=ease,
         )
-        _store_answered_card_rwkv_review_retrievability(reviewer, card)
-        _store_answered_card_rwkv_s90(reviewer, card, ease)
+        if answer_key is not None:
+            setattr(reviewer, _RWKV_REVIEW_LAST_ANSWER_KEY_ATTR, answer_key)
         card_id = _card_id(card)
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
@@ -1496,6 +1859,268 @@ def prepare_reviewer_queue_order(reviewer: object) -> None:
     )
 
 
+def prepare_reviewer_queue_order_async_work(
+    reviewer: object,
+    *,
+    reason: str = "review queue",
+) -> RwkvReviewQueueOrderAsyncWork | None:
+    """Build immutable RWKV queue scoring work while holding collection access.
+
+    The returned work can be scored on a non-collection worker. Installation must
+    still validate the backend state generation before replacing queue scores.
+    """
+
+    start = time.monotonic()
+    deck_id = _current_deck_id(reviewer)
+    if deck_id is None:
+        _clear_rwkv_review_queue_scores(reviewer)
+        return None
+
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    if not (
+        isinstance(deck_config, dict)
+        and _rwkv_review_config_enabled(deck_config)
+        and _rwkv_review_instant_order_enabled(deck_config)
+        and _review_order_uses_retrievability(deck_config)
+    ):
+        _clear_rwkv_review_queue_scores(reviewer, deck_id)
+        return None
+
+    if _reviewer_backend is None:
+        configure_start = time.monotonic()
+        configure_reviewer_backend_from_environment()
+        logger.debug(
+            "RWKV async %s backend configure finished: deck_id=%s backend=%s "
+            "elapsed_ms=%.1f",
+            reason,
+            deck_id,
+            type(_reviewer_backend).__name__ if _reviewer_backend is not None else None,
+            (time.monotonic() - configure_start) * 1000,
+        )
+    if _reviewer_backend is None:
+        _clear_rwkv_review_queue_scores(reviewer, deck_id)
+        return None
+
+    if not _reviewer_backend_accepts_review_inputs():
+        logger.debug(
+            "RWKV async %s scoring skipped: deck_id=%s input_scoring=False",
+            reason,
+            deck_id,
+        )
+        return None
+
+    try:
+        warmup_start = time.monotonic()
+        warmed_up = _prepare_reviewer_backend_for_review(reviewer)
+        warmup_elapsed_ms = (time.monotonic() - warmup_start) * 1000
+        if not warmed_up:
+            _clear_rwkv_review_queue_scores(reviewer, deck_id)
+            logger.debug(
+                "RWKV async %s scoring skipped: deck_id=%s warmup_elapsed_ms=%.1f",
+                reason,
+                deck_id,
+                warmup_elapsed_ms,
+            )
+            return None
+
+        batch_size = _rwkv_review_batch_size(deck_config)
+        state_generation = _reviewer_backend_state_generation()
+        candidate_work = _candidate_refreshed_rwkv_review_queue_async_work(
+            reviewer=reviewer,
+            deck_id=deck_id,
+            deck_config=deck_config,
+            reason=reason,
+            batch_size=batch_size,
+            state_generation=state_generation,
+            warmup_elapsed_ms=warmup_elapsed_ms,
+            start=start,
+        )
+        if candidate_work is not None:
+            return candidate_work
+
+        input_build = _rwkv_review_input_batches_for_deck_review_queue(
+            reviewer=reviewer,
+            deck_id=deck_id,
+            batch_size_override=batch_size,
+        )
+        if input_build is None:
+            logger.debug(
+                "RWKV async %s scoring skipped: deck_id=%s deck_input_build=False",
+                reason,
+                deck_id,
+            )
+            return None
+
+        return _rwkv_review_queue_async_work_from_input_build(
+            deck_id=deck_id,
+            reason=reason,
+            batch_size=batch_size,
+            state_generation=state_generation,
+            input_build=input_build,
+            warmup_elapsed_ms=warmup_elapsed_ms,
+            build_start=start,
+            fresh_for_backend_state=True,
+        )
+    except Exception:
+        logger.exception("RWKV async %s scoring preparation failed", reason)
+        _clear_rwkv_review_queue_scores(reviewer, deck_id)
+        return None
+
+
+def score_reviewer_queue_order_async_work(
+    work: RwkvReviewQueueOrderAsyncWork,
+) -> RwkvReviewQueueOrderAsyncResult:
+    start = time.monotonic()
+    predictions = list(work.predictions)
+    requests_by_index = list(work.requests_by_index)
+    runtime_batch_size = min(
+        _rwkv_retrievability_batch_size(work.batch_size),
+        _MIN_RWKV_REVIEW_BATCH_SIZE,
+    )
+    for missing_offset in range(0, len(requests_by_index), runtime_batch_size):
+        if _reviewer_backend_state_generation() != work.state_generation:
+            logger.debug(
+                "RWKV async %s scoring aborted after state advance: deck_id=%s "
+                "missing_offset=%s state_generation=%s current_generation=%s",
+                work.reason,
+                work.deck_id,
+                missing_offset,
+                work.state_generation,
+                _reviewer_backend_state_generation(),
+            )
+            break
+
+        batch_requests_by_index = requests_by_index[
+            missing_offset : missing_offset + runtime_batch_size
+        ]
+        batch_start = time.monotonic()
+        logger.debug(
+            "RWKV async review input runtime batch started: deck_id=%s "
+            "missing_offset=%s size=%s batch_size=%s configured_batch_size=%s "
+            "cache_hits=%s",
+            work.deck_id,
+            missing_offset,
+            len(batch_requests_by_index),
+            runtime_batch_size,
+            work.batch_size,
+            work.cache_hits,
+        )
+        batch_predictions = _predict_retrievability_requests_uncached(
+            [request for _, request in batch_requests_by_index]
+        )
+        batch_predict_elapsed_ms = (time.monotonic() - batch_start) * 1000
+        if len(batch_predictions) != len(batch_requests_by_index):
+            raise ValueError("RWKV batch prediction count mismatch")
+
+        for (index, _), prediction in zip(
+            batch_requests_by_index,
+            batch_predictions,
+            strict=True,
+        ):
+            predictions[index] = prediction
+        logger.debug(
+            "RWKV async review input runtime batch processed: deck_id=%s "
+            "missing_offset=%s size=%s batch_size=%s configured_batch_size=%s "
+            "predict_elapsed_ms=%.1f elapsed_ms=%.1f",
+            work.deck_id,
+            missing_offset,
+            len(batch_requests_by_index),
+            runtime_batch_size,
+            work.batch_size,
+            batch_predict_elapsed_ms,
+            (time.monotonic() - batch_start) * 1000,
+        )
+
+    scores = _scores_from_input_predictions(work.inputs_by_card_id, predictions)
+    if work.existing_scores is not None:
+        fresh_scores_by_card_id = dict(scores)
+        merged_scores = dict(work.existing_scores)
+        for card_id in work.candidate_card_ids:
+            if card_id in fresh_scores_by_card_id:
+                merged_scores[card_id] = fresh_scores_by_card_id[card_id]
+            else:
+                merged_scores.pop(card_id, None)
+        scores = sorted(merged_scores.items())
+
+    score_elapsed_ms = (time.monotonic() - start) * 1000
+    logger.debug(
+        "RWKV async %s inputs scored: deck_id=%s searched=%s loaded=%s "
+        "with_state=%s enabled=%s inputs=%s scored=%s deck_configs=%s "
+        "batch_size=%s cache_hits=%s runtime_requests=%s load_elapsed_ms=%.1f "
+        "candidate_elapsed_ms=%.1f prediction_elapsed_ms=%.1f",
+        work.reason,
+        work.deck_id,
+        work.input_build.searched_rows,
+        work.input_build.parsed_cards,
+        work.input_build.cards_with_state,
+        work.input_build.eligible_cards,
+        len(work.inputs_by_card_id),
+        len(scores),
+        work.input_build.deck_configs,
+        work.batch_size,
+        work.cache_hits,
+        len(work.requests_by_index),
+        work.input_build.load_elapsed_ms,
+        work.input_build.candidate_elapsed_ms,
+        score_elapsed_ms,
+    )
+    return RwkvReviewQueueOrderAsyncResult(
+        deck_id=work.deck_id,
+        reason=work.reason,
+        state_generation=work.state_generation,
+        scores=tuple(scores),
+        input_build=work.input_build,
+        cache_hits=work.cache_hits,
+        runtime_requests=len(work.requests_by_index),
+        warmup_elapsed_ms=work.warmup_elapsed_ms,
+        build_elapsed_ms=work.build_elapsed_ms,
+        score_elapsed_ms=score_elapsed_ms,
+        existing_scores=work.existing_scores,
+        candidate_card_ids=work.candidate_card_ids,
+        fresh_for_backend_state=work.fresh_for_backend_state,
+    )
+
+
+def install_reviewer_queue_order_async_result(
+    reviewer: object,
+    result: RwkvReviewQueueOrderAsyncResult,
+) -> bool:
+    current_generation = _reviewer_backend_state_generation()
+    if current_generation != result.state_generation:
+        logger.debug(
+            "RWKV async %s scores discarded after state advance: deck_id=%s "
+            "state_generation=%s current_generation=%s scored=%s",
+            result.reason,
+            result.deck_id,
+            result.state_generation,
+            current_generation,
+            len(result.scores),
+        )
+        return False
+
+    set_start = time.monotonic()
+    _set_rwkv_review_queue_scores(
+        reviewer,
+        result.deck_id,
+        result.scores,
+        fresh_for_backend_state=result.fresh_for_backend_state,
+    )
+    logger.debug(
+        "installed RWKV async %s scores: deck_id=%s scored=%s "
+        "warmup_elapsed_ms=%.1f build_elapsed_ms=%.1f score_elapsed_ms=%.1f "
+        "set_elapsed_ms=%.1f total_elapsed_ms=%.1f",
+        result.reason,
+        result.deck_id,
+        len(result.scores),
+        result.warmup_elapsed_ms,
+        result.build_elapsed_ms,
+        result.score_elapsed_ms,
+        (time.monotonic() - set_start) * 1000,
+        result.build_elapsed_ms + result.score_elapsed_ms,
+    )
+    return True
+
+
 def reviewer_queue_order_enabled(reviewer: object) -> bool:
     deck_id = _current_deck_id(reviewer)
     if deck_id is None:
@@ -1523,6 +2148,117 @@ def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
     interval = _rwkv_review_refresh_interval(deck_config)
     return answered_count > 0 and answered_count % interval == 0
+
+
+def reviewer_queue_order_refresh_due_after_next_answer(reviewer: object) -> bool:
+    card = getattr(reviewer, "card", None)
+    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    if deck_config is None or not (
+        _rwkv_review_instant_order_enabled(deck_config)
+        and _review_order_uses_retrievability(deck_config)
+    ):
+        return False
+
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
+    interval = _rwkv_review_refresh_interval(deck_config)
+    return (answered_count + 1) > 0 and (answered_count + 1) % interval == 0
+
+
+def precompute_reviewer_queue_order_for_answer(reviewer: object) -> None:
+    """Speculatively score exact post-answer queue maps for the visible card."""
+
+    backend = _reviewer_backend
+    if backend is None or not _reviewer_backend_cacheable():
+        return
+    predict_future = getattr(backend, "predict_retrievability_after_review", None)
+    if not callable(predict_future):
+        return
+
+    deck_id = _current_deck_id(reviewer)
+    card = getattr(reviewer, "card", None)
+    card_id = _card_id(card)
+    if deck_id is None or card_id is None:
+        return
+
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    if not (
+        isinstance(deck_config, dict)
+        and _rwkv_review_config_enabled(deck_config)
+        and _rwkv_review_instant_order_enabled(deck_config)
+        and _review_order_uses_retrievability(deck_config)
+        and not _rwkv_review_candidate_refresh_enabled(deck_config)
+        and reviewer_queue_order_refresh_due_after_next_answer(reviewer)
+    ):
+        return
+
+    if not _prepare_reviewer_backend_for_review(reviewer):
+        logger.debug("RWKV speculative queue refresh skipped: warm-up pending")
+        return
+
+    start = time.monotonic()
+    batch_size = _rwkv_review_batch_size(deck_config)
+    input_build = _rwkv_review_input_batches_for_deck_review_queue(
+        reviewer=reviewer,
+        deck_id=deck_id,
+        batch_size_override=batch_size,
+    )
+    if input_build is None:
+        return
+
+    inputs_by_card_id = [
+        (candidate_card_id, review_input)
+        for candidate_card_id, review_input in _rwkv_review_input_build_inputs(
+            input_build
+        )
+        if candidate_card_id != card_id
+    ]
+    candidate_card_ids = tuple(card_id for card_id, _ in inputs_by_card_id)
+    if not candidate_card_ids:
+        return
+
+    cache: dict[
+        RwkvSpeculativeReviewAnswerKey,
+        RwkvSpeculativeReviewQueueScores,
+    ] = {}
+    base_state_generation = _reviewer_backend_state_generation()
+    snapshot = cast(Any, backend).cache_snapshot()
+    for ease in (1, 2, 3, 4):
+        answer_input = _rwkv_answer_input(reviewer, card, ease)
+        key = _speculative_review_answer_key(
+            reviewer=reviewer,
+            card=card,
+            ease=ease,
+            base_state_generation=base_state_generation,
+        )
+        if answer_input is None or key is None:
+            continue
+        score_start = time.monotonic()
+        scores = predict_future(
+            answer=answer_input,
+            inputs_by_card_id=inputs_by_card_id,
+            snapshot=snapshot,
+        )
+        if scores is None:
+            return
+        cache[key] = RwkvSpeculativeReviewQueueScores(
+            key=key,
+            candidate_card_ids=candidate_card_ids,
+            scores=tuple(scores),
+            elapsed_ms=(time.monotonic() - score_start) * 1000,
+        )
+
+    if cache:
+        setattr(reviewer, _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR, cache)
+        logger.debug(
+            "RWKV speculative queue scores prepared: deck_id=%s card_id=%s "
+            "eases=%s candidates=%s elapsed_ms=%.1f",
+            deck_id,
+            card_id,
+            sorted(key[1] for key in cache),
+            len(candidate_card_ids),
+            (time.monotonic() - start) * 1000,
+        )
 
 
 def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
@@ -2087,10 +2823,74 @@ def _prepare_rwkv_review_scores_for_deck(
             )
             return
         deck_scores_start = time.monotonic()
+        batch_size = _rwkv_review_batch_size(deck_config)
+        candidate_scores = _candidate_refreshed_rwkv_review_queue_scores_for_deck(
+            reviewer=reviewer,
+            deck_id=deck_id,
+            deck_config=deck_config,
+            batch_size=batch_size,
+        )
+        deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
+        if candidate_scores is not None:
+            scores, candidates, scored = candidate_scores
+            set_start = time.monotonic()
+            _set_rwkv_review_queue_scores(
+                reviewer,
+                deck_id,
+                scores,
+                fresh_for_backend_state=False,
+            )
+            set_elapsed_ms = (time.monotonic() - set_start) * 1000
+            logger.debug(
+                "prepared RWKV %s scores from candidate refresh: deck_id=%s "
+                "candidates=%s scored=%s retained=%s warmup_elapsed_ms=%.1f "
+                "scores_elapsed_ms=%.1f set_elapsed_ms=%.1f elapsed_ms=%.1f",
+                reason,
+                deck_id,
+                candidates,
+                scored,
+                len(scores),
+                warmup_elapsed_ms,
+                deck_scores_elapsed_ms,
+                set_elapsed_ms,
+                (time.monotonic() - start) * 1000,
+            )
+            return
+
+        deck_scores_start = time.monotonic()
+        speculative_scores = _speculative_rwkv_review_queue_scores_for_deck(
+            reviewer=reviewer,
+            deck_id=deck_id,
+            batch_size=batch_size,
+        )
+        deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
+        if speculative_scores is not None:
+            scores, input_build, speculative_elapsed_ms = speculative_scores
+            set_start = time.monotonic()
+            _set_rwkv_review_queue_scores(reviewer, deck_id, scores)
+            set_elapsed_ms = (time.monotonic() - set_start) * 1000
+            logger.debug(
+                "prepared RWKV %s scores from speculative exact refresh: "
+                "deck_id=%s candidates=%s scored=%s warmup_elapsed_ms=%.1f "
+                "verify_elapsed_ms=%.1f speculative_elapsed_ms=%.1f "
+                "set_elapsed_ms=%.1f elapsed_ms=%.1f",
+                reason,
+                deck_id,
+                input_build.searched_rows,
+                len(scores),
+                warmup_elapsed_ms,
+                deck_scores_elapsed_ms,
+                speculative_elapsed_ms,
+                set_elapsed_ms,
+                (time.monotonic() - start) * 1000,
+            )
+            return
+
+        deck_scores_start = time.monotonic()
         deck_scores = _rwkv_review_queue_scores_for_deck(
             reviewer=reviewer,
             deck_id=deck_id,
-            batch_size=_rwkv_review_batch_size(deck_config),
+            batch_size=batch_size,
         )
         deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
         if deck_scores is not None:
@@ -2119,7 +2919,7 @@ def _prepare_rwkv_review_scores_for_deck(
         scores = _rwkv_review_queue_scores(
             reviewer=reviewer,
             card_ids=card_ids,
-            batch_size=_rwkv_review_batch_size(deck_config),
+            batch_size=batch_size,
         )
         scores_elapsed_ms = (time.monotonic() - scores_start) * 1000
 
@@ -2339,6 +3139,42 @@ def rwkv_review_input(
     )
 
 
+def _rwkv_answer_input(
+    reviewer: object,
+    card: object,
+    ease: int,
+) -> RwkvReviewInput | None:
+    identity = rwkv_review_identity(reviewer, card)
+    if identity is None:
+        return None
+    return rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=identity,
+        ease=ease,
+    )
+
+
+def _speculative_review_answer_key(
+    *,
+    reviewer: object,
+    card: object,
+    ease: int,
+    base_state_generation: int,
+) -> RwkvSpeculativeReviewAnswerKey | None:
+    card_id = _card_id(card)
+    deck_id = _current_deck_id(reviewer)
+    if card_id is None or deck_id is None:
+        return None
+    return (
+        card_id,
+        ease,
+        _duration_millis(card, ease),
+        deck_id,
+        base_state_generation,
+    )
+
+
 def _rwkv_target_retentions(
     *,
     reviewer: object,
@@ -2528,102 +3364,27 @@ def _current_reviewer_prediction(
     return prediction
 
 
-def _store_answered_card_rwkv_s90(reviewer: object, card: object, ease: int) -> None:
+def set_answer_rwkv_s90(
+    answer: object,
+    reviewer: object,
+    card: object,
+    ease: int,
+) -> None:
     prediction = _current_reviewer_prediction(reviewer, card)
     if prediction is None or not prediction.review_enabled:
         return
 
+    if _valid_probability(prediction.retrievability):
+        setattr(answer, "rwkv_retrievability", float(prediction.retrievability))
+
     s90 = _s90_for_ease(prediction.s90_overrides, ease)
     if s90 is None:
         return
-
-    load = getattr(card, "load", None)
-    if callable(load):
-        try:
-            load()
-        except Exception:
-            logger.debug("failed to reload answered card before storing RWKV S90")
-            return
-
-    memory_state = getattr(card, "memory_state", None)
-    if memory_state is None:
-        memory_state = cards_pb2.FsrsMemoryState(difficulty=5.0)
-        setattr(card, "memory_state", memory_state)
-    elif getattr(memory_state, "difficulty", 0) <= 0:
-        memory_state.difficulty = 5.0
-
-    memory_state.stability = float(s90)
-
-    col = getattr(card, "col", None)
-    if col is None:
-        mw = getattr(reviewer, "mw", None)
-        col = getattr(mw, "col", None)
-    update_card = getattr(col, "update_card", None)
-    if not callable(update_card):
+    if not math.isfinite(s90) or s90 <= 0:
+        logger.debug("invalid RWKV S90 ignored for answer: %s", s90)
         return
 
-    try:
-        update_card(card, skip_undo_entry=True)
-    except Exception:
-        logger.exception("failed to store RWKV S90 on answered card")
-
-
-def _store_answered_card_rwkv_review_retrievability(
-    reviewer: object,
-    card: object,
-) -> None:
-    prediction = _current_reviewer_prediction(reviewer, card)
-    if (
-        prediction is None
-        or not prediction.review_enabled
-        or not _valid_probability(prediction.retrievability)
-    ):
-        return
-
-    card_id = _card_id(card)
-    if card_id is None:
-        return
-
-    review_id = _latest_rwkv_review_id_for_card(reviewer, card_id)
-    if review_id is None:
-        logger.debug(
-            "RWKV review retrievability cache skipped: no review row for card %s",
-            card_id,
-        )
-        return
-
-    writer = _RwkvReviewRetrievabilityCacheWriter(reviewer, source="rwkv_review")
-    writer.record(review_id, prediction.retrievability)
-    writer.flush()
-
-
-def _latest_rwkv_review_id_for_card(reviewer: object, card_id: int) -> int | None:
-    col = _collection(reviewer)
-    db = getattr(col, "db", None)
-    scalar = getattr(db, "scalar", None)
-    if not callable(scalar):
-        return None
-
-    try:
-        review_id = scalar(
-            """
-            select id
-            from revlog
-            where cid = ?
-                and ease between 1 and 4
-                and type in (0, 1, 2, 3)
-            order by id desc
-            limit 1
-            """,
-            card_id,
-        )
-    except Exception:
-        logger.debug("failed to find latest RWKV review id for card %s", card_id)
-        return None
-
-    if isinstance(review_id, int) and not isinstance(review_id, bool) and review_id > 0:
-        return review_id
-    return None
+    setattr(answer, "rwkv_s90", float(s90))
 
 
 def _s90_for_ease(overrides: RwkvIntervalOverride, ease: int) -> int | None:
@@ -3524,7 +4285,1145 @@ def build_rwkv_state_cache_with_progress(
     _run_on_main(mw, start_build)
 
 
-def reschedule_rwkv_review_cards_with_progress(mw: object) -> None:
+def simulate_rwkv_workload_bytes(
+    data: bytes,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> bytes:
+    request = scheduler_pb2.SimulateFsrsReviewRequest()
+    request.ParseFromString(data)
+    response = simulate_rwkv_workload(request, cancel_event=cancel_event)
+    return response.SerializeToString()
+
+
+def start_rwkv_workload_bytes(data: bytes) -> bytes:
+    global _rwkv_workload_job
+
+    cancel_rwkv_workload()
+    job = RwkvWorkloadJob(cancel_event=threading.Event())
+    with _rwkv_workload_job_lock:
+        _rwkv_workload_job = job
+    _set_rwkv_workload_progress(0, 0)
+
+    def run() -> None:
+        try:
+            job.result = simulate_rwkv_workload_bytes(
+                bytes(data),
+                cancel_event=job.cancel_event,
+            )
+        except Exception as exc:
+            job.error = str(exc)
+        finally:
+            job.done = True
+
+    threading.Thread(
+        target=run,
+        name="rwkv-workload-simulation",
+        daemon=True,
+    ).start()
+    return b""
+
+
+def rwkv_workload_result_bytes() -> bytes | None:
+    with _rwkv_workload_job_lock:
+        job = _rwkv_workload_job
+    if job is None:
+        raise ValueError("RWKV workload simulation has not been started")
+    if not job.done:
+        return None
+    if job.error is not None:
+        raise ValueError(job.error)
+    return job.result or b""
+
+
+def cancel_rwkv_workload() -> None:
+    with _rwkv_workload_job_lock:
+        job = _rwkv_workload_job
+    if job is not None and not job.done:
+        job.cancel_event.set()
+
+
+def rwkv_workload_progress_bytes() -> bytes:
+    with _rwkv_workload_progress_lock:
+        progress = _rwkv_workload_progress
+    return collection_pb2.ComputeRetentionProgress(
+        current=max(0, int(progress.current)),
+        total=max(0, int(progress.total)),
+    ).SerializeToString()
+
+
+def _set_rwkv_workload_progress(current: int, total: int) -> None:
+    global _rwkv_workload_progress
+    with _rwkv_workload_progress_lock:
+        _rwkv_workload_progress = RwkvWorkloadProgress(
+            current=max(0, int(current)),
+            total=max(0, int(total)),
+        )
+
+
+def _check_rwkv_workload_cancel(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("RWKV workload simulation interrupted")
+
+
+def _rwkv_workload_progress_total(min_dr: int, max_dr: int) -> int:
+    return _rwkv_workload_progress_total_for_step(min_dr, max_dr, 1)
+
+
+def _rwkv_workload_progress_total_for_step(
+    min_dr: int,
+    max_dr: int,
+    target_dr_step: int,
+) -> int:
+    target_drs = _rwkv_workload_target_drs(min_dr, max_dr, target_dr_step)
+    return len(target_drs) + 1 if target_drs else 0
+
+
+def _rwkv_workload_target_drs(
+    min_dr: int,
+    max_dr: int,
+    target_dr_step: int,
+) -> list[int]:
+    if min_dr > max_dr:
+        return []
+    step = max(1, int(target_dr_step))
+    values = list(range(min_dr, max_dr + 1, step))
+    if values[-1] != max_dr:
+        values.append(max_dr)
+    return values
+
+
+def _rwkv_workload_target_dr_step(
+    request: scheduler_pb2.SimulateFsrsReviewRequest,
+) -> int:
+    return max(1, int(request.rwkv_workload_target_step or 1))
+
+
+def _rwkv_workload_state_update_interval(
+    request: scheduler_pb2.SimulateFsrsReviewRequest,
+) -> int:
+    return max(1, int(request.rwkv_workload_state_update_interval or 1))
+
+
+def _rwkv_sampled_review_limit(review_limit: int, input_scale: float) -> int:
+    if review_limit <= 0:
+        return 0
+    if input_scale <= 1.0:
+        return review_limit
+    return max(1, int(round(review_limit / input_scale)))
+
+
+def _rwkv_workload_review_count_cap(review_limit: int, days_to_simulate: int) -> int:
+    return min(
+        2**32 - 1,
+        max(0, int(review_limit)) * max(0, int(days_to_simulate)),
+    )
+
+
+def _sample_rwkv_simulation_inputs(
+    inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+    sample_limit: int,
+) -> list[tuple[int, RwkvReviewInput, int]]:
+    if sample_limit <= 0 or len(inputs) <= sample_limit:
+        return list(inputs)
+
+    sorted_inputs = sorted(inputs, key=lambda item: item[0])
+    total = len(sorted_inputs)
+    if sample_limit == 1:
+        return [sorted_inputs[total // 2]]
+    return [
+        sorted_inputs[round(index * (total - 1) / (sample_limit - 1))]
+        for index in range(sample_limit)
+    ]
+
+
+def simulate_rwkv_workload(
+    request: scheduler_pb2.SimulateFsrsReviewRequest,
+    mw: object | None = None,
+    cancel_event: threading.Event | None = None,
+) -> scheduler_pb2.SimulateFsrsWorkloadResponse:
+    """Simulate a fixed-DR workload using the current desktop RWKV state cache."""
+
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+
+    reviewer = SimpleNamespace(mw=mw)
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        raise ValueError("RWKV backend is not available")
+    if not _reviewer_backend_warmed_up(reviewer) and not load_rwkv_state_cache(mw):
+        raise ValueError("RWKV state cache is not ready. Build it first.")
+    if not _reviewer_backend_accepts_review_inputs():
+        raise ValueError("RWKV backend does not support workload simulation")
+
+    input_build = _rwkv_review_input_batches_for_search(
+        reviewer=reviewer,
+        search=request.search,
+        include_suspended_review=False,
+        batch_size_override=None,
+    )
+    if input_build is None:
+        raise ValueError("Unable to load RWKV review inputs for the requested search")
+
+    all_simulation_inputs = _rwkv_simulation_inputs(input_build)
+    sample_limit = max(0, int(request.rwkv_workload_sample_limit or 0))
+    simulation_inputs = _sample_rwkv_simulation_inputs(
+        all_simulation_inputs,
+        sample_limit,
+    )
+    input_scale = (
+        len(all_simulation_inputs) / len(simulation_inputs)
+        if simulation_inputs
+        else 1.0
+    )
+    response = scheduler_pb2.SimulateFsrsWorkloadResponse()
+    response.reviewless_end_memorized = 0.0
+    response.reviewless_end_weighted_memorized = 0.0
+    _set_rwkv_workload_progress(0, 0)
+    if not simulation_inputs:
+        return response
+
+    backend = _reviewer_backend
+    cache_snapshot = getattr(backend, "cache_snapshot", None)
+    restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
+    if not callable(cache_snapshot) or not callable(restore_cache_snapshot):
+        raise ValueError("RWKV backend does not support simulator snapshots")
+
+    original_snapshot = cache_snapshot()
+    review_model = _rwkv_simulator_review_model(reviewer)
+    _apply_rwkv_review_time_model(response, review_model)
+    days_to_simulate = max(0, int(request.days_to_simulate))
+    review_limit = max(0, int(request.review_limit))
+    sampled_review_limit = _rwkv_sampled_review_limit(review_limit, input_scale)
+    review_count_cap = _rwkv_workload_review_count_cap(
+        review_limit,
+        days_to_simulate,
+    )
+    target_dr_step = _rwkv_workload_target_dr_step(request)
+    state_update_interval = _rwkv_workload_state_update_interval(request)
+    progress_total = _rwkv_workload_progress_total_for_step(
+        _RWKV_WORKLOAD_MIN_DR,
+        _RWKV_WORKLOAD_MAX_DR,
+        target_dr_step,
+    )
+    _set_rwkv_workload_progress(0, progress_total)
+    restore_snapshot_on_exit = False
+
+    def report_progress(current: int, total: int) -> None:
+        _check_rwkv_workload_cancel(cancel_event)
+        _set_rwkv_workload_progress(current, total)
+
+    try:
+        _check_rwkv_workload_cancel(cancel_event)
+        start = time.monotonic()
+        fast_output = _simulate_rwkv_workload_with_embedded_runtime(
+            backend=backend,
+            simulation_inputs=simulation_inputs,
+            snapshot=original_snapshot,
+            days_to_simulate=days_to_simulate,
+            review_limit=sampled_review_limit,
+            target_dr_step=target_dr_step,
+            state_update_interval=state_update_interval,
+            review_model=review_model,
+            progress=report_progress,
+        )
+        if fast_output is not None:
+            _check_rwkv_workload_cancel(cancel_event)
+            _apply_rwkv_workload_output(response, fast_output)
+            _scale_rwkv_workload_response(
+                response,
+                input_scale,
+                review_count_cap=review_count_cap,
+            )
+            _enforce_monotonic_rwkv_workload_review_counts(response)
+            logger.debug(
+                "RWKV workload simulation finished: search=%r inputs=%s days=%s "
+                "sampled_inputs=%s sample_limit=%s input_scale=%.3f dr_step=%s "
+                "review_limit=%s sampled_review_limit=%s state_update_interval=%s "
+                "path=embedded elapsed_ms=%.1f",
+                request.search,
+                len(all_simulation_inputs),
+                days_to_simulate,
+                len(simulation_inputs),
+                sample_limit,
+                input_scale,
+                target_dr_step,
+                review_limit,
+                sampled_review_limit,
+                state_update_interval,
+                (time.monotonic() - start) * 1000,
+            )
+            return response
+
+        restore_snapshot_on_exit = True
+        restore_cache_snapshot(original_snapshot)
+        _check_rwkv_workload_cancel(cancel_event)
+        reviewless_memorized, reviewless_weighted = _rwkv_simulation_memorized(
+            simulation_inputs,
+            days_to_simulate,
+        )
+        response.reviewless_end_memorized = reviewless_memorized
+        response.reviewless_end_weighted_memorized = reviewless_weighted
+        report_progress(1, progress_total)
+
+        start = time.monotonic()
+        for offset, dr in enumerate(
+            _rwkv_workload_target_drs(
+                _RWKV_WORKLOAD_MIN_DR,
+                _RWKV_WORKLOAD_MAX_DR,
+                target_dr_step,
+            ),
+            start=2,
+        ):
+            _check_rwkv_workload_cancel(cancel_event)
+            target_retention = dr / 100.0
+            restore_cache_snapshot(original_snapshot)
+            point = _simulate_rwkv_workload_for_target(
+                simulation_inputs,
+                target_retention=target_retention,
+                days_to_simulate=days_to_simulate,
+                review_limit=sampled_review_limit,
+                state_update_interval=state_update_interval,
+                review_model=review_model,
+            )
+            response.memorized[dr] = point.memorized
+            response.weighted_memorized[dr] = point.weighted_memorized
+            response.cost[dr] = point.cost
+            response.review_count[dr] = point.review_count
+            report_progress(offset, progress_total)
+
+        _check_rwkv_workload_cancel(cancel_event)
+        _scale_rwkv_workload_response(
+            response,
+            input_scale,
+            review_count_cap=review_count_cap,
+        )
+        _enforce_monotonic_rwkv_workload_review_counts(response)
+        logger.debug(
+            "RWKV workload simulation finished: search=%r inputs=%s days=%s "
+            "sampled_inputs=%s sample_limit=%s input_scale=%.3f dr_step=%s "
+            "review_limit=%s sampled_review_limit=%s state_update_interval=%s "
+            "path=python elapsed_ms=%.1f",
+            request.search,
+            len(all_simulation_inputs),
+            days_to_simulate,
+            len(simulation_inputs),
+            sample_limit,
+            input_scale,
+            target_dr_step,
+            review_limit,
+            sampled_review_limit,
+            state_update_interval,
+            (time.monotonic() - start) * 1000,
+        )
+    finally:
+        if cancel_event is None or not cancel_event.is_set():
+            _set_rwkv_workload_progress(progress_total, progress_total)
+        if restore_snapshot_on_exit:
+            restore_cache_snapshot(original_snapshot)
+
+    return response
+
+
+def _rwkv_simulation_inputs(
+    input_build: RwkvReviewInputBatchBuild,
+) -> list[tuple[int, RwkvReviewInput, int]]:
+    inputs: list[tuple[int, RwkvReviewInput, int]] = []
+    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
+        for card_id, review_input in inputs_by_card_id:
+            if review_input.card_type != CARD_TYPE_REV:
+                continue
+            if review_input.current_elapsed_days is None:
+                continue
+            inputs.append((card_id, review_input, batch_size))
+    return inputs
+
+
+def _simulate_rwkv_workload_with_embedded_runtime(
+    *,
+    backend: object,
+    simulation_inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+    snapshot: RwkvBackendCacheSnapshot,
+    days_to_simulate: int,
+    review_limit: int,
+    target_dr_step: int,
+    state_update_interval: int,
+    review_model: _RwkvSimulatorReviewModel,
+    progress: RwkvWorkloadProgressCallback | None,
+) -> object | None:
+    simulate_workload = getattr(backend, "simulate_workload", None)
+    if not callable(simulate_workload):
+        return None
+    return simulate_workload(
+        inputs=simulation_inputs,
+        snapshot=snapshot,
+        min_dr=_RWKV_WORKLOAD_MIN_DR,
+        max_dr=_RWKV_WORKLOAD_MAX_DR,
+        target_dr_step=target_dr_step,
+        days_to_simulate=days_to_simulate,
+        review_limit=review_limit,
+        state_update_interval=state_update_interval,
+        review_model=review_model,
+        progress=progress,
+    )
+
+
+def _apply_rwkv_workload_output(
+    response: scheduler_pb2.SimulateFsrsWorkloadResponse,
+    output: object,
+) -> None:
+    reviewless_memorized, reviewless_weighted, points = cast(
+        RwkvWorkloadOutput,
+        output,
+    )
+    response.reviewless_end_memorized = reviewless_memorized
+    response.reviewless_end_weighted_memorized = reviewless_weighted
+    for dr, memorized, weighted_memorized, cost, review_count in points:
+        response.memorized[dr] = memorized
+        response.weighted_memorized[dr] = weighted_memorized
+        response.cost[dr] = cost
+        response.review_count[dr] = review_count
+
+
+def _apply_rwkv_review_time_model(
+    response: scheduler_pb2.SimulateFsrsWorkloadResponse,
+    model: _RwkvSimulatorReviewModel,
+) -> None:
+    response.review_time_r_bucket_count = model.review_time_r_bucket_count
+    response.review_time_s_bucket_count = model.review_time_s_bucket_count
+    _replace_repeated(
+        response.review_time_again_seconds, model.review_time_again_seconds
+    )
+    _replace_repeated(response.review_time_hard_seconds, model.review_time_hard_seconds)
+    _replace_repeated(response.review_time_good_seconds, model.review_time_good_seconds)
+    _replace_repeated(response.review_time_easy_seconds, model.review_time_easy_seconds)
+    _replace_repeated(
+        response.review_time_sample_counts, model.review_time_sample_counts
+    )
+    _replace_repeated(response.review_time_again_coeffs, model.review_time_again_coeffs)
+    _replace_repeated(response.review_time_hard_coeffs, model.review_time_hard_coeffs)
+    _replace_repeated(response.review_time_good_coeffs, model.review_time_good_coeffs)
+    _replace_repeated(response.review_time_easy_coeffs, model.review_time_easy_coeffs)
+    _replace_repeated(
+        response.review_time_grade_weights, model.review_time_grade_weights
+    )
+    _replace_repeated(
+        response.review_time_transition_probs, model.review_time_transition_probs
+    )
+    _replace_repeated(
+        response.review_time_transition_counts, model.review_time_transition_counts
+    )
+    _replace_repeated(
+        response.review_time_success_grade_probs,
+        model.review_time_success_grade_probs,
+    )
+    _replace_repeated(
+        response.review_time_success_grade_counts,
+        model.review_time_success_grade_counts,
+    )
+
+
+def _replace_repeated(field: object, values: Sequence[object]) -> None:
+    repeated = cast(Any, field)
+    del repeated[:]
+    repeated.extend(values)
+
+
+def _scale_rwkv_workload_response(
+    response: scheduler_pb2.SimulateFsrsWorkloadResponse,
+    scale: float,
+    *,
+    review_count_cap: int | None = None,
+) -> None:
+    if scale != 1.0:
+        response.reviewless_end_memorized *= scale
+        response.reviewless_end_weighted_memorized *= scale
+        for mapping in (
+            response.memorized,
+            response.weighted_memorized,
+            response.cost,
+        ):
+            for key, value in list(mapping.items()):
+                mapping[key] = value * scale
+    for key, value in list(response.review_count.items()):
+        review_count = max(0, int(round(value * scale)))
+        if review_count_cap is not None:
+            review_count = min(review_count, review_count_cap)
+        response.review_count[key] = min(
+            2**32 - 1,
+            review_count,
+        )
+
+
+def _enforce_monotonic_rwkv_workload_review_counts(
+    response: scheduler_pb2.SimulateFsrsWorkloadResponse,
+) -> None:
+    _enforce_monotonic_uint_map(response.review_count)
+    for preset in response.preset_workload:
+        _enforce_monotonic_uint_map(preset.review_count)
+
+
+def _enforce_monotonic_uint_map(mapping: Any) -> None:
+    running = 0
+    for key in sorted(mapping):
+        running = max(running, int(mapping[key]))
+        mapping[key] = running
+
+
+def _simulate_rwkv_workload_for_target(
+    simulation_inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+    *,
+    target_retention: float,
+    days_to_simulate: int,
+    review_limit: int,
+    state_update_interval: int,
+    review_model: _RwkvSimulatorReviewModel,
+) -> _RwkvSimulationPoint:
+    predictions = _rwkv_simulation_predictions(
+        [
+            (
+                card_id,
+                _rwkv_simulation_query_input(review_input, target_retention, 0),
+                batch_size,
+            )
+            for card_id, review_input, batch_size in simulation_inputs
+        ]
+    )
+    cards = [
+        _rwkv_simulation_card(
+            review_input,
+            prediction,
+            target_retention=target_retention,
+        )
+        for (_, review_input, _), prediction in zip(
+            simulation_inputs,
+            predictions,
+            strict=True,
+        )
+        if prediction is not None
+    ]
+
+    total_cost = 0.0
+    review_count = 0
+    for day in range(days_to_simulate):
+        due_cards = [card for card in cards if card.due_day <= day]
+        due_cards.sort(
+            key=lambda card: (card.due_day, card.review_input.identity.card_id)
+        )
+        due_cards = due_cards[:review_limit] if review_limit else []
+
+        for card in due_cards:
+            prediction = _rwkv_simulation_prediction_for_card(
+                card,
+                target_retention=target_retention,
+                day=day,
+            )
+            if prediction is None:
+                card.due_day = day + 1
+                continue
+
+            retrievability = _valid_retrievability_or_default(
+                prediction.retrievability,
+                target_retention,
+            )
+            ease = _rwkv_simulation_grade(
+                review_model.probabilities_for(retrievability),
+                card.review_input.identity.card_id,
+                day,
+                card.reps,
+            )
+            grade_seconds = review_model.grade_seconds[ease - 1]
+            total_cost += grade_seconds
+            review_count += 1
+
+            answer_input = _rwkv_simulation_answer_input(
+                card,
+                target_retention=target_retention,
+                day=day,
+                ease=ease,
+                duration_millis=max(1, round(grade_seconds * 1000)),
+            )
+            if review_count % state_update_interval == 0:
+                _rwkv_simulation_store_answer(answer_input)
+
+            interval = _s90_for_ease(prediction.interval_overrides, ease)
+            if interval is None or interval < 1:
+                interval = 1
+            card.interval_days = interval
+            card.last_review_day = day
+            card.due_day = day + interval
+            card.reps += 1
+            if ease == 1:
+                card.lapses += 1
+
+    memorized, weighted_memorized = _rwkv_simulation_memorized_from_cards(
+        cards,
+        target_retention=target_retention,
+        day=days_to_simulate,
+    )
+    return _RwkvSimulationPoint(
+        memorized=memorized,
+        weighted_memorized=weighted_memorized,
+        cost=total_cost,
+        review_count=review_count,
+    )
+
+
+def _rwkv_simulation_card(
+    review_input: RwkvReviewInput,
+    prediction: RwkvReviewPrediction | None,
+    *,
+    target_retention: float,
+) -> _RwkvSimulationCard:
+    elapsed_days = _rwkv_input_elapsed_days(review_input)
+    interval_days = review_input.interval_days or 1
+    due_day = 0
+    if prediction is not None and prediction.retrievability is not None:
+        if prediction.retrievability > target_retention and prediction.current_interval:
+            due_day = max(1, prediction.current_interval - elapsed_days)
+    return _RwkvSimulationCard(
+        review_input=review_input,
+        due_day=due_day,
+        last_review_day=-elapsed_days,
+        interval_days=interval_days,
+        reps=review_input.reps or 0,
+        lapses=review_input.lapses or 0,
+    )
+
+
+def _rwkv_simulation_memorized(
+    simulation_inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+    day: int,
+) -> tuple[float, float]:
+    predictions = _rwkv_simulation_predictions(
+        [
+            (card_id, _rwkv_simulation_query_input(review_input, 0.9, day), batch_size)
+            for card_id, review_input, batch_size in simulation_inputs
+        ]
+    )
+    return _rwkv_memorized_from_predictions(predictions)
+
+
+def _rwkv_simulation_memorized_from_cards(
+    cards: Sequence[_RwkvSimulationCard],
+    *,
+    target_retention: float,
+    day: int,
+) -> tuple[float, float]:
+    predictions = [
+        _rwkv_simulation_prediction_for_card(
+            card,
+            target_retention=target_retention,
+            day=day,
+        )
+        for card in cards
+    ]
+    return _rwkv_memorized_from_predictions(predictions)
+
+
+def _rwkv_memorized_from_predictions(
+    predictions: Sequence[RwkvReviewPrediction | None],
+) -> tuple[float, float]:
+    memorized = 0.0
+    weighted = 0.0
+    for prediction in predictions:
+        if prediction is None or prediction.retrievability is None:
+            continue
+        retrievability = prediction.retrievability
+        if not _valid_probability(retrievability):
+            continue
+        memorized += retrievability
+        weighted += retrievability * _rwkv_s90_weight(prediction.current_s90)
+    return memorized, weighted
+
+
+def _rwkv_simulation_prediction_for_card(
+    card: _RwkvSimulationCard,
+    *,
+    target_retention: float,
+    day: int,
+) -> RwkvReviewPrediction | None:
+    predictions = _rwkv_simulation_predictions(
+        [
+            (
+                card.review_input.identity.card_id,
+                _rwkv_simulation_query_input_for_card(
+                    card,
+                    target_retention=target_retention,
+                    day=day,
+                ),
+                _DEFAULT_RWKV_REVIEW_BATCH_SIZE,
+            )
+        ]
+    )
+    return predictions[0] if predictions else None
+
+
+def _rwkv_simulation_predictions(
+    inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+) -> list[RwkvReviewPrediction | None]:
+    predictions: list[RwkvReviewPrediction | None] = [None] * len(inputs)
+    indexes_by_batch_size: dict[int, list[int]] = {}
+    for index, (_, _, batch_size) in enumerate(inputs):
+        indexes_by_batch_size.setdefault(batch_size, []).append(index)
+
+    for batch_size, indexes in indexes_by_batch_size.items():
+        batch = [(inputs[index][0], inputs[index][1]) for index in indexes]
+        batch_predictions = _rwkv_review_predictions_for_inputs(
+            batch,
+            batch_size=batch_size,
+        )
+        if batch_predictions is None:
+            continue
+        for index, prediction in zip(indexes, batch_predictions, strict=True):
+            predictions[index] = prediction
+
+    return predictions
+
+
+def _rwkv_simulation_query_input_for_card(
+    card: _RwkvSimulationCard,
+    *,
+    target_retention: float,
+    day: int,
+) -> RwkvReviewInput:
+    elapsed_days = max(0, day - card.last_review_day)
+    return _rwkv_simulation_input(
+        card.review_input,
+        target_retention=target_retention,
+        day=day,
+        elapsed_days=elapsed_days,
+        interval_days=card.interval_days,
+        reps=card.reps,
+        lapses=card.lapses,
+        is_query=True,
+        ease=None,
+        duration_millis=None,
+    )
+
+
+def _rwkv_simulation_query_input(
+    review_input: RwkvReviewInput,
+    target_retention: float,
+    day: int,
+) -> RwkvReviewInput:
+    elapsed_days = _rwkv_input_elapsed_days(review_input) + day
+    return _rwkv_simulation_input(
+        review_input,
+        target_retention=target_retention,
+        day=day,
+        elapsed_days=elapsed_days,
+        interval_days=review_input.interval_days or 1,
+        reps=review_input.reps or 0,
+        lapses=review_input.lapses or 0,
+        is_query=True,
+        ease=None,
+        duration_millis=None,
+    )
+
+
+def _rwkv_simulation_answer_input(
+    card: _RwkvSimulationCard,
+    *,
+    target_retention: float,
+    day: int,
+    ease: int,
+    duration_millis: int,
+) -> RwkvReviewInput:
+    elapsed_days = max(0, day - card.last_review_day)
+    return _rwkv_simulation_input(
+        card.review_input,
+        target_retention=target_retention,
+        day=day,
+        elapsed_days=elapsed_days,
+        interval_days=card.interval_days,
+        reps=card.reps,
+        lapses=card.lapses,
+        is_query=False,
+        ease=ease,
+        duration_millis=duration_millis,
+    )
+
+
+def _rwkv_simulation_input(
+    review_input: RwkvReviewInput,
+    *,
+    target_retention: float,
+    day: int,
+    elapsed_days: int,
+    interval_days: int,
+    reps: int,
+    lapses: int,
+    is_query: bool,
+    ease: int | None,
+    duration_millis: int | None,
+) -> RwkvReviewInput:
+    day_offset = (
+        review_input.day_offset + day
+        if isinstance(review_input.day_offset, int)
+        else None
+    )
+    return replace(
+        review_input,
+        is_query=is_query,
+        ease=ease,
+        duration_millis=duration_millis,
+        day_offset=day_offset,
+        current_elapsed_days=elapsed_days,
+        current_elapsed_seconds=None,
+        interval_days=interval_days,
+        reps=reps,
+        lapses=lapses,
+        target_retentions=(
+            target_retention,
+            target_retention,
+            target_retention,
+            target_retention,
+        ),
+    )
+
+
+def _rwkv_simulation_store_answer(review_input: RwkvReviewInput) -> None:
+    backend = _reviewer_backend
+    review_input_answered = getattr(backend, "review_input_answered", None)
+    if not callable(review_input_answered):
+        raise ValueError("RWKV backend does not support simulator state updates")
+    review_input_answered(review_input)
+
+
+def _rwkv_simulator_review_model(reviewer: object) -> _RwkvSimulatorReviewModel:
+    rows = _rwkv_simulator_review_model_rows(reviewer)
+    bucket_counts: dict[int, list[float]] = {}
+    grade_seconds_sum = [0.0, 0.0, 0.0, 0.0]
+    grade_seconds_count = [0, 0, 0, 0]
+    timed_samples: list[tuple[float, int, float]] = []
+    for retrievability_value, ease_value, taken_millis in rows:
+        if (
+            not isinstance(retrievability_value, (int, float))
+            or isinstance(retrievability_value, bool)
+            or not isinstance(ease_value, int)
+            or isinstance(ease_value, bool)
+            or ease_value not in (1, 2, 3, 4)
+        ):
+            continue
+        retrievability = float(retrievability_value)
+        ease = ease_value
+        if not _valid_probability(retrievability):
+            continue
+        bucket = _rwkv_simulator_bucket(retrievability)
+        bucket_counts.setdefault(bucket, [0.0, 0.0, 0.0, 0.0])[ease - 1] += 1.0
+        if (
+            isinstance(taken_millis, int)
+            and not isinstance(taken_millis, bool)
+            and 0 < taken_millis < _RWKV_SIMULATOR_MAX_TAKEN_MILLIS
+        ):
+            seconds = taken_millis / 1000.0
+            grade_seconds_sum[ease - 1] += seconds
+            grade_seconds_count[ease - 1] += 1
+            timed_samples.append((retrievability, ease, seconds))
+
+    bucket_probabilities: dict[int, tuple[float, float, float, float]] = {}
+    for bucket, counts in bucket_counts.items():
+        center = (bucket + 0.5) / _RWKV_SIMULATOR_BUCKET_COUNT
+        fallback = _fallback_rwkv_grade_probabilities(center)
+        smoothed = [
+            count + fallback[index] * _RWKV_SIMULATOR_PRIOR_WEIGHT
+            for index, count in enumerate(counts)
+        ]
+        total = sum(smoothed)
+        if total > 0:
+            bucket_probabilities[bucket] = cast(
+                tuple[float, float, float, float],
+                tuple(value / total for value in smoothed),
+            )
+
+    grade_seconds = tuple(
+        grade_seconds_sum[index] / grade_seconds_count[index]
+        if grade_seconds_count[index]
+        else _RWKV_SIMULATOR_DEFAULT_GRADE_SECONDS[index]
+        for index in range(4)
+    )
+    review_time = _rwkv_simulator_review_time_fields(
+        timed_samples,
+        bucket_counts,
+        cast(tuple[float, float, float, float], grade_seconds),
+    )
+    return _RwkvSimulatorReviewModel(
+        grade_seconds=cast(tuple[float, float, float, float], grade_seconds),
+        bucket_probabilities=bucket_probabilities,
+        review_time_r_bucket_count=review_time.r_bucket_count,
+        review_time_s_bucket_count=review_time.s_bucket_count,
+        review_time_again_seconds=review_time.again_seconds,
+        review_time_hard_seconds=review_time.hard_seconds,
+        review_time_good_seconds=review_time.good_seconds,
+        review_time_easy_seconds=review_time.easy_seconds,
+        review_time_sample_counts=review_time.sample_counts,
+        review_time_again_coeffs=review_time.again_coeffs,
+        review_time_hard_coeffs=review_time.hard_coeffs,
+        review_time_good_coeffs=review_time.good_coeffs,
+        review_time_easy_coeffs=review_time.easy_coeffs,
+        review_time_grade_weights=review_time.grade_weights,
+        review_time_transition_probs=review_time.transition_probs,
+        review_time_transition_counts=review_time.transition_counts,
+        review_time_success_grade_probs=review_time.success_grade_probs,
+        review_time_success_grade_counts=review_time.success_grade_counts,
+    )
+
+
+def _rwkv_simulator_review_time_fields(
+    timed_samples: Sequence[tuple[float, int, float]],
+    bucket_counts: dict[int, list[float]],
+    grade_seconds: tuple[float, float, float, float],
+) -> _RwkvSimulatorReviewTimeFields:
+    samples_by_grade: list[list[tuple[float, float]]] = [[], [], [], []]
+    sample_counts = [0 for _ in range(_RWKV_SIMULATOR_BUCKET_COUNT)]
+    success_grade_counts = [
+        [0.0, 0.0, 0.0] for _ in range(_RWKV_SIMULATOR_BUCKET_COUNT)
+    ]
+
+    for retrievability, ease, seconds in timed_samples:
+        if ease not in (1, 2, 3, 4):
+            continue
+        bucket = _rwkv_simulator_ui_bucket(retrievability)
+        sample_counts[bucket] += 1
+        samples_by_grade[ease - 1].append((retrievability, seconds))
+        if ease > 1:
+            success_grade_counts[bucket][ease - 2] += 1.0
+
+    coeffs = tuple(
+        _rwkv_simulator_review_time_coeffs(
+            samples_by_grade[index], grade_seconds[index]
+        )
+        for index in range(4)
+    )
+    per_grade_seconds = tuple(
+        tuple(
+            _rwkv_simulator_review_time_for_bucket(
+                bucket, grade_coeffs, grade_seconds[index]
+            )
+            for bucket in range(_RWKV_SIMULATOR_BUCKET_COUNT)
+        )
+        for index, grade_coeffs in enumerate(coeffs)
+    )
+    grade_weights = _rwkv_simulator_grade_weights(bucket_counts)
+    success_probs = tuple(
+        probability
+        for bucket in range(_RWKV_SIMULATOR_BUCKET_COUNT)
+        for probability in _rwkv_simulator_success_grade_probabilities(
+            bucket,
+            success_grade_counts[bucket],
+        )
+    )
+    transition_probs = tuple(
+        probability for _ in range(4) for probability in grade_weights
+    )
+
+    return _RwkvSimulatorReviewTimeFields(
+        r_bucket_count=_RWKV_SIMULATOR_BUCKET_COUNT,
+        s_bucket_count=1,
+        again_seconds=per_grade_seconds[0],
+        hard_seconds=per_grade_seconds[1],
+        good_seconds=per_grade_seconds[2],
+        easy_seconds=per_grade_seconds[3],
+        sample_counts=tuple(sample_counts),
+        again_coeffs=coeffs[0],
+        hard_coeffs=coeffs[1],
+        good_coeffs=coeffs[2],
+        easy_coeffs=coeffs[3],
+        grade_weights=grade_weights,
+        transition_probs=transition_probs,
+        transition_counts=tuple(0 for _ in range(16)),
+        success_grade_probs=success_probs,
+        success_grade_counts=tuple(int(sum(counts)) for counts in success_grade_counts),
+    )
+
+
+def _rwkv_simulator_review_time_coeffs(
+    samples: Sequence[tuple[float, float]],
+    fallback_seconds: float,
+) -> tuple[float, float, float, float, float]:
+    if len(samples) < 2:
+        return (fallback_seconds, 0.0, 0.0, 0.0, 0.0)
+
+    xs = [1.0 - max(0.0, min(1.0, retrievability)) for retrievability, _ in samples]
+    ys = [seconds for _, seconds in samples]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    denominator = sum((x - mean_x) ** 2 for x in xs)
+    if denominator <= 1e-9:
+        return (mean_y, 0.0, 0.0, 0.0, 0.0)
+
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys, strict=True))
+    slope /= denominator
+    intercept = mean_y - slope * mean_x
+    if math.isfinite(intercept) and math.isfinite(slope):
+        return (intercept, slope, 0.0, 0.0, 0.0)
+    return (fallback_seconds, 0.0, 0.0, 0.0, 0.0)
+
+
+def _rwkv_simulator_review_time_for_bucket(
+    bucket: int,
+    coeffs: tuple[float, float, float, float, float],
+    fallback_seconds: float,
+) -> float:
+    retrievability = max(0.0, min(1.0, 1.0 - (bucket + 0.5) * 0.05))
+    predicted = coeffs[0] + coeffs[1] * (1.0 - retrievability)
+    return (
+        predicted if math.isfinite(predicted) and predicted > 0.0 else fallback_seconds
+    )
+
+
+def _rwkv_simulator_grade_weights(
+    bucket_counts: dict[int, list[float]],
+) -> tuple[float, float, float, float]:
+    counts = [0.0, 0.0, 0.0, 0.0]
+    for bucket in bucket_counts.values():
+        for index, count in enumerate(bucket):
+            counts[index] += count
+    total = sum(counts)
+    if total <= 0:
+        return (0.25, 0.25, 0.25, 0.25)
+    return cast(
+        tuple[float, float, float, float], tuple(count / total for count in counts)
+    )
+
+
+def _rwkv_simulator_success_grade_probabilities(
+    bucket: int,
+    counts: Sequence[float],
+) -> tuple[float, float, float]:
+    retrievability = max(0.0, min(1.0, 1.0 - (bucket + 0.5) * 0.05))
+    fallback = _fallback_rwkv_grade_probabilities(retrievability)
+    fallback_success = fallback[1:]
+    fallback_total = sum(fallback_success)
+    prior = (
+        tuple(value / fallback_total for value in fallback_success)
+        if fallback_total > 0
+        else (1 / 3, 1 / 3, 1 / 3)
+    )
+    smoothed = [
+        counts[index] + prior[index] * _RWKV_SIMULATOR_PRIOR_WEIGHT
+        for index in range(3)
+    ]
+    total = sum(smoothed)
+    if total <= 0:
+        return cast(tuple[float, float, float], prior)
+    return cast(tuple[float, float, float], tuple(value / total for value in smoothed))
+
+
+def _rwkv_simulator_review_model_rows(
+    reviewer: object,
+) -> list[tuple[object, object, object]]:
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return []
+
+    try:
+        return cast(
+            list[tuple[object, object, object]],
+            all_rows(
+                f"""
+select cache.prediction, r.ease, r.time
+from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
+join revlog r on r.id = cache.revlog_id
+where cache.prediction between 0 and 1
+  and {_rwkv_historical_answer_sql_condition("r")}
+"""
+            ),
+        )
+    except Exception:
+        logger.debug("failed to load RWKV simulator review-time samples")
+        return []
+
+
+def _fallback_rwkv_grade_probabilities(
+    retrievability: float,
+) -> tuple[float, float, float, float]:
+    r = min(max(retrievability, 0.0), 1.0) if math.isfinite(retrievability) else 0.9
+    again = min(max(1.0 - r, 0.02), 0.85)
+    success = 1.0 - again
+    hard_share = min(max((0.95 - r) / 0.45, 0.10), 0.45)
+    easy_share = min(max((r - 0.75) / 0.25, 0.05), 0.35)
+    if hard_share + easy_share > 0.90:
+        scale = 0.90 / (hard_share + easy_share)
+        hard_share *= scale
+        easy_share *= scale
+    hard = success * hard_share
+    easy = success * easy_share
+    good = max(0.0, success - hard - easy)
+    total = again + hard + good + easy
+    return again / total, hard / total, good / total, easy / total
+
+
+def _rwkv_simulation_grade(
+    probabilities: tuple[float, float, float, float],
+    card_id: int,
+    day: int,
+    reps: int,
+) -> int:
+    threshold = _rwkv_simulation_unit_hash(card_id, day, reps)
+    cumulative = 0.0
+    for index, probability in enumerate(probabilities, start=1):
+        cumulative += probability
+        if threshold <= cumulative:
+            return index
+    return 4
+
+
+def _rwkv_simulation_unit_hash(card_id: int, day: int, reps: int) -> float:
+    value = (card_id & 0xFFFFFFFFFFFFFFFF) ^ ((day + 1) * 0x9E3779B185EBCA87)
+    value ^= (reps + 1) * 0x165667B19E3779F9
+    value &= 0xFFFFFFFFFFFFFFFF
+    value ^= value >> 33
+    value = (value * 0xFF51AFD7ED558CCD) & 0xFFFFFFFFFFFFFFFF
+    value ^= value >> 33
+    value = (value * 0xC4CEB9FE1A85EC53) & 0xFFFFFFFFFFFFFFFF
+    value ^= value >> 33
+    return value / 0xFFFFFFFFFFFFFFFF
+
+
+def _rwkv_simulator_bucket(retrievability: float) -> int:
+    if not math.isfinite(retrievability):
+        return _RWKV_SIMULATOR_BUCKET_COUNT - 1
+    return min(
+        _RWKV_SIMULATOR_BUCKET_COUNT - 1,
+        max(0, int(retrievability * _RWKV_SIMULATOR_BUCKET_COUNT)),
+    )
+
+
+def _rwkv_simulator_ui_bucket(retrievability: float) -> int:
+    if not math.isfinite(retrievability):
+        return _RWKV_SIMULATOR_BUCKET_COUNT - 1
+    clamped = max(0.0, min(1.0, retrievability))
+    base_index = int(min(clamped * 100.0, 99.9999) / 5.0)
+    return _RWKV_SIMULATOR_BUCKET_COUNT - 1 - base_index
+
+
+def _rwkv_input_elapsed_days(review_input: RwkvReviewInput) -> int:
+    elapsed_days = review_input.current_elapsed_days
+    if isinstance(elapsed_days, int) and not isinstance(elapsed_days, bool):
+        return max(0, elapsed_days)
+    return 0
+
+
+def _valid_retrievability_or_default(value: object, default: float) -> float:
+    return cast(float, value) if _valid_probability(value) else default
+
+
+def _rwkv_s90_weight(current_s90: int | None) -> float:
+    if current_s90 is None or current_s90 <= 0:
+        return 1.0
+    return 1.0 - math.exp((-8.0 / 365.0) * current_s90)
+
+
+def reschedule_rwkv_review_cards_with_progress(
+    mw: object,
+    *,
+    deck_id: int | None = None,
+) -> None:
     """Reschedule RWKV-enabled review cards and persist current RWKV S90."""
 
     from aqt.operations import on_op_finished
@@ -3533,7 +5432,7 @@ def reschedule_rwkv_review_cards_with_progress(mw: object) -> None:
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
-        result = reschedule_rwkv_review_cards(mw)
+        result = reschedule_rwkv_review_cards(mw, deck_id=deck_id)
         if result.changes is not None:
             on_op_finished(cast(Any, mw), cast(Any, result.changes), None)
         return
@@ -3556,7 +5455,11 @@ def reschedule_rwkv_review_cards_with_progress(mw: object) -> None:
             _run_on_main(mw, update)
 
         def reschedule() -> RwkvReviewRescheduleResult:
-            return reschedule_rwkv_review_cards(mw, progress=progress)
+            return reschedule_rwkv_review_cards(
+                mw,
+                deck_id=deck_id,
+                progress=progress,
+            )
 
         def done(future: Future[RwkvReviewRescheduleResult]) -> None:
             try:
@@ -3600,6 +5503,7 @@ def reschedule_rwkv_review_cards_with_progress(mw: object) -> None:
 def reschedule_rwkv_review_cards(
     mw: object,
     *,
+    deck_id: int | None = None,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> RwkvReviewRescheduleResult:
     """Compute current RWKV intervals/S90s and apply them to review cards."""
@@ -3612,19 +5516,28 @@ def reschedule_rwkv_review_cards(
         return RwkvReviewRescheduleResult(built=False, changes=None)
 
     reviewer = SimpleNamespace(mw=mw)
-    _report_rwkv_state_cache_progress(
-        progress,
-        "Finding RWKV review cards...",
-    )
-    card_ids = _rwkv_review_reschedule_card_ids(mw)
-    if not card_ids:
-        return RwkvReviewRescheduleResult(built=True, changes=None)
+    items: list[RwkvReviewRescheduleItem] | None = None
+    if deck_id is not None:
+        items = _rwkv_review_reschedule_items_for_deck(
+            reviewer,
+            deck_id,
+            progress=progress,
+        )
 
-    items = _rwkv_review_reschedule_items(
-        reviewer,
-        card_ids,
-        progress=progress,
-    )
+    if items is None:
+        _report_rwkv_state_cache_progress(
+            progress,
+            "Finding RWKV review cards...",
+        )
+        card_ids = _rwkv_review_reschedule_card_ids(mw, deck_id=deck_id)
+        if not card_ids:
+            return RwkvReviewRescheduleResult(built=True, changes=None)
+
+        items = _rwkv_review_reschedule_items(
+            reviewer,
+            card_ids,
+            progress=progress,
+        )
     if not items:
         return RwkvReviewRescheduleResult(built=True, changes=None)
 
@@ -3778,8 +5691,7 @@ select count()
 from revlog r
 join {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
   on cache.revlog_id = r.id
-where r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
+where {_rwkv_historical_answer_sql_condition("r")}
   and r.id <= ?
   and cache.prediction between 0 and 1
 """,
@@ -4985,8 +6897,7 @@ select
   cast(r.factor as integer)
 from revlog r
 join cards c on c.id = r.cid
-where r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
+where {_rwkv_historical_answer_sql_condition("r")}
   {after_clause}
 order by r.id, r.cid
 """
@@ -5019,11 +6930,10 @@ def _historical_rwkv_review_count_through(
         return 0
 
     value = scalar(
-        """
+        f"""
 select count()
 from revlog
-where ease between 1 and 4
-  and type in (0, 1, 2, 3)
+where {_rwkv_historical_answer_sql_condition()}
   and id <= ?
 """,
         last_review_id,
@@ -5187,6 +7097,21 @@ def _rwkv_review_instant_order_enabled(deck_config: dict[str, object]) -> bool:
     return value if isinstance(value, bool) else False
 
 
+def _rwkv_review_candidate_refresh_enabled(deck_config: dict[str, object]) -> bool:
+    nested = _rwkv_other_config(deck_config)
+    if nested is not None:
+        value = nested.get("rwkv_review_candidate_refresh_enabled")
+        if isinstance(value, bool):
+            return value
+
+    value = _rwkv_config_direct_value(
+        deck_config,
+        "rwkvReviewCandidateRefreshEnabled",
+        "rwkv_review_candidate_refresh_enabled",
+    )
+    return value if isinstance(value, bool) else False
+
+
 def _rwkv_config_direct_value(
     deck_config: dict[str, object],
     camel_key: str,
@@ -5285,6 +7210,254 @@ def _review_card_ids_in_deck_tree(reviewer: object, deck_id: int) -> list[int]:
         )
         if isinstance(card_id, int)
     ]
+
+
+def _speculative_rwkv_review_queue_scores_for_deck(
+    *,
+    reviewer: object,
+    deck_id: int,
+    batch_size: int,
+) -> tuple[list[tuple[int, float]], RwkvReviewInputBatchBuild, float] | None:
+    answer_key = getattr(reviewer, _RWKV_REVIEW_LAST_ANSWER_KEY_ATTR, None)
+    if not isinstance(answer_key, tuple) or len(answer_key) != 5:
+        return None
+    if answer_key[3] != deck_id:
+        return None
+
+    cache = getattr(reviewer, _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR, None)
+    if not isinstance(cache, dict):
+        return None
+    speculative = cache.get(answer_key)
+    if not isinstance(speculative, RwkvSpeculativeReviewQueueScores):
+        return None
+
+    input_build = _rwkv_review_input_batches_for_deck_review_queue(
+        reviewer=reviewer,
+        deck_id=deck_id,
+        batch_size_override=batch_size,
+    )
+    if input_build is None:
+        return None
+
+    current_card_ids = tuple(
+        card_id for card_id, _ in _rwkv_review_input_build_inputs(input_build)
+    )
+    if current_card_ids != speculative.candidate_card_ids:
+        logger.debug(
+            "RWKV speculative queue scores rejected: deck_id=%s expected=%s actual=%s",
+            deck_id,
+            len(speculative.candidate_card_ids),
+            len(current_card_ids),
+        )
+        return None
+
+    return list(speculative.scores), input_build, speculative.elapsed_ms
+
+
+def _rwkv_review_input_build_inputs(
+    input_build: RwkvReviewInputBatchBuild,
+) -> list[tuple[int, RwkvReviewInput]]:
+    return [
+        item
+        for inputs_by_card_id in input_build.inputs_by_batch_size.values()
+        for item in inputs_by_card_id
+    ]
+
+
+def _candidate_refreshed_rwkv_review_queue_scores_for_deck(
+    *,
+    reviewer: object,
+    deck_id: int,
+    deck_config: dict[str, object],
+    batch_size: int,
+) -> tuple[list[tuple[int, float]], int, int] | None:
+    if not _rwkv_review_candidate_refresh_enabled(deck_config):
+        return None
+
+    existing_scores = _rwkv_review_queue_score_maps.get(deck_id)
+    if not existing_scores:
+        return None
+
+    candidate_ids = _rwkv_review_candidate_refresh_card_ids(
+        deck_config,
+        existing_scores,
+        limit=batch_size,
+    )
+    current_card_id = _card_id(getattr(reviewer, "card", None))
+    if current_card_id is not None:
+        candidate_ids.append(current_card_id)
+    candidate_ids = _unique_rwkv_candidate_card_ids(candidate_ids)
+    if not candidate_ids:
+        return None
+
+    fresh_scores = _rwkv_review_queue_scores(
+        reviewer=reviewer,
+        card_ids=candidate_ids,
+        batch_size=batch_size,
+    )
+    fresh_scores_by_card_id = dict(fresh_scores)
+    merged_scores = dict(existing_scores)
+    for card_id in candidate_ids:
+        if card_id in fresh_scores_by_card_id:
+            merged_scores[card_id] = fresh_scores_by_card_id[card_id]
+        else:
+            merged_scores.pop(card_id, None)
+
+    return sorted(merged_scores.items()), len(candidate_ids), len(fresh_scores)
+
+
+def _rwkv_review_candidate_refresh_card_ids(
+    deck_config: dict[str, object],
+    scores: dict[int, float],
+    *,
+    limit: int,
+) -> list[int]:
+    if limit <= 0:
+        return []
+
+    review_order = deck_config.get("reviewOrder", deck_config.get("review_order"))
+    if review_order == _REVIEW_ORDER_RETRIEVABILITY_DESCENDING:
+        ordered_scores = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    else:
+        ordered_scores = sorted(scores.items(), key=lambda item: (item[1], item[0]))
+
+    return [card_id for card_id, _ in ordered_scores[:limit]]
+
+
+def _unique_rwkv_candidate_card_ids(card_ids: Sequence[int]) -> list[int]:
+    seen: set[int] = set()
+    unique: list[int] = []
+    for value in card_ids:
+        card_id = _valid_card_id(value)
+        if card_id is None or card_id in seen:
+            continue
+        seen.add(card_id)
+        unique.append(card_id)
+    return unique
+
+
+def _candidate_refreshed_rwkv_review_queue_async_work(
+    *,
+    reviewer: object,
+    deck_id: int,
+    deck_config: dict[str, object],
+    reason: str,
+    batch_size: int,
+    state_generation: int,
+    warmup_elapsed_ms: float,
+    start: float,
+) -> RwkvReviewQueueOrderAsyncWork | None:
+    if not _rwkv_review_candidate_refresh_enabled(deck_config):
+        return None
+
+    existing_scores = _rwkv_review_queue_score_maps.get(deck_id)
+    if not existing_scores:
+        return None
+
+    candidate_ids = _rwkv_review_candidate_refresh_card_ids(
+        deck_config,
+        existing_scores,
+        limit=batch_size,
+    )
+    current_card_id = _card_id(getattr(reviewer, "card", None))
+    if current_card_id is not None:
+        candidate_ids.append(current_card_id)
+    candidate_ids = _unique_rwkv_candidate_card_ids(candidate_ids)
+    if not candidate_ids:
+        return None
+
+    timing = _timing_today(reviewer)
+    if not isinstance(getattr(timing, "days_elapsed", None), int):
+        return None
+
+    input_build = _rwkv_review_input_batches_for_ids(
+        reviewer=reviewer,
+        card_ids=candidate_ids,
+        timing=timing,
+        reason=reason,
+        include_suspended_review=False,
+        supported_state_filter=True,
+        batch_size_override=batch_size,
+    )
+    if input_build is None:
+        return None
+
+    return _rwkv_review_queue_async_work_from_input_build(
+        deck_id=deck_id,
+        reason=reason,
+        batch_size=batch_size,
+        state_generation=state_generation,
+        input_build=input_build,
+        warmup_elapsed_ms=warmup_elapsed_ms,
+        build_start=start,
+        existing_scores=tuple(sorted(existing_scores.items())),
+        candidate_card_ids=tuple(candidate_ids),
+        fresh_for_backend_state=False,
+    )
+
+
+def _rwkv_review_queue_async_work_from_input_build(
+    *,
+    deck_id: int,
+    reason: str,
+    batch_size: int,
+    state_generation: int,
+    input_build: RwkvReviewInputBatchBuild,
+    warmup_elapsed_ms: float,
+    build_start: float,
+    existing_scores: tuple[tuple[int, float], ...] | None = None,
+    candidate_card_ids: tuple[int, ...] = (),
+    fresh_for_backend_state: bool,
+) -> RwkvReviewQueueOrderAsyncWork | None:
+    inputs_by_card_id = tuple(_rwkv_review_input_build_inputs(input_build))
+    cached = _cached_review_input_predictions_for_inputs(
+        [
+            (index, review_input)
+            for index, (_, review_input) in enumerate(inputs_by_card_id)
+        ]
+    )
+    if cached is None:
+        return None
+
+    predictions, requests_by_index, cache_hits = cached
+    build_elapsed_ms = (time.monotonic() - build_start) * 1000
+    logger.debug(
+        "RWKV async %s work prepared: deck_id=%s searched=%s loaded=%s "
+        "with_state=%s enabled=%s inputs=%s cache_hits=%s runtime_requests=%s "
+        "deck_configs=%s batch_size=%s warmup_elapsed_ms=%.1f "
+        "load_elapsed_ms=%.1f candidate_elapsed_ms=%.1f build_elapsed_ms=%.1f",
+        reason,
+        deck_id,
+        input_build.searched_rows,
+        input_build.parsed_cards,
+        input_build.cards_with_state,
+        input_build.eligible_cards,
+        len(inputs_by_card_id),
+        cache_hits,
+        len(requests_by_index),
+        input_build.deck_configs,
+        batch_size,
+        warmup_elapsed_ms,
+        input_build.load_elapsed_ms,
+        input_build.candidate_elapsed_ms,
+        build_elapsed_ms,
+    )
+    return RwkvReviewQueueOrderAsyncWork(
+        deck_id=deck_id,
+        reason=reason,
+        batch_size=batch_size,
+        state_generation=state_generation,
+        input_build=input_build,
+        inputs_by_card_id=inputs_by_card_id,
+        predictions=tuple(predictions),
+        requests_by_index=tuple(requests_by_index),
+        cache_hits=cache_hits,
+        warmup_elapsed_ms=warmup_elapsed_ms,
+        build_elapsed_ms=build_elapsed_ms,
+        existing_scores=existing_scores,
+        candidate_card_ids=candidate_card_ids,
+        fresh_for_backend_state=fresh_for_backend_state,
+    )
 
 
 def _rwkv_review_queue_scores_for_deck(
@@ -5821,7 +7994,14 @@ def _fresh_rwkv_review_queue_score_map() -> dict[int, float]:
     return scores
 
 
-def _rwkv_review_reschedule_card_ids(mw: object) -> list[int]:
+def _rwkv_review_reschedule_card_ids(
+    mw: object,
+    *,
+    deck_id: int | None = None,
+) -> list[int]:
+    if deck_id is not None:
+        return _review_card_ids_in_deck_tree(SimpleNamespace(mw=mw), deck_id)
+
     col = getattr(mw, "col", None)
     db = getattr(col, "db", None)
     list_rows = getattr(db, "list", None)
@@ -5844,6 +8024,87 @@ where type = ?
         return []
 
     return [card_id for card_id in rows if isinstance(card_id, int)]
+
+
+def _rwkv_review_reschedule_items_for_deck(
+    reviewer: object,
+    deck_id: int,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> list[RwkvReviewRescheduleItem] | None:
+    if not _reviewer_backend_accepts_review_inputs():
+        return None
+
+    _report_rwkv_state_cache_progress(
+        progress,
+        "Finding RWKV review cards...",
+    )
+    input_build = _rwkv_review_input_batches_for_deck_review_queue(
+        reviewer=reviewer,
+        deck_id=deck_id,
+        batch_size_override=None,
+    )
+    if input_build is None:
+        return None
+
+    total_inputs = sum(
+        len(inputs) for inputs in input_build.inputs_by_batch_size.values()
+    )
+    if not total_inputs:
+        logger.debug(
+            "RWKV review reschedule deck inputs loaded: deck_id=%s searched=%s "
+            "loaded=%s with_state=%s enabled=%s items=0",
+            deck_id,
+            input_build.searched_rows,
+            input_build.parsed_cards,
+            input_build.cards_with_state,
+            input_build.eligible_cards,
+        )
+        return []
+
+    items: list[RwkvReviewRescheduleItem] = []
+    processed_inputs = 0
+    start = time.monotonic()
+    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
+        for batch in _chunks(inputs_by_card_id, batch_size):
+            predictions = _rwkv_review_predictions_for_inputs(
+                batch,
+                batch_size=batch_size,
+            )
+            if predictions is None:
+                return None
+
+            items.extend(
+                _rwkv_review_reschedule_items_from_input_predictions(
+                    batch,
+                    predictions,
+                )
+            )
+            processed_inputs += len(batch)
+            _report_rwkv_state_cache_progress(
+                progress,
+                "Predicting RWKV reschedule intervals...",
+                processed_inputs,
+                total_inputs,
+            )
+
+    logger.debug(
+        "RWKV review reschedule deck inputs predicted: deck_id=%s searched=%s "
+        "loaded=%s with_state=%s enabled=%s inputs=%s items=%s deck_configs=%s "
+        "load_elapsed_ms=%.1f candidate_elapsed_ms=%.1f elapsed_ms=%.1f",
+        deck_id,
+        input_build.searched_rows,
+        input_build.parsed_cards,
+        input_build.cards_with_state,
+        input_build.eligible_cards,
+        total_inputs,
+        len(items),
+        input_build.deck_configs,
+        input_build.load_elapsed_ms,
+        input_build.candidate_elapsed_ms,
+        (time.monotonic() - start) * 1000,
+    )
+    return items
 
 
 def _rwkv_review_reschedule_items(
@@ -5936,6 +8197,46 @@ def _rwkv_review_reschedule_items(
         len(card_ids),
         len(items),
     )
+    return items
+
+
+def _rwkv_review_reschedule_items_from_input_predictions(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    predictions: Sequence[RwkvReviewPrediction | None],
+) -> list[RwkvReviewRescheduleItem]:
+    if len(predictions) != len(inputs_by_card_id):
+        raise ValueError("RWKV batch prediction count mismatch")
+
+    items: list[RwkvReviewRescheduleItem] = []
+    for (card_id, review_input), prediction in zip(
+        inputs_by_card_id,
+        predictions,
+        strict=True,
+    ):
+        if prediction is None:
+            continue
+
+        try:
+            _validate_prediction(prediction)
+        except ValueError:
+            logger.debug("invalid RWKV reschedule prediction", exc_info=True)
+            continue
+
+        elapsed_days = review_input.current_elapsed_days
+        if not isinstance(elapsed_days, int) or isinstance(elapsed_days, bool):
+            continue
+        if prediction.current_interval is None or prediction.current_s90 is None:
+            continue
+
+        items.append(
+            RwkvReviewRescheduleItem(
+                card_id=card_id,
+                interval_days=prediction.current_interval,
+                elapsed_days=elapsed_days,
+                s90=prediction.current_s90,
+            )
+        )
+
     return items
 
 
@@ -6165,6 +8466,82 @@ def _rwkv_review_scores_for_inputs(
     return scores
 
 
+def _rwkv_review_predictions_for_inputs(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    *,
+    batch_size: int,
+) -> list[RwkvReviewPrediction | None] | None:
+    start = time.monotonic()
+    cached = _cached_review_input_predictions_for_inputs(
+        [
+            (index, review_input)
+            for index, (_, review_input) in enumerate(inputs_by_card_id)
+        ]
+    )
+    if cached is None:
+        return None
+
+    predictions, requests_by_index, cache_hits = cached
+    if not requests_by_index:
+        logger.debug(
+            "RWKV review inputs predicted from cache: inputs=%s cache_hits=%s "
+            "elapsed_ms=%.1f",
+            len(inputs_by_card_id),
+            cache_hits,
+            (time.monotonic() - start) * 1000,
+        )
+        return predictions
+
+    predict_start = time.monotonic()
+    for missing_offset in range(0, len(requests_by_index), batch_size):
+        batch_requests_by_index = requests_by_index[
+            missing_offset : missing_offset + batch_size
+        ]
+        batch_start = time.monotonic()
+        logger.debug(
+            "RWKV review input full prediction batch started: missing_offset=%s "
+            "size=%s batch_size=%s cache_hits=%s",
+            missing_offset,
+            len(batch_requests_by_index),
+            batch_size,
+            cache_hits,
+        )
+        batch_predictions = _predict_review_requests(
+            [request for _, request in batch_requests_by_index]
+        )
+        batch_predict_elapsed_ms = (time.monotonic() - batch_start) * 1000
+        if len(batch_predictions) != len(batch_requests_by_index):
+            raise ValueError("RWKV batch prediction count mismatch")
+
+        for (index, _), prediction in zip(
+            batch_requests_by_index,
+            batch_predictions,
+            strict=True,
+        ):
+            predictions[index] = prediction
+        logger.debug(
+            "RWKV review input full prediction batch processed: missing_offset=%s "
+            "size=%s batch_size=%s predict_elapsed_ms=%.1f elapsed_ms=%.1f",
+            missing_offset,
+            len(batch_requests_by_index),
+            batch_size,
+            batch_predict_elapsed_ms,
+            (time.monotonic() - batch_start) * 1000,
+        )
+
+    logger.debug(
+        "RWKV review inputs predicted: inputs=%s cache_hits=%s runtime_requests=%s "
+        "batch_size=%s predict_elapsed_ms=%.1f elapsed_ms=%.1f",
+        len(inputs_by_card_id),
+        cache_hits,
+        len(requests_by_index),
+        batch_size,
+        (time.monotonic() - predict_start) * 1000,
+        (time.monotonic() - start) * 1000,
+    )
+    return predictions
+
+
 def _cached_review_input_predictions_for_inputs(
     inputs_by_index: Sequence[tuple[int, RwkvReviewInput]],
 ) -> RwkvCachedReviewPredictions | None:
@@ -6299,6 +8676,24 @@ def _predict_retrievability_requests(
         )
 
     return _predict_review_requests(requests)
+
+
+def _predict_retrievability_requests_uncached(
+    requests: Sequence[RwkvReviewPredictionRequest],
+) -> Sequence[RwkvReviewPrediction | None]:
+    backend = _reviewer_backend
+    predict_retrievability_requests_uncached = getattr(
+        backend,
+        "predict_retrievability_requests_uncached",
+        None,
+    )
+    if callable(predict_retrievability_requests_uncached):
+        return cast(
+            Sequence[RwkvReviewPrediction | None],
+            predict_retrievability_requests_uncached(requests),
+        )
+
+    return _predict_retrievability_requests(requests)
 
 
 def _scores_from_review_predictions(
@@ -6538,8 +8933,18 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     *,
     reviewer: object,
     deck_id: int,
-    batch_size_override: int,
+    batch_size_override: int | None,
 ) -> RwkvReviewInputBatchBuild | None:
+    cache_key = _rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=deck_id,
+        batch_size_override=batch_size_override,
+    )
+    if cache_key is not None:
+        cached = _cached_rwkv_review_input_batch_build(reviewer, cache_key)
+        if cached is not None:
+            return cached
+
     col = _collection(reviewer)
     backend = getattr(col, "_backend", None)
     if backend is None:
@@ -6553,13 +8958,89 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     if response is None:
         return None
 
-    return _rwkv_review_input_batch_build_from_backend_response(
+    input_build = _rwkv_review_input_batch_build_from_backend_response(
         response=response,
         batch_size_override=batch_size_override,
         load_start=load_start,
         source_label="deck_review_queue_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
     )
+    if cache_key is not None:
+        _cache_rwkv_review_input_batch_build(reviewer, cache_key, input_build)
+    return input_build
+
+
+def _rwkv_review_input_batch_cache_key(
+    *,
+    reviewer: object,
+    deck_id: int,
+    batch_size_override: int | None,
+) -> RwkvReviewInputBatchCacheKey | None:
+    timing = _timing_today(reviewer)
+    days_elapsed = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(days_elapsed, int) or not isinstance(next_day_at, int):
+        return None
+
+    return (
+        deck_id,
+        batch_size_override,
+        days_elapsed,
+        next_day_at,
+        _reviewer_backend_state_generation(),
+    )
+
+
+def _rwkv_review_input_batch_cache(
+    reviewer: object,
+) -> OrderedDict[RwkvReviewInputBatchCacheKey, RwkvReviewInputBatchBuild]:
+    cache = getattr(reviewer, _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR, None)
+    if not isinstance(cache, OrderedDict):
+        cache = OrderedDict()
+        setattr(reviewer, _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR, cache)
+    return cast(
+        OrderedDict[RwkvReviewInputBatchCacheKey, RwkvReviewInputBatchBuild], cache
+    )
+
+
+def _cached_rwkv_review_input_batch_build(
+    reviewer: object,
+    cache_key: RwkvReviewInputBatchCacheKey,
+) -> RwkvReviewInputBatchBuild | None:
+    cache = _rwkv_review_input_batch_cache(reviewer)
+    cached = cache.get(cache_key)
+    if cached is None:
+        return None
+
+    cache.move_to_end(cache_key)
+    input_count = sum(len(inputs) for inputs in cached.inputs_by_batch_size.values())
+    logger.debug(
+        "RWKV review input backend rows reused from cache: deck_id=%s rows=%s "
+        "eligible=%s inputs=%s state_generation=%s",
+        cache_key[0],
+        cached.loaded_rows,
+        cached.eligible_cards,
+        input_count,
+        cache_key[4],
+    )
+    return replace(
+        cached,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+
+
+def _cache_rwkv_review_input_batch_build(
+    reviewer: object,
+    cache_key: RwkvReviewInputBatchCacheKey,
+    input_build: RwkvReviewInputBatchBuild,
+) -> None:
+    cache = _rwkv_review_input_batch_cache(reviewer)
+    cache[cache_key] = input_build
+    cache.move_to_end(cache_key)
+    while len(cache) > _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT:
+        cache.popitem(last=False)
 
 
 def _rwkv_review_input_batch_build_from_backend_response(
@@ -7154,8 +9635,7 @@ def _latest_eligible_review_times_for_cards(
 select cid, max(id)
 from revlog
 where cid in {ids2str(card_ids)}
-  and ease between 1 and 4
-  and type in (0, 1, 2, 3)
+  and {_rwkv_historical_answer_sql_condition()}
 group by cid
 """
         )
@@ -7682,20 +10162,25 @@ def _set_rwkv_review_queue_scores(
     mw = getattr(reviewer, "mw", None)
     col = getattr(mw, "col", None)
     backend = getattr(col, "_backend", None)
-    set_scores = getattr(backend, "set_rwkv_review_queue_scores", None)
-    if not callable(set_scores):
-        return
+    request = scheduler_pb2.RwkvReviewQueueScoresRequest(deck_id=deck_id)
+    for card_id, retrievability in scores:
+        request.scores.add(
+            card_id=card_id,
+            retrievability=retrievability,
+        )
 
-    set_scores(
-        deck_id=deck_id,
-        scores=[
-            scheduler_pb2.RwkvReviewQueueScoresRequest.Score(
-                card_id=card_id,
-                retrievability=retrievability,
-            )
-            for card_id, retrievability in scores
-        ],
-    )
+    set_scores_raw = getattr(backend, "set_rwkv_review_queue_scores_raw", None)
+    if callable(set_scores_raw):
+        set_scores_raw(request.SerializeToString())
+    else:
+        set_scores = getattr(backend, "set_rwkv_review_queue_scores", None)
+        if not callable(set_scores):
+            return
+
+        set_scores(
+            deck_id=deck_id,
+            scores=list(request.scores),
+        )
     if scores:
         _rwkv_review_queue_score_maps[deck_id] = {
             card_id: retrievability for card_id, retrievability in scores

@@ -41,6 +41,8 @@ type RwkvWarmUpSnapshot = (
     Option<Py<PyBytes>>,
     Py<PyBytes>,
 );
+type RwkvWorkloadPointTuple = (u32, f32, f32, f32, u32);
+type RwkvWorkloadOutput = (f32, f32, Vec<RwkvWorkloadPointTuple>);
 
 create_exception!(_rsbridge, BackendError, PyException);
 
@@ -277,6 +279,24 @@ impl RwkvInference {
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn predict_retrievability_many_after_review(
+        &self,
+        answer: &Bound<'_, PyAny>,
+        query_inputs: &Bound<'_, PyAny>,
+        snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<f32>> {
+        let answer = parse_rwkv_review_input(answer)?;
+        let mut parsed_query_inputs = Vec::new();
+        for query_input in query_inputs.try_iter()? {
+            parsed_query_inputs.push(parse_rwkv_review_input(&query_input?)?);
+        }
+        let snapshot = parse_rwkv_workload_snapshot(snapshot)?;
+
+        self.inner
+            .predict_retrievability_many_after_review(answer, parsed_query_inputs, snapshot)
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn warm_up_reviews(
         &mut self,
         reviews: &Bound<'_, PyAny>,
@@ -304,6 +324,78 @@ impl RwkvInference {
                 .map(|state| PyBytes::new(py, &state).unbind()),
             PyBytes::new(py, &self.inner.cache_state()).unbind(),
         )
+    }
+
+    fn simulate_workload(
+        &mut self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+        snapshot: &Bound<'_, PyAny>,
+        min_dr: u32,
+        max_dr: u32,
+        target_dr_step: u32,
+        days_to_simulate: u32,
+        review_limit: u32,
+        state_update_interval: u32,
+        grade_seconds: &Bound<'_, PyAny>,
+        bucket_probabilities: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<RwkvWorkloadOutput> {
+        let mut parsed_inputs = Vec::new();
+        for input in inputs.try_iter()? {
+            parsed_inputs.push(parse_rwkv_workload_simulation_input(&input?)?);
+        }
+        let config = rwkv::RwkvWorkloadSimulationConfig {
+            min_dr,
+            max_dr,
+            target_dr_step,
+            days_to_simulate,
+            review_limit,
+            state_update_interval,
+            review_model: rwkv::RwkvWorkloadReviewModel {
+                grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
+                bucket_probabilities: parse_rwkv_workload_bucket_probabilities(
+                    bucket_probabilities,
+                )?,
+            },
+        };
+        let snapshot = parse_rwkv_workload_snapshot(snapshot)?;
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback = |current: u32, total: u32| {
+            if let Some(callback) = &progress {
+                Python::attach(|py| callback.call1(py, (current, total)))
+                    .map(|_| ())
+                    .map_err(|err| {
+                        std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                    })?;
+            }
+            Ok(())
+        };
+
+        py.detach(|| {
+            self.inner
+                .simulate_workload(parsed_inputs, snapshot, config, &mut progress_callback)
+        })
+        .map(|output| {
+            (
+                output.reviewless_end_memorized,
+                output.reviewless_end_weighted_memorized,
+                output
+                    .points
+                    .into_iter()
+                    .map(|(dr, point)| {
+                        (
+                            dr,
+                            point.memorized,
+                            point.weighted_memorized,
+                            point.cost,
+                            point.review_count,
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
     }
 
     fn reset_warm_up_state(&mut self) {
@@ -570,6 +662,10 @@ fn parse_rwkv_review_input(request: &Bound<'_, PyAny>) -> PyResult<rwkv::ReviewI
         ));
     }
 
+    parse_rwkv_review_input_tuple(tuple)
+}
+
+fn parse_rwkv_review_input_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<rwkv::ReviewInput> {
     Ok(rwkv::ReviewInput {
         card_id: tuple.get_item(0)?.extract()?,
         note_id: tuple.get_item(1)?.extract()?,
@@ -589,6 +685,102 @@ fn parse_rwkv_review_input(request: &Bound<'_, PyAny>) -> PyResult<rwkv::ReviewI
             tuple.get_item(14)?.extract()?,
         ],
     })
+}
+
+fn parse_rwkv_workload_simulation_input(
+    request: &Bound<'_, PyAny>,
+) -> PyResult<rwkv::RwkvWorkloadSimulationInput> {
+    let tuple = request.cast::<PyTuple>()?;
+    if tuple.len() != 18 {
+        return Err(PyException::new_err(
+            "RWKV workload simulation input must contain 18 fields",
+        ));
+    }
+
+    Ok(rwkv::RwkvWorkloadSimulationInput {
+        review_input: parse_rwkv_review_input_tuple(tuple)?,
+        interval_days: tuple.get_item(15)?.extract()?,
+        reps: tuple.get_item(16)?.extract()?,
+        lapses: tuple.get_item(17)?.extract()?,
+    })
+}
+
+fn parse_rwkv_workload_snapshot(
+    snapshot: &Bound<'_, PyAny>,
+) -> PyResult<rwkv::RwkvWorkloadSimulationSnapshot> {
+    let tuple = snapshot.cast::<PyTuple>()?;
+    if tuple.len() != 6 {
+        return Err(PyException::new_err(
+            "RWKV workload snapshot must contain 6 fields",
+        ));
+    }
+
+    Ok(rwkv::RwkvWorkloadSimulationSnapshot {
+        card_states: parse_serialized_state_map(&tuple.get_item(0)?)?,
+        note_states: parse_serialized_state_map(&tuple.get_item(1)?)?,
+        deck_states: parse_serialized_state_map(&tuple.get_item(2)?)?,
+        preset_states: parse_serialized_state_map(&tuple.get_item(3)?)?,
+        global_state: optional_bytes(&tuple.get_item(4)?)?,
+        runtime_state: optional_bytes(&tuple.get_item(5)?)?,
+    })
+}
+
+fn parse_serialized_state_map(value: &Bound<'_, PyAny>) -> PyResult<Vec<(i64, Vec<u8>)>> {
+    let mut states = Vec::new();
+    for item in value.try_iter()? {
+        let item = item?;
+        let tuple = item.cast::<PyTuple>()?;
+        if tuple.len() != 2 {
+            return Err(PyException::new_err(
+                "RWKV serialized state map entry must contain 2 fields",
+            ));
+        }
+        states.push((
+            tuple.get_item(0)?.extract()?,
+            tuple.get_item(1)?.cast::<PyBytes>()?.as_bytes().to_vec(),
+        ));
+    }
+    Ok(states)
+}
+
+fn parse_f32_quad(value: &Bound<'_, PyAny>, name: &str) -> PyResult<[f32; 4]> {
+    let tuple = value.cast::<PyTuple>()?;
+    if tuple.len() != 4 {
+        return Err(PyException::new_err(format!(
+            "RWKV workload {name} must contain 4 fields"
+        )));
+    }
+    Ok([
+        tuple.get_item(0)?.extract()?,
+        tuple.get_item(1)?.extract()?,
+        tuple.get_item(2)?.extract()?,
+        tuple.get_item(3)?.extract()?,
+    ])
+}
+
+fn parse_rwkv_workload_bucket_probabilities(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Vec<(u32, [f32; 4])>> {
+    let mut probabilities = Vec::new();
+    for item in value.try_iter()? {
+        let item = item?;
+        let tuple = item.cast::<PyTuple>()?;
+        if tuple.len() != 5 {
+            return Err(PyException::new_err(
+                "RWKV workload bucket probability entry must contain 5 fields",
+            ));
+        }
+        probabilities.push((
+            tuple.get_item(0)?.extract()?,
+            [
+                tuple.get_item(1)?.extract()?,
+                tuple.get_item(2)?.extract()?,
+                tuple.get_item(3)?.extract()?,
+                tuple.get_item(4)?.extract()?,
+            ],
+        ));
+    }
+    Ok(probabilities)
 }
 
 fn interval_tuple(intervals: [Option<u32>; 4]) -> RwkvIntervalTuple {

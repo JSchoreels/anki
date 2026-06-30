@@ -53,7 +53,6 @@ impl Collection {
                 }
 
                 let original = card.clone();
-                let original_interval = card.interval;
                 card.interval = item.interval_days;
                 card.memory_state = Some(rwkv_rescheduled_memory_state(&card, item.s90));
 
@@ -68,7 +67,6 @@ impl Collection {
                     item.interval_days,
                 );
 
-                col.log_rescheduled_review(&card, original_interval, usn)?;
                 col.update_card_inner(&mut card, original, usn)?;
                 updated += 1;
             }
@@ -522,6 +520,36 @@ mod test {
     use crate::notes::NoteId;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+
+    #[test]
+    fn apply_review_reschedule_does_not_write_revlog() -> Result<()> {
+        let mut col = Collection::new();
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32 + 8);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 4;
+        col.add_card(&mut card)?;
+
+        let revlogs_before = col.storage.get_revlog_entries_for_card(card.id)?.len();
+        let result = col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
+            card_id: card.id,
+            interval_days: 12,
+            elapsed_days: 4,
+            s90: 9.5,
+        }])?;
+
+        let updated = col.storage.get_card(card.id)?.unwrap();
+        assert_eq!(result.output, 1);
+        assert_eq!(updated.interval, 12);
+        assert_eq!(updated.memory_state.unwrap().stability, 9.5);
+        assert_eq!(
+            col.storage.get_revlog_entries_for_card(card.id)?.len(),
+            revlogs_before
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn review_input_rows_return_eligible_review_cards() -> Result<()> {

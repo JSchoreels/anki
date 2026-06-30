@@ -6,8 +6,10 @@ import { expect, test } from "vitest";
 
 import type { GraphBounds } from "./graph-helpers";
 import {
+    centeredMovingAverage,
     renderWorkloadChart,
     SimulateWorkloadSubgraph,
+    smoothPointsByLabel,
     type WorkloadPoint,
     workloadSameMemorizedSavings,
 } from "./simulator";
@@ -135,6 +137,75 @@ test("renderWorkloadChart handles weighted workload metrics", () => {
             SimulateWorkloadSubgraph.weightedRatio,
         )
     ).not.toThrow();
+});
+
+test("centeredMovingAverage smooths without lagging the series", () => {
+    expect(centeredMovingAverage([10, 100, 10], 3)).toStrictEqual([55, 40, 55]);
+    expect(centeredMovingAverage([10, 100, 10], 1)).toStrictEqual([10, 100, 10]);
+});
+
+test("smoothPointsByLabel sorts and smooths each simulation separately", () => {
+    const points: WorkloadPoint[] = [
+        {
+            x: 3,
+            timeCost: 10,
+            count: 10,
+            memorized: 10,
+            weightedMemorized: 10,
+            reviewless_end_memorized: 0,
+            reviewless_end_weighted_memorized: 0,
+            label: 1,
+            learnSpan: 365,
+        },
+        {
+            x: 1,
+            timeCost: 10,
+            count: 10,
+            memorized: 10,
+            weightedMemorized: 10,
+            reviewless_end_memorized: 0,
+            reviewless_end_weighted_memorized: 0,
+            label: 1,
+            learnSpan: 365,
+        },
+        {
+            x: 2,
+            timeCost: 100,
+            count: 100,
+            memorized: 100,
+            weightedMemorized: 100,
+            reviewless_end_memorized: 0,
+            reviewless_end_weighted_memorized: 0,
+            label: 1,
+            learnSpan: 365,
+        },
+        {
+            x: 1,
+            timeCost: 1000,
+            count: 1000,
+            memorized: 1000,
+            weightedMemorized: 1000,
+            reviewless_end_memorized: 0,
+            reviewless_end_weighted_memorized: 0,
+            label: 2,
+            learnSpan: 365,
+        },
+    ];
+
+    const smoothed = smoothPointsByLabel(points, 3);
+
+    expect(smoothed.map((point) => [point.label, point.x])).toStrictEqual([
+        [1, 1],
+        [1, 2],
+        [1, 3],
+        [2, 1],
+    ]);
+    expect(smoothed.slice(0, 3).map((point) => point.memorized)).toStrictEqual([
+        55,
+        40,
+        55,
+    ]);
+    expect(smoothed[3].memorized).toBe(1000);
 });
 
 test("workloadSameMemorizedSavings compares ADR cost against fixed DR memory targets", () => {

@@ -48,6 +48,7 @@ class RwkvInferenceProcess:
         state_dict = torch.load(model_path, map_location=device, weights_only=True)
         self.rnn.load_state_dict(state_dict)
         self.rnn = self.rnn.selective_cast(dtype)
+        self.rnn.eval()
         self.device = device
         self.dtype = dtype
 
@@ -128,7 +129,7 @@ class RwkvInferenceProcess:
         )
 
         if self.first_day_offset is None:
-            self.first_day_offset = _int_value(prepared, "day_offset")
+            self.first_day_offset = _int_value(prepared, "_raw_day_offset")
 
         if prepared["day_offset"] != self.today:
             self.today = _int_value(prepared, "day_offset")
@@ -138,9 +139,7 @@ class RwkvInferenceProcess:
         if card_id not in self.card_set:
             self.today_new_cards += 1
             self.card_set.add(card_id)
-            self.card2first_day_offset[card_id] = (
-                _int_value(prepared, "day_offset") - self.first_day_offset
-            )
+            self.card2first_day_offset[card_id] = _int_value(prepared, "day_offset")
 
         self.prev_row = dict(prepared)
         self.last_i[card_id] = self.i
@@ -365,10 +364,12 @@ class RwkvInferenceProcess:
             / seconds_per_day
         )
 
+        raw_day_offset = _int_value(row, "day_offset")
+        row["_raw_day_offset"] = raw_day_offset
         if self.first_day_offset is None:
             row["day_offset"] = 0
         else:
-            row["day_offset"] = _int_value(row, "day_offset") - self.first_day_offset
+            row["day_offset"] = raw_day_offset - self.first_day_offset
 
         if card_id in self.card2first_day_offset:
             row["day_offset_first"] = self.card2first_day_offset[card_id]
@@ -379,7 +380,9 @@ class RwkvInferenceProcess:
 
         for name in ("note_id", "deck_id", "preset_id"):
             if is_missing_id(row.get(name)):
-                row[name] = ID_PLACEHOLDER
+                row[name] = (
+                    ID_PLACEHOLDER + card_id if name == "note_id" else ID_PLACEHOLDER
+                )
                 row[f"{name}_is_nan"] = 1.0
             else:
                 row[f"{name}_is_nan"] = 0.0

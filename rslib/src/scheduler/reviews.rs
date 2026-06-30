@@ -214,6 +214,8 @@ impl Collection {
                     milliseconds_taken: 0,
                     answered_at_millis: TimestampMillis::now().into(),
                     desired_retention_override,
+                    rwkv_s90: None,
+                    rwkv_retrievability: None,
                 }
                 .into();
                 // Process the card without updating queues yet

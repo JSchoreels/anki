@@ -21,6 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import * as tr from "@generated/ftl";
     import { postProto } from "@generated/post";
     import { runWithBackendProgress } from "@tslib/progress";
+    import { DeckId } from "@generated/anki/decks_pb";
 
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
@@ -1097,7 +1098,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reschedulingRwkvReviewCards = true;
         try {
             await saveRwkvDeckOptions();
-            await postProto("rescheduleRwkvReviewCards", new Empty({}), Empty);
+            await postProto(
+                "rescheduleRwkvReviewCards",
+                new DeckId({ did: state.getTargetDeckId() }),
+                Empty,
+            );
         } finally {
             reschedulingRwkvReviewCards = false;
         }
@@ -1116,8 +1121,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
+    function showRwkvWorkloadModal(): void {
+        simulateFsrsRequest.reviewLimit = 9999;
+        rwkvWorkloadModal?.show();
+    }
+
     let simulatorModal: Modal;
     let workloadModal: Modal;
+    let rwkvWorkloadModal: Modal;
     let dynamicDesiredRetentionPlotModal: Modal;
     const dynamicDesiredRetentionCalibrationCounts = Array.from(
         { length: 31 },
@@ -1337,6 +1348,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </SettingTitle>
         </SwitchRow>
 
+        <SwitchRow
+            bind:value={$config.rwkvReviewCandidateRefreshEnabled}
+            defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvCandidateRefresh")}>
+                {tr.deckConfigRwkvReviewCandidateRefresh()}
+            </SettingTitle>
+        </SwitchRow>
+
         <RwkvBatchSizeRow
             bind:value={$config.rwkvReviewBatchSize}
             defaultValue={defaults.rwkvReviewBatchSize}
@@ -1426,6 +1446,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 {:else}
                     Reschedule & update RWKV memory state
                 {/if}
+            </button>
+
+            <button
+                class="btn btn-outline-primary"
+                disabled={buildingRwkvStateCache ||
+                    forceBuildingRwkvStateCache ||
+                    reschedulingRwkvReviewCards}
+                on:click={() => showRwkvWorkloadModal()}
+            >
+                RWKV Desired Retention: Help Me Decide
             </button>
         </div>
     {/if}
@@ -1620,6 +1650,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <SimulatorModal
     bind:modal={workloadModal}
     workload
+    {state}
+    {simulateFsrsRequest}
+    {computing}
+    {openHelpModal}
+    {onPresetChange}
+/>
+
+<SimulatorModal
+    bind:modal={rwkvWorkloadModal}
+    workload
+    rwkvWorkload
     {state}
     {simulateFsrsRequest}
     {computing}

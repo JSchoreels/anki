@@ -7,6 +7,7 @@ import importlib.util
 import logging
 import struct
 import sys
+import threading
 import time
 import types
 from collections.abc import Callable, Sequence
@@ -313,6 +314,14 @@ class _RustRwkvRuntime:
             target_retention,
             max_interval_days,
         )
+        self._process_lock = threading.RLock()
+
+    def _locked_process(self) -> Any:
+        lock = getattr(self, "_process_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._process_lock = lock
+        return lock
 
     def review(
         self,
@@ -325,36 +334,37 @@ class _RustRwkvRuntime:
         global_state: object | None,
     ) -> RwkvReviewTransition:
         identity = review_input.identity
-        (
-            retrievability,
-            current_interval,
-            current_s90,
-            intervals,
-            s90s,
-            next_card_state,
-            next_note_state,
-            next_deck_state,
-            next_preset_state,
-            next_global_state,
-        ) = self._process.review(
-            identity.card_id,
-            identity.note_id,
-            identity.deck_id,
-            identity.preset_id,
-            review_input.is_query,
-            review_input.ease,
-            review_input.duration_millis,
-            review_input.card_type,
-            review_input.day_offset,
-            review_input.current_elapsed_days,
-            review_input.current_elapsed_seconds,
-            *review_input.target_retentions,
-            _state_bytes(card_state),
-            _state_bytes(note_state),
-            _state_bytes(deck_state),
-            _state_bytes(preset_state),
-            _state_bytes(global_state),
-        )
+        with self._locked_process():
+            (
+                retrievability,
+                current_interval,
+                current_s90,
+                intervals,
+                s90s,
+                next_card_state,
+                next_note_state,
+                next_deck_state,
+                next_preset_state,
+                next_global_state,
+            ) = self._process.review(
+                identity.card_id,
+                identity.note_id,
+                identity.deck_id,
+                identity.preset_id,
+                review_input.is_query,
+                review_input.ease,
+                review_input.duration_millis,
+                review_input.card_type,
+                review_input.day_offset,
+                review_input.current_elapsed_days,
+                review_input.current_elapsed_seconds,
+                *review_input.target_retentions,
+                _state_bytes(card_state),
+                _state_bytes(note_state),
+                _state_bytes(deck_state),
+                _state_bytes(preset_state),
+                _state_bytes(global_state),
+            )
 
         return RwkvReviewTransition(
             prediction=RwkvReviewPrediction(
@@ -385,29 +395,33 @@ class _RustRwkvRuntime:
         record_predictions = prediction_recorder is not None and review_ids is not None
         processed = 0
 
-        while processed < total:
-            chunk = reviews[processed : processed + report_every]
-            predictions = self._process.warm_up_reviews(
-                [_review_input_row(review_input) for review_input in chunk],
-                record_predictions,
-            )
-            if record_predictions:
-                for index, retrievability in predictions:
-                    review_index = processed + int(index)
-                    if 0 <= review_index < len(review_ids):
-                        prediction_recorder(review_ids[review_index], retrievability)
+        with self._locked_process():
+            while processed < total:
+                chunk = reviews[processed : processed + report_every]
+                predictions = self._process.warm_up_reviews(
+                    [_review_input_row(review_input) for review_input in chunk],
+                    record_predictions,
+                )
+                if record_predictions:
+                    for index, retrievability in predictions:
+                        review_index = processed + int(index)
+                        if 0 <= review_index < len(review_ids):
+                            prediction_recorder(
+                                review_ids[review_index],
+                                retrievability,
+                            )
 
-            processed += len(chunk)
-            _report_warmup_progress(progress, processed=processed, total=total)
+                processed += len(chunk)
+                _report_warmup_progress(progress, processed=processed, total=total)
 
-        (
-            card_states,
-            note_states,
-            deck_states,
-            preset_states,
-            global_state,
-            runtime_state,
-        ) = self._process.warm_up_snapshot()
+            (
+                card_states,
+                note_states,
+                deck_states,
+                preset_states,
+                global_state,
+                runtime_state,
+            ) = self._process.warm_up_snapshot()
         return RwkvBackendCacheSnapshot(
             card_states=dict(card_states),
             note_states=dict(note_states),
@@ -420,7 +434,8 @@ class _RustRwkvRuntime:
     def reset_warm_up_state(self) -> None:
         reset = getattr(self._process, "reset_warm_up_state", None)
         if callable(reset):
-            reset()
+            with self._locked_process():
+                reset()
 
     def predict_many(
         self,
@@ -470,7 +485,8 @@ class _RustRwkvRuntime:
             len(requests),
             build_elapsed_ms,
         )
-        outputs = predict_many(rows)
+        with self._locked_process():
+            outputs = predict_many(rows)
         predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
         if len(outputs) != len(requests):
             raise ValueError("RWKV Rust batch prediction count mismatch")
@@ -529,9 +545,12 @@ class _RustRwkvRuntime:
             use_packed,
             build_elapsed_ms,
         )
-        outputs = (
-            predict_many_packed(*payload) if use_packed else predict_many_tuple(payload)
-        )
+        with self._locked_process():
+            outputs = (
+                predict_many_packed(*payload)
+                if use_packed
+                else predict_many_tuple(payload)
+            )
         predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
         if len(outputs) != len(requests):
             raise ValueError("RWKV Rust retrievability prediction count mismatch")
@@ -548,18 +567,133 @@ class _RustRwkvRuntime:
 
         return [float(retrievability) for retrievability in outputs]
 
+    def predict_retrievability_many_after_review(
+        self,
+        *,
+        answer: RwkvReviewInput,
+        query_inputs: Sequence[RwkvReviewInput],
+        snapshot: RwkvBackendCacheSnapshot,
+    ) -> Sequence[float]:
+        predict_many = getattr(
+            self._process,
+            "predict_retrievability_many_after_review",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError("RWKV future retrievability prediction is unavailable")
+
+        build_start = time.monotonic()
+        answer_row = _review_input_row(answer)
+        query_rows = [_review_input_row(review_input) for review_input in query_inputs]
+        snapshot_row = _workload_snapshot(snapshot)
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust future retrievability batch bridge started: "
+            "requests=%s build_elapsed_ms=%.1f",
+            len(query_rows),
+            build_elapsed_ms,
+        )
+        with self._locked_process():
+            outputs = predict_many(answer_row, query_rows, snapshot_row)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(query_inputs):
+            raise ValueError("RWKV future retrievability prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust future retrievability batch predicted: "
+            "requests=%s build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
+            len(query_rows),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return [float(retrievability) for retrievability in outputs]
+
+    def simulate_workload(
+        self,
+        *,
+        inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+        snapshot: RwkvBackendCacheSnapshot,
+        min_dr: int,
+        max_dr: int,
+        target_dr_step: int,
+        days_to_simulate: int,
+        review_limit: int,
+        state_update_interval: int,
+        review_model: object,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> object:
+        simulate_workload = getattr(self._process, "simulate_workload", None)
+        if not callable(simulate_workload):
+            raise ValueError("RWKV Rust runtime does not support workload simulation")
+
+        build_start = time.monotonic()
+        rows = [_workload_input_row(review_input) for _, review_input, _ in inputs]
+        grade_seconds = tuple(getattr(review_model, "grade_seconds"))
+        bucket_probabilities = _workload_bucket_probabilities(review_model)
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust workload simulation bridge started: "
+            "inputs=%s dr=%s..%s step=%s days=%s state_update_interval=%s "
+            "build_elapsed_ms=%.1f",
+            len(rows),
+            min_dr,
+            max_dr,
+            target_dr_step,
+            days_to_simulate,
+            state_update_interval,
+            build_elapsed_ms,
+        )
+        with self._locked_process():
+            output = simulate_workload(
+                rows,
+                _workload_snapshot(snapshot),
+                int(min_dr),
+                int(max_dr),
+                int(target_dr_step),
+                int(days_to_simulate),
+                int(review_limit),
+                int(state_update_interval),
+                grade_seconds,
+                bucket_probabilities,
+                progress,
+            )
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        logger.debug(
+            "RWKV embedded Rust workload simulation bridge finished: "
+            "inputs=%s dr=%s..%s step=%s days=%s state_update_interval=%s "
+            "build_elapsed_ms=%.1f "
+            "bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
+            len(rows),
+            min_dr,
+            max_dr,
+            target_dr_step,
+            days_to_simulate,
+            state_update_interval,
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return output
+
     def snapshot(self, review_input: RwkvReviewInput) -> object:
-        return self._process.state_for_card(review_input.identity.card_id)
+        with self._locked_process():
+            return self._process.state_for_card(review_input.identity.card_id)
 
     def restore(self, state: object | None) -> None:
         if state is not None:
-            self._process.restore_state(state)
+            with self._locked_process():
+                self._process.restore_state(state)
 
     def cache_state(self) -> bytes:
-        return bytes(self._process.cache_state())
+        with self._locked_process():
+            return bytes(self._process.cache_state())
 
     def restore_cache_state(self, state: bytes) -> None:
-        self._process.restore_cache_state(state)
+        with self._locked_process():
+            self._process.restore_cache_state(state)
 
 
 def _review_input_row(
@@ -596,6 +730,66 @@ def _review_input_row(
         review_input.current_elapsed_seconds,
         *review_input.target_retentions,
     )
+
+
+def _workload_input_row(
+    review_input: RwkvReviewInput,
+) -> tuple[
+    int,
+    int | None,
+    int | None,
+    int | None,
+    bool,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+    int | None,
+    int | None,
+    int | None,
+]:
+    return (
+        *_review_input_row(review_input),
+        review_input.interval_days,
+        review_input.reps,
+        review_input.lapses,
+    )
+
+
+def _workload_snapshot(
+    snapshot: RwkvBackendCacheSnapshot,
+) -> tuple[
+    list[tuple[int, bytes]],
+    list[tuple[int, bytes]],
+    list[tuple[int, bytes]],
+    list[tuple[int, bytes]],
+    bytes | None,
+    bytes | None,
+]:
+    return (
+        sorted(snapshot.card_states.items()),
+        sorted(snapshot.note_states.items()),
+        sorted(snapshot.deck_states.items()),
+        sorted(snapshot.preset_states.items()),
+        snapshot.global_state,
+        snapshot.runtime_state,
+    )
+
+
+def _workload_bucket_probabilities(
+    review_model: object,
+) -> list[tuple[int, float, float, float, float]]:
+    probabilities = getattr(review_model, "bucket_probabilities")
+    return [
+        (int(bucket), float(again), float(hard), float(good), float(easy))
+        for bucket, (again, hard, good, easy) in sorted(probabilities.items())
+    ]
 
 
 def _prediction_request_row(
@@ -780,7 +974,7 @@ class SrsBenchmarkReviewRowBuilder:
                 "elapsed_days": elapsed_days,
                 "elapsed_seconds": elapsed_seconds,
                 "day_offset": review_input.day_offset or 0,
-                "duration": _duration_seconds(review_input),
+                "duration": _duration_millis(review_input),
                 "state": review_input.card_type or 0,
                 "rating": review_input.ease or 1,
             }
@@ -854,10 +1048,10 @@ def _elapsed_days(review_input: RwkvReviewInput, elapsed_seconds: int) -> int:
     return -1
 
 
-def _duration_seconds(review_input: RwkvReviewInput) -> float:
+def _duration_millis(review_input: RwkvReviewInput) -> float:
     if review_input.duration_millis is None:
         return 0.0
-    return review_input.duration_millis / 1000
+    return float(review_input.duration_millis)
 
 
 def _interval_search_days(max_interval_days: int) -> list[int]:

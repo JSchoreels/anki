@@ -105,6 +105,9 @@ service SchedulerService {
   // card, if one has been installed for the current scheduler day.
   rpc GetRwkvRetrievabilityScore(cards.CardId)
       returns (RwkvRetrievabilityScoreResponse);
+  // Stores derived local RWKV review-time retrievability cache rows.
+  rpc SetRwkvReviewRetrievabilityCacheRows(
+      RwkvReviewRetrievabilityCacheRowsRequest) returns (generic.UInt32);
   // Applies desktop-computed RWKV reschedule intervals and S90 values.
   rpc ApplyRwkvReviewReschedule(RwkvReviewRescheduleRequest)
       returns (collection.OpChangesWithCount);
@@ -353,6 +356,8 @@ message CardAnswer {
   int64 answered_at_millis = 5;
   uint32 milliseconds_taken = 6;
   optional float desired_retention_override = 7;
+  optional float rwkv_s90 = 8;
+  optional float rwkv_retrievability = 9;
 }
 
 message CustomStudyRequest {
@@ -551,6 +556,9 @@ message SimulateFsrsReviewRequest {
   repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 33;
   bool split_workload_by_preset = 34;
   string workload_preset_label = 35;
+  uint32 rwkv_workload_sample_limit = 36;
+  uint32 rwkv_workload_target_step = 37;
+  uint32 rwkv_workload_state_update_interval = 38;
 }
 
 message SimulateFsrsReviewResponse {
@@ -827,6 +835,15 @@ message RwkvCardInfoScoreRequest {
 
 message RwkvRetrievabilityScoreResponse {
   optional float retrievability = 1;
+}
+
+message RwkvReviewRetrievabilityCacheRowsRequest {
+  message Row {
+    int64 revlog_id = 1;
+    float prediction = 2;
+  }
+  string source = 1;
+  repeated Row rows = 2;
 }
 
 message RwkvReviewRescheduleRequest {

@@ -217,6 +217,10 @@ export class DeckOptionsState {
         return escapeSearchText(this.currentDeck.name);
     }
 
+    getTargetDeckId(): DeckOptionsId {
+        return this.targetDeckId;
+    }
+
     getSubtreeConfigIds(): bigint[] {
         return this.currentDeck.subtreeConfigIds;
     }

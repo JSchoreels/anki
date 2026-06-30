@@ -209,6 +209,40 @@ class TestMediaFileCSP:
             assert _get_csp(resp) is None
 
 
+class TestRwkvReschedule:
+    @pytest.mark.parametrize("deck_id", [None, 100])
+    def test_reschedule_forwards_requested_deck_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        deck_id: int | None,
+    ) -> None:
+        import aqt
+        from anki import decks_pb2
+        from aqt.mediasrv import app, reschedule_rwkv_review_cards
+
+        mw = object()
+        calls: list[tuple[object, int | None]] = []
+
+        def reschedule(mw_arg: object, *, deck_id: int | None = None) -> None:
+            calls.append((mw_arg, deck_id))
+
+        monkeypatch.setattr(aqt, "mw", mw, raising=False)
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress",
+            reschedule,
+        )
+
+        data = (
+            decks_pb2.DeckId(did=deck_id).SerializeToString()
+            if deck_id is not None
+            else b""
+        )
+        with app.test_request_context(data=data):
+            assert reschedule_rwkv_review_cards() == b""
+
+        assert calls == [(mw, deck_id)]
+
+
 class TestEditorPageCSP:
     def test_editor_csp_does_not_block_user_embeds(self) -> None:
         csp = _editor_content_security_policy(port=12345)

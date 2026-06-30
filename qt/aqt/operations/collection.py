@@ -17,7 +17,10 @@ def undo(*, parent: QWidget) -> None:
     def on_success(out: OpChangesAfterUndo) -> None:
         from aqt import rwkv_scheduler
 
-        rwkv_scheduler.record_collection_undo(out)
+        restored_card_ids = rwkv_scheduler.record_collection_undo(out)
+        reviewer = getattr(parent, "reviewer", None)
+        if reviewer is not None:
+            rwkv_scheduler.queue_reviewer_undo_card_ids(reviewer, restored_card_ids)
         gui_hooks.state_did_undo(out)
         tooltip(tr.undo_action_undone(action=out.operation), parent=parent)
 

@@ -195,6 +195,7 @@ message DeckConfig {
     bool rwkv_review_allow_same_day_review = 71;
     bool rwkv_review_instant_order_enabled = 72;
     bool rwkv_review_dynamic_preset_replay = 73;
+    bool rwkv_review_candidate_refresh_enabled = 74;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

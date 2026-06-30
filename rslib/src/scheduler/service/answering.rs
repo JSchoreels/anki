@@ -22,6 +22,8 @@ impl From<anki_proto::scheduler::CardAnswer> for CardAnswer {
             milliseconds_taken: answer.milliseconds_taken,
             custom_data,
             desired_retention_override: answer.desired_retention_override,
+            rwkv_s90: answer.rwkv_s90,
+            rwkv_retrievability: answer.rwkv_retrievability,
             from_queue: true,
         }
     }
