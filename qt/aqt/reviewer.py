@@ -64,6 +64,7 @@ from aqt.utils import (
 )
 
 logger = logging.getLogger(__name__)
+UNDO_RESTORED_CARD_ANSWER_UNBLOCK_DELAY_MS = 100
 
 
 class RefreshNeeded(Enum):
@@ -178,6 +179,12 @@ class Reviewer:
         self._qa_update_id = 0
         self._answer_update_id: int | None = None
         self._answer_rendered = False
+        self._review_actions_blocked = False
+        self._review_actions_block_id = 0
+        self._review_answer_actions_blocked = False
+        self._review_answer_actions_block_id = 0
+        self._review_card_generation = 0
+        self._rwkv_undo_restored_card_requires_queue_invalidation = False
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
         self._scheduling_states_pending = False
         self.bottom = BottomBar(mw, mw.bottomWeb)
@@ -196,6 +203,8 @@ class Reviewer:
             self.mw.moveToState("deckBrowser")
             show_warning(tr.scheduling_update_required().replace("V2", "v3"))
             return
+        self.set_review_actions_blocked(False)
+        self._set_review_answer_actions_blocked(False)
         self.mw.setStateShortcuts(self._shortcutKeys())  # type: ignore
         self.web.set_bridge_command(self._linkHandler, self)
         self.bottom.web.set_bridge_command(self._linkHandler, ReviewerBottomBar(self))
@@ -225,10 +234,16 @@ class Reviewer:
             self._prepare_rwkv_queue_order_on_exit()
         self.card = None
         self.auto_advance_enabled = False
+        self.set_review_actions_blocked(False)
+        self._set_review_answer_actions_blocked(False)
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed is RefreshNeeded.QUEUES:
-            if aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
+            if aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self):
+                self.nextCard()
+                self.mw.fade_in_webview()
+                self._refresh_needed = None
+            elif aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
                 self._refresh_needed = None
                 self._prepare_rwkv_queue_order_then_next_card(
                     fade_after=True,
@@ -263,7 +278,11 @@ class Reviewer:
             elif changes.card:
                 self._refresh_needed = RefreshNeeded.FLAG
 
-        if focused and self._refresh_needed:
+        should_refresh = focused or (
+            self._refresh_needed is RefreshNeeded.QUEUES
+            and aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self)
+        )
+        if should_refresh and self._refresh_needed:
             self.refresh_if_needed()
 
         return bool(self._refresh_needed)
@@ -279,23 +298,58 @@ class Reviewer:
         self._qa_update_id += 1
         return f"{kind}:{self._qa_update_id}"
 
+    def set_review_actions_blocked(self, blocked: bool) -> None:
+        self._review_actions_block_id = getattr(self, "_review_actions_block_id", 0) + 1
+        self._review_actions_blocked = blocked
+
+    def _review_actions_are_blocked(self) -> bool:
+        return getattr(self, "_review_actions_blocked", False)
+
+    def _set_review_answer_actions_blocked(self, blocked: bool) -> None:
+        self._review_answer_actions_block_id = (
+            getattr(self, "_review_answer_actions_block_id", 0) + 1
+        )
+        self._review_answer_actions_blocked = blocked
+
+    def _answer_actions_are_blocked(self) -> bool:
+        return self._review_actions_are_blocked() or getattr(
+            self, "_review_answer_actions_blocked", False
+        )
+
+    def _block_answer_actions_after_undo_redraw(self) -> None:
+        self._set_review_answer_actions_blocked(True)
+        block_id = getattr(self, "_review_answer_actions_block_id", 0)
+
+        def unblock_if_current() -> None:
+            if getattr(self, "_review_answer_actions_block_id", 0) == block_id:
+                self._set_review_answer_actions_blocked(False)
+
+        self.mw.progress.single_shot(
+            UNDO_RESTORED_CARD_ANSWER_UNBLOCK_DELAY_MS, unblock_if_current
+        )
+
     # Fetching a card
     ##########################################################################
 
     def nextCard(self) -> None:
         start = time.monotonic()
+        self._review_card_generation = getattr(self, "_review_card_generation", 0) + 1
         self.previous_card = self.card
         self.card = None
         self._v3 = None
         self._scheduling_states_pending = False
         self._desired_retention_override = None
-        if not self._get_rwkv_undo_restored_card():
+        self._rwkv_undo_restored_card_requires_queue_invalidation = False
+        restored_undo_card = self._get_rwkv_undo_restored_card()
+        if not restored_undo_card:
             self._get_next_v3_card()
 
         self._previous_card_info.set_card(self.previous_card)
         self._card_info.set_card(self.card)
 
         if not self.card:
+            self.set_review_actions_blocked(False)
+            self._set_review_answer_actions_blocked(False)
             self.mw.moveToState("overview")
             return
 
@@ -303,6 +357,11 @@ class Reviewer:
             self._initWeb()
 
         self._showQuestion()
+        self.set_review_actions_blocked(False)
+        if restored_undo_card:
+            self._block_answer_actions_after_undo_redraw()
+        else:
+            self._set_review_answer_actions_blocked(False)
         logger.debug(
             "reviewer nextCard displayed question: previous_card_id=%s card_id=%s elapsed_ms=%.1f",
             self.previous_card.id if self.previous_card else None,
@@ -444,6 +503,7 @@ class Reviewer:
                 context=context,
             )
             self._scheduling_states_pending = False
+            self._rwkv_undo_restored_card_requires_queue_invalidation = True
             self.card.start_timer()
             logger.debug("reviewer restored RWKV undone card: card_id=%s", card_id)
             return True
@@ -729,6 +789,8 @@ class Reviewer:
         if self.mw.state != "review":
             # showing resetRequired screen; ignore space
             return
+        if self._review_actions_are_blocked():
+            return
         if self.card is None or self._v3 is None:
             return
         self.state = "answer"
@@ -817,6 +879,8 @@ class Reviewer:
         if self.mw.state != "review":
             # showing resetRequired screen; ignore key
             return
+        if self._answer_actions_are_blocked():
+            return
         if self.state != "answer" or not self._answer_rendered:
             return
         proceed, ease = gui_hooks.reviewer_will_answer_card(
@@ -840,6 +904,15 @@ class Reviewer:
             desired_retention_override=self._desired_retention_override,
         )
         aqt.rwkv_scheduler.set_answer_rwkv_s90(answer, self, self.card, ease)
+        if getattr(
+            self,
+            "_rwkv_undo_restored_card_requires_queue_invalidation",
+            False,
+        ):
+            aqt.rwkv_scheduler.invalidate_reviewer_queue_for_card_answer(
+                self, self.card
+            )
+            self._rwkv_undo_restored_card_requires_queue_invalidation = False
         logger.debug(
             "reviewer built answer: card_id=%s ease=%s build_elapsed_ms=%.1f elapsed_ms=%.1f",
             self.card.id,
@@ -921,6 +994,7 @@ class Reviewer:
         if answered_card_id is None:
             answered_card_id = self.card.id if self.card else None
         initial_state = self.state
+        initial_generation = getattr(self, "_review_card_generation", 0)
         start = time.monotonic()
         logger.debug(
             "reviewer RWKV queue order refresh starting: answered_card_id=%s "
@@ -959,12 +1033,14 @@ class Reviewer:
             if show_next_card and self._rwkv_queue_refresh_target_is_current(
                 answered_card_id,
                 initial_state,
+                initial_generation,
             ):
                 self.nextCard()
                 if fade_after:
                     self.mw.fade_in_webview()
             elif (
-                self.state == "transition"
+                getattr(self, "_review_card_generation", 0) == initial_generation
+                and self.state == "transition"
                 and self.card is not None
                 and self.card.id == answered_card_id
             ):
@@ -1100,7 +1176,12 @@ class Reviewer:
         self,
         card_id: CardId | None,
         state: Literal["question", "answer", "transition"] | None,
+        generation: int | None = None,
     ) -> bool:
+        if generation is not None and generation != getattr(
+            self, "_review_card_generation", 0
+        ):
+            return False
         if self.state != state:
             return False
         if card_id is None:
@@ -1235,6 +1316,8 @@ class Reviewer:
         gui_hooks.audio_did_seek_relative(self.web, self.seek_secs)
 
     def onEnterKey(self) -> None:
+        if self._review_actions_are_blocked():
+            return
         if self.state == "question":
             self._getTypedAnswer()
         elif self.state == "answer" and aqt.mw.pm.spacebar_rates_card():
@@ -1382,6 +1465,8 @@ class Reviewer:
         return self.mw.col.extract_cloze_for_typing(txt, idx) or None
 
     def _getTypedAnswer(self) -> None:
+        if self._review_actions_are_blocked():
+            return
         card_id = self.card.id if self.card else None
         self.web.evalWithCallback(
             "getTypedAnswer();",

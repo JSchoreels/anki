@@ -357,6 +357,23 @@ deck-config-rwkv-review-dynamic-preset-replay-tooltip =
     move between preset streams as their interval or repetition count changes.
     Leave this disabled unless you use dynamic presets that can change a card's
     preset during its lifetime.
+deck-config-rwkv-review-preset-tag-state = Use tags in RWKV preset state
+deck-config-rwkv-review-preset-tag-state-tooltip =
+    When enabled, RWKV folds non-outcome note tags into the preset stream, so
+    tagged material can build separate preset memory. Outcome-like tags such as
+    leech, AnkiMorphs am-* tags, and tags with components like fail, lapse,
+    wrong, or missed are ignored.
+deck-config-rwkv-review-japanese-feature-state = Use Japanese feature sets in RWKV preset state
+deck-config-rwkv-review-japanese-feature-state-tooltip =
+    Experimental. When enabled, RWKV folds coarse Japanese word features into
+    the preset stream, using the Front, Reading, Front_Kana, and Frequency
+    fields when present. Tags are not used by this option.
+deck-config-rwkv-review-self-correction = Enable RWKV self-correction
+deck-config-rwkv-review-self-correction-tooltip =
+    Experimental. When enabled, Anki applies a fixed post-RWKV correction layer
+    using the raw confidence bin, local hour, and card maturity/lapse features.
+    This changes displayed, stats, and queue-order retrievability, but does not
+    retrain RWKV or change RWKV-Curve intervals.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 
@@ -408,6 +425,7 @@ deck-config-confirm-remove-name = Remove { $name }?
 ## Other Buttons
 
 deck-config-save-button = Save
+deck-config-save-and-close = Save and Close
 deck-config-save-to-all-subdecks = Save to All Subdecks
 deck-config-save-and-optimize = Optimize All Presets
 deck-config-revert-button-tooltip = Restore this setting to its default value?

@@ -54,6 +54,13 @@ TypeScript/Svelte browser e2e tests live in `ts/tests/e2e/` and run with
 `just test-e2e`. The harness launches a temporary Anki instance and drives
 mediasrv pages with Playwright's Chromium.
 
+When a bug involves UI state, focus, event timing, shortcut/click routing,
+embedded webviews, or async reviewer transitions, do not rely on unit tests
+alone if the behavior remains uncertain. Add or run a targeted runtime/UI
+smoke test using the existing harness where possible, such as Playwright e2e,
+an offscreen temporary Anki reviewer session, or another small mock UI flow
+that exercises the user interaction end to end.
+
 Be mindful that some changes (such as modifications to .proto files) may
 need a full build with `just check` first.
 

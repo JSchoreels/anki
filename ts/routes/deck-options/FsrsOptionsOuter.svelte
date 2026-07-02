@@ -116,6 +116,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigRwkvReviewDynamicPresetReplayTooltip(),
             sched: HelpItemScheduler.FSRS,
         },
+        rwkvPresetTagState: {
+            title: tr.deckConfigRwkvReviewPresetTagState(),
+            help: tr.deckConfigRwkvReviewPresetTagStateTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
+        rwkvJapaneseFeatureState: {
+            title: tr.deckConfigRwkvReviewJapaneseFeatureState(),
+            help: tr.deckConfigRwkvReviewJapaneseFeatureStateTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
+        rwkvSelfCorrection: {
+            title: tr.deckConfigRwkvReviewSelfCorrection(),
+            help: tr.deckConfigRwkvReviewSelfCorrectionTooltip(),
+            sched: HelpItemScheduler.FSRS,
+        },
     };
     const helpSections: HelpItem[] = Object.values(settings);
 

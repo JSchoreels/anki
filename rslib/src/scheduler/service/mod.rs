@@ -73,6 +73,8 @@ use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
 use crate::search::SortMode;
 use crate::stats::studied_today;
+use crate::storage::RwkvReviewRetrievabilityCacheRow;
+use crate::storage::RwkvReviewRetrievabilitySampleRole;
 
 impl crate::services::SchedulerService for Collection {
     /// This behaves like _updateCutoff() in older code - it also unburies at
@@ -890,7 +892,16 @@ impl crate::services::SchedulerService for Collection {
                 row.prediction.is_finite() && (0.0..=1.0).contains(&row.prediction),
                 "invalid RWKV retrievability"
             );
-            rows.push((RevlogId(row.revlog_id), row.prediction));
+            let Some(sample_role) = RwkvReviewRetrievabilitySampleRole::from_str(&row.sample_role)
+            else {
+                invalid_input!("invalid RWKV retrievability sample role");
+            };
+            rows.push(RwkvReviewRetrievabilityCacheRow {
+                revlog_id: RevlogId(row.revlog_id),
+                prediction: row.prediction,
+                sample_role,
+                fold_index: row.fold_index,
+            });
         }
         let count = self
             .storage

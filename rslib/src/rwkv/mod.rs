@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
+mod bulk;
+
 const D_MODEL: usize = 128;
 const CARD_FEATURES: usize = 92;
 const HEADS: usize = 4;
@@ -20,6 +22,218 @@ const S90_TARGET_RETENTION: f32 = 0.9;
 
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
+
+/// Rows per block in the bulk replay's blocked projection kernels. Bounds the
+/// stack scratch used per block; larger blocks amortize weight-matrix streaming
+/// over more rows.
+const LINEAR_BLOCK_ROWS: usize = 32;
+
+#[cfg(test)]
+#[derive(Clone)]
+struct RwkvScanCapturedStep {
+    r: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    w: Vec<f32>,
+    a: Vec<f32>,
+    k_deformed: Vec<f32>,
+}
+
+#[cfg(test)]
+static RWKV_SINGLE_TIMESTEP_PROFILE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static RWKV_SINGLE_TIMESTEP_PROFILE_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static RWKV_SINGLE_TIMESTEP_PROFILE_NANOS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+const RWKV_WARMUP_PROFILE_BUCKETS: usize = 16;
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum RwkvWarmupProfileBucket {
+    FeaturesFor = 0,
+    FeaturesStore = 1,
+    ModelReview = 2,
+    FeatureMlp = 3,
+    ModuleCard = 4,
+    ModuleDeck = 5,
+    ModuleNote = 6,
+    ModulePreset = 7,
+    ModuleGlobal = 8,
+    Heads = 9,
+    ModuleRun = 10,
+    TimeMixer = 11,
+    ChannelMixer = 12,
+    Linear = 13,
+    Norm = 14,
+    SingleTimestep = 15,
+}
+
+#[cfg(test)]
+static RWKV_WARMUP_PROFILE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static RWKV_WARMUP_PROFILE_CALLS: [std::sync::atomic::AtomicU64; RWKV_WARMUP_PROFILE_BUCKETS] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; RWKV_WARMUP_PROFILE_BUCKETS];
+#[cfg(test)]
+static RWKV_WARMUP_PROFILE_NANOS: [std::sync::atomic::AtomicU64; RWKV_WARMUP_PROFILE_BUCKETS] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; RWKV_WARMUP_PROFILE_BUCKETS];
+
+#[cfg(test)]
+fn start_rwkv_warmup_profile() {
+    for index in 0..RWKV_WARMUP_PROFILE_BUCKETS {
+        RWKV_WARMUP_PROFILE_CALLS[index].store(0, std::sync::atomic::Ordering::Relaxed);
+        RWKV_WARMUP_PROFILE_NANOS[index].store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    RWKV_WARMUP_PROFILE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn stop_rwkv_warmup_profile() -> Vec<(&'static str, u64, u64)> {
+    RWKV_WARMUP_PROFILE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    [
+        ("features_for", RwkvWarmupProfileBucket::FeaturesFor),
+        ("features_store", RwkvWarmupProfileBucket::FeaturesStore),
+        ("model_review", RwkvWarmupProfileBucket::ModelReview),
+        ("feature_mlp", RwkvWarmupProfileBucket::FeatureMlp),
+        ("module_card", RwkvWarmupProfileBucket::ModuleCard),
+        ("module_deck", RwkvWarmupProfileBucket::ModuleDeck),
+        ("module_note", RwkvWarmupProfileBucket::ModuleNote),
+        ("module_preset", RwkvWarmupProfileBucket::ModulePreset),
+        ("module_global", RwkvWarmupProfileBucket::ModuleGlobal),
+        ("heads", RwkvWarmupProfileBucket::Heads),
+        ("module_run", RwkvWarmupProfileBucket::ModuleRun),
+        ("time_mixer", RwkvWarmupProfileBucket::TimeMixer),
+        ("channel_mixer", RwkvWarmupProfileBucket::ChannelMixer),
+        ("linear", RwkvWarmupProfileBucket::Linear),
+        ("norm", RwkvWarmupProfileBucket::Norm),
+        ("single_timestep", RwkvWarmupProfileBucket::SingleTimestep),
+    ]
+    .into_iter()
+    .map(|(name, bucket)| {
+        let index = bucket as usize;
+        (
+            name,
+            RWKV_WARMUP_PROFILE_CALLS[index].load(std::sync::atomic::Ordering::Relaxed),
+            RWKV_WARMUP_PROFILE_NANOS[index].load(std::sync::atomic::Ordering::Relaxed),
+        )
+    })
+    .collect()
+}
+
+#[cfg(test)]
+fn rwkv_warmup_profile_start() -> Option<std::time::Instant> {
+    RWKV_WARMUP_PROFILE_ENABLED
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(std::time::Instant::now)
+}
+
+#[cfg(test)]
+fn rwkv_warmup_profile_record(
+    bucket: RwkvWarmupProfileBucket,
+    started: Option<std::time::Instant>,
+) {
+    if let Some(started) = started {
+        let index = bucket as usize;
+        RWKV_WARMUP_PROFILE_CALLS[index].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RWKV_WARMUP_PROFILE_NANOS[index].fetch_add(
+            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+#[cfg(test)]
+fn start_rwkv_single_timestep_profile() {
+    RWKV_SINGLE_TIMESTEP_PROFILE_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    RWKV_SINGLE_TIMESTEP_PROFILE_NANOS.store(0, std::sync::atomic::Ordering::Relaxed);
+    RWKV_SINGLE_TIMESTEP_PROFILE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn stop_rwkv_single_timestep_profile() -> (u64, u64) {
+    RWKV_SINGLE_TIMESTEP_PROFILE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    (
+        RWKV_SINGLE_TIMESTEP_PROFILE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+        RWKV_SINGLE_TIMESTEP_PROFILE_NANOS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+#[cfg(test)]
+struct RwkvScanCaptureState {
+    module_id: usize,
+    layer_id: usize,
+    steps: Vec<RwkvScanCapturedStep>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static RWKV_SCAN_CAPTURE: std::cell::RefCell<Option<RwkvScanCaptureState>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn start_rwkv_scan_capture(module_id: usize, layer_id: usize) {
+    RWKV_SCAN_CAPTURE.with(|capture| {
+        *capture.borrow_mut() = Some(RwkvScanCaptureState {
+            module_id,
+            layer_id,
+            steps: Vec::new(),
+        });
+    });
+}
+
+#[cfg(test)]
+fn rwkv_scan_capture_active() -> bool {
+    RWKV_SCAN_CAPTURE.with(|capture| capture.borrow().is_some())
+}
+
+#[cfg(test)]
+fn take_rwkv_scan_capture() -> Vec<RwkvScanCapturedStep> {
+    RWKV_SCAN_CAPTURE.with(|capture| {
+        capture
+            .borrow_mut()
+            .take()
+            .map(|capture| capture.steps)
+            .unwrap_or_default()
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn record_rwkv_scan_step(
+    module_id: usize,
+    layer_id: usize,
+    r: &[f32],
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    k_deformed: &[f32],
+) {
+    RWKV_SCAN_CAPTURE.with(|capture| {
+        let mut capture = capture.borrow_mut();
+        let Some(capture) = capture.as_mut() else {
+            return;
+        };
+        if capture.module_id != module_id || capture.layer_id != layer_id {
+            return;
+        }
+        capture.steps.push(RwkvScanCapturedStep {
+            r: r.to_vec(),
+            k: k.to_vec(),
+            v: v.to_vec(),
+            w: w.to_vec(),
+            a: a.to_vec(),
+            k_deformed: k_deformed.to_vec(),
+        });
+    });
+}
+
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
 const ID_SPLIT: u64 = 4;
 const TORCH_ID_RNG_STATE_LEN: usize = 624;
@@ -452,28 +666,59 @@ impl RwkvInference {
         reviews: Vec<ReviewInput>,
         record_predictions: bool,
     ) -> io::Result<Vec<(usize, f32)>> {
+        // The scan-capture harness records per-timestep coefficients from the
+        // answer pass only, so it needs the per-review path.
+        #[cfg(test)]
+        if rwkv_scan_capture_active() {
+            return self.warm_up_reviews_sequential(reviews, record_predictions);
+        }
+        bulk::warm_up_reviews_bulk(self, reviews, record_predictions)
+    }
+
+    /// The per-review reference implementation of `warm_up_reviews`. The bulk
+    /// path must match it bit-for-bit; parity tests compare the two.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn warm_up_reviews_sequential(
+        &mut self,
+        reviews: Vec<ReviewInput>,
+        record_predictions: bool,
+    ) -> io::Result<Vec<(usize, f32)>> {
         let mut predictions = vec![];
         for (index, input) in reviews.into_iter().enumerate() {
             if input.ease.is_none() {
                 continue;
             }
 
-            if record_predictions {
+            // Query features must be assigned before answer features so
+            // first-seen ID encodings keep the benchmark-compatible order.
+            let query_features = record_predictions.then(|| {
                 let mut query_input = input.clone();
                 query_input.is_query = true;
                 query_input.ease = None;
                 query_input.duration_millis = None;
-                let features = self.features.features_for(&query_input);
-                let query_heads = self
-                    .model
-                    .review(&features, self.warm_up_states.state_ref(&query_input));
-                predictions.push((index, query_heads.retrievability));
-            }
+                self.features.features_for(&query_input)
+            });
 
             let features = self.features.features_for(&input);
-            let heads = self
-                .model
-                .review(&features, self.warm_up_states.state_ref(&input));
+            let model = &*self.model;
+            // The query and answer inputs share card/note/deck/preset ids, so
+            // both passes read the same pre-review state and can run in
+            // parallel; only the answer pass advances state below.
+            let state = self.warm_up_states.state_ref(&input);
+            let (query_retrievability, heads) = match &query_features {
+                Some(query_features) => {
+                    let (retrievability, heads) = rayon::join(
+                        || model.review_retrievability_features(query_features, state),
+                        || model.review(&features, state),
+                    );
+                    (Some(retrievability), heads)
+                }
+                None => (None, model.review(&features, state)),
+            };
+            if let Some(retrievability) = query_retrievability {
+                predictions.push((index, retrievability));
+            }
+
             self.features.store_review(&input);
             self.curves.insert(input.card_id, heads.curve.clone());
             self.warm_up_states.store(&input, heads.next_state);
@@ -1364,6 +1609,9 @@ impl FeatureState {
     }
 
     fn features_for(&mut self, input: &ReviewInput) -> Vec<f32> {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
         let elapsed_seconds = elapsed_seconds(input);
         let elapsed_days = elapsed_days(input, elapsed_seconds);
         let elapsed_days_cumulative = self
@@ -1460,10 +1708,15 @@ impl FeatureState {
         self.append_id_encoding(&mut features, IdKind::Preset, preset_id);
         append_day_offset_encoding(&mut features, day_offset, day_offset_first);
         debug_assert_eq!(features.len(), CARD_FEATURES);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeaturesFor, profile_started);
         features
     }
 
     fn store_review(&mut self, input: &ReviewInput) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
         let elapsed_seconds = elapsed_seconds(input);
         let elapsed_days = elapsed_days(input, elapsed_seconds);
         *self
@@ -1500,6 +1753,9 @@ impl FeatureState {
         self.last_new_cards
             .insert(input.card_id, self.card_set.len() as i64);
         self.review_index += 1;
+
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeaturesStore, profile_started);
     }
 
     fn append_id_encoding(&mut self, features: &mut Vec<f32>, kind: IdKind, value: i64) {
@@ -1841,7 +2097,13 @@ impl WeightMap {
     fn linear(&self, name: &str, input: usize, output: usize, bias: bool) -> io::Result<Linear> {
         let weight_name = format!("{name}.weight");
         let bias_name = format!("{name}.bias");
-        let weight = self.tensor(&weight_name, &[output, input])?.values.clone();
+        let weight = &self.tensor(&weight_name, &[output, input])?.values;
+        let mut weight_by_input = vec![0.0; weight.len()];
+        for row in 0..output {
+            for column in 0..input {
+                weight_by_input[column * output + row] = weight[row * input + column];
+            }
+        }
         let bias = if bias {
             Some(self.tensor(&bias_name, &[output])?.values.clone())
         } else {
@@ -1850,7 +2112,7 @@ impl WeightMap {
         Ok(Linear {
             input,
             output,
-            weight,
+            weight_by_input,
             bias,
         })
     }
@@ -2063,35 +2325,96 @@ impl SrsModel {
             .collect()
     }
 
-    fn review_features(&self, features: &[f32], state: SrsStateRef<'_>) -> ReviewHeads {
+    /// The feature MLP shared by the per-review and bulk replay paths.
+    fn feature_mlp(&self, features: &[f32]) -> Vec<f32> {
         let mut x = self.features_0.apply(features);
         silu_in_place(&mut x);
         x = self.features_norm.apply(&x);
         x = self.features_3.apply(&x);
         silu_in_place(&mut x);
+        x
+    }
 
-        let (x, card_state) = self.modules[0].run(&x, state.card);
-        let (x, deck_state) = self.modules[1].run(&x, state.deck);
-        let (x, note_state) = self.modules[2].run(&x, state.note);
-        let (x, preset_state) = self.modules[3].run(&x, state.preset);
-        let (x, global_state) = self.modules[4].run(&x, state.global);
-
-        let x = self.prehead_norm.apply(&x);
-
-        let mut head_w = self.head_w_0.apply(&x);
+    /// The recall-curve heads shared by the per-review and bulk replay paths.
+    /// `prehead_x` must already have `prehead_norm` applied.
+    fn curve_head(&self, prehead_x: &[f32]) -> ReviewCurve {
+        let mut head_w = self.head_w_0.apply(prehead_x);
         relu_in_place(&mut head_w);
         head_w = self.head_w_norm.apply(&head_w);
         head_w = self.head_w_4.apply(&head_w);
         let weights = softmax(&self.w_linear.apply(&head_w));
 
-        let mut ahead = self.head_ahead_0.apply(&x);
+        let mut ahead = self.head_ahead_0.apply(prehead_x);
         relu_in_place(&mut ahead);
         let ahead_logits = self.ahead_linear.apply(&ahead);
 
-        let mut head_p = self.head_p_0.apply(&x);
+        ReviewCurve {
+            ahead_logits,
+            weights,
+        }
+    }
+
+    /// The retrievability head shared by the per-review and bulk replay
+    /// paths. `prehead_x` must already have `prehead_norm` applied.
+    fn retrievability_head(&self, prehead_x: &[f32]) -> f32 {
+        let mut head_p = self.head_p_0.apply(prehead_x);
         relu_in_place(&mut head_p);
         let logits = self.p_linear.apply(&head_p);
         let probabilities = softmax(&logits);
+        1.0 - probabilities[0]
+    }
+
+    fn review_features(&self, features: &[f32], state: SrsStateRef<'_>) -> ReviewHeads {
+        #[cfg(test)]
+        let review_profile_started = rwkv_warmup_profile_start();
+        #[cfg(test)]
+        let feature_mlp_profile_started = rwkv_warmup_profile_start();
+
+        let x = self.feature_mlp(features);
+
+        #[cfg(test)]
+        rwkv_warmup_profile_record(
+            RwkvWarmupProfileBucket::FeatureMlp,
+            feature_mlp_profile_started,
+        );
+
+        #[cfg(test)]
+        let module_profile_started = rwkv_warmup_profile_start();
+        let (x, card_state) = self.modules[0].run(&x, state.card);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleCard, module_profile_started);
+        #[cfg(test)]
+        let module_profile_started = rwkv_warmup_profile_start();
+        let (x, deck_state) = self.modules[1].run(&x, state.deck);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleDeck, module_profile_started);
+        #[cfg(test)]
+        let module_profile_started = rwkv_warmup_profile_start();
+        let (x, note_state) = self.modules[2].run(&x, state.note);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleNote, module_profile_started);
+        #[cfg(test)]
+        let module_profile_started = rwkv_warmup_profile_start();
+        let (x, preset_state) = self.modules[3].run(&x, state.preset);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(
+            RwkvWarmupProfileBucket::ModulePreset,
+            module_profile_started,
+        );
+        #[cfg(test)]
+        let module_profile_started = rwkv_warmup_profile_start();
+        let (x, global_state) = self.modules[4].run(&x, state.global);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(
+            RwkvWarmupProfileBucket::ModuleGlobal,
+            module_profile_started,
+        );
+
+        #[cfg(test)]
+        let heads_profile_started = rwkv_warmup_profile_start();
+        let x = self.prehead_norm.apply(&x);
+        let curve = self.curve_head(&x);
+        let retrievability = self.retrievability_head(&x);
 
         let next_state = SrsState {
             card: card_state,
@@ -2101,22 +2424,20 @@ impl SrsModel {
             global: global_state,
         };
 
-        ReviewHeads {
-            retrievability: 1.0 - probabilities[0],
-            curve: ReviewCurve {
-                ahead_logits,
-                weights,
-            },
+        let heads = ReviewHeads {
+            retrievability,
+            curve,
             next_state,
-        }
+        };
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Heads, heads_profile_started);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModelReview, review_profile_started);
+        heads
     }
 
     fn review_retrievability_features(&self, features: &[f32], state: SrsStateRef<'_>) -> f32 {
-        let mut x = self.features_0.apply(features);
-        silu_in_place(&mut x);
-        x = self.features_norm.apply(&x);
-        x = self.features_3.apply(&x);
-        silu_in_place(&mut x);
+        let x = self.feature_mlp(features);
 
         let (x, _) = self.modules[0].run(&x, state.card);
         let (x, _) = self.modules[1].run(&x, state.deck);
@@ -2125,11 +2446,7 @@ impl SrsModel {
         let (x, _) = self.modules[4].run(&x, state.global);
 
         let x = self.prehead_norm.apply(&x);
-        let mut head_p = self.head_p_0.apply(&x);
-        relu_in_place(&mut head_p);
-        let logits = self.p_linear.apply(&head_p);
-        let probabilities = softmax(&logits);
-        1.0 - probabilities[0]
+        self.retrievability_head(&x)
     }
 }
 
@@ -2507,6 +2824,9 @@ impl RwkvModule {
     }
 
     fn run(&self, input: &[f32], state: Option<&ModuleState>) -> (Vec<f32>, ModuleState) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
         let mut x = input.to_vec();
         let mut v0 = vec![0.0; D_MODEL];
         let mut next_layers = Vec::with_capacity(self.layers.len());
@@ -2519,12 +2839,15 @@ impl RwkvModule {
             next_layers.push(next_layer_state);
         }
 
-        (
+        let output = (
             x,
             ModuleState {
                 layers: next_layers,
             },
-        )
+        );
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleRun, profile_started);
+        output
     }
 }
 
@@ -2576,6 +2899,8 @@ struct LayerState {
 }
 
 struct TimeMixer {
+    #[cfg(test)]
+    module_id: usize,
     layer_id: usize,
     layer_norm: Norm,
     rkvdag_lerp: Vec<f32>,
@@ -2598,6 +2923,8 @@ impl TimeMixer {
     fn load(weights: &WeightMap, module_id: usize, layer_id: usize) -> io::Result<Self> {
         let prefix = format!("rwkv_modules.{module_id}.blocks.{layer_id}.time_mixer");
         Ok(Self {
+            #[cfg(test)]
+            module_id,
             layer_id,
             layer_norm: weights.layer_norm(&format!("{prefix}.layer_norm"), D_MODEL, 1e-5)?,
             rkvdag_lerp: weights.values(&format!("{prefix}.rkvdag_lerp"))?,
@@ -2638,56 +2965,108 @@ impl TimeMixer {
         v0: &[f32],
         state: Option<&TimeState>,
     ) -> (Vec<f32>, Vec<f32>, TimeState) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
         let x = self.layer_norm.apply(input);
         let (x_shift, state_matrix) = match state {
             Some(state) => (state.x_shift.as_slice(), state.matrix.as_slice()),
             None => (x.as_slice(), &[0.0; HEADS * HEAD_SIZE * HEAD_SIZE][..]),
         };
 
-        let mut mixed = vec![vec![0.0; D_MODEL]; 8];
-        for (mix_id, mixed_row) in mixed.iter_mut().enumerate() {
+        let parts = self.mix_parts(&x, x_shift, v0);
+
+        #[cfg(test)]
+        record_rwkv_scan_step(
+            self.module_id,
+            self.layer_id,
+            &parts.r,
+            &parts.k,
+            &parts.v,
+            &parts.w,
+            &parts.a,
+            &parts.k_deformed,
+        );
+
+        let (out, next_matrix) = single_timestep(
+            &parts.r,
+            &parts.k,
+            &parts.v,
+            &parts.w,
+            &parts.a,
+            &parts.k_deformed,
+            state_matrix,
+        );
+        let out = self.mix_output(&parts, out, input);
+
+        let output = (
+            out,
+            parts.next_v0,
+            TimeState {
+                x_shift: x,
+                matrix: next_matrix,
+            },
+        );
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::TimeMixer, profile_started);
+        output
+    }
+
+    /// The pre-recurrence per-timestep math shared by the per-review and bulk
+    /// replay paths: lerp mixes, projections, loras, activations, and head
+    /// normalization. `x` must already be layer-normed; `x_shift` is the
+    /// previous timestep's normed input for this stream (or `x` itself when
+    /// the stream has no state yet).
+    fn mix_parts(&self, x: &[f32], x_shift: &[f32], v0: &[f32]) -> TimeMixParts {
+        let mut mixed = [0.0; D_MODEL];
+        let fill_mixed = |mix_id: usize, mixed: &mut [f32; D_MODEL]| {
             let lerp_offset = mix_id * D_MODEL;
             for channel in 0..D_MODEL {
-                mixed_row[channel] = lerp(
+                mixed[channel] = lerp(
                     x[channel],
                     x_shift[channel],
                     self.rkvdag_lerp[lerp_offset + channel],
                 );
             }
-        }
+        };
 
-        let r = self.w_r.apply(&mixed[0]);
-        let mut k = self.w_k.apply(&mixed[1]);
-        let mut k_scale = self.k_scale_linear.apply(&mixed[6]);
+        fill_mixed(0, &mut mixed);
+        let r = self.w_r.apply(&mixed);
+        fill_mixed(1, &mut mixed);
+        let mut k = self.w_k.apply(&mixed);
+        fill_mixed(6, &mut mixed);
+        let mut k_scale = self.k_scale_linear.apply(&mixed);
         sigmoid_in_place(&mut k_scale);
-        let mut v_scale = self.v_scale_linear.apply(&mixed[7]);
+        fill_mixed(7, &mut mixed);
+        let mut v_scale = self.v_scale_linear.apply(&mixed);
         sigmoid_in_place(&mut v_scale);
 
+        fill_mixed(2, &mut mixed);
         let (v, next_v0) = if self.layer_id == 0 {
-            let v = self.w_v.apply(&mixed[2]);
+            let v = self.w_v.apply(&mixed);
             (v.clone(), v)
         } else {
-            let mut v_lerp = self.v_lora.apply_sigmoid(&mixed[2]);
-            let w_v = self.w_v.apply(&mixed[2]);
+            let mut v_lerp = self.v_lora.apply_sigmoid(&mixed);
+            let w_v = self.w_v.apply(&mixed);
             for channel in 0..D_MODEL {
                 v_lerp[channel] = lerp(w_v[channel], v0[channel], v_lerp[channel]);
             }
             (v_lerp, v0.to_vec())
         };
 
-        let a = self.a_lora.apply_sigmoid(&mixed[4]);
-        let mut g = self.lora_a_g.apply(&mixed[5]);
+        fill_mixed(4, &mut mixed);
+        let a = self.a_lora.apply_sigmoid(&mixed);
+        fill_mixed(5, &mut mixed);
+        let mut g = self.lora_a_g.apply(&mixed);
         sigmoid_in_place(&mut g);
         g = self.lora_b_g.apply(&g);
 
-        let mut d = self.d_lora.apply_tanh(&mixed[3]);
-        for value in &mut d {
-            *value = -0.5 - softplus(-*value);
+        fill_mixed(3, &mut mixed);
+        let mut w = self.d_lora.apply_tanh(&mixed);
+        for value in &mut w {
+            let d = -0.5 - softplus(-*value);
+            *value = (-d.exp()).exp();
         }
-        let w = d
-            .iter()
-            .map(|value| (-value.exp()).exp())
-            .collect::<Vec<_>>();
 
         normalize_heads_in_place(&mut k);
         for head in 0..HEADS {
@@ -2709,39 +3088,63 @@ impl TimeMixer {
             k[channel] *= a[channel];
         }
 
-        let (mut out, next_matrix) = single_timestep(&r, &k, &v, &w, &a, &k_deformed, state_matrix);
-        out = self.out_group_norm.apply(&out);
+        TimeMixParts {
+            r,
+            k,
+            v,
+            w,
+            a,
+            k_deformed,
+            g,
+            next_v0,
+        }
+    }
 
-        let mut bonus = vec![0.0; D_MODEL];
+    /// The post-recurrence per-timestep math shared by the per-review and
+    /// bulk replay paths: group norm, bonus, gate, output projection, and the
+    /// residual add against the un-normed layer input.
+    fn mix_output(
+        &self,
+        parts: &TimeMixParts,
+        recurrence_out: Vec<f32>,
+        input: &[f32],
+    ) -> Vec<f32> {
+        let mut out = self.out_group_norm.apply(&recurrence_out);
+
+        let mut bonus = [0.0; D_MODEL];
         for head in 0..HEADS {
             let base = head * HEAD_SIZE;
             let mut bonus_scale = 0.0;
             for index in 0..HEAD_SIZE {
-                bonus_scale += r[base + index] * self.bonus[base + index] * k[base + index];
+                bonus_scale +=
+                    parts.r[base + index] * self.bonus[base + index] * parts.k[base + index];
             }
             for index in 0..HEAD_SIZE {
-                bonus[base + index] = bonus_scale * v[base + index];
+                bonus[base + index] = bonus_scale * parts.v[base + index];
             }
         }
 
         for channel in 0..D_MODEL {
-            out[channel] = g[channel] * (out[channel] + bonus[channel]);
+            out[channel] = parts.g[channel] * (out[channel] + bonus[channel]);
         }
-        let out = self.w_o.apply(&out);
-        let mut next = vec![0.0; D_MODEL];
+        let mut out = self.w_o.apply(&out);
         for channel in 0..D_MODEL {
-            next[channel] = input[channel] + out[channel];
+            out[channel] += input[channel];
         }
-
-        (
-            next,
-            next_v0,
-            TimeState {
-                x_shift: x,
-                matrix: next_matrix,
-            },
-        )
+        out
     }
+}
+
+/// Per-timestep time-mixer coefficients produced ahead of the recurrence.
+struct TimeMixParts {
+    r: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    w: Vec<f32>,
+    a: Vec<f32>,
+    k_deformed: Vec<f32>,
+    g: Vec<f32>,
+    next_v0: Vec<f32>,
 }
 
 #[derive(Clone)]
@@ -2770,9 +3173,25 @@ impl ChannelMixer {
     }
 
     fn run(&self, input: &[f32], state: Option<&Vec<f32>>) -> (Vec<f32>, Vec<f32>) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
         let x = self.layer_norm.apply(input);
         let x_shift = state.map_or(x.as_slice(), |state| state.as_slice());
-        let mut mixed = vec![0.0; D_MODEL];
+        let out = self.mix_value(&x, x_shift, input);
+        let output = (out, x);
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ChannelMixer, profile_started);
+        output
+    }
+
+    /// The per-timestep channel-mixer math shared by the per-review and bulk
+    /// replay paths. `x` must already be layer-normed; `x_shift` is the
+    /// previous timestep's normed input for this stream (or `x` itself when
+    /// the stream has no state yet); `input` is the un-normed layer input
+    /// used for the residual add.
+    fn mix_value(&self, x: &[f32], x_shift: &[f32], input: &[f32]) -> Vec<f32> {
+        let mut mixed = [0.0; D_MODEL];
         for channel in 0..D_MODEL {
             mixed[channel] = lerp(x[channel], x_shift[channel], self.lerp_k[channel]);
         }
@@ -2781,12 +3200,11 @@ impl ChannelMixer {
         for value in &mut k {
             *value = value.max(0.0).powi(2);
         }
-        let out = self.w_v.apply(&k);
-        let mut next = vec![0.0; D_MODEL];
+        let mut out = self.w_v.apply(&k);
         for channel in 0..D_MODEL {
-            next[channel] = input[channel] + out[channel];
+            out[channel] += input[channel];
         }
-        (next, x)
+        out
     }
 }
 
@@ -2816,26 +3234,187 @@ impl LoraSimple {
         }
         self.b.apply(&hidden)
     }
+
+    /// Block variant of `apply_sigmoid`; bit-identical per row.
+    fn apply_sigmoid_block_into(&self, inputs: &[f32], outs: &mut [f32], rows: usize) {
+        let rank = self.a.output;
+        debug_assert!(rank <= 16);
+        debug_assert!(rows <= LINEAR_BLOCK_ROWS);
+        let mut hidden = [0.0; 16 * LINEAR_BLOCK_ROWS];
+        let hidden = &mut hidden[..rows * rank];
+        self.a.apply_block_into(inputs, hidden, rows);
+        self.b.apply_block_into(hidden, outs, rows);
+        sigmoid_in_place(outs);
+    }
+
+    /// Block variant of `apply_tanh`; bit-identical per row.
+    fn apply_tanh_block_into(&self, inputs: &[f32], outs: &mut [f32], rows: usize) {
+        let rank = self.a.output;
+        debug_assert!(rank <= 16);
+        debug_assert!(rows <= LINEAR_BLOCK_ROWS);
+        let mut hidden = [0.0; 16 * LINEAR_BLOCK_ROWS];
+        let hidden = &mut hidden[..rows * rank];
+        self.a.apply_block_into(inputs, hidden, rows);
+        for value in hidden.iter_mut() {
+            *value = value.tanh();
+        }
+        self.b.apply_block_into(hidden, outs, rows);
+    }
 }
 
 struct Linear {
     input: usize,
     output: usize,
-    weight: Vec<f32>,
+    weight_by_input: Vec<f32>,
     bias: Option<Vec<f32>>,
 }
 
 impl Linear {
     fn apply(&self, input: &[f32]) -> Vec<f32> {
-        debug_assert_eq!(input.len(), self.input);
         let mut out = vec![0.0; self.output];
-        for (row, output) in out.iter_mut().enumerate() {
-            let weight_row = &self.weight[row * self.input..(row + 1) * self.input];
-            let mut sum = dot_product(input, weight_row);
-            sum += self.bias.as_ref().map_or(0.0, |bias| bias[row]);
-            *output = sum;
-        }
+        self.apply_into(input, &mut out);
         out
+    }
+
+    fn apply_into(&self, input: &[f32], out: &mut [f32]) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
+        debug_assert_eq!(input.len(), self.input);
+        debug_assert_eq!(out.len(), self.output);
+        if let Some(bias) = &self.bias {
+            out.copy_from_slice(bias);
+        } else {
+            out.fill(0.0);
+        }
+        for (column, scale) in input.iter().copied().enumerate() {
+            if scale == 0.0 {
+                continue;
+            }
+            let weight_column =
+                &self.weight_by_input[column * self.output..(column + 1) * self.output];
+            add_scaled_in_place(out, weight_column, scale);
+        }
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+    }
+
+    /// Applies the projection to `rows` packed input rows at once, streaming
+    /// each weight column once per block instead of once per row. For every
+    /// output element this performs the identical operation sequence as
+    /// `apply_into` (bias init, then ascending-column fused accumulation with
+    /// the same zero-column skip), so results are bit-identical to calling
+    /// `apply_into` per row.
+    fn apply_block_into(&self, inputs: &[f32], outs: &mut [f32], rows: usize) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
+        debug_assert_eq!(inputs.len(), rows * self.input);
+        debug_assert_eq!(outs.len(), rows * self.output);
+        for out in outs.chunks_exact_mut(self.output) {
+            if let Some(bias) = &self.bias {
+                out.copy_from_slice(bias);
+            } else {
+                out.fill(0.0);
+            }
+        }
+        for column in 0..self.input {
+            let weight_column =
+                &self.weight_by_input[column * self.output..(column + 1) * self.output];
+            for (row, out) in outs.chunks_exact_mut(self.output).enumerate() {
+                let scale = inputs[row * self.input + column];
+                if scale == 0.0 {
+                    continue;
+                }
+                add_scaled_in_place(out, weight_column, scale);
+            }
+        }
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+    }
+}
+
+#[inline(always)]
+fn add_scaled_in_place(out: &mut [f32], weights: &[f32], scale: f32) {
+    debug_assert_eq!(out.len(), weights.len());
+    add_scaled_in_place_arch(out, weights, scale)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn add_scaled_in_place_arch(out: &mut [f32], weights: &[f32], scale: f32) {
+    // SAFETY: aarch64 guarantees NEON support, and the helper only uses
+    // unaligned loads/stores within the bounds checked by its loop conditions.
+    unsafe { add_scaled_in_place_neon(out, weights, scale) }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn add_scaled_in_place_arch(out: &mut [f32], weights: &[f32], scale: f32) {
+    add_scaled_in_place_scalar(out, weights, scale)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn add_scaled_in_place_neon(out: &mut [f32], weights: &[f32], scale: f32) {
+    use std::arch::aarch64::*;
+
+    let mut offset = 0;
+    let len = out.len();
+    let scale = vdupq_n_f32(scale);
+    while offset + 16 <= len {
+        let out_ptr = out.as_mut_ptr().add(offset);
+        let weight_ptr = weights.as_ptr().add(offset);
+        vst1q_f32(
+            out_ptr,
+            vfmaq_f32(vld1q_f32(out_ptr), vld1q_f32(weight_ptr), scale),
+        );
+        vst1q_f32(
+            out_ptr.add(4),
+            vfmaq_f32(
+                vld1q_f32(out_ptr.add(4)),
+                vld1q_f32(weight_ptr.add(4)),
+                scale,
+            ),
+        );
+        vst1q_f32(
+            out_ptr.add(8),
+            vfmaq_f32(
+                vld1q_f32(out_ptr.add(8)),
+                vld1q_f32(weight_ptr.add(8)),
+                scale,
+            ),
+        );
+        vst1q_f32(
+            out_ptr.add(12),
+            vfmaq_f32(
+                vld1q_f32(out_ptr.add(12)),
+                vld1q_f32(weight_ptr.add(12)),
+                scale,
+            ),
+        );
+        offset += 16;
+    }
+    while offset + 4 <= len {
+        let out_ptr = out.as_mut_ptr().add(offset);
+        let weight_ptr = weights.as_ptr().add(offset);
+        vst1q_f32(
+            out_ptr,
+            vfmaq_f32(vld1q_f32(out_ptr), vld1q_f32(weight_ptr), scale),
+        );
+        offset += 4;
+    }
+    while offset < len {
+        out[offset] += weights[offset] * vgetq_lane_f32(scale, 0);
+        offset += 1;
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn add_scaled_in_place_scalar(out: &mut [f32], weights: &[f32], scale: f32) {
+    for (output, weight) in out.iter_mut().zip(weights) {
+        *output += weight * scale;
     }
 }
 
@@ -2930,9 +3509,18 @@ struct Norm {
 
 impl Norm {
     fn apply(&self, input: &[f32]) -> Vec<f32> {
-        debug_assert_eq!(input.len(), self.dim);
-        let group_size = self.dim / self.groups;
         let mut out = vec![0.0; self.dim];
+        self.apply_into(input, &mut out);
+        out
+    }
+
+    fn apply_into(&self, input: &[f32], out: &mut [f32]) {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+
+        debug_assert_eq!(input.len(), self.dim);
+        debug_assert_eq!(out.len(), self.dim);
+        let group_size = self.dim / self.groups;
 
         for group in 0..self.groups {
             let start = group * group_size;
@@ -2953,7 +3541,8 @@ impl Norm {
             }
         }
 
-        out
+        #[cfg(test)]
+        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Norm, profile_started);
     }
 }
 
@@ -2966,6 +3555,16 @@ fn single_timestep(
     k_deformed: &[f32],
     state: &[f32],
 ) -> (Vec<f32>, Vec<f32>) {
+    #[cfg(test)]
+    let profile_started =
+        if RWKV_SINGLE_TIMESTEP_PROFILE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+    #[cfg(test)]
+    let warmup_profile_started = rwkv_warmup_profile_start();
+
     let mut next_state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
     let mut out = vec![0.0; D_MODEL];
 
@@ -2998,6 +3597,20 @@ fn single_timestep(
             out[head_base + row] = dot_product(state_row, receptance);
         }
     }
+
+    #[cfg(test)]
+    if let Some(started) = profile_started {
+        RWKV_SINGLE_TIMESTEP_PROFILE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RWKV_SINGLE_TIMESTEP_PROFILE_NANOS.fetch_add(
+            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    #[cfg(test)]
+    rwkv_warmup_profile_record(
+        RwkvWarmupProfileBucket::SingleTimestep,
+        warmup_profile_started,
+    );
 
     (out, next_state)
 }
@@ -3078,6 +3691,1073 @@ fn lerp(start: f32, end: f32, weight: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TimeMixerAffineTransform {
+        matrix: Vec<f32>,
+        bias: Vec<f32>,
+    }
+
+    struct TimeMixerStateAffineTransform {
+        matrix_by_head: Vec<f32>,
+        bias: Vec<f32>,
+    }
+
+    fn deterministic_values(len: usize, seed: f32) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                let value = index as f32 + 1.0;
+                (value * seed).sin() * 0.25 + (value * seed * 0.37).cos() * 0.1
+            })
+            .collect()
+    }
+
+    fn deterministic_step_vectors(step: usize) -> RwkvScanCapturedStep {
+        let offset = step as f32 * 0.001;
+        RwkvScanCapturedStep {
+            r: deterministic_values(D_MODEL, 0.013 + offset),
+            k: deterministic_values(D_MODEL, 0.017 + offset),
+            v: deterministic_values(D_MODEL, 0.019 + offset),
+            w: deterministic_values(D_MODEL, 0.023 + offset),
+            a: deterministic_values(D_MODEL, 0.029 + offset),
+            k_deformed: deterministic_values(D_MODEL, 0.031 + offset),
+        }
+    }
+
+    fn time_mixer_transform_for_head_row(
+        head: usize,
+        row: usize,
+        k: &[f32],
+        v: &[f32],
+        w: &[f32],
+        a: &[f32],
+        k_deformed: &[f32],
+    ) -> TimeMixerAffineTransform {
+        let head_base = head * HEAD_SIZE;
+        let mut matrix = vec![0.0; HEAD_SIZE * HEAD_SIZE];
+        let mut bias = vec![0.0; HEAD_SIZE];
+
+        for input_column in 0..HEAD_SIZE {
+            for output_column in 0..HEAD_SIZE {
+                let output_channel = head_base + output_column;
+                matrix[input_column * HEAD_SIZE + output_column] =
+                    if input_column == output_column {
+                        w[output_channel]
+                    } else {
+                        0.0
+                    } - k_deformed[head_base + input_column]
+                        * a[output_channel]
+                        * k_deformed[output_channel];
+            }
+        }
+
+        for output_column in 0..HEAD_SIZE {
+            bias[output_column] = v[head_base + row] * k[head_base + output_column];
+        }
+
+        TimeMixerAffineTransform { matrix, bias }
+    }
+
+    fn time_mixer_state_transform(
+        k: &[f32],
+        v: &[f32],
+        w: &[f32],
+        a: &[f32],
+        k_deformed: &[f32],
+    ) -> TimeMixerStateAffineTransform {
+        let mut matrix_by_head = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+        let mut bias = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+
+        for head in 0..HEADS {
+            let head_base = head * HEAD_SIZE;
+            let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
+            for input_column in 0..HEAD_SIZE {
+                for output_column in 0..HEAD_SIZE {
+                    let output_channel = head_base + output_column;
+                    matrix_by_head[matrix_base + input_column * HEAD_SIZE + output_column] =
+                        if input_column == output_column {
+                            w[output_channel]
+                        } else {
+                            0.0
+                        } - k_deformed[head_base + input_column]
+                            * a[output_channel]
+                            * k_deformed[output_channel];
+                }
+            }
+
+            for row in 0..HEAD_SIZE {
+                let row_start = matrix_base + row * HEAD_SIZE;
+                for output_column in 0..HEAD_SIZE {
+                    bias[row_start + output_column] =
+                        v[head_base + row] * k[head_base + output_column];
+                }
+            }
+        }
+
+        TimeMixerStateAffineTransform {
+            matrix_by_head,
+            bias,
+        }
+    }
+
+    fn compose_affine_transforms(
+        first: &TimeMixerAffineTransform,
+        second: &TimeMixerAffineTransform,
+    ) -> TimeMixerAffineTransform {
+        let mut matrix = vec![0.0; HEAD_SIZE * HEAD_SIZE];
+        let mut bias = vec![0.0; HEAD_SIZE];
+
+        for input_column in 0..HEAD_SIZE {
+            for output_column in 0..HEAD_SIZE {
+                matrix[input_column * HEAD_SIZE + output_column] = (0..HEAD_SIZE)
+                    .map(|middle| {
+                        first.matrix[input_column * HEAD_SIZE + middle]
+                            * second.matrix[middle * HEAD_SIZE + output_column]
+                    })
+                    .sum();
+            }
+        }
+
+        for (output_column, value) in bias.iter_mut().enumerate() {
+            *value = second.bias[output_column]
+                + (0..HEAD_SIZE)
+                    .map(|middle| {
+                        first.bias[middle] * second.matrix[middle * HEAD_SIZE + output_column]
+                    })
+                    .sum::<f32>();
+        }
+
+        TimeMixerAffineTransform { matrix, bias }
+    }
+
+    fn compose_time_mixer_state_transforms(
+        first: &TimeMixerStateAffineTransform,
+        second: &TimeMixerStateAffineTransform,
+    ) -> TimeMixerStateAffineTransform {
+        let mut matrix_by_head = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+        let mut bias = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+
+        for head in 0..HEADS {
+            let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
+            for input_column in 0..HEAD_SIZE {
+                for output_column in 0..HEAD_SIZE {
+                    matrix_by_head[matrix_base + input_column * HEAD_SIZE + output_column] = (0
+                        ..HEAD_SIZE)
+                        .map(|middle| {
+                            first.matrix_by_head[matrix_base + input_column * HEAD_SIZE + middle]
+                                * second.matrix_by_head
+                                    [matrix_base + middle * HEAD_SIZE + output_column]
+                        })
+                        .sum();
+                }
+            }
+
+            for row in 0..HEAD_SIZE {
+                let row_start = matrix_base + row * HEAD_SIZE;
+                for output_column in 0..HEAD_SIZE {
+                    bias[row_start + output_column] = second.bias[row_start + output_column]
+                        + (0..HEAD_SIZE)
+                            .map(|middle| {
+                                first.bias[row_start + middle]
+                                    * second.matrix_by_head
+                                        [matrix_base + middle * HEAD_SIZE + output_column]
+                            })
+                            .sum::<f32>();
+                }
+            }
+        }
+
+        TimeMixerStateAffineTransform {
+            matrix_by_head,
+            bias,
+        }
+    }
+
+    fn compose_time_mixer_step_range(
+        steps: &[RwkvScanCapturedStep],
+        start: usize,
+        end: usize,
+    ) -> TimeMixerStateAffineTransform {
+        assert!(start < end);
+        let first = &steps[start];
+        let mut transform =
+            time_mixer_state_transform(&first.k, &first.v, &first.w, &first.a, &first.k_deformed);
+        for step in &steps[start + 1..end] {
+            let next =
+                time_mixer_state_transform(&step.k, &step.v, &step.w, &step.a, &step.k_deformed);
+            transform = compose_time_mixer_state_transforms(&transform, &next);
+        }
+
+        transform
+    }
+
+    fn chunked_time_mixer_state_transform(
+        steps: &[RwkvScanCapturedStep],
+        chunk_size: usize,
+    ) -> TimeMixerStateAffineTransform {
+        assert!(!steps.is_empty());
+        assert!(chunk_size > 0);
+        let ranges = (0..steps.len())
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(steps.len());
+                (start, end)
+            })
+            .collect::<Vec<_>>();
+        let chunk_transforms = std::thread::scope(|scope| {
+            let handles = ranges
+                .iter()
+                .map(|&(start, end)| {
+                    scope.spawn(move || compose_time_mixer_step_range(steps, start, end))
+                })
+                .collect::<Vec<_>>();
+
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        let mut transforms = chunk_transforms.into_iter();
+        let mut transform = transforms.next().unwrap();
+        for next in transforms {
+            transform = compose_time_mixer_state_transforms(&transform, &next);
+        }
+
+        transform
+    }
+
+    fn apply_affine_transform(row_state: &[f32], transform: &TimeMixerAffineTransform) -> Vec<f32> {
+        (0..HEAD_SIZE)
+            .map(|output_column| {
+                transform.bias[output_column]
+                    + (0..HEAD_SIZE)
+                        .map(|input_column| {
+                            row_state[input_column]
+                                * transform.matrix[input_column * HEAD_SIZE + output_column]
+                        })
+                        .sum::<f32>()
+            })
+            .collect()
+    }
+
+    fn apply_time_mixer_state_transform(
+        state: &[f32],
+        transform: &TimeMixerStateAffineTransform,
+    ) -> Vec<f32> {
+        let mut output = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+
+        for head in 0..HEADS {
+            let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
+            for row in 0..HEAD_SIZE {
+                let row_start = matrix_base + row * HEAD_SIZE;
+                for output_column in 0..HEAD_SIZE {
+                    output[row_start + output_column] = transform.bias[row_start + output_column]
+                        + (0..HEAD_SIZE)
+                            .map(|input_column| {
+                                state[row_start + input_column]
+                                    * transform.matrix_by_head
+                                        [matrix_base + input_column * HEAD_SIZE + output_column]
+                            })
+                            .sum::<f32>();
+                }
+            }
+        }
+
+        output
+    }
+
+    fn assert_close(left: &[f32], right: &[f32], tolerance: f32) {
+        assert_eq!(left.len(), right.len());
+        for (index, (left, right)) in left.iter().zip(right).enumerate() {
+            let diff = (left - right).abs();
+            assert!(
+                diff <= tolerance,
+                "values differ at {index}: left={left}, right={right}, diff={diff}, tolerance={tolerance}"
+            );
+        }
+    }
+
+    fn sequential_time_mixer_state(steps: &[RwkvScanCapturedStep]) -> Vec<f32> {
+        let mut state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+        for step in steps {
+            let (_, next_state) = single_timestep(
+                &step.r,
+                &step.k,
+                &step.v,
+                &step.w,
+                &step.a,
+                &step.k_deformed,
+                &state,
+            );
+            state = next_state;
+        }
+
+        state
+    }
+
+    fn scan_reduce_time_mixer_state(
+        steps: &[RwkvScanCapturedStep],
+        bulk_size: usize,
+        leaf_size: usize,
+    ) -> Vec<f32> {
+        assert!(bulk_size > 0);
+        assert!(leaf_size > 0);
+        let mut state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+
+        for bulk in steps.chunks(bulk_size) {
+            let leaf_transforms = bulk
+                .par_chunks(leaf_size)
+                .map(|chunk| compose_time_mixer_step_range(chunk, 0, chunk.len()))
+                .collect::<Vec<_>>();
+            let mut leaf_transforms = leaf_transforms.into_iter();
+            let Some(mut bulk_transform) = leaf_transforms.next() else {
+                continue;
+            };
+            for next in leaf_transforms {
+                bulk_transform = compose_time_mixer_state_transforms(&bulk_transform, &next);
+            }
+            state = apply_time_mixer_state_transform(&state, &bulk_transform);
+        }
+
+        state
+    }
+
+    fn max_abs_diff(left: &[f32], right: &[f32]) -> f32 {
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max)
+    }
+
+    fn parse_scan_bench_sizes(value: &str) -> Vec<usize> {
+        value
+            .split(',')
+            .filter_map(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .collect()
+    }
+
+    fn auto_scan_bench_sizes(
+        step_count: usize,
+        memory_budget_bytes: u64,
+        bytes_per_review_all_layers: usize,
+    ) -> Vec<usize> {
+        let max_by_memory = (memory_budget_bytes / bytes_per_review_all_layers as u64)
+            .max(1)
+            .try_into()
+            .unwrap_or(usize::MAX);
+        let max_size = step_count.min(max_by_memory).max(1);
+        let mut sizes = Vec::new();
+        let mut size = 64_usize;
+        while size < max_size {
+            sizes.push(size);
+            size = size.saturating_mul(2);
+        }
+        sizes.push(max_size);
+        sizes.sort_unstable();
+        sizes.dedup();
+        sizes
+    }
+
+    fn scan_bench_env_usize(name: &str, default: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    }
+
+    fn scan_bench_env_u64(name: &str, default: u64) -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    }
+
+    #[derive(Clone, Copy)]
+    struct ScanBenchTiming {
+        days_elapsed: i64,
+        next_day_at: i64,
+    }
+
+    fn scan_bench_timing() -> ScanBenchTiming {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let days_elapsed = now_secs / SECONDS_PER_DAY;
+        ScanBenchTiming {
+            days_elapsed,
+            next_day_at: (days_elapsed + 1) * SECONDS_PER_DAY,
+        }
+    }
+
+    struct ScanBenchHistoricalReviewRow {
+        review_id: i64,
+        card_id: i64,
+        note_id: i64,
+        deck_id: i64,
+        ease: i64,
+        duration_millis: i64,
+        review_kind: i64,
+    }
+
+    fn collection_reviews_for_scan_bench(
+        path: &std::path::Path,
+        limit: usize,
+        deck_id: Option<i64>,
+    ) -> rusqlite::Result<Vec<ReviewInput>> {
+        let uri = format!("file:{}?mode=ro&immutable=1", path.to_string_lossy());
+        let db = rusqlite::Connection::open_with_flags(
+            uri,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        let current_deck_id_sql = scan_bench_current_deck_id_sql(&db)?;
+        let limit_clause = if limit == 0 {
+            String::new()
+        } else {
+            format!(" limit {limit}")
+        };
+        let deck_clause = deck_id.map_or(String::new(), |deck_id| {
+            format!(" and {current_deck_id_sql} = {deck_id}")
+        });
+        let sql = format!(
+            "
+select
+  r.id,
+  r.cid,
+  c.nid,
+  {current_deck_id_sql},
+  r.ease,
+  r.time,
+  r.type
+from revlog r
+join cards c on c.id = r.cid
+where r.ease between 1 and 4
+  and (r.type in (0, 1, 2, 3) or r.type = 4)
+  {deck_clause}
+order by r.id, r.cid
+{limit_clause}"
+        );
+        let timing = scan_bench_timing();
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ScanBenchHistoricalReviewRow {
+                review_id: row.get(0)?,
+                card_id: row.get(1)?,
+                note_id: row.get(2)?,
+                deck_id: row.get(3)?,
+                ease: row.get(4)?,
+                duration_millis: row.get(5)?,
+                review_kind: row.get(6)?,
+            })
+        })?;
+
+        let mut previous_review_id_by_card = HashMap::new();
+        let mut reviews = Vec::new();
+        for row in rows {
+            let row = row?;
+            let previous_review_id = previous_review_id_by_card.insert(row.card_id, row.review_id);
+            let elapsed_seconds = previous_review_id
+                .map_or(-1, |previous| ((row.review_id - previous) / 1000).max(0));
+            let elapsed_days = if elapsed_seconds >= 0 {
+                elapsed_seconds / SECONDS_PER_DAY
+            } else {
+                -1
+            };
+            reviews.push(ReviewInput {
+                card_id: row.card_id,
+                note_id: Some(row.note_id),
+                deck_id: Some(row.deck_id),
+                preset_id: Some(row.deck_id),
+                is_query: false,
+                ease: Some(row.ease as u8),
+                duration_millis: Some(row.duration_millis),
+                card_type: Some(scan_bench_historical_card_type(row.review_kind)),
+                day_offset: Some(scan_bench_historical_day_offset(row.review_id, &timing)),
+                current_elapsed_days: Some(elapsed_days),
+                current_elapsed_seconds: Some(elapsed_seconds),
+                target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+            });
+        }
+
+        Ok(reviews)
+    }
+
+    fn scan_bench_current_deck_id_sql(db: &rusqlite::Connection) -> rusqlite::Result<&'static str> {
+        Ok(if scan_bench_table_has_column(db, "cards", "odid")? {
+            "case when c.odid != 0 then c.odid else c.did end"
+        } else {
+            "c.did"
+        })
+    }
+
+    fn scan_bench_table_has_column(
+        db: &rusqlite::Connection,
+        table: &str,
+        column: &str,
+    ) -> rusqlite::Result<bool> {
+        let mut stmt = db.prepare(&format!("pragma table_info({table})"))?;
+        let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for name in columns {
+            if name? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn scan_bench_historical_card_type(review_kind: i64) -> i64 {
+        match review_kind {
+            0 => 1,
+            2 => 3,
+            _ => 2,
+        }
+    }
+
+    fn scan_bench_historical_day_offset(review_id: i64, timing: &ScanBenchTiming) -> i64 {
+        let review_secs = review_id / 1000;
+        let days_before_today = (timing.next_day_at - 1 - review_secs).max(0) / SECONDS_PER_DAY;
+        (timing.days_elapsed - days_before_today).max(0)
+    }
+
+    fn scan_bench_global_layer_matrix(
+        inference: &RwkvInference,
+        layer_id: usize,
+    ) -> Option<&[f32]> {
+        inference
+            .warm_up_states
+            .global
+            .as_ref()?
+            .layers
+            .get(layer_id)?
+            .time
+            .as_ref()
+            .map(|state| state.matrix.as_slice())
+    }
+
+    fn write_scan_bench_capture(
+        path: &std::path::Path,
+        steps: &[RwkvScanCapturedStep],
+        final_state: &[f32],
+    ) -> std::io::Result<()> {
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        std::io::Write::write_all(&mut file, b"ARWKVSCAN1")?;
+        std::io::Write::write_all(&mut file, &(D_MODEL as u32).to_le_bytes())?;
+        std::io::Write::write_all(&mut file, &(HEADS as u32).to_le_bytes())?;
+        std::io::Write::write_all(&mut file, &(HEAD_SIZE as u32).to_le_bytes())?;
+        std::io::Write::write_all(&mut file, &(steps.len() as u64).to_le_bytes())?;
+        for step in steps {
+            for values in [
+                &step.r,
+                &step.k,
+                &step.v,
+                &step.w,
+                &step.a,
+                &step.k_deformed,
+            ] {
+                for value in values {
+                    std::io::Write::write_all(&mut file, &value.to_le_bytes())?;
+                }
+            }
+        }
+        std::io::Write::write_all(&mut file, &(final_state.len() as u32).to_le_bytes())?;
+        for value in final_state {
+            std::io::Write::write_all(&mut file, &value.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn rwkv_bulk_collection_benchmark() {
+        let Ok(collection_path) = std::env::var("ANKI_RWKV_BULK_BENCH_COLLECTION")
+            .or_else(|_| std::env::var("ANKI_RWKV_SCAN_BENCH_COLLECTION"))
+        else {
+            eprintln!(
+                "set ANKI_RWKV_BULK_BENCH_COLLECTION to a copied collection.anki2 path to run this benchmark"
+            );
+            return;
+        };
+        let weights_path = std::env::var("ANKI_RWKV_BULK_BENCH_MODEL")
+            .or_else(|_| std::env::var("ANKI_RWKV_SCAN_BENCH_MODEL"))
+            .unwrap_or_else(|_| "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin".to_string());
+        let review_limit = scan_bench_env_usize("ANKI_RWKV_BULK_BENCH_LIMIT", 0);
+        let deck_id = std::env::var("ANKI_RWKV_BULK_BENCH_DECK_ID")
+            .or_else(|_| std::env::var("ANKI_RWKV_SCAN_BENCH_DECK_ID"))
+            .ok()
+            .and_then(|value| value.parse().ok());
+        let chunk_rows = std::env::var("ANKI_RWKV_BULK_BENCH_CHUNK_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok());
+        let record_predictions = std::env::var("ANKI_RWKV_BULK_BENCH_RECORD_PREDICTIONS")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let profile = std::env::var("ANKI_RWKV_BULK_BENCH_PROFILE").map_or(true, |value| {
+            !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO")
+        });
+
+        let collection_path = std::path::PathBuf::from(collection_path);
+        let weights_path = std::path::PathBuf::from(weights_path);
+        let load_reviews_started = std::time::Instant::now();
+        let reviews = collection_reviews_for_scan_bench(&collection_path, review_limit, deck_id)
+            .expect("collection review load failed");
+        let load_reviews_ms = load_reviews_started.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            !reviews.is_empty(),
+            "collection review load returned no rows"
+        );
+
+        let mut inference =
+            RwkvInference::load(weights_path.clone(), 0.9, 36_500).expect("RWKV load failed");
+        if profile {
+            start_rwkv_single_timestep_profile();
+            start_rwkv_warmup_profile();
+        }
+        let warmup_started = std::time::Instant::now();
+        let predictions = if let Some(chunk_rows) = chunk_rows {
+            bulk::warm_up_reviews_bulk_chunked(
+                &mut inference,
+                reviews.clone(),
+                record_predictions,
+                chunk_rows,
+            )
+        } else {
+            inference.warm_up_reviews(reviews.clone(), record_predictions)
+        }
+        .expect("RWKV warm-up failed");
+        let warmup_ms = warmup_started.elapsed().as_secs_f64() * 1000.0;
+        let warmup_profile = profile.then(stop_rwkv_warmup_profile);
+        let single_timestep_profile = profile.then(stop_rwkv_single_timestep_profile);
+
+        println!("collection={}", collection_path.display());
+        println!("weights={}", weights_path.display());
+        println!("collection_reviews={}", reviews.len());
+        println!("record_predictions={record_predictions}");
+        println!("profile={profile}");
+        if let Some(chunk_rows) = chunk_rows {
+            println!("chunk_rows={chunk_rows}");
+        }
+        println!("predictions={}", predictions.len());
+        println!("load_reviews_ms={load_reviews_ms:.3}");
+        println!("warmup_ms={warmup_ms:.3}");
+        if let Ok(threads) = std::env::var("RAYON_NUM_THREADS") {
+            println!("rayon_num_threads={threads}");
+        }
+        if let Some(warmup_profile) = warmup_profile {
+            for (name, calls, nanos) in warmup_profile {
+                let ms = nanos as f64 / 1_000_000.0;
+                println!("warmup_profile_{name}_calls={calls}");
+                println!("warmup_profile_{name}_ms={ms:.3}");
+                println!(
+                    "warmup_profile_{name}_fraction={:.6}",
+                    ms / warmup_ms.max(f64::MIN_POSITIVE)
+                );
+            }
+        }
+        if let Some((calls, nanos)) = single_timestep_profile {
+            println!("single_timestep_calls={calls}");
+            println!("single_timestep_ms={:.3}", nanos as f64 / 1_000_000.0);
+            println!(
+                "single_timestep_warmup_fraction={:.6}",
+                (nanos as f64 / 1_000_000.0) / warmup_ms.max(f64::MIN_POSITIVE)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn rwkv_scan_collection_benchmark() {
+        let Ok(collection_path) = std::env::var("ANKI_RWKV_SCAN_BENCH_COLLECTION") else {
+            eprintln!(
+                "set ANKI_RWKV_SCAN_BENCH_COLLECTION to a copied collection.anki2 path to run this benchmark"
+            );
+            return;
+        };
+        let weights_path = std::env::var("ANKI_RWKV_SCAN_BENCH_MODEL")
+            .unwrap_or_else(|_| "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin".to_string());
+        let review_limit = scan_bench_env_usize("ANKI_RWKV_SCAN_BENCH_LIMIT", 0);
+        let leaf_size = scan_bench_env_usize("ANKI_RWKV_SCAN_BENCH_LEAF_SIZE", 64);
+        let layer_id = scan_bench_env_usize("ANKI_RWKV_SCAN_BENCH_LAYER_ID", MODULE_LAYERS[4] - 1);
+        let deck_id = std::env::var("ANKI_RWKV_SCAN_BENCH_DECK_ID")
+            .ok()
+            .and_then(|value| value.parse().ok());
+        let memory_budget_bytes = scan_bench_env_u64(
+            "ANKI_RWKV_SCAN_BENCH_MEMORY_BUDGET_BYTES",
+            16 * 1024 * 1024 * 1024,
+        );
+        let extend_to_memory_budget = std::env::var("ANKI_RWKV_SCAN_BENCH_EXTEND_TO_MEMORY_BUDGET")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let profile_single_timestep = std::env::var("ANKI_RWKV_SCAN_BENCH_PROFILE_SINGLE_TIMESTEP")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let profile_warmup = std::env::var("ANKI_RWKV_SCAN_BENCH_PROFILE_WARMUP")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let selected_layer_step_bytes = 6 * D_MODEL * std::mem::size_of::<f32>();
+        let all_layer_step_bytes = selected_layer_step_bytes * MODULE_LAYERS.iter().sum::<usize>();
+
+        let collection_path = std::path::PathBuf::from(collection_path);
+        let weights_path = std::path::PathBuf::from(weights_path);
+        let load_reviews_started = std::time::Instant::now();
+        let reviews = collection_reviews_for_scan_bench(&collection_path, review_limit, deck_id)
+            .expect("collection review load failed");
+        let load_reviews_ms = load_reviews_started.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            !reviews.is_empty(),
+            "collection review load returned no rows"
+        );
+        assert!(
+            layer_id < MODULE_LAYERS[4],
+            "global layer id is out of range"
+        );
+
+        let mut inference =
+            RwkvInference::load(weights_path.clone(), 0.9, 36_500).expect("RWKV load failed");
+        start_rwkv_scan_capture(4, layer_id);
+        if profile_single_timestep {
+            start_rwkv_single_timestep_profile();
+        }
+        if profile_warmup {
+            start_rwkv_warmup_profile();
+        }
+        let warmup_started = std::time::Instant::now();
+        inference
+            .warm_up_reviews(reviews.clone(), false)
+            .expect("RWKV warm-up failed");
+        let warmup_ms = warmup_started.elapsed().as_secs_f64() * 1000.0;
+        let warmup_profile = if profile_warmup {
+            Some(stop_rwkv_warmup_profile())
+        } else {
+            None
+        };
+        let single_timestep_profile = if profile_single_timestep {
+            Some(stop_rwkv_single_timestep_profile())
+        } else {
+            None
+        };
+        let mut steps = take_rwkv_scan_capture();
+        assert_eq!(steps.len(), reviews.len());
+        let runtime_matrix = scan_bench_global_layer_matrix(&inference, layer_id)
+            .expect("captured global layer state is missing")
+            .to_vec();
+        let captured_steps = steps.len();
+        let capture_state = sequential_time_mixer_state(&steps);
+        let capture_error = max_abs_diff(&capture_state, &runtime_matrix);
+        if let Ok(capture_path) = std::env::var("ANKI_RWKV_SCAN_BENCH_CAPTURE_OUTPUT") {
+            write_scan_bench_capture(std::path::Path::new(&capture_path), &steps, &capture_state)
+                .expect("failed to write RWKV scan capture");
+            println!("capture_output={capture_path}");
+        }
+
+        if extend_to_memory_budget {
+            let target_steps = (memory_budget_bytes / all_layer_step_bytes as u64)
+                .max(1)
+                .try_into()
+                .unwrap_or(usize::MAX);
+            if steps.len() < target_steps {
+                steps.reserve(target_steps - steps.len());
+                for index in steps.len()..target_steps {
+                    steps.push(steps[index % captured_steps].clone());
+                }
+            }
+        }
+
+        let sequential_started = std::time::Instant::now();
+        let sequential_state = sequential_time_mixer_state(&steps);
+        let sequential_ms = sequential_started.elapsed().as_secs_f64() * 1000.0;
+
+        let bulk_sizes = std::env::var("ANKI_RWKV_SCAN_BENCH_BULK_SIZES")
+            .ok()
+            .map(|value| parse_scan_bench_sizes(&value))
+            .filter(|sizes| !sizes.is_empty())
+            .unwrap_or_else(|| {
+                auto_scan_bench_sizes(steps.len(), memory_budget_bytes, all_layer_step_bytes)
+            });
+
+        let mut csv_rows = vec![
+            "bulk_size,selected_layer_memory_mb,all_layer_memory_mb,scan_ms,speedup_vs_sequential,max_abs_error"
+                .to_string(),
+        ];
+
+        println!("collection={}", collection_path.display());
+        println!("weights={}", weights_path.display());
+        println!("collection_reviews={captured_steps}");
+        println!("benchmark_steps={}", steps.len());
+        println!("extended_to_memory_budget={extend_to_memory_budget}");
+        println!("captured_global_module_layer={layer_id}");
+        println!("load_reviews_ms={load_reviews_ms:.3}");
+        println!("warmup_ms={warmup_ms:.3}");
+        if let Some(profile) = &warmup_profile {
+            for (name, calls, nanos) in profile {
+                let ms = *nanos as f64 / 1_000_000.0;
+                println!("warmup_profile_{name}_calls={calls}");
+                println!("warmup_profile_{name}_ms={ms:.3}");
+                println!(
+                    "warmup_profile_{name}_fraction={:.6}",
+                    ms / warmup_ms.max(f64::MIN_POSITIVE)
+                );
+            }
+        }
+        if let Some((calls, nanos)) = single_timestep_profile {
+            println!("single_timestep_calls={calls}");
+            println!("single_timestep_ms={:.3}", nanos as f64 / 1_000_000.0);
+            println!(
+                "single_timestep_warmup_fraction={:.6}",
+                (nanos as f64 / 1_000_000.0) / warmup_ms.max(f64::MIN_POSITIVE)
+            );
+        }
+        println!("sequential_single_timestep_ms={sequential_ms:.3}");
+        println!("capture_vs_runtime_max_abs_error={capture_error:.9}");
+        println!("leaf_size={leaf_size}");
+        println!("memory_budget_bytes={memory_budget_bytes}");
+        println!("bulk_size,selected_layer_memory_mb,all_layer_memory_mb,scan_ms,speedup_vs_sequential,max_abs_error");
+
+        for bulk_size in bulk_sizes {
+            let started = std::time::Instant::now();
+            let state = scan_reduce_time_mixer_state(&steps, bulk_size, leaf_size);
+            let scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let error = max_abs_diff(&state, &sequential_state);
+            let speedup = sequential_ms / scan_ms.max(f64::MIN_POSITIVE);
+            let selected_layer_memory_mb =
+                bulk_size as f64 * selected_layer_step_bytes as f64 / (1024.0 * 1024.0);
+            let all_layer_memory_mb =
+                bulk_size as f64 * all_layer_step_bytes as f64 / (1024.0 * 1024.0);
+            let row = format!(
+                "{bulk_size},{selected_layer_memory_mb:.3},{all_layer_memory_mb:.3},{scan_ms:.3},{speedup:.6},{error:.9}"
+            );
+            println!("{row}");
+            csv_rows.push(row);
+            std::hint::black_box(state);
+        }
+
+        if let Ok(output_path) = std::env::var("ANKI_RWKV_SCAN_BENCH_OUTPUT") {
+            std::fs::write(&output_path, csv_rows.join("\n"))
+                .expect("failed to write RWKV scan benchmark CSV");
+            println!("output={output_path}");
+        }
+    }
+
+    #[test]
+    fn single_timestep_state_update_supports_affine_composition() {
+        let r1 = deterministic_values(D_MODEL, 0.013);
+        let k1 = deterministic_values(D_MODEL, 0.017);
+        let v1 = deterministic_values(D_MODEL, 0.019);
+        let w1 = deterministic_values(D_MODEL, 0.023);
+        let a1 = deterministic_values(D_MODEL, 0.029);
+        let k_deformed1 = deterministic_values(D_MODEL, 0.031);
+        let r2 = deterministic_values(D_MODEL, 0.037);
+        let k2 = deterministic_values(D_MODEL, 0.041);
+        let v2 = deterministic_values(D_MODEL, 0.043);
+        let w2 = deterministic_values(D_MODEL, 0.047);
+        let a2 = deterministic_values(D_MODEL, 0.053);
+        let k_deformed2 = deterministic_values(D_MODEL, 0.059);
+        let state0 = deterministic_values(HEADS * HEAD_SIZE * HEAD_SIZE, 0.061);
+
+        let (_, state1) = single_timestep(&r1, &k1, &v1, &w1, &a1, &k_deformed1, &state0);
+        let (_, sequential_state) = single_timestep(&r2, &k2, &v2, &w2, &a2, &k_deformed2, &state1);
+
+        let mut composed_state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+        for head in 0..HEADS {
+            let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
+            for row in 0..HEAD_SIZE {
+                let row_start = matrix_base + row * HEAD_SIZE;
+                let first =
+                    time_mixer_transform_for_head_row(head, row, &k1, &v1, &w1, &a1, &k_deformed1);
+                let second =
+                    time_mixer_transform_for_head_row(head, row, &k2, &v2, &w2, &a2, &k_deformed2);
+                let composed = compose_affine_transforms(&first, &second);
+                let row_state =
+                    apply_affine_transform(&state0[row_start..row_start + HEAD_SIZE], &composed);
+                composed_state[row_start..row_start + HEAD_SIZE].copy_from_slice(&row_state);
+            }
+        }
+
+        assert_close(&composed_state, &sequential_state, 1e-5);
+    }
+
+    #[test]
+    fn single_timestep_chunked_affine_reduction_matches_sequential() {
+        let steps = (0..32).map(deterministic_step_vectors).collect::<Vec<_>>();
+        let state0 = deterministic_values(HEADS * HEAD_SIZE * HEAD_SIZE, 0.061);
+
+        let mut sequential_state = state0.clone();
+        for step in &steps {
+            let (_, next_state) = single_timestep(
+                &step.r,
+                &step.k,
+                &step.v,
+                &step.w,
+                &step.a,
+                &step.k_deformed,
+                &sequential_state,
+            );
+            sequential_state = next_state;
+        }
+
+        let transform = chunked_time_mixer_state_transform(&steps, 8);
+        let reduced_state = apply_time_mixer_state_transform(&state0, &transform);
+
+        assert_close(&reduced_state, &sequential_state, 1e-4);
+    }
+
+    fn embedded_weights_path() -> Option<PathBuf> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+        path.exists().then_some(path)
+    }
+
+    fn bulk_parity_reviews(count: usize) -> Vec<ReviewInput> {
+        let mut state = 0x9e3779b97f4a7c15_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as i64
+        };
+        (0..count)
+            .map(|index| {
+                let card_id = 100 + next().rem_euclid(23);
+                ReviewInput {
+                    card_id,
+                    note_id: (index % 11 != 3).then_some(1000 + card_id / 2),
+                    deck_id: (index % 13 != 5).then_some(2000 + next().rem_euclid(3)),
+                    preset_id: (index % 17 != 7).then_some(3000 + next().rem_euclid(2)),
+                    is_query: false,
+                    ease: (index % 19 != 11).then_some((next().rem_euclid(4) + 1) as u8),
+                    duration_millis: Some(1500 + next().rem_euclid(20_000)),
+                    card_type: Some(next().rem_euclid(3)),
+                    day_offset: Some(7300 + (index as i64) / 7),
+                    current_elapsed_days: Some(next().rem_euclid(45) - 1),
+                    current_elapsed_seconds: Some(next().rem_euclid(45 * 86_400) - 1),
+                    target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                }
+            })
+            .collect()
+    }
+
+    fn sorted_states(mut states: Vec<(i64, Vec<u8>)>) -> Vec<(i64, Vec<u8>)> {
+        states.sort_by_key(|(id, _)| *id);
+        states
+    }
+
+    fn sorted_curve_bytes(curves: &HashMap<i64, ReviewCurve>) -> Vec<(i64, Vec<u8>)> {
+        let mut serialized: Vec<(i64, Vec<u8>)> = curves
+            .iter()
+            .map(|(id, curve)| {
+                let mut bytes = Vec::new();
+                curve.write_cache_state(&mut bytes);
+                (*id, bytes)
+            })
+            .collect();
+        serialized.sort_by_key(|(id, _)| *id);
+        serialized
+    }
+
+    fn assert_warm_up_parity(sequential: &RwkvInference, bulk: &RwkvInference) {
+        let sequential_snapshot = sequential.warm_up_snapshot();
+        let bulk_snapshot = bulk.warm_up_snapshot();
+        assert_eq!(
+            sorted_states(sequential_snapshot.card_states),
+            sorted_states(bulk_snapshot.card_states),
+            "card states diverged"
+        );
+        assert_eq!(
+            sorted_states(sequential_snapshot.note_states),
+            sorted_states(bulk_snapshot.note_states),
+            "note states diverged"
+        );
+        assert_eq!(
+            sorted_states(sequential_snapshot.deck_states),
+            sorted_states(bulk_snapshot.deck_states),
+            "deck states diverged"
+        );
+        assert_eq!(
+            sorted_states(sequential_snapshot.preset_states),
+            sorted_states(bulk_snapshot.preset_states),
+            "preset states diverged"
+        );
+        assert_eq!(
+            sequential_snapshot.global_state, bulk_snapshot.global_state,
+            "global state diverged"
+        );
+        assert_eq!(
+            sorted_curve_bytes(&sequential.curves),
+            sorted_curve_bytes(&bulk.curves),
+            "curves diverged"
+        );
+    }
+
+    fn assert_prediction_parity(sequential: &[(usize, f32)], bulk: &[(usize, f32)]) {
+        assert_eq!(sequential.len(), bulk.len(), "prediction counts diverged");
+        for ((sequential_index, sequential_value), (bulk_index, bulk_value)) in
+            sequential.iter().zip(bulk)
+        {
+            assert_eq!(sequential_index, bulk_index, "prediction order diverged");
+            assert_eq!(
+                sequential_value.to_bits(),
+                bulk_value.to_bits(),
+                "prediction values diverged at review {sequential_index}"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_warm_up_matches_sequential() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(230);
+        for record_predictions in [false, true] {
+            let mut sequential = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+            let sequential_predictions = sequential
+                .warm_up_reviews_sequential(reviews.clone(), record_predictions)
+                .unwrap();
+
+            let mut bulk = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+            let bulk_predictions =
+                bulk::warm_up_reviews_bulk(&mut bulk, reviews.clone(), record_predictions).unwrap();
+
+            assert_prediction_parity(&sequential_predictions, &bulk_predictions);
+            assert_warm_up_parity(&sequential, &bulk);
+            assert_eq!(
+                sequential.cache_state().len(),
+                bulk.cache_state().len(),
+                "runtime cache size diverged (record={record_predictions})"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_warm_up_chunked_calls_match_sequential() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(160);
+
+        let mut sequential = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let sequential_predictions = sequential
+            .warm_up_reviews_sequential(reviews.clone(), true)
+            .unwrap();
+
+        // Uneven bridge-style calls plus a tiny internal chunk size, so both
+        // cross-call and cross-chunk stream continuity are exercised.
+        let mut bulk = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let mut bulk_predictions = Vec::new();
+        let mut offset = 0;
+        for call in [37, 96, 27] {
+            let calls: Vec<ReviewInput> = reviews[offset..offset + call].to_vec();
+            let predictions =
+                bulk::warm_up_reviews_bulk_chunked(&mut bulk, calls, true, 7).unwrap();
+            bulk_predictions.extend(
+                predictions
+                    .into_iter()
+                    .map(|(index, value)| (index + offset, value)),
+            );
+            offset += call;
+        }
+
+        assert_prediction_parity(&sequential_predictions, &bulk_predictions);
+        assert_warm_up_parity(&sequential, &bulk);
+    }
 
     #[test]
     fn clamped_interval_days_rounds_up_to_target_crossing() {

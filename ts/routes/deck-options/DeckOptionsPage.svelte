@@ -3,6 +3,7 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
+    import { createEventDispatcher } from "svelte";
     import type { Writable } from "svelte/store";
 
     import "$lib/sveltelib/export-runtime";
@@ -28,6 +29,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EasyDays from "./EasyDays.svelte";
 
     export let state: DeckOptionsState;
+    const dispatch = createEventDispatcher<{ close: void }>();
     const addons = state.addonComponents;
 
     export function auxData(): Writable<Record<string, unknown>> {
@@ -73,7 +75,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<ConfigSelector {state} on:presetchange={onPresetChange} />
+<ConfigSelector
+    {state}
+    on:presetchange={onPresetChange}
+    on:close={() => dispatch("close")}
+/>
 
 <div class="deck-options-page">
     <Container

@@ -48,6 +48,40 @@ pub(crate) struct FsrsReviewRetrievabilityCacheRow {
     pub fold_index: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RwkvReviewRetrievabilitySampleRole {
+    FinalFit,
+    TestFold,
+    PostOptimization,
+}
+
+impl RwkvReviewRetrievabilitySampleRole {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::FinalFit => "final_fit",
+            Self::TestFold => "test_fold",
+            Self::PostOptimization => "post_optimization",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "" | "final_fit" => Some(Self::FinalFit),
+            "test_fold" | "validation_fold" => Some(Self::TestFold),
+            "post_optimization" => Some(Self::PostOptimization),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RwkvReviewRetrievabilityCacheRow {
+    pub revlog_id: RevlogId,
+    pub prediction: f32,
+    pub sample_role: RwkvReviewRetrievabilitySampleRole,
+    pub fold_index: i32,
+}
+
 pub(crate) struct StudiedToday {
     pub cards: u32,
     pub seconds: f64,
@@ -163,10 +197,14 @@ impl SqliteStorage {
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let required_columns = ["revlog_id", "prediction", "source", "updated_at"];
+        let has_sample_role = table_info.iter().any(|col| col == "sample_role");
+        let has_fold_index = table_info.iter().any(|col| col == "fold_index");
         if !table_info.is_empty()
-            && !required_columns
+            && (!required_columns
                 .iter()
                 .all(|required| table_info.iter().any(|column| column == required))
+                || !has_sample_role
+                || !has_fold_index)
         {
             self.db.execute_batch(&format!(
                 "DROP TABLE IF EXISTS {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE};"
@@ -176,11 +214,17 @@ impl SqliteStorage {
         self.db.execute_batch(&format!(
             "
             CREATE TABLE IF NOT EXISTS {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
-                revlog_id INTEGER PRIMARY KEY,
+                revlog_id INTEGER NOT NULL,
                 prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
                 source TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                sample_role TEXT NOT NULL DEFAULT 'final_fit'
+                    CHECK(sample_role IN ('final_fit', 'test_fold', 'validation_fold', 'post_optimization')),
+                fold_index INTEGER NOT NULL DEFAULT -1,
+                PRIMARY KEY (revlog_id, sample_role, fold_index, source)
             );
+            CREATE INDEX IF NOT EXISTS ix_rwkv_review_retrievability_role_revlog
+                ON {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} (sample_role, revlog_id);
             "
         ))?;
         Ok(())
@@ -188,7 +232,7 @@ impl SqliteStorage {
 
     pub(crate) fn set_rwkv_review_retrievability_predictions(
         &self,
-        rows: &[(RevlogId, f32)],
+        rows: &[RwkvReviewRetrievabilityCacheRow],
         source: &str,
     ) -> Result<usize> {
         if rows.is_empty() {
@@ -202,13 +246,23 @@ impl SqliteStorage {
         let mut stmt = self.db.prepare_cached(&format!(
             "
             INSERT OR REPLACE INTO {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
-                (revlog_id, prediction, source, updated_at)
-            VALUES (?, ?, ?, ?)
+                (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+            VALUES (?, ?, ?, ?, ?, ?)
             "
         ))?;
-        for (revlog_id, prediction) in rows {
-            if revlog_id.0 > 0 && prediction.is_finite() && (0.0..=1.0).contains(prediction) {
-                stmt.execute(params![revlog_id, prediction, source, updated_at])?;
+        for row in rows {
+            if row.revlog_id.0 > 0
+                && row.prediction.is_finite()
+                && (0.0..=1.0).contains(&row.prediction)
+            {
+                stmt.execute(params![
+                    row.revlog_id,
+                    row.prediction,
+                    source,
+                    updated_at,
+                    row.sample_role.as_str(),
+                    row.fold_index,
+                ])?;
                 stored += 1;
             }
         }
@@ -221,8 +275,16 @@ impl SqliteStorage {
         prediction: f32,
         source: &str,
     ) -> Result<()> {
-        self.set_rwkv_review_retrievability_predictions(&[(revlog_id, prediction)], source)
-            .map(|_| ())
+        self.set_rwkv_review_retrievability_predictions(
+            &[RwkvReviewRetrievabilityCacheRow {
+                revlog_id,
+                prediction,
+                sample_role: RwkvReviewRetrievabilitySampleRole::PostOptimization,
+                fold_index: -1,
+            }],
+            source,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {

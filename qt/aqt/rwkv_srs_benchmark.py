@@ -36,8 +36,10 @@ from aqt.rwkv_scheduler import (
 logger = logging.getLogger(__name__)
 
 _PACKED_PREDICTION_REQUEST_MAGIC = b"ARWKVPR1"
+_PACKED_WARM_UP_REVIEW_MAGIC = b"ARWKVWU1"
 _PACKED_PREDICTION_REQUEST_HEADER = struct.Struct("<8sI")
 _PACKED_PREDICTION_REQUEST_ROW = struct.Struct("<IqqqqBBqqqqqffff")
+_RUST_WARMUP_CHUNK_SIZE = 4096
 
 
 class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
@@ -390,18 +392,25 @@ class _RustRwkvRuntime:
         progress: RwkvWarmUpProgressCallback | None = None,
     ) -> RwkvBackendCacheSnapshot:
         total = len(reviews)
-        report_every = _warmup_progress_interval(total)
+        backend_chunk_size = _rust_warmup_chunk_size(total)
         _report_warmup_progress(progress, processed=0, total=total)
         record_predictions = prediction_recorder is not None and review_ids is not None
         processed = 0
+        warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
 
         with self._locked_process():
             while processed < total:
-                chunk = reviews[processed : processed + report_every]
-                predictions = self._process.warm_up_reviews(
-                    [_review_input_row(review_input) for review_input in chunk],
-                    record_predictions,
-                )
+                chunk = reviews[processed : processed + backend_chunk_size]
+                if callable(warm_up_packed):
+                    predictions = warm_up_packed(
+                        _packed_warm_up_reviews(chunk),
+                        record_predictions,
+                    )
+                else:
+                    predictions = self._process.warm_up_reviews(
+                        [_review_input_row(review_input) for review_input in chunk],
+                        record_predictions,
+                    )
                 if record_predictions:
                     for index, retrievability in predictions:
                         review_index = processed + int(index)
@@ -851,58 +860,7 @@ def _packed_prediction_requests(
     global_states: list[bytes | None] = []
 
     for request in requests:
-        review_input = request.review_input
-        identity = review_input.identity
-        presence = 0
-
-        def optional_i64(value: int | None, bit: int) -> int:
-            nonlocal presence
-            if value is None:
-                return 0
-            presence |= 1 << bit
-            return int(value)
-
-        def optional_f32(value: float | None, bit: int) -> float:
-            nonlocal presence
-            if value is None:
-                return 0.0
-            presence |= 1 << bit
-            return float(value)
-
-        note_id = optional_i64(identity.note_id, 0)
-        deck_id = optional_i64(identity.deck_id, 1)
-        preset_id = optional_i64(identity.preset_id, 2)
-        ease = optional_i64(review_input.ease, 3)
-        duration_millis = optional_i64(review_input.duration_millis, 4)
-        card_type = optional_i64(review_input.card_type, 5)
-        day_offset = optional_i64(review_input.day_offset, 6)
-        current_elapsed_days = optional_i64(review_input.current_elapsed_days, 7)
-        current_elapsed_seconds = optional_i64(review_input.current_elapsed_seconds, 8)
-        target_retention_again = optional_f32(review_input.target_retentions[0], 9)
-        target_retention_hard = optional_f32(review_input.target_retentions[1], 10)
-        target_retention_good = optional_f32(review_input.target_retentions[2], 11)
-        target_retention_easy = optional_f32(review_input.target_retentions[3], 12)
-
-        payload.extend(
-            _PACKED_PREDICTION_REQUEST_ROW.pack(
-                presence,
-                identity.card_id,
-                note_id,
-                deck_id,
-                preset_id,
-                1 if review_input.is_query else 0,
-                ease,
-                duration_millis,
-                card_type,
-                day_offset,
-                current_elapsed_days,
-                current_elapsed_seconds,
-                target_retention_again,
-                target_retention_hard,
-                target_retention_good,
-                target_retention_easy,
-            )
-        )
+        payload.extend(_packed_review_input_row(request.review_input))
 
         card_states.append(_state_bytes(request.card_state))
         note_states.append(_state_bytes(request.note_state))
@@ -916,10 +874,81 @@ def _packed_prediction_requests(
     )
 
 
+def _packed_review_input_row(review_input: RwkvReviewInput) -> bytes:
+    identity = review_input.identity
+    presence = 0
+
+    def optional_i64(value: int | None, bit: int) -> int:
+        nonlocal presence
+        if value is None:
+            return 0
+        presence |= 1 << bit
+        return int(value)
+
+    def optional_f32(value: float | None, bit: int) -> float:
+        nonlocal presence
+        if value is None:
+            return 0.0
+        presence |= 1 << bit
+        return float(value)
+
+    note_id = optional_i64(identity.note_id, 0)
+    deck_id = optional_i64(identity.deck_id, 1)
+    preset_id = optional_i64(identity.preset_id, 2)
+    ease = optional_i64(review_input.ease, 3)
+    duration_millis = optional_i64(review_input.duration_millis, 4)
+    card_type = optional_i64(review_input.card_type, 5)
+    day_offset = optional_i64(review_input.day_offset, 6)
+    current_elapsed_days = optional_i64(review_input.current_elapsed_days, 7)
+    current_elapsed_seconds = optional_i64(review_input.current_elapsed_seconds, 8)
+    target_retention_again = optional_f32(review_input.target_retentions[0], 9)
+    target_retention_hard = optional_f32(review_input.target_retentions[1], 10)
+    target_retention_good = optional_f32(review_input.target_retentions[2], 11)
+    target_retention_easy = optional_f32(review_input.target_retentions[3], 12)
+
+    return _PACKED_PREDICTION_REQUEST_ROW.pack(
+        presence,
+        identity.card_id,
+        note_id,
+        deck_id,
+        preset_id,
+        1 if review_input.is_query else 0,
+        ease,
+        duration_millis,
+        card_type,
+        day_offset,
+        current_elapsed_days,
+        current_elapsed_seconds,
+        target_retention_again,
+        target_retention_hard,
+        target_retention_good,
+        target_retention_easy,
+    )
+
+
+def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
+    payload = bytearray(
+        _PACKED_PREDICTION_REQUEST_HEADER.pack(
+            _PACKED_WARM_UP_REVIEW_MAGIC,
+            len(reviews),
+        )
+    )
+    for review_input in reviews:
+        payload.extend(_packed_review_input_row(review_input))
+    return bytes(payload)
+
+
 def _warmup_progress_interval(total: int) -> int:
     if total <= 0:
         return 1
     return max(1, min(1000, total // 100 or 1))
+
+
+def _rust_warmup_chunk_size(total: int) -> int:
+    progress_interval = _warmup_progress_interval(total)
+    if total <= _RUST_WARMUP_CHUNK_SIZE:
+        return progress_interval
+    return max(progress_interval, _RUST_WARMUP_CHUNK_SIZE)
 
 
 def _report_warmup_progress(

@@ -8,7 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ComputeParamsProgress_Phase,
         type ComputeParamsProgress,
     } from "@generated/anki/collection_pb";
-    import { Empty } from "@generated/anki/generic_pb";
+    import { Empty, Json } from "@generated/anki/generic_pb";
     import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
     import {
         computeFsrsParams,
@@ -136,7 +136,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let checkingHealth = false;
     let buildingRwkvStateCache = false;
     let forceBuildingRwkvStateCache = false;
+    let recomputingRwkvCalibrationData = false;
+    let comparingRwkvExtraFeatureMetrics = false;
+    let trainingRwkvCalibration = false;
     let reschedulingRwkvReviewCards = false;
+    $: rwkvActionInProgress =
+        buildingRwkvStateCache ||
+        forceBuildingRwkvStateCache ||
+        recomputingRwkvCalibrationData ||
+        comparingRwkvExtraFeatureMetrics ||
+        trainingRwkvCalibration ||
+        reschedulingRwkvReviewCards;
     type OptimizationMetrics = {
         logLoss: number;
         rmseBins: number;
@@ -1094,6 +1104,59 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
+    async function recomputeRwkvCalibrationData(): Promise<void> {
+        recomputingRwkvCalibrationData = true;
+        try {
+            await saveRwkvDeckOptions();
+            await postProto("recomputeRwkvCalibrationData", new Empty({}), Empty);
+        } finally {
+            recomputingRwkvCalibrationData = false;
+        }
+    }
+
+    async function compareRwkvExtraFeatureMetrics(): Promise<void> {
+        comparingRwkvExtraFeatureMetrics = true;
+        try {
+            await commitEditing();
+            await postProto(
+                "compareRwkvExtraFeatureMetrics",
+                rwkvExtraFeatureComparisonRequest(),
+                Empty,
+            );
+        } finally {
+            comparingRwkvExtraFeatureMetrics = false;
+        }
+    }
+
+    function rwkvExtraFeatureComparisonRequest(): Json {
+        return new Json({
+            json: new TextEncoder().encode(
+                JSON.stringify({
+                    deckId: state.getTargetDeckId().toString(),
+                    configId: state.getCurrentConfigId().toString(),
+                    presetTagStateEnabled: $config.rwkvReviewPresetTagStateEnabled,
+                    japaneseFeatureStateEnabled:
+                        $config.rwkvReviewJapaneseFeatureStateEnabled,
+                    selfCorrectionEnabled: $config.rwkvReviewSelfCorrectionEnabled,
+                }),
+            ),
+        });
+    }
+
+    async function trainRwkvSelfCorrectionCalibration(): Promise<void> {
+        trainingRwkvCalibration = true;
+        try {
+            await saveRwkvDeckOptions();
+            await postProto(
+                "trainRwkvSelfCorrectionCalibration",
+                rwkvExtraFeatureComparisonRequest(),
+                Empty,
+            );
+        } finally {
+            trainingRwkvCalibration = false;
+        }
+    }
+
     async function rescheduleRwkvReviewCards(): Promise<void> {
         reschedulingRwkvReviewCards = true;
         try {
@@ -1405,12 +1468,37 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </SettingTitle>
         </SwitchRow>
 
+        <SwitchRow
+            bind:value={$config.rwkvReviewPresetTagStateEnabled}
+            defaultValue={defaults.rwkvReviewPresetTagStateEnabled}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvPresetTagState")}>
+                {tr.deckConfigRwkvReviewPresetTagState()}
+            </SettingTitle>
+        </SwitchRow>
+
+        <SwitchRow
+            bind:value={$config.rwkvReviewJapaneseFeatureStateEnabled}
+            defaultValue={defaults.rwkvReviewJapaneseFeatureStateEnabled}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvJapaneseFeatureState")}>
+                {tr.deckConfigRwkvReviewJapaneseFeatureState()}
+            </SettingTitle>
+        </SwitchRow>
+
+        <SwitchRow
+            bind:value={$config.rwkvReviewSelfCorrectionEnabled}
+            defaultValue={defaults.rwkvReviewSelfCorrectionEnabled}
+        >
+            <SettingTitle on:click={() => openHelpModal("rwkvSelfCorrection")}>
+                {tr.deckConfigRwkvReviewSelfCorrection()}
+            </SettingTitle>
+        </SwitchRow>
+
         <div class="d-flex flex-wrap gap-2">
             <button
                 class="btn btn-outline-primary"
-                disabled={buildingRwkvStateCache ||
-                    forceBuildingRwkvStateCache ||
-                    reschedulingRwkvReviewCards}
+                disabled={rwkvActionInProgress}
                 on:click={() => buildRwkvStateCache()}
             >
                 {#if buildingRwkvStateCache}
@@ -1422,9 +1510,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             <button
                 class="btn btn-outline-primary"
-                disabled={buildingRwkvStateCache ||
-                    forceBuildingRwkvStateCache ||
-                    reschedulingRwkvReviewCards}
+                disabled={rwkvActionInProgress}
                 on:click={() => forceBuildRwkvStateCache()}
             >
                 {#if forceBuildingRwkvStateCache}
@@ -1436,9 +1522,43 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             <button
                 class="btn btn-outline-primary"
-                disabled={buildingRwkvStateCache ||
-                    forceBuildingRwkvStateCache ||
-                    reschedulingRwkvReviewCards}
+                disabled={rwkvActionInProgress}
+                on:click={() => recomputeRwkvCalibrationData()}
+            >
+                {#if recomputingRwkvCalibrationData}
+                    Starting RWKV calibration recompute...
+                {:else}
+                    Recompute RWKV Calibration Data
+                {/if}
+            </button>
+
+            <button
+                class="btn btn-outline-primary"
+                disabled={rwkvActionInProgress}
+                on:click={() => compareRwkvExtraFeatureMetrics()}
+            >
+                {#if comparingRwkvExtraFeatureMetrics}
+                    Computing RWKV feature metrics...
+                {:else}
+                    Compare RWKV Extra Features
+                {/if}
+            </button>
+
+            <button
+                class="btn btn-outline-primary"
+                disabled={rwkvActionInProgress}
+                on:click={() => trainRwkvSelfCorrectionCalibration()}
+            >
+                {#if trainingRwkvCalibration}
+                    Starting RWKV calibration training...
+                {:else}
+                    Train RWKV Calibration
+                {/if}
+            </button>
+
+            <button
+                class="btn btn-outline-primary"
+                disabled={rwkvActionInProgress}
                 on:click={() => rescheduleRwkvReviewCards()}
             >
                 {#if reschedulingRwkvReviewCards}
@@ -1450,9 +1570,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             <button
                 class="btn btn-outline-primary"
-                disabled={buildingRwkvStateCache ||
-                    forceBuildingRwkvStateCache ||
-                    reschedulingRwkvReviewCards}
+                disabled={rwkvActionInProgress}
                 on:click={() => showRwkvWorkloadModal()}
             >
                 RWKV Desired Retention: Help Me Decide

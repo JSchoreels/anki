@@ -133,10 +133,18 @@ fn cache_files() -> Vec<Utf8PathBuf> {
             // don't walk into symlinks, or the top-level out/, or .git
             !(e.path_is_symlink()
                 || (e.depth() == 1 && (e.file_name() == "out" || e.file_name() == ".git")))
+                && e.file_name() != "__pycache__"
         })
         .filter_map(move |e| {
             let path = e.as_ref().unwrap().path().strip_prefix("./").unwrap();
             if !path.is_dir() {
+                if path.file_name().is_some_and(|name| name == ".DS_Store")
+                    || path
+                        .extension()
+                        .is_some_and(|extension| extension == "pyc" || extension == "pyo")
+                {
+                    return None;
+                }
                 Some(Utf8PathBuf::from_path_buf(path.to_owned()).unwrap())
             } else {
                 None

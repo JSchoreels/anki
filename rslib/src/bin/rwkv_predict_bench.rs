@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -34,6 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.warmup_reviews,
             args.queries,
             args.target_retention,
+            &args.preset_tags,
+            args.deck_id,
         )?,
         None => CollectionWorkload {
             source: "synthetic".into(),
@@ -43,10 +46,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let workload_ms = elapsed_ms(workload_start);
 
-    let warmup_count = workload.warmup_reviews.len();
-    let query_count = workload.query_inputs.len();
+    let CollectionWorkload {
+        source,
+        warmup_reviews,
+        query_inputs,
+    } = workload;
+    let warmup_count = warmup_reviews.len();
+    let query_count = query_inputs.len();
+    let original_metric_reviews = args.metrics.then(|| warmup_reviews.clone());
+    let (warmup_reviews, warmup_original_indices) =
+        mix_warmup_windows(warmup_reviews, args.warmup_mix_window);
+    let mut warmup_reviews = Some(warmup_reviews);
     let warmup_start = Instant::now();
-    inference.warm_up_reviews(workload.warmup_reviews, false)?;
+    let recall_metrics = if args.metrics {
+        let metric_reviews = original_metric_reviews.expect("metric reviews");
+        let recall_labels = recall_labels(&metric_reviews);
+        let recall_bins = recall_bins(&metric_reviews);
+        let reviews = warmup_reviews.take().unwrap();
+        let predictions = remap_prediction_indices(
+            inference.warm_up_reviews(reviews, true)?,
+            &warmup_original_indices,
+        );
+        Some(RecallMetrics::from_predictions(
+            &recall_labels,
+            &recall_bins,
+            &predictions,
+        ))
+    } else {
+        None
+    };
+    if let Some(reviews) = warmup_reviews.take() {
+        inference.warm_up_reviews(reviews, false)?;
+    }
     let warmup_ms = elapsed_ms(warmup_start);
 
     let snapshot_start = Instant::now();
@@ -59,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let timing = run_prediction_timing(
             &mut inference,
-            &workload.query_inputs,
+            &query_inputs,
             &snapshot,
             batch_size,
             args.repeat,
@@ -67,14 +98,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         println!("weights={}", args.weights.display());
-        println!("source={}", workload.source);
+        println!("source={source}");
         if let Some(collection) = &args.collection {
             println!("collection={}", collection.display());
         }
         println!("queries={query_count}");
         println!("batch_size={batch_size}");
         println!("warmup_reviews={warmup_count}");
+        println!("warmup_mix_window={}", args.warmup_mix_window.unwrap_or(0));
         println!("repeat={}", args.repeat);
+        println!("preset_tags={}", args.preset_tags.label());
+        if let Some(deck_id) = args.deck_id {
+            println!("deck_id={deck_id}");
+        }
         println!(
             "prediction_mode={}",
             if args.retrievability_only {
@@ -89,6 +125,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("workload_ms={workload_ms:.3}");
         println!("warmup_ms={warmup_ms:.3}");
         println!("snapshot_ms={snapshot_ms:.3}");
+        if let Some(metrics) = &recall_metrics {
+            println!("eval_predictions={}", metrics.predictions);
+            println!("eval_successes={}", metrics.successes);
+            println!("eval_observed_success={:.9}", metrics.observed_success);
+            println!("eval_predicted_recall={:.9}", metrics.predicted_recall);
+            println!("eval_logloss={:.9}", metrics.logloss);
+            println!("eval_brier={:.9}", metrics.brier);
+            println!("eval_rmse={:.9}", metrics.rmse);
+            println!("eval_bins={}", metrics.bins);
+            println!("eval_rmse_bins={:.9}", metrics.rmse_bins);
+            println!("eval_mae={:.9}", metrics.mae);
+        }
         println!("request_build_ms={:.3}", timing.request_build_ms);
         println!("predict_ms={:.3}", timing.predict_ms);
         println!("total_ms={:.3}", timing.total_ms);
@@ -179,6 +227,10 @@ struct Args {
     target_retention: f32,
     max_interval_days: u32,
     retrievability_only: bool,
+    preset_tags: PresetTagMode,
+    metrics: bool,
+    deck_id: Option<i64>,
+    warmup_mix_window: Option<usize>,
 }
 
 impl Args {
@@ -192,6 +244,10 @@ impl Args {
         let mut target_retention = 0.9_f32;
         let mut max_interval_days = 36_500_u32;
         let mut retrievability_only = false;
+        let mut preset_tags = PresetTagMode::None;
+        let mut metrics = false;
+        let mut deck_id = None;
+        let mut warmup_mix_window = None;
         let mut args = env::args().skip(1);
 
         while let Some(arg) = args.next() {
@@ -231,6 +287,19 @@ impl Args {
                 "--retrievability-only" => {
                     retrievability_only = true;
                 }
+                "--preset-tags" => {
+                    preset_tags =
+                        PresetTagMode::parse(&args.next().ok_or("--preset-tags requires a value")?)?
+                }
+                "--metrics" => {
+                    metrics = true;
+                }
+                "--deck-id" => {
+                    deck_id = Some(parse_next(&mut args, "--deck-id")?);
+                }
+                "--warmup-mix-window" => {
+                    warmup_mix_window = Some(parse_next(&mut args, "--warmup-mix-window")?);
+                }
                 "--help" | "-h" => return Err(usage()),
                 _ => return Err(format!("unknown argument: {arg}\n{}", usage())),
             }
@@ -245,6 +314,9 @@ impl Args {
         if repeat == 0 {
             return Err("--repeat must be greater than zero".into());
         }
+        if warmup_mix_window == Some(0) {
+            return Err("--warmup-mix-window must be greater than zero".into());
+        }
 
         Ok(Self {
             weights: weights.ok_or("--weights is required")?,
@@ -256,6 +328,10 @@ impl Args {
             target_retention,
             max_interval_days,
             retrievability_only,
+            preset_tags,
+            metrics,
+            deck_id,
+            warmup_mix_window,
         })
     }
 }
@@ -289,9 +365,299 @@ fn parse_next<T: std::str::FromStr>(
 fn usage() -> String {
     "usage: rwkv_predict_bench --weights weights.bin [--collection copy.anki2] \
      [--queries N] [--batch-size N|--batch-sizes N,N] [--warmup-reviews N] [--repeat N] \
-     [--target-retention R] [--max-interval-days N] [--retrievability-only]\n\
+     [--target-retention R] [--max-interval-days N] [--retrievability-only] \
+     [--preset-tags '*'|tag1,tag2] [--metrics] [--deck-id ID] [--warmup-mix-window N]\n\
      With --collection, --warmup-reviews 0 replays all eligible review history."
         .into()
+}
+
+fn mix_warmup_windows(
+    mut reviews: Vec<ReviewInput>,
+    window: Option<usize>,
+) -> (Vec<ReviewInput>, Vec<usize>) {
+    let mut original_indices = (0..reviews.len()).collect::<Vec<_>>();
+    let Some(window) = window.filter(|window| *window > 1) else {
+        return (reviews, original_indices);
+    };
+
+    for start in (0..reviews.len()).step_by(window) {
+        let end = (start + window).min(reviews.len());
+        let mut pairs = reviews[start..end]
+            .iter()
+            .cloned()
+            .zip(original_indices[start..end].iter().copied())
+            .collect::<Vec<_>>();
+        pairs.sort_by_key(|(review, index)| warmup_mix_key(review, *index));
+        for (offset, (review, index)) in pairs.into_iter().enumerate() {
+            reviews[start + offset] = review;
+            original_indices[start + offset] = index;
+        }
+    }
+
+    (reviews, original_indices)
+}
+
+fn warmup_mix_key(review: &ReviewInput, index: usize) -> u64 {
+    let mut value = index as u64;
+    value ^= (review.card_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value ^= (review.deck_id.unwrap_or_default() as u64).rotate_left(17);
+    value ^= (review.preset_id.unwrap_or_default() as u64).rotate_left(31);
+    value ^= u64::from(review.ease.unwrap_or_default()).rotate_left(47);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn remap_prediction_indices(
+    predictions: Vec<(usize, f32)>,
+    original_indices: &[usize],
+) -> Vec<(usize, f32)> {
+    predictions
+        .into_iter()
+        .filter_map(|(index, prediction)| {
+            original_indices
+                .get(index)
+                .copied()
+                .map(|original_index| (original_index, prediction))
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+enum PresetTagMode {
+    None,
+    All,
+    Selected(Vec<String>),
+}
+
+impl PresetTagMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        if value.trim() == "*" {
+            return Ok(Self::All);
+        }
+
+        let tags = value
+            .split(',')
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if tags.is_empty() {
+            return Err("--preset-tags requires '*' or at least one tag".into());
+        }
+
+        Ok(Self::Selected(tags))
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::None => "none".into(),
+            Self::All => "all".into(),
+            Self::Selected(tags) => tags.join(","),
+        }
+    }
+
+    fn matching_tags(&self, note_tags: &str) -> Vec<String> {
+        match self {
+            Self::None => Vec::new(),
+            Self::All => sorted_tags(note_tags),
+            Self::Selected(selected) => {
+                let note_tags = note_tags.split_whitespace().collect::<HashSet<_>>();
+                selected
+                    .iter()
+                    .filter(|tag| note_tags.contains(tag.as_str()))
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+}
+
+fn sorted_tags(note_tags: &str) -> Vec<String> {
+    let mut tags = note_tags
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+fn preset_id_with_tags(base_preset_id: i64, note_tags: &str, mode: &PresetTagMode) -> i64 {
+    let tags = mode.matching_tags(note_tags);
+    if tags.is_empty() {
+        return base_preset_id;
+    }
+
+    let key = format!("rwkv-preset-tags:{base_preset_id}:{}", tags.join("\x1f"));
+    let digest = blake3::hash(key.as_bytes());
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&digest.as_bytes()[..8]);
+    (u64::from_be_bytes(bytes) & ((1_u64 << 63) - 1)) as i64
+}
+
+struct RecallMetrics {
+    predictions: usize,
+    successes: usize,
+    observed_success: f64,
+    predicted_recall: f64,
+    logloss: f64,
+    brier: f64,
+    rmse: f64,
+    bins: usize,
+    rmse_bins: f64,
+    mae: f64,
+}
+
+impl RecallMetrics {
+    fn from_predictions(labels: &[bool], bins: &[RecallBin], predictions: &[(usize, f32)]) -> Self {
+        let mut successes = 0_usize;
+        let mut predicted_sum = 0.0_f64;
+        let mut logloss_sum = 0.0_f64;
+        let mut squared_error_sum = 0.0_f64;
+        let mut absolute_error_sum = 0.0_f64;
+        let mut r_matrix: HashMap<RecallBin, RecallBinValue> = HashMap::new();
+
+        for &(index, retrievability) in predictions {
+            let success = labels.get(index).copied().unwrap_or(false);
+            let observed = if success { 1.0 } else { 0.0 };
+            let predicted = (retrievability as f64).clamp(1e-6, 1.0 - 1e-6);
+            let error = predicted - observed;
+
+            successes += usize::from(success);
+            predicted_sum += predicted;
+            logloss_sum += if success {
+                -predicted.ln()
+            } else {
+                -(1.0 - predicted).ln()
+            };
+            squared_error_sum += error * error;
+            absolute_error_sum += error.abs();
+
+            if let Some(bin) = bins.get(index) {
+                let value = r_matrix.entry(*bin).or_default();
+                value.predicted += predicted;
+                value.actual += observed;
+                value.count += 1.0;
+                value.weight += 1.0;
+            }
+        }
+
+        let predictions = predictions.len();
+        let divisor = predictions.max(1) as f64;
+        let brier = squared_error_sum / divisor;
+        let (bin_count, rmse_bins) = rmse_bins(&r_matrix);
+        Self {
+            predictions,
+            successes,
+            observed_success: successes as f64 / divisor,
+            predicted_recall: predicted_sum / divisor,
+            logloss: logloss_sum / divisor,
+            brier,
+            rmse: brier.sqrt(),
+            bins: bin_count,
+            rmse_bins,
+            mae: absolute_error_sum / divisor,
+        }
+    }
+}
+
+fn recall_labels(reviews: &[ReviewInput]) -> Vec<bool> {
+    reviews
+        .iter()
+        .map(|review| review.ease.is_some_and(|ease| ease > 1))
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct RecallBin {
+    delta_t_bin: u32,
+    length_bin: u32,
+    lapse_bin: u32,
+}
+
+#[derive(Default)]
+struct RecallBinValue {
+    predicted: f64,
+    actual: f64,
+    count: f64,
+    weight: f64,
+}
+
+fn recall_bins(reviews: &[ReviewInput]) -> Vec<RecallBin> {
+    let mut long_term_review_counts_by_card = HashMap::new();
+    let mut prior_lapse_counts_by_card = HashMap::new();
+    let mut bins = Vec::with_capacity(reviews.len());
+
+    for review in reviews {
+        let elapsed_days = review.current_elapsed_days.unwrap_or(-1);
+        let is_long_term_review = elapsed_days >= 1;
+        let prior_long_term_reviews = long_term_review_counts_by_card
+            .get(&review.card_id)
+            .copied()
+            .unwrap_or(0);
+        let prior_lapses = prior_lapse_counts_by_card
+            .get(&review.card_id)
+            .copied()
+            .unwrap_or(0);
+        let long_term_reviews = prior_long_term_reviews + u32::from(is_long_term_review);
+
+        bins.push(RecallBin {
+            delta_t_bin: fsrs_delta_t_bin(elapsed_days),
+            length_bin: fsrs_count_bin(long_term_reviews as f64 + 1.0, 1.99, 1.89),
+            lapse_bin: if prior_lapses == 0 {
+                0
+            } else {
+                fsrs_count_bin(prior_lapses as f64, 1.65, 1.73)
+            },
+        });
+
+        if is_long_term_review {
+            long_term_review_counts_by_card.insert(review.card_id, long_term_reviews);
+            if review.ease == Some(1) {
+                prior_lapse_counts_by_card.insert(review.card_id, prior_lapses + 1);
+            }
+        }
+    }
+
+    bins
+}
+
+fn fsrs_delta_t_bin(delta_t: i64) -> u32 {
+    if delta_t <= 0 {
+        return 0;
+    }
+    fsrs_count_bin(delta_t as f64, 248.0, 3.62)
+}
+
+fn fsrs_count_bin(value: f64, multiplier: f64, base: f64) -> u32 {
+    if value <= 0.0 {
+        return 0;
+    }
+    let binned = multiplier * base.powf(value.log(base).floor());
+    if binned.is_finite() && binned >= 0.0 {
+        binned.round() as u32
+    } else {
+        0
+    }
+}
+
+fn rmse_bins(r_matrix: &HashMap<RecallBin, RecallBinValue>) -> (usize, f64) {
+    let weight_sum = r_matrix.values().map(|value| value.weight).sum::<f64>();
+    if weight_sum == 0.0 {
+        return (0, 0.0);
+    }
+
+    let squared_error_sum = r_matrix
+        .values()
+        .map(|value| {
+            let predicted = value.predicted / value.count;
+            let actual = value.actual / value.count;
+            (predicted - actual).powi(2) * value.weight
+        })
+        .sum::<f64>();
+
+    (r_matrix.len(), (squared_error_sum / weight_sum).sqrt())
 }
 
 struct StateSnapshot {
@@ -327,6 +693,8 @@ impl CollectionWorkload {
         warmup_limit: usize,
         query_limit: usize,
         target_retention: f32,
+        preset_tags: &PresetTagMode,
+        deck_id: Option<i64>,
     ) -> rusqlite::Result<Self> {
         let uri = format!("file:{}?mode=ro&immutable=1", path.to_string_lossy());
         let db = Connection::open_with_flags(
@@ -334,8 +702,16 @@ impl CollectionWorkload {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
         )?;
         let timing = BenchTiming::today();
-        let warmup_reviews = collection_warmup_reviews(&db, warmup_limit, &timing)?;
-        let query_inputs = collection_query_inputs(&db, query_limit, target_retention, &timing)?;
+        let warmup_reviews =
+            collection_warmup_reviews(&db, warmup_limit, &timing, preset_tags, deck_id)?;
+        let query_inputs = collection_query_inputs(
+            &db,
+            query_limit,
+            target_retention,
+            &timing,
+            preset_tags,
+            deck_id,
+        )?;
         Ok(Self {
             source: "collection".into(),
             warmup_reviews,
@@ -370,11 +746,14 @@ fn collection_warmup_reviews(
     db: &Connection,
     limit: usize,
     timing: &BenchTiming,
+    preset_tags: &PresetTagMode,
+    deck_id: Option<i64>,
 ) -> rusqlite::Result<Vec<ReviewInput>> {
+    let current_deck_id_sql = current_deck_id_sql(db)?;
     let sql = if limit == 0 {
-        historical_review_sql(None)
+        historical_review_sql(None, current_deck_id_sql, deck_id)
     } else {
-        historical_review_sql(Some(limit))
+        historical_review_sql(Some(limit), current_deck_id_sql, deck_id)
     };
     let mut stmt = db.prepare(&sql)?;
     let rows = stmt.query_map([], |row| {
@@ -386,6 +765,7 @@ fn collection_warmup_reviews(
             ease: row.get(4)?,
             duration_millis: row.get(5)?,
             review_kind: row.get(6)?,
+            tags: row.get(7)?,
         })
     })?;
 
@@ -405,7 +785,7 @@ fn collection_warmup_reviews(
             card_id: row.card_id,
             note_id: Some(row.note_id),
             deck_id: Some(row.deck_id),
-            preset_id: Some(row.deck_id),
+            preset_id: Some(preset_id_with_tags(row.deck_id, &row.tags, preset_tags)),
             is_query: false,
             ease: Some(row.ease as u8),
             duration_millis: Some(row.duration_millis),
@@ -420,22 +800,32 @@ fn collection_warmup_reviews(
     Ok(reviews)
 }
 
-fn historical_review_sql(limit: Option<usize>) -> String {
+fn historical_review_sql(
+    limit: Option<usize>,
+    current_deck_id_sql: &str,
+    deck_id: Option<i64>,
+) -> String {
     let limit_clause = limit.map_or(String::new(), |limit| format!(" limit {limit}"));
+    let deck_clause = deck_id.map_or(String::new(), |deck_id| {
+        format!(" and {current_deck_id_sql} = {deck_id}")
+    });
     format!(
         "
 select
   r.id,
   r.cid,
   c.nid,
-  c.did,
+  {current_deck_id_sql},
   r.ease,
   r.time,
-  r.type
+  r.type,
+  n.tags
 from revlog r
 join cards c on c.id = r.cid
+join notes n on n.id = c.nid
 where r.ease between 1 and 4
   and (r.type in (0, 1, 2, 3) or r.type = 4)
+  {deck_clause}
 order by r.id, r.cid
 {limit_clause}"
     )
@@ -449,6 +839,7 @@ struct HistoricalReviewRow {
     ease: i64,
     duration_millis: i64,
     review_kind: i64,
+    tags: String,
 }
 
 fn collection_query_inputs(
@@ -456,20 +847,29 @@ fn collection_query_inputs(
     limit: usize,
     target_retention: f32,
     timing: &BenchTiming,
+    preset_tags: &PresetTagMode,
+    deck_id: Option<i64>,
 ) -> rusqlite::Result<Vec<ReviewInput>> {
+    let current_deck_id_sql = current_deck_id_sql(db)?;
+    let deck_clause = deck_id.map_or(String::new(), |deck_id| {
+        format!(" and {current_deck_id_sql} = {deck_id}")
+    });
     let mut stmt = db.prepare(&format!(
         "
 select
   c.id,
   c.nid,
-  case when c.odid != 0 then c.odid else c.did end as current_did,
-  max(r.id) as last_review_id
+  {current_deck_id_sql} as current_did,
+  max(r.id) as last_review_id,
+  n.tags
 from cards c
+join notes n on n.id = c.nid
 left join revlog r on r.cid = c.id
   and r.ease between 1 and 4
   and (r.type in (0, 1, 2, 3) or r.type = 4)
 where c.type = 2
   and c.queue = 2
+  {deck_clause}
 group by c.id
 order by c.id
 limit {limit}"
@@ -481,12 +881,13 @@ limit {limit}"
             row.get::<_, i64>(1)?,
             row.get::<_, i64>(2)?,
             row.get::<_, Option<i64>>(3)?,
+            row.get::<_, String>(4)?,
         ))
     })?;
 
     let mut inputs = Vec::new();
     for row in rows {
-        let (card_id, note_id, deck_id, last_review_id) = row?;
+        let (card_id, note_id, deck_id, last_review_id, tags) = row?;
         let elapsed_seconds = last_review_id
             .map(|id| (timing.now_secs - id / 1000).max(0))
             .unwrap_or(-1);
@@ -499,7 +900,7 @@ limit {limit}"
             card_id,
             note_id: Some(note_id),
             deck_id: Some(deck_id),
-            preset_id: Some(deck_id),
+            preset_id: Some(preset_id_with_tags(deck_id, &tags, preset_tags)),
             is_query: true,
             ease: None,
             duration_millis: None,
@@ -517,6 +918,25 @@ limit {limit}"
     }
 
     Ok(inputs)
+}
+
+fn current_deck_id_sql(db: &Connection) -> rusqlite::Result<&'static str> {
+    Ok(if table_has_column(db, "cards", "odid")? {
+        "case when c.odid != 0 then c.odid else c.did end"
+    } else {
+        "c.did"
+    })
+}
+
+fn table_has_column(db: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = db.prepare(&format!("pragma table_info({table})"))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in columns {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn historical_card_type(review_kind: i64) -> i64 {

@@ -111,6 +111,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             on:clone={promptToClone}
             on:rename={promptToRename}
             on:remove={dispatchPresetChange}
+            on:close={() => dispatch("close")}
         />
     </div>
 </StickyContainer>

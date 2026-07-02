@@ -25,6 +25,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             deckOptionsRequireClose({});
         }
     };
+    globalThis.anki.deckOptionsSaved = (): void => {
+        location.reload();
+    };
+
+    function closeRequested(): void {
+        globalThis.anki.deckOptionsPendingChanges();
+    }
 
     onMount(() => {
         globalThis.$deckOptions = new Promise((resolve, _reject) => {
@@ -35,4 +42,4 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 </script>
 
-<DeckOptionsPage state={data.state} bind:this={page} />
+<DeckOptionsPage state={data.state} bind:this={page} on:close={closeRequested} />

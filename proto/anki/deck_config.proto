@@ -196,6 +196,9 @@ message DeckConfig {
     bool rwkv_review_instant_order_enabled = 72;
     bool rwkv_review_dynamic_preset_replay = 73;
     bool rwkv_review_candidate_refresh_enabled = 74;
+    bool rwkv_review_preset_tag_state_enabled = 75;
+    bool rwkv_review_self_correction_enabled = 76;
+    bool rwkv_review_japanese_feature_state_enabled = 77;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

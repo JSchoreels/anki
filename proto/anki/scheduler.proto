@@ -841,6 +841,8 @@ message RwkvReviewRetrievabilityCacheRowsRequest {
   message Row {
     int64 revlog_id = 1;
     float prediction = 2;
+    string sample_role = 3;
+    int32 fold_index = 4;
   }
   string source = 1;
   repeated Row rows = 2;

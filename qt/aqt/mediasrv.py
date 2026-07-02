@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import json
 import logging
 import mimetypes
 import os
@@ -31,7 +32,7 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
-from anki import decks_pb2, hooks
+from anki import decks_pb2, generic_pb2, hooks
 from anki.cards import CardId
 from anki.collection import OpChanges, OpChangesOnly, Progress, SearchNode
 from anki.decks import UpdateDeckConfigs
@@ -547,7 +548,7 @@ def get_deck_configs_for_update() -> bytes:
     return aqt.mw.col._backend.get_deck_configs_for_update_raw(request.data)
 
 
-def update_deck_configs() -> bytes:  # complexipy: ignore
+def _update_deck_configs(*, close_on_success: bool) -> bytes:  # complexipy: ignore
     # the regular change tracking machinery expects to be started on the main
     # thread and uses a callback on success, so we need to run this op on
     # main, and return immediately from the web request
@@ -749,7 +750,10 @@ def update_deck_configs() -> bytes:  # complexipy: ignore
 
     def on_success(changes: OpChanges) -> None:
         if isinstance(window := aqt.mw.app.activeModalWidget(), DeckOptionsDialog):
-            window.reject()
+            if close_on_success:
+                window.reject()
+            else:
+                window.web.eval("anki.deckOptionsSaved();")
 
     def handle_on_main() -> None:
         update_deck_configs_op(parent=aqt.mw, input=input).success(
@@ -758,6 +762,14 @@ def update_deck_configs() -> bytes:  # complexipy: ignore
 
     aqt.mw.taskman.run_on_main(handle_on_main)
     return b""
+
+
+def update_deck_configs() -> bytes:
+    return _update_deck_configs(close_on_success=False)
+
+
+def update_deck_configs_and_close() -> bytes:
+    return _update_deck_configs(close_on_success=True)
 
 
 def get_scheduling_states_with_context() -> bytes:
@@ -873,6 +885,65 @@ def force_build_rwkv_state_cache() -> bytes:
     aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(
         aqt.mw,
         force_rebuild=True,
+    )
+    return b""
+
+
+def recompute_rwkv_calibration_data() -> bytes:
+    aqt.rwkv_scheduler.recompute_rwkv_calibration_data_with_progress(aqt.mw)
+    return b""
+
+
+def compare_rwkv_extra_feature_metrics() -> bytes:
+    payload_request = generic_pb2.Json()
+    payload_request.ParseFromString(request.data)
+    payload: dict[str, object] = {}
+    if payload_request.json:
+        try:
+            value = json.loads(payload_request.json.decode("utf8"))
+        except Exception:
+            logger.debug("failed to decode RWKV extra feature comparison payload")
+        else:
+            if isinstance(value, dict):
+                payload = value
+    (
+        deck_id,
+        extra_feature_override,
+    ) = aqt.rwkv_scheduler.rwkv_extra_feature_comparison_request_from_payload(
+        payload,
+    )
+    aqt.rwkv_scheduler.compare_rwkv_extra_feature_metrics_with_progress(
+        aqt.mw,
+        deck_id=deck_id,
+        extra_feature_override=extra_feature_override,
+    )
+    return b""
+
+
+def train_rwkv_self_correction_calibration() -> bytes:
+    payload_request = generic_pb2.Json()
+    payload_request.ParseFromString(request.data)
+    payload: dict[str, object] = {}
+    if payload_request.json:
+        try:
+            value = json.loads(payload_request.json.decode("utf8"))
+        except Exception:
+            logger.debug("failed to decode RWKV calibration training payload")
+        else:
+            if isinstance(value, dict):
+                payload = value
+    (
+        deck_id,
+        config_id,
+        extra_feature_override,
+    ) = aqt.rwkv_scheduler.rwkv_self_correction_training_request_from_payload(
+        payload,
+    )
+    aqt.rwkv_scheduler.train_rwkv_self_correction_calibration_with_progress(
+        aqt.mw,
+        deck_id=deck_id,
+        config_id=config_id,
+        extra_feature_override=extra_feature_override,
     )
     return b""
 
@@ -1017,6 +1088,7 @@ post_handler_list = [
     congrats_info,
     get_deck_configs_for_update,
     update_deck_configs,
+    update_deck_configs_and_close,
     get_scheduling_states_with_context,
     set_scheduling_states,
     change_notetype,
@@ -1030,6 +1102,9 @@ post_handler_list = [
     deck_options_ready,
     build_rwkv_state_cache,
     force_build_rwkv_state_cache,
+    recompute_rwkv_calibration_data,
+    compare_rwkv_extra_feature_metrics,
+    train_rwkv_self_correction_calibration,
     reschedule_rwkv_review_cards,
     simulate_rwkv_workload,
     start_rwkv_workload,

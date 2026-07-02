@@ -299,6 +299,7 @@ impl RwkvInference {
 
     fn warm_up_reviews(
         &mut self,
+        py: Python<'_>,
         reviews: &Bound<'_, PyAny>,
         record_predictions: bool,
     ) -> PyResult<Vec<(usize, f32)>> {
@@ -307,13 +308,30 @@ impl RwkvInference {
             parsed_reviews.push(parse_rwkv_review_input(&review?)?);
         }
 
-        self.inner
-            .warm_up_reviews(parsed_reviews, record_predictions)
-            .map_err(|err| PyException::new_err(err.to_string()))
+        py.detach(|| {
+            self.inner
+                .warm_up_reviews(parsed_reviews, record_predictions)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    fn warm_up_reviews_packed(
+        &mut self,
+        py: Python<'_>,
+        reviews: &Bound<'_, PyBytes>,
+        record_predictions: bool,
+    ) -> PyResult<Vec<(usize, f32)>> {
+        let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
+        py.detach(|| {
+            self.inner
+                .warm_up_reviews(parsed_reviews, record_predictions)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
     }
 
     fn warm_up_snapshot(&self, py: Python<'_>) -> RwkvWarmUpSnapshot {
-        let snapshot = self.inner.warm_up_snapshot();
+        let (snapshot, cache_state) =
+            py.detach(|| (self.inner.warm_up_snapshot(), self.inner.cache_state()));
         (
             py_state_map(py, snapshot.card_states),
             py_state_map(py, snapshot.note_states),
@@ -322,7 +340,7 @@ impl RwkvInference {
             snapshot
                 .global_state
                 .map(|state| PyBytes::new(py, &state).unbind()),
-            PyBytes::new(py, &self.inner.cache_state()).unbind(),
+            PyBytes::new(py, &cache_state).unbind(),
         )
     }
 
@@ -479,43 +497,8 @@ fn parse_packed_rwkv_prediction_requests(
     let states = parse_packed_prediction_request_states(state_columns, request_count)?;
     let mut parsed_requests = Vec::with_capacity(request_count);
     for state in states {
-        let presence = cursor.read_u32()?;
-        let card_id = cursor.read_i64()?;
-        let note_id = cursor.read_i64()?;
-        let deck_id = cursor.read_i64()?;
-        let preset_id = cursor.read_i64()?;
-        let is_query = cursor.read_bool()?;
-        let ease = cursor.read_u8()?;
-        let duration_millis = cursor.read_i64()?;
-        let card_type = cursor.read_i64()?;
-        let day_offset = cursor.read_i64()?;
-        let current_elapsed_days = cursor.read_i64()?;
-        let current_elapsed_seconds = cursor.read_i64()?;
-        let target_retention_again = cursor.read_f32()?;
-        let target_retention_hard = cursor.read_f32()?;
-        let target_retention_good = cursor.read_f32()?;
-        let target_retention_easy = cursor.read_f32()?;
-
         parsed_requests.push(rwkv::ReviewPredictionRequest {
-            input: rwkv::ReviewInput {
-                card_id,
-                note_id: optional_i64(presence, 0, note_id),
-                deck_id: optional_i64(presence, 1, deck_id),
-                preset_id: optional_i64(presence, 2, preset_id),
-                is_query,
-                ease: optional_u8(presence, 3, ease),
-                duration_millis: optional_i64(presence, 4, duration_millis),
-                card_type: optional_i64(presence, 5, card_type),
-                day_offset: optional_i64(presence, 6, day_offset),
-                current_elapsed_days: optional_i64(presence, 7, current_elapsed_days),
-                current_elapsed_seconds: optional_i64(presence, 8, current_elapsed_seconds),
-                target_retentions: [
-                    optional_f32(presence, 9, target_retention_again),
-                    optional_f32(presence, 10, target_retention_hard),
-                    optional_f32(presence, 11, target_retention_good),
-                    optional_f32(presence, 12, target_retention_easy),
-                ],
-            },
+            input: read_packed_rwkv_review_input(&mut cursor)?,
             state,
         });
     }
@@ -527,6 +510,73 @@ fn parse_packed_rwkv_prediction_requests(
     }
 
     Ok(parsed_requests)
+}
+
+const PACKED_WARM_UP_REVIEW_MAGIC: &[u8; 8] = b"ARWKVWU1";
+
+fn parse_packed_rwkv_review_inputs(reviews: &[u8]) -> PyResult<Vec<rwkv::ReviewInput>> {
+    let mut cursor = PackedPredictionRequestCursor::new(reviews);
+    let magic = cursor.read_array::<8>()?;
+    if &magic != PACKED_WARM_UP_REVIEW_MAGIC {
+        return Err(PyException::new_err(
+            "invalid RWKV packed warm-up review header",
+        ));
+    }
+
+    let review_count = cursor.read_u32()? as usize;
+    let mut parsed_reviews = Vec::with_capacity(review_count);
+    for _ in 0..review_count {
+        parsed_reviews.push(read_packed_rwkv_review_input(&mut cursor)?);
+    }
+
+    if !cursor.is_finished() {
+        return Err(PyException::new_err(
+            "trailing bytes in RWKV packed warm-up reviews",
+        ));
+    }
+
+    Ok(parsed_reviews)
+}
+
+fn read_packed_rwkv_review_input(
+    cursor: &mut PackedPredictionRequestCursor<'_>,
+) -> PyResult<rwkv::ReviewInput> {
+    let presence = cursor.read_u32()?;
+    let card_id = cursor.read_i64()?;
+    let note_id = cursor.read_i64()?;
+    let deck_id = cursor.read_i64()?;
+    let preset_id = cursor.read_i64()?;
+    let is_query = cursor.read_bool()?;
+    let ease = cursor.read_u8()?;
+    let duration_millis = cursor.read_i64()?;
+    let card_type = cursor.read_i64()?;
+    let day_offset = cursor.read_i64()?;
+    let current_elapsed_days = cursor.read_i64()?;
+    let current_elapsed_seconds = cursor.read_i64()?;
+    let target_retention_again = cursor.read_f32()?;
+    let target_retention_hard = cursor.read_f32()?;
+    let target_retention_good = cursor.read_f32()?;
+    let target_retention_easy = cursor.read_f32()?;
+
+    Ok(rwkv::ReviewInput {
+        card_id,
+        note_id: optional_i64(presence, 0, note_id),
+        deck_id: optional_i64(presence, 1, deck_id),
+        preset_id: optional_i64(presence, 2, preset_id),
+        is_query,
+        ease: optional_u8(presence, 3, ease),
+        duration_millis: optional_i64(presence, 4, duration_millis),
+        card_type: optional_i64(presence, 5, card_type),
+        day_offset: optional_i64(presence, 6, day_offset),
+        current_elapsed_days: optional_i64(presence, 7, current_elapsed_days),
+        current_elapsed_seconds: optional_i64(presence, 8, current_elapsed_seconds),
+        target_retentions: [
+            optional_f32(presence, 9, target_retention_again),
+            optional_f32(presence, 10, target_retention_hard),
+            optional_f32(presence, 11, target_retention_good),
+            optional_f32(presence, 12, target_retention_easy),
+        ],
+    })
 }
 
 fn parse_packed_prediction_request_states(

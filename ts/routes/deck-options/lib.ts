@@ -2,19 +2,21 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import type { PlainMessage } from "@bufbuild/protobuf";
+import { OpChanges } from "@generated/anki/collection_pb";
 import type {
     DeckConfigsForUpdate,
     DeckConfigsForUpdate_CurrentDeck,
     UpdateDeckConfigsMode,
-    UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 import {
     DeckConfig,
     DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate_CurrentDeck_Limits,
+    UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 import { updateDeckConfigs } from "@generated/backend";
+import { postProto } from "@generated/post";
 import { localeCompare } from "@tslib/i18n";
 import { promiseWithResolver } from "@tslib/promise";
 import { cloneDeep, isEqual, isEqualWith } from "lodash-es";
@@ -37,6 +39,16 @@ export interface ConfigListEntry {
     name: string;
     useCount: number;
     current: boolean;
+}
+
+async function updateDeckConfigsAndClose(
+    input: PlainMessage<UpdateDeckConfigsRequest>,
+): Promise<void> {
+    await postProto(
+        "updateDeckConfigsAndClose",
+        new UpdateDeckConfigsRequest(input),
+        OpChanges,
+    );
 }
 
 type AllConfigs =
@@ -221,6 +233,10 @@ export class DeckOptionsState {
         return this.targetDeckId;
     }
 
+    getCurrentConfigId(): DeckOptionsId {
+        return this.configs[this.selectedIdx].config.id;
+    }
+
     getSubtreeConfigIds(): bigint[] {
         return this.currentDeck.subtreeConfigIds;
     }
@@ -334,8 +350,13 @@ export class DeckOptionsState {
         return this._presetAssignmentsChanged;
     }
 
-    async save(mode: UpdateDeckConfigsMode): Promise<void> {
-        await updateDeckConfigs(this.dataForSaving(mode));
+    async save(mode: UpdateDeckConfigsMode, closeOnSuccess = false): Promise<void> {
+        const request = this.dataForSaving(mode);
+        if (closeOnSuccess) {
+            await updateDeckConfigsAndClose(request);
+        } else {
+            await updateDeckConfigs(request);
+        }
     }
 
     private onCurrentConfigChanged(config: DeckConfig_Config): void {
