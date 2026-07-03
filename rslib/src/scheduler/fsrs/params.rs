@@ -67,7 +67,10 @@ fn include_same_day_training_entries(
     model_version: ComputeParametersVersion,
     include_same_day_override: Option<bool>,
 ) -> bool {
-    include_same_day_override.unwrap_or(matches!(model_version, ComputeParametersVersion::Fsrs7))
+    match model_version {
+        ComputeParametersVersion::Fsrs7 => include_same_day_override.unwrap_or(true),
+        ComputeParametersVersion::Fsrs6 => false,
+    }
 }
 
 pub(crate) fn include_same_day_for_params(params: &[f32]) -> bool {
@@ -2342,6 +2345,24 @@ pub(crate) mod tests {
                 Some(false),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn fsrs6_training_ignores_same_day_true_override() {
+        let revlogs = &[
+            revlog(RevlogReviewKind::Learning, 1),
+            revlog(RevlogReviewKind::Review, 1),
+            revlog(RevlogReviewKind::Review, 1),
+        ];
+        assert_eq!(
+            convert_with_model_and_override(
+                revlogs,
+                true,
+                ComputeParametersVersion::Fsrs6,
+                Some(true),
+            ),
+            convert_with_model(revlogs, true, ComputeParametersVersion::Fsrs6)
         );
     }
 

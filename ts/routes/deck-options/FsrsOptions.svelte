@@ -63,6 +63,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         withFsrsSearchSettings,
     } from "./fsrs-search-settings";
     import {
+        fsrsParamDiagnostics,
+        fsrsParamsSupportSameDayEvaluation,
+        fsrsSameDayEvaluationOverrideForComparison,
+        type FsrsParamDiagnostics,
+    } from "./fsrs-param-diagnostics";
+    import {
         costWeightForAverageDr,
         dynamicDesiredRetentionEnabled,
         schedulingTargetDr,
@@ -164,6 +170,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dynamicDesiredRetentionMax: number;
         search: string;
         ignoreRevlogsBeforeMs: bigint;
+        includeSameDayReviews: boolean | undefined;
         current: OptimizationMetrics;
         optimized: OptimizationMetrics;
     };
@@ -188,6 +195,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fsrsItems: number;
         params: number[];
     };
+    type FsrsParamRole = "current" | "optimized";
+
+    class FsrsOptimizationFeedbackError extends Error {}
     type SameDayDecisionComparison = {
         withSameDay: SameDayDecisionRow;
         withoutSameDay: SameDayDecisionRow;
@@ -258,6 +268,159 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function setSelectedFsrsParams(params: number[]): void {
         config.update((current) => withSelectedFsrsParams(current, params));
+    }
+
+    function errorMessage(err: unknown): string {
+        return err instanceof Error ? err.message : String(err);
+    }
+
+    function isInterrupted(err: unknown): boolean {
+        return errorMessage(err) === "500: Interrupted";
+    }
+
+    function isInvalidFsrsParametersError(err: unknown): boolean {
+        return errorMessage(err).includes(tr.deckConfigInvalidParameters());
+    }
+
+    function fsrsParamDiagnosticDetails(diagnostics: FsrsParamDiagnostics): string {
+        if (!diagnostics.validCount) {
+            return `Expected 0, 17, 19, 21, or 35 values, but found ${diagnostics.count}.`;
+        }
+        if (diagnostics.nonFiniteIndexes.length) {
+            const positions = diagnostics.nonFiniteIndexes
+                .slice(0, 5)
+                .map((index) => index + 1)
+                .join(", ");
+            return `Non-finite value at position ${positions}.`;
+        }
+        return "";
+    }
+
+    function invalidFsrsParamsFeedback(
+        role: FsrsParamRole,
+        diagnostics: FsrsParamDiagnostics,
+        rejectedByBackend = false,
+    ): string {
+        const details = fsrsParamDiagnosticDetails(diagnostics);
+        const backendDetail = rejectedByBackend
+            ? "FSRS rejected these parameters during evaluation."
+            : "";
+        const reason = [details, backendDetail].filter((text) => text).join("\n");
+        const roleMessage =
+            role === "current"
+                ? "Anki cannot evaluate the current FSRS parameters, so it cannot compare them with the optimized parameters."
+                : "Anki cannot evaluate the optimized FSRS parameters, so it cannot show the optimization comparison.";
+        const nextStep =
+            role === "current"
+                ? "Leave the FSRS parameters field blank to use the default values, then optimize again."
+                : "Please report this with the console details.";
+
+        return [
+            roleMessage,
+            reason,
+            nextStep,
+            "Details have been logged to the console.",
+        ]
+            .filter((text) => text)
+            .join("\n\n");
+    }
+
+    function logFsrsParamProblem(
+        reason: string,
+        role: FsrsParamRole,
+        params: number[],
+        err?: unknown,
+    ): void {
+        console.warn(
+            `FSRS ${role} parameter ${reason}`,
+            {
+                params,
+                diagnostics: fsrsParamDiagnostics(params),
+                fsrsVersion: $config.fsrsVersion,
+                includeSameDayReviews: includeSameDayOverride(),
+                dynamicDesiredRetentionEnabled:
+                    $config.fsrsDynamicDesiredRetentionEnabled,
+                search: optimizeSearchFilter(),
+                evaluationSearch: evaluateSearchFilter(),
+                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
+                error: err ? errorMessage(err) : undefined,
+            },
+            err,
+        );
+    }
+
+    function requireValidFsrsParams(role: FsrsParamRole, params: number[]): void {
+        const diagnostics = fsrsParamDiagnostics(params);
+        if (diagnostics.valid) {
+            return;
+        }
+        logFsrsParamProblem("validation failed before backend call", role, params);
+        throw new FsrsOptimizationFeedbackError(
+            invalidFsrsParamsFeedback(role, diagnostics),
+        );
+    }
+
+    async function evaluateParamsLegacyForOptimization(
+        role: FsrsParamRole,
+        input: Parameters<typeof evaluateParamsLegacy>[0],
+    ): ReturnType<typeof evaluateParamsLegacy> {
+        requireValidFsrsParams(role, input.params);
+        try {
+            return await evaluateParamsLegacy(input, { alertOnError: false });
+        } catch (err) {
+            logFsrsParamProblem("backend evaluation failed", role, input.params, err);
+            if (isInvalidFsrsParametersError(err)) {
+                throw new FsrsOptimizationFeedbackError(
+                    invalidFsrsParamsFeedback(
+                        role,
+                        fsrsParamDiagnostics(input.params),
+                        true,
+                    ),
+                );
+            }
+            throw err;
+        }
+    }
+
+    function optimizationFailureFeedback(err: unknown, params: number[]): string {
+        if (err instanceof FsrsOptimizationFeedbackError) {
+            return err.message;
+        }
+
+        const diagnostics = fsrsParamDiagnostics(params);
+        if (isInvalidFsrsParametersError(err) && !diagnostics.valid) {
+            logFsrsParamProblem(
+                "backend rejected current parameters",
+                "current",
+                params,
+                err,
+            );
+            return invalidFsrsParamsFeedback("current", diagnostics, true);
+        }
+
+        console.warn(
+            "FSRS optimization failed",
+            {
+                params,
+                diagnostics,
+                fsrsVersion: $config.fsrsVersion,
+                includeSameDayReviews: includeSameDayOverride(),
+                dynamicDesiredRetentionEnabled:
+                    $config.fsrsDynamicDesiredRetentionEnabled,
+                search: optimizeSearchFilter(),
+                evaluationSearch: evaluateSearchFilter(),
+                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
+                error: errorMessage(err),
+            },
+            err,
+        );
+
+        const dynamicDesiredRetentionHint =
+            $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
+            $config.fsrsDynamicDesiredRetentionEnabled
+                ? "\n\nDynamic DR (SSP-MMC) is enabled. Try disabling it and optimizing again to check whether it is involved."
+                : "";
+        return `FSRS optimization failed. Details have been logged to the console.${dynamicDesiredRetentionHint}\n\n${errorMessage(err)}`;
     }
 
     const healthCheck = state.fsrsHealthCheck;
@@ -543,6 +706,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return includeSameDayReviewsInFsrs7;
     }
 
+    function includeSameDayOverrideForParams(params: number[]): boolean | undefined {
+        return fsrsParamsSupportSameDayEvaluation(params)
+            ? includeSameDayOverride()
+            : undefined;
+    }
+
+    function includeSameDayOverrideForComparison(
+        currentParams: number[],
+        optimizedParams: number[],
+    ): boolean | undefined {
+        return fsrsSameDayEvaluationOverrideForComparison(
+            currentParams,
+            optimizedParams,
+            includeSameDayOverride(),
+        );
+    }
+
     async function computeParams(): Promise<void> {
         if (computingParams) {
             await setWantsAbort({});
@@ -555,25 +735,30 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         await commitEditing();
         computingParams = true;
         computeParamsProgress = undefined;
+        const params = selectedFsrsParams($config);
         try {
+            requireValidFsrsParams("current", params);
             await runWithBackendProgress(
                 async () => {
-                    const params = selectedFsrsParams($config);
                     const search = optimizeSearchFilter();
                     const evaluateSearch = evaluateSearchFilter();
-                    const resp = await computeFsrsParams({
-                        search,
-                        ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                        currentParams: params,
-                        numOfRelearningSteps: getNumOfRelearningStepsInDay(),
-                        healthCheck: $healthCheck,
-                        includeSameDayReviews: includeSameDayOverride(),
-                        fsrsVersion: $config.fsrsVersion,
-                        dynamicDesiredRetentionEnabled:
-                            $config.fsrsVersion ===
-                                DeckConfig_Config_FsrsVersion.SEVEN &&
-                            $config.fsrsDynamicDesiredRetentionEnabled,
-                    });
+                    const resp = await computeFsrsParams(
+                        {
+                            search,
+                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            currentParams: params,
+                            numOfRelearningSteps: getNumOfRelearningStepsInDay(),
+                            healthCheck: $healthCheck,
+                            includeSameDayReviews: includeSameDayOverride(),
+                            fsrsVersion: $config.fsrsVersion,
+                            dynamicDesiredRetentionEnabled:
+                                $config.fsrsVersion ===
+                                    DeckConfig_Config_FsrsVersion.SEVEN &&
+                                $config.fsrsDynamicDesiredRetentionEnabled,
+                        },
+                        { alertOnError: false },
+                    );
+                    requireValidFsrsParams("optimized", resp.params);
 
                     const alreadyOptimal =
                         (params.length &&
@@ -649,18 +834,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
 
                     if (!alreadyOptimal) {
-                        const currentMetrics = await evaluateParamsLegacy({
-                            search: evaluateSearch,
-                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                            params,
-                            includeSameDayReviews: includeSameDayOverride(),
-                        });
-                        const optimizedMetrics = await evaluateParamsLegacy({
-                            search: evaluateSearch,
-                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                            params: resp.params,
-                            includeSameDayReviews: includeSameDayOverride(),
-                        });
+                        const comparisonIncludeSameDayReviews =
+                            includeSameDayOverrideForComparison(params, resp.params);
+                        const currentMetrics =
+                            await evaluateParamsLegacyForOptimization("current", {
+                                search: evaluateSearch,
+                                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                                params,
+                                includeSameDayReviews: comparisonIncludeSameDayReviews,
+                            });
+                        const optimizedMetrics =
+                            await evaluateParamsLegacyForOptimization("optimized", {
+                                search: evaluateSearch,
+                                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                                params: resp.params,
+                                includeSameDayReviews: comparisonIncludeSameDayReviews,
+                            });
                         optimizationComparison = {
                             optimizedParams: [...resp.params],
                             dynamicDesiredRetentionParams,
@@ -674,6 +863,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             dynamicDesiredRetentionMax,
                             search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            includeSameDayReviews: comparisonIncludeSameDayReviews,
                             current: {
                                 logLoss: currentMetrics.logLoss,
                                 rmseBins: currentMetrics.rmseBins,
@@ -694,6 +884,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
                 },
             );
+        } catch (err) {
+            if (!isInterrupted(err)) {
+                alert(optimizationFailureFeedback(err, params));
+            }
         } finally {
             computingParams = false;
         }
@@ -755,7 +949,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         search: comparison.search,
                         ignoreRevlogsBeforeMs: comparison.ignoreRevlogsBeforeMs,
                         params: withLastParam(comparison.optimizedParams, decay),
-                        includeSameDayReviews: includeSameDayOverride(),
+                        includeSameDayReviews: comparison.includeSameDayReviews,
                     });
                     return {
                         decay,
@@ -970,7 +1164,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         search,
                         ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                         params: selectedFsrsParams($config),
-                        includeSameDayReviews: includeSameDayOverride(),
+                        includeSameDayReviews: includeSameDayOverrideForParams(
+                            selectedFsrsParams($config),
+                        ),
                     });
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
