@@ -3348,7 +3348,19 @@ fn add_scaled_in_place_arch(out: &mut [f32], weights: &[f32], scale: f32) {
     unsafe { add_scaled_in_place_neon(out, weights, scale) }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn add_scaled_in_place_arch(out: &mut [f32], weights: &[f32], scale: f32) {
+    if x86_avx2_fma_available() {
+        // SAFETY: availability was checked above, and the helper only uses
+        // unaligned loads/stores within the bounds checked by its loops.
+        unsafe { add_scaled_in_place_avx2_fma(out, weights, scale) }
+    } else {
+        add_scaled_in_place_scalar(out, weights, scale)
+    }
+}
+
+#[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
 #[inline(always)]
 fn add_scaled_in_place_arch(out: &mut [f32], weights: &[f32], scale: f32) {
     add_scaled_in_place_scalar(out, weights, scale)
@@ -3410,6 +3422,89 @@ unsafe fn add_scaled_in_place_neon(out: &mut [f32], weights: &[f32], scale: f32)
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn x86_avx2_fma_available() -> bool {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    static AVAILABLE: AtomicU8 = AtomicU8::new(0);
+
+    match AVAILABLE.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let available =
+                std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma");
+            AVAILABLE.store(if available { 2 } else { 1 }, Ordering::Relaxed);
+            available
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn add_scaled_in_place_avx2_fma(out: &mut [f32], weights: &[f32], scale: f32) {
+    use std::arch::x86_64::*;
+
+    let mut offset = 0;
+    let len = out.len();
+    let scale_vector = _mm256_set1_ps(scale);
+    while offset + 32 <= len {
+        let out_ptr = out.as_mut_ptr().add(offset);
+        let weight_ptr = weights.as_ptr().add(offset);
+        _mm256_storeu_ps(
+            out_ptr,
+            _mm256_fmadd_ps(
+                _mm256_loadu_ps(weight_ptr),
+                scale_vector,
+                _mm256_loadu_ps(out_ptr),
+            ),
+        );
+        _mm256_storeu_ps(
+            out_ptr.add(8),
+            _mm256_fmadd_ps(
+                _mm256_loadu_ps(weight_ptr.add(8)),
+                scale_vector,
+                _mm256_loadu_ps(out_ptr.add(8)),
+            ),
+        );
+        _mm256_storeu_ps(
+            out_ptr.add(16),
+            _mm256_fmadd_ps(
+                _mm256_loadu_ps(weight_ptr.add(16)),
+                scale_vector,
+                _mm256_loadu_ps(out_ptr.add(16)),
+            ),
+        );
+        _mm256_storeu_ps(
+            out_ptr.add(24),
+            _mm256_fmadd_ps(
+                _mm256_loadu_ps(weight_ptr.add(24)),
+                scale_vector,
+                _mm256_loadu_ps(out_ptr.add(24)),
+            ),
+        );
+        offset += 32;
+    }
+    while offset + 8 <= len {
+        let out_ptr = out.as_mut_ptr().add(offset);
+        let weight_ptr = weights.as_ptr().add(offset);
+        _mm256_storeu_ps(
+            out_ptr,
+            _mm256_fmadd_ps(
+                _mm256_loadu_ps(weight_ptr),
+                scale_vector,
+                _mm256_loadu_ps(out_ptr),
+            ),
+        );
+        offset += 8;
+    }
+    while offset < len {
+        out[offset] += weights[offset] * scale;
+        offset += 1;
+    }
+}
+
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn add_scaled_in_place_scalar(out: &mut [f32], weights: &[f32], scale: f32) {
@@ -3432,7 +3527,19 @@ fn dot_product_arch(left: &[f32], right: &[f32]) -> f32 {
     unsafe { dot_product_neon(left, right) }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn dot_product_arch(left: &[f32], right: &[f32]) -> f32 {
+    if x86_avx2_fma_available() {
+        // SAFETY: availability was checked above, and the helper only uses
+        // unaligned loads within the bounds checked by its loops.
+        unsafe { dot_product_avx2_fma(left, right) }
+    } else {
+        dot_product_scalar(left, right)
+    }
+}
+
+#[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
 #[inline(always)]
 fn dot_product_arch(left: &[f32], right: &[f32]) -> f32 {
     dot_product_scalar(left, right)
@@ -3483,6 +3590,60 @@ unsafe fn dot_product_neon(left: &[f32], right: &[f32]) -> f32 {
     }
 
     let mut sum = vaddvq_f32(acc);
+    while offset < len {
+        sum += left[offset] * right[offset];
+        offset += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_product_avx2_fma(left: &[f32], right: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut offset = 0;
+    let len = left.len();
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+    let mut acc2 = _mm256_setzero_ps();
+    let mut acc3 = _mm256_setzero_ps();
+
+    while offset + 32 <= len {
+        let left_ptr = left.as_ptr().add(offset);
+        let right_ptr = right.as_ptr().add(offset);
+        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(left_ptr), _mm256_loadu_ps(right_ptr), acc0);
+        acc1 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(left_ptr.add(8)),
+            _mm256_loadu_ps(right_ptr.add(8)),
+            acc1,
+        );
+        acc2 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(left_ptr.add(16)),
+            _mm256_loadu_ps(right_ptr.add(16)),
+            acc2,
+        );
+        acc3 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(left_ptr.add(24)),
+            _mm256_loadu_ps(right_ptr.add(24)),
+            acc3,
+        );
+        offset += 32;
+    }
+
+    let mut acc = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+    while offset + 8 <= len {
+        acc = _mm256_fmadd_ps(
+            _mm256_loadu_ps(left.as_ptr().add(offset)),
+            _mm256_loadu_ps(right.as_ptr().add(offset)),
+            acc,
+        );
+        offset += 8;
+    }
+
+    let mut lanes = [0.0_f32; 8];
+    _mm256_storeu_ps(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes.iter().copied().sum::<f32>();
     while offset < len {
         sum += left[offset] * right[offset];
         offset += 1;
@@ -3975,6 +4136,57 @@ mod tests {
                 "values differ at {index}: left={left}, right={right}, diff={diff}, tolerance={tolerance}"
             );
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn deterministic_simd_values(len: usize, period: usize, scale: f32) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                let centered = index as i32 % period as i32 - period as i32 / 2;
+                centered as f32 * scale
+            })
+            .collect()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn add_scaled_in_place_avx2_fma_matches_scalar() {
+        if !x86_avx2_fma_available() {
+            eprintln!("skipping: AVX2/FMA not available");
+            return;
+        }
+
+        let mut scalar = deterministic_simd_values(101, 17, 0.03125);
+        let mut simd = scalar.clone();
+        let weights = deterministic_simd_values(101, 23, -0.015625);
+
+        add_scaled_in_place_scalar(&mut scalar, &weights, 0.75);
+        // SAFETY: the runtime feature check above confirms AVX2/FMA support.
+        unsafe { add_scaled_in_place_avx2_fma(&mut simd, &weights, 0.75) };
+
+        assert_close(&simd, &scalar, 1e-6);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn dot_product_avx2_fma_matches_scalar() {
+        if !x86_avx2_fma_available() {
+            eprintln!("skipping: AVX2/FMA not available");
+            return;
+        }
+
+        let left = deterministic_simd_values(101, 19, 0.046875);
+        let right = deterministic_simd_values(101, 29, -0.0234375);
+
+        let scalar = dot_product_scalar(&left, &right);
+        // SAFETY: the runtime feature check above confirms AVX2/FMA support.
+        let simd = unsafe { dot_product_avx2_fma(&left, &right) };
+
+        assert!(
+            (simd - scalar).abs() <= 1e-5,
+            "simd={simd}, scalar={scalar}, diff={}",
+            (simd - scalar).abs()
+        );
     }
 
     fn sequential_time_mixer_state(steps: &[RwkvScanCapturedStep]) -> Vec<f32> {
