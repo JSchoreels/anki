@@ -53,6 +53,7 @@ use fsrs::FSRSReview;
 use fsrs::FSRS;
 
 use crate::backend::Backend;
+use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::config::BoolKey;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
@@ -840,9 +841,15 @@ impl crate::services::SchedulerService for Collection {
                 score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
                 "invalid RWKV retrievability"
             );
-            scores.insert(score.card_id.into(), score.retrievability);
+            scores.insert(
+                score.card_id.into(),
+                RwkvReviewQueueScoreEntry {
+                    retrievability: score.retrievability,
+                    intervening_reviews: score.intervening_reviews,
+                },
+            );
         }
-        self.set_rwkv_review_queue_scores(input.deck_id.into(), scores)
+        self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)
     }
 
     fn set_rwkv_stats_graph_scores(&mut self, input: RwkvStatsGraphScoresRequest) -> Result<()> {

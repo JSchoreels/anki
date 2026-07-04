@@ -194,6 +194,10 @@ struct RwkvDeckConfigFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_allow_same_day_review: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_min_intervening_reviews: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_min_elapsed_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_instant_order_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_dynamic_preset_replay: Option<bool>,
@@ -221,6 +225,11 @@ impl RwkvDeckConfigFields {
             ),
             rwkv_review_refresh_on_exit: true_only(config.rwkv_review_refresh_on_exit),
             rwkv_review_allow_same_day_review: true_only(config.rwkv_review_allow_same_day_review),
+            rwkv_review_min_intervening_reviews: non_default(
+                config.rwkv_review_min_intervening_reviews,
+                0,
+            ),
+            rwkv_review_min_elapsed_secs: non_default(config.rwkv_review_min_elapsed_secs, 0),
             rwkv_review_instant_order_enabled: true_only(config.rwkv_review_instant_order_enabled),
             rwkv_review_dynamic_preset_replay: true_only(config.rwkv_review_dynamic_preset_replay),
             rwkv_review_candidate_refresh_enabled: true_only(
@@ -253,6 +262,12 @@ impl RwkvDeckConfigFields {
         }
         if let Some(value) = self.rwkv_review_allow_same_day_review {
             config.rwkv_review_allow_same_day_review = value;
+        }
+        if let Some(value) = self.rwkv_review_min_intervening_reviews {
+            config.rwkv_review_min_intervening_reviews = value;
+        }
+        if let Some(value) = self.rwkv_review_min_elapsed_secs {
+            config.rwkv_review_min_elapsed_secs = value;
         }
         if let Some(value) = self.rwkv_review_instant_order_enabled {
             config.rwkv_review_instant_order_enabled = value;
@@ -394,6 +409,8 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.rwkv_review_refresh_interval = 0;
     config.rwkv_review_refresh_on_exit = false;
     config.rwkv_review_allow_same_day_review = false;
+    config.rwkv_review_min_intervening_reviews = 0;
+    config.rwkv_review_min_elapsed_secs = 0;
     config.rwkv_review_instant_order_enabled = false;
     config.rwkv_review_dynamic_preset_replay = false;
     config.rwkv_review_candidate_refresh_enabled = false;
@@ -452,6 +469,8 @@ mod tests {
             rwkv_review_refresh_interval: 5,
             rwkv_review_refresh_on_exit: true,
             rwkv_review_allow_same_day_review: true,
+            rwkv_review_min_intervening_reviews: 3,
+            rwkv_review_min_elapsed_secs: 300,
             rwkv_review_instant_order_enabled: true,
             rwkv_review_dynamic_preset_replay: true,
             rwkv_review_candidate_refresh_enabled: true,
@@ -480,6 +499,8 @@ mod tests {
         assert_eq!(storage_config.rwkv_review_refresh_interval, 0);
         assert!(!storage_config.rwkv_review_refresh_on_exit);
         assert!(!storage_config.rwkv_review_allow_same_day_review);
+        assert_eq!(storage_config.rwkv_review_min_intervening_reviews, 0);
+        assert_eq!(storage_config.rwkv_review_min_elapsed_secs, 0);
         assert!(!storage_config.rwkv_review_instant_order_enabled);
         assert!(!storage_config.rwkv_review_dynamic_preset_replay);
         assert!(!storage_config.rwkv_review_candidate_refresh_enabled);
@@ -496,6 +517,10 @@ mod tests {
         assert!(fsrs_other
             .get("rwkv_review_allow_same_day_review")
             .is_none());
+        assert!(fsrs_other
+            .get("rwkv_review_min_intervening_reviews")
+            .is_none());
+        assert!(fsrs_other.get("rwkv_review_min_elapsed_secs").is_none());
         assert!(fsrs_other
             .get("rwkv_review_instant_order_enabled")
             .is_none());
@@ -522,6 +547,8 @@ mod tests {
                 "rwkv_review_refresh_interval": 5,
                 "rwkv_review_refresh_on_exit": true,
                 "rwkv_review_allow_same_day_review": true,
+                "rwkv_review_min_intervening_reviews": 3,
+                "rwkv_review_min_elapsed_secs": 300,
                 "rwkv_review_instant_order_enabled": true,
                 "rwkv_review_dynamic_preset_replay": true,
                 "rwkv_review_candidate_refresh_enabled": true,
@@ -568,6 +595,14 @@ mod tests {
         assert_eq!(
             decoded.rwkv_review_allow_same_day_review,
             config.rwkv_review_allow_same_day_review
+        );
+        assert_eq!(
+            decoded.rwkv_review_min_intervening_reviews,
+            config.rwkv_review_min_intervening_reviews
+        );
+        assert_eq!(
+            decoded.rwkv_review_min_elapsed_secs,
+            config.rwkv_review_min_elapsed_secs
         );
         assert_eq!(
             decoded.rwkv_review_instant_order_enabled,
@@ -635,6 +670,8 @@ mod tests {
                     "rwkv_review_refresh_interval": 7,
                     "rwkv_review_refresh_on_exit": true,
                     "rwkv_review_allow_same_day_review": true,
+                    "rwkv_review_min_intervening_reviews": 3,
+                    "rwkv_review_min_elapsed_secs": 300,
                     "rwkv_review_instant_order_enabled": true,
                     "rwkv_review_dynamic_preset_replay": true,
                     "rwkv_review_candidate_refresh_enabled": true,
@@ -656,6 +693,8 @@ mod tests {
         assert_eq!(config.rwkv_review_refresh_interval, 7);
         assert!(config.rwkv_review_refresh_on_exit);
         assert!(config.rwkv_review_allow_same_day_review);
+        assert_eq!(config.rwkv_review_min_intervening_reviews, 3);
+        assert_eq!(config.rwkv_review_min_elapsed_secs, 300);
         assert!(config.rwkv_review_instant_order_enabled);
         assert!(config.rwkv_review_dynamic_preset_replay);
         assert!(config.rwkv_review_candidate_refresh_enabled);
@@ -674,6 +713,8 @@ mod tests {
                     "rwkv_review_refresh_interval": 7,
                     "rwkv_review_refresh_on_exit": true,
                     "rwkv_review_allow_same_day_review": true,
+                    "rwkv_review_min_intervening_reviews": 3,
+                    "rwkv_review_min_elapsed_secs": 300,
                     "rwkv_review_instant_order_enabled": true,
                     "rwkv_review_dynamic_preset_replay": true,
                     "rwkv_review_candidate_refresh_enabled": true,
@@ -687,6 +728,8 @@ mod tests {
                     "rwkv_review_refresh_interval": 3,
                     "rwkv_review_refresh_on_exit": false,
                     "rwkv_review_allow_same_day_review": false,
+                    "rwkv_review_min_intervening_reviews": 1,
+                    "rwkv_review_min_elapsed_secs": 60,
                     "rwkv_review_instant_order_enabled": false,
                     "rwkv_review_dynamic_preset_replay": false,
                     "rwkv_review_candidate_refresh_enabled": false,
@@ -708,6 +751,8 @@ mod tests {
         assert_eq!(config.rwkv_review_refresh_interval, 3);
         assert!(!config.rwkv_review_refresh_on_exit);
         assert!(!config.rwkv_review_allow_same_day_review);
+        assert_eq!(config.rwkv_review_min_intervening_reviews, 1);
+        assert_eq!(config.rwkv_review_min_elapsed_secs, 60);
         assert!(!config.rwkv_review_instant_order_enabled);
         assert!(!config.rwkv_review_dynamic_preset_replay);
         assert!(!config.rwkv_review_candidate_refresh_enabled);

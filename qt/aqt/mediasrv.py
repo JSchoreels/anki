@@ -53,6 +53,12 @@ waitress.wasyncore._DISCONNECTED = waitress.wasyncore._DISCONNECTED.union({EPROT
 
 logger = logging.getLogger(__name__)
 app = flask.Flask(__name__, root_path="/fake")
+RWKV_STATS_PENDING_HEADER = "X-Anki-Rwkv-Stats-Pending"
+_QUIET_DEBUG_REQUEST_PATHS = frozenset(
+    {
+        "_anki/latestProgress",
+    }
+)
 
 
 @dataclass
@@ -403,7 +409,8 @@ def handle_request(pathin: str) -> Response:
             abort(403)
 
     req = _extract_request(pathin)
-    logger.debug("%s /%s", flask.request.method, pathin)
+    if _should_log_request(pathin):
+        logger.debug("%s /%s", flask.request.method, pathin)
 
     try:
         if isinstance(req, NotFound):
@@ -419,6 +426,10 @@ def handle_request(pathin: str) -> Response:
             return _text_response(HTTPStatus.FORBIDDEN, f"unexpected request: {pathin}")
     except UnsafePathException as exc:
         return _text_response(HTTPStatus.FORBIDDEN, str(exc))
+
+
+def _should_log_request(pathin: str) -> bool:
+    return pathin not in _QUIET_DEBUG_REQUEST_PATHS
 
 
 def is_sveltekit_page(path: str) -> bool:
@@ -1057,13 +1068,13 @@ def _card_stats_fallback_retrievability_source(response: CardStatsResponse) -> s
     return "FSRS" if response.HasField("memory_state") else "SM2"
 
 
-def graphs() -> bytes:
+def graphs() -> Response:
     start = time.monotonic()
     request_proto = GraphsRequest()
     request_proto.ParseFromString(request.data)
     reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
     prepare_start = time.monotonic()
-    aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
+    prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
         reviewer,
         request_proto.search,
     )
@@ -1071,17 +1082,22 @@ def graphs() -> bytes:
     backend_start = time.monotonic()
     output = raw_backend_request("graphs")()
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
+    response = flask.make_response(output)
+    response.headers["Content-Type"] = "application/binary"
+    if prepare_status == aqt.rwkv_scheduler.RwkvStatsPreparationStatus.PENDING:
+        response.headers[RWKV_STATS_PENDING_HEADER] = "1"
     logger.debug(
-        "graphs served: search=%r days=%s prepare_elapsed_ms=%.1f "
+        "graphs served: search=%r days=%s rwkv_prepare_status=%s prepare_elapsed_ms=%.1f "
         "backend_elapsed_ms=%.1f response_bytes=%s elapsed_ms=%.1f",
         request_proto.search,
         request_proto.days,
+        prepare_status.value,
         prepare_elapsed_ms,
         backend_elapsed_ms,
         len(output),
         (time.monotonic() - start) * 1000,
     )
-    return output
+    return response
 
 
 post_handler_list = [

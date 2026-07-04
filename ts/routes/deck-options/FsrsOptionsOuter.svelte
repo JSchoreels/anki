@@ -76,61 +76,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             sched: HelpItemScheduler.FSRS,
             global: true,
         },
-        rwkvReview: {
-            title: tr.deckConfigRwkvReviewEnabled(),
-            help: tr.deckConfigRwkvReviewEnabledTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvInstantOrder: {
-            title: tr.deckConfigRwkvReviewInstantOrder(),
-            help: tr.deckConfigRwkvReviewInstantOrderTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvCandidateRefresh: {
-            title: tr.deckConfigRwkvReviewCandidateRefresh(),
-            help: tr.deckConfigRwkvReviewCandidateRefreshTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvBatchSize: {
-            title: tr.deckConfigRwkvReviewBatchSize(),
-            help: tr.deckConfigRwkvReviewBatchSizeTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvRefreshInterval: {
-            title: tr.deckConfigRwkvReviewRefreshInterval(),
-            help: tr.deckConfigRwkvReviewRefreshIntervalTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvRefreshOnExit: {
-            title: tr.deckConfigRwkvReviewRefreshOnExit(),
-            help: tr.deckConfigRwkvReviewRefreshOnExitTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvAllowSameDayReview: {
-            title: tr.deckConfigRwkvReviewAllowSameDayReview(),
-            help: tr.deckConfigRwkvReviewAllowSameDayReviewTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvDynamicPresetReplay: {
-            title: tr.deckConfigRwkvReviewDynamicPresetReplay(),
-            help: tr.deckConfigRwkvReviewDynamicPresetReplayTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvPresetTagState: {
-            title: tr.deckConfigRwkvReviewPresetTagState(),
-            help: tr.deckConfigRwkvReviewPresetTagStateTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvJapaneseFeatureState: {
-            title: tr.deckConfigRwkvReviewJapaneseFeatureState(),
-            help: tr.deckConfigRwkvReviewJapaneseFeatureStateTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
-        rwkvSelfCorrection: {
-            title: tr.deckConfigRwkvReviewSelfCorrection(),
-            help: tr.deckConfigRwkvReviewSelfCorrectionTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
     };
     const helpSections: HelpItem[] = Object.values(settings);
 
@@ -143,9 +88,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<TitledContainer title={"FSRS"}>
+<TitledContainer title={"Scheduler"}>
     <HelpModal
-        title={"FSRS"}
+        title={"Scheduler"}
         url={HelpPage.DeckOptions.fsrs}
         slot="tooltip"
         fsrs={$fsrs}

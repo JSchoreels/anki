@@ -92,7 +92,7 @@ impl DynamicDesiredRetention {
         } = fields;
         require!(
             policy_params.len() == COST_ADR_PARAMETER_COUNT,
-            "Dynamic DR requires 15 SSP-MMC parameters"
+            "Dynamic DR requires 15 ADR policy parameters"
         );
         require!(
             policy_params.iter().all(|value| value.is_finite()),

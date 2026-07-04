@@ -373,8 +373,14 @@ impl Collection {
                     return Ok(None);
                 }
 
-                let elapsed_days = self.rwkv_last_review_time(card)?.map(|last_review_time| {
+                let last_review_time = self.rwkv_last_review_time(card)?;
+                let elapsed_days = last_review_time.map(|last_review_time| {
                     timing.next_day_at.elapsed_days_since(last_review_time) as u32
+                });
+                let elapsed_seconds = last_review_time.map(|last_review_time| {
+                    TimestampSecs::now()
+                        .elapsed_secs_since(last_review_time)
+                        .max(0) as u32
                 });
                 Ok(Some(RwkvReviewInputState {
                     state_kind: elapsed_days
@@ -384,7 +390,7 @@ impl Collection {
                         .map(|_| "review".to_string())
                         .unwrap_or_default(),
                     elapsed_days,
-                    elapsed_seconds: None,
+                    elapsed_seconds,
                 }))
             }
             (CardType::Learn, CardQueue::Learn | CardQueue::DayLearn) => {
@@ -459,6 +465,7 @@ impl Collection {
 pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) target_retention: f32,
     pub(crate) reviewed_today: bool,
+    pub(crate) elapsed_secs_since_last_review: Option<u32>,
     pub(crate) current_deck_id: DeckId,
     pub(crate) fsrs_due_today: bool,
 }
@@ -480,6 +487,12 @@ pub(crate) fn rwkv_review_candidate_metadata(
 
         let partial = RwkvReviewCandidatePartial {
             reviewed_today: card_reviewed_today(&card, timing),
+            elapsed_secs_since_last_review: card.last_review_time.map(|last_review_time| {
+                timing
+                    .now
+                    .elapsed_secs_since(last_review_time)
+                    .clamp(0, u32::MAX as i64) as u32
+            }),
             current_deck_id: card.deck_id,
             fsrs_due_today: card.due <= timing.days_elapsed as i32,
         };
@@ -507,15 +520,39 @@ pub(crate) fn rwkv_review_score_eligible(
     score: f32,
     metadata: &RwkvReviewCandidateMetadata,
     allow_same_day_review: bool,
+    min_intervening_reviews: u32,
+    min_elapsed_secs: u32,
+    intervening_reviews: Option<u32>,
 ) -> bool {
     score.is_finite()
         && score <= metadata.target_retention
         && (allow_same_day_review || !metadata.reviewed_today)
+        && rwkv_review_intervening_reviews_elapsed(intervening_reviews, min_intervening_reviews)
+        && rwkv_review_min_elapsed_secs_elapsed(metadata, min_elapsed_secs)
+}
+
+fn rwkv_review_intervening_reviews_elapsed(
+    intervening_reviews: Option<u32>,
+    min_intervening_reviews: u32,
+) -> bool {
+    min_intervening_reviews == 0
+        || intervening_reviews.map_or(true, |reviews| reviews >= min_intervening_reviews)
+}
+
+fn rwkv_review_min_elapsed_secs_elapsed(
+    metadata: &RwkvReviewCandidateMetadata,
+    min_elapsed_secs: u32,
+) -> bool {
+    min_elapsed_secs == 0
+        || metadata
+            .elapsed_secs_since_last_review
+            .map_or(true, |elapsed_secs| elapsed_secs >= min_elapsed_secs)
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RwkvReviewCandidatePartial {
     reviewed_today: bool,
+    elapsed_secs_since_last_review: Option<u32>,
     current_deck_id: DeckId,
     fsrs_due_today: bool,
 }
@@ -525,6 +562,7 @@ impl RwkvReviewCandidatePartial {
         RwkvReviewCandidateMetadata {
             target_retention,
             reviewed_today: self.reviewed_today,
+            elapsed_secs_since_last_review: self.elapsed_secs_since_last_review,
             current_deck_id: self.current_deck_id,
             fsrs_due_today: self.fsrs_due_today,
         }
@@ -866,7 +904,8 @@ mod test {
         assert_eq!(row.current_state_kind, "normal");
         assert_eq!(row.current_normal_state_kind, "review");
         assert_eq!(row.current_elapsed_days, Some(39));
-        assert_eq!(row.current_elapsed_seconds, None);
+        let elapsed_seconds = row.current_elapsed_seconds.unwrap();
+        assert!((38 * 86_400..=39 * 86_400).contains(&elapsed_seconds));
         assert_eq!(row.target_retention, 0.86);
         assert_eq!(row.batch_size, 1024);
 
@@ -1015,6 +1054,7 @@ mod test {
         assert_eq!(response.cards_with_supported_state, 1);
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].current_elapsed_days, Some(39));
+        assert!(response.rows[0].current_elapsed_seconds.is_some());
 
         Ok(())
     }

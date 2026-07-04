@@ -903,7 +903,7 @@ class Reviewer:
             rating=self._v3.rating_from_ease(ease),
             desired_retention_override=self._desired_retention_override,
         )
-        aqt.rwkv_scheduler.set_answer_rwkv_s90(answer, self, self.card, ease)
+        aqt.rwkv_scheduler.set_answer_rwkv_metadata(answer, self, self.card, ease)
         if getattr(
             self,
             "_rwkv_undo_restored_card_requires_queue_invalidation",

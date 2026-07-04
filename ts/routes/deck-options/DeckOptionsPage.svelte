@@ -25,6 +25,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import LapseOptions from "./LapseOptions.svelte";
     import type { DeckOptionsState } from "./lib";
     import NewOptions from "./NewOptions.svelte";
+    import RwkvOptions from "./RwkvOptions.svelte";
     import TimerOptions from "./TimerOptions.svelte";
     import EasyDays from "./EasyDays.svelte";
 
@@ -115,6 +116,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     api={{}}
                     bind:this={fsrsOptionsOuterComponent}
                 />
+            </Row>
+
+            <Row class="row-columns">
+                <RwkvOptions {state} {onPresetChange} />
             </Row>
         </div>
 

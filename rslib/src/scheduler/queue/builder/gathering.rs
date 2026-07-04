@@ -66,7 +66,7 @@ impl QueueBuilder {
                 if let Some(score) = scores
                     .get(&card.id)
                     .copied()
-                    .filter(|score| score.is_finite())
+                    .filter(|score| score.retrievability.is_finite())
                 {
                     scored_card_ids.insert(card.id);
                     scored_candidates.push((card, score));
@@ -81,9 +81,14 @@ impl QueueBuilder {
         for (card, score) in scored_candidates {
             let metadata = candidate_metadata.get(&card.id).or_not_found(card.id)?;
             if rwkv_review_score_eligible(
-                score,
+                score.retrievability,
                 metadata,
                 self.context.sort_options.rwkv_review_allow_same_day_review,
+                self.context
+                    .sort_options
+                    .rwkv_review_min_intervening_reviews,
+                self.context.sort_options.rwkv_review_min_elapsed_secs,
+                score.intervening_reviews,
             ) {
                 scored_cards.push((card, score));
             }
@@ -94,7 +99,7 @@ impl QueueBuilder {
             ReviewCardOrder::RetrievabilityDescending
         );
         scored_cards.sort_by(|(card_a, score_a), (card_b, score_b)| {
-            let ord = score_a.total_cmp(score_b);
+            let ord = score_a.retrievability.total_cmp(&score_b.retrievability);
             let ord = if descending { ord.reverse() } else { ord };
             ord.then_with(|| card_a.id.cmp(&card_b.id))
         });

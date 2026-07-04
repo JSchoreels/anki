@@ -1,10 +1,10 @@
 # RWKV Review Scheduler
 
 The RWKV review scheduler is a desktop-only review-time scheduler. In RWKV
-mode, answer buttons use RWKV-Curve intervals and store RWKV-Curve S90 values.
-RWKV-Instant retrievability can also be used for review queue ordering when its
-separate deck option is enabled. Mobile clients do not load the RWKV backend
-and continue to schedule with FSRS/SM2.
+mode, answer buttons keep the normal FSRS/SM2 scheduler intervals. RWKV-Instant
+retrievability can be recorded on live review answers and can also be used for
+review queue ordering when its separate deck option is enabled. Mobile clients
+do not load the RWKV backend and continue to schedule with FSRS/SM2.
 
 ## Settings And Storage
 
@@ -14,6 +14,8 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_refresh_interval`, which defaults to `1`,
 `rwkv_review_refresh_on_exit`, which defaults to `false`, and
 `rwkv_review_allow_same_day_review`, which defaults to `false`, and
+`rwkv_review_min_intervening_reviews`, which defaults to `0`, and
+`rwkv_review_min_elapsed_secs`, which defaults to `0`, and
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
@@ -71,15 +73,19 @@ RWKV ordering path or the normal due fallback until a later prediction puts them
 back below target. When
 `rwkv_review_allow_same_day_review` is disabled, scored review cards that were
 already answered during the current scheduler day are also withheld until the
-next day. Due review cards without an RWKV score remain eligible through the
+next day. When same-day RWKV re-review is enabled,
+`rwkv_review_min_intervening_reviews` can require a session-local number of
+other answered reviews before the same card is admitted again, and
+`rwkv_review_min_elapsed_secs` can require that many seconds since the card's
+stored last review time. If both values are nonzero, both guards must be
+satisfied. Due review cards without an RWKV score remain eligible through the
 normal due-card path.
 
 If RWKV review is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a
 fallback. Queue gathering treats the review order as normal due-day ordering
-until RWKV-Instant ordering is explicitly enabled. This does not affect
-answer-button scheduling: RWKV-Curve intervals are still used for buttons while
-RWKV review is enabled.
+until RWKV-Instant ordering is explicitly enabled. Answer-button scheduling
+still uses the normal FSRS/SM2 scheduler states while RWKV review is enabled.
 
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
@@ -93,11 +99,11 @@ candidate refresh or full queue rebuild scores them again.
 
 Deck tree review counts use the same eligibility rules when a current-day RWKV
 queue score map is installed. Scored review cards above target retention, or
-same-day reviewed cards when same-day RWKV re-review is disabled, are removed
-from review counts even if FSRS says they are due. Scored future review cards
-below target retention are added to review counts. Before a RWKV queue score
-map has been prepared, deck tree counts continue to show the normal FSRS due
-counts.
+same-day reviewed cards blocked by same-day or repeat-spacing guards, are
+removed from review counts even if FSRS says they are due. Scored future review
+cards below target retention are added to review counts. Before a RWKV queue
+score map has been prepared, deck tree counts continue to show the normal FSRS
+due counts.
 
 ## Stats And Search
 
@@ -126,27 +132,19 @@ rows, and other non-answer rows are not used as the last review. If neither
 source exists, the query leaves current elapsed unknown instead of inferring it
 from `due - ivl`.
 
-## Answer Button Intervals And S90
+## Answer Button Intervals
 
 When RWKV review is enabled and the desktop RWKV backend is available, the
-reviewer computes each answer button by simulating that rating from the current
-RWKV state. The embedded runtime evaluates the current query plus hypothetical
-Again, Hard, Good, and Easy answer states. Each hypothetical answer state
-returns an RWKV-Curve; Anki uses that curve to find the interval at the target
-retention for that grade.
+reviewer queries RWKV-Instant for the current card's retrievability before the
+answer buttons are rendered. That RWKV retrievability is stored on the answer
+for calibration/history rows when the user grades the card. The answer-button
+scheduling states themselves are not rewritten by RWKV: Again, Hard, Good, and
+Easy keep the intervals and memory states produced by the normal FSRS/SM2
+scheduler.
 
-The target retention is the scheduler's desired retention for the card. If
-Dynamic Desired Retention is active for the scheduling states, RWKV receives the
-per-grade Dynamic DR targets and uses the matching target for Again, Hard,
-Good, and Easy. Otherwise it uses the resolved preset desired retention, with
-deck-config desired retention and `0.9` as fallbacks.
-
-The same per-grade RWKV-Curve is also evaluated at `90%` retrievability. That
-interval is the RWKV S90 equivalent. The selected answer's S90 is written to
-the card memory-state payload as `memory_state.stability`, which is the
-user-facing S90 field consumed by stats and Browser stability views. Existing
-FSRS `memory_state.stability_internal` values are not overwritten by the RWKV
-S90 write.
+Live review answers do not write an RWKV S90 value to the card memory-state
+payload. The user-facing stability fields consumed by stats and Browser
+stability views remain owned by the FSRS/SM2 scheduler during normal reviews.
 
 Deck Options also exposes a desktop maintenance action to reschedule RWKV
 review cards and update their stored RWKV memory state. The action first warms
@@ -210,8 +208,12 @@ not synchronously refresh the full deck tree after every answer when the refresh
 interval is greater than `1`, as that can be too expensive for large deck
 trees. Between interval refreshes, Anki refreshes only the answered card's
 installed queue score from the updated RWKV state, so a stale pre-answer low
-score cannot immediately re-admit the same card. Due post-answer refreshes show
-the next question after answer operation bookkeeping, then refresh the
+score cannot immediately re-admit the same card. Installed score requests also
+record session-local intervening-review counts for cards already answered in
+the current reviewer session, which lets the backend enforce
+`rwkv_review_min_intervening_reviews` without storing a synced per-card counter.
+Due post-answer refreshes show the next question after answer operation
+bookkeeping, then refresh the
 queue-score map for later queue builds. The refresh is split into a short
 collection task that snapshots candidate inputs, a model-scoring task that does
 not hold the collection executor, and a short collection task that installs the
@@ -250,11 +252,11 @@ without waiting for historical warm-up and full queue scoring. RWKV warm-up and
 score preparation start in the background after that first card is displayed, so
 review startup stays responsive. The first card may therefore use the existing
 queue order; later queue fetches can use RWKV scores once preparation completes.
-Review-time button predictions and Card Info diagnostics may restore a valid
-local state cache and replay only newer revlogs before querying. They do not
-start a synchronous full historical replay. If no warmed or restorable cache is
-available, RWKV intervals and Card Info RWKV diagnostics stay unavailable until
-the background warm-up has completed.
+Review-time RWKV retrievability queries and Card Info diagnostics may restore a
+valid local state cache and replay only newer revlogs before querying. They do
+not start a synchronous full historical replay. If no warmed or restorable cache
+is available, review-time RWKV retrievability and Card Info RWKV diagnostics
+stay unavailable until the background warm-up has completed.
 
 When RWKV review is enabled and a usable local cache exists, desktop Anki starts
 loading it after profile open with a progress dialog. This restores the saved
@@ -264,8 +266,8 @@ local cache load or cache build finishes successfully, Anki also starts the same
 opportunistic current/parent deck prediction-memo prewarm in the background.
 When no usable local cache exists, desktop Anki prompts once per session after profile
 open to build the RWKV state cache. This startup build, and the same manual
-build from the RWKV button in the Advanced Settings section of FSRS deck
-options, run as a modal progress operation. The expensive replay work runs off
+build from the RWKV section of deck options, run as a modal progress operation.
+The expensive replay work runs off
 the UI thread, but Anki blocks review/deck interaction until the cache build
 finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
@@ -308,6 +310,8 @@ default RWKV checkpoint. `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
 weight file while keeping the embedded runner. `ANKI_RWKV_BENCHMARK_PATH` plus
 `ANKI_RWKV_MODEL_PATH` selects the legacy PyTorch-based `srs-benchmark` bridge
 for local development or retrained models.
+The embedded runner uses NEON helpers on `aarch64`, runtime-detected AVX2/FMA
+helpers on `x86_64`, and scalar helpers as the fallback path.
 
 Queue and stats scoring send retrievability-only query predictions to the
 embedded runner in batches using the deck option `rwkv_review_batch_size`. The
@@ -316,11 +320,11 @@ because it evaluates one query state per card instead of the full per-grade
 answer set; explicit non-default batch-size settings are still respected. The
 embedded Rust runner evaluates those independent query predictions on Rayon
 worker lanes without evaluating the four hypothetical answer states. Reviewer
-answer-button prediction still uses the full batch path that returns current
-retrievability plus the per-grade interval and S90 overrides. Both paths avoid
-per-card Python/Rust calls and avoid serialization of next-state blobs that
-query predictions do not use. Answered reviews still update recurrent state
-sequentially, preserving review-history order.
+current-card prediction uses RWKV only for retrievability metadata; live
+answer-button intervals stay on FSRS/SM2. Both paths avoid per-card Python/Rust
+calls and avoid serialization of next-state blobs that query predictions do not
+use. Answered reviews still update recurrent state sequentially, preserving
+review-history order.
 
 The embedded runner also exposes a native after-review R-only path for exact
 post-answer queue preparation. It restores a supplied snapshot into a temporary
@@ -364,7 +368,8 @@ review count, lapse count, and whether the card is in a long-term review. It was
 fit on the Yomitan deck train/test split as a lightweight calibration layer. The
 correction changes displayed/card-info retrievability, stats graph scores, and
 queue-order scores, but it does not retrain RWKV, change the RWKV recurrent
-state, or change RWKV-Curve interval/S90 overrides.
+state, change RWKV-Curve maintenance/simulator projections, or change FSRS/SM2
+answer-button scheduling.
 
 ### Query Prediction Memoization
 

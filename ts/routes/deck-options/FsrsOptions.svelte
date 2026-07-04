@@ -8,8 +8,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ComputeParamsProgress_Phase,
         type ComputeParamsProgress,
     } from "@generated/anki/collection_pb";
-    import { Empty, Json } from "@generated/anki/generic_pb";
-    import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
     import {
         computeFsrsParams,
         evaluateParams,
@@ -19,9 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         setWantsAbort,
     } from "@generated/backend";
     import * as tr from "@generated/ftl";
-    import { postProto } from "@generated/post";
     import { runWithBackendProgress } from "@tslib/progress";
-    import { DeckId } from "@generated/anki/decks_pb";
 
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
@@ -37,7 +33,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
     import ParamsInputRow from "./ParamsInputRow.svelte";
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
-    import RwkvBatchSizeRow from "./RwkvBatchSizeRow.svelte";
     import DynamicDesiredRetentionPlotModal from "./DynamicDesiredRetentionPlotModal.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
@@ -79,10 +74,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         validRetentionBounds,
     } from "./dynamic-desired-retention";
     import {
-        HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
-        HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
-    } from "./help-me-decide-defaults";
-    import {
         DeckConfig_Config,
         DeckConfig_Config_FsrsVersion,
         GetRetentionWorkloadRequest,
@@ -93,6 +84,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import TabbedValue from "./TabbedValue.svelte";
     import Item from "$lib/components/Item.svelte";
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
+    import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
 
     export let state: DeckOptionsState;
     export let openHelpModal: (String) => void;
@@ -140,19 +132,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let computingParams = false;
     let checkingParams = false;
     let checkingHealth = false;
-    let buildingRwkvStateCache = false;
-    let forceBuildingRwkvStateCache = false;
-    let recomputingRwkvCalibrationData = false;
-    let comparingRwkvExtraFeatureMetrics = false;
-    let trainingRwkvCalibration = false;
-    let reschedulingRwkvReviewCards = false;
-    $: rwkvActionInProgress =
-        buildingRwkvStateCache ||
-        forceBuildingRwkvStateCache ||
-        recomputingRwkvCalibrationData ||
-        comparingRwkvExtraFeatureMetrics ||
-        trainingRwkvCalibration ||
-        reschedulingRwkvReviewCards;
     type OptimizationMetrics = {
         logLoss: number;
         rmseBins: number;
@@ -418,7 +397,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const dynamicDesiredRetentionHint =
             $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
             $config.fsrsDynamicDesiredRetentionEnabled
-                ? "\n\nDynamic DR (SSP-MMC) is enabled. Try disabling it and optimizing again to check whether it is involved."
+                ? "\n\nDynamic DR (ADR) is enabled. Try disabling it and optimizing again to check whether it is involved."
                 : "";
         return `FSRS optimization failed. Details have been logged to the console.${dynamicDesiredRetentionHint}\n\n${errorMessage(err)}`;
     }
@@ -487,40 +466,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let newCardIntervalsError = "";
     let newCardIntervalRequest = 0;
 
-    $: simulateFsrsRequest = new SimulateFsrsReviewRequest({
+    $: simulateFsrsRequest = buildSimulateFsrsRequest({
+        config: $config,
         params: selectedFsrsParams($config),
-        desiredRetention: $config.desiredRetention,
-        newLimit: $config.newPerDay,
-        reviewLimit: $config.reviewsPerDay,
-        maxInterval: $config.maximumReviewInterval,
         search: `preset:"${state.getCurrentNameForSearch()}" -is:suspended`,
         newCardsIgnoreReviewLimit: $newCardsIgnoreReviewLimit,
-        easyDaysPercentages: $config.easyDaysPercentages,
-        reviewOrder: $config.reviewOrder,
-        historicalRetention: $config.historicalRetention,
-        learningStepCount: $config.learnSteps.length,
-        relearningStepCount: $config.relearnSteps.length,
-        reviewFuzzBase: $reviewFuzzEnabled ? $reviewFuzzBase : 0,
-        reviewFuzzFactorShort: $reviewFuzzEnabled ? $reviewFuzzFactorShort : 0,
-        reviewFuzzFactorMid: $reviewFuzzEnabled ? $reviewFuzzFactorMid : 0,
-        reviewFuzzFactorLong: $reviewFuzzEnabled ? $reviewFuzzFactorLong : 0,
-        helpMeDecideTransitionBlendAlpha: HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
-        helpMeDecideEnforceMonotonicSuccessGradeProbs:
-            HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
-        fsrsDynamicDesiredRetentionParams: $config.fsrsDynamicDesiredRetentionParams,
-        fsrsDynamicDesiredRetentionWeights: $config.fsrsDynamicDesiredRetentionWeights,
-        fsrsDynamicDesiredRetentionAvgDrs: $config.fsrsDynamicDesiredRetentionAvgDrs,
-        fsrsDynamicDesiredRetentionFsrsEqWeights:
-            $config.fsrsDynamicDesiredRetentionFsrsEqWeights,
-        fsrsDynamicDesiredRetentionFsrsEqDrs:
-            $config.fsrsDynamicDesiredRetentionFsrsEqDrs,
-        fsrsDynamicDesiredRetentionFixedTargetWeights:
-            $config.fsrsDynamicDesiredRetentionFixedTargetWeights,
-        fsrsDynamicDesiredRetentionFixedTargetDrs:
-            $config.fsrsDynamicDesiredRetentionFixedTargetDrs,
-        fsrsDynamicDesiredRetentionMin: $config.fsrsDynamicDesiredRetentionMin,
-        fsrsDynamicDesiredRetentionMax: $config.fsrsDynamicDesiredRetentionMax,
-        fsrsDynamicDesiredRetentionClamp: $config.fsrsDynamicDesiredRetentionClamp,
+        reviewFuzzEnabled: $reviewFuzzEnabled,
+        reviewFuzzBase: $reviewFuzzBase,
+        reviewFuzzFactorShort: $reviewFuzzFactorShort,
+        reviewFuzzFactorMid: $reviewFuzzFactorMid,
+        reviewFuzzFactorLong: $reviewFuzzFactorLong,
     });
 
     $: void loadNewCardIntervals(
@@ -1265,7 +1220,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         } else if (
             val.phase === ComputeParamsProgress_Phase.TRAINING_DYNAMIC_DESIRED_RETENTION
         ) {
-            return `Compute ADR values (SSP-MMC): ${pct}%`;
+            return `Compute ADR values: ${pct}%`;
         } else {
             if (val.current === val.total) {
                 return tr.deckConfigCheckingForImprovement();
@@ -1280,98 +1235,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         state.save(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS);
     }
 
-    async function buildRwkvStateCache(): Promise<void> {
-        buildingRwkvStateCache = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto("buildRwkvStateCache", new Empty({}), Empty);
-        } finally {
-            buildingRwkvStateCache = false;
-        }
-    }
-
-    async function forceBuildRwkvStateCache(): Promise<void> {
-        forceBuildingRwkvStateCache = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto("forceBuildRwkvStateCache", new Empty({}), Empty);
-        } finally {
-            forceBuildingRwkvStateCache = false;
-        }
-    }
-
-    async function recomputeRwkvCalibrationData(): Promise<void> {
-        recomputingRwkvCalibrationData = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto("recomputeRwkvCalibrationData", new Empty({}), Empty);
-        } finally {
-            recomputingRwkvCalibrationData = false;
-        }
-    }
-
-    async function compareRwkvExtraFeatureMetrics(): Promise<void> {
-        comparingRwkvExtraFeatureMetrics = true;
-        try {
-            await commitEditing();
-            await postProto(
-                "compareRwkvExtraFeatureMetrics",
-                rwkvExtraFeatureComparisonRequest(),
-                Empty,
-            );
-        } finally {
-            comparingRwkvExtraFeatureMetrics = false;
-        }
-    }
-
-    function rwkvExtraFeatureComparisonRequest(): Json {
-        return new Json({
-            json: new TextEncoder().encode(
-                JSON.stringify({
-                    deckId: state.getTargetDeckId().toString(),
-                    configId: state.getCurrentConfigId().toString(),
-                    presetTagStateEnabled: $config.rwkvReviewPresetTagStateEnabled,
-                    japaneseFeatureStateEnabled:
-                        $config.rwkvReviewJapaneseFeatureStateEnabled,
-                    selfCorrectionEnabled: $config.rwkvReviewSelfCorrectionEnabled,
-                }),
-            ),
-        });
-    }
-
-    async function trainRwkvSelfCorrectionCalibration(): Promise<void> {
-        trainingRwkvCalibration = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto(
-                "trainRwkvSelfCorrectionCalibration",
-                rwkvExtraFeatureComparisonRequest(),
-                Empty,
-            );
-        } finally {
-            trainingRwkvCalibration = false;
-        }
-    }
-
-    async function rescheduleRwkvReviewCards(): Promise<void> {
-        reschedulingRwkvReviewCards = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto(
-                "rescheduleRwkvReviewCards",
-                new DeckId({ did: state.getTargetDeckId() }),
-                Empty,
-            );
-        } finally {
-            reschedulingRwkvReviewCards = false;
-        }
-    }
-
-    async function saveRwkvDeckOptions(): Promise<void> {
-        await commitEditing();
-        await state.save(UpdateDeckConfigsMode.NORMAL);
-    }
-
     function showSimulatorModal(modal: Modal) {
         if (selectedFsrsParams($config).toString() === initialParams.toString()) {
             modal?.show();
@@ -1380,14 +1243,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
-    function showRwkvWorkloadModal(): void {
-        simulateFsrsRequest.reviewLimit = 9999;
-        rwkvWorkloadModal?.show();
-    }
-
     let simulatorModal: Modal;
     let workloadModal: Modal;
-    let rwkvWorkloadModal: Modal;
     let dynamicDesiredRetentionPlotModal: Modal;
     const dynamicDesiredRetentionCalibrationCounts = Array.from(
         { length: 31 },
@@ -1445,7 +1302,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 config.fsrsDynamicDesiredRetentionFixedTargetDrs,
             )
         ) {
-            return "Dynamic DR requires 15 SSP-MMC parameters and matching calibration arrays.";
+            return "Dynamic DR requires 15 ADR policy parameters and matching calibration arrays.";
         }
         if (
             !validRetentionBounds(
@@ -1588,192 +1445,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     <Warning warning={lastOptimizationWarning} className="alert-warning" />
 
-    <SwitchRow
-        bind:value={$config.rwkvReviewEnabled}
-        defaultValue={defaults.rwkvReviewEnabled}
-    >
-        <SettingTitle on:click={() => openHelpModal("rwkvReview")}>
-            {tr.deckConfigRwkvReviewEnabled()}
-        </SettingTitle>
-    </SwitchRow>
-
-    {#if $config.rwkvReviewEnabled}
-        <SwitchRow
-            bind:value={$config.rwkvReviewInstantOrderEnabled}
-            defaultValue={defaults.rwkvReviewInstantOrderEnabled}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvInstantOrder")}>
-                {tr.deckConfigRwkvReviewInstantOrder()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewCandidateRefreshEnabled}
-            defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvCandidateRefresh")}>
-                {tr.deckConfigRwkvReviewCandidateRefresh()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <RwkvBatchSizeRow
-            bind:value={$config.rwkvReviewBatchSize}
-            defaultValue={defaults.rwkvReviewBatchSize}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvBatchSize")}>
-                {tr.deckConfigRwkvReviewBatchSize()}
-            </SettingTitle>
-        </RwkvBatchSizeRow>
-
-        <SpinBoxFloatRow
-            bind:value={$config.rwkvReviewRefreshInterval}
-            defaultValue={defaults.rwkvReviewRefreshInterval}
-            min={1}
-            max={10000}
-            step={1}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvRefreshInterval")}>
-                {tr.deckConfigRwkvReviewRefreshInterval()}
-            </SettingTitle>
-        </SpinBoxFloatRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewRefreshOnExit}
-            defaultValue={defaults.rwkvReviewRefreshOnExit}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvRefreshOnExit")}>
-                {tr.deckConfigRwkvReviewRefreshOnExit()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewAllowSameDayReview}
-            defaultValue={defaults.rwkvReviewAllowSameDayReview}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvAllowSameDayReview")}>
-                {tr.deckConfigRwkvReviewAllowSameDayReview()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewDynamicPresetReplay}
-            defaultValue={defaults.rwkvReviewDynamicPresetReplay}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvDynamicPresetReplay")}>
-                {tr.deckConfigRwkvReviewDynamicPresetReplay()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewPresetTagStateEnabled}
-            defaultValue={defaults.rwkvReviewPresetTagStateEnabled}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvPresetTagState")}>
-                {tr.deckConfigRwkvReviewPresetTagState()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewJapaneseFeatureStateEnabled}
-            defaultValue={defaults.rwkvReviewJapaneseFeatureStateEnabled}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvJapaneseFeatureState")}>
-                {tr.deckConfigRwkvReviewJapaneseFeatureState()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewSelfCorrectionEnabled}
-            defaultValue={defaults.rwkvReviewSelfCorrectionEnabled}
-        >
-            <SettingTitle on:click={() => openHelpModal("rwkvSelfCorrection")}>
-                {tr.deckConfigRwkvReviewSelfCorrection()}
-            </SettingTitle>
-        </SwitchRow>
-
-        <div class="d-flex flex-wrap gap-2">
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => buildRwkvStateCache()}
-            >
-                {#if buildingRwkvStateCache}
-                    Starting RWKV state cache build...
-                {:else}
-                    Build RWKV state cache
-                {/if}
-            </button>
-
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => forceBuildRwkvStateCache()}
-            >
-                {#if forceBuildingRwkvStateCache}
-                    Starting full RWKV state cache rebuild...
-                {:else}
-                    Force rebuild RWKV state cache
-                {/if}
-            </button>
-
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => recomputeRwkvCalibrationData()}
-            >
-                {#if recomputingRwkvCalibrationData}
-                    Starting RWKV calibration recompute...
-                {:else}
-                    Recompute RWKV Calibration Data
-                {/if}
-            </button>
-
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => compareRwkvExtraFeatureMetrics()}
-            >
-                {#if comparingRwkvExtraFeatureMetrics}
-                    Computing RWKV feature metrics...
-                {:else}
-                    Compare RWKV Extra Features
-                {/if}
-            </button>
-
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => trainRwkvSelfCorrectionCalibration()}
-            >
-                {#if trainingRwkvCalibration}
-                    Starting RWKV calibration training...
-                {:else}
-                    Train RWKV Calibration
-                {/if}
-            </button>
-
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => rescheduleRwkvReviewCards()}
-            >
-                {#if reschedulingRwkvReviewCards}
-                    Starting RWKV reschedule...
-                {:else}
-                    Reschedule & update RWKV memory state
-                {/if}
-            </button>
-
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => showRwkvWorkloadModal()}
-            >
-                RWKV Desired Retention: Help Me Decide
-            </button>
-        </div>
-    {/if}
-
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
         <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>
             <SettingTitle>Include same-day reviews in FSRS-7</SettingTitle>
@@ -1833,7 +1504,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             bind:value={$config.fsrsDynamicDesiredRetentionEnabled}
             defaultValue={false}
         >
-            <SettingTitle>Dynamic DR (SSP-MMC)</SettingTitle>
+            <SettingTitle>Dynamic DR (ADR)</SettingTitle>
         </SwitchRow>
 
         {#if $config.fsrsDynamicDesiredRetentionEnabled}
@@ -1847,9 +1518,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 bind:value={$config.fsrsDynamicDesiredRetentionParams}
                 defaultValue={[]}
                 validParamCounts={[0, 15]}
-                ariaLabel="Dynamic DR SSP-MMC parameters"
+                ariaLabel="Dynamic DR ADR policy parameters"
             >
-                <SettingTitle>SSP-MMC Parameters</SettingTitle>
+                <SettingTitle>ADR Policy Parameters</SettingTitle>
             </ParamsInputRow>
             <ParamsInputRow
                 bind:value={$config.fsrsDynamicDesiredRetentionWeights}
@@ -1964,17 +1635,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <SimulatorModal
     bind:modal={workloadModal}
     workload
-    {state}
-    {simulateFsrsRequest}
-    {computing}
-    {openHelpModal}
-    {onPresetChange}
-/>
-
-<SimulatorModal
-    bind:modal={rwkvWorkloadModal}
-    workload
-    rwkvWorkload
     {state}
     {simulateFsrsRequest}
     {computing}

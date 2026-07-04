@@ -39,6 +39,8 @@ pub const DEFAULT_REVIEW_FUZZ_FACTOR_LONG: f32 = 0.05;
 pub const DEFAULT_REVIEW_FUZZ_ENABLED: bool = true;
 pub(crate) const DEFAULT_RWKV_REVIEW_BATCH_SIZE: u32 = 512;
 pub(crate) const DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL: u32 = 1;
+pub(crate) const DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS: u32 = 0;
+pub(crate) const DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS: u32 = 0;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct DeckConfig {
@@ -85,6 +87,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_preset_tag_state_enabled: false,
     rwkv_review_self_correction_enabled: false,
     rwkv_review_japanese_feature_state_enabled: false,
+    rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
+    rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,
@@ -345,6 +349,18 @@ pub(crate) fn ensure_deck_config_values_valid(config: &mut DeckConfigInner) {
         default.rwkv_review_refresh_interval,
         1,
         10_000,
+    );
+    ensure_u32_valid(
+        &mut config.rwkv_review_min_intervening_reviews,
+        default.rwkv_review_min_intervening_reviews,
+        0,
+        10_000,
+    );
+    ensure_u32_valid(
+        &mut config.rwkv_review_min_elapsed_secs,
+        default.rwkv_review_min_elapsed_secs,
+        0,
+        86_400,
     );
     ensure_u32_valid(
         &mut config.minimum_lapse_interval,

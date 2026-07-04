@@ -6,6 +6,11 @@ export interface PostProtoOptions {
     alertOnError?: boolean;
 }
 
+export interface PostProtoResponse<T> {
+    output: T;
+    headers: Headers;
+}
+
 function graphDebugLoggingEnabled(): boolean {
     return typeof location !== "undefined"
         && new URLSearchParams(location.search).has("graphDebug");
@@ -30,6 +35,16 @@ export async function postProto<T>(
     outputType: { fromBinary(arr: Uint8Array): T },
     options: PostProtoOptions = {},
 ): Promise<T> {
+    const { output } = await postProtoWithResponse(method, input, outputType, options);
+    return output;
+}
+
+export async function postProtoWithResponse<T>(
+    method: string,
+    input: { toBinary(): Uint8Array; getType(): { typeName: string } },
+    outputType: { fromBinary(arr: Uint8Array): T },
+    options: PostProtoOptions = {},
+): Promise<PostProtoResponse<T>> {
     try {
         const start = performance.now();
         const inputBytes = input.toBinary();
@@ -40,7 +55,8 @@ export async function postProto<T>(
                 elapsedMs: performance.now() - start,
             });
         }
-        const outputBytes = await postProtoInner(path, inputBytes);
+        const response = await postProtoInner(path, inputBytes);
+        const outputBytes = response.body;
         const fetchElapsedMs = performance.now() - start;
         if (method === "graphs") {
             logGraphPostProto("graphs postProto body received", {
@@ -66,7 +82,7 @@ export async function postProto<T>(
                 elapsedMs: performance.now() - start,
             });
         }
-        return output;
+        return { output, headers: response.headers };
     } catch (err) {
         const { alertOnError = true } = options;
         if (alertOnError && !(err instanceof Error && err.message === "500: Interrupted")) {
@@ -76,7 +92,15 @@ export async function postProto<T>(
     }
 }
 
-async function postProtoInner(url: string, body: Uint8Array): Promise<Uint8Array> {
+interface PostProtoInnerResponse {
+    body: Uint8Array;
+    headers: Headers;
+}
+
+async function postProtoInner(
+    url: string,
+    body: Uint8Array,
+): Promise<PostProtoInnerResponse> {
     const start = performance.now();
     const graphRequest = url === "/_anki/graphs";
     if (graphRequest) {
@@ -120,5 +144,5 @@ async function postProtoInner(url: string, body: Uint8Array): Promise<Uint8Array
             elapsedMs: performance.now() - start,
         });
     }
-    return new Uint8Array(respBuf);
+    return { body: new Uint8Array(respBuf), headers: result.headers };
 }

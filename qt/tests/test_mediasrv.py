@@ -18,6 +18,7 @@ from aqt.mediasrv import (
     UnsafePathException,
     _editor_content_security_policy,
     _handle_local_file_request,
+    _should_log_request,
     ensure_safe_path,
     is_localhost_origin,
     is_sveltekit_page,
@@ -108,6 +109,59 @@ class TestIsSveltekitPage:
     def test_dynamic_desired_retention_plot_is_internal_page(self) -> None:
         assert is_sveltekit_page("dynamic-desired-retention-plot")
         assert is_sveltekit_page("dynamic-desired-retention-plot/_app/start.js")
+
+
+class TestRequestLogging:
+    def test_latest_progress_polling_is_not_logged(self) -> None:
+        assert not _should_log_request("_anki/latestProgress")
+
+    def test_regular_requests_are_logged(self) -> None:
+        assert _should_log_request("_anki/evaluateParamsLegacy")
+
+
+class TestGraphs:
+    @pytest.mark.parametrize(
+        ("status", "expected_header"),
+        [
+            ("PENDING", "1"),
+            ("READY", None),
+        ],
+    )
+    def test_graphs_sets_rwkv_pending_header(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        status: str,
+        expected_header: str | None,
+    ) -> None:
+        import aqt
+        from anki.stats_pb2 import GraphsRequest
+        from aqt.mediasrv import RWKV_STATS_PENDING_HEADER, app, graphs
+        from aqt.rwkv_scheduler import RwkvStatsPreparationStatus
+
+        calls: list[str] = []
+
+        def prepare(reviewer: object, search: str) -> RwkvStatsPreparationStatus:
+            calls.append(search)
+            return getattr(RwkvStatsPreparationStatus, status)
+
+        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=object()), raising=False)
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
+            prepare,
+        )
+        monkeypatch.setattr(
+            "aqt.mediasrv.raw_backend_request",
+            lambda endpoint: lambda: b"graph-data",
+        )
+
+        data = GraphsRequest(search="rated:7", days=365).SerializeToString()
+        with app.test_request_context(data=data):
+            response = graphs()
+
+        assert calls == ["rated:7"]
+        assert response.get_data() == b"graph-data"
+        assert response.headers.get("Content-Type") == "application/binary"
+        assert response.headers.get(RWKV_STATS_PENDING_HEADER) == expected_header
 
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:

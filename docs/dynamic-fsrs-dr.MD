@@ -1,9 +1,9 @@
 # Dynamic FSRS Desired Retention
 
-Deck config stores Dynamic DR (SSP-MMC) data for FSRS-7 presets:
+Deck config stores Dynamic DR (ADR) data for FSRS-7 presets:
 
 - `fsrs_dynamic_desired_retention_enabled`: enables ADR scheduling for an FSRS-7 preset.
-- `fsrs_dynamic_desired_retention_params`: the 15 SSP-MMC policy coefficients.
+- `fsrs_dynamic_desired_retention_params`: the 15 ADR policy coefficients.
 - `fsrs_dynamic_desired_retention_weights`: calibration cost weights from policy evaluation.
 - `fsrs_dynamic_desired_retention_avg_drs`: average ADR desired retentions for the calibration weights.
 - `fsrs_dynamic_desired_retention_fsrs_eq_weights`: cost weights that have a fixed-FSRS equivalent DR.
@@ -20,15 +20,16 @@ Browser Stability and Retrievability sorts read each matching card and its resol
 
 Add-ons that need interval projections for many cards can call the batch desired-retention helper instead of `GetSchedulingStates` once per card. `fsrs_desired_retention_for_intervals_batch()` reads the requested cards, resolves each card's active FSRS preset in a batch, including add-on preset overlay rules, and returns the desired retention to use for interval projection. When Dynamic DR applies, the returned interval target is the Good-button ADR desired retention and the full per-answer ADR desired-retention array is included. When Dynamic DR is disabled, unavailable, or the requested target uses the fixed-FSRS fallback, the returned interval target is the requested fixed desired retention.
 
-RWKV review-button intervals use the same per-answer Dynamic DR targets when
-`GetSchedulingStates` supplies them. If Dynamic DR is not active for the card,
-RWKV-Curve interval projection uses the resolved preset desired retention.
+Live review answer-button intervals remain owned by the normal FSRS/SM2
+scheduler, so RWKV review-time retrievability does not consume Dynamic DR for
+grade scheduling. RWKV-Curve interval projection used by RWKV
+maintenance/simulation helpers uses the resolved preset desired retention.
 RWKV historical state-cache replay resolves add-on preset overlays and evaluates
 add-on `simulator_rules` only when `rwkv_review_dynamic_preset_replay` is
 enabled on an RWKV-enabled preset; otherwise, each historical review uses the
 card's current deck config as the preset stream.
 
-When FSRS-7 params are optimized with Dynamic DR enabled, Anki first optimizes the normal FSRS params, then trains the SSP-MMC policy for that preset with the default ADR retention bounds `0.30-0.995`. The ADR simulator is shaped from the selected training slice: deck size is the number of reviewed cards, learn span is the number of days with learning reviews, and learn limit is the rounded cards-per-learning-day rate. The optimize request may override the ADR simulator review limit and daily cost budget in minutes; defaults are `9999` reviews and `720` minutes. It then computes simulation-backed calibration weights by bisection for evenly spaced average ADR desired-retention targets, stores the subset of those weights that can be mapped to fixed-FSRS equivalent DRs, and stores the efficient fixed-target frontier points from ADR training. It stores the policy coefficients, all calibration families, and the bounds in deck config. When Dynamic DR is disabled, optimization leaves any stored Dynamic DR data unchanged and uses the normal fixed desired-retention scheduler path.
+When FSRS-7 params are optimized with Dynamic DR enabled, Anki first optimizes the normal FSRS params, then trains the ADR policy for that preset with the default ADR retention bounds `0.30-0.995`. The ADR simulator is shaped from the selected training slice: deck size is the number of reviewed cards, learn span is the number of days with learning reviews, and learn limit is the rounded cards-per-learning-day rate. The optimize request may override the ADR simulator review limit and daily cost budget in minutes; defaults are `9999` reviews and `720` minutes. It then computes simulation-backed calibration weights by bisection for evenly spaced average ADR desired-retention targets, stores the subset of those weights that can be mapped to fixed-FSRS equivalent DRs, and stores the efficient fixed-target frontier points from ADR training. It stores the policy coefficients, all calibration families, and the bounds in deck config. When Dynamic DR is disabled, optimization leaves any stored Dynamic DR data unchanged and uses the normal fixed desired-retention scheduler path.
 
 The 3D visualizer uses the same target-DR calibration as scheduling. Its DR control starts from the preset desired retention; changing it only changes the preview until the user saves it back to the preset.
 
@@ -58,6 +59,6 @@ Add-ons can open the same visualizer with `aqt.dynamic_desired_retention_plot.op
 
 When an add-on opens the shared visualizer from another dialog, avoid nesting `QDialog.exec()` calls. A parent dialog opened with `exec()` can have its modal loop unwound when a child plot dialog also uses `exec()` or `open()`, leaving the main Anki window unclickable after both windows close. Use the newer non-blocking pattern for the parent dialog instead: keep a Python reference to the parent dialog, call `show()`, and apply saved config from the parent dialog's `finished` callback. The visualizer should also be kept alive by a parent-owned reference and shown with `show()` as a normal `Qt.WindowType.Window` child so macOS keeps native titlebar controls. The standalone visualizer route renders inline; do not wrap it in a Bootstrap modal inside the Qt dialog, or focus and modality can be trapped by a modal inside a modal.
 
-During the ADR part of optimization, progress is shown as `Compute ADR values (SSP-MMC)`.
+During the ADR part of optimization, progress is shown as `Compute ADR values`.
 
 When the feature is disabled, scheduling remains the existing fixed desired-retention path.

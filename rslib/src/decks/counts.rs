@@ -57,7 +57,7 @@ impl Collection {
             return Ok(());
         };
 
-        let allow_same_day_review = match decks
+        let (allow_same_day_review, min_intervening_reviews, min_elapsed_secs) = match decks
             .get(&score_deck_id)
             .and_then(|deck| deck.config_id())
             .and_then(|config_id| configs.get(&config_id))
@@ -71,7 +71,11 @@ impl Collection {
                             | ReviewCardOrder::RetrievabilityDescending
                     ) =>
             {
-                config.inner.rwkv_review_allow_same_day_review
+                (
+                    config.inner.rwkv_review_allow_same_day_review,
+                    config.inner.rwkv_review_min_intervening_reviews,
+                    config.inner.rwkv_review_min_elapsed_secs,
+                )
             }
             _ => return Ok(()),
         };
@@ -83,7 +87,14 @@ impl Collection {
                 continue;
             };
 
-            let rwkv_due = rwkv_review_score_eligible(score, metadata, allow_same_day_review);
+            let rwkv_due = rwkv_review_score_eligible(
+                score.retrievability,
+                metadata,
+                allow_same_day_review,
+                min_intervening_reviews,
+                min_elapsed_secs,
+                score.intervening_reviews,
+            );
             if rwkv_due == metadata.fsrs_due_today {
                 continue;
             }

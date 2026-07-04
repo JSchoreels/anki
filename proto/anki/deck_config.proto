@@ -199,6 +199,8 @@ message DeckConfig {
     bool rwkv_review_preset_tag_state_enabled = 75;
     bool rwkv_review_self_correction_enabled = 76;
     bool rwkv_review_japanese_feature_state_enabled = 77;
+    uint32 rwkv_review_min_intervening_reviews = 78;
+    uint32 rwkv_review_min_elapsed_secs = 79;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

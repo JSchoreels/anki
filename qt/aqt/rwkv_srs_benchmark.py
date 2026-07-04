@@ -148,6 +148,25 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             s90_overrides=s90s,
         )
 
+    def predict_review_retrievability(
+        self,
+        *,
+        reviewer: object,
+        card: object,
+    ) -> RwkvReviewPrediction | None:
+        identity = rwkv_review_identity(reviewer, card)
+        if identity is None:
+            return None
+
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=identity,
+            ease=None,
+        )
+        probability = self._process.imm_predict(self._row_builder.row_for(review_input))
+        return RwkvReviewPrediction(retrievability=_probability_as_float(probability))
+
     def predict_reviews(
         self,
         candidates: Sequence[RwkvReviewCandidate],

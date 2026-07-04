@@ -22,6 +22,8 @@ use super::DeckConfigId;
 use super::DeckConfigInner;
 use super::NewCardInsertOrder;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
+use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 use super::INITIAL_EASE_FACTOR_THOUSANDS;
 use crate::serde::default_on_invalid;
@@ -133,6 +135,10 @@ pub struct DeckConfSchema11 {
     rwkv_review_refresh_on_exit: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_allow_same_day_review: bool,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    rwkv_review_min_intervening_reviews: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    rwkv_review_min_elapsed_secs: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_instant_order_enabled: bool,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -199,6 +205,10 @@ fn default_rwkv_review_refresh_interval() -> u32 {
 
 fn is_default_or_zero_rwkv_review_refresh_interval(value: &u32) -> bool {
     *value == 0 || *value == default_rwkv_review_refresh_interval()
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 fn is_default_dynamic_desired_retention_min(value: &f32) -> bool {
@@ -446,6 +456,8 @@ impl Default for DeckConfSchema11 {
             rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
             rwkv_review_refresh_on_exit: false,
             rwkv_review_allow_same_day_review: false,
+            rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
+            rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
             rwkv_review_instant_order_enabled: false,
             rwkv_review_dynamic_preset_replay: false,
             rwkv_review_candidate_refresh_enabled: false,
@@ -515,6 +527,8 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_refresh_interval: c.rwkv_review_refresh_interval,
             rwkv_review_refresh_on_exit: c.rwkv_review_refresh_on_exit,
             rwkv_review_allow_same_day_review: c.rwkv_review_allow_same_day_review,
+            rwkv_review_min_intervening_reviews: c.rwkv_review_min_intervening_reviews,
+            rwkv_review_min_elapsed_secs: c.rwkv_review_min_elapsed_secs,
             rwkv_review_instant_order_enabled: c.rwkv_review_instant_order_enabled,
             rwkv_review_dynamic_preset_replay: c.rwkv_review_dynamic_preset_replay,
             rwkv_review_candidate_refresh_enabled: c.rwkv_review_candidate_refresh_enabled,
@@ -711,6 +725,8 @@ impl From<DeckConfig> for DeckConfSchema11 {
             rwkv_review_refresh_interval: i.rwkv_review_refresh_interval,
             rwkv_review_refresh_on_exit: i.rwkv_review_refresh_on_exit,
             rwkv_review_allow_same_day_review: i.rwkv_review_allow_same_day_review,
+            rwkv_review_min_intervening_reviews: i.rwkv_review_min_intervening_reviews,
+            rwkv_review_min_elapsed_secs: i.rwkv_review_min_elapsed_secs,
             rwkv_review_instant_order_enabled: i.rwkv_review_instant_order_enabled,
             rwkv_review_dynamic_preset_replay: i.rwkv_review_dynamic_preset_replay,
             rwkv_review_candidate_refresh_enabled: i.rwkv_review_candidate_refresh_enabled,
@@ -938,6 +954,25 @@ mod test {
 
         let serialized = serde_json::to_value(config)?;
         assert_eq!(serialized["rwkvReviewAllowSameDayReview"], json!(true));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_repeat_guards_omit_default_and_serialize_nonzero() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewMinInterveningReviews").is_none());
+        assert!(serialized.get("rwkvReviewMinElapsedSecs").is_none());
+
+        let config = DeckConfSchema11 {
+            rwkv_review_min_intervening_reviews: 3,
+            rwkv_review_min_elapsed_secs: 300,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["rwkvReviewMinInterveningReviews"], json!(3));
+        assert_eq!(serialized["rwkvReviewMinElapsedSecs"], json!(300));
 
         Ok(())
     }

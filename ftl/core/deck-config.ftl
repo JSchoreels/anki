@@ -350,6 +350,14 @@ deck-config-rwkv-review-allow-same-day-review-tooltip =
     When enabled, RWKV may select a review card again after it was already
     answered today, if its RWKV retrievability is at or below the target
     retention. When disabled, answered cards wait until tomorrow.
+deck-config-rwkv-review-min-intervening-reviews = Minimum intervening reviews
+deck-config-rwkv-review-min-intervening-reviews-tooltip =
+    The number of other reviews that must be answered before RWKV may show the
+    same card again. 0 disables this guard.
+deck-config-rwkv-review-min-elapsed-secs = Minimum elapsed seconds
+deck-config-rwkv-review-min-elapsed-secs-tooltip =
+    The number of seconds that must pass before RWKV may show the same card
+    again. 0 disables this guard.
 deck-config-rwkv-review-dynamic-preset-replay = Dynamic RWKV preset replay
 deck-config-rwkv-review-dynamic-preset-replay-tooltip =
     When enabled, RWKV state-cache building resolves add-on preset overlays and

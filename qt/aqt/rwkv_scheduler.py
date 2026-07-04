@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import enum
 import gzip
 import hashlib
 import inspect
@@ -40,6 +41,14 @@ from aqt.qt import QWidget
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
+
+
+class RwkvStatsPreparationStatus(enum.Enum):
+    READY = "ready"
+    PENDING = "pending"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+
 
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
 _REVIEW_ORDER_RETRIEVABILITY_ASCENDING = (
@@ -170,6 +179,7 @@ _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
 _RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT7\0"
 _RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS7\0"
+_RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
 _RWKV_RATING_FIELDS = ("again", "hard", "good", "easy")
@@ -881,6 +891,46 @@ class RwkvStatefulReviewerBackend:
         self._cache_prediction(review_input, prediction)
         return prediction
 
+    def predict_review_uncached(
+        self,
+        *,
+        reviewer: object,
+        card: object,
+    ) -> RwkvReviewPrediction | None:
+        identity = rwkv_review_identity(reviewer, card)
+        if identity is None:
+            return None
+
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=identity,
+            ease=None,
+        )
+        request = self._prediction_request(identity, review_input)
+        prediction = self.predict_review_requests_uncached([request])[0]
+        self._cache_prediction(review_input, prediction)
+        return prediction
+
+    def predict_review_retrievability(
+        self,
+        *,
+        reviewer: object,
+        card: object,
+    ) -> RwkvReviewPrediction | None:
+        identity = rwkv_review_identity(reviewer, card)
+        if identity is None:
+            return None
+
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=identity,
+            ease=None,
+        )
+        request = self._prediction_request(identity, review_input)
+        return self.predict_retrievability_requests_uncached([request])[0]
+
     def predict_reviews(
         self,
         candidates: Sequence[RwkvReviewCandidate],
@@ -1154,8 +1204,6 @@ class RwkvStatefulReviewerBackend:
             RwkvReviewPrediction(retrievability=float(retrievability))
             for retrievability in retrievabilities
         ]
-        for request, prediction in zip(requests, predictions, strict=True):
-            self._cache_prediction(request.review_input, prediction)
         return predictions
 
     def predict_review_requests_uncached(
@@ -1927,7 +1975,7 @@ def update_reviewer_scheduling_states(
     reviewer: object,
     card: object,
 ) -> SchedulingStates:
-    """Apply desktop RWKV predictions before answer buttons are rendered."""
+    """Record desktop RWKV retrievability before answer buttons are rendered."""
 
     if _reviewer_backend is None:
         return states
@@ -1937,28 +1985,27 @@ def update_reviewer_scheduling_states(
         if review_enabled and not _prepare_reviewer_backend_for_review(reviewer):
             logger.debug("RWKV scheduling prediction skipped: warm-up pending")
             return states
-        prediction = _reviewer_backend.predict_review(
-            reviewer=reviewer,
-            card=card,
+        predict_retrievability = getattr(
+            _reviewer_backend,
+            "predict_review_retrievability",
+            None,
+        )
+        prediction = (
+            predict_retrievability(reviewer=reviewer, card=card)
+            if callable(predict_retrievability)
+            else _reviewer_backend.predict_review(reviewer=reviewer, card=card)
         )
         if prediction is None:
             return states
 
         _validate_prediction(prediction)
-        has_interval_overrides = _has_interval_overrides(prediction.interval_overrides)
         _store_reviewer_prediction(
             reviewer,
             card,
             prediction,
             review_enabled=review_enabled,
-            interval_override_used=review_enabled and has_interval_overrides,
+            interval_override_used=False,
         )
-        if review_enabled and has_interval_overrides:
-            return apply_review_interval_overrides(
-                states,
-                prediction.interval_overrides,
-                prediction.s90_overrides,
-            )
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
 
@@ -2521,7 +2568,10 @@ def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
     )
 
 
-def prepare_stats_retrievability_scores(reviewer: object, search: str) -> None:
+def prepare_stats_retrievability_scores(
+    reviewer: object,
+    search: str,
+) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
 
     if _reviewer_backend is None:
@@ -2535,7 +2585,7 @@ def prepare_stats_retrievability_scores(reviewer: object, search: str) -> None:
         )
     if _reviewer_backend is None:
         _set_rwkv_stats_graph_scores(reviewer, search, [])
-        return
+        return RwkvStatsPreparationStatus.UNAVAILABLE
 
     start = time.monotonic()
     prepare_key: RwkvStatsPrepareKey | None = None
@@ -2565,7 +2615,11 @@ def prepare_stats_retrievability_scores(reviewer: object, search: str) -> None:
                 "RWKV stats retrievability scoring skipped: warm-up pending search=%r",
                 search,
             )
-            return
+            return (
+                RwkvStatsPreparationStatus.PENDING
+                if _reviewer_backend_warmup_pending(reviewer)
+                else RwkvStatsPreparationStatus.UNAVAILABLE
+            )
         prepare_key = _rwkv_stats_prepare_key(reviewer, search)
         if prepare_key is not None:
             prepare_event, owns_prepare = _begin_rwkv_stats_prepare(prepare_key)
@@ -2582,7 +2636,7 @@ def prepare_stats_retrievability_scores(reviewer: object, search: str) -> None:
                     search,
                     (time.monotonic() - wait_start) * 1000,
                 )
-                return
+                return RwkvStatsPreparationStatus.READY
         search_score_start = time.monotonic()
         search_score_result = _rwkv_stats_graph_scores_for_search(
             reviewer=reviewer,
@@ -2606,7 +2660,7 @@ def prepare_stats_retrievability_scores(reviewer: object, search: str) -> None:
                 set_elapsed_ms,
                 (time.monotonic() - start) * 1000,
             )
-            return
+            return RwkvStatsPreparationStatus.READY
         card_ids_start = time.monotonic()
         card_ids = _stats_graph_card_ids(reviewer, search)
         card_ids_elapsed_ms = (time.monotonic() - card_ids_start) * 1000
@@ -2635,9 +2689,11 @@ def prepare_stats_retrievability_scores(reviewer: object, search: str) -> None:
             set_elapsed_ms,
             (time.monotonic() - start) * 1000,
         )
+        return RwkvStatsPreparationStatus.READY
     except Exception:
         logger.exception("RWKV stats retrievability scoring failed")
         _set_rwkv_stats_graph_scores(reviewer, search, [])
+        return RwkvStatsPreparationStatus.FAILED
     finally:
         if owns_prepare and prepare_key is not None and prepare_event is not None:
             _finish_rwkv_stats_prepare(prepare_key, prepare_event)
@@ -3378,6 +3434,8 @@ def rwkv_review_input(
     current_state = _current_scheduling_state(reviewer)
     state_kind, normal_state_kind = _scheduling_state_kinds(current_state)
     elapsed_days, elapsed_seconds = _scheduling_state_elapsed(current_state)
+    if normal_state_kind == "review" and elapsed_seconds is None:
+        elapsed_seconds = _elapsed_seconds_since_card_last_review(card)
 
     return RwkvReviewInput(
         identity=identity,
@@ -3644,12 +3702,13 @@ def _current_reviewer_prediction(
     return prediction
 
 
-def set_answer_rwkv_s90(
+def set_answer_rwkv_metadata(
     answer: object,
     reviewer: object,
     card: object,
     ease: int,
 ) -> None:
+    del ease
     prediction = _current_reviewer_prediction(reviewer, card)
     if prediction is None or not prediction.review_enabled:
         return
@@ -3657,14 +3716,14 @@ def set_answer_rwkv_s90(
     if _valid_probability(prediction.retrievability):
         setattr(answer, "rwkv_retrievability", float(prediction.retrievability))
 
-    s90 = _s90_for_ease(prediction.s90_overrides, ease)
-    if s90 is None:
-        return
-    if not math.isfinite(s90) or s90 <= 0:
-        logger.debug("invalid RWKV S90 ignored for answer: %s", s90)
-        return
 
-    setattr(answer, "rwkv_s90", float(s90))
+def set_answer_rwkv_s90(
+    answer: object,
+    reviewer: object,
+    card: object,
+    ease: int,
+) -> None:
+    set_answer_rwkv_metadata(answer, reviewer, card, ease)
 
 
 def _s90_for_ease(overrides: RwkvIntervalOverride, ease: int) -> int | None:
@@ -3818,10 +3877,10 @@ def _retrievability_source(
     prediction: RwkvReviewerPrediction,
     fallback_source: str,
 ) -> str:
-    if prediction.review_enabled and prediction.interval_override_used:
+    if prediction.review_enabled and _valid_probability(prediction.retrievability):
         return "RWKV"
     if prediction.review_enabled:
-        return f"{fallback_source} (RWKV interval unavailable)"
+        return f"{fallback_source} (RWKV unavailable)"
     return f"{fallback_source} (RWKV disabled)"
 
 
@@ -8649,6 +8708,17 @@ def _encode_rwkv_delta_record(review_id: int, review_input: RwkvReviewInput) -> 
     return bytes(out)
 
 
+def _write_rwkv_delta_record_frame(
+    out: bytearray,
+    review_id: int,
+    review_input: RwkvReviewInput,
+) -> None:
+    payload = _encode_rwkv_delta_record(review_id, review_input)
+    _write_u32(out, len(payload))
+    out.extend(payload)
+    _write_u32(out, zlib.crc32(payload) & 0xFFFFFFFF)
+
+
 def _decode_rwkv_delta_record(data: bytes) -> tuple[int, RwkvReviewInput]:
     reader = _RwkvBinaryReader(data)
     review_id = reader.i64()
@@ -8667,13 +8737,16 @@ def _append_rwkv_delta_records(
 
     needs_header = not path.exists() or path.stat().st_size == 0
     with path.open("ab") as file:
+        pending = bytearray()
         if needs_header:
-            file.write(_RWKV_STATE_CACHE_DELTAS_MAGIC)
+            pending.extend(_RWKV_STATE_CACHE_DELTAS_MAGIC)
         for review_id, review in zip(review_ids, reviews):
-            payload = _encode_rwkv_delta_record(review_id, review)
-            file.write(struct.pack("<I", len(payload)))
-            file.write(payload)
-            file.write(struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF))
+            _write_rwkv_delta_record_frame(pending, review_id, review)
+            if len(pending) >= _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE:
+                file.write(pending)
+                pending.clear()
+        if pending:
+            file.write(pending)
         file.flush()
         os.fsync(file.fileno())
 
@@ -13276,9 +13349,10 @@ def _rwkv_state_fields_for_stats_graph_values(
             last_review_time,
             timing,
         )
-        if elapsed_days is None:
+        elapsed_seconds = _stats_graph_elapsed_seconds_for_review_time(last_review_time)
+        if elapsed_days is None or elapsed_seconds is None:
             return None, None, None, None
-        return "normal", "review", elapsed_days, None
+        return "normal", "review", elapsed_days, elapsed_seconds
 
     if card_type == int(CARD_TYPE_LRN) and queue in (
         int(QUEUE_TYPE_LRN),
@@ -13370,11 +13444,19 @@ def _stats_graph_elapsed_seconds(
 def _stats_graph_elapsed_seconds_for_review_time(
     last_review_time: int | None,
 ) -> int | None:
-    if isinstance(last_review_time, int):
-        now = int(time.time())
-        return max(0, now - last_review_time)
+    return _elapsed_seconds_since_review_time(last_review_time)
 
-    return None
+
+def _elapsed_seconds_since_card_last_review(card: object) -> int | None:
+    return _elapsed_seconds_since_review_time(getattr(card, "last_review_time", None))
+
+
+def _elapsed_seconds_since_review_time(last_review_time: object) -> int | None:
+    if not isinstance(last_review_time, int) or isinstance(last_review_time, bool):
+        return None
+
+    now = int(time.time())
+    return max(0, now - last_review_time)
 
 
 def _stats_graph_reviewer_context(
@@ -13483,11 +13565,12 @@ def _set_rwkv_review_queue_scores(
     col = getattr(mw, "col", None)
     backend = getattr(col, "_backend", None)
     request = scheduler_pb2.RwkvReviewQueueScoresRequest(deck_id=deck_id)
+    intervening_reviews_by_card_id = _session_intervening_reviews_by_card_id(reviewer)
     for card_id, retrievability in scores:
-        request.scores.add(
-            card_id=card_id,
-            retrievability=retrievability,
-        )
+        score = request.scores.add(card_id=card_id, retrievability=retrievability)
+        intervening_reviews = intervening_reviews_by_card_id.get(card_id)
+        if intervening_reviews is not None:
+            score.intervening_reviews = intervening_reviews
 
     set_scores_raw = getattr(backend, "set_rwkv_review_queue_scores_raw", None)
     if callable(set_scores_raw):
@@ -13518,6 +13601,24 @@ def _set_rwkv_review_queue_scores(
         _rwkv_review_queue_score_maps.pop(deck_id, None)
         _rwkv_review_queue_score_generations.pop(deck_id, None)
         _rwkv_review_queue_score_config_keys.pop(deck_id, None)
+
+
+def _session_intervening_reviews_by_card_id(reviewer: object) -> dict[int, int]:
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    if not isinstance(answered_ids, list):
+        return {}
+
+    last_answer_index_by_card_id: dict[int, int] = {}
+    for index, value in enumerate(answered_ids):
+        card_id = _valid_card_id(value)
+        if card_id is not None:
+            last_answer_index_by_card_id[card_id] = index
+
+    answered_count = len(answered_ids)
+    return {
+        card_id: max(0, answered_count - answer_index - 1)
+        for card_id, answer_index in last_answer_index_by_card_id.items()
+    }
 
 
 def _set_rwkv_stats_graph_scores(
