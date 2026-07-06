@@ -368,6 +368,12 @@ impl QueueBuilder {
             NewCardGatherPriority::HighestPosition => {
                 self.gather_new_cards_sorted(col, NewCardSorting::HighestPosition)
             }
+            NewCardGatherPriority::AscendingRetrievability => {
+                self.gather_new_cards_by_retrievability(col, false)
+            }
+            NewCardGatherPriority::DescendingRetrievability => {
+                self.gather_new_cards_by_retrievability(col, true)
+            }
             NewCardGatherPriority::RandomNotes => {
                 self.gather_new_cards_sorted(col, NewCardSorting::RandomNotes(salt))
             }
@@ -423,6 +429,61 @@ impl QueueBuilder {
                 }
                 Ok(true)
             })
+    }
+
+    fn gather_new_cards_by_retrievability(
+        &mut self,
+        col: &mut Collection,
+        descending: bool,
+    ) -> Result<()> {
+        let mut cards = Vec::new();
+        col.storage
+            .for_each_new_card_in_active_decks(NewCardSorting::LowestPosition, |card| {
+                cards.push(card);
+                Ok(true)
+            })?;
+
+        if let Some(scores) = self.context.rwkv_review_queue_scores.as_ref() {
+            cards.sort_by(|card_a, card_b| {
+                let score_a = scores
+                    .get(&card_a.id)
+                    .map(|score| score.retrievability)
+                    .filter(|score| score.is_finite());
+                let score_b = scores
+                    .get(&card_b.id)
+                    .map(|score| score.retrievability)
+                    .filter(|score| score.is_finite());
+                match (score_a, score_b) {
+                    (Some(score_a), Some(score_b)) => {
+                        let ord = score_a.total_cmp(&score_b);
+                        if descending {
+                            ord.reverse()
+                        } else {
+                            ord
+                        }
+                    }
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            });
+        }
+
+        for card in cards {
+            if self.limits.root_limit_reached(LimitKind::New) {
+                break;
+            }
+            if !self
+                .limits
+                .limit_reached(card.current_deck_id, LimitKind::New)?
+                && self.add_new_card(card)
+            {
+                self.limits
+                    .decrement_deck_and_parent_limits(card.current_deck_id, LimitKind::New)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// True if limit should be decremented.

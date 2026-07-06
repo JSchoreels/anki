@@ -70,7 +70,7 @@ impl Collection {
         };
         let cards = self.storage.all_searched_cards()?;
         let rwkv_retrievability_scores =
-            self.rwkv_retrievability_scores_for_day(timing.days_elapsed, Some(search));
+            self.rwkv_stats_graph_scores_for_search(timing.days_elapsed, Some(search));
         let fsrs_cards: Vec<Card> = cards
             .iter()
             .filter(|card| card.memory_state.is_some())

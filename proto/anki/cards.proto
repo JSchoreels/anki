@@ -59,6 +59,7 @@ message FsrsMemoryState {
   float stability = 1;
   float difficulty = 2;
   optional float stability_internal = 3;
+  optional float stability_fast = 4;
 }
 
 message UpdateCardsRequest {

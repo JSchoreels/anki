@@ -237,6 +237,12 @@ intervals are clamped to the deck preset's FSRS minimum interval so real review
 scheduling and Deck Options' "New Card Intervals" preview do not represent them
 as a zero-second `(end)` interval.
 
+Configured learning/relearning steps still take precedence while any remain.
+After the final configured step, FSRS same-day scheduling may keep the card in
+the learning or relearning queue with `remaining_steps = 0`, so later `Hard` and
+`Good` answers use FSRS short-term intervals instead of replaying the last
+configured step.
+
 When FSRS review order is ascending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
 into one exact-retrievability ordering. Intraday cards with a future timestamp
@@ -244,7 +250,10 @@ remain hidden until their due time, at which point the queue is rebuilt so they
 can be inserted according to their current retrievability. The ordering key is
 the card's current FSRS retrievability from its selected deck preset, not its
 relative distance from desired retention. New cards are not included in this
-ordering because they do not have retrievability yet.
+FSRS ordering because they do not have FSRS retrievability yet. In desktop RWKV
+mode, new-card gather order can instead use ascending or descending RWKV
+retrievability when the reviewer has installed a current-day RWKV queue score
+map; unscored new cards retain ascending-position fallback order.
 Review limits are applied after the shared retrievability sort, so filtered-deck
 positions do not decide which cards are admitted before sorting.
 
@@ -262,8 +271,9 @@ FSRS training-item extraction is model-family-aware:
 - FSRS-7 includes same-day (`delta_t == 0`) follow-up targets during
   optimization/evaluation item generation.
 - Revlog-derived training items keep an aligned card-id vector after sorting by
-  review id. Anki passes those ids to `fsrs-rs` so FSRS-7 optimization can group
-  surviving prefix items from the same card for windowed training.
+  review id. Final FSRS-7 uses the standard tensor optimizer path in `fsrs-rs`;
+  the previous windowed analytic optimizer is not used because it was tied to
+  the old single-stability parameter layout.
 - Optimize progress now reports:
   - total training targets,
   - long-term targets (`delta_t >= 1`),
@@ -288,45 +298,53 @@ FSRS training-item extraction is model-family-aware:
   time and review-weighted progress across all non-skipped presets, smooths that
   estimate across progress updates, and logs each completed preset with the time
   observed for that preset's optimizer job.
-- Deck options expose a single per-preset FSRS-7 same-day review toggle used by
-  optimize, evaluate, and health-check target selection.
+- Deck options expose per-preset FSRS-7 toggles for same-day review targets and
+  scheduling penalties. The same-day review toggle is used by optimize,
+  evaluate, and health-check target selection; the scheduling-penalty toggle is
+  used by optimization and fold-based health checks.
   Their per-preset UI state is persisted in `deck_config.config.other` JSON as:
   - `fsrs7IncludeSameDayOptimize`
+  - `fsrs7EnableSchedulingPenalties` (absent means disabled)
   - `fsrsEvaluationSearch` (separate search expression used by Evaluate /
     Check Health / Optimize comparison metrics; optimize training still uses
     `param_search`)
   - For Check Health specifically:
     - optimization/training uses `param_search`
     - metric evaluation uses `fsrsEvaluationSearch` (or `param_search` if blank)
-  - Optimize All Decks reads `fsrs7IncludeSameDayOptimize` from each preset's
-    stored `other` JSON before optimizing that preset.
+  - Optimize All Decks reads `fsrs7IncludeSameDayOptimize` and
+    `fsrs7EnableSchedulingPenalties` from each preset's stored `other` JSON
+    before optimizing that preset.
   - The FSRS options UI also provides a transient same-day "Help Me Decide"
     comparison that optimizes FSRS-7 parameters with and without same-day reviews
     and evaluates both parameter sets on all targets and long-term-only targets.
 
 Runtime parameter lookup uses the selected version first; if that array is not
-usable (`17/19/21/35` length with finite values), it falls back to best
+usable (`17/19/21/34` length with finite values), it falls back to best
 available parameters for compatibility with existing collections.
 
 FSRS optimization follows the training objective implemented in `fsrs-rs`. Anki
 does not apply the legacy raw-logloss post-filter to optimizer output, because
 optimized parameters are selected by the regularized training objective, which
-can include L2 and schedule penalty terms depending on the model family.
+can include L2 and, when enabled, schedule penalty terms depending on the model
+family. FSRS-7 scheduling penalties are disabled by default.
 FSRS-7 optimization reads/writes `fsrs_params_7`.
 When optimizer output length does not match the selected preset's current
 parameter-family length (for example selected FSRS-6 vs optimizer returning
 FSRS-7-length params), deck options keeps the current selected params instead of
 cross-writing a different family into that slot.
 
-When `fsrs_params_7` has 35 values (FSRS-7), card-info forgetting-curve
-visualization uses the FSRS-7 two-curve mixture (`w[27..34]`). The deck-options
-custom single-decay table is disabled for FSRS-7 because there is no single
-`decay` parameter to sweep.
+When `fsrs_params_7` has 34 values (FSRS-7), card-info forgetting-curve
+visualization uses the FSRS-7 mixture curve parameters in `w[23..33]`. The
+deck-options custom single-decay table is disabled for FSRS-7 because there is
+no single `decay` parameter to sweep.
+Deck options treats 35-value FSRS-7 preview parameter sets as outdated and
+shows a migration warning instead of sending them to backend preview/evaluation
+calls.
 
 When deriving memory state from legacy SM-2 card fields (cards without usable
 revlog-derived state), FSRS-7 now uses a numerically-stable conversion path in
 `rslib/src/scheduler/fsrs/memory_state.rs`. This avoids save-time failures with
-valid 35-parameter sets where the legacy scalar-decay conversion can overflow.
+valid 34-parameter sets where the legacy scalar-decay conversion can overflow.
 
 ## FSRS Add-on Math APIs
 
@@ -336,7 +354,7 @@ SchedulerService exposes two FSRS math helpers for add-ons:
 - `FsrsNextInterval(card_id, stability, desired_retention)`
 
 Both read the target card's deck config and use the backend-selected FSRS
-parameter array (including FSRS-7 with 35 params). This avoids add-ons
+parameter array (including FSRS-7 with 34 params). This avoids add-ons
 re-implementing forgetting-curve math in Python and keeps results aligned with
 backend scheduling/evaluation behavior.
 
@@ -355,16 +373,19 @@ RWKV score map has been prepared:
 For FSRS-7, this uses the native forgetting-curve mixture (no scalar decay
 approximation).
 
-FSRS optimization also populates a local review-time prediction cache in the
-collection table `search_stats_fsrs_review_retrievability`. Rows are keyed by
+FSRS calibration consumers can populate a local review-time prediction cache in
+the profile-local retrievability cache database, not in the synced collection
+DB, with `ComputeFsrsReviewRetrievabilityCalibration`. The cache table is
+`search_stats_fsrs_review_retrievability`, attached to the collection
+connection from `collection.retrievability-cache.sqlite`. Rows are keyed by
 `revlog.id`, role, fold, and source. `final_fit` rows store the pre-answer
-predicted retrievability computed with the optimized parameter array returned
-by that optimization run. `validation_fold` rows store out-of-sample
-predictions from the expanding time-series folds used for calibration
-consumers, and `post_optimization` rows store pre-answer predictions for later
-reviews. This table is a local derived cache for calibration-style consumers;
-it is not card state and should not be used for current retrievability
-ordering/search.
+predicted retrievability computed with the supplied parameter array.
+`validation_fold` rows store out-of-sample predictions from the expanding
+time-series folds used for calibration consumers, and `post_optimization` rows
+store pre-answer predictions for later reviews. This table is a local derived
+cache for calibration-style consumers; it is not populated by ordinary FSRS
+optimization, is not card state, is not synced as part of collection sync/full
+upload, and should not be used for current retrievability ordering/search.
 
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
 stored scalar decay from `card.data` for ordering/search expressions.
@@ -380,11 +401,11 @@ temporary table/cache scoped to the current operation, instead of syncing a
 derived `R` value in card data.
 
 When cards are moved to another normal deck, their persisted FSRS data in
-`card.data` (`s`, `s_int`, `d`, `dr`, `decay`) is rewritten for the target
-deck preset. Non-new cards rebuild memory state from revlog history using the
-target deck's FSRS params and ignore-before setting; if no usable revlog data is
-available, the state is inferred from the card's current SM-2 fields. New cards
-remain without memory state.
+`card.data` (`s`, `s_int`, `s_fast`, `d`, `dr`, `decay`) is rewritten for the
+target deck preset. Non-new cards rebuild memory state from revlog history using
+the target deck's FSRS params and ignore-before setting; if no usable revlog
+data is available, the state is inferred from the card's current SM-2 fields.
+New cards remain without memory state.
 
 Implication for aggregates:
 
@@ -398,6 +419,7 @@ Current exact-vs-scalar status:
 - Exact model-based ordering in Rust is used for:
   - Browser sort by `Retrievability`
   - Review queue retrievability order (`ascending` / `descending`)
+  - RWKV-only new-card gather order (`ascending/descending retrievability (RWKV)`)
   - Filtered deck retrievability order (`ascending` / `descending`)
 - `prop:r` filtering is exact-model-based. Search builds a temporary
   `search_exact_retrievability` table (`cid`, `r`, `s90`) from
@@ -416,10 +438,14 @@ Current exact-vs-scalar status:
 - The scheduler's internal stability is stored separately in `card.data.s_int`
   on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
   math use `s_int`; legacy card data without `s_int` treats `s` as both values.
+- FSRS-7's fast stability trace is stored in `card.data.s_fast` on new FSRS
+  writes. Legacy card data without `s_fast` treats the internal slow stability
+  as the fast trace fallback.
 - Python `Collection.compute_memory_state()` exposes both `stability` (`S90`) and
-  `stability_internal`. Add-ons that write `FSRSMemoryState` back to cards must
-  preserve `stability_internal`; otherwise later scheduling answers will start
-  from the display stability instead of the model's internal state.
+  `stability_internal`, and FSRS-7 states also carry `stability_fast`. Add-ons
+  that write `FSRSMemoryState` back to cards must preserve
+  `stability_internal` and `stability_fast`; otherwise later scheduling answers
+  will start from incomplete model state.
 - The Card Info forgetting curve plots retrievability from reconstructed
   review-log memory states. FSRS-7 reconstruction uses fractional same-day
   review deltas from revlog timestamps, matching the scheduler path; FSRS-6

@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use anki_proto::scheduler::ComputeMemoryStateResponse;
 use fsrs::FSRSItem;
 use fsrs::MemoryState;
-use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use fsrs::FSRS5_DEFAULT_DECAY;
 use fsrs::FSRS6_DEFAULT_DECAY;
@@ -32,10 +31,8 @@ use crate::search::Negated;
 use crate::search::SearchNode;
 use crate::search::StateKind;
 
+#[cfg(test)]
 const S_MIN: f32 = 0.0001;
-const S_MAX: f32 = 36_500.0;
-const D_MIN: f32 = 1.0;
-const D_MAX: f32 = 10.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct ComputeMemoryProgress {
@@ -79,10 +76,10 @@ pub(crate) fn get_decay_from_params(params: &[f32]) -> f32 {
         FSRS6_DEFAULT_DECAY // default decay for FSRS-6
     } else if params.len() < 21 {
         FSRS5_DEFAULT_DECAY // default decay for FSRS-4.5 and FSRS-5
-    } else if params.len() >= 35 {
+    } else if params.len() >= 34 {
         // FSRS-7 uses a mixture curve; expose the first decay component for
         // compatibility with existing callers that expect a single decay value.
-        params[27]
+        params[23]
     } else {
         params[20]
     }
@@ -101,39 +98,17 @@ pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     stability: f32,
     elapsed_days: f32,
 ) -> Result<f32> {
-    if params.len() != 35 {
-        let fsrs = FSRS::new(params)?;
-        return Ok(fsrs.current_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-            },
-            elapsed_days.max(0.0),
-        ));
-    }
-    let retrievability = fsrs7_current_retrievability_scalar(params, stability, elapsed_days);
+    let fsrs = FSRS::new(params)?;
+    let retrievability = fsrs.current_retrievability(
+        MemoryState {
+            stability,
+            difficulty: 5.0,
+            stability_fast: stability,
+        },
+        elapsed_days.max(0.0),
+    );
     require!(retrievability.is_finite(), "invalid FSRS parameter values");
     Ok(retrievability)
-}
-
-fn fsrs7_current_retrievability_scalar(params: &[f32], stability: f32, elapsed_days: f32) -> f32 {
-    let stability = stability.max(S_MIN);
-    let t_over_s = elapsed_days.max(0.0) / stability;
-
-    let decay1 = -params[27];
-    let decay2 = -params[28];
-    let base1 = params[29];
-    let base2 = params[30];
-
-    let factor1 = base1.powf(1.0 / decay1) - 1.0;
-    let factor2 = base2.powf(1.0 / decay2) - 1.0;
-    let r1 = (1.0 + factor1 * t_over_s).powf(decay1);
-    let r2 = (1.0 + factor2 * t_over_s).powf(decay2);
-
-    let weight1 = params[31] * stability.powf(-params[33]);
-    let weight2 = params[32] * stability.powf(params[34]);
-
-    (weight1 * r1 + weight2 * r2) / (weight1 + weight2)
 }
 
 pub(crate) fn fsrs_next_interval_for_params(
@@ -142,7 +117,14 @@ pub(crate) fn fsrs_next_interval_for_params(
     desired_retention: f32,
 ) -> Result<f32> {
     let fsrs = FSRS::new(params)?;
-    Ok(fsrs.next_interval(Some(stability), desired_retention.clamp(0.0001, 0.9999), 0))
+    Ok(fsrs.next_interval_for_state(
+        MemoryState {
+            stability,
+            difficulty: 5.0,
+            stability_fast: stability,
+        },
+        desired_retention.clamp(0.0001, 0.9999),
+    ))
 }
 
 pub(crate) fn fsrs_interval_at_retrievability_for_params(
@@ -155,6 +137,7 @@ pub(crate) fn fsrs_interval_at_retrievability_for_params(
         MemoryState {
             stability,
             difficulty: 5.0,
+            stability_fast: stability,
         },
         target_retrievability.clamp(0.0001, 0.9999),
     ))
@@ -176,65 +159,24 @@ pub(crate) fn fsrs_memory_state_for_fsrs(
     FsrsMemoryState {
         stability,
         stability_internal: memory_state.stability,
+        stability_fast: Some(memory_state.stability_fast),
         difficulty: memory_state.difficulty,
     }
 }
 
-fn log_expm1(x: f64) -> f64 {
-    if x > 50.0 {
-        x
-    } else {
-        x.exp_m1().ln()
-    }
-}
-
-/// Compute memory state from SM-2 fields with a stable path for FSRS-7 params.
+/// Compute memory state from SM-2 fields.
 ///
-/// FSRS-7 no longer uses a single legacy decay index at position 20, and some
-/// valid FSRS-7 parameter sets can cause overflow in the legacy conversion path
-/// used for older parameterizations. This helper keeps older behavior for
-/// legacy params and applies a numerically-stable conversion when params have
-/// 35 values.
+/// FSRS-7 no longer has a legacy scalar decay slot, so conversion is delegated
+/// to the selected FSRS implementation to initialize dual-trace state
+/// consistently.
 pub(crate) fn memory_state_from_sm2_with_params(
     fsrs: &FSRS,
-    params: &[f32],
+    _params: &[f32],
     ease_factor: f32,
     interval: f32,
     sm2_retention: f32,
 ) -> Result<MemoryState> {
-    let params = if params.is_empty() {
-        &DEFAULT_PARAMETERS[..]
-    } else {
-        params
-    };
-
-    if params.len() != 35 {
-        return Ok(fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?);
-    }
-
-    let interval = interval.max(S_MIN);
-    let retention = sm2_retention.clamp(0.70, 0.9999);
-    let decay = -get_decay_from_params(params).max(0.001);
-    let stability = if (retention - 0.9).abs() < 1e-6 {
-        interval
-    } else {
-        let inv_decay = 1.0f64 / decay as f64;
-        let target = retention as f64;
-        let x = inv_decay * 0.9f64.ln();
-        let y = inv_decay * target.ln();
-        let ratio = (log_expm1(x) - log_expm1(y)).clamp(-80.0, 80.0).exp();
-        (interval as f64 * ratio) as f32
-    }
-    .clamp(S_MIN, S_MAX);
-
-    // FSRS-7 does not use the same scalar decay regime as legacy models.
-    // When only SM-2 fields are available, keep difficulty neutral.
-    let difficulty = 5.0f32.clamp(D_MIN, D_MAX);
-
-    Ok(MemoryState {
-        stability,
-        difficulty,
-    })
+    Ok(fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?)
 }
 
 #[derive(Debug)]
@@ -730,6 +672,7 @@ impl Collection {
                 MemoryState {
                     stability: *stability,
                     difficulty: 5.0,
+                    stability_fast: *stability,
                 },
                 target_retrievability.clamp(0.0001, 0.9999),
             ));
@@ -1132,6 +1075,7 @@ mod tests {
         card.memory_state = Some(FsrsMemoryState {
             stability,
             stability_internal: stability,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1256,6 +1200,7 @@ mod tests {
             Some(FsrsMemoryState {
                 stability: 100.0,
                 stability_internal: 100.0,
+                stability_fast: None,
                 difficulty: 5.003576,
             }),
         );
@@ -1269,6 +1214,7 @@ mod tests {
             Some(FsrsMemoryState {
                 stability: 248.9251,
                 stability_internal: 248.9251,
+                stability_fast: None,
                 difficulty: 4.9938006,
             }),
         );
@@ -1294,6 +1240,7 @@ mod tests {
             Some(FsrsMemoryState {
                 stability: 100.0,
                 stability_internal: 100.0,
+                stability_fast: None,
                 difficulty: 5.003576,
             }),
         );
@@ -1318,7 +1265,8 @@ mod tests {
             Some(
                 MemoryState {
                     stability: 99.999954,
-                    difficulty: 5.0,
+                    difficulty: 10.0,
+                    stability_fast: 99.999954,
                 }
                 .into(),
             ),
@@ -1455,7 +1403,6 @@ mod tests {
             0.194_363_62,
             0.696_230_1,
             0.121_837_68,
-            0.37259683,
         ];
         let fsrs = FSRS::new(&params)?;
         let revlogs: Vec<_> = [
@@ -1508,9 +1455,9 @@ mod tests {
         let s90 = fsrs.interval_at_retrievability(internal, 0.9);
 
         assert!((elapsed_secs - 1354.404).abs() < 0.01);
-        assert!((internal.stability - 0.14337839).abs() < 1e-6);
-        assert!((s90 - 0.029642101).abs() < 1e-6);
-        assert!((internal.difficulty - 8.743349).abs() < 1e-6);
+        assert!((internal.stability - 0.0033932074).abs() < 1e-6);
+        assert!((s90 - 0.03385916).abs() < 1e-6);
+        assert!((internal.difficulty - 8.922556).abs() < 1e-6);
         Ok(())
     }
 
@@ -1539,7 +1486,7 @@ mod tests {
             0.1558, 3.0107, 6.2423, 22.3570, 5.6837, 0.5279, 2.2999, 1.9751, 0.2886, 1.2884,
             0.8518, 0.0149, 0.7189, 0.6297, 0.3777, 2.8929, 0.9740, 0.5923, 3.6757, 0.8299, 0.0010,
             0.6994, 2.6457, 0.5673, 1.3138, 2.5067, 0.9955, 0.0499, 0.4071, 0.5686, 0.8969, 0.2210,
-            0.8008, 0.0147, 0.1591,
+            0.8008, 0.0147,
         ];
         let fsrs = FSRS::new(&params)?;
         let state = memory_state_from_sm2_with_params(&fsrs, &params, 2.5, 100.0, 0.9)?;
@@ -1560,6 +1507,7 @@ mod tests {
             MemoryState {
                 stability,
                 difficulty: 5.0,
+                stability_fast: stability,
             },
             elapsed_days,
         );
@@ -1575,6 +1523,7 @@ mod tests {
             MemoryState {
                 stability,
                 difficulty: 5.0,
+                stability_fast: stability,
             },
             target_retrievability,
         );
@@ -1596,6 +1545,7 @@ mod tests {
             MemoryState {
                 stability,
                 difficulty: 5.0,
+                stability_fast: stability,
             },
             elapsed_days,
         );
@@ -1611,6 +1561,7 @@ mod tests {
             MemoryState {
                 stability,
                 difficulty: 5.0,
+                stability_fast: stability,
             },
             target_retrievability,
         );
@@ -2041,6 +1992,7 @@ mod tests {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 1.0,
                 stability_internal: 1.0,
+                stability_fast: None,
                 difficulty: 1.0,
             });
             card.desired_retention = Some(0.123);

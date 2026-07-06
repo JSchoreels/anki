@@ -2032,14 +2032,6 @@
     "repository": "https://github.com/rust-itertools/itertools"
   },
   {
-    "authors": "bluss",
-    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "itertools",
-    "repository": "https://github.com/rust-itertools/itertools"
-  },
-  {
     "authors": "David Tolnay <dtolnay@gmail.com>",
     "description": "Fast integer primitive to string conversion",
     "license": "Apache-2.0 OR MIT",
@@ -2102,6 +2094,14 @@
     "license_file": null,
     "name": "khronos_api",
     "repository": "https://github.com/brendanzab/gl-rs/"
+  },
+  {
+    "authors": "Benjamin Naecker <ben@oxide.computer>",
+    "description": "Rust interface to illumos's libkstat",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "kstat-rs",
+    "repository": "https://github.com/oxidecomputer/kstat-rs"
   },
   {
     "authors": "Marvin Löbel <loebel.marvin@gmail.com>",
@@ -2222,6 +2222,14 @@
     "license_file": null,
     "name": "macerator-macros",
     "repository": "https://github.com/wingertge/macerator"
+  },
+  {
+    "authors": null,
+    "description": "A Rust interface to the user-space API of the Mach 3.0 kernel that underlies OSX.",
+    "license": "Apache-2.0 OR BSD-2-Clause OR MIT",
+    "license_file": null,
+    "name": "mach2",
+    "repository": "https://github.com/JohnTitor/mach2"
   },
   {
     "authors": "Steven Sheldon",
@@ -3392,6 +3400,14 @@
     "repository": "https://github.com/dtolnay/ryu"
   },
   {
+    "authors": "Lokathor <zefria@gmail.com>",
+    "description": "Crate that exposes `core::arch` safely via `#[cfg()]`.",
+    "license": "Apache-2.0 OR MIT OR Zlib",
+    "license_file": null,
+    "name": "safe_arch",
+    "repository": "https://github.com/Lokathor/safe_arch"
+  },
+  {
     "authors": null,
     "description": "Provides functions to read and write safetensors which aim to be safer than their PyTorch counterpart. The format is 8 bytes which is an unsized int, being the size of a JSON header, the JSON header refers the `dtype` the `shape` and `data_offsets` which are the offsets for the values in the rest of the file.",
     "license": "Apache-2.0",
@@ -4296,14 +4312,6 @@
     "repository": "https://github.com/unicode-rs/unicode-width"
   },
   {
-    "authors": "kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
-    "description": "Determine displayed width of `char` and `str` types according to Unicode Standard Annex #11 rules.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "unicode-width",
-    "repository": "https://github.com/unicode-rs/unicode-width"
-  },
-  {
     "authors": "erick.tryzelaar <erick.tryzelaar@gmail.com>|kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
     "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31.",
     "license": "Apache-2.0 OR MIT",
@@ -4600,6 +4608,14 @@
     "repository": "https://github.com/gfx-rs/wgpu"
   },
   {
+    "authors": "Lokathor <zefria@gmail.com>",
+    "description": "A crate to help you go wide.",
+    "license": "Apache-2.0 OR MIT OR Zlib",
+    "license_file": null,
+    "name": "wide",
+    "repository": "https://github.com/Lokathor/wide"
+  },
+  {
     "authors": "Peter Atashian <retep998@gmail.com>",
     "description": "Raw FFI bindings for all of Windows API.",
     "license": "Apache-2.0 OR MIT",
@@ -4829,14 +4845,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "windows-strings",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": "Microsoft",
-    "description": "Rust for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-sys",
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {

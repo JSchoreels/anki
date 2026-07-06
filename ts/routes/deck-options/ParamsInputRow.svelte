@@ -10,7 +10,7 @@
 
     export let value: number[];
     export let defaultValue: number[];
-    export let validParamCounts = [0, 17, 19, 21, 35];
+    export let validParamCounts = [0, 17, 19, 21, 34];
     export let ariaLabel = "FSRS Parameters";
 </script>
 

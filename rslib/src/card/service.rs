@@ -159,6 +159,7 @@ impl From<anki_proto::cards::FsrsMemoryState> for FsrsMemoryState {
         FsrsMemoryState {
             stability: value.stability,
             stability_internal,
+            stability_fast: value.stability_fast,
             difficulty: value.difficulty,
         }
     }
@@ -170,6 +171,7 @@ impl From<FsrsMemoryState> for anki_proto::cards::FsrsMemoryState {
             stability: value.stability,
             difficulty: value.difficulty,
             stability_internal: Some(value.stability_internal),
+            stability_fast: value.stability_fast,
         }
     }
 }

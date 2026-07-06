@@ -119,6 +119,7 @@ impl CardStateUpdater {
                         fsrs::MemoryState {
                             stability: states.again.memory.stability,
                             difficulty: states.again.memory.difficulty,
+                            stability_fast: states.again.memory.stability_fast,
                         },
                     )
                     .map(|state| state.stability)
@@ -192,6 +193,7 @@ impl CardStateUpdater {
                     fsrs::MemoryState {
                         stability: state.stability_internal,
                         difficulty: state.difficulty,
+                        stability_fast: state.stability_fast.unwrap_or(state.stability_internal),
                     },
                 )
             })
@@ -452,6 +454,7 @@ impl Collection {
                     card.memory_state = Some(FsrsMemoryState {
                         stability: rwkv_s90,
                         stability_internal: rwkv_s90,
+                        stability_fast: Some(rwkv_s90),
                         difficulty: 5.0,
                     });
                 }
@@ -975,9 +978,11 @@ pub(crate) mod test {
             0.0113, 0.7801, 2.2056, 17.8287, 5.7900, 0.4527, 3.1686, 2.1464, 0.2876, 1.2004,
             0.4385, 0.0057, 0.8110, 0.2112, 0.5439, 1.7069, 0.9438, 0.3588, 3.6203, 0.3262, 0.0060,
             0.2524, 2.6739, 0.5529, 1.3967, 2.5000, 0.9966, 0.0630, 0.2528, 0.6248, 0.9734, 0.1204,
-            0.6260, 0.1575, 0.4048,
+            0.6260, 0.1575,
         ]
     }
+
+    const SHORT_TERM_RELEARNING_RETENTION: f32 = 0.85;
 
     fn add_due_review_card(
         col: &mut Collection,
@@ -1014,6 +1019,7 @@ pub(crate) mod test {
             Some(FsrsMemoryState {
                 stability: 10.0,
                 stability_internal: 10.0,
+                stability_fast: None,
                 difficulty: 5.0,
             }),
         )?;
@@ -1026,6 +1032,7 @@ pub(crate) mod test {
         review.memory_state = Some(FsrsMemoryState {
             stability: 1.0,
             stability_internal: 7.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
 
@@ -1193,6 +1200,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1261,6 +1269,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1309,6 +1318,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1363,6 +1373,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1440,6 +1451,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1462,7 +1474,7 @@ pub(crate) mod test {
         col.update_default_deck_config(|config| {
             config.fsrs_version = FsrsVersion::Seven as i32;
             config.fsrs_params_7 = low_retention_fsrs7_params();
-            config.desired_retention = 0.65;
+            config.desired_retention = SHORT_TERM_RELEARNING_RETENTION;
             config.relearn_steps = vec![];
         });
 
@@ -1480,6 +1492,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 0.0001,
             stability_internal: 0.0001,
+            stability_fast: None,
             difficulty: 9.796331,
         });
         card.last_review_time = Some(now.adding_secs(-105));
@@ -1509,7 +1522,7 @@ pub(crate) mod test {
         col.update_default_deck_config(|config| {
             config.fsrs_version = FsrsVersion::Seven as i32;
             config.fsrs_params_7 = low_retention_fsrs7_params();
-            config.desired_retention = 0.65;
+            config.desired_retention = SHORT_TERM_RELEARNING_RETENTION;
             config.relearn_steps = vec![];
         });
 
@@ -1527,6 +1540,7 @@ pub(crate) mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: 0.0001,
             stability_internal: 0.0001,
+            stability_fast: None,
             difficulty: 9.796331,
         });
         card.last_review_time = Some(now.adding_secs(-105));
@@ -1591,6 +1605,7 @@ pub(crate) mod test {
         relearn_card.memory_state = Some(FsrsMemoryState {
             stability: 0.0001,
             stability_internal: 0.0001,
+            stability_fast: None,
             difficulty: 9.796331,
         });
         relearn_card.last_review_time = Some(now.adding_secs(-105));

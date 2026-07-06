@@ -76,6 +76,18 @@ matching rule assigns the card's FSRS preset. Cards that do not match any rule
 use the built-in `deck-config:<id>` FSRS preset derived from their home deck
 config.
 
+FSRS-7 add-on presets should provide either 34 final FSRS-7 parameters or an
+empty parameter array. A 35-value FSRS-7 array from the old FSRS-7 preview is
+accepted for compatibility, but Anki ignores those preview values and uses the
+final FSRS-7 defaults for that add-on preset. Other invalid parameter counts or
+non-finite values still reject the overlay.
+
+If a built-in deck config still has a 35-value `fsrsParams7` array from the old
+FSRS-7 preview, Anki warns on collection load. The warning can clear the stale
+FSRS-7 parameters from the affected presets and open Deck Options so the user
+can run Optimize All Presets. Deck Options also checks Optimize All Presets for
+incompatible FSRS parameter arrays and asks before clearing them.
+
 FSRS-7 add-on presets may include Dynamic DR policy fields. Current policies
 should include `fsrs_dynamic_desired_retention_fixed_target_weights` and
 `fsrs_dynamic_desired_retention_fixed_target_drs`; Anki uses those arrays before
@@ -137,8 +149,9 @@ that graph request, instead of reading each card's deck config separately.
 Add-ons that manage FSRS presets can optimize multiple draft presets with
 `ComputeFsrsParamsBatch`. The request reads review logs through each item's
 search, current parameter array, selected FSRS version, relearning step count,
-ignore-before timestamp, and same-day review training flag. It does not write
-deck configs, cards, review logs, or `fsrsPresetOverlay`; callers receive the
+ignore-before timestamp, same-day review training flag, and scheduling-penalty
+flag. The scheduling-penalty flag defaults to disabled. It does not write deck
+configs, cards, review logs, or `fsrsPresetOverlay`; callers receive the
 optimized params and decide where to store them.
 
 The batch optimizer reuses the same prepared FSRS training data path as
@@ -174,7 +187,7 @@ interprets these values should accept both shapes, while writes should continue
 to target the nested `other` storage documented above.
 
 Older fork builds wrote those values to numbered `DeckConfig.Config` protobuf
-fields `47-65` and `67-68`. A short-lived fork build also wrote RWKV fields into
+fields `47-65` and `67-81`. A short-lived fork build also wrote RWKV fields into
 `other["jschoreels.fsrs"]`. Current code still reads those legacy locations, but
 normal deck config writes migrate FSRS fields into `other["jschoreels.fsrs"]`,
 RWKV fields into `other["jschoreels.rwkv"]`, and clear the numbered fork fields

@@ -948,7 +948,7 @@ mod test {
             0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
             0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
             0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339, 0.9846, 0.2485,
-            0.6014, 0.0545, 0.2885,
+            0.6014, 0.0545,
         ]
     }
 
@@ -957,7 +957,7 @@ mod test {
             0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
             0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
             0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.3000, 0.3000, 0.6000, 0.9500, 0.3500,
-            0.9000, 0.1500, 0.9000,
+            0.9000, 0.1500,
         ]
     }
 
@@ -986,6 +986,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
@@ -1079,6 +1080,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
@@ -1174,6 +1176,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: s90,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
@@ -1205,15 +1208,7 @@ mod test {
     #[test]
     fn retrievability_property_filter_uses_exact_model_r() -> Result<()> {
         let mut col = Collection::new();
-        set_selected_fsrs7_params(
-            &mut col,
-            vec![
-                0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
-                0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455,
-                0.0022, 0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339,
-                0.9846, 0.2485, 0.6014, 0.0545, 0.2885,
-            ],
-        )?;
+        set_selected_fsrs7_params(&mut col, fsrs7_sort_params_a())?;
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -1235,6 +1230,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
@@ -1279,6 +1275,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 1.0,
                 stability_internal: 1.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-100 * 86_400));
@@ -1334,6 +1331,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 1.0,
                 stability_internal: 1.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-100 * 86_400));
@@ -1385,6 +1383,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 1.0,
                 stability_internal: 1.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-100 * 86_400));
@@ -1419,15 +1418,7 @@ mod test {
     #[test]
     fn stability_property_filter_uses_s90_for_fsrs7() -> Result<()> {
         let mut col = Collection::new();
-        set_selected_fsrs7_params(
-            &mut col,
-            vec![
-                0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
-                0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455,
-                0.0022, 0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339,
-                0.9846, 0.2485, 0.6014, 0.0545, 0.2885,
-            ],
-        )?;
+        set_selected_fsrs7_params(&mut col, fsrs7_sort_params_a())?;
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -1443,6 +1434,7 @@ mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability: s90,
             stability_internal: raw_s,
+            stability_fast: None,
             difficulty: 5.0,
         });
         col.storage.update_card(&card)?;

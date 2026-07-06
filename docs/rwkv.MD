@@ -19,8 +19,12 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
+`rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
+`false`, and
 `rwkv_review_preset_tag_state_enabled`, which defaults to `false`, and
 `rwkv_review_japanese_feature_state_enabled`, which defaults to `false`, and
+`rwkv_review_japanese_kanji_field`, which defaults to `Front`, and
+`rwkv_review_japanese_reading_field`, which defaults to `Reading`, and
 `rwkv_review_self_correction_enabled`, which defaults to `false`.
 
 Development code that reads deck configs through the legacy Python
@@ -79,7 +83,18 @@ other answered reviews before the same card is admitted again, and
 `rwkv_review_min_elapsed_secs` can require that many seconds since the card's
 stored last review time. If both values are nonzero, both guards must be
 satisfied. Due review cards without an RWKV score remain eligible through the
-normal due-card path.
+normal due-card path. When the new-card gather order is `Ascending
+retrievability (RWKV)` or `Descending retrievability (RWKV)`, queue scoring also
+requests new-card inputs and the new queue gathers finite scored new cards by
+RWKV retrievability in the selected direction. New cards without a current RWKV
+score remain after scored new cards in ascending-position fallback order. These
+gather modes are desktop-only in practice, because the RWKV score map is
+transient desktop state.
+
+By default, RWKV treats elapsed time before a card's first review as unknown.
+When `rwkv_review_first_review_elapsed_from_card_creation` is enabled, RWKV uses
+the time since the card was created for new-card inputs and for the first
+historical review during state replay.
 
 If RWKV review is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a
@@ -267,7 +282,9 @@ opportunistic current/parent deck prediction-memo prewarm in the background.
 When no usable local cache exists, desktop Anki prompts once per session after profile
 open to build the RWKV state cache. This startup build, and the same manual
 build from the RWKV section of deck options, run as a modal progress operation.
-The expensive replay work runs off
+When the startup prompt appears, users can choose a faster state-only build or
+the slower state build that also records historical retrievability rows for
+calibration/stat consumers. The expensive replay work runs off
 the UI thread, but Anki blocks review/deck interaction until the cache build
 finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
@@ -275,15 +292,23 @@ to the cache, elapsed time, and estimated time remaining.
 
 While building, incrementally updating, or applying an answered review to the
 RWKV state cache, Anki also writes pre-answer review-time predictions to the
-local collection table
-`search_stats_rwkv_review_retrievability`. Rows store the query retrievability
-before the historical answer is applied. The table is a derived local cache for
-calibration/stat consumers; it is separate from the profile-local recurrent
-state cache and from the short-lived in-memory query memo. Rows are keyed by
-`revlog_id`, `sample_role`, `fold_index`, and `source`. State-cache builds write
-training-only rows with source `rwkv_state_cache_build` and role `final_fit`;
-live review answers write rows with source `rwkv_review` and role
+profile-local retrievability cache database, not the synced collection DB. The
+cache table is `search_stats_rwkv_review_retrievability`, attached to the
+collection connection from `collection.retrievability-cache.sqlite`. Rows store
+the query retrievability before the historical answer is applied. The table is
+a derived local cache for calibration/stat consumers; it is separate from the
+profile-local recurrent state cache and from the short-lived in-memory query
+memo, and is not synced as part of collection sync/full upload. Rows are keyed
+by `revlog_id`, `sample_role`, `fold_index`, and `source`. State-cache builds
+write training-only rows with source `rwkv_state_cache_build` and role
+`final_fit`; live review answers write rows with source `rwkv_review` and role
 `post_optimization`.
+
+For manual state-cache build timing experiments, setting
+`ANKI_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY=0` skips the
+`rwkv_state_cache_build` rows and treats the recurrent state snapshot as usable
+without requiring a complete retrievability cache. Calibration recompute still
+records its own calibration rows.
 
 The deck options action **Recompute RWKV Calibration Data** replays historical
 queries only for this derived table, uses a chronological 70% train / 30% test
@@ -356,9 +381,10 @@ reviews.
 
 When `rwkv_review_japanese_feature_state_enabled` is enabled on a preset, RWKV
 folds a coarse Japanese feature bucket into the preset stream identity. The
-bucket is derived from the note's `Front`, `Reading`, `Front_Kana`, and
-`Frequency` fields when present, and includes word length, reading length,
-kanji count, kana count, kanji ratio, front-kana length, rough text shape, and
+bucket is derived from the configured Kanji field (default `Front`), configured
+Reading field (default `Reading`), and the note's `Front_Kana` and `Frequency`
+fields when present. The bucket includes word length, reading length, kanji
+count, kana count, kanji ratio, front-kana length, rough text shape, and
 frequency rank bin. It does not use note tags.
 
 When `rwkv_review_self_correction_enabled` is enabled on a preset,
@@ -635,12 +661,20 @@ recurrence sweeps of single-stream modules: on the synthetic shape the deck,
 preset, and global modules each have one stream, and their sweeps account for
 roughly 1.9s of the 2.8s wall. Cores idle during every sweep, so making the
 already-parallel pointwise stages faster does not move the wall until sweeps
-overlap with pointwise work. The next structural win is therefore a
-wavefront/pipelined schedule: sweep state for chunk k+1 only needs pointwise
-`x_norm` data (the stored x_shift is pointwise), so pointwise stages of later
-chunks and sweeps of different layers/modules can overlap. Only after that
-overlap exists would a register-tiled multi-row NEON kernel (reusing one
-weight load across several row accumulators, still bit-exact) pay off at the
+overlap with pointwise work.
+
+A later prototype moved module replay to a layer-major chunk order and
+pipelines each chunk's recurrence/post stages with the next chunk's time-mixer
+pointwise stage. The dependency is legal because sweep state for chunk k+1
+only needs pointwise `x_norm` data; the stored time `x_shift` is pointwise and
+does not depend on the recurrence matrix output. The prototype preserves the
+per-review arithmetic order inside the blocked projection and recurrence
+kernels, so the bulk parity tests remain bit-exact. On the same 208,502-review
+copied desktop collection used for the 2026-07-04 real-data benchmark, release
+bulk replay improved from 16.32s to 12.98s without prediction recording, and
+from 33.52s to 27.56s with prediction recording. Only after this overlap exists
+would a register-tiled multi-row NEON kernel (reusing one weight load across
+several row accumulators, still bit-exact) be expected to pay off at the
 wall-clock level.
 
 The same follow-up pass also moved the desktop warm-up bridge to a packed
@@ -677,10 +711,10 @@ rules can be applied consistently to newer revlogs after a restart. If the
 count of historical revlogs through the cached checkpoint changes, if the
 configured RWKV model content changes, or if the local cache schema changes, the
 cache is treated as stale and rebuilt from history. Changing
-`rwkv_review_dynamic_preset_replay`, `rwkv_review_preset_tag_state_enabled`, or
-`rwkv_review_japanese_feature_state_enabled` also makes the cache stale,
-because the same historical reviews may be replayed into different preset
-streams.
+`rwkv_review_dynamic_preset_replay`, `rwkv_review_preset_tag_state_enabled`,
+`rwkv_review_japanese_feature_state_enabled`, or the configured Japanese
+Kanji/Reading field names also makes the cache stale, because the same
+historical reviews may be replayed into different preset streams.
 
 ## Review Undo And Redo
 

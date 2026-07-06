@@ -9,13 +9,17 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
+use rusqlite::params;
 
 use crate::card::Card;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
+use crate::deckconfig::normalized_rwkv_japanese_field_name;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
+use crate::deckconfig::DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD;
+use crate::deckconfig::DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD;
 use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::notes::NoteId;
@@ -23,7 +27,11 @@ use crate::ops::Op;
 use crate::prelude::*;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::timing::SchedTimingToday;
+use crate::search::parse_search;
+use crate::search::Node;
+use crate::search::SearchNode;
 use crate::search::SortMode;
+use crate::search::StateKind;
 use crate::storage::ids_to_string;
 
 pub(crate) struct RwkvReviewRescheduleItem {
@@ -94,6 +102,7 @@ impl Collection {
         let cards = self.storage.rwkv_review_input_candidate_cards_for_ids(
             &card_ids,
             input.include_suspended_review,
+            input.include_new_cards,
             enabled_deck_ids.as_ref(),
         )?;
         let mut response = self.rwkv_review_input_rows_from_cards(
@@ -119,11 +128,13 @@ impl Collection {
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
         let guard = self.search_cards_into_table(&input.search, SortMode::NoOrder)?;
         let searched_cards = guard.cards as u32;
+        let include_new_cards = search_explicitly_includes_new_cards(&parse_search(&input.search)?);
         let cards = guard
             .col
             .storage
             .rwkv_review_input_candidate_cards_in_search(
                 input.include_suspended_review,
+                include_new_cards,
                 enabled_deck_ids.as_ref(),
             )?;
         let mut response = guard.col.rwkv_review_input_rows_from_cards(
@@ -157,6 +168,7 @@ impl Collection {
             .rwkv_review_input_candidate_cards_for_deck_review_queue(
                 &deck_ids,
                 enabled_deck_ids.as_ref(),
+                input.include_new_cards,
             )?;
         let mut response = self.rwkv_review_input_rows_from_cards(
             cards,
@@ -189,7 +201,7 @@ impl Collection {
 
         for card in cards {
             let Some(state) =
-                self.rwkv_review_input_state(&card, timing, include_suspended_review)?
+                self.rwkv_review_input_state(&card, timing, include_suspended_review, false)?
             else {
                 continue;
             };
@@ -210,6 +222,15 @@ impl Collection {
                 disabled_config_cards += 1;
                 continue;
             }
+            let state = if config
+                .inner
+                .rwkv_review_first_review_elapsed_from_card_creation
+            {
+                self.rwkv_review_input_state(&card, timing, include_suspended_review, true)?
+                    .unwrap_or(state)
+            } else {
+                state
+            };
 
             eligible.push(RwkvReviewInputRowPartial {
                 target_retention: deck.effective_desired_retention(config),
@@ -218,6 +239,7 @@ impl Collection {
                 japanese_feature_state_enabled: config
                     .inner
                     .rwkv_review_japanese_feature_state_enabled,
+                japanese_feature_fields: rwkv_japanese_feature_field_names(&config.inner),
                 card,
                 current_deck_id,
                 state,
@@ -246,18 +268,33 @@ impl Collection {
         } else {
             HashMap::new()
         };
-        let japanese_features_by_id = if eligible
+        let japanese_features_by_key = if eligible
             .iter()
             .any(|partial| partial.japanese_feature_state_enabled)
         {
-            let mut note_ids: Vec<_> = eligible
+            let mut note_ids_by_fields: HashMap<RwkvJapaneseFeatureFieldNames, Vec<NoteId>> =
+                HashMap::new();
+            for partial in eligible
                 .iter()
                 .filter(|partial| partial.japanese_feature_state_enabled)
-                .map(|partial| partial.card.note_id)
-                .collect();
-            note_ids.sort_unstable();
-            note_ids.dedup();
-            self.rwkv_japanese_feature_buckets_by_note_id(&note_ids)?
+            {
+                note_ids_by_fields
+                    .entry(partial.japanese_feature_fields.clone())
+                    .or_default()
+                    .push(partial.card.note_id);
+            }
+
+            let mut features_by_key = HashMap::new();
+            for (fields, mut note_ids) in note_ids_by_fields {
+                note_ids.sort_unstable();
+                note_ids.dedup();
+                for (note_id, bucket) in
+                    self.rwkv_japanese_feature_buckets_by_note_id(&note_ids, &fields)?
+                {
+                    features_by_key.insert((note_id, fields.clone()), bucket);
+                }
+            }
+            features_by_key
         } else {
             HashMap::new()
         };
@@ -278,8 +315,11 @@ impl Collection {
                 let japanese_features = partial
                     .japanese_feature_state_enabled
                     .then(|| {
-                        japanese_features_by_id
-                            .get(&partial.card.note_id)
+                        japanese_features_by_key
+                            .get(&(
+                                partial.card.note_id,
+                                partial.japanese_feature_fields.clone(),
+                            ))
                             .map(String::as_str)
                     })
                     .flatten();
@@ -319,6 +359,7 @@ impl Collection {
     fn rwkv_japanese_feature_buckets_by_note_id(
         &self,
         note_ids: &[NoteId],
+        fields: &RwkvJapaneseFeatureFieldNames,
     ) -> Result<HashMap<NoteId, String>> {
         if note_ids.is_empty() {
             return Ok(HashMap::new());
@@ -327,8 +368,8 @@ impl Collection {
         let mut sql = String::from(
             "select n.id, n.flds, front.ord, reading.ord, front_kana.ord, frequency.ord \
              from notes n \
-             left join fields front on front.ntid = n.mid and front.name = 'Front' \
-             left join fields reading on reading.ntid = n.mid and reading.name = 'Reading' \
+             left join fields front on front.ntid = n.mid and front.name = ? \
+             left join fields reading on reading.ntid = n.mid and reading.name = ? \
              left join fields front_kana on front_kana.ntid = n.mid and front_kana.name = 'Front_Kana' \
              left join fields frequency on frequency.ntid = n.mid and frequency.name = 'Frequency' \
              where n.id in ",
@@ -337,22 +378,25 @@ impl Collection {
 
         let mut by_note_id = HashMap::new();
         let mut stmt = self.storage.db.prepare(&sql)?;
-        for row in stmt.query_and_then([], |row| -> Result<_> {
-            let note_id: NoteId = row.get(0)?;
-            let fields_raw: String = row.get(1)?;
-            let front_ord: Option<i64> = row.get(2)?;
-            let reading_ord: Option<i64> = row.get(3)?;
-            let front_kana_ord: Option<i64> = row.get(4)?;
-            let frequency_ord: Option<i64> = row.get(5)?;
-            let fields = fields_raw.split('\x1f').collect::<Vec<_>>();
-            Ok(rwkv_japanese_feature_bucket(
-                rwkv_field_at_ord(&fields, front_ord),
-                rwkv_field_at_ord(&fields, reading_ord),
-                rwkv_field_at_ord(&fields, front_kana_ord),
-                rwkv_field_at_ord(&fields, frequency_ord),
-            )
-            .map(|bucket| (note_id, bucket)))
-        })? {
+        for row in stmt.query_and_then(
+            params![&fields.kanji, &fields.reading],
+            |row| -> Result<_> {
+                let note_id: NoteId = row.get(0)?;
+                let fields_raw: String = row.get(1)?;
+                let front_ord: Option<i64> = row.get(2)?;
+                let reading_ord: Option<i64> = row.get(3)?;
+                let front_kana_ord: Option<i64> = row.get(4)?;
+                let frequency_ord: Option<i64> = row.get(5)?;
+                let fields = fields_raw.split('\x1f').collect::<Vec<_>>();
+                Ok(rwkv_japanese_feature_bucket(
+                    rwkv_field_at_ord(&fields, front_ord),
+                    rwkv_field_at_ord(&fields, reading_ord),
+                    rwkv_field_at_ord(&fields, front_kana_ord),
+                    rwkv_field_at_ord(&fields, frequency_ord),
+                )
+                .map(|bucket| (note_id, bucket)))
+            },
+        )? {
             if let Some((note_id, bucket)) = row? {
                 by_note_id.insert(note_id, bucket);
             }
@@ -366,8 +410,19 @@ impl Collection {
         card: &Card,
         timing: SchedTimingToday,
         include_suspended_review: bool,
+        first_review_elapsed_from_card_creation: bool,
     ) -> Result<Option<RwkvReviewInputState>> {
         match (card.ctype, card.queue) {
+            (CardType::New, CardQueue::New) => {
+                let elapsed_seconds = first_review_elapsed_from_card_creation
+                    .then(|| timing.now.elapsed_secs_since(card.id.as_secs()).max(0) as u32);
+                Ok(Some(RwkvReviewInputState {
+                    state_kind: "normal".to_string(),
+                    normal_state_kind: "new".to_string(),
+                    elapsed_days: elapsed_seconds.map(|elapsed_seconds| elapsed_seconds / 86_400),
+                    elapsed_seconds,
+                }))
+            }
             (CardType::Review, CardQueue::Review | CardQueue::Suspended) => {
                 if card.queue == CardQueue::Suspended && !include_suspended_review {
                     return Ok(None);
@@ -458,6 +513,23 @@ impl Collection {
         }
 
         Ok(())
+    }
+}
+
+fn search_explicitly_includes_new_cards(nodes: &[Node]) -> bool {
+    nodes
+        .iter()
+        .any(|node| node_explicitly_includes_new_cards(node, false))
+}
+
+fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
+    match node {
+        Node::Search(SearchNode::State(StateKind::New)) => !negated,
+        Node::Not(inner) => node_explicitly_includes_new_cards(inner, !negated),
+        Node::Group(nodes) => nodes
+            .iter()
+            .any(|node| node_explicitly_includes_new_cards(node, negated)),
+        Node::And | Node::Or | Node::Search(_) => false,
     }
 }
 
@@ -578,6 +650,28 @@ struct RwkvReviewInputRowPartial {
     batch_size: u32,
     preset_tag_state_enabled: bool,
     japanese_feature_state_enabled: bool,
+    japanese_feature_fields: RwkvJapaneseFeatureFieldNames,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct RwkvJapaneseFeatureFieldNames {
+    kanji: String,
+    reading: String,
+}
+
+fn rwkv_japanese_feature_field_names(
+    config: &crate::deckconfig::DeckConfigInner,
+) -> RwkvJapaneseFeatureFieldNames {
+    RwkvJapaneseFeatureFieldNames {
+        kanji: normalized_rwkv_japanese_field_name(
+            &config.rwkv_review_japanese_kanji_field,
+            DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
+        ),
+        reading: normalized_rwkv_japanese_field_name(
+            &config.rwkv_review_japanese_reading_field,
+            DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
+        ),
+    }
 }
 
 #[derive(Debug)]
@@ -803,6 +897,10 @@ fn rwkv_rescheduled_memory_state(card: &Card, s90: f32) -> FsrsMemoryState {
             .map(|state| state.stability_internal)
             .filter(|stability| stability.is_finite() && *stability > 0.0)
             .unwrap_or(s90),
+        stability_fast: existing
+            .and_then(|state| state.stability_fast)
+            .filter(|stability| stability.is_finite() && *stability > 0.0)
+            .or(Some(s90)),
         difficulty: existing
             .map(|state| state.difficulty)
             .filter(|difficulty| difficulty.is_finite() && *difficulty > 0.0)
@@ -881,6 +979,7 @@ mod test {
                 card_ids: vec![card.id.0],
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
 
         assert_eq!(response.loaded_cards, 1);
@@ -941,6 +1040,7 @@ mod test {
                 card_ids: vec![card.id.0],
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
 
         assert_eq!(response.rows.len(), 1);
@@ -977,9 +1077,48 @@ mod test {
                 card_ids: vec![card.id.0],
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
 
         let expected_bucket = rwkv_japanese_feature_bucket("食べる", "", "", "").unwrap();
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(
+            response.rows[0].preset_id,
+            rwkv_preset_id_with_japanese_features("1", Some(&expected_bucket))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_use_custom_japanese_feature_fields() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.rwkv_review_japanese_feature_state_enabled = true;
+            config.rwkv_review_japanese_kanji_field = "Back".into();
+            config.rwkv_review_japanese_reading_field = "Front".into();
+        });
+        let mut note = col.basic_notetype().new_note();
+        note.fields_mut()[0] = "たべる".into();
+        note.fields_mut()[1] = "食べる".into();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
+        let timing = col.timing_today()?;
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
+        col.storage.update_card(&card)?;
+
+        let response =
+            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                card_ids: vec![card.id.0],
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+
+        let expected_bucket = rwkv_japanese_feature_bucket("食べる", "たべる", "", "").unwrap();
         assert_eq!(response.rows.len(), 1);
         assert_eq!(
             response.rows[0].preset_id,
@@ -1048,6 +1187,7 @@ mod test {
                 card_ids: vec![card.id.0],
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
 
         assert_eq!(response.loaded_cards, 1);
@@ -1075,6 +1215,7 @@ mod test {
                 card_ids: vec![card.id.0],
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
         assert_eq!(filtered.loaded_cards, 0);
         assert!(filtered.rows.is_empty());
@@ -1084,10 +1225,50 @@ mod test {
                 card_ids: vec![card.id.0],
                 include_suspended_review: false,
                 include_disabled_decks: true,
+                include_new_cards: false,
             })?;
         assert_eq!(included.loaded_cards, 1);
         assert_eq!(included.rows.len(), 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_for_cards_can_include_new_cards() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.rwkv_review_first_review_elapsed_from_card_creation = true;
+        });
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
+        col.add_card(&mut card)?;
+
+        let excluded =
+            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                card_ids: vec![card.id.0],
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+        assert_eq!(excluded.loaded_cards, 0);
+        assert!(excluded.rows.is_empty());
+
+        let included =
+            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                card_ids: vec![card.id.0],
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: true,
+            })?;
+        assert_eq!(included.loaded_cards, 1);
+        assert_eq!(included.cards_with_supported_state, 1);
+        assert_eq!(included.rows.len(), 1);
+        assert_eq!(included.rows[0].card_id, card.id.0);
+        assert_eq!(included.rows[0].current_state_kind, "normal");
+        assert_eq!(included.rows[0].current_normal_state_kind, "new");
+        assert!(included.rows[0].current_elapsed_days.is_some());
+        assert!(included.rows[0].current_elapsed_seconds.is_some());
         Ok(())
     }
 
@@ -1121,6 +1302,24 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].card_id, review_card.id.0);
 
+        let response =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{},{} is:new", review_card.id.0, new_card.id.0),
+                include_suspended_review: false,
+                include_disabled_decks: false,
+            })?;
+
+        assert_eq!(response.searched_cards, 1);
+        assert_eq!(response.loaded_cards, 1);
+        assert_eq!(response.cards_with_supported_state, 1);
+        assert_eq!(response.rows.len(), 1);
+        let row = &response.rows[0];
+        assert_eq!(row.card_id, new_card.id.0);
+        assert_eq!(row.current_state_kind, "normal");
+        assert_eq!(row.current_normal_state_kind, "new");
+        assert_eq!(row.current_elapsed_days, None);
+        assert_eq!(row.current_elapsed_seconds, None);
+
         Ok(())
     }
 
@@ -1148,6 +1347,7 @@ mod test {
             RwkvReviewInputRowsForDeckReviewQueueRequest {
                 deck_id: parent.id.0,
                 include_disabled_decks: false,
+                include_new_cards: false,
             },
         )?;
 
@@ -1157,6 +1357,50 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].card_id, review_card.id.0);
         assert_eq!(response.rows[0].deck_id, child.id.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_for_deck_review_queue_can_include_new_cards() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.rwkv_review_first_review_elapsed_from_card_creation = true;
+        });
+        let deck = col.get_or_create_normal_deck("Default")?;
+        let timing = col.timing_today()?;
+        let last_review_time = timing.next_day_at.adding_secs(-4 * 86_400);
+        let mut review_card = Card::new(NoteId(10), 0, deck.id, timing.days_elapsed as i32 + 8);
+        review_card.ctype = CardType::Review;
+        review_card.queue = CardQueue::Review;
+        review_card.interval = 4;
+        review_card.last_review_time = Some(last_review_time);
+        col.add_card(&mut review_card)?;
+        let mut new_card = Card::new(NoteId(20), 0, deck.id, timing.days_elapsed as i32);
+        col.add_card(&mut new_card)?;
+
+        let response = col.rwkv_review_input_rows_for_deck_review_queue(
+            RwkvReviewInputRowsForDeckReviewQueueRequest {
+                deck_id: deck.id.0,
+                include_disabled_decks: false,
+                include_new_cards: true,
+            },
+        )?;
+
+        assert_eq!(response.searched_cards, 2);
+        assert_eq!(response.loaded_cards, 2);
+        assert_eq!(response.cards_with_supported_state, 2);
+        assert_eq!(response.rows.len(), 2);
+        let new_row = response
+            .rows
+            .iter()
+            .find(|row| row.card_id == new_card.id.0)
+            .unwrap();
+        assert_eq!(new_row.current_state_kind, "normal");
+        assert_eq!(new_row.current_normal_state_kind, "new");
+        assert_eq!(new_row.current_elapsed_days, Some(0));
+        assert_eq!(new_row.current_elapsed_seconds, Some(0));
 
         Ok(())
     }

@@ -26,6 +26,8 @@ import { get, readable, writable } from "svelte/store";
 
 import type { DynamicSvelteComponent } from "$lib/sveltelib/dynamicComponent";
 
+import { fsrsParamDiagnostics } from "./fsrs-param-diagnostics";
+
 export type DeckOptionsId = bigint;
 
 export interface ConfigWithCount {
@@ -243,6 +245,39 @@ export class DeckOptionsState {
 
     getConfigById(id: DeckConfig["id"]): DeckConfig | undefined {
         return this.configs.find((c) => c.config.id === id)?.config;
+    }
+
+    incompatibleFsrsParamPresetNames(): string[] {
+        return this.configs.flatMap(({ config }) => {
+            const inner = config.config;
+            if (!inner || fsrsParamDiagnostics(selectedFsrsParams(inner)).valid) {
+                return [];
+            }
+
+            return [config.name];
+        });
+    }
+
+    clearIncompatibleFsrsParams(): number {
+        let cleared = 0;
+        for (const config of this.configs.map((c) => c.config)) {
+            const inner = config.config;
+            if (!inner || fsrsParamDiagnostics(selectedFsrsParams(inner)).valid) {
+                continue;
+            }
+
+            config.config = withSelectedFsrsParams(inner, []);
+            if (config.id) {
+                this.modifiedConfigs.add(config.id);
+            }
+            cleared += 1;
+        }
+
+        if (cleared) {
+            this.updateCurrentConfig();
+        }
+
+        return cleared;
     }
 
     setCurrentName(name: string): void {
@@ -555,7 +590,7 @@ function fsrsParamsUsable(params: number[] | undefined): params is number[] {
     if (!params || params.length === 0) {
         return false;
     }
-    if (![17, 19, 21, 35].includes(params.length)) {
+    if (![17, 19, 21, 34].includes(params.length)) {
         return false;
     }
     return params.every((w) => Number.isFinite(w));

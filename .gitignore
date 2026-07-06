@@ -19,6 +19,7 @@ yarn-error.log
 ts/.svelte-kit
 .yarn
 .claude/settings.local.json
+.local/
 .claude/user.md
 .venv
 docs/_build/

@@ -53,6 +53,9 @@ service SchedulerService {
       returns (ComputeFsrsParamsResponse);
   rpc ComputeFsrsParamsBatch(ComputeFsrsParamsBatchRequest)
       returns (ComputeFsrsParamsBatchResponse);
+  rpc ComputeFsrsReviewRetrievabilityCalibration(
+      ComputeFsrsReviewRetrievabilityCalibrationRequest)
+      returns (generic.UInt32);
   rpc GetOptimalRetentionParameters(GetOptimalRetentionParametersRequest)
       returns (GetOptimalRetentionParametersResponse);
   rpc ComputeOptimalRetention(SimulateFsrsReviewRequest)
@@ -439,6 +442,7 @@ message ComputeFsrsParamsRequest {
   bool dynamic_desired_retention_enabled = 8;
   optional uint32 dynamic_desired_retention_review_limit = 9;
   optional float dynamic_desired_retention_max_cost_perday_minutes = 10;
+  optional bool enable_scheduling_penalties = 11;
 }
 
 message ComputeFsrsParamsResponse {
@@ -470,6 +474,7 @@ message ComputeFsrsParamsBatchRequest {
     bool dynamic_desired_retention_enabled = 9;
     optional uint32 dynamic_desired_retention_review_limit = 10;
     optional float dynamic_desired_retention_max_cost_perday_minutes = 11;
+    optional bool enable_scheduling_penalties = 12;
   }
 
   repeated Item items = 1;
@@ -493,6 +498,18 @@ message ComputeFsrsParamsBatchResponse {
   }
 
   repeated Item items = 1;
+}
+
+message ComputeFsrsReviewRetrievabilityCalibrationRequest {
+  /// The search used to gather cards for calibration
+  string search = 1;
+  repeated float params = 2;
+  int64 ignore_revlogs_before_ms = 3;
+  uint32 num_of_relearning_steps = 4;
+  optional bool include_same_day_reviews = 5;
+  optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 6;
+  bool include_validation_folds = 7;
+  optional bool enable_scheduling_penalties = 8;
 }
 
 message ComputeFsrsParamsFromItemsRequest {
@@ -644,6 +661,7 @@ message EvaluateParamsRequest {
   optional bool include_same_day_reviews = 5;
   optional bool include_same_day_reviews_for_training = 6;
   optional string search_for_training = 7;
+  optional bool enable_scheduling_penalties = 8;
 }
 
 message GetFsrsNewCardIntervalsRequest {
@@ -863,6 +881,7 @@ message RwkvReviewInputRowsForCardsRequest {
   repeated int64 card_ids = 1;
   bool include_suspended_review = 2;
   bool include_disabled_decks = 3;
+  bool include_new_cards = 4;
 }
 
 message RwkvReviewInputRowsForSearchRequest {
@@ -874,6 +893,7 @@ message RwkvReviewInputRowsForSearchRequest {
 message RwkvReviewInputRowsForDeckReviewQueueRequest {
   int64 deck_id = 1;
   bool include_disabled_decks = 2;
+  bool include_new_cards = 3;
 }
 
 message RwkvReviewInputRowsForCardsResponse {

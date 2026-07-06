@@ -109,6 +109,8 @@ pub struct FsrsMemoryState {
     pub stability: f32,
     /// The model's internal stability, in days.
     pub stability_internal: f32,
+    /// FSRS-7's fast stability trace, in days. Missing on older card data.
+    pub stability_fast: Option<f32>,
     /// A number in the range 1.0-10.0. Use difficulty() for a normalized
     /// number.
     pub difficulty: f32,
@@ -498,6 +500,7 @@ impl From<FsrsMemoryState> for MemoryState {
         MemoryState {
             stability: value.stability_internal,
             difficulty: value.difficulty,
+            stability_fast: value.stability_fast.unwrap_or(value.stability_internal),
         }
     }
 }
@@ -507,6 +510,7 @@ impl From<MemoryState> for FsrsMemoryState {
         FsrsMemoryState {
             stability: value.stability,
             stability_internal: value.stability,
+            stability_fast: Some(value.stability_fast),
             difficulty: value.difficulty,
         }
     }

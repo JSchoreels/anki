@@ -249,6 +249,7 @@ mod test {
         card.memory_state = Some(crate::card::FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));

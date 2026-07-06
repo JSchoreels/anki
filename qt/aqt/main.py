@@ -12,7 +12,7 @@ import sys
 import traceback
 import weakref
 from argparse import Namespace
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from concurrent.futures import Future
 from typing import Any, Literal, TypeVar, cast
 
@@ -62,6 +62,7 @@ from aqt.utils import (
     HelpPage,
     KeyboardModifiersPressed,
     askUser,
+    askUserDialog,
     checkInvalidFilename,
     current_window,
     disallow_full_screen,
@@ -88,6 +89,100 @@ MainWindowState = Literal[
 
 
 T = TypeVar("T")
+
+OUTDATED_FSRS7_PREVIEW_PARAM_COUNT = 35
+OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS = 8
+FSRS_FORK_FIELDS_KEY = "jschoreels.fsrs"
+CLEAR_OUTDATED_FSRS7_PREVIEW_PARAMS_BUTTON = "Clear Parameters"
+LATER_BUTTON = "Later"
+
+
+def _fsrs7_params_from_config(config: Mapping[str, Any]) -> object:
+    params = config.get("fsrsParams7") or config.get("fsrs_params_7")
+    if params:
+        return params
+
+    fsrs_other = config.get(FSRS_FORK_FIELDS_KEY)
+    if isinstance(fsrs_other, Mapping):
+        return fsrs_other.get("fsrs_params_7")
+
+    other = config.get("other")
+    if isinstance(other, Mapping):
+        fsrs_other = other.get(FSRS_FORK_FIELDS_KEY)
+        if isinstance(fsrs_other, Mapping):
+            return fsrs_other.get("fsrs_params_7")
+
+    return None
+
+
+def _is_outdated_fsrs7_preview_params(value: object) -> bool:
+    return isinstance(value, list) and len(value) == OUTDATED_FSRS7_PREVIEW_PARAM_COUNT
+
+
+def _clear_outdated_fsrs7_preview_params(config: MutableMapping[str, Any]) -> bool:
+    changed = False
+
+    for key in ("fsrsParams7", "fsrs_params_7"):
+        if _is_outdated_fsrs7_preview_params(config.get(key)):
+            config[key] = []
+            changed = True
+
+    fsrs_other = config.get(FSRS_FORK_FIELDS_KEY)
+    if isinstance(fsrs_other, MutableMapping) and _is_outdated_fsrs7_preview_params(
+        fsrs_other.get("fsrs_params_7")
+    ):
+        del fsrs_other["fsrs_params_7"]
+        changed = True
+
+    other = config.get("other")
+    if isinstance(other, MutableMapping):
+        fsrs_other = other.get(FSRS_FORK_FIELDS_KEY)
+        if isinstance(fsrs_other, MutableMapping) and _is_outdated_fsrs7_preview_params(
+            fsrs_other.get("fsrs_params_7")
+        ):
+            del fsrs_other["fsrs_params_7"]
+            changed = True
+
+    return changed
+
+
+def _outdated_fsrs7_preview_preset_names(
+    configs: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    names: list[str] = []
+    for config in configs:
+        params = _fsrs7_params_from_config(config)
+        if not _is_outdated_fsrs7_preview_params(params):
+            continue
+
+        name = config.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+            continue
+
+        config_id = config.get("id")
+        names.append(
+            f"Preset {config_id}" if config_id is not None else "Unnamed preset"
+        )
+
+    return names
+
+
+def _outdated_fsrs7_preview_warning_text(preset_names: Sequence[str]) -> str:
+    shown_presets = "\n".join(
+        f"- {preset_name}"
+        for preset_name in preset_names[:OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS]
+    )
+    remaining = len(preset_names) - OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS
+    remaining_text = f"\n- ...and {remaining} more" if remaining > 0 else ""
+
+    return (
+        "Some FSRS-7 parameters were produced by an older preview version and have "
+        "35 values. Final FSRS-7 uses 34 values.\n\n"
+        "Anki can clear those old parameters now, then open Deck Options so you can "
+        "run Optimize All Presets.\n\n"
+        f"Affected presets:\n{shown_presets}{remaining_text}"
+    )
 
 
 class MainWebView(AnkiWebView):
@@ -182,6 +277,7 @@ class AnkiQt(QMainWindow):
         self.state: MainWindowState = "startup"
         self.opts = opts
         self.col: Collection | None = None
+        self._outdated_fsrs7_preview_warning_shown = False
         self.taskman = TaskManager(self)
         self.media_syncer = MediaSyncer(self)
         aqt.mw = self
@@ -667,6 +763,7 @@ class AnkiQt(QMainWindow):
             gui_hooks.collection_did_load(self.col)
             self.apply_collection_options()
             self.moveToState("deckBrowser")
+            self._warn_if_outdated_fsrs7_preview_params()
         except Exception:
             # dump error to stderr so it gets picked up by errors.py
             traceback.print_exc()
@@ -676,7 +773,50 @@ class AnkiQt(QMainWindow):
     def _loadCollection(self) -> None:
         cpath = self.pm.collectionPath()
         self.col = Collection(cpath, backend=self.backend)
+        self._outdated_fsrs7_preview_warning_shown = False
         self.setEnabled(True)
+
+    def _warn_if_outdated_fsrs7_preview_params(self) -> None:
+        if getattr(self, "_outdated_fsrs7_preview_warning_shown", False):
+            return
+
+        configs = self.col.decks.all_config()
+        preset_names = _outdated_fsrs7_preview_preset_names(configs)
+        if not preset_names:
+            return
+
+        self._outdated_fsrs7_preview_warning_shown = True
+        dialog = askUserDialog(
+            _outdated_fsrs7_preview_warning_text(preset_names),
+            [CLEAR_OUTDATED_FSRS7_PREVIEW_PARAMS_BUTTON, LATER_BUTTON],
+            parent=self,
+        )
+        dialog.setDefault(1)
+        dialog.exec()
+        clicked_button = dialog.clickedButton()
+        clicked_text = (
+            clicked_button.text().replace("&", "") if clicked_button else LATER_BUTTON
+        )
+        if clicked_text == CLEAR_OUTDATED_FSRS7_PREVIEW_PARAMS_BUTTON:
+            self._clear_outdated_fsrs7_preview_params_and_open_deck_options(configs)
+
+    def _clear_outdated_fsrs7_preview_params_and_open_deck_options(
+        self, configs: Sequence[MutableMapping[str, Any]]
+    ) -> None:
+        changed_count = 0
+        for config in configs:
+            if _clear_outdated_fsrs7_preview_params(config):
+                self.col.decks.update_config(dict(config))
+                changed_count += 1
+
+        if changed_count:
+            tooltip(
+                f"Cleared outdated FSRS-7 parameters from {changed_count} preset(s)."
+            )
+
+        from aqt.deckoptions import display_options_for_deck
+
+        display_options_for_deck(self.col.decks.current())
 
     def reopen(self, after_full_sync: bool = False) -> None:
         self.col.reopen(after_full_sync=after_full_sync)

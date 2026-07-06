@@ -158,6 +158,21 @@ impl Collection {
         debug!("invalid ids");
         out.invalid_ids = self.maybe_fix_invalid_ids()?;
 
+        debug!("legacy retrievability cache tables");
+        let migrated_legacy_retrievability_cache_tables = self
+            .storage
+            .migrate_review_retrievability_cache_to_sidecar()?
+            > 0;
+        if migrated_legacy_retrievability_cache_tables
+            || !self
+                .storage
+                .review_retrievability_cache_cleanup_full_sync_marked()?
+        {
+            self.storage
+                .mark_review_retrievability_cache_cleanup_full_sync()?;
+            self.set_schema_modified()?;
+        }
+
         debug!("db check finished: {:#?}", out);
 
         Ok(out)
@@ -481,6 +496,16 @@ mod test {
     use super::*;
     use crate::decks::DeckId;
     use crate::search::SortMode;
+    const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str = "search_stats_fsrs_review_retrievability";
+    const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str = "search_stats_rwkv_review_retrievability";
+
+    fn main_table_exists(col: &Collection, table: &str) -> Result<bool> {
+        col.storage
+            .db
+            .prepare("SELECT null FROM main.sqlite_master WHERE type = 'table' AND name = ?")?
+            .exists([table])
+            .map_err(Into::into)
+    }
 
     #[test]
     fn cards() -> Result<()> {
@@ -597,6 +622,109 @@ mod test {
         assert!(col
             .storage
             .db_scalar::<bool>("select ivl = lastIvl = 1 from revlog")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_retrievability_cache_tables_force_one_way_sync() -> Result<()> {
+        let mut col = Collection::new();
+        col.storage
+            .set_schema_modified_time(TimestampMillis(1_000))?;
+        col.storage.set_last_sync(TimestampMillis(1_000))?;
+        col.storage.db.execute_batch(&format!(
+            "
+            CREATE TABLE main.{FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
+                revlog_id INTEGER NOT NULL,
+                prediction REAL NOT NULL,
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                sample_role TEXT NOT NULL DEFAULT 'final_fit',
+                fold_index INTEGER NOT NULL DEFAULT -1,
+                PRIMARY KEY (revlog_id, sample_role, fold_index, source)
+            );
+            INSERT INTO main.{FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+            VALUES (1, 0.25, 'legacy_fsrs', 123, 'validation_fold', 2);
+            CREATE TABLE main.{RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} (
+                revlog_id INTEGER NOT NULL,
+                prediction REAL NOT NULL,
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                sample_role TEXT NOT NULL DEFAULT 'final_fit',
+                fold_index INTEGER NOT NULL DEFAULT -1,
+                PRIMARY KEY (revlog_id, sample_role, fold_index, source)
+            );
+            INSERT INTO main.{RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+            VALUES (2, 0.75, 'legacy_rwkv', 456, 'test_fold', 0);
+            "
+        ))?;
+
+        assert_eq!(col.check_database()?, Default::default());
+
+        assert!(!main_table_exists(
+            &col,
+            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE
+        )?);
+        assert!(!main_table_exists(
+            &col,
+            RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE
+        )?);
+        assert!(col
+            .storage
+            .get_collection_timestamps()?
+            .schema_changed_since_sync());
+        assert!(col
+            .storage
+            .review_retrievability_cache_cleanup_full_sync_marked()?);
+
+        let fsrs: (f64, String, i64) = col.storage.db.query_row(
+            &format!(
+                "SELECT prediction, sample_role, fold_index \
+                 FROM {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} WHERE revlog_id = 1"
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(fsrs, (0.25, "validation_fold".to_string(), 2));
+
+        let rwkv: (f64, String, i64) = col.storage.db.query_row(
+            &format!(
+                "SELECT prediction, sample_role, fold_index \
+                 FROM {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} WHERE revlog_id = 2"
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(rwkv, (0.75, "test_fold".to_string(), 0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_retrievability_cache_cleanup_marker_forces_one_sync() -> Result<()> {
+        let mut col = Collection::new();
+        col.storage
+            .set_schema_modified_time(TimestampMillis(1_000))?;
+        col.storage.set_last_sync(TimestampMillis(1_000))?;
+
+        assert!(!col
+            .storage
+            .review_retrievability_cache_cleanup_full_sync_marked()?);
+        assert_eq!(col.check_database()?, Default::default());
+        let timestamps = col.storage.get_collection_timestamps()?;
+        assert!(timestamps.schema_changed_since_sync());
+        assert!(col
+            .storage
+            .review_retrievability_cache_cleanup_full_sync_marked()?);
+
+        col.storage.set_last_sync(timestamps.schema_change)?;
+        assert_eq!(col.check_database()?, Default::default());
+        assert!(!col
+            .storage
+            .get_collection_timestamps()?
+            .schema_changed_since_sync());
 
         Ok(())
     }

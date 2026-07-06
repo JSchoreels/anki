@@ -7,6 +7,7 @@
 
 import { protoBase64 } from "@bufbuild/protobuf";
 import {
+    DeckConfig_Config_FsrsVersion,
     DeckConfig_Config_LeechAction,
     DeckConfigsForUpdate,
     UpdateDeckConfigsMode,
@@ -277,6 +278,33 @@ test("saving", () => {
     out = state.dataForSaving(UpdateDeckConfigsMode.APPLY_TO_CHILDREN);
     expect(out.removedConfigIds).toStrictEqual([1618570764780n]);
     expect(out.configs!.map((c) => c.name)).toStrictEqual(["Default"]);
+});
+
+test("clears incompatible FSRS params across presets for optimize all", () => {
+    const state = startingState();
+    const defaultConfig = state.getConfigById(1n)!;
+    const otherConfig = state.getConfigById(1618570764780n)!;
+
+    defaultConfig.config!.fsrsVersion = DeckConfig_Config_FsrsVersion.SEVEN;
+    defaultConfig.config!.fsrsParams7 = Array(35).fill(1);
+    otherConfig.config!.fsrsVersion = DeckConfig_Config_FsrsVersion.SIX;
+    otherConfig.config!.fsrsParams6 = [Number.NaN, ...Array(20).fill(1)];
+
+    expect(state.incompatibleFsrsParamPresetNames()).toStrictEqual([
+        "another one",
+        "Default",
+    ]);
+    expect(state.clearIncompatibleFsrsParams()).toBe(2);
+    expect(state.incompatibleFsrsParamPresetNames()).toStrictEqual([]);
+    expect(get(state.currentConfig).fsrsParams6).toStrictEqual([]);
+
+    const out = state.dataForSaving(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS);
+    expect(out.configs!.map((config) => config.name)).toStrictEqual([
+        "Default",
+        "another one",
+    ]);
+    expect(out.configs![0].config!.fsrsParams7).toStrictEqual([]);
+    expect(out.configs![1].config!.fsrsParams6).toStrictEqual([]);
 });
 
 test("aux data", () => {

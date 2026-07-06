@@ -152,6 +152,10 @@ deck-config-new-gather-priority-tooltip-2 =
     
     `Descending position`: Gathers cards by descending position (due #), which is typically
     the latest-added first.
+
+    `Ascending/descending retrievability (RWKV)`: Gathers cards by RWKV retrievability when
+    RWKV queue scores are available. Cards without an RWKV score fall back to ascending position.
+    These are desktop-only RWKV gather modes.
     
     `Random notes`: Picks notes at random, then gathers all of its cards.
     
@@ -206,6 +210,10 @@ deck-config-new-gather-priority-deck-then-random-notes = Deck, then random notes
 deck-config-new-gather-priority-position-lowest-first = Ascending position
 # Gather new cards ordered by position number, descending (highest to lowest).
 deck-config-new-gather-priority-position-highest-first = Descending position
+# Gather new cards ordered by RWKV retrievability percentage, ascending (0% to 100%, least retrievable to most easily retrievable).
+deck-config-new-gather-priority-ascending-retrievability = Ascending retrievability (RWKV)
+# Gather new cards ordered by RWKV retrievability percentage, descending (100% to 0%, most easily retrievable to least retrievable).
+deck-config-new-gather-priority-descending-retrievability = Descending retrievability (RWKV)
 # Gather the cards ordered by random notes, ensuring all cards of the same note are grouped together.
 deck-config-new-gather-priority-random-notes = Random notes
 # Gather new cards randomly.
@@ -358,6 +366,11 @@ deck-config-rwkv-review-min-elapsed-secs = Minimum elapsed seconds
 deck-config-rwkv-review-min-elapsed-secs-tooltip =
     The number of seconds that must pass before RWKV may show the same card
     again. 0 disables this guard.
+deck-config-rwkv-review-first-review-elapsed-from-card-creation = Use card age for first RWKV review
+deck-config-rwkv-review-first-review-elapsed-from-card-creation-tooltip =
+    When enabled, RWKV uses the time since the card was created as the elapsed
+    time for new cards and first historical reviews. When disabled, first-review
+    elapsed time is treated as unknown.
 deck-config-rwkv-review-dynamic-preset-replay = Dynamic RWKV preset replay
 deck-config-rwkv-review-dynamic-preset-replay-tooltip =
     When enabled, RWKV state-cache building resolves add-on preset overlays and
@@ -374,8 +387,10 @@ deck-config-rwkv-review-preset-tag-state-tooltip =
 deck-config-rwkv-review-japanese-feature-state = Use Japanese feature sets in RWKV preset state
 deck-config-rwkv-review-japanese-feature-state-tooltip =
     Experimental. When enabled, RWKV folds coarse Japanese word features into
-    the preset stream, using the Front, Reading, Front_Kana, and Frequency
-    fields when present. Tags are not used by this option.
+    the preset stream, using the configured Kanji and Reading fields plus
+    Front_Kana and Frequency when present. Tags are not used by this option.
+deck-config-rwkv-review-japanese-kanji-field = Kanji Field
+deck-config-rwkv-review-japanese-reading-field = Reading Field
 deck-config-rwkv-review-self-correction = Enable RWKV self-correction
 deck-config-rwkv-review-self-correction-tooltip =
     Experimental. When enabled, Anki applies a fixed post-RWKV correction layer

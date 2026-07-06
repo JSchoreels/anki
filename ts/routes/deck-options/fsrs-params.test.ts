@@ -25,14 +25,14 @@ test("fsrsParams uses selected version when usable", () => {
     const config = new DeckConfig_Config();
     config.fsrsVersion = DeckConfig_Config_FsrsVersion.SIX;
     config.fsrsParams6 = Array.from({ length: 21 }, (_, i) => 50 + i);
-    config.fsrsParams7 = Array.from({ length: 35 }, (_, i) => 100 + i);
+    config.fsrsParams7 = Array.from({ length: 34 }, (_, i) => 100 + i);
     expect(fsrsParams(config)).toStrictEqual(config.fsrsParams6);
 });
 
-test("fsrsParams accepts 35-parameter FSRS-7", () => {
+test("fsrsParams accepts 34-parameter FSRS-7", () => {
     const config = new DeckConfig_Config();
     config.fsrsParams6 = Array.from({ length: 21 }, (_, i) => i + 1);
-    config.fsrsParams7 = Array.from({ length: 35 }, (_, i) => 100 + i);
+    config.fsrsParams7 = Array.from({ length: 34 }, (_, i) => 100 + i);
     expect(fsrsParams(config)).toStrictEqual(config.fsrsParams7);
 });
 
@@ -49,9 +49,9 @@ test("withSelectedFsrsParams updates FSRS-7 params immutably", () => {
     const config = new DeckConfig_Config();
     config.fsrsVersion = DeckConfig_Config_FsrsVersion.SEVEN;
     config.fsrsParams6 = Array.from({ length: 21 }, (_, i) => 10 + i);
-    config.fsrsParams7 = Array.from({ length: 35 }, (_, i) => 100 + i);
+    config.fsrsParams7 = Array.from({ length: 34 }, (_, i) => 100 + i);
 
-    const updatedParams = Array.from({ length: 35 }, (_, i) => 200 + i);
+    const updatedParams = Array.from({ length: 34 }, (_, i) => 200 + i);
     const updated = withSelectedFsrsParams(config, updatedParams);
 
     expect(updated).not.toBe(config);
@@ -64,7 +64,7 @@ test("withSelectedFsrsParams updates selected FSRS-6 params only", () => {
     const config = new DeckConfig_Config();
     config.fsrsVersion = DeckConfig_Config_FsrsVersion.SIX;
     config.fsrsParams6 = Array.from({ length: 21 }, (_, i) => 10 + i);
-    config.fsrsParams7 = Array.from({ length: 35 }, (_, i) => 100 + i);
+    config.fsrsParams7 = Array.from({ length: 34 }, (_, i) => 100 + i);
 
     const updatedParams = Array.from({ length: 21 }, (_, i) => 300 + i);
     const updated = withSelectedFsrsParams(config, updatedParams);

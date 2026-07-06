@@ -113,7 +113,7 @@ mod tests {
             0.4843, 3.0562, 10.9946, 32.7202, 5.6296, 0.5900, 3.1230, 2.4679, 0.2733, 1.4895,
             0.4868, 0.0010, 0.8082, 0.1723, 0.6389, 1.5767, 0.8918, 0.3341, 3.5942, 0.3455, 0.0022,
             0.2834, 2.6418, 0.5604, 1.3042, 2.5054, 0.9376, 0.0611, 0.0830, 0.6339, 0.9846, 0.2485,
-            0.6014, 0.0545, 0.0,
+            0.6014, 0.0545,
         ]
     }
 
@@ -164,10 +164,11 @@ mod tests {
         card.memory_state = Some(FsrsMemoryState {
             stability,
             stability_internal: stability,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(timing.now.adding_secs(-(elapsed_days as i64) * 86_400));
-        card.decay = Some(params[27]);
+        card.decay = Some(params[23]);
         col.storage.update_card(&card)?;
 
         let graphs = col.graph_data_for_search("", 365)?;
@@ -176,6 +177,7 @@ mod tests {
             MemoryState {
                 stability,
                 difficulty: 5.0,
+                stability_fast: stability,
             },
             elapsed_days,
         ) * 100.0;
@@ -198,6 +200,7 @@ mod tests {
         card.memory_state = Some(FsrsMemoryState {
             stability: 42.0,
             stability_internal: 42.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(timing.now);
@@ -219,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn retrievability_graph_uses_active_rwkv_score_precedence() -> Result<()> {
+    fn retrievability_graph_uses_matching_stats_rwkv_scores() -> Result<()> {
         let mut col = Collection::new();
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -232,6 +235,7 @@ mod tests {
         card.memory_state = Some(FsrsMemoryState {
             stability: 42.0,
             stability_internal: 42.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(timing.now);
@@ -244,15 +248,15 @@ mod tests {
         let graphs = col.graph_data_for_search("", 365)?;
         let retrievability = graphs.retrievability.unwrap();
         let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
-        assert_eq!(format!("{:.1}", retrievability.average), "83.0");
-        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "83.0");
+        assert_eq!(format!("{:.1}", retrievability.average), "25.0");
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
 
         col.set_rwkv_card_info_score(cid, None)?;
         let graphs = col.graph_data_for_search("", 365)?;
         let retrievability = graphs.retrievability.unwrap();
         let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
-        assert_eq!(format!("{:.1}", retrievability.average), "57.0");
-        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "57.0");
+        assert_eq!(format!("{:.1}", retrievability.average), "25.0");
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
 
         col.set_rwkv_review_queue_scores(DeckId(1), HashMap::new())?;
         let graphs = col.graph_data_for_search("", 365)?;
@@ -260,6 +264,11 @@ mod tests {
         let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
         assert_eq!(format!("{:.1}", retrievability.average), "25.0");
         assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
+
+        col.set_rwkv_stats_graph_scores("deck:other".into(), HashMap::from([(cid, 0.91)]))?;
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        assert!(retrievability.rwkv.is_none());
         Ok(())
     }
 }

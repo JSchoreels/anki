@@ -82,12 +82,7 @@ impl RelearnState {
                 },
                 review: again_review,
             };
-            if ctx.fsrs_allow_short_term
-                && ctx.fsrs_short_term_with_steps_enabled
-                && ctx.fsrs_uses_learning_queues()
-                && ctx.relearn_steps.is_empty()
-                && interval < 0.5
-            {
+            if ctx.fsrs_uses_short_term_learning_queue() && interval < 0.5 {
                 again_relearn.into()
             } else {
                 again_review.into()
@@ -132,18 +127,14 @@ impl RelearnState {
             };
             let hard_relearn = RelearnState {
                 learning: LearnState {
+                    remaining_steps: 0,
                     scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     memory_state,
-                    ..self.learning
+                    elapsed_secs: self.learning.elapsed_secs,
                 },
                 review: hard_review,
             };
-            if ctx.fsrs_allow_short_term
-                && ctx.fsrs_short_term_with_steps_enabled
-                && ctx.fsrs_uses_learning_queues()
-                && ctx.relearn_steps.is_empty()
-                && interval < 0.5
-            {
+            if ctx.fsrs_uses_short_term_learning_queue() && interval < 0.5 {
                 hard_relearn.into()
             } else {
                 hard_review.into()
@@ -192,20 +183,13 @@ impl RelearnState {
             let good_relearn = RelearnState {
                 learning: LearnState {
                     scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
-                    remaining_steps: ctx
-                        .relearn_steps
-                        .remaining_for_good(self.learning.remaining_steps),
+                    remaining_steps: 0,
                     memory_state,
-                    ..self.learning
+                    elapsed_secs: self.learning.elapsed_secs,
                 },
                 review: good_review,
             };
-            if ctx.fsrs_allow_short_term
-                && ctx.fsrs_short_term_with_steps_enabled
-                && ctx.fsrs_uses_learning_queues()
-                && ctx.relearn_steps.is_empty()
-                && interval < 0.5
-            {
+            if ctx.fsrs_uses_short_term_learning_queue() && interval < 0.5 {
                 good_relearn.into()
             } else {
                 good_review.into()
@@ -232,5 +216,69 @@ impl RelearnState {
             memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
             ..self.review
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use fsrs::ItemState;
+    use fsrs::MemoryState;
+    use fsrs::NextStates;
+
+    use super::*;
+    use crate::scheduler::states::steps::LearningSteps;
+
+    fn fsrs_item_state(interval: f32) -> ItemState {
+        ItemState {
+            interval,
+            memory: MemoryState {
+                stability: 0.1,
+                difficulty: 5.0,
+                stability_fast: 0.1,
+            },
+        }
+    }
+
+    #[test]
+    fn fsrs_short_term_can_follow_configured_relearning_steps() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.relearn_steps = LearningSteps::new(&[10.0]);
+        ctx.fsrs_allow_short_term = true;
+        ctx.fsrs_short_term_with_steps_enabled = true;
+        ctx.fsrs_minimum_interval_secs = 5;
+        ctx.fsrs_next_states = Some(NextStates {
+            again: fsrs_item_state(0.000001),
+            hard: fsrs_item_state(0.000001),
+            good: fsrs_item_state(0.000001),
+            easy: fsrs_item_state(1.0),
+        });
+
+        let state = RelearnState {
+            learning: LearnState {
+                remaining_steps: 1,
+                scheduled_secs: 600,
+                elapsed_secs: 0,
+                memory_state: None,
+            },
+            review: ReviewState {
+                scheduled_days: 1,
+                elapsed_days: 1,
+                ..Default::default()
+            },
+        };
+        let next = state.next_states(&ctx);
+
+        let CardState::Normal(super::super::NormalState::Relearning(good)) = next.good else {
+            panic!("Good should stay in short-term relearning after final configured step");
+        };
+        assert_eq!(good.learning.remaining_steps, 0);
+        assert_eq!(good.learning.scheduled_secs, 5);
+
+        let followup = good.next_states(&ctx);
+        let CardState::Normal(super::super::NormalState::Relearning(hard)) = followup.hard else {
+            panic!("Hard should stay in FSRS short-term relearning");
+        };
+        assert_eq!(hard.learning.remaining_steps, 0);
+        assert_eq!(hard.learning.scheduled_secs, 5);
     }
 }

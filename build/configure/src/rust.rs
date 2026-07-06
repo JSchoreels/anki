@@ -144,6 +144,10 @@ fn build_rsbridge(build: &mut Build) -> Result<()> {
         CargoBuild {
             inputs: inputs![
                 glob!["{pylib/rsbridge/**,rslib/**}"],
+                // a local `../fsrs-rs` path-dependency checkout, if present, so
+                // edits to it trigger a rebuild (no-op when fsrs is a git rev
+                // and the sibling dir is absent, e.g. upstream / fresh clones)
+                glob!["../fsrs-rs/{src/**,Cargo.toml}"],
                 // declare a dependency on i18n/proto so they get built first, allowing
                 // things depending on them to build faster, and ensuring
                 // changes to the ftl files trigger a rebuild

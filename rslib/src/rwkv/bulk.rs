@@ -310,49 +310,22 @@ fn run_module(
         })
         .collect();
 
-    let mut chunk_start = 0;
-    while chunk_start < rows {
-        let chunk_end = (chunk_start + chunk_size).min(rows);
-        let chunk_rows = chunk_end - chunk_start;
+    let mut v0 = vec![0.0; rows * D_MODEL];
+    let mut v0_query = x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]);
 
-        // Streams with rows in this chunk; row lists are ascending, so the
-        // chunk's slice of each stream is contiguous.
-        let mut chunk_rows_by_stream: Vec<&[u32]> = vec![&[]; plan.streams.len()];
-        let mut chunk_streams = Vec::new();
-        for (stream_index, stream) in plan.streams.iter().enumerate() {
-            let low = stream
-                .rows
-                .partition_point(|&row| (row as usize) < chunk_start);
-            let high = stream
-                .rows
-                .partition_point(|&row| (row as usize) < chunk_end);
-            if low < high {
-                chunk_rows_by_stream[stream_index] = &stream.rows[low..high];
-                chunk_streams.push(stream_index);
-            }
-        }
-
-        let mut v0 = vec![0.0; chunk_rows * D_MODEL];
-        let mut v0_query = x_query.as_ref().map(|_| vec![0.0; chunk_rows * D_MODEL]);
-
-        for (layer_id, layer) in module.layers.iter().enumerate() {
-            run_layer_chunk(LayerChunk {
-                layer,
-                layer_id,
-                plan: &plan,
-                stream_layers: &mut stream_layers,
-                chunk_rows_by_stream: &chunk_rows_by_stream,
-                chunk_streams: &chunk_streams,
-                chunk_start,
-                chunk_rows,
-                x,
-                v0: &mut v0,
-                x_query: x_query.as_deref_mut(),
-                v0_query: v0_query.as_deref_mut(),
-            });
-        }
-
-        chunk_start = chunk_end;
+    for (layer_id, layer) in module.layers.iter().enumerate() {
+        run_layer_chunks(LayerChunks {
+            layer,
+            layer_id,
+            plan: &plan,
+            stream_layers: &mut stream_layers,
+            rows,
+            chunk_size,
+            x,
+            v0: &mut v0,
+            x_query: x_query.as_deref_mut(),
+            v0_query: v0_query.as_deref_mut(),
+        });
     }
 
     for (stream, layers) in plan.streams.iter().zip(stream_layers) {
@@ -362,76 +335,273 @@ fn run_module(
     }
 }
 
-struct LayerChunk<'a> {
+struct LayerChunks<'a> {
     layer: &'a RwkvLayer,
     layer_id: usize,
     plan: &'a ModulePlan,
     stream_layers: &'a mut [Vec<LayerState>],
-    chunk_rows_by_stream: &'a [&'a [u32]],
-    chunk_streams: &'a [usize],
-    chunk_start: usize,
-    chunk_rows: usize,
+    rows: usize,
+    chunk_size: usize,
     x: &'a mut [f32],
     v0: &'a mut [f32],
     x_query: Option<&'a mut [f32]>,
     v0_query: Option<&'a mut [f32]>,
 }
 
-fn run_layer_chunk(chunk: LayerChunk<'_>) {
-    let LayerChunk {
+fn run_layer_chunks(chunks: LayerChunks<'_>) {
+    let LayerChunks {
         layer,
         layer_id,
         plan,
         stream_layers,
-        chunk_rows_by_stream,
-        chunk_streams,
-        chunk_start,
-        chunk_rows,
+        rows,
+        chunk_size,
         x,
         v0,
         mut x_query,
         mut v0_query,
-    } = chunk;
+    } = chunks;
+
+    let mut time_shifts = initial_time_shifts(stream_layers, layer_id);
+    let mut chunk_start = 0;
+    let mut current = Some(prepare_layer_time_stage(LayerTimeStageInput {
+        layer,
+        plan,
+        time_shifts: &time_shifts,
+        chunk_start,
+        chunk_rows: chunk_size.min(rows),
+        x_snapshot: &x[..chunk_size.min(rows) * D_MODEL],
+        v0_snapshot: &v0[..chunk_size.min(rows) * D_MODEL],
+        x_query_snapshot: x_query
+            .as_deref()
+            .map(|x_query| &x_query[..chunk_size.min(rows) * D_MODEL]),
+        v0_query_snapshot: v0_query
+            .as_deref()
+            .map(|v0_query| &v0_query[..chunk_size.min(rows) * D_MODEL]),
+    }));
+
+    while chunk_start < rows {
+        let chunk_end = (chunk_start + chunk_size).min(rows);
+        let chunk_layout = ChunkStreamLayout::build(plan, chunk_start, chunk_end);
+        let stage = current.take().expect("prepared layer stage");
+        update_time_shifts_for_chunk(&mut time_shifts, &chunk_layout, &stage.x_norm);
+
+        let next_chunk_start = chunk_end;
+        if next_chunk_start < rows {
+            let next_chunk_end = (next_chunk_start + chunk_size).min(rows);
+            let next_chunk_rows = next_chunk_end - next_chunk_start;
+            let next_time_shifts = time_shifts.clone();
+            let x_next = x[next_chunk_start * D_MODEL..next_chunk_end * D_MODEL].to_vec();
+            let v0_next = v0[next_chunk_start * D_MODEL..next_chunk_end * D_MODEL].to_vec();
+            let x_query_next = x_query.as_deref().map(|x_query| {
+                x_query[next_chunk_start * D_MODEL..next_chunk_end * D_MODEL].to_vec()
+            });
+            let v0_query_next = v0_query.as_deref().map(|v0_query| {
+                v0_query[next_chunk_start * D_MODEL..next_chunk_end * D_MODEL].to_vec()
+            });
+
+            let (next, ()) = rayon::join(
+                || {
+                    prepare_layer_time_stage(LayerTimeStageInput {
+                        layer,
+                        plan,
+                        time_shifts: &next_time_shifts,
+                        chunk_start: next_chunk_start,
+                        chunk_rows: next_chunk_rows,
+                        x_snapshot: &x_next,
+                        v0_snapshot: &v0_next,
+                        x_query_snapshot: x_query_next.as_deref(),
+                        v0_query_snapshot: v0_query_next.as_deref(),
+                    })
+                },
+                || {
+                    finish_layer_time_stage(LayerTimeStageOutput {
+                        layer,
+                        layer_id,
+                        plan,
+                        stream_layers,
+                        chunk_layout: &chunk_layout,
+                        stage,
+                        x,
+                        v0,
+                        x_query: x_query.as_deref_mut(),
+                        v0_query: v0_query.as_deref_mut(),
+                    });
+                },
+            );
+            current = Some(next);
+        } else {
+            finish_layer_time_stage(LayerTimeStageOutput {
+                layer,
+                layer_id,
+                plan,
+                stream_layers,
+                chunk_layout: &chunk_layout,
+                stage,
+                x,
+                v0,
+                x_query: x_query.as_deref_mut(),
+                v0_query: v0_query.as_deref_mut(),
+            });
+        }
+
+        chunk_start = chunk_end;
+    }
+}
+
+struct ChunkStreamLayout<'a> {
+    chunk_start: usize,
+    chunk_rows: usize,
+    rows_by_stream: Vec<&'a [u32]>,
+    streams: Vec<usize>,
+}
+
+impl<'a> ChunkStreamLayout<'a> {
+    fn build(plan: &'a ModulePlan, chunk_start: usize, chunk_end: usize) -> Self {
+        let mut rows_by_stream: Vec<&[u32]> = vec![&[]; plan.streams.len()];
+        let mut streams = Vec::new();
+        for (stream_index, stream) in plan.streams.iter().enumerate() {
+            let low = stream
+                .rows
+                .partition_point(|&row| (row as usize) < chunk_start);
+            let high = stream
+                .rows
+                .partition_point(|&row| (row as usize) < chunk_end);
+            if low < high {
+                rows_by_stream[stream_index] = &stream.rows[low..high];
+                streams.push(stream_index);
+            }
+        }
+        Self {
+            chunk_start,
+            chunk_rows: chunk_end - chunk_start,
+            rows_by_stream,
+            streams,
+        }
+    }
+}
+
+struct LayerTimeStage {
+    chunk_start: usize,
+    chunk_rows: usize,
+    x_norm: Vec<f32>,
+    parts: BulkTimeMixParts,
+    parts_query: Option<BulkTimeMixParts>,
+}
+
+struct LayerTimeStageInput<'a> {
+    layer: &'a RwkvLayer,
+    plan: &'a ModulePlan,
+    time_shifts: &'a [Option<Vec<f32>>],
+    chunk_start: usize,
+    chunk_rows: usize,
+    x_snapshot: &'a [f32],
+    v0_snapshot: &'a [f32],
+    x_query_snapshot: Option<&'a [f32]>,
+    v0_query_snapshot: Option<&'a [f32]>,
+}
+
+fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
+    let LayerTimeStageInput {
+        layer,
+        plan,
+        time_shifts,
+        chunk_start,
+        chunk_rows,
+        x_snapshot,
+        v0_snapshot,
+        x_query_snapshot,
+        v0_query_snapshot,
+    } = input;
     let mixer = &layer.time_mixer;
 
-    // Time mixer, pointwise pre-recurrence stage.
-    let x_norm = normed_rows(&mixer.layer_norm, x, chunk_start, chunk_rows);
-    let x_norm_query = x_query
+    let x_norm = normed_rows_from(&mixer.layer_norm, x_snapshot, chunk_rows);
+    let x_norm_query = x_query_snapshot
         .as_ref()
-        .map(|x_query| normed_rows(&mixer.layer_norm, x_query, chunk_start, chunk_rows));
+        .map(|x_query| normed_rows_from(&mixer.layer_norm, x_query, chunk_rows));
 
     let parts = time_parts(
         mixer,
-        layer_id,
         plan,
-        stream_layers,
+        time_shifts,
         chunk_start,
         chunk_rows,
         &x_norm,
         &x_norm,
-        v0,
+        v0_snapshot,
     );
-    if layer_id == 0 {
-        fill_v0(v0, &parts);
-    }
     let parts_query = x_norm_query.as_ref().map(|x_norm_query| {
-        let v0_query = v0_query.take().expect("query v0 buffer");
-        let parts_query = time_parts(
+        time_parts(
             mixer,
-            layer_id,
             plan,
-            stream_layers,
+            time_shifts,
             chunk_start,
             chunk_rows,
             x_norm_query,
             &x_norm,
-            v0_query,
-        );
-        if layer_id == 0 {
-            fill_v0(v0_query, &parts_query);
-        }
-        parts_query
+            v0_query_snapshot.expect("query v0 buffer"),
+        )
     });
+
+    LayerTimeStage {
+        chunk_start,
+        chunk_rows,
+        x_norm,
+        parts,
+        parts_query,
+    }
+}
+
+struct LayerTimeStageOutput<'a> {
+    layer: &'a RwkvLayer,
+    layer_id: usize,
+    plan: &'a ModulePlan,
+    stream_layers: &'a mut [Vec<LayerState>],
+    chunk_layout: &'a ChunkStreamLayout<'a>,
+    stage: LayerTimeStage,
+    x: &'a mut [f32],
+    v0: &'a mut [f32],
+    x_query: Option<&'a mut [f32]>,
+    v0_query: Option<&'a mut [f32]>,
+}
+
+fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
+    let LayerTimeStageOutput {
+        layer,
+        layer_id,
+        plan,
+        stream_layers,
+        chunk_layout,
+        stage,
+        x,
+        v0,
+        mut x_query,
+        v0_query,
+    } = output;
+    let LayerTimeStage {
+        chunk_start,
+        chunk_rows,
+        x_norm,
+        parts,
+        parts_query,
+    } = stage;
+    debug_assert_eq!(chunk_start, chunk_layout.chunk_start);
+    debug_assert_eq!(chunk_rows, chunk_layout.chunk_rows);
+
+    if layer_id == 0 {
+        fill_v0(
+            &mut v0[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL],
+            &parts,
+        );
+        if let (Some(v0_query), Some(parts_query)) = (v0_query, &parts_query) {
+            fill_v0(
+                &mut v0_query[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL],
+                parts_query,
+            );
+        }
+    }
+
+    let mixer = &layer.time_mixer;
 
     // Recurrence sweep: sequential within a stream, parallel across streams.
     // Query rows read the pre-review state; only answer rows advance it.
@@ -443,7 +613,7 @@ fn run_layer_chunk(chunk: LayerChunk<'_>) {
         .par_iter_mut()
         .enumerate()
         .map(|(stream_index, layers)| {
-            let stream_rows = chunk_rows_by_stream[stream_index];
+            let stream_rows = chunk_layout.rows_by_stream[stream_index];
             if stream_rows.is_empty() {
                 return None;
             }
@@ -494,11 +664,12 @@ fn run_layer_chunk(chunk: LayerChunk<'_>) {
             Some((outs, outs_query))
         })
         .collect();
-    for &stream_index in chunk_streams {
+    for &stream_index in &chunk_layout.streams {
         let Some((outs, outs_query)) = &sweep_outs[stream_index] else {
             continue;
         };
-        for (position, &stream_row) in chunk_rows_by_stream[stream_index].iter().enumerate() {
+        for (position, &stream_row) in chunk_layout.rows_by_stream[stream_index].iter().enumerate()
+        {
             let index = stream_row as usize - chunk_start;
             recurrence[index * D_MODEL..(index + 1) * D_MODEL]
                 .copy_from_slice(&outs[position * D_MODEL..(position + 1) * D_MODEL]);
@@ -557,13 +728,43 @@ fn run_layer_chunk(chunk: LayerChunk<'_>) {
         );
     }
 
-    for &stream_index in chunk_streams {
+    for &stream_index in &chunk_layout.streams {
         if plan.streams[stream_index].key.is_none() {
             continue;
         }
-        let stream_rows = chunk_rows_by_stream[stream_index];
+        let stream_rows = chunk_layout.rows_by_stream[stream_index];
         let last = *stream_rows.last().unwrap() as usize - chunk_start;
         stream_layers[stream_index][layer_id].channel_shift = Some(row(&cm_norm, last).to_vec());
+    }
+}
+
+fn initial_time_shifts(
+    stream_layers: &[Vec<LayerState>],
+    layer_id: usize,
+) -> Vec<Option<Vec<f32>>> {
+    stream_layers
+        .iter()
+        .map(|layers| {
+            layers[layer_id]
+                .time
+                .as_ref()
+                .map(|time| time.x_shift.clone())
+        })
+        .collect()
+}
+
+fn update_time_shifts_for_chunk(
+    time_shifts: &mut [Option<Vec<f32>>],
+    chunk_layout: &ChunkStreamLayout<'_>,
+    x_norm: &[f32],
+) {
+    for &stream_index in &chunk_layout.streams {
+        let stream_rows = chunk_layout.rows_by_stream[stream_index];
+        if stream_rows.is_empty() {
+            continue;
+        }
+        let last = *stream_rows.last().unwrap() as usize - chunk_layout.chunk_start;
+        time_shifts[stream_index] = Some(row(x_norm, last).to_vec());
     }
 }
 
@@ -652,9 +853,8 @@ fn resolve_shift<'a>(
 #[allow(clippy::too_many_arguments)]
 fn time_parts(
     mixer: &TimeMixer,
-    layer_id: usize,
     plan: &ModulePlan,
-    stream_layers: &[Vec<LayerState>],
+    time_shifts: &[Option<Vec<f32>>],
     chunk_start: usize,
     chunk_rows: usize,
     x_norm: &[f32],
@@ -678,9 +878,8 @@ fn time_parts(
             |(block_index, (((((((r, k), v), w), a), k_deformed), g), next_v0))| {
                 time_parts_block(
                     mixer,
-                    layer_id,
                     plan,
-                    stream_layers,
+                    time_shifts,
                     chunk_start,
                     block_index * LINEAR_BLOCK_ROWS,
                     x_norm,
@@ -709,9 +908,8 @@ fn time_parts(
 #[allow(clippy::too_many_arguments)]
 fn time_parts_block(
     mixer: &TimeMixer,
-    layer_id: usize,
     plan: &ModulePlan,
-    stream_layers: &[Vec<LayerState>],
+    time_shifts: &[Option<Vec<f32>>],
     chunk_start: usize,
     block_start: usize,
     x_norm: &[f32],
@@ -733,12 +931,7 @@ fn time_parts_block(
             chunk_start,
             x_norm_answer,
             own,
-            |stream_index| {
-                stream_layers[stream_index][layer_id]
-                    .time
-                    .as_ref()
-                    .map(|time| time.x_shift.as_slice())
-            },
+            |stream_index| time_shifts[stream_index].as_deref(),
         );
     }
     let fill_mixed = |mix_id: usize, mixed: &mut [f32]| {

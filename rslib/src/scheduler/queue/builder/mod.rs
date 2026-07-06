@@ -154,10 +154,15 @@ impl QueueBuilder {
             new_cards_ignore_review_limit,
         );
         let sort_options = sort_options(&root_deck, &config_map);
-        let rwkv_review_queue_scores = sort_options
-            .uses_rwkv_review_order()
-            .then(|| col.rwkv_review_queue_scores(root_deck.id, timing.days_elapsed))
-            .flatten();
+        let rwkv_review_queue_scores = if sort_options.uses_rwkv_retrievability_scores() {
+            col.rwkv_review_queue_scores(root_deck.id, timing.days_elapsed)
+                .or_else(|| {
+                    col.rwkv_review_queue_scores_for_day(timing.days_elapsed)
+                        .map(|(_, scores)| scores)
+                })
+        } else {
+            None
+        };
         let deck_map = col.storage.get_decks_map()?;
 
         let load_balancer = col
@@ -289,6 +294,15 @@ impl QueueSortOptions {
                 self.review_order,
                 ReviewCardOrder::RetrievabilityAscending
                     | ReviewCardOrder::RetrievabilityDescending
+            )
+    }
+
+    fn uses_rwkv_retrievability_scores(&self) -> bool {
+        self.uses_rwkv_review_order()
+            || matches!(
+                self.new_gather_priority,
+                NewCardGatherPriority::AscendingRetrievability
+                    | NewCardGatherPriority::DescendingRetrievability
             )
     }
 
@@ -682,6 +696,7 @@ mod test {
             card.memory_state = Some(FsrsMemoryState {
                 stability: 30.0,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             });
             card.desired_retention = Some(0.8);
@@ -719,6 +734,7 @@ mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability,
             stability_internal: stability,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.desired_retention = Some(0.9);
@@ -917,6 +933,102 @@ mod test {
         )?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![new_card, review]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_descending_retrievability_gathers_new_cards() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_gather_order(&mut deck, NewCardGatherPriority::DescendingRetrievability);
+
+        let first = CardAdder::new().add(&mut col)[0].id;
+        let second = CardAdder::new().add(&mut col)[0].id;
+        let unscored = CardAdder::new().add(&mut col)[0].id;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.80)]))?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![second, first, unscored]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_retrievability_gather_uses_current_day_scores_when_deck_id_differs() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        let prepared_deck = DeckAdder::new("Prepared").add(&mut col);
+        col.set_deck_gather_order(&mut deck, NewCardGatherPriority::DescendingRetrievability);
+
+        let first = CardAdder::new().add(&mut col)[0].id;
+        let second = CardAdder::new().add(&mut col)[0].id;
+        col.set_rwkv_review_queue_scores(
+            prepared_deck.id,
+            HashMap::from([(first, 0.10), (second, 0.80)]),
+        )?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![second, first]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_retrievability_gather_is_not_overridden_by_new_card_sort_order() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        let mut conf = DeckConfig::default();
+        conf.inner.new_card_gather_priority =
+            NewCardGatherPriority::DescendingRetrievability as i32;
+        conf.inner.new_card_sort_order = NewCardSortOrder::Template as i32;
+        col.add_or_update_deck_config(&mut conf)?;
+        deck.normal_mut().unwrap().config_id = conf.id.0;
+        col.add_or_update_deck(&mut deck)?;
+
+        let siblings = CardAdder::new().siblings(2).add(&mut col);
+        let lower_template = siblings[0].id;
+        let higher_template = siblings[1].id;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(lower_template, 0.61), (higher_template, 0.83)]),
+        )?;
+
+        assert_eq!(
+            col.queue_as_ids(deck.id),
+            vec![higher_template, lower_template]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_descending_retrievability_gathers_new_cards_across_child_decks() -> Result<()> {
+        let mut col = Collection::new();
+        let mut parent = DeckAdder::new("Parent").add(&mut col);
+        let child1 = DeckAdder::new("Parent::Child 1").add(&mut col);
+        let child2 = DeckAdder::new("Parent::Child 2").add(&mut col);
+        let child3 = DeckAdder::new("Parent::Child 3").add(&mut col);
+        col.set_deck_gather_order(&mut parent, NewCardGatherPriority::DescendingRetrievability);
+
+        let card32 = CardAdder::new().deck(child1.id).add(&mut col)[0].id;
+        let card33 = CardAdder::new().deck(child2.id).add(&mut col)[0].id;
+        let card35 = CardAdder::new().deck(child3.id).add(&mut col)[0].id;
+        col.set_rwkv_review_queue_scores(
+            parent.id,
+            HashMap::from([(card32, 0.32), (card33, 0.33), (card35, 0.35)]),
+        )?;
+
+        assert_eq!(col.queue_as_ids(parent.id), vec![card35, card33, card32]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_ascending_retrievability_gathers_new_cards() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_gather_order(&mut deck, NewCardGatherPriority::AscendingRetrievability);
+
+        let first = CardAdder::new().add(&mut col)[0].id;
+        let second = CardAdder::new().add(&mut col)[0].id;
+        let unscored = CardAdder::new().add(&mut col)[0].id;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.80)]))?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![first, second, unscored]);
         Ok(())
     }
 

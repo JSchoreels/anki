@@ -177,6 +177,8 @@ class Reviewer:
         self._v3: V3CardInfo | None = None
         self._desired_retention_override: float | None = None
         self._qa_update_id = 0
+        self._question_update_id: int | None = None
+        self._question_rendered = False
         self._answer_update_id: int | None = None
         self._answer_rendered = False
         self._review_actions_blocked = False
@@ -234,6 +236,10 @@ class Reviewer:
             self._prepare_rwkv_queue_order_on_exit()
         self.card = None
         self.auto_advance_enabled = False
+        self._question_update_id = None
+        self._question_rendered = False
+        self._answer_update_id = None
+        self._answer_rendered = False
         self.set_review_actions_blocked(False)
         self._set_review_answer_actions_blocked(False)
 
@@ -242,6 +248,12 @@ class Reviewer:
             if aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self):
                 self.nextCard()
                 self.mw.fade_in_webview()
+                self._refresh_needed = None
+            elif self._current_card_is_rwkv_undo_restored():
+                logger.debug(
+                    "ignored study queue refresh while RWKV undo-restored card is active: card_id=%s",
+                    self.card.id if self.card else None,
+                )
                 self._refresh_needed = None
             elif aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
                 self._refresh_needed = None
@@ -280,12 +292,25 @@ class Reviewer:
 
         should_refresh = focused or (
             self._refresh_needed is RefreshNeeded.QUEUES
-            and aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self)
+            and (
+                aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self)
+                or self._current_card_is_rwkv_undo_restored()
+            )
         )
         if should_refresh and self._refresh_needed:
             self.refresh_if_needed()
 
         return bool(self._refresh_needed)
+
+    def _current_card_is_rwkv_undo_restored(self) -> bool:
+        return bool(
+            self.card is not None
+            and getattr(
+                self,
+                "_rwkv_undo_restored_card_requires_queue_invalidation",
+                False,
+            )
+        )
 
     def _redraw_current_card(self) -> None:
         self.card.load()
@@ -339,6 +364,10 @@ class Reviewer:
         self._v3 = None
         self._scheduling_states_pending = False
         self._desired_retention_override = None
+        self._question_update_id = None
+        self._question_rendered = False
+        self._answer_update_id = None
+        self._answer_rendered = False
         self._rwkv_undo_restored_card_requires_queue_invalidation = False
         restored_undo_card = self._get_rwkv_undo_restored_card()
         if not restored_undo_card:
@@ -688,6 +717,7 @@ class Reviewer:
         self._reps += 1
         self.state = "question"
         self.typedAnswer: str | None = None
+        self._question_rendered = False
         self._answer_update_id = None
         self._answer_rendered = False
         c = self.card
@@ -712,6 +742,7 @@ class Reviewer:
         bodyclass = theme_manager.body_classes_for_card_ord(c.ord)
         a = self.mw.col.media.escape_media_filenames(c.answer())
         update_context = self._next_qa_update_context("question")
+        self._question_update_id = self._qa_update_id
 
         self.web.eval(
             f"_showQuestion({json.dumps(q)}, {json.dumps(a)}, "
@@ -731,6 +762,33 @@ class Reviewer:
         gui_hooks.reviewer_did_show_question(c)
         self._auto_advance_to_answer_if_enabled()
         self._run_after_question_shown_callbacks()
+
+    def _current_question_is_rendered(self, update_id: int | None = None) -> bool:
+        if self.state != "question" or self.card is None:
+            return False
+        if not getattr(self, "_question_rendered", False):
+            return False
+        if update_id is not None and update_id != getattr(
+            self, "_question_update_id", None
+        ):
+            return False
+        return True
+
+    def _on_question_rendered(self, update_id: int) -> None:
+        if self.state != "question" or self.card is None:
+            return
+        if self._question_update_id != update_id:
+            self._question_rendered = False
+            logger.debug(
+                "ignored stale question render: current_update_id=%s rendered_update_id=%s card_id=%s",
+                self._question_update_id,
+                update_id,
+                self.card.id,
+            )
+            return
+
+        self._question_rendered = True
+        self.web.update()
 
     def _auto_advance_to_answer_if_enabled(self) -> None:
         self._clear_auto_advance_timers()
@@ -793,6 +851,13 @@ class Reviewer:
             return
         if self.card is None or self._v3 is None:
             return
+        if self.state == "question" and not self._current_question_is_rendered():
+            logger.debug(
+                "ignored show answer before current question rendered: card_id=%s update_id=%s",
+                self.card.id,
+                self._question_update_id,
+            )
+            return
         self.state = "answer"
         c = self.card
         a = c.answer()
@@ -826,6 +891,7 @@ class Reviewer:
         self._showEaseButtons()
         self.mw.web.setFocus()
         gui_hooks.reviewer_did_show_answer(self.card)
+        self._precompute_rwkv_queue_order_for_answer()
         self._auto_advance_to_question_if_enabled()
 
     def _auto_advance_to_question_if_enabled(self) -> None:
@@ -956,25 +1022,55 @@ class Reviewer:
             return
 
         rwkv_queue_order_enabled = aqt.rwkv_scheduler.reviewer_queue_order_enabled(self)
-        if (
+        rwkv_queue_order_refresh_due = (
             rwkv_queue_order_enabled
             and aqt.rwkv_scheduler.reviewer_queue_order_refresh_due(self)
-        ):
+        )
+        rwkv_last_queued_card = (
+            rwkv_queue_order_enabled and self._answered_card_was_last_queued_card()
+        )
+        if rwkv_queue_order_refresh_due or rwkv_last_queued_card:
             queued_at = time.monotonic()
             answered_card_id = self.card.id
-            self._run_after_next_question_shown(
-                lambda: self._prepare_rwkv_queue_order_then_next_card(
-                    queued_at,
-                    answered_card_id=answered_card_id,
+            refresh_before_next_card = (
+                rwkv_queue_order_refresh_due
+                and aqt.rwkv_scheduler.reviewer_queue_order_refresh_before_next_card(
+                    self
                 )
             )
-            self.nextCard()
+            if rwkv_last_queued_card or refresh_before_next_card:
+                self._prepare_rwkv_queue_order_then_next_card(
+                    queued_at,
+                    answered_card_id=answered_card_id,
+                    show_next_card=True,
+                )
+            else:
+                self._run_after_next_question_shown(
+                    lambda: self._prepare_rwkv_queue_order_then_next_card(
+                        queued_at,
+                        answered_card_id=answered_card_id,
+                    )
+                )
+                self.nextCard()
         elif rwkv_queue_order_enabled:
             aqt.rwkv_scheduler.refresh_answered_card_queue_score(self, self.card)
             self.nextCard()
         else:
             aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
             self.nextCard()
+
+    def _answered_card_was_last_queued_card(self) -> bool:
+        v3 = getattr(self, "_v3", None)
+        if v3 is None:
+            return False
+
+        queued_cards = v3.queued_cards
+        queued_count = (
+            queued_cards.new_count
+            + queued_cards.learning_count
+            + queued_cards.review_count
+        )
+        return queued_count <= 1
 
     def _prepare_rwkv_queue_order_then_next_card(
         self,
@@ -1060,35 +1156,52 @@ class Reviewer:
         queued_at: float | None = None,
         *,
         answered_card_id: CardId | None = None,
+        reason: str = "review queue",
+        prewarm_reason: str | None = None,
     ) -> None:
         if answered_card_id is None:
             answered_card_id = self.card.id if self.card else None
         start = time.monotonic()
         logger.debug(
-            "reviewer RWKV queue order async refresh starting: answered_card_id=%s "
-            "main_delay_ms=%.1f",
+            "reviewer RWKV queue order async refresh starting: reason=%s "
+            "answered_card_id=%s main_delay_ms=%.1f",
+            reason,
             answered_card_id,
             ((start - queued_at) * 1000) if queued_at is not None else 0.0,
         )
 
         def finish(*, installed: bool | None = None) -> None:
             logger.debug(
-                "reviewer RWKV queue order async refresh finished: "
+                "reviewer RWKV queue order async refresh finished: reason=%s "
                 "answered_card_id=%s installed=%s elapsed_ms=%.1f",
+                reason,
                 answered_card_id,
                 installed,
                 (time.monotonic() - start) * 1000,
             )
+            if prewarm_reason is not None and installed is not False:
+                aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
+                    self,
+                    reason=prewarm_reason,
+                )
             update_undo_actions = getattr(self.mw, "update_undo_actions", None)
             if callable(update_undo_actions):
                 update_undo_actions()
 
         def build_work() -> aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncWork | None:
             build_start = time.monotonic()
-            work = aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(self)
+            work = (
+                aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(self)
+                if reason == "review queue"
+                else aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(
+                    self,
+                    reason=reason,
+                )
+            )
             logger.debug(
                 "reviewer RWKV queue order async work prepared: "
-                "answered_card_id=%s work=%s elapsed_ms=%.1f",
+                "reason=%s answered_card_id=%s work=%s elapsed_ms=%.1f",
+                reason,
                 answered_card_id,
                 work is not None,
                 (time.monotonic() - build_start) * 1000,
@@ -1156,6 +1269,33 @@ class Reviewer:
             uses_collection=True,
         )
 
+    def _precompute_rwkv_queue_order_for_answer(self) -> None:
+        try:
+            work = aqt.rwkv_scheduler.prepare_reviewer_queue_order_precompute_work(self)
+        except Exception:
+            logger.exception("RWKV review queue answer precompute preparation failed")
+            return
+        if work is None:
+            return
+
+        def score() -> None:
+            aqt.rwkv_scheduler.score_reviewer_queue_order_precompute_work(
+                self,
+                work,
+            )
+
+        def done(future: Future[None]) -> None:
+            try:
+                future.result()
+            except Exception:
+                logger.exception("RWKV review queue answer precompute failed")
+
+        self.mw.taskman.run_in_background(
+            score,
+            done,
+            uses_collection=True,
+        )
+
     def _run_after_next_question_shown(self, callback: Callable[[], None]) -> None:
         callbacks = getattr(self, "_rwkv_after_question_shown_callbacks", None)
         if not isinstance(callbacks, list):
@@ -1195,39 +1335,17 @@ class Reviewer:
             "reviewer RWKV queue order exit refresh starting: answered_count=%s",
             answered_count,
         )
-
-        def prepare() -> None:
-            prepare_start = time.monotonic()
-            aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
-            logger.debug(
-                "reviewer RWKV queue order exit background prepare finished: "
-                "answered_count=%s prepare_elapsed_ms=%.1f",
-                answered_count,
-                (time.monotonic() - prepare_start) * 1000,
-            )
-
-        def done(future: Future[None]) -> None:
-            try:
-                future.result()
-            except Exception:
-                logger.exception("RWKV review queue exit refresh failed")
-                return
-
-            logger.debug(
-                "reviewer RWKV queue order exit refresh finished: "
-                "answered_count=%s elapsed_ms=%.1f",
-                answered_count,
-                (time.monotonic() - start) * 1000,
-            )
-            aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
-                self,
-                reason="review queue exit refresh",
-            )
-            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
-            if callable(update_undo_actions):
-                update_undo_actions()
-
-        self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
+        self._prepare_rwkv_queue_order_async(
+            answered_card_id=self._answeredIds[-1],
+            reason="review queue exit refresh",
+            prewarm_reason="review queue exit refresh",
+        )
+        logger.debug(
+            "reviewer RWKV queue order exit refresh queued: "
+            "answered_count=%s elapsed_ms=%.1f",
+            answered_count,
+            (time.monotonic() - start) * 1000,
+        )
 
     # Handlers
     ############################################################
@@ -1349,6 +1467,11 @@ class Reviewer:
             self.mw.toolbarWeb.update_background_image()
         elif url == "statesMutated":
             self._states_mutated = True
+        elif url.startswith("qaUpdated:question:"):
+            try:
+                self._on_question_rendered(int(url.split(":")[-1]))
+            except ValueError:
+                pass
         elif url.startswith("qaUpdated:answer:"):
             try:
                 self._on_answer_rendered(int(url.split(":")[-1]))
@@ -1467,18 +1590,30 @@ class Reviewer:
     def _getTypedAnswer(self) -> None:
         if self._review_actions_are_blocked():
             return
+        if not self._current_question_is_rendered():
+            return
         card_id = self.card.id if self.card else None
+        question_update_id = self._question_update_id
         self.web.evalWithCallback(
             "getTypedAnswer();",
-            lambda val: self._onTypedAnswer(val, card_id),
+            lambda val: self._onTypedAnswer(val, card_id, question_update_id),
         )
 
-    def _onTypedAnswer(self, val: str | None, card_id: CardId | None = None) -> None:
+    def _onTypedAnswer(
+        self,
+        val: str | None,
+        card_id: CardId | None = None,
+        question_update_id: int | None = None,
+    ) -> None:
         if self.state != "question" or self.card is None:
             return
         if card_id is None:
             card_id = self.card.id
         if self.card.id != card_id:
+            return
+        if question_update_id is not None and not self._current_question_is_rendered(
+            question_update_id
+        ):
             return
         self.typedAnswer = val or ""
         self._showAnswer()
@@ -1492,7 +1627,7 @@ class Reviewer:
 <table id=innertable width=100%% cellspacing=0 cellpadding=0>
 <tr>
 <td align=start valign=top class=stat>
-<button title="%(editkey)s" onclick="pycmd('edit');">%(edit)s</button></td>
+<button title="%(editkey)s" onclick="pycmd('edit');">%(edit)s<span id=timebox-summary class=stattxt></span></button></td>
 <td align=center valign=top id=middle>
 </td>
 <td align=end valign=top class=stat>
@@ -1503,10 +1638,14 @@ class Reviewer:
 </td>
 </tr>
 </table>
+<div id=timebox-progress%(timebox_hidden)s><div></div></div>
 </center>
 <script>
 time = %(time)d;
 timerStopped = false;
+timeboxElapsed = 0;
+timeboxLimit = %(timebox_limit)d;
+timeboxReps = 0;
 </script>
 """ % dict(
             edit=tr.studying_edit(),
@@ -1515,6 +1654,8 @@ timerStopped = false;
             morekey=tr.actions_shortcut_key(val="M"),
             downArrow=downArrow(),
             time=self.card.time_taken() // 1000,
+            timebox_limit=self.mw.col.conf["timeLim"],
+            timebox_hidden=" hidden" if not self.mw.col.conf["timeLim"] else "",
         )
 
     def _showAnswerButton(self) -> None:
@@ -1534,6 +1675,29 @@ timerStopped = false;
         else:
             maxTime = 0
         self.bottom.web.eval("showQuestion(%s,%d);" % (json.dumps(middle), maxTime))
+        self.bottom.web.eval(
+            "setTimeboxProgress(%d, %d, %d);"
+            % (
+                self._timebox_elapsed_secs(),
+                self.mw.col.conf["timeLim"],
+                self._timebox_reps(),
+            )
+        )
+
+    def _timebox_elapsed_secs(self) -> int:
+        if not self.mw.col.conf["timeLim"]:
+            return 0
+        start = getattr(self.mw.col, "_startTime", None)
+        if start is None:
+            return 0
+        return max(0, int(time.time() - start))
+
+    def _timebox_reps(self) -> int:
+        if not self.mw.col.conf["timeLim"]:
+            return 0
+        reps = self.mw.col.sched.reps
+        start_reps = getattr(self.mw.col, "_startReps", reps)
+        return max(0, reps - start_reps)
 
     def _showEaseButtons(self) -> None:
         if not self._states_mutated or not self._ensure_scheduling_states_ready(
@@ -1683,6 +1847,9 @@ timerStopped = false;
                 self.mw.moveToState("deckBrowser")
                 return True
             self.mw.col.startTimebox()
+            self.bottom.web.eval(
+                "setTimeboxProgress(0, %d, 0);" % self.mw.col.conf["timeLim"]
+            )
         return False
 
     # Context menu

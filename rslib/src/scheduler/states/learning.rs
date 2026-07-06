@@ -57,8 +57,7 @@ impl LearnState {
             let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
                 (
                     states.again.interval,
-                    ctx.fsrs_uses_short_term_learning_queue(ctx.steps)
-                        && states.again.interval < 0.5,
+                    ctx.fsrs_uses_short_term_learning_queue() && states.again.interval < 0.5,
                 )
             } else {
                 (ctx.graduating_interval_good as f32, false)
@@ -105,8 +104,7 @@ impl LearnState {
             let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
                 (
                     states.hard.interval,
-                    ctx.fsrs_uses_short_term_learning_queue(ctx.steps)
-                        && states.hard.interval < 0.5,
+                    ctx.fsrs_uses_short_term_learning_queue() && states.hard.interval < 0.5,
                 )
             } else {
                 (ctx.graduating_interval_good as f32, false)
@@ -114,10 +112,10 @@ impl LearnState {
 
             if short_term {
                 LearnState {
+                    remaining_steps: 0,
                     scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     elapsed_secs: 0,
                     memory_state,
-                    ..self
                 }
                 .into()
             } else {
@@ -153,8 +151,7 @@ impl LearnState {
             let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
                 (
                     states.good.interval,
-                    ctx.fsrs_uses_short_term_learning_queue(ctx.steps)
-                        && states.good.interval < 0.5,
+                    ctx.fsrs_uses_short_term_learning_queue() && states.good.interval < 0.5,
                 )
             } else {
                 (ctx.graduating_interval_good as f32, false)
@@ -162,10 +159,10 @@ impl LearnState {
 
             if short_term {
                 LearnState {
+                    remaining_steps: 0,
                     scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
                     elapsed_secs: 0,
                     memory_state,
-                    ..self
                 }
                 .into()
             } else {
@@ -219,6 +216,7 @@ mod test {
             memory: MemoryState {
                 stability: 0.1,
                 difficulty: 5.0,
+                stability_fast: 0.1,
             },
         }
     }
@@ -259,5 +257,41 @@ mod test {
             panic!("Good should stay in learning");
         };
         assert_eq!(good.scheduled_secs, 5);
+    }
+
+    #[test]
+    fn fsrs_short_term_can_follow_configured_learning_steps() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.steps = LearningSteps::new(&[1.0]);
+        ctx.fsrs_allow_short_term = true;
+        ctx.fsrs_short_term_with_steps_enabled = true;
+        ctx.fsrs_minimum_interval_secs = 5;
+        ctx.fsrs_next_states = Some(NextStates {
+            again: fsrs_item_state(0.000001),
+            hard: fsrs_item_state(0.000001),
+            good: fsrs_item_state(0.000001),
+            easy: fsrs_item_state(1.0),
+        });
+
+        let state = LearnState {
+            remaining_steps: 1,
+            scheduled_secs: 60,
+            elapsed_secs: 0,
+            memory_state: None,
+        };
+        let next = state.next_states(&ctx);
+
+        let CardState::Normal(super::super::NormalState::Learning(good)) = next.good else {
+            panic!("Good should stay in short-term learning after final configured step");
+        };
+        assert_eq!(good.remaining_steps, 0);
+        assert_eq!(good.scheduled_secs, 5);
+
+        let followup = good.next_states(&ctx);
+        let CardState::Normal(super::super::NormalState::Learning(hard)) = followup.hard else {
+            panic!("Hard should stay in FSRS short-term learning");
+        };
+        assert_eq!(hard.remaining_steps, 0);
+        assert_eq!(hard.scheduled_secs, 5);
     }
 }

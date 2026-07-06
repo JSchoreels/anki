@@ -507,11 +507,19 @@ impl Collection {
         &self,
         days_elapsed: u32,
     ) -> Option<HashMap<CardId, f32>> {
+        self.rwkv_stats_graph_scores_for_search(days_elapsed, None)
+    }
+
+    pub(crate) fn rwkv_stats_graph_scores_for_search(
+        &self,
+        days_elapsed: u32,
+        search: Option<&str>,
+    ) -> Option<HashMap<CardId, f32>> {
         self.state
             .rwkv_retrievability_scores
             .as_ref()
             .filter(|scores| scores.days_elapsed == days_elapsed)
-            .and_then(|scores| scores.stats_graph_scores(None))
+            .and_then(|scores| scores.stats_graph_scores(search))
     }
 
     pub(crate) fn set_rwkv_card_info_score(

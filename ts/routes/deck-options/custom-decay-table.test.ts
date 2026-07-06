@@ -16,7 +16,7 @@ test("withLastParam only updates final parameter", () => {
 
 test("custom decay table is disabled for FSRS-7 parameter sets", () => {
     expect(supportsCustomDecayTable(Array.from({ length: 21 }, (_, i) => i))).toBe(true);
-    expect(supportsCustomDecayTable(Array.from({ length: 35 }, (_, i) => i))).toBe(false);
+    expect(supportsCustomDecayTable(Array.from({ length: 34 }, (_, i) => i))).toBe(false);
 });
 
 test("formatDecay keeps two decimals", () => {

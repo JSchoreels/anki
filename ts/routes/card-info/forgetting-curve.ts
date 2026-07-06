@@ -12,7 +12,7 @@ import { type GraphBounds, setDataAvailable } from "../graphs/graph-helpers";
 import { hideTooltip, showTooltip } from "../graphs/tooltip-utils.svelte";
 
 const MIN_POINTS = 1000;
-const FSRS7_PARAM_COUNT = 35;
+const FSRS7_PARAM_COUNT = 34;
 const S90_TARGET_RETRIEVABILITY = 0.9;
 const S_MAX = 36_500;
 const S90_SEARCH_STEPS = 32;
@@ -23,25 +23,24 @@ function forgettingCurveFsrs6(stability: number, daysElapsed: number, decay: num
 }
 
 function forgettingCurveFsrs7(stability: number, daysElapsed: number, params: number[]): number {
-    const tOverS = daysElapsed / stability;
-    const decay1 = -params[27];
-    const decay2 = -params[28];
-    const base1 = params[29];
-    const base2 = params[30];
-    const baseWeight1 = params[31];
-    const baseWeight2 = params[32];
-    const sWeightPower1 = params[33];
-    const sWeightPower2 = params[34];
+    const stabilityFast = stability;
+    const difficulty = 5.0;
+    const decay1Mag = Math.min(0.95, Math.max(0.01, params[23] * Math.pow(stabilityFast, params[33] - 0.3)));
+    const decay1 = -decay1Mag;
+    const decay2 = -Math.min(0.95, Math.max(0.01, params[24]));
+    const factor1 = Math.exp(Math.min(60.0, Math.log(params[25]) / decay1)) - 1;
+    const factor2 = Math.pow(params[26], 1 / decay2) - 1;
+    const dTimescale = Math.exp((difficulty - 5.0) * (params[32] - 0.3));
 
-    const factor1 = Math.pow(base1, 1 / decay1) - 1;
-    const factor2 = Math.pow(base2, 1 / decay2) - 1;
-    const r1 = Math.pow(1 + factor1 * tOverS, decay1);
-    const r2 = Math.pow(1 + factor2 * tOverS, decay2);
+    const r1 = Math.pow(1 + factor1 * (daysElapsed / stabilityFast), decay1);
+    const r2 = Math.pow(1 + factor2 * dTimescale * (daysElapsed / stability), decay2);
 
-    const weight1 = baseWeight1 * Math.pow(stability, -sWeightPower1);
-    const weight2 = baseWeight2 * Math.pow(stability, sWeightPower2);
+    const weight1 = params[27] * Math.pow(stabilityFast, -params[29]);
+    const weight2 = params[28]
+        * Math.pow(stability, params[30])
+        * Math.exp((difficulty - 5.0) * (params[31] - 0.5));
     const retrievability = (weight1 * r1 + weight2 * r2) / (weight1 + weight2);
-    return Math.min(0.9999, Math.max(0.0001, retrievability));
+    return Math.min(0.9999, Math.max(0.0001, retrievability * (1.0 - 2e-5) + 1e-5));
 }
 
 function forgettingCurve(

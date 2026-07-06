@@ -264,6 +264,7 @@ mod test {
                     num_of_relearning_steps: 0,
                     model_version: ComputeParametersVersion::Fsrs7,
                     include_same_day_reviews: true,
+                    enable_scheduling_penalties: true,
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
                     existing_card_input: None,
@@ -314,10 +315,11 @@ mod test {
                 index: 1,
                 name: "Second".into(),
                 prepared: PreparedComputeParams {
-                    current_params: vec![2.0; 35],
+                    current_params: vec![2.0; 34],
                     num_of_relearning_steps: 0,
                     model_version: ComputeParametersVersion::Fsrs7,
                     include_same_day_reviews: true,
+                    enable_scheduling_penalties: true,
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
                     existing_card_input: None,
@@ -332,10 +334,11 @@ mod test {
                 index: 0,
                 name: "First".into(),
                 prepared: PreparedComputeParams {
-                    current_params: vec![1.0; 35],
+                    current_params: vec![1.0; 34],
                     num_of_relearning_steps: 0,
                     model_version: ComputeParametersVersion::Fsrs7,
                     include_same_day_reviews: true,
+                    enable_scheduling_penalties: true,
                     dynamic_desired_retention_enabled: false,
                     simulator_config: Default::default(),
                     existing_card_input: None,
@@ -355,8 +358,8 @@ mod test {
                 .collect::<Vec<_>>(),
             vec![(0, "First"), (1, "Second")]
         );
-        assert_eq!(outputs[0].result.as_ref().unwrap().params, vec![1.0; 35]);
-        assert_eq!(outputs[1].result.as_ref().unwrap().params, vec![2.0; 35]);
+        assert_eq!(outputs[0].result.as_ref().unwrap().params, vec![1.0; 34]);
+        assert_eq!(outputs[1].result.as_ref().unwrap().params, vec![2.0; 34]);
         Ok(())
     }
 }

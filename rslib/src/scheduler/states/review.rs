@@ -152,12 +152,7 @@ impl ReviewState {
                 review: again_review,
             }
             .into()
-        } else if ctx.fsrs_allow_short_term
-            && ctx.fsrs_short_term_with_steps_enabled
-            && ctx.fsrs_uses_learning_queues()
-            && ctx.relearn_steps.is_empty()
-            && scheduled_days < 0.5
-        {
+        } else if ctx.fsrs_uses_short_term_learning_queue() && scheduled_days < 0.5 {
             again_relearn.into()
         } else {
             again_review.into()
@@ -471,6 +466,7 @@ mod test {
             memory: MemoryState {
                 stability: interval.max(0.1),
                 difficulty: 5.0,
+                stability_fast: interval.max(0.1),
             },
         }
     }
@@ -493,6 +489,7 @@ mod test {
             memory_state: Some(crate::card::FsrsMemoryState {
                 stability: 30.0,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             }),
             ..Default::default()

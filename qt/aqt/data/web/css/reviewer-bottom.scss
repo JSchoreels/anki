@@ -63,6 +63,16 @@ button {
     display: inline-block;
 }
 
+#timebox-summary {
+    color: var(--state-learn);
+    left: 0;
+    max-width: calc(100vw - 180px);
+    overflow: hidden;
+    text-align: start;
+    text-overflow: ellipsis;
+    transform: translateY(-100%);
+}
+
 .fuzz-delta {
     color: var(--fg-subtle);
     font-style: italic;
@@ -80,6 +90,17 @@ button {
     border-top: 1px solid color(border);
     /* Better compatibility with graphics pad/touchscreen */
     -webkit-user-select: none;
+}
+
+#timebox-progress {
+    height: 3px;
+    width: 100%;
+
+    div {
+        background: var(--state-learn);
+        height: 100%;
+        width: 100%;
+    }
 }
 
 .nightMode {

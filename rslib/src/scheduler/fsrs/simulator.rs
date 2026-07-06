@@ -1444,7 +1444,7 @@ fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
             parameters
         }
         21 => params.to_vec(),
-        35 => params.to_vec(),
+        34 => params.to_vec(),
         _ => invalid_input!("invalid FSRS parameter count"),
     };
     if converted.iter().any(|w| !w.is_finite()) {

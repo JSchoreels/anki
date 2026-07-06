@@ -34,6 +34,14 @@ export function newGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGath
             value: DeckConfig_Config_NewCardGatherPriority.HIGHEST_POSITION,
         },
         {
+            label: tr.deckConfigNewGatherPriorityAscendingRetrievability(),
+            value: DeckConfig_Config_NewCardGatherPriority.ASCENDING_RETRIEVABILITY,
+        },
+        {
+            label: tr.deckConfigNewGatherPriorityDescendingRetrievability(),
+            value: DeckConfig_Config_NewCardGatherPriority.DESCENDING_RETRIEVABILITY,
+        },
+        {
             label: tr.deckConfigNewGatherPriorityRandomNotes(),
             value: DeckConfig_Config_NewCardGatherPriority.RANDOM_NOTES,
         },

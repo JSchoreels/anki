@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -55,8 +57,11 @@ use crate::storage::FsrsReviewRetrievabilitySampleRole;
 
 pub(crate) type Params = Vec<f32>;
 
+const FSRS_VALIDATION_FOLDS: usize = 5;
+const FSRS_CALIBRATION_PROGRESS_SCALE: usize = 1000;
+
 fn model_version_for_params(params: &[f32]) -> ComputeParametersVersion {
-    if params.len() == 35 {
+    if params.len() == 34 {
         ComputeParametersVersion::Fsrs7
     } else {
         ComputeParametersVersion::Fsrs6
@@ -104,6 +109,7 @@ pub struct ComputeParamsRequest<'t> {
     pub num_of_relearning_steps: usize,
     pub health_check: bool,
     pub include_same_day_reviews: Option<bool>,
+    pub enable_scheduling_penalties: bool,
     pub model_version_override: Option<ComputeParametersVersion>,
     pub dynamic_desired_retention_enabled: bool,
     pub dynamic_desired_retention_review_limit: Option<u32>,
@@ -115,6 +121,7 @@ pub(crate) struct PreparedComputeParams {
     pub num_of_relearning_steps: usize,
     pub model_version: ComputeParametersVersion,
     pub include_same_day_reviews: bool,
+    pub enable_scheduling_penalties: bool,
     pub dynamic_desired_retention_enabled: bool,
     pub simulator_config: SimulatorConfig,
     pub existing_card_input: Option<ExistingCardInput>,
@@ -141,6 +148,7 @@ pub(crate) struct PrepareComputeParamsInput<'a> {
     pub current_params: &'a [f32],
     pub num_of_relearning_steps: usize,
     pub include_same_day_reviews: Option<bool>,
+    pub enable_scheduling_penalties: bool,
     pub model_version_override: Option<ComputeParametersVersion>,
     pub dynamic_desired_retention_enabled: bool,
     pub historical_retention: f32,
@@ -194,6 +202,11 @@ pub(crate) fn new_compute_params_progress_phase() -> SharedComputeParamsProgress
     Arc::new(AtomicU8::new(
         ComputeParamsProgressPhase::OptimizingFsrsParams as u8,
     ))
+}
+
+pub(crate) struct FsrsReviewRetrievabilityProgress {
+    training_progress: Arc<Mutex<CombinedProgressState>>,
+    completed_validation_folds: Arc<AtomicUsize>,
 }
 
 fn set_compute_params_progress_phase(
@@ -309,6 +322,7 @@ pub(crate) struct FsrsReviewPredictionContext {
     sources: Vec<FsrsReviewPredictionSource>,
     model_version: ComputeParametersVersion,
     num_relearning_steps: usize,
+    enable_scheduling_penalties: bool,
 }
 
 impl FsrsReviewPredictionContext {
@@ -320,6 +334,7 @@ impl FsrsReviewPredictionContext {
             sources: prepared.fsrs_prediction_sources.clone(),
             model_version: prepared.model_version,
             num_relearning_steps: prepared.num_of_relearning_steps,
+            enable_scheduling_penalties: prepared.enable_scheduling_penalties,
         }
     }
 }
@@ -528,6 +543,7 @@ pub(crate) fn compute_params_from_prepared(
         num_of_relearning_steps,
         model_version,
         include_same_day_reviews,
+        enable_scheduling_penalties,
         dynamic_desired_retention_enabled,
         simulator_config,
         existing_card_input,
@@ -568,7 +584,7 @@ pub(crate) fn compute_params_from_prepared(
         card_ids: Some(item_card_ids.clone()),
         progress: progress.clone(),
         enable_short_term: true,
-        enable_sched_penalties: true,
+        enable_sched_penalties: enable_scheduling_penalties,
         model_version,
         num_relearning_steps: Some(num_of_relearning_steps),
     };
@@ -614,7 +630,7 @@ pub(crate) fn compute_params_from_prepared(
                 card_ids: health_check_items.card_ids.clone(),
                 progress: None,
                 enable_short_term: true,
-                enable_sched_penalties: true,
+                enable_sched_penalties: enable_scheduling_penalties,
                 model_version,
                 num_relearning_steps: Some(num_of_relearning_steps),
             },
@@ -949,6 +965,35 @@ fn interpolated_desired_retention_for_memory_target(
     })
 }
 
+fn calibration_progress_total(total_validation_folds: usize) -> usize {
+    if total_validation_folds == 0 {
+        1
+    } else {
+        total_validation_folds * FSRS_CALIBRATION_PROGRESS_SCALE
+    }
+}
+
+fn calibration_progress_current(
+    completed_validation_folds: usize,
+    total_validation_folds: usize,
+    training_progress: &CombinedProgressState,
+) -> usize {
+    if total_validation_folds == 0 {
+        return 0;
+    }
+
+    let completed = completed_validation_folds.min(total_validation_folds);
+    let fold_current = training_progress.current();
+    let fold_total = training_progress.total();
+    let current_fold_progress = if completed == total_validation_folds || fold_total == 0 {
+        0
+    } else {
+        (fold_current * FSRS_CALIBRATION_PROGRESS_SCALE / fold_total)
+            .min(FSRS_CALIBRATION_PROGRESS_SCALE.saturating_sub(1))
+    };
+    completed * FSRS_CALIBRATION_PROGRESS_SCALE + current_fold_progress
+}
+
 impl Collection {
     /// Note this does not return an error if there are less than 400 items -
     /// the caller should instead check the fsrs_items count in the return
@@ -966,6 +1011,7 @@ impl Collection {
             num_of_relearning_steps,
             health_check,
             include_same_day_reviews,
+            enable_scheduling_penalties,
             model_version_override,
             dynamic_desired_retention_enabled,
             dynamic_desired_retention_review_limit,
@@ -979,6 +1025,7 @@ impl Collection {
             current_params,
             num_of_relearning_steps,
             include_same_day_reviews,
+            enable_scheduling_penalties,
             model_version_override,
             dynamic_desired_retention_enabled,
             historical_retention: 0.9,
@@ -1005,7 +1052,6 @@ impl Collection {
                 fsrs_dynamic_desired_retention_max: 0.0,
             });
         }
-        let fsrs_prediction_context = FsrsReviewPredictionContext::from_prepared(&prepared);
         // adapt the progress handler to our built-in progress handling
 
         let create_progress_thread = || -> Result<_> {
@@ -1048,29 +1094,94 @@ impl Collection {
             health_check,
         );
         progress_thread.join().ok();
-        let output = output?;
-        if let Err(err) = self
-            .store_fsrs_review_retrievability_predictions(&output.params, &fsrs_prediction_context)
-        {
-            tracing::warn!(?err, "failed to store FSRS review retrievability cache");
-        }
-        Ok(output)
+        output
     }
 
-    fn store_fsrs_review_retrievability_predictions(
+    pub(crate) fn compute_fsrs_review_retrievability_calibration_cache(
         &mut self,
         params: &[f32],
         context: &FsrsReviewPredictionContext,
-    ) -> Result<()> {
-        let predictions = fsrs_review_retrievability_cache_rows(params, context)?;
+        include_validation_folds: bool,
+    ) -> Result<u32> {
+        self.clear_progress();
+        let (progress, done, progress_thread) = self
+            .create_fsrs_review_retrievability_progress_thread(context, include_validation_folds)?;
+        let rows = fsrs_review_retrievability_cache_rows(
+            params,
+            context,
+            include_validation_folds,
+            Some(&progress),
+        );
+        done.store(true, Ordering::Release);
+        progress_thread.join().ok();
+        let rows = rows?;
         let stored = self
             .storage
-            .set_fsrs_review_retrievability_predictions(&predictions, "fsrs_optimization")?;
+            .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")?;
         tracing::debug!(
             predictions = stored,
-            "stored FSRS review retrievability cache"
+            "stored FSRS review retrievability calibration cache"
         );
-        Ok(())
+        Ok(stored as u32)
+    }
+
+    fn create_fsrs_review_retrievability_progress_thread(
+        &self,
+        context: &FsrsReviewPredictionContext,
+        include_validation_folds: bool,
+    ) -> Result<(
+        FsrsReviewRetrievabilityProgress,
+        Arc<AtomicBool>,
+        thread::JoinHandle<()>,
+    )> {
+        let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
+        let total_validation_folds = if include_validation_folds {
+            FSRS_VALIDATION_FOLDS
+        } else {
+            0
+        };
+        let target_counts = training_target_counts_from_items(&context.items);
+        let total_iterations = calibration_progress_total(total_validation_folds);
+        anki_progress.update(false, |p| {
+            p.current_iteration = 0;
+            p.total_iterations = total_iterations as u32;
+            p.reviews = target_counts.total_targets as u32;
+            p.long_term_reviews = target_counts.long_term_targets as u32;
+            p.short_term_reviews = target_counts.short_term_targets as u32;
+            p.current_preset = 1;
+            p.total_presets = 1;
+        })?;
+
+        let progress = FsrsReviewRetrievabilityProgress {
+            training_progress: CombinedProgressState::new_shared(),
+            completed_validation_folds: Arc::new(AtomicUsize::new(0)),
+        };
+        let done = Arc::new(AtomicBool::new(false));
+        let training_progress = progress.training_progress.clone();
+        let completed_validation_folds = progress.completed_validation_folds.clone();
+        let done_for_thread = done.clone();
+        let progress_thread = thread::spawn(move || {
+            while !done_for_thread.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(100));
+                let mut guard = training_progress.lock().unwrap();
+                let current_iterations = calibration_progress_current(
+                    completed_validation_folds.load(Ordering::Acquire),
+                    total_validation_folds,
+                    &guard,
+                );
+                if anki_progress
+                    .update(false, |s| {
+                        s.current_iteration = current_iterations as u32;
+                        s.total_iterations = total_iterations as u32;
+                    })
+                    .is_err()
+                {
+                    guard.want_abort = true;
+                    return;
+                }
+            }
+        });
+        Ok((progress, done, progress_thread))
     }
 
     pub(crate) fn prepare_compute_params(
@@ -1083,6 +1194,7 @@ impl Collection {
             current_params,
             num_of_relearning_steps,
             include_same_day_reviews,
+            enable_scheduling_penalties,
             model_version_override,
             dynamic_desired_retention_enabled,
             historical_retention,
@@ -1149,6 +1261,7 @@ impl Collection {
             num_of_relearning_steps,
             model_version,
             include_same_day_reviews,
+            enable_scheduling_penalties,
             dynamic_desired_retention_enabled,
             simulator_config,
             existing_card_input,
@@ -1237,6 +1350,7 @@ impl Collection {
         model_version: ComputeParametersVersion,
         include_same_day_reviews: Option<bool>,
         include_same_day_reviews_for_training: Option<bool>,
+        enable_scheduling_penalties: bool,
     ) -> Result<ModelEvaluation> {
         let timing = self.timing_today()?;
         let training_search = training_search(search, search_for_training);
@@ -1283,7 +1397,7 @@ impl Collection {
                     card_ids: training_items.card_ids,
                     progress: None,
                     enable_short_term: true,
-                    enable_sched_penalties: true,
+                    enable_sched_penalties: enable_scheduling_penalties,
                     model_version,
                     num_relearning_steps: Some(num_of_relearning_steps),
                 },
@@ -1296,7 +1410,7 @@ impl Collection {
                     card_ids: evaluation_items.card_ids,
                     progress: None,
                     enable_short_term: true,
-                    enable_sched_penalties: true,
+                    enable_sched_penalties: enable_scheduling_penalties,
                     model_version,
                     num_relearning_steps: Some(num_of_relearning_steps),
                 },
@@ -1316,7 +1430,7 @@ impl Collection {
                     card_ids: training_items.card_ids,
                     progress: None,
                     enable_short_term: true,
-                    enable_sched_penalties: true,
+                    enable_sched_penalties: enable_scheduling_penalties,
                     model_version,
                     num_relearning_steps: Some(num_of_relearning_steps),
                 },
@@ -1394,7 +1508,7 @@ fn coerce_computed_params_to_selected_version(
     }
 
     let expected_len = match model_version {
-        ComputeParametersVersion::Fsrs7 => 35,
+        ComputeParametersVersion::Fsrs7 => 34,
         ComputeParametersVersion::Fsrs6 => 21,
     };
 
@@ -1529,6 +1643,8 @@ fn fsrs_prediction_source_from_filtered_revlogs(
 pub(crate) fn fsrs_review_retrievability_cache_rows(
     params: &[f32],
     context: &FsrsReviewPredictionContext,
+    include_validation_folds: bool,
+    progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
     let mut rows =
         fsrs_review_retrievability_predictions_for_targets(params, &context.sources, None)?
@@ -1540,9 +1656,15 @@ pub(crate) fn fsrs_review_retrievability_cache_rows(
                 fold_index: -1,
             })
             .collect_vec();
-    match fsrs_validation_retrievability_cache_rows(context) {
-        Ok(validation_rows) => rows.extend(validation_rows),
-        Err(err) => tracing::debug!(?err, "failed to compute FSRS validation cache rows"),
+    if fsrs_review_retrievability_progress_wants_abort(progress) {
+        return Err(AnkiError::Interrupted);
+    }
+    if include_validation_folds {
+        match fsrs_validation_retrievability_cache_rows(context, progress) {
+            Ok(validation_rows) => rows.extend(validation_rows),
+            Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
+            Err(err) => tracing::debug!(?err, "failed to compute FSRS validation cache rows"),
+        }
     }
     Ok(rows)
 }
@@ -1595,8 +1717,15 @@ fn fsrs_review_retrievability_predictions_for_targets(
     Ok(predictions)
 }
 
+fn fsrs_review_retrievability_progress_wants_abort(
+    progress: Option<&FsrsReviewRetrievabilityProgress>,
+) -> bool {
+    progress.is_some_and(|progress| progress.training_progress.lock().unwrap().want_abort)
+}
+
 fn fsrs_validation_retrievability_cache_rows(
     context: &FsrsReviewPredictionContext,
+    progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
     if context.items.is_empty() || context.sources.is_empty() {
         return Ok(Vec::new());
@@ -1608,7 +1737,7 @@ fn fsrs_validation_retrievability_cache_rows(
             context.revlog_ids.clone(),
             Vec::new(),
         ),
-        5,
+        FSRS_VALIDATION_FOLDS,
     );
     if splits.is_empty() {
         return Ok(Vec::new());
@@ -1616,19 +1745,28 @@ fn fsrs_validation_retrievability_cache_rows(
 
     let mut rows = Vec::new();
     for (fold_index, (train_items, test_items)) in splits.into_iter().enumerate() {
+        if let Some(progress) = progress {
+            progress
+                .completed_validation_folds
+                .store(fold_index, Ordering::Release);
+        }
+        if fsrs_review_retrievability_progress_wants_abort(progress) {
+            return Err(AnkiError::Interrupted);
+        }
         let Some(test_revlog_ids) = test_items.revlog_ids else {
             continue;
         };
         let parameters = match compute_parameters(ComputeParametersInput {
             train_set: train_items.items,
             card_ids: train_items.card_ids,
-            progress: None,
+            progress: progress.map(|progress| progress.training_progress.clone()),
             enable_short_term: true,
-            enable_sched_penalties: true,
+            enable_sched_penalties: context.enable_scheduling_penalties,
             model_version: context.model_version,
             num_relearning_steps: Some(context.num_relearning_steps),
         }) {
             Ok(parameters) => parameters,
+            Err(fsrs::FSRSError::Interrupted) => return Err(AnkiError::Interrupted),
             Err(err) => {
                 tracing::debug!(?err, fold_index, "skipping FSRS validation cache fold");
                 continue;
@@ -1658,6 +1796,11 @@ fn fsrs_validation_retrievability_cache_rows(
                 fold_index: fold_index as i32,
             }
         }));
+        if let Some(progress) = progress {
+            progress
+                .completed_validation_folds
+                .store(fold_index + 1, Ordering::Release);
+        }
     }
     Ok(rows)
 }
@@ -1867,7 +2010,20 @@ fn revlog_entry_to_proto(e: RevlogEntry) -> anki_proto::stats::RevlogEntry {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use rusqlite::params;
+    use tempfile::tempdir;
+    use tempfile::TempDir;
+
     use super::*;
+    use crate::collection::Collection;
+    use crate::collection::CollectionBuilder;
+
+    const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE_FOR_BENCH: &str =
+        "search_stats_fsrs_review_retrievability";
 
     const NEXT_DAY_AT: TimestampSecs = TimestampSecs(86400 * 1000);
 
@@ -1953,6 +2109,7 @@ pub(crate) mod tests {
                 num_of_relearning_steps: 1,
                 model_version: ComputeParametersVersion::Fsrs7,
                 include_same_day_reviews: true,
+                enable_scheduling_penalties: true,
                 dynamic_desired_retention_enabled: false,
                 simulator_config: Default::default(),
                 existing_card_input: None,
@@ -1970,6 +2127,255 @@ pub(crate) mod tests {
         assert_eq!(output.params, current_params);
         assert_eq!(output.fsrs_items, 0);
         assert_eq!(output.health_check_passed, None);
+        Ok(())
+    }
+
+    fn benchmark_collection_from_env(var: &str) -> Result<Option<(Collection, TempDir, PathBuf)>> {
+        let Ok(source) = std::env::var(var) else {
+            eprintln!("set {var} to a copied collection.anki2 path to run this benchmark");
+            return Ok(None);
+        };
+
+        let tempdir = tempdir()?;
+        let col_path = tempdir.path().join("feature-bench.anki2");
+        std::fs::copy(source, &col_path)?;
+        let mut builder = CollectionBuilder::new(&col_path);
+        builder.with_desktop_media_paths();
+        Ok(Some((builder.build()?, tempdir, col_path)))
+    }
+
+    fn benchmark_wal_path(path: &Path) -> PathBuf {
+        let mut wal = path.as_os_str().to_os_string();
+        wal.push("-wal");
+        wal.into()
+    }
+
+    fn benchmark_file_size(path: &Path) -> u64 {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    }
+
+    fn benchmark_checkpoint_truncate(col: &mut Collection) -> Result<()> {
+        col.storage
+            .db
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
+    fn benchmark_clear_fsrs_cache_rows(col: &mut Collection) -> Result<()> {
+        col.storage.db.execute_batch(&format!(
+            "DELETE FROM {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE_FOR_BENCH};"
+        ))?;
+        Ok(())
+    }
+
+    fn benchmark_legacy_autocommit_fsrs_store(
+        col: &mut Collection,
+        rows: &[FsrsReviewRetrievabilityCacheRow],
+        source: &str,
+    ) -> Result<usize> {
+        if let Some(row) = rows.first() {
+            col.storage
+                .set_fsrs_review_retrievability_predictions(std::slice::from_ref(row), source)?;
+            benchmark_clear_fsrs_cache_rows(col)?;
+        }
+
+        let updated_at = TimestampMillis::now().0;
+        let mut stored = 0;
+        let mut stmt = col.storage.db.prepare_cached(&format!(
+            "
+            INSERT OR REPLACE INTO {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE_FOR_BENCH}
+                (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "
+        ))?;
+
+        for row in rows {
+            if row.revlog_id.0 > 0
+                && row.prediction.is_finite()
+                && (0.0..=1.0).contains(&row.prediction)
+            {
+                stmt.execute(params![
+                    row.revlog_id,
+                    row.prediction,
+                    source,
+                    updated_at,
+                    row.sample_role.as_str(),
+                    row.fold_index
+                ])?;
+                stored += 1;
+            }
+        }
+
+        Ok(stored)
+    }
+
+    #[test]
+    fn fsrs_retrievability_cache_rows_can_skip_validation_folds() -> Result<()> {
+        let mut items = Vec::new();
+        let mut card_ids = Vec::new();
+        let mut revlog_ids = Vec::new();
+        let mut sources = Vec::new();
+
+        for index in 0..12 {
+            let revlog_id = RevlogId(index + 1);
+            let reviews = vec![
+                FSRSReview {
+                    rating: 3,
+                    delta_t: 0.0,
+                },
+                FSRSReview {
+                    rating: if index % 2 == 0 { 3 } else { 1 },
+                    delta_t: 1.0 + index as f32,
+                },
+            ];
+            items.push(FSRSItem {
+                reviews: reviews.clone(),
+            });
+            card_ids.push(index + 1);
+            revlog_ids.push(revlog_id);
+            sources.push(FsrsReviewPredictionSource {
+                reviews,
+                targets: vec![(revlog_id, 1)],
+            });
+        }
+
+        let context = FsrsReviewPredictionContext {
+            items,
+            card_ids,
+            revlog_ids,
+            sources,
+            model_version: ComputeParametersVersion::Fsrs7,
+            num_relearning_steps: 1,
+            enable_scheduling_penalties: false,
+        };
+        let final_fit_rows = fsrs_review_retrievability_cache_rows(
+            &fsrs::DEFAULT_PARAMETERS,
+            &context,
+            false,
+            None,
+        )?;
+        assert!(!final_fit_rows.is_empty());
+        assert!(final_fit_rows
+            .iter()
+            .all(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::FinalFit));
+
+        let validation_rows =
+            fsrs_review_retrievability_cache_rows(&fsrs::DEFAULT_PARAMETERS, &context, true, None)?;
+        assert!(validation_rows
+            .iter()
+            .any(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn fsrs_optimize_cache_store_feature_benchmark() -> Result<()> {
+        let Some((mut col, _tempdir, col_path)) =
+            benchmark_collection_from_env("ANKI_FEATURE_BENCH_COLLECTION")?
+        else {
+            return Ok(());
+        };
+        let search = std::env::var("ANKI_FEATURE_BENCH_SEARCH").unwrap_or_default();
+        let wal_path = benchmark_wal_path(&col_path);
+
+        let prepare_started = Instant::now();
+        let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+            search: &search,
+            ignore_revlogs_before: TimestampMillis(0),
+            current_params: &fsrs::DEFAULT_PARAMETERS,
+            num_of_relearning_steps: 1,
+            include_same_day_reviews: Some(true),
+            enable_scheduling_penalties: false,
+            model_version_override: Some(ComputeParametersVersion::Fsrs7),
+            dynamic_desired_retention_enabled: false,
+            historical_retention: 0.9,
+            desired_retention: 0.9,
+            dynamic_desired_retention_simulator_options:
+                DynamicDesiredRetentionSimulatorOptions::default(),
+        })?;
+        let prepared_items = prepared.items.len();
+        let prepared_targets = prepared.target_counts.total_targets;
+        let eval_items = prepared.items.clone();
+        let fsrs_prediction_context = FsrsReviewPredictionContext::from_prepared(&prepared);
+        let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
+
+        let optimize_started = Instant::now();
+        let output = compute_params_from_prepared(prepared, None, None, false)?;
+        let optimize_ms = optimize_started.elapsed().as_secs_f64() * 1000.0;
+
+        let eval_started = Instant::now();
+        let eval = FSRS::new(&output.params)?.evaluate(eval_items, |_| true)?;
+        let eval_ms = eval_started.elapsed().as_secs_f64() * 1000.0;
+
+        let rows_started = Instant::now();
+        let predictions = fsrs_review_retrievability_cache_rows(
+            &output.params,
+            &fsrs_prediction_context,
+            true,
+            None,
+        )?;
+        let rows_ms = rows_started.elapsed().as_secs_f64() * 1000.0;
+
+        if predictions.is_empty() {
+            println!(
+                "fsrs_optimize_cache_store_feature_benchmark search={search:?} \
+                 prepared_items={prepared_items} prepared_targets={prepared_targets} \
+                 cache_rows=0 prepare_ms={prepare_ms:.3} optimize_ms={optimize_ms:.3} \
+                 eval_ms={eval_ms:.3} log_loss={:.9} rmse_bins={:.9} rows_ms={rows_ms:.3}",
+                eval.log_loss, eval.rmse_bins
+            );
+            return Ok(());
+        }
+
+        benchmark_checkpoint_truncate(&mut col)?;
+        let legacy_started = Instant::now();
+        let legacy_stored =
+            benchmark_legacy_autocommit_fsrs_store(&mut col, &predictions, "fsrs_feature_bench")?;
+        let legacy_ms = legacy_started.elapsed().as_secs_f64() * 1000.0;
+        let legacy_wal_bytes = benchmark_file_size(&wal_path);
+
+        benchmark_clear_fsrs_cache_rows(&mut col)?;
+        benchmark_checkpoint_truncate(&mut col)?;
+        let batched_started = Instant::now();
+        let batched_stored = col
+            .storage
+            .set_fsrs_review_retrievability_predictions(&predictions, "fsrs_feature_bench")?;
+        let batched_ms = batched_started.elapsed().as_secs_f64() * 1000.0;
+        let batched_wal_bytes = benchmark_file_size(&wal_path);
+
+        benchmark_checkpoint_truncate(&mut col)?;
+        let repeated_started = Instant::now();
+        let repeated_stored = col
+            .storage
+            .set_fsrs_review_retrievability_predictions(&predictions, "fsrs_feature_bench")?;
+        let repeated_ms = repeated_started.elapsed().as_secs_f64() * 1000.0;
+        let repeated_wal_bytes = benchmark_file_size(&wal_path);
+
+        let legacy_total_ms = prepare_ms + optimize_ms + rows_ms + legacy_ms;
+        let batched_total_ms = prepare_ms + optimize_ms + rows_ms + batched_ms;
+        let repeated_total_ms = prepare_ms + optimize_ms + rows_ms + repeated_ms;
+
+        println!(
+            "fsrs_optimize_cache_store_feature_benchmark search={search:?} \
+             prepared_items={prepared_items} prepared_targets={prepared_targets} \
+             cache_rows={} prepare_ms={prepare_ms:.3} optimize_ms={optimize_ms:.3} \
+             eval_ms={eval_ms:.3} log_loss={:.9} rmse_bins={:.9} rows_ms={rows_ms:.3} \
+             legacy_stored={legacy_stored} legacy_store_ms={legacy_ms:.3} \
+             legacy_wal_bytes={legacy_wal_bytes} batched_stored={batched_stored} \
+             batched_store_ms={batched_ms:.3} batched_wal_bytes={batched_wal_bytes} \
+             repeated_stored={repeated_stored} repeated_store_ms={repeated_ms:.3} \
+             repeated_wal_bytes={repeated_wal_bytes} legacy_total_ms={legacy_total_ms:.3} \
+             batched_total_ms={batched_total_ms:.3} repeated_total_ms={repeated_total_ms:.3}",
+            predictions.len(),
+            eval.log_loss,
+            eval.rmse_bins
+        );
+
+        assert_eq!(legacy_stored, predictions.len());
+        assert_eq!(batched_stored, predictions.len());
+        assert_eq!(repeated_stored, predictions.len());
         Ok(())
     }
 
@@ -2251,7 +2657,7 @@ pub(crate) mod tests {
     #[test]
     fn coerce_computed_params_prefers_computed_when_matches_selected_family() {
         let current = vec![1.0; 21];
-        let computed = vec![2.0; 35];
+        let computed = vec![2.0; 34];
         assert_eq!(
             coerce_computed_params_to_selected_version(
                 ComputeParametersVersion::Fsrs7,
@@ -2278,7 +2684,7 @@ pub(crate) mod tests {
 
     #[test]
     fn coerce_computed_params_falls_back_to_current_when_computed_invalid_for_selected_family() {
-        let current = vec![1.0; 35];
+        let current = vec![1.0; 34];
         let computed = vec![2.0; 21];
         assert_eq!(
             coerce_computed_params_to_selected_version(
@@ -2614,7 +3020,7 @@ pub(crate) mod tests {
             ComputeParametersVersion::Fsrs7
         );
         assert_eq!(
-            super::resolved_model_version(&[0.0; 35], Some(ComputeParametersVersion::Fsrs6)),
+            super::resolved_model_version(&[0.0; 34], Some(ComputeParametersVersion::Fsrs6)),
             ComputeParametersVersion::Fsrs6
         );
     }
@@ -2622,7 +3028,7 @@ pub(crate) mod tests {
     #[test]
     fn resolved_model_version_falls_back_to_param_length() {
         assert_eq!(
-            super::resolved_model_version(&[0.0; 35], None),
+            super::resolved_model_version(&[0.0; 34], None),
             ComputeParametersVersion::Fsrs7
         );
         assert_eq!(

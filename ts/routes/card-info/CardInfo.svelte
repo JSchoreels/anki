@@ -28,8 +28,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (paramsLength < 21) {
             return 0.5; // default decay for FSRS-4.5 and FSRS-5
         }
-        if (paramsLength >= 35) {
-            return params[27] ?? 0.0723;
+        if (paramsLength >= 34) {
+            return params[23] ?? 0.0723;
         }
         return params[20] ?? 0.1542;
     })();

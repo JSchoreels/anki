@@ -24,6 +24,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SimulatorModal from "./SimulatorModal.svelte";
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
+    import TextInputRow from "./TextInputRow.svelte";
 
     export let state: DeckOptionsState;
     export let onPresetChange: () => void;
@@ -79,6 +80,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvAllowSameDayReview: {
             title: tr.deckConfigRwkvReviewAllowSameDayReview(),
             help: tr.deckConfigRwkvReviewAllowSameDayReviewTooltip(),
+        },
+        rwkvFirstReviewElapsed: {
+            title: tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation(),
+            help: tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreationTooltip(),
         },
         rwkvMinInterveningReviews: {
             title: tr.deckConfigRwkvReviewMinInterveningReviews(),
@@ -345,6 +350,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/if}
 
             <SwitchRow
+                bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
+                defaultValue={defaults.rwkvReviewFirstReviewElapsedFromCardCreation}
+            >
+                <SettingTitle
+                    on:click={() => openSettingHelp("rwkvFirstReviewElapsed")}
+                >
+                    {tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation()}
+                </SettingTitle>
+            </SwitchRow>
+
+            <SwitchRow
                 bind:value={$config.rwkvReviewDynamicPresetReplay}
                 defaultValue={defaults.rwkvReviewDynamicPresetReplay}
             >
@@ -374,6 +390,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {tr.deckConfigRwkvReviewJapaneseFeatureState()}
                 </SettingTitle>
             </SwitchRow>
+
+            {#if $config.rwkvReviewJapaneseFeatureStateEnabled}
+                <TextInputRow
+                    bind:value={$config.rwkvReviewJapaneseKanjiField}
+                    defaultValue={defaults.rwkvReviewJapaneseKanjiField}
+                >
+                    <SettingTitle>
+                        {tr.deckConfigRwkvReviewJapaneseKanjiField()}
+                    </SettingTitle>
+                </TextInputRow>
+
+                <TextInputRow
+                    bind:value={$config.rwkvReviewJapaneseReadingField}
+                    defaultValue={defaults.rwkvReviewJapaneseReadingField}
+                >
+                    <SettingTitle>
+                        {tr.deckConfigRwkvReviewJapaneseReadingField()}
+                    </SettingTitle>
+                </TextInputRow>
+            {/if}
 
             <SwitchRow
                 bind:value={$config.rwkvReviewSelfCorrectionEnabled}

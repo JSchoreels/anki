@@ -54,6 +54,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         withFsrs7SameDaySettings,
     } from "./fsrs-same-day-settings";
     import {
+        readFsrs7SchedulingPenaltySettings,
+        withFsrs7SchedulingPenaltySettings,
+    } from "./fsrs-scheduling-penalty-settings";
+    import {
         readFsrsSearchSettings,
         withFsrsSearchSettings,
     } from "./fsrs-search-settings";
@@ -61,6 +65,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fsrsParamDiagnostics,
         fsrsParamsSupportSameDayEvaluation,
         fsrsSameDayEvaluationOverrideForComparison,
+        OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
         type FsrsParamDiagnostics,
     } from "./fsrs-param-diagnostics";
     import {
@@ -191,6 +196,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let loadingCustomDecayTable = false;
     let evaluationSearchFilter = "";
     let includeSameDayReviewsInFsrs7 = true;
+    let enableSchedulingPenaltiesInFsrs7 = false;
     let checkingSameDayDecision = false;
     $: evaluationSearchFilter = readFsrsSearchSettings($auxData).evaluationSearch;
     $: {
@@ -208,6 +214,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: {
         const updated = withFsrs7SameDaySettings($auxData, {
             includeSameDayReviews: includeSameDayReviewsInFsrs7,
+        });
+        if (updated) {
+            auxData.set(updated);
+        }
+    }
+    $: {
+        const settings = readFsrs7SchedulingPenaltySettings($auxData);
+        enableSchedulingPenaltiesInFsrs7 = settings.enableSchedulingPenalties;
+    }
+    $: {
+        const updated = withFsrs7SchedulingPenaltySettings($auxData, {
+            enableSchedulingPenalties: enableSchedulingPenaltiesInFsrs7,
         });
         if (updated) {
             auxData.set(updated);
@@ -262,8 +280,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function fsrsParamDiagnosticDetails(diagnostics: FsrsParamDiagnostics): string {
+        if (diagnostics.outdatedFsrs7PreviewParams) {
+            return OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING;
+        }
         if (!diagnostics.validCount) {
-            return `Expected 0, 17, 19, 21, or 35 values, but found ${diagnostics.count}.`;
+            return `Expected 0, 17, 19, 21, or 34 values, but found ${diagnostics.count}.`;
         }
         if (diagnostics.nonFiniteIndexes.length) {
             const positions = diagnostics.nonFiniteIndexes
@@ -289,10 +310,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             role === "current"
                 ? "Anki cannot evaluate the current FSRS parameters, so it cannot compare them with the optimized parameters."
                 : "Anki cannot evaluate the optimized FSRS parameters, so it cannot show the optimization comparison.";
-        const nextStep =
-            role === "current"
-                ? "Leave the FSRS parameters field blank to use the default values, then optimize again."
-                : "Please report this with the console details.";
+        let nextStep = "Please report this with the console details.";
+        if (role === "current") {
+            nextStep = diagnostics.outdatedFsrs7PreviewParams
+                ? ""
+                : "Leave the FSRS parameters field blank to use the default values, then optimize again.";
+        }
 
         return [
             roleMessage,
@@ -310,20 +333,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         params: number[],
         err?: unknown,
     ): void {
+        const details = {
+            params,
+            diagnostics: fsrsParamDiagnostics(params),
+            fsrsVersion: $config.fsrsVersion,
+            includeSameDayReviews: includeSameDayOverride(),
+            enableSchedulingPenalties: enableSchedulingPenaltiesOverride(),
+            dynamicDesiredRetentionEnabled: $config.fsrsDynamicDesiredRetentionEnabled,
+            search: optimizeSearchFilter(),
+            evaluationSearch: evaluateSearchFilter(),
+            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
+            error: err ? errorMessage(err) : undefined,
+        };
         console.warn(
-            `FSRS ${role} parameter ${reason}`,
-            {
-                params,
-                diagnostics: fsrsParamDiagnostics(params),
-                fsrsVersion: $config.fsrsVersion,
-                includeSameDayReviews: includeSameDayOverride(),
-                dynamicDesiredRetentionEnabled:
-                    $config.fsrsDynamicDesiredRetentionEnabled,
-                search: optimizeSearchFilter(),
-                evaluationSearch: evaluateSearchFilter(),
-                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
-                error: err ? errorMessage(err) : undefined,
-            },
+            `FSRS ${role} parameter ${reason}: ${JSON.stringify(details)}`,
             err,
         );
     }
@@ -411,6 +434,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: desiredRetentionWarning = getRetentionLongShortWarning(roundedRetention);
 
     let desiredRetentionChangeInfo = "";
+    let desiredRetentionChangeClass = "alert-info two-line";
     $: if (showDesiredRetentionTooltip) {
         getRetentionChangeInfo(roundedRetention, selectedFsrsParams($config));
     }
@@ -547,6 +571,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     ): Promise<void> {
         const request = ++newCardIntervalRequest;
         newCardIntervalsError = "";
+        const diagnostics = fsrsParamDiagnostics(params);
+        if (!diagnostics.valid) {
+            newCardIntervals = undefined;
+            newCardIntervalsError = fsrsParamDiagnosticDetails(diagnostics);
+            return;
+        }
         const currentConfig = withSelectedFsrsParams($config, params);
         try {
             const [current, selected] = await Promise.all([
@@ -582,6 +612,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function getRetentionChangeInfo(retention: number, params: number[]) {
         if (+startingDesiredRetention == roundedRetention) {
             desiredRetentionChangeInfo = tr.deckConfigWorkloadFactorUnchanged();
+            desiredRetentionChangeClass = "alert-info two-line";
+            return;
+        }
+        const diagnostics = fsrsParamDiagnostics(params);
+        if (!diagnostics.valid) {
+            lastParams = [...params];
+            retentionWorkloadInfo = undefined;
+            desiredRetentionChangeInfo = fsrsParamDiagnosticDetails(diagnostics);
+            desiredRetentionChangeClass = "alert-warning two-line";
             return;
         }
         if (
@@ -595,18 +634,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 search: defaultparamSearch,
             });
             lastParams = [...params];
-            retentionWorkloadInfo = getRetentionWorkload(request);
+            retentionWorkloadInfo = getRetentionWorkload(request, {
+                alertOnError: false,
+            });
         }
 
         const previous = +startingDesiredRetention * 100;
         const after = retention * 100;
-        const resp = await retentionWorkloadInfo;
-        const factor = resp.costs[after] / resp.costs[previous];
+        try {
+            const resp = await retentionWorkloadInfo;
+            const factor = resp.costs[after] / resp.costs[previous];
 
-        desiredRetentionChangeInfo = tr.deckConfigWorkloadFactorChange({
-            factor: factor.toFixed(2),
-            previousDr: previous.toString(),
-        });
+            desiredRetentionChangeInfo = tr.deckConfigWorkloadFactorChange({
+                factor: factor.toFixed(2),
+                previousDr: previous.toString(),
+            });
+            desiredRetentionChangeClass = "alert-info two-line";
+        } catch (err) {
+            retentionWorkloadInfo = undefined;
+            desiredRetentionChangeInfo = errorMessage(err);
+            desiredRetentionChangeClass = "alert-warning two-line";
+            console.warn("failed to load FSRS retention workload", err);
+        }
     }
 
     function getRetentionWarningClass(retention: number): string {
@@ -661,6 +710,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return includeSameDayReviewsInFsrs7;
     }
 
+    function enableSchedulingPenaltiesOverride(): boolean {
+        return (
+            $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
+            enableSchedulingPenaltiesInFsrs7
+        );
+    }
+
     function includeSameDayOverrideForParams(params: number[]): boolean | undefined {
         return fsrsParamsSupportSameDayEvaluation(params)
             ? includeSameDayOverride()
@@ -705,6 +761,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             numOfRelearningSteps: getNumOfRelearningStepsInDay(),
                             healthCheck: $healthCheck,
                             includeSameDayReviews: includeSameDayOverride(),
+                            enableSchedulingPenalties:
+                                enableSchedulingPenaltiesOverride(),
                             fsrsVersion: $config.fsrsVersion,
                             dynamicDesiredRetentionEnabled:
                                 $config.fsrsVersion ===
@@ -953,17 +1011,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function sameDayParamsCandidate(
         label: string,
         includeSameDayReviews: boolean,
+        currentParams: number[],
     ): Promise<SameDayParamsCandidate> {
-        const paramsResp = await computeFsrsParams({
-            search: optimizeSearchFilter(),
-            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-            currentParams: selectedFsrsParams($config),
-            numOfRelearningSteps: getNumOfRelearningStepsInDay(),
-            healthCheck: false,
-            includeSameDayReviews,
-            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
-            dynamicDesiredRetentionEnabled: false,
-        });
+        const paramsResp = await computeFsrsParams(
+            {
+                search: optimizeSearchFilter(),
+                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                currentParams,
+                numOfRelearningSteps: getNumOfRelearningStepsInDay(),
+                healthCheck: false,
+                includeSameDayReviews,
+                enableSchedulingPenalties: enableSchedulingPenaltiesOverride(),
+                fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+                dynamicDesiredRetentionEnabled: false,
+            },
+            { alertOnError: false },
+        );
         return {
             label,
             fsrsItems: paramsResp.fsrsItems,
@@ -975,18 +1038,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         candidate: SameDayParamsCandidate,
     ): Promise<SameDayDecisionRow> {
         const search = evaluateSearchFilter();
-        const allTargets = await evaluateParamsLegacy({
-            search,
-            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-            params: candidate.params,
-            includeSameDayReviews: true,
-        });
-        const longTermTargets = await evaluateParamsLegacy({
-            search,
-            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-            params: candidate.params,
-            includeSameDayReviews: false,
-        });
+        const allTargets = await evaluateParamsLegacy(
+            {
+                search,
+                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                params: candidate.params,
+                includeSameDayReviews: true,
+            },
+            { alertOnError: false },
+        );
+        const longTermTargets = await evaluateParamsLegacy(
+            {
+                search,
+                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                params: candidate.params,
+                includeSameDayReviews: false,
+            },
+            { alertOnError: false },
+        );
         return {
             label: candidate.label,
             fsrsItems: candidate.fsrsItems,
@@ -1010,6 +1079,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
+        const currentParams = selectedFsrsParams($config);
+        try {
+            requireValidFsrsParams("current", currentParams);
+        } catch (err) {
+            if (!isInterrupted(err)) {
+                alert(optimizationFailureFeedback(err, currentParams));
+            }
+            return;
+        }
         await commitEditing();
         checkingSameDayDecision = true;
         computeParamsProgress = undefined;
@@ -1020,10 +1098,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     const withSameDayParams = await sameDayParamsCandidate(
                         "Optimized with same-day reviews",
                         true,
+                        currentParams,
                     );
                     const withoutSameDayParams = await sameDayParamsCandidate(
                         "Optimized without same-day reviews",
                         false,
+                        currentParams,
                     );
                     if (
                         !withSameDayParams.fsrsItems ||
@@ -1048,6 +1128,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
                 },
             );
+        } catch (err) {
+            if (!isInterrupted(err)) {
+                alert(optimizationFailureFeedback(err, currentParams));
+            }
         } finally {
             checkingSameDayDecision = false;
         }
@@ -1109,20 +1193,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
+        const params = selectedFsrsParams($config);
         checkingParams = true;
         computeParamsProgress = undefined;
         try {
+            requireValidFsrsParams("current", params);
             await runWithBackendProgress(
                 async () => {
                     const search = evaluateSearchFilter();
-                    const resp = await evaluateParamsLegacy({
-                        search,
-                        ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                        params: selectedFsrsParams($config),
-                        includeSameDayReviews: includeSameDayOverrideForParams(
-                            selectedFsrsParams($config),
-                        ),
-                    });
+                    const resp = await evaluateParamsLegacy(
+                        {
+                            search,
+                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            params,
+                            includeSameDayReviews:
+                                includeSameDayOverrideForParams(params),
+                        },
+                        { alertOnError: false },
+                    );
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
                     }
@@ -1142,6 +1230,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
                 },
             );
+        } catch (err) {
+            if (!isInterrupted(err)) {
+                alert(optimizationFailureFeedback(err, params));
+            }
         } finally {
             checkingParams = false;
         }
@@ -1156,22 +1248,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
+        const params = selectedFsrsParams($config);
         checkingHealth = true;
         computeParamsProgress = undefined;
         try {
+            requireValidFsrsParams("current", params);
             await runWithBackendProgress(
                 async () => {
                     const search = evaluateSearchFilter();
                     const searchForTraining = optimizeSearchFilter();
-                    const resp = await evaluateParams({
-                        search,
-                        searchForTraining,
-                        ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                        numOfRelearningSteps: getNumOfRelearningStepsInDay(),
-                        fsrsVersion: $config.fsrsVersion,
-                        includeSameDayReviews: includeSameDayOverride(),
-                        includeSameDayReviewsForTraining: includeSameDayOverride(),
-                    });
+                    const resp = await evaluateParams(
+                        {
+                            search,
+                            searchForTraining,
+                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
+                            numOfRelearningSteps: getNumOfRelearningStepsInDay(),
+                            fsrsVersion: $config.fsrsVersion,
+                            includeSameDayReviews: includeSameDayOverride(),
+                            includeSameDayReviewsForTraining: includeSameDayOverride(),
+                            enableSchedulingPenalties:
+                                enableSchedulingPenaltiesOverride(),
+                        },
+                        { alertOnError: false },
+                    );
                     if (computeParamsProgress) {
                         computeParamsProgress.current = computeParamsProgress.total;
                     }
@@ -1191,6 +1290,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     }
                 },
             );
+        } catch (err) {
+            if (!isInterrupted(err)) {
+                alert(optimizationFailureFeedback(err, params));
+            }
         } finally {
             checkingHealth = false;
         }
@@ -1232,11 +1335,42 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function computeAllParams(): Promise<void> {
         await commitEditing();
+        const incompatiblePresetNames = state.incompatibleFsrsParamPresetNames();
+        if (incompatiblePresetNames.length) {
+            const shownPresets = incompatiblePresetNames
+                .slice(0, 8)
+                .map((name) => `- ${name}`)
+                .join("\n");
+            const remaining = incompatiblePresetNames.length - 8;
+            const remainingText = remaining > 0 ? `\n- ...and ${remaining} more` : "";
+            const shouldClear = confirm(
+                [
+                    "Some presets have incompatible FSRS parameters. Optimize All Presets needs to clear those fields first so the default parameters can be used.",
+                    `Affected presets:\n${shownPresets}${remainingText}`,
+                    "Clear the incompatible FSRS parameters and continue?",
+                ].join("\n\n"),
+            );
+            if (!shouldClear) {
+                return;
+            }
+            state.clearIncompatibleFsrsParams();
+        }
         state.save(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS);
     }
 
     function showSimulatorModal(modal: Modal) {
-        if (selectedFsrsParams($config).toString() === initialParams.toString()) {
+        const params = selectedFsrsParams($config);
+        const diagnostics = fsrsParamDiagnostics(params);
+        if (!diagnostics.valid) {
+            logFsrsParamProblem(
+                "validation failed before simulator",
+                "current",
+                params,
+            );
+            alert(fsrsParamDiagnosticDetails(diagnostics));
+            return;
+        }
+        if (params.toString() === initialParams.toString()) {
             modal?.show();
         } else {
             alert(tr.deckConfigFsrsSimulateSavePreset());
@@ -1282,6 +1416,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dynamicDesiredRetentionConfigReady,
         dynamicDesiredRetentionWeight,
     );
+    $: outdatedFsrs7ParamsWarning =
+        $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
+        fsrsParamDiagnostics($config.fsrsParams7).outdatedFsrs7PreviewParams
+            ? OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING
+            : "";
 
     function dynamicDesiredRetentionWarningMessage(
         config: DeckConfig_Config,
@@ -1353,7 +1492,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SpinBoxFloatRow>
     </Item>
 </DynamicallySlottable>
-<Warning warning={desiredRetentionChangeInfo} className={"alert-info two-line"} />
+<Warning warning={desiredRetentionChangeInfo} className={desiredRetentionChangeClass} />
 <Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
 
 {#if newCardIntervals}
@@ -1389,6 +1528,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 {/if}
 
 <Warning warning={newCardIntervalsError} className={"alert-warning"} />
+<Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
 
 <div class="ms-1 me-1">
     <button
@@ -1448,6 +1588,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
         <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>
             <SettingTitle>Include same-day reviews in FSRS-7</SettingTitle>
+        </SwitchRow>
+        <SwitchRow bind:value={enableSchedulingPenaltiesInFsrs7} defaultValue={false}>
+            <SettingTitle>Use scheduling penalties in FSRS-7 optimization</SettingTitle>
         </SwitchRow>
         <button
             class="btn {checkingSameDayDecision

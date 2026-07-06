@@ -2742,7 +2742,7 @@ fn interval_for_curve(
         previous = Some((day, retrievability));
     }
 
-    None
+    Some(max_interval_days)
 }
 
 fn interval_search_days(max_interval_days: u32) -> Vec<u32> {
@@ -4977,6 +4977,16 @@ order by r.id, r.cid
         assert_eq!(clamped_interval_days(1.0, 10), 1);
         assert_eq!(clamped_interval_days(1.1, 10), 2);
         assert_eq!(clamped_interval_days(12.0, 10), 10);
+    }
+
+    #[test]
+    fn interval_for_curve_returns_max_when_target_not_reached() {
+        let curve = ReviewCurve {
+            ahead_logits: vec![20.0],
+            weights: vec![1.0],
+        };
+
+        assert_eq!(interval_for_curve(&curve, 0.30, 365), Some(365));
     }
 
     #[test]

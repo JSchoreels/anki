@@ -79,6 +79,10 @@ message DeckConfig {
       NEW_CARD_GATHER_PRIORITY_RANDOM_NOTES = 3;
       // Siblings are neither grouped nor ordered.
       NEW_CARD_GATHER_PRIORITY_RANDOM_CARDS = 4;
+      // Descending RWKV retrievability, then ascending position.
+      NEW_CARD_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY = 6;
+      // Ascending RWKV retrievability, then ascending position.
+      NEW_CARD_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY = 7;
     }
     enum NewCardSortOrder {
       // Ascending card template ordinal.
@@ -201,6 +205,9 @@ message DeckConfig {
     bool rwkv_review_japanese_feature_state_enabled = 77;
     uint32 rwkv_review_min_intervening_reviews = 78;
     uint32 rwkv_review_min_elapsed_secs = 79;
+    string rwkv_review_japanese_kanji_field = 80;
+    string rwkv_review_japanese_reading_field = 81;
+    bool rwkv_review_first_review_elapsed_from_card_creation = 82;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

@@ -8,7 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
 
     export let value: number[];
-    export let validParamCounts = [0, 17, 19, 21, 35];
+    export let validParamCounts = [0, 17, 19, 21, 34];
     export let ariaLabel = "FSRS Parameters";
 
     let stringValue: string;
@@ -33,6 +33,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function update(e: Event): void {
         const input = e.target as HTMLTextAreaElement;
+        if (input.value === stringValue) {
+            return;
+        }
         const newValue = input.value
             .replace(/ /g, "")
             .split(",")

@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import struct
 import tempfile
 import threading
@@ -28,16 +29,18 @@ from typing import Any, NamedTuple, Protocol, TypeVar, cast
 from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.consts import (
     CARD_TYPE_LRN,
+    CARD_TYPE_NEW,
     CARD_TYPE_RELEARNING,
     CARD_TYPE_REV,
     QUEUE_TYPE_DAY_LEARN_RELEARN,
     QUEUE_TYPE_LRN,
+    QUEUE_TYPE_NEW,
     QUEUE_TYPE_REV,
     QUEUE_TYPE_SUSPENDED,
 )
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
-from aqt.qt import QWidget
+from aqt.qt import QMessageBox, QWidget
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -50,6 +53,12 @@ class RwkvStatsPreparationStatus(enum.Enum):
     FAILED = "failed"
 
 
+class RwkvFirstReviewElapsedSource(enum.Enum):
+    DECK_CONFIG = "deck_config"
+    MISSING = "missing"
+    CARD_CREATION = "card_creation"
+
+
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
 _REVIEW_ORDER_RETRIEVABILITY_ASCENDING = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING
@@ -57,8 +66,20 @@ _REVIEW_ORDER_RETRIEVABILITY_ASCENDING = (
 _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_DESCENDING
 )
+_NEW_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY = getattr(
+    deck_config_pb2.DeckConfig.Config,
+    "NEW_CARD_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY",
+    6,
+)
+_NEW_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY = getattr(
+    deck_config_pb2.DeckConfig.Config,
+    "NEW_CARD_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY",
+    7,
+)
 _DEFAULT_RWKV_REVIEW_BATCH_SIZE = 512
 _DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL = 1
+_DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD = "Front"
+_DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD = "Reading"
 _MIN_RWKV_REVIEW_BATCH_SIZE = 64
 _MAX_RWKV_REVIEW_BATCH_SIZE = 2048
 _MIN_RWKV_REVIEW_REFRESH_INTERVAL = 1
@@ -69,8 +90,11 @@ _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT = 4
 _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR = "_rwkv_review_speculative_queue_scores"
 _RWKV_REVIEW_LAST_ANSWER_KEY_ATTR = "_rwkv_review_last_answer_key"
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
+_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY_ENV = (
+    "ANKI_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY"
+)
 _RWKV_REVIEW_UNDO_LIMIT = 30
-_RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 30.0
+_RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
 _RWKV_WORKLOAD_MIN_DR = 30
 _RWKV_WORKLOAD_MAX_DR = 95
@@ -164,6 +188,13 @@ _RWKV_SELF_CORRECTION_TRAIN_FRACTION = 0.70
 _RWKV_SELF_CORRECTION_MIN_SAMPLES = 200
 _RWKV_SELF_CORRECTION_L2 = 0.01
 _RWKV_SELF_CORRECTION_MAX_ITERATIONS = 50
+
+
+def _rwkv_state_cache_records_retrievability() -> bool:
+    value = os.environ.get(_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY_ENV)
+    return value is None or value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT = "final_fit"
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD = "test_fold"
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_POST_OPTIMIZATION = "post_optimization"
@@ -199,7 +230,7 @@ _reviewer_backend_warmup_pending_keys: set[tuple[int, int]] = set()
 _resolved_preset_id_cache: dict[tuple[int, str | None], dict[int, str]] = {}
 _rwkv_review_queue_score_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_score_generations: dict[int, int] = {}
-_rwkv_review_queue_score_config_keys: dict[int, tuple[tuple[object, bool], ...]] = {}
+_rwkv_review_queue_score_config_keys: dict[int, RwkvReviewQueueScoreConfigKey] = {}
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _rwkv_stats_prepare_lock = threading.Lock()
 _rwkv_stats_prepare_in_flight: dict[RwkvStatsPrepareKey, threading.Event] = {}
@@ -380,6 +411,17 @@ class RwkvSpeculativeReviewQueueScores:
     candidate_card_ids: tuple[int, ...]
     scores: tuple[tuple[int, float], ...]
     elapsed_ms: float
+
+
+@dataclass(frozen=True)
+class RwkvReviewQueueOrderPrecomputeWork:
+    deck_id: int
+    card_id: int
+    batch_size: int
+    include_new_cards: bool
+    answer_inputs_by_ease: tuple[tuple[int, RwkvReviewInput], ...]
+    base_state_generation: int
+    snapshot: RwkvBackendCacheSnapshot
 
 
 @dataclass(frozen=True)
@@ -631,19 +673,26 @@ RwkvWorkloadOutput = tuple[
 RwkvStatsPrepareKey = tuple[int, int, int, int, str]
 RwkvScorePrewarmKey = tuple[int, int, int, int, tuple[int, ...]]
 RwkvPresetTagStateCacheKey = tuple[tuple[object, bool], ...]
-RwkvJapaneseFeatureStateCacheKey = tuple[tuple[object, bool], ...]
+RwkvJapaneseFeatureStateCacheKey = tuple[tuple[object, bool, str, str], ...]
+RwkvFirstReviewElapsedStateCacheKey = tuple[tuple[object, bool], ...]
 RwkvSelfCorrectionCacheKey = tuple[tuple[object, bool], ...]
+RwkvReviewQueueScoreConfigKey = tuple[
+    RwkvFirstReviewElapsedStateCacheKey,
+    RwkvSelfCorrectionCacheKey,
+]
+RwkvJapaneseFeatureFieldNames = tuple[str, str]
 RwkvJapaneseFeatureFields = tuple[str, str, str, str]
 RwkvCalibrationMetricBin = tuple[int, int, int]
 RwkvCalibrationMetricPair = tuple[float, int, RwkvCalibrationMetricBin]
 RwkvReviewInputBatchCacheKey = tuple[
     int,
     int | None,
-    int,
+    bool,
     int,
     int,
     RwkvPresetTagStateCacheKey,
     RwkvJapaneseFeatureStateCacheKey,
+    RwkvFirstReviewElapsedStateCacheKey,
     RwkvSelfCorrectionCacheKey,
 ]
 RwkvSpeculativeReviewAnswerKey = tuple[int, int, int | None, int, int]
@@ -1888,6 +1937,7 @@ def set_reviewer_backend(
     _rwkv_review_queue_score_generations.clear()
     _rwkv_review_queue_score_config_keys.clear()
     _rwkv_score_prewarm_in_flight.clear()
+    _rwkv_review_input_batch_module_cache.clear()
     return previous
 
 
@@ -2070,7 +2120,7 @@ def refresh_answered_card_queue_score(
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
         return
@@ -2107,12 +2157,25 @@ def invalidate_reviewer_queue_for_card_answer(
     """Drop the in-memory study queue before answering a non-queued reviewer card."""
 
     deck_id = _deck_id(card)
+    current_deck_id = _current_deck_id(reviewer)
     if deck_id is None:
-        deck_id = _current_deck_id(reviewer)
+        deck_id = current_deck_id
     if deck_id is None:
         deck_id = 0
 
     existing_scores = _rwkv_review_queue_score_map_for_deck(reviewer, deck_id)
+    if (
+        existing_scores is None
+        and current_deck_id is not None
+        and current_deck_id != deck_id
+    ):
+        current_deck_scores = _rwkv_review_queue_score_map_for_deck(
+            reviewer,
+            current_deck_id,
+        )
+        if current_deck_scores is not None:
+            deck_id = current_deck_id
+            existing_scores = current_deck_scores
     scores = sorted(existing_scores.items()) if existing_scores is not None else []
     _set_rwkv_review_queue_scores(reviewer, deck_id, scores)
 
@@ -2130,7 +2193,7 @@ def prepare_reviewer_queue_order(reviewer: object) -> None:
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
         return
@@ -2165,7 +2228,7 @@ def prepare_reviewer_queue_order_async_work(
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
         return None
@@ -2226,6 +2289,7 @@ def prepare_reviewer_queue_order_async_work(
             reviewer=reviewer,
             deck_id=deck_id,
             batch_size_override=batch_size,
+            include_new_cards=_new_gather_uses_retrievability(deck_config),
         )
         if input_build is None:
             logger.debug(
@@ -2257,10 +2321,7 @@ def score_reviewer_queue_order_async_work(
     start = time.monotonic()
     predictions = list(work.predictions)
     requests_by_index = list(work.requests_by_index)
-    runtime_batch_size = min(
-        _rwkv_retrievability_batch_size(work.batch_size),
-        _MIN_RWKV_REVIEW_BATCH_SIZE,
-    )
+    runtime_batch_size = _rwkv_retrievability_batch_size(work.batch_size)
     for missing_offset in range(0, len(requests_by_index), runtime_batch_size):
         if _reviewer_backend_state_generation() != work.state_generation:
             logger.debug(
@@ -2419,7 +2480,7 @@ def reviewer_queue_order_enabled(reviewer: object) -> bool:
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
     )
 
 
@@ -2428,7 +2489,7 @@ def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
     if deck_config is None or not (
         _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
     ):
         return False
 
@@ -2443,63 +2504,123 @@ def reviewer_queue_order_refresh_due_after_next_answer(reviewer: object) -> bool
     deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
     if deck_config is None or not (
         _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
     ):
         return False
 
     answered_ids = getattr(reviewer, "_answeredIds", None)
     answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
+    return _rwkv_review_refresh_due_after_answer_count(
+        deck_config,
+        answered_count + 1,
+    )
+
+
+def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
+    deck_id = _current_deck_id(reviewer)
+    if deck_id is None:
+        return False
+
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    return isinstance(deck_config, dict) and _new_gather_uses_retrievability(
+        deck_config
+    )
+
+
+def _rwkv_review_refresh_due_after_answer_count(
+    deck_config: dict[str, object],
+    answered_count: int,
+) -> bool:
     interval = _rwkv_review_refresh_interval(deck_config)
-    return (answered_count + 1) > 0 and (answered_count + 1) % interval == 0
+    return answered_count > 0 and answered_count % interval == 0
 
 
-def precompute_reviewer_queue_order_for_answer(reviewer: object) -> None:
-    """Speculatively score exact post-answer queue maps for the visible card."""
+def prepare_reviewer_queue_order_precompute_work(
+    reviewer: object,
+) -> RwkvReviewQueueOrderPrecomputeWork | None:
+    """Capture immutable state for speculative post-answer queue scoring."""
 
     backend = _reviewer_backend
     if backend is None or not _reviewer_backend_cacheable():
-        return
+        return None
     predict_future = getattr(backend, "predict_retrievability_after_review", None)
     if not callable(predict_future):
-        return
+        return None
 
     deck_id = _current_deck_id(reviewer)
     card = getattr(reviewer, "card", None)
     card_id = _card_id(card)
     if deck_id is None or card_id is None:
-        return
+        return None
 
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
     if not (
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
         and not _rwkv_review_candidate_refresh_enabled(deck_config)
-        and reviewer_queue_order_refresh_due_after_next_answer(reviewer)
+        and (
+            _rwkv_review_refresh_on_exit(deck_config)
+            or _rwkv_review_refresh_due_after_answer_count(
+                deck_config,
+                answered_count + 1,
+            )
+        )
     ):
-        return
+        return None
 
     if not _prepare_reviewer_backend_for_review(reviewer):
         logger.debug("RWKV speculative queue refresh skipped: warm-up pending")
+        return None
+
+    answer_inputs_by_ease: list[tuple[int, RwkvReviewInput]] = []
+    for ease in (1, 2, 3, 4):
+        answer_input = _rwkv_answer_input(reviewer, card, ease)
+        if answer_input is not None:
+            answer_inputs_by_ease.append((ease, answer_input))
+    if not answer_inputs_by_ease:
+        return None
+
+    return RwkvReviewQueueOrderPrecomputeWork(
+        deck_id=deck_id,
+        card_id=card_id,
+        batch_size=_rwkv_review_batch_size(deck_config),
+        include_new_cards=_new_gather_uses_retrievability(deck_config),
+        answer_inputs_by_ease=tuple(answer_inputs_by_ease),
+        base_state_generation=_reviewer_backend_state_generation(),
+        snapshot=cast(Any, backend).cache_snapshot(),
+    )
+
+
+def score_reviewer_queue_order_precompute_work(
+    reviewer: object,
+    work: RwkvReviewQueueOrderPrecomputeWork,
+) -> None:
+    """Speculatively score exact post-answer queue maps for captured answer work."""
+
+    backend = _reviewer_backend
+    predict_future = getattr(backend, "predict_retrievability_after_review", None)
+    if backend is None or not callable(predict_future):
         return
 
     start = time.monotonic()
-    batch_size = _rwkv_review_batch_size(deck_config)
     input_build = _rwkv_review_input_batches_for_deck_review_queue(
         reviewer=reviewer,
-        deck_id=deck_id,
-        batch_size_override=batch_size,
+        deck_id=work.deck_id,
+        batch_size_override=work.batch_size,
+        include_new_cards=work.include_new_cards,
     )
     if input_build is None:
         return
-
     inputs_by_card_id = [
         (candidate_card_id, review_input)
         for candidate_card_id, review_input in _rwkv_review_input_build_inputs(
             input_build
         )
-        if candidate_card_id != card_id
+        if candidate_card_id != work.card_id
     ]
     candidate_card_ids = tuple(card_id for card_id, _ in inputs_by_card_id)
     if not candidate_card_ids:
@@ -2509,23 +2630,19 @@ def precompute_reviewer_queue_order_for_answer(reviewer: object) -> None:
         RwkvSpeculativeReviewAnswerKey,
         RwkvSpeculativeReviewQueueScores,
     ] = {}
-    base_state_generation = _reviewer_backend_state_generation()
-    snapshot = cast(Any, backend).cache_snapshot()
-    for ease in (1, 2, 3, 4):
-        answer_input = _rwkv_answer_input(reviewer, card, ease)
-        key = _speculative_review_answer_key(
-            reviewer=reviewer,
-            card=card,
-            ease=ease,
-            base_state_generation=base_state_generation,
+    for ease, answer_input in work.answer_inputs_by_ease:
+        key: RwkvSpeculativeReviewAnswerKey = (
+            work.card_id,
+            ease,
+            answer_input.duration_millis,
+            work.deck_id,
+            work.base_state_generation,
         )
-        if answer_input is None or key is None:
-            continue
         score_start = time.monotonic()
         scores = predict_future(
             answer=answer_input,
             inputs_by_card_id=inputs_by_card_id,
-            snapshot=snapshot,
+            snapshot=work.snapshot,
         )
         if scores is None:
             return
@@ -2541,16 +2658,29 @@ def precompute_reviewer_queue_order_for_answer(reviewer: object) -> None:
         )
 
     if cache:
+        existing_cache = getattr(
+            reviewer,
+            _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR,
+            None,
+        )
+        if isinstance(existing_cache, dict):
+            cache = {**existing_cache, **cache}
         setattr(reviewer, _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR, cache)
         logger.debug(
             "RWKV speculative queue scores prepared: deck_id=%s card_id=%s "
             "eases=%s candidates=%s elapsed_ms=%.1f",
-            deck_id,
-            card_id,
+            work.deck_id,
+            work.card_id,
             sorted(key[1] for key in cache),
             len(candidate_card_ids),
             (time.monotonic() - start) * 1000,
         )
+
+
+def precompute_reviewer_queue_order_for_answer(reviewer: object) -> None:
+    work = prepare_reviewer_queue_order_precompute_work(reviewer)
+    if work is not None:
+        score_reviewer_queue_order_precompute_work(reviewer, work)
 
 
 def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
@@ -2563,7 +2693,7 @@ def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _review_order_uses_retrievability(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
         and _rwkv_review_refresh_on_exit(deck_config)
     )
 
@@ -2671,7 +2801,11 @@ def prepare_stats_retrievability_scores(
             card_ids_elapsed_ms,
         )
         score_start = time.monotonic()
-        scores = _rwkv_stats_graph_scores(reviewer=reviewer, card_ids=card_ids)
+        scores = _rwkv_stats_graph_scores(
+            reviewer=reviewer,
+            card_ids=card_ids,
+            include_new_cards=_search_text_explicitly_includes_new_cards(search),
+        )
         score_elapsed_ms = (time.monotonic() - score_start) * 1000
         set_start = time.monotonic()
         _set_rwkv_stats_graph_scores(reviewer, search, scores)
@@ -3043,7 +3177,7 @@ def _prewarm_rwkv_review_scores_for_decks(
             isinstance(deck_config, dict)
             and _rwkv_review_config_enabled(deck_config)
             and _rwkv_review_instant_order_enabled(deck_config)
-            and _review_order_uses_retrievability(deck_config)
+            and _queue_scores_use_retrievability(deck_config)
         ):
             continue
 
@@ -3051,6 +3185,7 @@ def _prewarm_rwkv_review_scores_for_decks(
             reviewer=reviewer,
             deck_id=deck_id,
             batch_size=_rwkv_review_batch_size(deck_config),
+            include_new_cards=_new_gather_uses_retrievability(deck_config),
         )
         if deck_scores is not None:
             scores, input_build = deck_scores
@@ -3163,6 +3298,7 @@ def _prepare_rwkv_review_scores_for_deck(
             reviewer=reviewer,
             deck_id=deck_id,
             batch_size=batch_size,
+            include_new_cards=_new_gather_uses_retrievability(deck_config),
         )
         deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
         if speculative_scores is not None:
@@ -3192,6 +3328,7 @@ def _prepare_rwkv_review_scores_for_deck(
             reviewer=reviewer,
             deck_id=deck_id,
             batch_size=batch_size,
+            include_new_cards=_new_gather_uses_retrievability(deck_config),
         )
         deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
         if deck_scores is not None:
@@ -3403,7 +3540,7 @@ def rwkv_review_identity(
         else None
     )
     japanese_features = (
-        _japanese_features_for_card(reviewer, card)
+        _japanese_features_for_card(reviewer, card, deck_config)
         if isinstance(deck_config, dict)
         and _rwkv_review_japanese_feature_state_enabled(deck_config)
         else None
@@ -3436,6 +3573,17 @@ def rwkv_review_input(
     elapsed_days, elapsed_seconds = _scheduling_state_elapsed(current_state)
     if normal_state_kind == "review" and elapsed_seconds is None:
         elapsed_seconds = _elapsed_seconds_since_card_last_review(card)
+    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    if (
+        normal_state_kind == "new"
+        and elapsed_seconds is None
+        and isinstance(deck_config, dict)
+        and _rwkv_review_first_review_elapsed_from_card_creation(deck_config)
+    ):
+        elapsed_seconds = _elapsed_seconds_since_card_created(reviewer, card)
+        elapsed_days = (
+            elapsed_seconds // 86_400 if elapsed_seconds is not None else None
+        )
 
     return RwkvReviewInput(
         identity=identity,
@@ -3596,7 +3744,7 @@ def interval_from_recall_curve(
 
         previous = point
 
-    return None
+    return max_interval_days
 
 
 def apply_review_interval_overrides(
@@ -4208,21 +4356,32 @@ def _note_tags_for_card(reviewer: object, card: object) -> object:
 def _japanese_features_for_card(
     reviewer: object,
     card: object,
+    deck_config: Mapping[str, object] | None = None,
 ) -> RwkvJapaneseFeatureFields | None:
+    field_names = _rwkv_japanese_feature_field_names(deck_config)
     features = getattr(card, "japanese_features", None)
-    if features is not None:
+    if (
+        features is not None
+        and field_names == _rwkv_default_japanese_feature_field_names()
+    ):
         return _rwkv_japanese_feature_fields(features)
 
     note_id = _int_attr(card, "nid")
     if note_id is None:
         return None
 
-    return _rwkv_japanese_features_for_note_ids(reviewer, [note_id]).get(note_id)
+    return _rwkv_japanese_features_for_note_ids(
+        reviewer,
+        [note_id],
+        field_names=field_names,
+    ).get(note_id)
 
 
 def _rwkv_japanese_features_for_note_ids(
     reviewer: object,
     note_ids: Sequence[int],
+    *,
+    field_names: RwkvJapaneseFeatureFieldNames | None = None,
 ) -> dict[int, RwkvJapaneseFeatureFields]:
     if not note_ids:
         return {}
@@ -4238,18 +4397,22 @@ def _rwkv_japanese_features_for_note_ids(
     )
     if not unique_note_ids:
         return {}
+    field_names = field_names or _rwkv_default_japanese_feature_field_names()
+    kanji_field, reading_field = field_names
 
     try:
         rows = all_rows(
             f"""
 select n.id, n.flds, front.ord, reading.ord, front_kana.ord, frequency.ord
 from notes n
-left join fields front on front.ntid = n.mid and front.name = 'Front'
-left join fields reading on reading.ntid = n.mid and reading.name = 'Reading'
+left join fields front on front.ntid = n.mid and front.name = ?
+left join fields reading on reading.ntid = n.mid and reading.name = ?
 left join fields front_kana on front_kana.ntid = n.mid and front_kana.name = 'Front_Kana'
 left join fields frequency on frequency.ntid = n.mid and frequency.name = 'Frequency'
 where n.id in {ids2str(unique_note_ids)}
-"""
+""",
+            kanji_field,
+            reading_field,
         )
     except Exception:
         logger.debug("failed to read note fields for RWKV Japanese feature state")
@@ -4463,6 +4626,7 @@ def _warm_up_reviewer_backend(
     *,
     force_rebuild: bool = False,
     require_retrievability_cache: bool = False,
+    record_retrievability_cache: bool = True,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> bool:
     backend = _reviewer_backend
@@ -4511,6 +4675,7 @@ def _warm_up_reviewer_backend(
             restored = _restore_reviewer_backend_cache(
                 reviewer,
                 require_retrievability_cache=require_retrievability_cache,
+                record_retrievability_cache=record_retrievability_cache,
                 progress=progress,
             )
             restore_elapsed_ms = (time.monotonic() - restore_start) * 1000
@@ -4549,6 +4714,7 @@ def _warm_up_reviewer_backend(
             review_ids=history.review_ids,
             progress=progress,
             label="Building RWKV state cache",
+            record_retrievability_cache=record_retrievability_cache,
         )
         warm_up_elapsed_ms = (time.monotonic() - warm_up_start) * 1000
         _report_rwkv_state_cache_progress(
@@ -4596,6 +4762,7 @@ def _warm_up_rwkv_reviews(
     review_ids: Sequence[int] | None = None,
     progress: RwkvStateCacheProgressCallback | None,
     label: str,
+    record_retrievability_cache: bool = True,
 ) -> None:
     review_inputs_by_id = (
         dict(zip(review_ids, reviews, strict=True)) if review_ids else {}
@@ -4605,35 +4772,24 @@ def _warm_up_rwkv_reviews(
         if review_ids
         else {}
     )
-    if isinstance(backend, RwkvStatefulReviewerBackend):
-        writer = _RwkvReviewRetrievabilityCacheWriter(
-            reviewer,
-            review_inputs_by_id=review_inputs_by_id,
-            self_correction_features_by_review_id=(
-                self_correction_features_by_review_id
-            ),
+    started_at = time.monotonic()
+
+    def progress_reporter(replay_progress: RwkvWarmUpProgress) -> None:
+        _report_rwkv_review_replay_progress(
+            progress,
+            label=label,
+            replay_progress=replay_progress,
+            elapsed_seconds=time.monotonic() - started_at,
         )
-        started_at = time.monotonic()
-        try:
+
+    if isinstance(backend, RwkvStatefulReviewerBackend):
+        if not record_retrievability_cache:
             backend.warm_up(
                 reviews,
                 review_ids=review_ids,
-                prediction_recorder=writer.record,
-                progress=lambda replay_progress: _report_rwkv_review_replay_progress(
-                    progress,
-                    label=label,
-                    replay_progress=replay_progress,
-                    elapsed_seconds=time.monotonic() - started_at,
-                ),
+                progress=progress_reporter,
             )
-        finally:
-            writer.flush()
-        return
-
-    if callable(warm_up):
-        warm_up_callable = cast(Callable[..., Any], warm_up)
-        warm_up_parameters = _callable_parameters(warm_up_callable)
-        if _supports_rwkv_warm_up_prediction_recorder(warm_up_parameters):
+        else:
             writer = _RwkvReviewRetrievabilityCacheWriter(
                 reviewer,
                 review_inputs_by_id=review_inputs_by_id,
@@ -4641,27 +4797,43 @@ def _warm_up_rwkv_reviews(
                     self_correction_features_by_review_id
                 ),
             )
-            started_at = time.monotonic()
-            kwargs: dict[str, object] = {
-                "review_ids": review_ids,
-                "prediction_recorder": writer.record,
-            }
-            if _callable_accepts_keyword(warm_up_parameters, "progress"):
-                kwargs["progress"] = (
-                    lambda replay_progress: _report_rwkv_review_replay_progress(
-                        progress,
-                        label=label,
-                        replay_progress=replay_progress,
-                        elapsed_seconds=time.monotonic() - started_at,
-                    )
+            try:
+                backend.warm_up(
+                    reviews,
+                    review_ids=review_ids,
+                    prediction_recorder=writer.record,
+                    progress=progress_reporter,
                 )
+            finally:
+                writer.flush()
+        return
+
+    if callable(warm_up):
+        warm_up_callable = cast(Callable[..., Any], warm_up)
+        warm_up_parameters = _callable_parameters(warm_up_callable)
+        kwargs: dict[str, object] = {}
+        if _callable_accepts_keyword(warm_up_parameters, "review_ids"):
+            kwargs["review_ids"] = review_ids
+        if _callable_accepts_keyword(warm_up_parameters, "progress"):
+            kwargs["progress"] = progress_reporter
+        if record_retrievability_cache and _supports_rwkv_warm_up_prediction_recorder(
+            warm_up_parameters
+        ):
+            writer = _RwkvReviewRetrievabilityCacheWriter(
+                reviewer,
+                review_inputs_by_id=review_inputs_by_id,
+                self_correction_features_by_review_id=(
+                    self_correction_features_by_review_id
+                ),
+            )
+            kwargs["prediction_recorder"] = writer.record
             try:
                 warm_up_callable(reviews, **kwargs)
             finally:
                 writer.flush()
             return
 
-        warm_up_callable(reviews)
+        warm_up_callable(reviews, **kwargs)
 
 
 def _callable_parameters(
@@ -4775,6 +4947,7 @@ def warm_up_rwkv_state(
     *,
     force_rebuild: bool = False,
     require_retrievability_cache: bool = False,
+    record_retrievability_cache: bool = True,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> bool:
     """Warm and persist RWKV state for the current desktop collection."""
@@ -4787,6 +4960,7 @@ def warm_up_rwkv_state(
         SimpleNamespace(mw=mw),
         force_rebuild=force_rebuild,
         require_retrievability_cache=require_retrievability_cache,
+        record_retrievability_cache=record_retrievability_cache,
         progress=progress,
     )
 
@@ -5110,6 +5284,131 @@ def compare_rwkv_extra_feature_metrics(
         except Exception:
             logger.exception(
                 "failed to restore RWKV backend state after metric comparison"
+            )
+
+
+def compare_rwkv_first_review_elapsed_metrics(
+    mw: object,
+    *,
+    deck_id: int | None = None,
+    use_extra_feature_state: bool = True,
+    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
+    apply_self_correction: bool = False,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> dict[str, object]:
+    """Compare RWKV logloss with first-review elapsed time missing vs card creation."""
+
+    configure_reviewer_backend_from_environment()
+    backend = _reviewer_backend
+    if backend is None:
+        return _rwkv_unavailable_metric_comparison("RWKV backend is not available.")
+
+    cache_snapshot = getattr(backend, "cache_snapshot", None)
+    restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
+    reset_cache_snapshot = getattr(backend, "reset_cache_snapshot", None)
+    warm_up = getattr(backend, "warm_up", None)
+    if not (
+        callable(cache_snapshot)
+        and callable(restore_cache_snapshot)
+        and callable(reset_cache_snapshot)
+        and callable(warm_up)
+    ):
+        logger.debug(
+            "RWKV first-review elapsed comparison skipped: backend does not support snapshots"
+        )
+        return _rwkv_unavailable_metric_comparison(
+            "RWKV backend does not support comparison replay."
+        )
+
+    reviewer = SimpleNamespace(mw=mw)
+    snapshot = cache_snapshot()
+    start = time.monotonic()
+    try:
+        _report_rwkv_state_cache_progress(
+            progress,
+            "Loading RWKV review history with missing first-review elapsed time...",
+        )
+        missing_history = _historical_rwkv_review_inputs(
+            reviewer,
+            deck_id=deck_id,
+            use_extra_feature_state=use_extra_feature_state,
+            extra_feature_override=extra_feature_override,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.MISSING,
+            progress=progress,
+        )
+        missing_predictions = _rwkv_calibration_predictions_for_history(
+            backend,
+            warm_up,
+            reset_cache_snapshot,
+            missing_history,
+            progress=progress,
+            label="Replaying RWKV history with missing first-review elapsed time",
+        )
+        _report_rwkv_state_cache_progress(
+            progress,
+            "Loading RWKV review history with creation-based first-review elapsed time...",
+        )
+        card_creation_history = _historical_rwkv_review_inputs(
+            reviewer,
+            deck_id=deck_id,
+            use_extra_feature_state=use_extra_feature_state,
+            extra_feature_override=extra_feature_override,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.CARD_CREATION,
+            progress=progress,
+        )
+        card_creation_predictions = _rwkv_calibration_predictions_for_history(
+            backend,
+            warm_up,
+            reset_cache_snapshot,
+            card_creation_history,
+            progress=progress,
+            label="Replaying RWKV history with creation-based first-review elapsed time",
+        )
+        _report_rwkv_state_cache_progress(
+            progress,
+            "Computing RWKV first-review elapsed comparison metrics...",
+        )
+        comparison = {
+            "available": True,
+            "deckId": deck_id or 0,
+            "missing": _rwkv_calibration_metrics_for_history(
+                reviewer,
+                missing_history,
+                missing_predictions,
+                apply_self_correction=apply_self_correction,
+                extra_feature_override=extra_feature_override,
+            ),
+            "cardCreation": _rwkv_calibration_metrics_for_history(
+                reviewer,
+                card_creation_history,
+                card_creation_predictions,
+                apply_self_correction=apply_self_correction,
+                extra_feature_override=extra_feature_override,
+            ),
+        }
+        logger.debug(
+            "RWKV first-review elapsed comparison finished: deck_id=%s "
+            "missing_reviews=%s card_creation_reviews=%s missing_predictions=%s "
+            "card_creation_predictions=%s elapsed_ms=%.1f",
+            deck_id,
+            len(missing_history.reviews),
+            len(card_creation_history.reviews),
+            len(missing_predictions),
+            len(card_creation_predictions),
+            (time.monotonic() - start) * 1000,
+        )
+        return comparison
+    except Exception:
+        logger.exception("RWKV first-review elapsed comparison failed")
+        return _rwkv_unavailable_metric_comparison(
+            "RWKV first-review elapsed comparison failed."
+        )
+    finally:
+        try:
+            restore_cache_snapshot(snapshot)
+        except Exception:
+            logger.exception(
+                "failed to restore RWKV backend state after first-review elapsed comparison"
             )
 
 
@@ -6386,14 +6685,35 @@ def maybe_prompt_for_rwkv_state_cache(mw: object) -> None:
     _rwkv_startup_prompt_shown = True
 
     def prompt() -> None:
-        from aqt.utils import askUser
+        from aqt.utils import ask_user_dialog
 
-        if askUser(
-            "RWKV review is enabled, but the local RWKV state cache is not ready. "
-            "Build it now? Anki will show progress until it finishes.",
+        def on_choice(choice: int) -> None:
+            if choice == 0:
+                build_rwkv_state_cache_with_progress(
+                    mw,
+                    record_retrievability_cache=False,
+                )
+            elif choice == 1:
+                build_rwkv_state_cache_with_progress(
+                    mw,
+                    record_retrievability_cache=True,
+                )
+
+        ask_user_dialog(
+            "RWKV review is enabled, but the local RWKV state cache is not ready.\n\n"
+            "Build the state cache only to start reviewing sooner. Build with "
+            "calibration data if you also want historical RWKV predictions prepared "
+            "for calibration/stat features.",
+            callback=on_choice,
+            buttons=[
+                "Build State Only",
+                "Build State + Calibration Data",
+                QMessageBox.StandardButton.Cancel,
+            ],
+            default_button=1,
             parent=parent,
-        ):
-            build_rwkv_state_cache_with_progress(mw)
+            title="RWKV State Cache",
+        )
 
     taskman = getattr(mw, "taskman", None)
     run_on_main = getattr(taskman, "run_on_main", None)
@@ -6472,6 +6792,7 @@ def build_rwkv_state_cache_with_progress(
     mw: object,
     *,
     force_rebuild: bool = False,
+    record_retrievability_cache: bool | None = None,
 ) -> None:
     """Build the local RWKV state cache with a modal progress dialog."""
 
@@ -6479,11 +6800,14 @@ def build_rwkv_state_cache_with_progress(
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
+    if record_retrievability_cache is None:
+        record_retrievability_cache = _rwkv_state_cache_records_retrievability()
     if not callable(with_progress):
         warm_up_rwkv_state(
             mw,
             force_rebuild=force_rebuild,
-            require_retrievability_cache=True,
+            require_retrievability_cache=record_retrievability_cache,
+            record_retrievability_cache=record_retrievability_cache,
         )
         return
 
@@ -6508,7 +6832,8 @@ def build_rwkv_state_cache_with_progress(
             return warm_up_rwkv_state(
                 mw,
                 force_rebuild=force_rebuild,
-                require_retrievability_cache=True,
+                require_retrievability_cache=record_retrievability_cache,
+                record_retrievability_cache=record_retrievability_cache,
                 progress=progress,
             )
 
@@ -7823,6 +8148,7 @@ def _restore_reviewer_backend_cache(
     reviewer: object,
     *,
     require_retrievability_cache: bool = False,
+    record_retrievability_cache: bool = True,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> bool:
     backend = _reviewer_backend
@@ -7880,6 +8206,7 @@ def _restore_reviewer_backend_cache(
                 review_ids=history.review_ids,
                 progress=progress,
                 label="Updating RWKV state cache",
+                record_retrievability_cache=record_retrievability_cache,
             )
             _report_rwkv_state_cache_progress(
                 progress,
@@ -8878,6 +9205,7 @@ def _historical_rwkv_review_inputs(
     previous_review_id_by_card: dict[int, int] | None = None,
     previous_interval_days_by_card: dict[int, int] | None = None,
     review_count_by_card: dict[int, int] | None = None,
+    first_review_elapsed_source: RwkvFirstReviewElapsedSource = RwkvFirstReviewElapsedSource.DECK_CONFIG,
 ) -> RwkvHistoricalReviewInputs:
     start = time.monotonic()
     requested_deck_id = deck_id
@@ -9003,11 +9331,25 @@ def _historical_rwkv_review_inputs(
             continue
 
         previous_review_id = previous_ids.get(card_id)
-        elapsed_seconds = (
-            max(0, (review_id - previous_review_id) // 1000)
-            if previous_review_id is not None
-            else -1
-        )
+        if previous_review_id is not None:
+            elapsed_seconds = max(0, (review_id - previous_review_id) // 1000)
+        else:
+            deck_config = deck_configs_by_deck_id.get(row_deck_id)
+            elapsed_source = first_review_elapsed_source
+            if elapsed_source == RwkvFirstReviewElapsedSource.DECK_CONFIG:
+                elapsed_source = (
+                    RwkvFirstReviewElapsedSource.CARD_CREATION
+                    if isinstance(deck_config, dict)
+                    and _rwkv_review_first_review_elapsed_from_card_creation(
+                        deck_config
+                    )
+                    else RwkvFirstReviewElapsedSource.MISSING
+                )
+            elapsed_seconds = (
+                max(0, (review_id - card_id) // 1000)
+                if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
+                else -1
+            )
         elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
         review_count_so_far = review_counts.get(card_id, 0)
         historical_interval_days = previous_intervals.get(card_id, 0)
@@ -9032,8 +9374,13 @@ def _historical_rwkv_review_inputs(
             else None
         )
         japanese_features = (
-            japanese_features_by_note_id.get(note_id)
-            if use_extra_feature_state
+            japanese_features_by_note_id.get(
+                (
+                    note_id,
+                    _rwkv_japanese_feature_field_names(feature_deck_config),
+                )
+            )
+            if use_extra_feature_state and isinstance(feature_deck_config, dict)
             else None
         )
         folded_preset_id = _rwkv_preset_id_with_features(
@@ -9199,7 +9546,10 @@ def _historical_rwkv_note_feature_maps(
     *,
     use_extra_feature_state: bool,
     feature_deck_configs_by_deck_id: Mapping[int, object | None],
-) -> tuple[dict[int, object], dict[int, RwkvJapaneseFeatureFields | None]]:
+) -> tuple[
+    dict[int, object],
+    dict[tuple[int, RwkvJapaneseFeatureFieldNames], RwkvJapaneseFeatureFields | None],
+]:
     if not use_extra_feature_state:
         return {}, {}
 
@@ -9209,29 +9559,40 @@ def _historical_rwkv_note_feature_maps(
         _rwkv_review_preset_tag_state_enabled,
         inline_column_count=10,
     )
-    japanese_note_ids, inline_japanese_note_ids = _historical_rwkv_note_ids_for_feature(
-        rows,
-        feature_deck_configs_by_deck_id,
-        _rwkv_review_japanese_feature_state_enabled,
-        inline_column_count=15,
-    )
-
     note_tags_by_note_id: dict[int, object] = {}
-    japanese_features_by_note_id: dict[int, RwkvJapaneseFeatureFields | None] = {}
+    japanese_features_by_note_key: dict[
+        tuple[int, RwkvJapaneseFeatureFieldNames],
+        RwkvJapaneseFeatureFields | None,
+    ] = {}
+    japanese_note_ids_by_fields: dict[RwkvJapaneseFeatureFieldNames, set[int]] = {}
     for row in rows:
-        if len(row) < 10:
+        if len(row) < 4:
             continue
         note_id = row[2]
-        if not isinstance(note_id, int):
+        row_deck_id = row[3]
+        if not isinstance(note_id, int) or not isinstance(row_deck_id, int):
             continue
-        if note_id in inline_tag_note_ids and note_id not in note_tags_by_note_id:
+        if (
+            len(row) >= 10
+            and note_id in inline_tag_note_ids
+            and note_id not in note_tags_by_note_id
+        ):
             note_tags_by_note_id[note_id] = row[9]
+
+        deck_config = feature_deck_configs_by_deck_id.get(row_deck_id)
+        if not isinstance(
+            deck_config, dict
+        ) or not _rwkv_review_japanese_feature_state_enabled(deck_config):
+            continue
+        field_names = _rwkv_japanese_feature_field_names(deck_config)
+        note_key = (note_id, field_names)
+        japanese_note_ids_by_fields.setdefault(field_names, set()).add(note_id)
         if (
             len(row) >= 15
-            and note_id in inline_japanese_note_ids
-            and note_id not in japanese_features_by_note_id
+            and field_names == _rwkv_default_japanese_feature_field_names()
+            and note_key not in japanese_features_by_note_key
         ):
-            japanese_features_by_note_id[note_id] = (
+            japanese_features_by_note_key[note_key] = (
                 _rwkv_japanese_feature_fields_from_storage(
                     row[10],
                     row[11],
@@ -9247,15 +9608,26 @@ def _historical_rwkv_note_feature_maps(
             _rwkv_note_tags_for_note_ids(reviewer, missing_tag_note_ids)
         )
 
-    missing_japanese_note_ids = sorted(
-        japanese_note_ids - set(japanese_features_by_note_id)
-    )
-    if missing_japanese_note_ids:
-        japanese_features_by_note_id.update(
-            _rwkv_japanese_features_for_note_ids(reviewer, missing_japanese_note_ids)
+    for field_names, note_ids in japanese_note_ids_by_fields.items():
+        missing_note_ids = sorted(
+            note_id
+            for note_id in note_ids
+            if (note_id, field_names) not in japanese_features_by_note_key
+        )
+        if not missing_note_ids:
+            continue
+        japanese_features_by_note_key.update(
+            {
+                (note_id, field_names): features
+                for note_id, features in _rwkv_japanese_features_for_note_ids(
+                    reviewer,
+                    missing_note_ids,
+                    field_names=field_names,
+                ).items()
+            }
         )
 
-    return note_tags_by_note_id, japanese_features_by_note_id
+    return note_tags_by_note_id, japanese_features_by_note_key
 
 
 def _rwkv_note_tags_for_note_ids(
@@ -9701,10 +10073,13 @@ def _rwkv_japanese_feature_state_config_key(reviewer: object) -> list[list[objec
         if not isinstance(config, dict):
             continue
         config_id = config.get("id")
+        kanji_field, reading_field = _rwkv_japanese_feature_field_names(config)
         key.append(
             [
                 config_id if isinstance(config_id, int) else f"index:{index}",
                 _rwkv_review_japanese_feature_state_enabled(config),
+                kanji_field,
+                reading_field,
             ]
         )
 
@@ -9735,6 +10110,36 @@ def _rwkv_self_correction_config_key(
             [
                 config_id if isinstance(config_id, int) else f"index:{index}",
                 _rwkv_review_self_correction_enabled(config),
+            ]
+        )
+
+    return sorted(key, key=lambda item: str(item[0]))
+
+
+def _rwkv_first_review_elapsed_config_key(
+    reviewer: object,
+) -> list[list[object]]:
+    col = _collection(reviewer)
+    decks = getattr(col, "decks", None)
+    all_config = getattr(decks, "all_config", None)
+    if not callable(all_config):
+        return []
+
+    try:
+        configs = all_config()
+    except Exception:
+        logger.debug("failed to read deck configs for RWKV first review elapsed")
+        return []
+
+    key: list[list[object]] = []
+    for index, config in enumerate(configs):
+        if not isinstance(config, dict):
+            continue
+        config_id = config.get("id")
+        key.append(
+            [
+                config_id if isinstance(config_id, int) else f"index:{index}",
+                _rwkv_review_first_review_elapsed_from_card_creation(config),
             ]
         )
 
@@ -9788,6 +10193,61 @@ def _rwkv_review_japanese_feature_state_enabled(
     return value if isinstance(value, bool) else False
 
 
+def _rwkv_japanese_feature_field_names(
+    deck_config: Mapping[str, object] | None,
+) -> RwkvJapaneseFeatureFieldNames:
+    if not isinstance(deck_config, dict):
+        return _rwkv_default_japanese_feature_field_names()
+
+    nested = _rwkv_other_config(deck_config)
+    kanji_value = None
+    reading_value = None
+    if nested is not None:
+        kanji_value = nested.get("rwkv_review_japanese_kanji_field")
+        reading_value = nested.get("rwkv_review_japanese_reading_field")
+
+    if not isinstance(kanji_value, str):
+        kanji_value = _rwkv_config_direct_value(
+            deck_config,
+            "rwkvReviewJapaneseKanjiField",
+            "rwkv_review_japanese_kanji_field",
+        )
+    if not isinstance(reading_value, str):
+        reading_value = _rwkv_config_direct_value(
+            deck_config,
+            "rwkvReviewJapaneseReadingField",
+            "rwkv_review_japanese_reading_field",
+        )
+
+    return (
+        _rwkv_japanese_feature_field_name_or_default(
+            kanji_value,
+            _DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
+        ),
+        _rwkv_japanese_feature_field_name_or_default(
+            reading_value,
+            _DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
+        ),
+    )
+
+
+def _rwkv_japanese_feature_field_name_or_default(
+    value: object,
+    default: str,
+) -> str:
+    if not isinstance(value, str):
+        return default
+    value = value.strip()
+    return value or default
+
+
+def _rwkv_default_japanese_feature_field_names() -> RwkvJapaneseFeatureFieldNames:
+    return (
+        _DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
+        _DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
+    )
+
+
 def _rwkv_review_self_correction_enabled(
     deck_config: dict[str, object],
 ) -> bool:
@@ -9801,6 +10261,23 @@ def _rwkv_review_self_correction_enabled(
         deck_config,
         "rwkvReviewSelfCorrectionEnabled",
         "rwkv_review_self_correction_enabled",
+    )
+    return value if isinstance(value, bool) else False
+
+
+def _rwkv_review_first_review_elapsed_from_card_creation(
+    deck_config: dict[str, object],
+) -> bool:
+    nested = _rwkv_other_config(deck_config)
+    if nested is not None:
+        value = nested.get("rwkv_review_first_review_elapsed_from_card_creation")
+        if isinstance(value, bool):
+            return value
+
+    value = _rwkv_config_direct_value(
+        deck_config,
+        "rwkvReviewFirstReviewElapsedFromCardCreation",
+        "rwkv_review_first_review_elapsed_from_card_creation",
     )
     return value if isinstance(value, bool) else False
 
@@ -10067,6 +10544,27 @@ def _review_order_uses_retrievability(deck_config: dict[str, object]) -> bool:
         _REVIEW_ORDER_RETRIEVABILITY_ASCENDING,
         _REVIEW_ORDER_RETRIEVABILITY_DESCENDING,
     )
+
+
+def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
+    value = deck_config.get(
+        "newCardGatherPriority",
+        deck_config.get("new_card_gather_priority"),
+    )
+    return value in (
+        _NEW_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY,
+        _NEW_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY,
+    )
+
+
+def _search_text_explicitly_includes_new_cards(search: str) -> bool:
+    return re.search(r"(?<![-\w:])is:new(?![\w:])", search, re.IGNORECASE) is not None
+
+
+def _queue_scores_use_retrievability(deck_config: dict[str, object]) -> bool:
+    return _review_order_uses_retrievability(
+        deck_config
+    ) or _new_gather_uses_retrievability(deck_config)
 
 
 def _rwkv_review_batch_size(deck_config: dict[str, object]) -> int:
@@ -10359,6 +10857,7 @@ def _speculative_rwkv_review_queue_scores_for_deck(
     reviewer: object,
     deck_id: int,
     batch_size: int,
+    include_new_cards: bool,
 ) -> tuple[list[tuple[int, float]], RwkvReviewInputBatchBuild, float] | None:
     answer_key = getattr(reviewer, _RWKV_REVIEW_LAST_ANSWER_KEY_ATTR, None)
     if not isinstance(answer_key, tuple) or len(answer_key) != 5:
@@ -10377,6 +10876,7 @@ def _speculative_rwkv_review_queue_scores_for_deck(
         reviewer=reviewer,
         deck_id=deck_id,
         batch_size_override=batch_size,
+        include_new_cards=include_new_cards,
     )
     if input_build is None:
         return None
@@ -10669,6 +11169,7 @@ def _rwkv_review_queue_scores_for_deck(
     reviewer: object,
     deck_id: int,
     batch_size: int,
+    include_new_cards: bool,
 ) -> tuple[list[tuple[int, float]], RwkvReviewInputBatchBuild] | None:
     if not _reviewer_backend_accepts_review_inputs():
         return None
@@ -10678,6 +11179,7 @@ def _rwkv_review_queue_scores_for_deck(
         reviewer=reviewer,
         deck_id=deck_id,
         batch_size_override=batch_size,
+        include_new_cards=include_new_cards,
     )
     if input_build is None:
         return None
@@ -10823,6 +11325,13 @@ def _rwkv_review_queue_scores(
         deck_config = deck_configs[deck_id]
         if deck_config is None:
             continue
+        if _rwkv_review_first_review_elapsed_from_card_creation(deck_config):
+            state_fields = _rwkv_state_fields_for_stats_graph_card(
+                card,
+                timing,
+                include_suspended_review=False,
+                first_review_elapsed_from_card_creation=True,
+            )
         eligible_cards.append((card, deck_config, state_fields))
 
     preset_ids_by_card = _resolved_fsrs_preset_ids(
@@ -10900,6 +11409,7 @@ def _rwkv_stats_graph_scores(
     *,
     reviewer: object,
     card_ids: Sequence[int],
+    include_new_cards: bool = False,
 ) -> list[tuple[int, float]]:
     start = time.monotonic()
     timing = _timing_today(reviewer)
@@ -10915,6 +11425,7 @@ def _rwkv_stats_graph_scores(
             reason="stats graph",
             include_suspended_review=True,
             supported_state_filter=True,
+            include_new_cards=include_new_cards,
         )
         if input_build is not None:
             input_scores_accum: list[tuple[int, float]] = []
@@ -11023,6 +11534,13 @@ def _rwkv_stats_graph_scores(
             disabled_config_cards += 1
             continue
 
+        if _rwkv_review_first_review_elapsed_from_card_creation(deck_config):
+            state_fields = _rwkv_state_fields_for_stats_graph_card(
+                card,
+                timing,
+                include_suspended_review=True,
+                first_review_elapsed_from_card_creation=True,
+            )
         batch_size = _rwkv_review_batch_size(deck_config)
         eligible_cards.append((card, deck_config, state_fields, batch_size))
 
@@ -11226,7 +11744,7 @@ def _rwkv_review_queue_score_map_for_deck(
 
     if _rwkv_review_queue_score_config_keys.get(
         deck_id
-    ) != _rwkv_self_correction_cache_key(reviewer):
+    ) != _rwkv_review_queue_score_config_key(reviewer):
         return None
 
     return scores
@@ -11240,7 +11758,7 @@ def _fresh_rwkv_review_queue_score_map(reviewer: object) -> dict[int, float]:
             deck_id
         ) == state_generation and _rwkv_review_queue_score_config_keys.get(
             deck_id
-        ) == _rwkv_self_correction_cache_key(reviewer):
+        ) == _rwkv_review_queue_score_config_key(reviewer):
             scores.update(deck_scores)
     return scores
 
@@ -11294,6 +11812,7 @@ def _rwkv_review_reschedule_items_for_deck(
         reviewer=reviewer,
         deck_id=deck_id,
         batch_size_override=None,
+        include_new_cards=False,
     )
     if input_build is None:
         return None
@@ -12024,6 +12543,7 @@ def _rwkv_review_input_batches_for_ids(
     reason: str,
     include_suspended_review: bool,
     supported_state_filter: bool,
+    include_new_cards: bool = False,
     batch_size_override: int | None = None,
     use_enabled_deck_filter: bool = True,
 ) -> RwkvReviewInputBatchBuild | None:
@@ -12031,6 +12551,7 @@ def _rwkv_review_input_batches_for_ids(
         reviewer=reviewer,
         card_ids=card_ids,
         include_suspended_review=include_suspended_review,
+        include_new_cards=include_new_cards,
         batch_size_override=batch_size_override,
         use_enabled_deck_filter=use_enabled_deck_filter,
     )
@@ -12106,6 +12627,13 @@ def _rwkv_review_input_batches_for_ids(
         if deck_config is None:
             disabled_config_cards += 1
             continue
+        if _rwkv_review_first_review_elapsed_from_card_creation(deck_config):
+            state_fields = _rwkv_state_fields_for_stats_graph_fields(
+                fields,
+                timing,
+                include_suspended_review=include_suspended_review,
+                first_review_elapsed_from_card_creation=True,
+            )
         batch_size = (
             batch_size_override
             if batch_size_override is not None
@@ -12163,6 +12691,7 @@ def _rwkv_review_input_batches_from_backend_for_ids(
     reviewer: object,
     card_ids: Sequence[int],
     include_suspended_review: bool,
+    include_new_cards: bool,
     batch_size_override: int | None,
     use_enabled_deck_filter: bool,
 ) -> RwkvReviewInputBatchBuild | None:
@@ -12192,6 +12721,7 @@ def _rwkv_review_input_batches_from_backend_for_ids(
         backend,
         card_ids=card_ids,
         include_suspended_review=include_suspended_review,
+        include_new_cards=include_new_cards,
     )
     if response is None:
         return None
@@ -12246,16 +12776,28 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     reviewer: object,
     deck_id: int,
     batch_size_override: int | None,
+    include_new_cards: bool,
 ) -> RwkvReviewInputBatchBuild | None:
     cache_key = _rwkv_review_input_batch_cache_key(
         reviewer=reviewer,
         deck_id=deck_id,
         batch_size_override=batch_size_override,
+        include_new_cards=include_new_cards,
     )
     if cache_key is not None:
         cached = _cached_rwkv_review_input_batch_build(reviewer, cache_key)
         if cached is not None:
             return cached
+        cache = _rwkv_review_input_batch_cache(reviewer)
+        if cache:
+            logger.debug(
+                "RWKV review input batch cache miss: deck_id=%s "
+                "batch_size=%s cache_size=%s stored_keys=%s",
+                deck_id,
+                batch_size_override,
+                len(cache),
+                [(k[0], k[1]) for k in cache],
+            )
 
     col = _collection(reviewer)
     backend = getattr(col, "_backend", None)
@@ -12266,6 +12808,7 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     response = _rwkv_review_input_rows_for_deck_review_queue_backend_response(
         backend,
         deck_id=deck_id,
+        include_new_cards=include_new_cards,
     )
     if response is None:
         return None
@@ -12288,6 +12831,7 @@ def _rwkv_review_input_batch_cache_key(
     reviewer: object,
     deck_id: int,
     batch_size_override: int | None,
+    include_new_cards: bool,
 ) -> RwkvReviewInputBatchCacheKey | None:
     timing = _timing_today(reviewer)
     days_elapsed = getattr(timing, "days_elapsed", None)
@@ -12298,11 +12842,12 @@ def _rwkv_review_input_batch_cache_key(
     return (
         deck_id,
         batch_size_override,
+        include_new_cards,
         days_elapsed,
         next_day_at,
-        _reviewer_backend_state_generation(),
         _rwkv_preset_tag_state_cache_key(reviewer),
         _rwkv_japanese_feature_state_cache_key(reviewer),
+        _rwkv_first_review_elapsed_state_cache_key(reviewer),
         _rwkv_self_correction_cache_key(reviewer),
     )
 
@@ -12317,8 +12862,27 @@ def _rwkv_japanese_feature_state_cache_key(
     reviewer: object,
 ) -> RwkvJapaneseFeatureStateCacheKey:
     return tuple(
-        (item[0], bool(item[1]))
+        (
+            item[0],
+            bool(item[1]),
+            item[2]
+            if isinstance(item[2], str)
+            else _DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
+            item[3]
+            if isinstance(item[3], str)
+            else _DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
+        )
         for item in _rwkv_japanese_feature_state_config_key(reviewer)
+        if len(item) >= 4
+    )
+
+
+def _rwkv_first_review_elapsed_state_cache_key(
+    reviewer: object,
+) -> RwkvFirstReviewElapsedStateCacheKey:
+    return tuple(
+        (item[0], bool(item[1]))
+        for item in _rwkv_first_review_elapsed_config_key(reviewer)
     )
 
 
@@ -12330,16 +12894,24 @@ def _rwkv_self_correction_cache_key(
     )
 
 
+def _rwkv_review_queue_score_config_key(
+    reviewer: object,
+) -> RwkvReviewQueueScoreConfigKey:
+    return (
+        _rwkv_first_review_elapsed_state_cache_key(reviewer),
+        _rwkv_self_correction_cache_key(reviewer),
+    )
+
+
+_rwkv_review_input_batch_module_cache: OrderedDict[
+    RwkvReviewInputBatchCacheKey, RwkvReviewInputBatchBuild
+] = OrderedDict()
+
+
 def _rwkv_review_input_batch_cache(
     reviewer: object,
 ) -> OrderedDict[RwkvReviewInputBatchCacheKey, RwkvReviewInputBatchBuild]:
-    cache = getattr(reviewer, _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR, None)
-    if not isinstance(cache, OrderedDict):
-        cache = OrderedDict()
-        setattr(reviewer, _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR, cache)
-    return cast(
-        OrderedDict[RwkvReviewInputBatchCacheKey, RwkvReviewInputBatchBuild], cache
-    )
+    return _rwkv_review_input_batch_module_cache
 
 
 def _cached_rwkv_review_input_batch_build(
@@ -12352,18 +12924,45 @@ def _cached_rwkv_review_input_batch_build(
         return None
 
     cache.move_to_end(cache_key)
-    input_count = sum(len(inputs) for inputs in cached.inputs_by_batch_size.values())
+
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    exclude_ids: set[int] | None = None
+    if isinstance(answered_ids, list) and answered_ids:
+        exclude_ids = set(answered_ids)
+
+    if exclude_ids:
+        filtered_inputs_by_batch_size = {
+            batch_size: [
+                (card_id, review_input)
+                for card_id, review_input in inputs
+                if card_id not in exclude_ids
+            ]
+            for batch_size, inputs in cached.inputs_by_batch_size.items()
+        }
+        filtered_inputs_by_batch_size = {
+            k: v for k, v in filtered_inputs_by_batch_size.items() if v
+        }
+        filtered_eligible = sum(
+            len(inputs) for inputs in filtered_inputs_by_batch_size.values()
+        )
+    else:
+        filtered_inputs_by_batch_size = cached.inputs_by_batch_size
+        filtered_eligible = cached.eligible_cards
+
+    input_count = sum(len(inputs) for inputs in filtered_inputs_by_batch_size.values())
     logger.debug(
         "RWKV review input backend rows reused from cache: deck_id=%s rows=%s "
-        "eligible=%s inputs=%s state_generation=%s",
+        "eligible=%s inputs=%s excluded=%s",
         cache_key[0],
         cached.loaded_rows,
-        cached.eligible_cards,
+        filtered_eligible,
         input_count,
-        cache_key[4],
+        len(exclude_ids) if exclude_ids else 0,
     )
     return replace(
         cached,
+        inputs_by_batch_size=filtered_inputs_by_batch_size,
+        eligible_cards=filtered_eligible,
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
@@ -12380,6 +12979,11 @@ def _cache_rwkv_review_input_batch_build(
     cache.move_to_end(cache_key)
     while len(cache) > _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT:
         cache.popitem(last=False)
+
+
+def _clear_rwkv_review_input_batch_cache(reviewer: object) -> None:
+    if _rwkv_review_input_batch_module_cache:
+        _rwkv_review_input_batch_module_cache.clear()
 
 
 def _rwkv_review_input_batch_build_from_backend_response(
@@ -12513,6 +13117,7 @@ def _rwkv_review_input_rows_backend_response(
     *,
     card_ids: Sequence[int],
     include_suspended_review: bool,
+    include_new_cards: bool,
 ) -> object | None:
     get_rows_raw = getattr(backend, "rwkv_review_input_rows_for_cards_raw", None)
     if callable(get_rows_raw) and hasattr(
@@ -12523,6 +13128,7 @@ def _rwkv_review_input_rows_backend_response(
             request = scheduler_pb2.RwkvReviewInputRowsForCardsRequest(
                 card_ids=card_ids,
                 include_suspended_review=include_suspended_review,
+                include_new_cards=include_new_cards,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -12541,6 +13147,7 @@ def _rwkv_review_input_rows_backend_response(
             card_ids=card_ids,
             include_suspended_review=include_suspended_review,
             include_disabled_decks=False,
+            include_new_cards=include_new_cards,
         )
     except Exception:
         logger.debug("failed to load RWKV review input rows from backend")
@@ -12592,6 +13199,7 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
     backend: object,
     *,
     deck_id: int,
+    include_new_cards: bool,
 ) -> object | None:
     get_rows_raw = getattr(
         backend,
@@ -12605,6 +13213,7 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
         try:
             request = scheduler_pb2.RwkvReviewInputRowsForDeckReviewQueueRequest(
                 deck_id=deck_id,
+                include_new_cards=include_new_cards,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -12624,6 +13233,7 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
         return get_rows(
             deck_id=deck_id,
             include_disabled_decks=False,
+            include_new_cards=include_new_cards,
         )
     except Exception:
         logger.debug(
@@ -12860,18 +13470,9 @@ def _rwkv_card_rows_for_ids(
         rows = all_rows(
             f"""
 select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, data,
-  n.tags,
-  n.flds,
-  front.ord,
-  reading.ord,
-  front_kana.ord,
-  frequency.ord
+  n.tags
 from cards
 join notes n on n.id = cards.nid
-left join fields front on front.ntid = n.mid and front.name = 'Front'
-left join fields reading on reading.ntid = n.mid and reading.name = 'Reading'
-left join fields front_kana on front_kana.ntid = n.mid and front_kana.name = 'Front_Kana'
-left join fields frequency on frequency.ntid = n.mid and frequency.name = 'Frequency'
 where cards.id in {ids2str(card_ids)}
 {_rwkv_supported_state_sql_filter() if supported_state_filter else ""}
 {_rwkv_enabled_deck_sql_filter(enabled_deck_ids)}
@@ -12894,6 +13495,8 @@ where cards.id in {ids2str(card_ids)}
 def _rwkv_supported_state_sql_filter() -> str:
     return f"""
   and (
+    (type = {int(CARD_TYPE_NEW)} and queue = {int(QUEUE_TYPE_NEW)})
+    or
     (type = {int(CARD_TYPE_REV)} and queue in ({int(QUEUE_TYPE_REV)}, {int(QUEUE_TYPE_SUSPENDED)}))
     or (type = {int(CARD_TYPE_LRN)} and queue in ({int(QUEUE_TYPE_LRN)}, {int(QUEUE_TYPE_DAY_LEARN_RELEARN)}))
     or (type = {int(CARD_TYPE_RELEARNING)} and queue in ({int(QUEUE_TYPE_LRN)}, {int(QUEUE_TYPE_DAY_LEARN_RELEARN)}))
@@ -13068,11 +13671,6 @@ def _stats_graph_card_fields_from_row(
         return None
 
     note_tags = extra_fields[0] if extra_fields else None
-    japanese_features = (
-        _rwkv_japanese_feature_fields_from_storage(*extra_fields[1:6])
-        if len(extra_fields) >= 6
-        else None
-    )
 
     return RwkvStatsGraphCardFields(
         id=cast(int, card_id),
@@ -13089,7 +13687,7 @@ def _stats_graph_card_fields_from_row(
         lapses=cast(int, lapses),
         last_review_time=_stats_graph_last_review_time(data),
         note_tags=note_tags,
-        japanese_features=japanese_features,
+        japanese_features=None,
     )
 
 
@@ -13136,6 +13734,10 @@ def _stats_graph_scheduling_states(
     include_suspended_review: bool = False,
 ) -> SchedulingStates | None:
     states = SchedulingStates()
+
+    if card.type == int(CARD_TYPE_NEW) and card.queue == int(QUEUE_TYPE_NEW):
+        states.current.normal.new.SetInParent()
+        return states
 
     if card.type == int(CARD_TYPE_REV) and card.queue in (
         int(QUEUE_TYPE_REV),
@@ -13198,6 +13800,9 @@ def _rwkv_review_input_for_stats_graph_card(
             card,
             timing,
             include_suspended_review=include_suspended_review,
+            first_review_elapsed_from_card_creation=(
+                _rwkv_review_first_review_elapsed_from_card_creation(deck_config)
+            ),
         )
     )
     if state_kind is _UNSUPPORTED_RWKV_STATE:
@@ -13255,6 +13860,9 @@ def _rwkv_review_input_for_stats_graph_fields(
             fields,
             timing,
             include_suspended_review=True,
+            first_review_elapsed_from_card_creation=(
+                _rwkv_review_first_review_elapsed_from_card_creation(deck_config)
+            ),
         )
     )
     if state_kind is _UNSUPPORTED_RWKV_STATE:
@@ -13306,13 +13914,18 @@ def _rwkv_state_fields_for_stats_graph_card(
     timing: object,
     *,
     include_suspended_review: bool,
+    first_review_elapsed_from_card_creation: bool = False,
 ) -> tuple[object, str | None, int | None, int | None]:
     return _rwkv_state_fields_for_stats_graph_values(
+        card_id=card.id,
         card_type=card.type,
         queue=card.queue,
         last_review_time=card.last_review_time,
         timing=timing,
         include_suspended_review=include_suspended_review,
+        first_review_elapsed_from_card_creation=(
+            first_review_elapsed_from_card_creation
+        ),
     )
 
 
@@ -13321,24 +13934,47 @@ def _rwkv_state_fields_for_stats_graph_fields(
     timing: object,
     *,
     include_suspended_review: bool,
+    first_review_elapsed_from_card_creation: bool = False,
 ) -> tuple[object, str | None, int | None, int | None]:
     return _rwkv_state_fields_for_stats_graph_values(
+        card_id=fields.id,
         card_type=fields.type,
         queue=fields.queue,
         last_review_time=fields.last_review_time,
         timing=timing,
         include_suspended_review=include_suspended_review,
+        first_review_elapsed_from_card_creation=(
+            first_review_elapsed_from_card_creation
+        ),
     )
 
 
 def _rwkv_state_fields_for_stats_graph_values(
     *,
+    card_id: int,
     card_type: int,
     queue: int,
     last_review_time: int | None,
     timing: object,
     include_suspended_review: bool,
+    first_review_elapsed_from_card_creation: bool,
 ) -> tuple[object, str | None, int | None, int | None]:
+    if card_type == int(CARD_TYPE_NEW) and queue == int(QUEUE_TYPE_NEW):
+        elapsed_seconds = (
+            _elapsed_seconds_since_card_created_for_timing(
+                timing,
+                card_id,
+            )
+            if first_review_elapsed_from_card_creation
+            else None
+        )
+        if first_review_elapsed_from_card_creation and elapsed_seconds is None:
+            return None, None, None, None
+        elapsed_days = (
+            elapsed_seconds // 86_400 if elapsed_seconds is not None else None
+        )
+        return "normal", "new", elapsed_days, elapsed_seconds
+
     if card_type == int(CARD_TYPE_REV) and queue in (
         int(QUEUE_TYPE_REV),
         int(QUEUE_TYPE_SUSPENDED),
@@ -13584,12 +14220,15 @@ def _set_rwkv_review_queue_scores(
             deck_id=deck_id,
             scores=list(request.scores),
         )
+    _rwkv_review_queue_score_maps.clear()
+    _rwkv_review_queue_score_generations.clear()
+    _rwkv_review_queue_score_config_keys.clear()
     if scores:
         _rwkv_review_queue_score_maps[deck_id] = {
             card_id: retrievability for card_id, retrievability in scores
         }
-        _rwkv_review_queue_score_config_keys[deck_id] = _rwkv_self_correction_cache_key(
-            reviewer
+        _rwkv_review_queue_score_config_keys[deck_id] = (
+            _rwkv_review_queue_score_config_key(reviewer)
         )
         if fresh_for_backend_state:
             _rwkv_review_queue_score_generations[deck_id] = (
@@ -13597,10 +14236,6 @@ def _set_rwkv_review_queue_scores(
             )
         else:
             _rwkv_review_queue_score_generations.pop(deck_id, None)
-    else:
-        _rwkv_review_queue_score_maps.pop(deck_id, None)
-        _rwkv_review_queue_score_generations.pop(deck_id, None)
-        _rwkv_review_queue_score_config_keys.pop(deck_id, None)
 
 
 def _session_intervening_reviews_by_card_id(reviewer: object) -> dict[int, int]:
@@ -13737,6 +14372,27 @@ def _day_offset(reviewer: object) -> int | None:
     timing = _timing_today(reviewer)
     days_elapsed = getattr(timing, "days_elapsed", None)
     return days_elapsed if isinstance(days_elapsed, int) else None
+
+
+def _elapsed_seconds_since_card_created(
+    reviewer: object,
+    card: object,
+) -> int | None:
+    card_id = _int_attr(card, "id")
+    if card_id is None:
+        return None
+
+    timing = _timing_today(reviewer)
+    return _elapsed_seconds_since_card_created_for_timing(timing, card_id)
+
+
+def _elapsed_seconds_since_card_created_for_timing(
+    timing: object,
+    card_id: int,
+) -> int | None:
+    now = getattr(timing, "now", None)
+    now_secs = now if isinstance(now, int) else int(time.time())
+    return max(0, now_secs - card_id // 1000)
 
 
 def _timing_today(reviewer: object) -> object | None:

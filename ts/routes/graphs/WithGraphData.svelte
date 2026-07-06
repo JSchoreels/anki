@@ -22,7 +22,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     );
     const rwkvStatsPendingHeader = "X-Anki-Rwkv-Stats-Pending";
     const rwkvStatsRetryDelayMs = 2_000;
-    const rwkvStatsMaxRetries = 3;
+    const rwkvStatsMaxRetries = 30;
 
     let sourceData: GraphsResponse | null = null;
     let loading = true;
@@ -121,16 +121,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         days: number,
         requestId: number,
         rwkvStatsPending: boolean,
-    ): void {
+    ): boolean {
         const key = graphDataKey(search, days);
         resetRwkvStatsRetryForKey(key);
         if (!rwkvStatsPending) {
             clearRwkvStatsRetryTimer();
             rwkvStatsRetryCount = 0;
-            return;
+            return false;
         }
         if (rwkvStatsRetryTimer != null) {
-            return;
+            return true;
         }
         if (rwkvStatsRetryCount >= rwkvStatsMaxRetries) {
             logGraphTiming("graphs RWKV stats retry exhausted", {
@@ -139,7 +139,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 requestId,
                 retries: rwkvStatsRetryCount,
             });
-            return;
+            return false;
         }
 
         rwkvStatsRetryCount += 1;
@@ -174,6 +174,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             });
             scheduleSourceDataUpdate(search, days);
         }, rwkvStatsRetryDelayMs);
+        return true;
     }
 
     function scheduleSourceDataUpdate(search: string, days: number): void {
@@ -235,7 +236,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             if (requestId === activeRequestId) {
                 const applyStart = performance.now();
                 sourceData = data.data;
-                loading = false;
+                const retryPending = handleRwkvStatsRetry(
+                    search,
+                    days,
+                    requestId,
+                    data.rwkvStatsPending,
+                );
+                loading = retryPending;
                 await tick();
                 applied = true;
                 logGraphTiming("graphs data applied", {
@@ -246,8 +253,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     applyElapsedMs: performance.now() - applyStart,
                     elapsedMs: performance.now() - start,
                     rwkvStatsPending: data.rwkvStatsPending,
+                    retryPending,
                 });
-                handleRwkvStatsRetry(search, days, requestId, data.rwkvStatsPending);
             } else {
                 logGraphTiming("graphs data ignored", {
                     search,

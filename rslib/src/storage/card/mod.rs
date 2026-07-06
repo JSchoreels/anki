@@ -674,6 +674,7 @@ impl super::SqliteStorage {
         &self,
         card_ids: &[CardId],
         include_suspended_review: bool,
+        include_new_cards: bool,
         enabled_deck_ids: Option<&HashSet<DeckId>>,
     ) -> Result<Vec<Card>> {
         if card_ids.is_empty() || enabled_deck_ids.is_some_and(HashSet::is_empty) {
@@ -684,6 +685,7 @@ impl super::SqliteStorage {
             self.set_search_table_to_card_ids(card_ids)?;
             self.rwkv_review_input_candidate_cards_in_search(
                 include_suspended_review,
+                include_new_cards,
                 enabled_deck_ids,
             )
         })
@@ -693,6 +695,7 @@ impl super::SqliteStorage {
         &self,
         deck_ids: &[DeckId],
         enabled_deck_ids: Option<&HashSet<DeckId>>,
+        include_new_cards: bool,
     ) -> Result<(u32, Vec<Card>)> {
         if deck_ids.is_empty() {
             return Ok((0, Vec::new()));
@@ -706,19 +709,34 @@ impl super::SqliteStorage {
         let searched_cards = self
             .db
             .prepare(&format!(
-                "select count() from cards where did in {deck_ids_sql} and queue = ?",
+                "select count() from cards where did in {deck_ids_sql} and queue in ({})",
+                if include_new_cards { "0, 2" } else { "2" }
             ))?
-            .query_row([CardQueue::Review as i8], |row| row.get(0))?;
+            .query_row([], |row| row.get(0))?;
 
         if enabled_deck_ids.is_some_and(HashSet::is_empty) {
             return Ok((searched_cards, Vec::new()));
         }
 
+        let queue_filter = if include_new_cards {
+            format!(
+                "((type = {} and queue = {}) or (type = {} and queue = {}))",
+                CardType::Review as i8,
+                CardQueue::Review as i8,
+                CardType::New as i8,
+                CardQueue::New as i8,
+            )
+        } else {
+            format!(
+                "type = {} and queue = {}",
+                CardType::Review as i8,
+                CardQueue::Review as i8,
+            )
+        };
+
         let mut sql = format!(
-            "{} where did in {deck_ids_sql} and type = {} and queue = {}",
+            "{} where did in {deck_ids_sql} and {queue_filter}",
             include_str!("get_card.sql"),
-            CardType::Review as i8,
-            CardQueue::Review as i8,
         );
 
         if let Some(enabled_deck_ids) = enabled_deck_ids {
@@ -743,12 +761,22 @@ impl super::SqliteStorage {
     pub(crate) fn rwkv_review_input_candidate_cards_in_search(
         &self,
         include_suspended_review: bool,
+        include_new_cards: bool,
         enabled_deck_ids: Option<&HashSet<DeckId>>,
     ) -> Result<Vec<Card>> {
         if enabled_deck_ids.is_some_and(HashSet::is_empty) {
             return Ok(Vec::new());
         }
 
+        let new_card_filter = if include_new_cards {
+            format!(
+                "   or (type = {} and queue = {})\n",
+                CardType::New as i8,
+                CardQueue::New as i8,
+            )
+        } else {
+            String::new()
+        };
         let mut sql = concat!(
             include_str!("get_card.sql"),
             " where id in (select cid from search_cids)\n",
@@ -756,6 +784,7 @@ impl super::SqliteStorage {
             "   (type = 2 and queue in REVIEW_QUEUES)\n",
             "   or (type = 1 and queue in (1, 3))\n",
             "   or (type = 3 and queue in (1, 3))\n",
+            "NEW_CARD_FILTER",
             " )\n",
         )
         .replace(
@@ -765,7 +794,8 @@ impl super::SqliteStorage {
             } else {
                 "(2)"
             },
-        );
+        )
+        .replace("NEW_CARD_FILTER", &new_card_filter);
 
         if let Some(enabled_deck_ids) = enabled_deck_ids {
             let mut deck_ids: Vec<_> = enabled_deck_ids.iter().map(|deck_id| deck_id.0).collect();

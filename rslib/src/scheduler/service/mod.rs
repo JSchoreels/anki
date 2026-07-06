@@ -60,7 +60,6 @@ use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
-use crate::scheduler::fsrs::params::fsrs_review_retrievability_cache_rows;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
@@ -335,6 +334,7 @@ impl crate::services::SchedulerService for Collection {
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
             include_same_day_reviews: input.include_same_day_reviews,
+            enable_scheduling_penalties: input.enable_scheduling_penalties.unwrap_or(false),
             model_version_override: input.fsrs_version.map(health_check_model_version),
             dynamic_desired_retention_enabled: input.dynamic_desired_retention_enabled,
             dynamic_desired_retention_review_limit: input.dynamic_desired_retention_review_limit,
@@ -357,6 +357,7 @@ impl crate::services::SchedulerService for Collection {
                 current_params: &item.current_params,
                 num_of_relearning_steps: item.num_of_relearning_steps as usize,
                 include_same_day_reviews: item.include_same_day_reviews,
+                enable_scheduling_penalties: item.enable_scheduling_penalties.unwrap_or(false),
                 model_version_override: item.fsrs_version.map(health_check_model_version),
                 dynamic_desired_retention_enabled: item.dynamic_desired_retention_enabled,
                 historical_retention: 0.9,
@@ -368,11 +369,7 @@ impl crate::services::SchedulerService for Collection {
                             .dynamic_desired_retention_max_cost_perday_minutes,
                     },
             })?;
-            response_meta.push((
-                item.id.clone(),
-                item.name.clone(),
-                FsrsReviewPredictionContext::from_prepared(&prepared),
-            ));
+            response_meta.push((item.id.clone(), item.name.clone()));
             jobs.push(ComputeParamsBatchInput {
                 index,
                 name: item.name,
@@ -384,26 +381,8 @@ impl crate::services::SchedulerService for Collection {
             .compute_params_batch(jobs)?
             .into_iter()
             .map(|output| {
-                let (id, name, prediction_sources) = &response_meta[output.index];
+                let (id, name) = &response_meta[output.index];
                 let params = output.result?;
-                match fsrs_review_retrievability_cache_rows(&params.params, prediction_sources)
-                    .and_then(|predictions| {
-                        self.storage.set_fsrs_review_retrievability_predictions(
-                            &predictions,
-                            "fsrs_optimization",
-                        )
-                    }) {
-                    Ok(stored) => tracing::debug!(
-                        predictions = stored,
-                        preset = name,
-                        "stored FSRS review retrievability cache"
-                    ),
-                    Err(err) => tracing::warn!(
-                        ?err,
-                        preset = name,
-                        "failed to store FSRS review retrievability cache"
-                    ),
-                }
                 Ok(scheduler::compute_fsrs_params_batch_response::Item {
                     id: id.clone(),
                     name: name.clone(),
@@ -430,6 +409,33 @@ impl crate::services::SchedulerService for Collection {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
+    }
+
+    fn compute_fsrs_review_retrievability_calibration(
+        &mut self,
+        input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
+    ) -> Result<generic::UInt32> {
+        let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
+            search: &input.search,
+            ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
+            current_params: &input.params,
+            num_of_relearning_steps: input.num_of_relearning_steps as usize,
+            include_same_day_reviews: input.include_same_day_reviews,
+            enable_scheduling_penalties: input.enable_scheduling_penalties.unwrap_or(false),
+            model_version_override: input.fsrs_version.map(health_check_model_version),
+            dynamic_desired_retention_enabled: false,
+            historical_retention: 0.9,
+            desired_retention: 0.9,
+            dynamic_desired_retention_simulator_options:
+                DynamicDesiredRetentionSimulatorOptions::default(),
+        })?;
+        let context = FsrsReviewPredictionContext::from_prepared(&prepared);
+        let count = self.compute_fsrs_review_retrievability_calibration_cache(
+            &input.params,
+            &context,
+            input.include_validation_folds,
+        )?;
+        Ok(generic::UInt32 { val: count })
     }
 
     fn simulate_fsrs_review(
@@ -600,6 +606,7 @@ impl crate::services::SchedulerService for Collection {
             model_version,
             input.include_same_day_reviews,
             input.include_same_day_reviews_for_training,
+            input.enable_scheduling_penalties.unwrap_or(false),
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,
@@ -1086,7 +1093,7 @@ impl crate::services::BackendSchedulerService for Backend {
             card_ids: None,
             progress: None,
             enable_short_term: true,
-            enable_sched_penalties: true,
+            enable_sched_penalties: false,
             model_version: ComputeParametersVersion::default(),
             num_relearning_steps: None,
         })?;
@@ -1120,7 +1127,7 @@ impl crate::services::BackendSchedulerService for Backend {
             card_ids: None,
             progress: None,
             enable_short_term: true,
-            enable_sched_penalties: true,
+            enable_sched_penalties: false,
             model_version: ComputeParametersVersion::default(),
             num_relearning_steps: None,
         });

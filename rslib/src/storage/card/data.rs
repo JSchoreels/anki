@@ -39,6 +39,12 @@ pub(crate) struct CardData {
     )]
     pub(crate) fsrs_stability_internal: Option<f32>,
     #[serde(
+        rename = "s_fast",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "default_on_invalid"
+    )]
+    pub(crate) fsrs_stability_fast: Option<f32>,
+    #[serde(
         rename = "d",
         skip_serializing_if = "Option::is_none",
         deserialize_with = "default_on_invalid"
@@ -75,6 +81,7 @@ impl CardData {
             original_position: card.original_position,
             fsrs_stability: card.memory_state.as_ref().map(|m| m.stability),
             fsrs_stability_internal: card.memory_state.as_ref().map(|m| m.stability_internal),
+            fsrs_stability_fast: card.memory_state.as_ref().and_then(|m| m.stability_fast),
             fsrs_difficulty: card.memory_state.as_ref().map(|m| m.difficulty),
             fsrs_desired_retention: card.desired_retention,
             decay: card.decay,
@@ -93,6 +100,7 @@ impl CardData {
                 return Some(FsrsMemoryState {
                     stability,
                     stability_internal: self.fsrs_stability_internal.unwrap_or(stability),
+                    stability_fast: self.fsrs_stability_fast,
                     difficulty,
                 });
             }
@@ -105,6 +113,9 @@ impl CardData {
             round_fsrs_stability(v)
         }
         if let Some(v) = &mut self.fsrs_stability_internal {
+            round_fsrs_stability(v)
+        }
+        if let Some(v) = &mut self.fsrs_stability_fast {
             round_fsrs_stability(v)
         }
         if self.fsrs_difficulty.is_some() && self.fsrs_stability == Some(0.0) {
@@ -198,6 +209,7 @@ mod test {
             original_position: None,
             fsrs_stability: Some(123.45678),
             fsrs_stability_internal: Some(234.56789),
+            fsrs_stability_fast: None,
             fsrs_difficulty: Some(1.234567),
             fsrs_desired_retention: Some(0.987654),
             decay: Some(0.123456),
@@ -215,6 +227,7 @@ mod test {
         let mut data = CardData {
             fsrs_stability: Some(0.0001),
             fsrs_stability_internal: Some(0.0001),
+            fsrs_stability_fast: None,
             fsrs_difficulty: Some(1.0),
             ..Default::default()
         };
@@ -229,6 +242,7 @@ mod test {
         let mut data = CardData {
             fsrs_stability: Some(0.00001),
             fsrs_stability_internal: Some(0.0005),
+            fsrs_stability_fast: None,
             fsrs_difficulty: Some(9.932),
             ..Default::default()
         };
@@ -243,6 +257,7 @@ mod test {
         let mut data = CardData {
             fsrs_stability: Some(0.0),
             fsrs_stability_internal: Some(0.0005),
+            fsrs_stability_fast: None,
             fsrs_difficulty: Some(9.932),
             ..Default::default()
         };
@@ -257,6 +272,7 @@ mod test {
         let data = CardData {
             fsrs_stability: Some(12.0),
             fsrs_stability_internal: Some(30.0),
+            fsrs_stability_fast: None,
             fsrs_difficulty: Some(5.0),
             ..Default::default()
         };
@@ -265,6 +281,7 @@ mod test {
             Some(FsrsMemoryState {
                 stability: 12.0,
                 stability_internal: 30.0,
+                stability_fast: None,
                 difficulty: 5.0,
             })
         );
@@ -282,6 +299,7 @@ mod test {
             Some(FsrsMemoryState {
                 stability: 12.0,
                 stability_internal: 12.0,
+                stability_fast: None,
                 difficulty: 5.0,
             })
         );
@@ -293,6 +311,7 @@ mod test {
             memory_state: Some(FsrsMemoryState {
                 stability: 12.0,
                 stability_internal: 12.0,
+                stability_fast: None,
                 difficulty: 5.0,
             }),
             ..Default::default()

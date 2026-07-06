@@ -7,10 +7,11 @@ import {
     fsrsParamDiagnostics,
     fsrsParamsSupportSameDayEvaluation,
     fsrsSameDayEvaluationOverrideForComparison,
+    OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
 } from "./fsrs-param-diagnostics";
 
 test("accepts default and known FSRS parameter counts", () => {
-    for (const count of [0, 17, 19, 21, 35]) {
+    for (const count of [0, 17, 19, 21, 34]) {
         expect(fsrsParamDiagnostics(Array(count).fill(1)).valid).toBe(true);
     }
 });
@@ -21,6 +22,17 @@ test("rejects unexpected FSRS parameter counts", () => {
     expect(diagnostics.valid).toBe(false);
     expect(diagnostics.validCount).toBe(false);
     expect(diagnostics.count).toBe(3);
+    expect(diagnostics.outdatedFsrs7PreviewParams).toBe(false);
+});
+
+test("flags outdated 35-parameter FSRS-7 preview params", () => {
+    const diagnostics = fsrsParamDiagnostics(Array(35).fill(1));
+
+    expect(diagnostics.valid).toBe(false);
+    expect(diagnostics.validCount).toBe(false);
+    expect(diagnostics.outdatedFsrs7PreviewParams).toBe(true);
+    expect(OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING).toContain("35 values");
+    expect(OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING).toContain("34 values");
 });
 
 test("reports non-finite FSRS parameter indexes and values", () => {
@@ -37,7 +49,7 @@ test("reports non-finite FSRS parameter indexes and values", () => {
 });
 
 test("same-day evaluation is only supported for FSRS-7 parameter sets", () => {
-    expect(fsrsParamsSupportSameDayEvaluation(Array(35).fill(1))).toBe(true);
+    expect(fsrsParamsSupportSameDayEvaluation(Array(34).fill(1))).toBe(true);
 
     for (const count of [0, 17, 19, 21]) {
         expect(fsrsParamsSupportSameDayEvaluation(Array(count).fill(1))).toBe(false);
@@ -46,7 +58,7 @@ test("same-day evaluation is only supported for FSRS-7 parameter sets", () => {
 
 test("comparison excludes same-day targets unless both parameter sets support them", () => {
     const fsrs6Params = Array(21).fill(1);
-    const fsrs7Params = Array(35).fill(1);
+    const fsrs7Params = Array(34).fill(1);
 
     expect(
         fsrsSameDayEvaluationOverrideForComparison(fsrs6Params, fsrs7Params, true),
@@ -58,10 +70,6 @@ test("comparison excludes same-day targets unless both parameter sets support th
         fsrsSameDayEvaluationOverrideForComparison(fsrs6Params, fsrs7Params, false),
     ).toBe(false);
     expect(
-        fsrsSameDayEvaluationOverrideForComparison(
-            fsrs6Params,
-            fsrs7Params,
-            undefined,
-        ),
+        fsrsSameDayEvaluationOverrideForComparison(fsrs6Params, fsrs7Params, undefined),
     ).toBeUndefined();
 });

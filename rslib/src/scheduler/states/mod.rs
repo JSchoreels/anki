@@ -140,11 +140,10 @@ impl StateContext<'_> {
         self.fsrs_next_states.is_none() || !self.fsrs_learning_queues_disabled
     }
 
-    pub(crate) fn fsrs_uses_short_term_learning_queue(&self, steps: LearningSteps<'_>) -> bool {
+    pub(crate) fn fsrs_uses_short_term_learning_queue(&self) -> bool {
         self.fsrs_allow_short_term
             && self.fsrs_short_term_with_steps_enabled
             && self.fsrs_uses_learning_queues()
-            && steps.is_empty()
     }
 
     #[cfg(test)]

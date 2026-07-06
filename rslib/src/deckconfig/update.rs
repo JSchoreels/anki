@@ -534,6 +534,7 @@ impl Collection {
                 current_params: &current_params,
                 num_of_relearning_steps,
                 include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(config),
+                enable_scheduling_penalties: fsrs7_enable_scheduling_penalties(config),
                 model_version_override: Some(
                     match FsrsVersion::try_from(config.inner.fsrs_version)
                         .unwrap_or(FsrsVersion::Seven)
@@ -640,6 +641,22 @@ fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> 
         .as_bool()
 }
 
+fn fsrs7_enable_scheduling_penalties(config: &DeckConfig) -> bool {
+    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
+        FsrsVersion::Seven => {}
+        _ => return false,
+    }
+
+    serde_json::from_slice::<serde_json::Value>(&config.inner.other)
+        .ok()
+        .and_then(|other| {
+            other
+                .get("fsrs7EnableSchedulingPenalties")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
 fn normal_deck_to_limits(deck: &NormalDeck, today: u32) -> Limits {
     Limits {
         review: deck.review_limit,
@@ -726,6 +743,43 @@ mod test {
         }))?;
 
         assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_enable_scheduling_penalties_reads_stored_flag() -> Result<()> {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "fsrs7EnableSchedulingPenalties": true,
+        }))?;
+
+        assert!(fsrs7_enable_scheduling_penalties(&config));
+
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "fsrs7EnableSchedulingPenalties": false,
+        }))?;
+        assert!(!fsrs7_enable_scheduling_penalties(&config));
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_enable_scheduling_penalties_defaults_when_missing() {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+
+        assert!(!fsrs7_enable_scheduling_penalties(&config));
+    }
+
+    #[test]
+    fn fsrs7_enable_scheduling_penalties_ignores_older_versions() -> Result<()> {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Six as i32;
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "fsrs7EnableSchedulingPenalties": true,
+        }))?;
+
+        assert!(!fsrs7_enable_scheduling_penalties(&config));
         Ok(())
     }
 
@@ -963,7 +1017,7 @@ mod test {
             fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
-        let expected: Vec<f32> = (0..35).map(|i| 0.1 + i as f32 * 0.01).collect();
+        let expected: Vec<f32> = (0..34).map(|i| 0.1 + i as f32 * 0.01).collect();
         input.configs[0].inner.fsrs_params_6 = vec![1.0; 21];
         input.configs[0].inner.fsrs_params_7 = expected.clone();
         col.update_deck_configs(input)?;

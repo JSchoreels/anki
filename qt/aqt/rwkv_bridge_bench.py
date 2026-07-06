@@ -473,6 +473,7 @@ def _run_deck_input_cache_benchmark(args: argparse.Namespace) -> None:
                 reviewer=reviewer,
                 deck_id=100,
                 batch_size_override=args.batch_size,
+                include_new_cards=False,
             )
             cold_ms += _elapsed_ms(cold_start)
             cold_inputs += _input_build_input_count(cold_build)
@@ -482,6 +483,7 @@ def _run_deck_input_cache_benchmark(args: argparse.Namespace) -> None:
                 reviewer=reviewer,
                 deck_id=100,
                 batch_size_override=args.batch_size,
+                include_new_cards=False,
             )
             cached_ms += _elapsed_ms(cached_start)
             cached_inputs += _input_build_input_count(cached_build)
@@ -727,8 +729,9 @@ def _deck_input_cache_benchmark_reviewer(
             *,
             deck_id: int,
             include_disabled_decks: bool,
+            include_new_cards: bool,
         ) -> SimpleNamespace:
-            del deck_id, include_disabled_decks
+            del deck_id, include_disabled_decks, include_new_cards
             self.deck_row_calls += 1
             return SimpleNamespace(
                 rows=rows,

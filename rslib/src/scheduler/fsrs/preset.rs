@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 
+use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use serde::Deserialize;
 use serde::Serialize;
@@ -26,6 +27,7 @@ use crate::search::SortMode;
 use crate::search::TryIntoSearch;
 
 pub(crate) const FSRS_PRESET_OVERLAY_CONFIG_KEY: &str = "fsrsPresetOverlay";
+const OUTDATED_FSRS7_PREVIEW_PARAM_COUNT: usize = 35;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FsrsPresetId {
@@ -191,8 +193,19 @@ impl AddonFsrsPreset {
             self.id.starts_with("addon:"),
             "add-on FSRS preset id must start with addon:"
         );
-        FSRS::new(&self.params)?;
         let fsrs_version = self.fsrs_version.into_fsrs_version();
+        let params = if fsrs_version == FsrsVersion::Seven
+            && self.params.len() == OUTDATED_FSRS7_PREVIEW_PARAM_COUNT
+        {
+            tracing::warn!(
+                preset_id = %self.id,
+                "ignored outdated 35-parameter FSRS-7 add-on preset overlay params"
+            );
+            DEFAULT_PARAMETERS.to_vec()
+        } else {
+            self.params
+        };
+        FSRS::new(&params)?;
         let dynamic_desired_retention = if fsrs_version == FsrsVersion::Seven
             && self.fsrs_dynamic_desired_retention_enabled
         {
@@ -218,7 +231,7 @@ impl AddonFsrsPreset {
             id: FsrsPresetId::Addon(self.id),
             name: self.name,
             fsrs_version,
-            params: self.params,
+            params,
             desired_retention: self.desired_retention,
             dynamic_desired_retention,
             historical_retention: self.historical_retention,
@@ -714,7 +727,7 @@ mod test {
             id: "addon:test:dynamic-dr".into(),
             name: "Dynamic DR".into(),
             fsrs_version: AddonFsrsVersion::Seven,
-            params: vec![2.0; 35],
+            params: vec![2.0; 34],
             desired_retention: 0.82,
             historical_retention: 0.72,
             ignore_revlogs_before_date: String::new(),
@@ -884,7 +897,7 @@ mod test {
                         id: "addon:test:second".into(),
                         name: "Second".into(),
                         fsrs_version: AddonFsrsVersion::Seven,
-                        params: vec![2.0; 35],
+                        params: vec![2.0; 34],
                         desired_retention: 0.82,
                         historical_retention: 0.72,
                         ignore_revlogs_before_date: String::new(),
@@ -913,6 +926,45 @@ mod test {
         assert_eq!(preset.params, vec![1.0; 21]);
         assert_eq!(preset.desired_retention, 0.81);
         assert_eq!(preset.historical_retention, 0.71);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_replaces_outdated_fsrs7_preview_params() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col)
+            .fields(&["front", "back"])
+            .add(&mut col);
+        let card = col.get_first_card();
+
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:old-preview".into(),
+                    name: "Old Preview".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: vec![1.0; OUTDATED_FSRS7_PREVIEW_PARAM_COUNT],
+                    desired_retention: 0.82,
+                    historical_retention: 0.72,
+                    ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "front".into(),
+                    preset_id: "addon:test:old-preview".into(),
+                }],
+                simulator_rules: Vec::new(),
+            },
+        )?;
+
+        let preset = col.fsrs_preset_for_card(&card)?;
+        assert_eq!(
+            preset.id,
+            FsrsPresetId::Addon("addon:test:old-preview".into())
+        );
+        assert_eq!(preset.fsrs_version, FsrsVersion::Seven);
+        assert_eq!(preset.params, DEFAULT_PARAMETERS.to_vec());
         Ok(())
     }
 
@@ -1000,6 +1052,7 @@ mod test {
         card.memory_state = Some(FsrsMemoryState {
             stability,
             stability_internal: stability,
+            stability_fast: None,
             difficulty: 5.0,
         });
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
@@ -1271,6 +1324,7 @@ mod test {
         reviewed_card.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
+            stability_fast: None,
             difficulty: 5.0,
         });
         reviewed_card.last_review_time = Some(TimestampSecs::now().adding_secs(-86_400));

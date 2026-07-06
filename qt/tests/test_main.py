@@ -9,7 +9,13 @@ from collections.abc import Callable
 
 import aqt.errors
 import aqt.main
-from aqt.main import AnkiQt
+from aqt.main import (
+    OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS,
+    AnkiQt,
+    _clear_outdated_fsrs7_preview_params,
+    _outdated_fsrs7_preview_preset_names,
+    _outdated_fsrs7_preview_warning_text,
+)
 
 
 class CloseEvent:
@@ -139,7 +145,10 @@ def test_error_handler_unload_keeps_excepthook_and_detaches_logging_stream(
 ) -> None:
     old_stderr = sys.stderr
     previous_excepthook = sys.excepthook
-    excepthook = lambda etype, value, tb: None
+
+    def excepthook(etype: object, value: object, tb: object) -> None:
+        pass
+
     logger = logging.getLogger("test_error_handler_unload")
     logger.handlers.clear()
 
@@ -160,3 +169,75 @@ def test_error_handler_unload_keeps_excepthook_and_detaches_logging_stream(
     finally:
         logger.handlers.clear()
         sys.excepthook = previous_excepthook
+
+
+def test_outdated_fsrs7_preview_preset_names_detects_35_value_params() -> None:
+    configs = [
+        {"name": "Default", "fsrsParams7": [1.0] * 34},
+        {"name": "Preview", "fsrsParams7": [1.0] * 35},
+        {
+            "name": "Fork fields",
+            "other": {"jschoreels.fsrs": {"fsrs_params_7": [1.0] * 35}},
+        },
+        {
+            "name": "Flattened fork fields",
+            "jschoreels.fsrs": {"fsrs_params_7": [1.0] * 35},
+        },
+        {"id": 3, "name": "", "fsrsParams7": [1.0] * 35},
+        {"name": "Invalid other count", "fsrsParams7": [1.0] * 36},
+        {"name": "Missing params"},
+    ]
+
+    assert _outdated_fsrs7_preview_preset_names(configs) == [
+        "Preview",
+        "Fork fields",
+        "Flattened fork fields",
+        "Preset 3",
+    ]
+
+
+def test_clear_outdated_fsrs7_preview_params_only_removes_35_value_params() -> None:
+    config = {
+        "fsrsParams7": [1.0] * 35,
+        "fsrs_params_7": [2.0] * 34,
+        "jschoreels.fsrs": {
+            "fsrs_params_7": [3.0] * 35,
+            "fsrs_minimum_interval_secs": 2,
+        },
+        "other": {
+            "jschoreels.fsrs": {
+                "fsrs_params_7": [4.0] * 35,
+                "fsrs_dynamic_desired_retention_enabled": True,
+            },
+        },
+    }
+
+    assert _clear_outdated_fsrs7_preview_params(config)
+
+    assert config["fsrsParams7"] == []
+    assert config["fsrs_params_7"] == [2.0] * 34
+    assert config["jschoreels.fsrs"] == {"fsrs_minimum_interval_secs": 2}
+    assert config["other"]["jschoreels.fsrs"] == {
+        "fsrs_dynamic_desired_retention_enabled": True
+    }
+
+
+def test_clear_outdated_fsrs7_preview_params_ignores_valid_params() -> None:
+    config = {"fsrsParams7": [1.0] * 34}
+
+    assert not _clear_outdated_fsrs7_preview_params(config)
+    assert config == {"fsrsParams7": [1.0] * 34}
+
+
+def test_outdated_fsrs7_preview_warning_text_limits_preset_list() -> None:
+    names = [
+        f"Preset {idx}" for idx in range(OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS + 2)
+    ]
+
+    text = _outdated_fsrs7_preview_warning_text(names)
+
+    assert "35 values" in text
+    assert "34 values" in text
+    assert f"- Preset {OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS - 1}" in text
+    assert f"- Preset {OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS}" not in text
+    assert "...and 2 more" in text
