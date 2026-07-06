@@ -87,8 +87,6 @@ _MAX_RWKV_REVIEW_REFRESH_INTERVAL = 10_000
 _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
 _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR = "_rwkv_review_input_batch_cache"
 _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT = 4
-_RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR = "_rwkv_review_speculative_queue_scores"
-_RWKV_REVIEW_LAST_ANSWER_KEY_ATTR = "_rwkv_review_last_answer_key"
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 _RWKV_STATE_CACHE_RECORD_RETRIEVABILITY_ENV = (
     "ANKI_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY"
@@ -406,25 +404,6 @@ class RwkvReviewInputBatchBuild:
 
 
 @dataclass(frozen=True)
-class RwkvSpeculativeReviewQueueScores:
-    key: RwkvSpeculativeReviewAnswerKey
-    candidate_card_ids: tuple[int, ...]
-    scores: tuple[tuple[int, float], ...]
-    elapsed_ms: float
-
-
-@dataclass(frozen=True)
-class RwkvReviewQueueOrderPrecomputeWork:
-    deck_id: int
-    card_id: int
-    batch_size: int
-    include_new_cards: bool
-    answer_inputs_by_ease: tuple[tuple[int, RwkvReviewInput], ...]
-    base_state_generation: int
-    snapshot: RwkvBackendCacheSnapshot
-
-
-@dataclass(frozen=True)
 class RwkvReviewQueueOrderAsyncWork:
     deck_id: int
     reason: str
@@ -695,7 +674,6 @@ RwkvReviewInputBatchCacheKey = tuple[
     RwkvFirstReviewElapsedStateCacheKey,
     RwkvSelfCorrectionCacheKey,
 ]
-RwkvSpeculativeReviewAnswerKey = tuple[int, int, int | None, int, int]
 
 
 class RwkvReviewerBackend(Protocol):
@@ -2078,20 +2056,11 @@ def record_reviewer_answer(
         ) and not _prepare_reviewer_backend_for_review(reviewer):
             logger.debug("RWKV answer update skipped: warm-up pending")
             return
-        before_generation = _reviewer_backend_state_generation()
-        answer_key = _speculative_review_answer_key(
-            reviewer=reviewer,
-            card=card,
-            ease=ease,
-            base_state_generation=before_generation,
-        )
         _reviewer_backend.review_answered(
             reviewer=reviewer,
             card=card,
             ease=ease,
         )
-        if answer_key is not None:
-            setattr(reviewer, _RWKV_REVIEW_LAST_ANSWER_KEY_ATTR, answer_key)
         card_id = _card_id(card)
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
@@ -2499,22 +2468,6 @@ def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     return answered_count > 0 and answered_count % interval == 0
 
 
-def reviewer_queue_order_refresh_due_after_next_answer(reviewer: object) -> bool:
-    card = getattr(reviewer, "card", None)
-    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
-    if deck_config is None or not (
-        _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
-    ):
-        return False
-
-    answered_ids = getattr(reviewer, "_answeredIds", None)
-    answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
-    return _rwkv_review_refresh_due_after_answer_count(
-        deck_config,
-        answered_count + 1,
-    )
-
 
 def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
     deck_id = _current_deck_id(reviewer)
@@ -2527,160 +2480,7 @@ def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
     )
 
 
-def _rwkv_review_refresh_due_after_answer_count(
-    deck_config: dict[str, object],
-    answered_count: int,
-) -> bool:
-    interval = _rwkv_review_refresh_interval(deck_config)
-    return answered_count > 0 and answered_count % interval == 0
 
-
-def prepare_reviewer_queue_order_precompute_work(
-    reviewer: object,
-) -> RwkvReviewQueueOrderPrecomputeWork | None:
-    """Capture immutable state for speculative post-answer queue scoring."""
-
-    backend = _reviewer_backend
-    if backend is None or not _reviewer_backend_cacheable():
-        return None
-    predict_future = getattr(backend, "predict_retrievability_after_review", None)
-    if not callable(predict_future):
-        return None
-
-    deck_id = _current_deck_id(reviewer)
-    card = getattr(reviewer, "card", None)
-    card_id = _card_id(card)
-    if deck_id is None or card_id is None:
-        return None
-
-    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-    answered_ids = getattr(reviewer, "_answeredIds", None)
-    answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
-    if not (
-        isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
-        and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
-        and not _rwkv_review_candidate_refresh_enabled(deck_config)
-        and (
-            _rwkv_review_refresh_on_exit(deck_config)
-            or _rwkv_review_refresh_due_after_answer_count(
-                deck_config,
-                answered_count + 1,
-            )
-        )
-    ):
-        return None
-
-    if not _prepare_reviewer_backend_for_review(reviewer):
-        logger.debug("RWKV speculative queue refresh skipped: warm-up pending")
-        return None
-
-    answer_inputs_by_ease: list[tuple[int, RwkvReviewInput]] = []
-    for ease in (1, 2, 3, 4):
-        answer_input = _rwkv_answer_input(reviewer, card, ease)
-        if answer_input is not None:
-            answer_inputs_by_ease.append((ease, answer_input))
-    if not answer_inputs_by_ease:
-        return None
-
-    return RwkvReviewQueueOrderPrecomputeWork(
-        deck_id=deck_id,
-        card_id=card_id,
-        batch_size=_rwkv_review_batch_size(deck_config),
-        include_new_cards=_new_gather_uses_retrievability(deck_config),
-        answer_inputs_by_ease=tuple(answer_inputs_by_ease),
-        base_state_generation=_reviewer_backend_state_generation(),
-        snapshot=cast(Any, backend).cache_snapshot(),
-    )
-
-
-def score_reviewer_queue_order_precompute_work(
-    reviewer: object,
-    work: RwkvReviewQueueOrderPrecomputeWork,
-) -> None:
-    """Speculatively score exact post-answer queue maps for captured answer work."""
-
-    backend = _reviewer_backend
-    predict_future = getattr(backend, "predict_retrievability_after_review", None)
-    if backend is None or not callable(predict_future):
-        return
-
-    start = time.monotonic()
-    input_build = _rwkv_review_input_batches_for_deck_review_queue(
-        reviewer=reviewer,
-        deck_id=work.deck_id,
-        batch_size_override=work.batch_size,
-        include_new_cards=work.include_new_cards,
-    )
-    if input_build is None:
-        return
-    inputs_by_card_id = [
-        (candidate_card_id, review_input)
-        for candidate_card_id, review_input in _rwkv_review_input_build_inputs(
-            input_build
-        )
-        if candidate_card_id != work.card_id
-    ]
-    candidate_card_ids = tuple(card_id for card_id, _ in inputs_by_card_id)
-    if not candidate_card_ids:
-        return
-
-    cache: dict[
-        RwkvSpeculativeReviewAnswerKey,
-        RwkvSpeculativeReviewQueueScores,
-    ] = {}
-    for ease, answer_input in work.answer_inputs_by_ease:
-        key: RwkvSpeculativeReviewAnswerKey = (
-            work.card_id,
-            ease,
-            answer_input.duration_millis,
-            work.deck_id,
-            work.base_state_generation,
-        )
-        score_start = time.monotonic()
-        scores = predict_future(
-            answer=answer_input,
-            inputs_by_card_id=inputs_by_card_id,
-            snapshot=work.snapshot,
-        )
-        if scores is None:
-            return
-        scores = _rwkv_self_corrected_scores(
-            scores,
-            input_build.self_correction_features_by_card_id,
-        )
-        cache[key] = RwkvSpeculativeReviewQueueScores(
-            key=key,
-            candidate_card_ids=candidate_card_ids,
-            scores=tuple(scores),
-            elapsed_ms=(time.monotonic() - score_start) * 1000,
-        )
-
-    if cache:
-        existing_cache = getattr(
-            reviewer,
-            _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR,
-            None,
-        )
-        if isinstance(existing_cache, dict):
-            cache = {**existing_cache, **cache}
-        setattr(reviewer, _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR, cache)
-        logger.debug(
-            "RWKV speculative queue scores prepared: deck_id=%s card_id=%s "
-            "eases=%s candidates=%s elapsed_ms=%.1f",
-            work.deck_id,
-            work.card_id,
-            sorted(key[1] for key in cache),
-            len(candidate_card_ids),
-            (time.monotonic() - start) * 1000,
-        )
-
-
-def precompute_reviewer_queue_order_for_answer(reviewer: object) -> None:
-    work = prepare_reviewer_queue_order_precompute_work(reviewer)
-    if work is not None:
-        score_reviewer_queue_order_precompute_work(reviewer, work)
 
 
 def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
@@ -3294,36 +3094,6 @@ def _prepare_rwkv_review_scores_for_deck(
             return
 
         deck_scores_start = time.monotonic()
-        speculative_scores = _speculative_rwkv_review_queue_scores_for_deck(
-            reviewer=reviewer,
-            deck_id=deck_id,
-            batch_size=batch_size,
-            include_new_cards=_new_gather_uses_retrievability(deck_config),
-        )
-        deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
-        if speculative_scores is not None:
-            scores, input_build, speculative_elapsed_ms = speculative_scores
-            set_start = time.monotonic()
-            _set_rwkv_review_queue_scores(reviewer, deck_id, scores)
-            set_elapsed_ms = (time.monotonic() - set_start) * 1000
-            logger.debug(
-                "prepared RWKV %s scores from speculative exact refresh: "
-                "deck_id=%s candidates=%s scored=%s warmup_elapsed_ms=%.1f "
-                "verify_elapsed_ms=%.1f speculative_elapsed_ms=%.1f "
-                "set_elapsed_ms=%.1f elapsed_ms=%.1f",
-                reason,
-                deck_id,
-                input_build.searched_rows,
-                len(scores),
-                warmup_elapsed_ms,
-                deck_scores_elapsed_ms,
-                speculative_elapsed_ms,
-                set_elapsed_ms,
-                (time.monotonic() - start) * 1000,
-            )
-            return
-
-        deck_scores_start = time.monotonic()
         deck_scores = _rwkv_review_queue_scores_for_deck(
             reviewer=reviewer,
             deck_id=deck_id,
@@ -3625,25 +3395,6 @@ def _rwkv_answer_input(
         ease=ease,
     )
 
-
-def _speculative_review_answer_key(
-    *,
-    reviewer: object,
-    card: object,
-    ease: int,
-    base_state_generation: int,
-) -> RwkvSpeculativeReviewAnswerKey | None:
-    card_id = _card_id(card)
-    deck_id = _current_deck_id(reviewer)
-    if card_id is None or deck_id is None:
-        return None
-    return (
-        card_id,
-        ease,
-        _duration_millis(card, ease),
-        deck_id,
-        base_state_generation,
-    )
 
 
 def _rwkv_target_retentions(
@@ -10851,49 +10602,6 @@ def _review_card_ids_in_deck_tree(reviewer: object, deck_id: int) -> list[int]:
         if isinstance(card_id, int)
     ]
 
-
-def _speculative_rwkv_review_queue_scores_for_deck(
-    *,
-    reviewer: object,
-    deck_id: int,
-    batch_size: int,
-    include_new_cards: bool,
-) -> tuple[list[tuple[int, float]], RwkvReviewInputBatchBuild, float] | None:
-    answer_key = getattr(reviewer, _RWKV_REVIEW_LAST_ANSWER_KEY_ATTR, None)
-    if not isinstance(answer_key, tuple) or len(answer_key) != 5:
-        return None
-    if answer_key[3] != deck_id:
-        return None
-
-    cache = getattr(reviewer, _RWKV_REVIEW_SPECULATIVE_QUEUE_SCORES_ATTR, None)
-    if not isinstance(cache, dict):
-        return None
-    speculative = cache.get(answer_key)
-    if not isinstance(speculative, RwkvSpeculativeReviewQueueScores):
-        return None
-
-    input_build = _rwkv_review_input_batches_for_deck_review_queue(
-        reviewer=reviewer,
-        deck_id=deck_id,
-        batch_size_override=batch_size,
-        include_new_cards=include_new_cards,
-    )
-    if input_build is None:
-        return None
-
-    current_card_ids = tuple(
-        card_id for card_id, _ in _rwkv_review_input_build_inputs(input_build)
-    )
-    if current_card_ids != speculative.candidate_card_ids:
-        logger.debug(
-            "RWKV speculative queue scores rejected: deck_id=%s expected=%s actual=%s",
-            deck_id,
-            len(speculative.candidate_card_ids),
-            len(current_card_ids),
-        )
-        return None
-
-    return list(speculative.scores), input_build, speculative.elapsed_ms
 
 
 def _rwkv_review_input_build_inputs(

@@ -891,7 +891,6 @@ class Reviewer:
         self._showEaseButtons()
         self.mw.web.setFocus()
         gui_hooks.reviewer_did_show_answer(self.card)
-        self._precompute_rwkv_queue_order_for_answer()
         self._auto_advance_to_question_if_enabled()
 
     def _auto_advance_to_question_if_enabled(self) -> None:
@@ -1266,33 +1265,6 @@ class Reviewer:
         self.mw.taskman.run_in_background(
             build_work,
             build_done,
-            uses_collection=True,
-        )
-
-    def _precompute_rwkv_queue_order_for_answer(self) -> None:
-        try:
-            work = aqt.rwkv_scheduler.prepare_reviewer_queue_order_precompute_work(self)
-        except Exception:
-            logger.exception("RWKV review queue answer precompute preparation failed")
-            return
-        if work is None:
-            return
-
-        def score() -> None:
-            aqt.rwkv_scheduler.score_reviewer_queue_order_precompute_work(
-                self,
-                work,
-            )
-
-        def done(future: Future[None]) -> None:
-            try:
-                future.result()
-            except Exception:
-                logger.exception("RWKV review queue answer precompute failed")
-
-        self.mw.taskman.run_in_background(
-            score,
-            done,
             uses_collection=True,
         )
 
