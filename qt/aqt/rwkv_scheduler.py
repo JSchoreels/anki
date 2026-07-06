@@ -2468,7 +2468,6 @@ def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     return answered_count > 0 and answered_count % interval == 0
 
 
-
 def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
     deck_id = _current_deck_id(reviewer)
     if deck_id is None:
@@ -2478,9 +2477,6 @@ def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
     return isinstance(deck_config, dict) and _new_gather_uses_retrievability(
         deck_config
     )
-
-
-
 
 
 def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
@@ -3394,7 +3390,6 @@ def _rwkv_answer_input(
         identity=identity,
         ease=ease,
     )
-
 
 
 def _rwkv_target_retentions(
@@ -10601,7 +10596,6 @@ def _review_card_ids_in_deck_tree(reviewer: object, deck_id: int) -> list[int]:
         )
         if isinstance(card_id, int)
     ]
-
 
 
 def _rwkv_review_input_build_inputs(
