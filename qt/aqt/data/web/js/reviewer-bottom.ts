@@ -82,7 +82,7 @@ function showQuestion(txt: string, maxTime_: number): void {
         clearInterval(intervalId);
     }
 
-    intervalId = setInterval(function () {
+    intervalId = setInterval(function() {
         if (timeboxLimit !== 0) {
             timeboxElapsed += 1;
             updateTimeboxProgress();
