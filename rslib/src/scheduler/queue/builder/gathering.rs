@@ -89,6 +89,7 @@ impl QueueBuilder {
                     .rwkv_review_min_intervening_reviews,
                 self.context.sort_options.rwkv_review_min_elapsed_secs,
                 score.intervening_reviews,
+                score.target_retention,
             ) {
                 scored_cards.push((card, score));
             }

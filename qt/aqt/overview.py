@@ -9,7 +9,8 @@ from typing import Any
 
 import aqt
 import aqt.operations
-from anki.collection import OpChanges
+import aqt.rwkv_scheduler
+from anki.collection import Collection, OpChanges
 from anki.scheduler import UnburyDeck
 from aqt import gui_hooks
 from aqt.deckdescription import DeckDescriptionDialog
@@ -71,9 +72,14 @@ class Overview:
             self.mw.web.setFocus()
             gui_hooks.overview_did_refresh(self)
 
-        QueryOp(
-            parent=self.mw, op=lambda col: col.sched.counts(), success=success
-        ).run_in_background()
+        def get_counts(col: Collection) -> tuple:
+            aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores(
+                self.mw,
+                reason="overview counts",
+            )
+            return col.sched.counts()
+
+        QueryOp(parent=self.mw, op=get_counts, success=success).run_in_background()
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed:

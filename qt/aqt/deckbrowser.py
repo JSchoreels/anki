@@ -10,6 +10,7 @@ from typing import Any
 
 import aqt
 import aqt.operations
+import aqt.rwkv_scheduler
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckCollapseScope, DeckId, DeckTreeNode
 from aqt import AnkiQt, gui_hooks
@@ -159,6 +160,10 @@ class DeckBrowser:
         if not reuse:
 
             def get_data(col: Collection) -> RenderData:
+                aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores(
+                    self.mw,
+                    reason="deck browser counts",
+                )
                 return RenderData(
                     tree=col.sched.deck_due_tree(),
                     current_deck_id=col.decks.get_current_id(),

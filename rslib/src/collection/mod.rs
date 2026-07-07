@@ -183,6 +183,7 @@ struct RwkvReviewQueueScore {
 pub(crate) struct RwkvReviewQueueScoreEntry {
     pub(crate) retrievability: f32,
     pub(crate) intervening_reviews: Option<u32>,
+    pub(crate) target_retention: Option<f32>,
 }
 
 impl RwkvReviewQueueScoreEntry {
@@ -191,6 +192,7 @@ impl RwkvReviewQueueScoreEntry {
         Self {
             retrievability,
             intervening_reviews: None,
+            target_retention: None,
         }
     }
 }

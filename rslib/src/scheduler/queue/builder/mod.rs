@@ -1191,6 +1191,46 @@ mod test {
     }
 
     #[test]
+    fn rwkv_retrievability_order_excludes_scores_above_card_desired_retention() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_desired_retention(
+            &mut deck,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.90,
+        );
+
+        let timing = col.timing_today()?;
+        let card_id = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let mut card = col.storage.get_card(card_id)?.unwrap();
+        card.desired_retention = Some(0.90);
+        col.storage.update_card(&card)?;
+        col.set_rwkv_review_queue_score_entries(
+            deck.id,
+            HashMap::from([(
+                card_id,
+                RwkvReviewQueueScoreEntry {
+                    retrievability: 0.60,
+                    intervening_reviews: None,
+                    target_retention: Some(0.50),
+                },
+            )]),
+        )?;
+
+        assert!(col.queue_as_ids(deck.id).is_empty());
+        assert_eq!(col.counts(), [0, 0, 0]);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_retrievability_order_excludes_same_day_reviews_by_default() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
@@ -1283,6 +1323,7 @@ mod test {
                 RwkvReviewQueueScoreEntry {
                     retrievability: 0.20,
                     intervening_reviews: Some(1),
+                    target_retention: None,
                 },
             )]),
         )?;
@@ -1297,6 +1338,7 @@ mod test {
                 RwkvReviewQueueScoreEntry {
                     retrievability: 0.20,
                     intervening_reviews: Some(2),
+                    target_retention: None,
                 },
             )]),
         )?;

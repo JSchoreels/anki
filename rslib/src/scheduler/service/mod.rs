@@ -848,11 +848,18 @@ impl crate::services::SchedulerService for Collection {
                 score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
                 "invalid RWKV retrievability"
             );
+            if let Some(target_retention) = score.target_retention {
+                require!(
+                    target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),
+                    "invalid RWKV target retention"
+                );
+            }
             scores.insert(
                 score.card_id.into(),
                 RwkvReviewQueueScoreEntry {
                     retrievability: score.retrievability,
                     intervening_reviews: score.intervening_reviews,
+                    target_retention: score.target_retention,
                 },
             );
         }
@@ -935,6 +942,7 @@ impl crate::services::SchedulerService for Collection {
                 interval_days: item.interval_days,
                 elapsed_days: item.elapsed_days,
                 s90: item.s90,
+                target_retention: item.target_retention,
             })
             .collect();
         self.apply_rwkv_review_reschedule(items).map(Into::into)

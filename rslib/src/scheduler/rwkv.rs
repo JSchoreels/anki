@@ -39,6 +39,7 @@ pub(crate) struct RwkvReviewRescheduleItem {
     pub(crate) interval_days: u32,
     pub(crate) elapsed_days: u32,
     pub(crate) s90: f32,
+    pub(crate) target_retention: Option<f32>,
 }
 
 impl Collection {
@@ -54,6 +55,12 @@ impl Collection {
             for item in items {
                 require!(item.interval_days >= 1, "invalid RWKV interval");
                 require!(item.s90.is_finite() && item.s90 > 0.0, "invalid RWKV S90");
+                if let Some(target_retention) = item.target_retention {
+                    require!(
+                        target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),
+                        "invalid RWKV target retention"
+                    );
+                }
 
                 let Some(mut card) = col.storage.get_card(item.card_id)? else {
                     continue;
@@ -65,6 +72,9 @@ impl Collection {
                 let original = card.clone();
                 card.interval = item.interval_days;
                 card.memory_state = Some(rwkv_rescheduled_memory_state(&card, item.s90));
+                if let Some(target_retention) = item.target_retention {
+                    card.desired_retention = Some(target_retention);
+                }
 
                 let due = if card.original_due != 0 {
                     &mut card.original_due
@@ -595,9 +605,14 @@ pub(crate) fn rwkv_review_score_eligible(
     min_intervening_reviews: u32,
     min_elapsed_secs: u32,
     intervening_reviews: Option<u32>,
+    target_retention: Option<f32>,
 ) -> bool {
+    let target_retention = target_retention
+        .filter(|target| target.is_finite() && (0.0..=1.0).contains(target))
+        .unwrap_or(metadata.target_retention);
+
     score.is_finite()
-        && score <= metadata.target_retention
+        && score <= target_retention
         && (allow_same_day_review || !metadata.reviewed_today)
         && rwkv_review_intervening_reviews_elapsed(intervening_reviews, min_intervening_reviews)
         && rwkv_review_min_elapsed_secs_elapsed(metadata, min_elapsed_secs)
@@ -940,12 +955,14 @@ mod test {
             interval_days: 12,
             elapsed_days: 4,
             s90: 9.5,
+            target_retention: Some(0.75),
         }])?;
 
         let updated = col.storage.get_card(card.id)?.unwrap();
         assert_eq!(result.output, 1);
         assert_eq!(updated.interval, 12);
         assert_eq!(updated.memory_state.unwrap().stability, 9.5);
+        assert_eq!(updated.desired_retention, Some(0.75));
         assert_eq!(
             col.storage.get_revlog_entries_for_card(card.id)?.len(),
             revlogs_before

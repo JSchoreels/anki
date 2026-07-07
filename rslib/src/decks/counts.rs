@@ -94,6 +94,7 @@ impl Collection {
                 min_intervening_reviews,
                 min_elapsed_secs,
                 score.intervening_reviews,
+                score.target_retention,
             );
             if rwkv_due == metadata.fsrs_due_today {
                 continue;

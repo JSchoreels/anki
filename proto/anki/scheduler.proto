@@ -833,6 +833,7 @@ message RwkvReviewQueueScoresRequest {
     int64 card_id = 1;
     float retrievability = 2;
     optional uint32 intervening_reviews = 3;
+    optional float target_retention = 4;
   }
   int64 deck_id = 1;
   repeated Score scores = 2;
@@ -873,6 +874,7 @@ message RwkvReviewRescheduleRequest {
     uint32 interval_days = 2;
     uint32 elapsed_days = 3;
     float s90 = 4;
+    optional float target_retention = 5;
   }
   repeated Item items = 1;
 }

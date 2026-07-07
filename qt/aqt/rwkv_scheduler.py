@@ -7,6 +7,7 @@ import base64
 import enum
 import gzip
 import hashlib
+import importlib
 import inspect
 import json
 import logging
@@ -227,6 +228,7 @@ _reviewer_backend_warmup_keys: set[tuple[int, int]] = set()
 _reviewer_backend_warmup_pending_keys: set[tuple[int, int]] = set()
 _resolved_preset_id_cache: dict[tuple[int, str | None], dict[int, str]] = {}
 _rwkv_review_queue_score_maps: dict[int, dict[int, float]] = {}
+_rwkv_review_queue_target_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_score_generations: dict[int, int] = {}
 _rwkv_review_queue_score_config_keys: dict[int, RwkvReviewQueueScoreConfigKey] = {}
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
@@ -404,6 +406,12 @@ class RwkvReviewInputBatchBuild:
 
 
 @dataclass(frozen=True)
+class RwkvReviewQueueScoreResult:
+    scores: list[tuple[int, float]]
+    target_retentions_by_card_id: dict[int, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RwkvReviewQueueOrderAsyncWork:
     deck_id: int
     reason: str
@@ -417,6 +425,7 @@ class RwkvReviewQueueOrderAsyncWork:
     warmup_elapsed_ms: float
     build_elapsed_ms: float
     existing_scores: tuple[tuple[int, float], ...] | None = None
+    existing_target_retentions: tuple[tuple[int, float], ...] | None = None
     candidate_card_ids: tuple[int, ...] = ()
     fresh_for_backend_state: bool = True
 
@@ -433,7 +442,9 @@ class RwkvReviewQueueOrderAsyncResult:
     warmup_elapsed_ms: float
     build_elapsed_ms: float
     score_elapsed_ms: float
+    target_retentions_by_card_id: dict[int, float] = field(default_factory=dict)
     existing_scores: tuple[tuple[int, float], ...] | None = None
+    existing_target_retentions: tuple[tuple[int, float], ...] | None = None
     candidate_card_ids: tuple[int, ...] = ()
     fresh_for_backend_state: bool = True
 
@@ -444,6 +455,7 @@ class RwkvReviewRescheduleItem:
     interval_days: int
     elapsed_days: int
     s90: float
+    target_retention: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1912,6 +1924,7 @@ def set_reviewer_backend(
     _reviewer_backend_warmup_pending_keys.clear()
     _resolved_preset_id_cache.clear()
     _rwkv_review_queue_score_maps.clear()
+    _rwkv_review_queue_target_maps.clear()
     _rwkv_review_queue_score_generations.clear()
     _rwkv_review_queue_score_config_keys.clear()
     _rwkv_score_prewarm_in_flight.clear()
@@ -2098,23 +2111,37 @@ def refresh_answered_card_queue_score(
     updated_scores.pop(card_id, None)
 
     try:
-        scores = _rwkv_review_queue_scores(
+        score_result = _rwkv_review_queue_score_result(
             reviewer=reviewer,
             card_ids=[card_id],
             batch_size=_rwkv_review_batch_size(deck_config),
         )
     except Exception:
         logger.exception("RWKV answered-card queue score refresh failed")
-        scores = []
+        score_result = RwkvReviewQueueScoreResult(scores=[])
 
-    for scored_card_id, retrievability in scores:
+    existing_target_retentions = _rwkv_review_queue_target_map_for_deck(
+        reviewer,
+        deck_id,
+    )
+    updated_target_retentions = (
+        dict(existing_target_retentions)
+        if existing_target_retentions is not None
+        else {}
+    )
+    updated_target_retentions.pop(card_id, None)
+    for scored_card_id, retrievability in score_result.scores:
         if scored_card_id == card_id:
             updated_scores[scored_card_id] = retrievability
+            target_retention = score_result.target_retentions_by_card_id.get(card_id)
+            if target_retention is not None:
+                updated_target_retentions[scored_card_id] = target_retention
 
     _set_rwkv_review_queue_scores(
         reviewer,
         deck_id,
         sorted(updated_scores.items()),
+        target_retentions_by_card_id=updated_target_retentions,
         fresh_for_backend_state=False,
     )
 
@@ -2146,12 +2173,22 @@ def invalidate_reviewer_queue_for_card_answer(
             deck_id = current_deck_id
             existing_scores = current_deck_scores
     scores = sorted(existing_scores.items()) if existing_scores is not None else []
-    _set_rwkv_review_queue_scores(reviewer, deck_id, scores)
+    _set_rwkv_review_queue_scores(
+        reviewer,
+        deck_id,
+        scores,
+        target_retentions_by_card_id=_rwkv_review_queue_target_map_for_deck(
+            reviewer,
+            deck_id,
+        ),
+    )
 
 
-def prepare_reviewer_queue_order(reviewer: object) -> None:
-    """Prepare transient RWKV review ordering scores for the current deck."""
-
+def _prepare_current_deck_review_queue_scores(
+    reviewer: object,
+    *,
+    reason: str,
+) -> None:
     deck_id = _current_deck_id(reviewer)
     if deck_id is None:
         _clear_rwkv_review_queue_scores(reviewer)
@@ -2171,8 +2208,24 @@ def prepare_reviewer_queue_order(reviewer: object) -> None:
         reviewer=reviewer,
         deck_id=deck_id,
         deck_config=deck_config,
-        reason="review queue",
+        reason=reason,
     )
+
+
+def prepare_current_deck_review_queue_scores(
+    mw: object,
+    *,
+    reason: str = "deck counts",
+) -> None:
+    """Prepare transient RWKV review scores before deck counts are queried."""
+
+    _prepare_current_deck_review_queue_scores(SimpleNamespace(mw=mw), reason=reason)
+
+
+def prepare_reviewer_queue_order(reviewer: object) -> None:
+    """Prepare transient RWKV review ordering scores for the current deck."""
+
+    _prepare_current_deck_review_queue_scores(reviewer, reason="review queue")
 
 
 def prepare_reviewer_queue_order_async_work(
@@ -2269,6 +2322,7 @@ def prepare_reviewer_queue_order_async_work(
             return None
 
         return _rwkv_review_queue_async_work_from_input_build(
+            reviewer=reviewer,
             deck_id=deck_id,
             reason=reason,
             batch_size=batch_size,
@@ -2350,6 +2404,9 @@ def score_reviewer_queue_order_async_work(
         predictions,
         self_correction_features_by_card_id=work.input_build.self_correction_features_by_card_id,
     )
+    target_retentions_by_card_id = (
+        _rwkv_review_input_build_target_retentions_by_card_id(work.input_build)
+    )
     if work.existing_scores is not None:
         fresh_scores_by_card_id = dict(scores)
         merged_scores = dict(work.existing_scores)
@@ -2359,6 +2416,19 @@ def score_reviewer_queue_order_async_work(
             else:
                 merged_scores.pop(card_id, None)
         scores = sorted(merged_scores.items())
+
+        merged_target_retentions = (
+            dict(work.existing_target_retentions)
+            if work.existing_target_retentions is not None
+            else {}
+        )
+        for card_id in work.candidate_card_ids:
+            target_retention = target_retentions_by_card_id.get(card_id)
+            if target_retention is not None and card_id in fresh_scores_by_card_id:
+                merged_target_retentions[card_id] = target_retention
+            else:
+                merged_target_retentions.pop(card_id, None)
+        target_retentions_by_card_id = merged_target_retentions
 
     score_elapsed_ms = (time.monotonic() - start) * 1000
     logger.debug(
@@ -2393,7 +2463,9 @@ def score_reviewer_queue_order_async_work(
         warmup_elapsed_ms=work.warmup_elapsed_ms,
         build_elapsed_ms=work.build_elapsed_ms,
         score_elapsed_ms=score_elapsed_ms,
+        target_retentions_by_card_id=target_retentions_by_card_id,
         existing_scores=work.existing_scores,
+        existing_target_retentions=work.existing_target_retentions,
         candidate_card_ids=work.candidate_card_ids,
         fresh_for_backend_state=work.fresh_for_backend_state,
     )
@@ -2421,6 +2493,7 @@ def install_reviewer_queue_order_async_result(
         reviewer,
         result.deck_id,
         result.scores,
+        target_retentions_by_card_id=result.target_retentions_by_card_id,
         fresh_for_backend_state=result.fresh_for_backend_state,
     )
     logger.debug(
@@ -2462,8 +2535,7 @@ def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     ):
         return False
 
-    answered_ids = getattr(reviewer, "_answeredIds", None)
-    answered_count = len(answered_ids) if isinstance(answered_ids, list) else 0
+    answered_count = len(_session_answered_ids(reviewer))
     interval = _rwkv_review_refresh_interval(deck_config)
     return answered_count > 0 and answered_count % interval == 0
 
@@ -3064,12 +3136,13 @@ def _prepare_rwkv_review_scores_for_deck(
         )
         deck_scores_elapsed_ms = (time.monotonic() - deck_scores_start) * 1000
         if candidate_scores is not None:
-            scores, candidates, scored = candidate_scores
+            scores, target_retentions_by_card_id, candidates, scored = candidate_scores
             set_start = time.monotonic()
             _set_rwkv_review_queue_scores(
                 reviewer,
                 deck_id,
                 scores,
+                target_retentions_by_card_id=target_retentions_by_card_id,
                 fresh_for_backend_state=False,
             )
             set_elapsed_ms = (time.monotonic() - set_start) * 1000
@@ -3100,7 +3173,14 @@ def _prepare_rwkv_review_scores_for_deck(
         if deck_scores is not None:
             scores, input_build = deck_scores
             set_start = time.monotonic()
-            _set_rwkv_review_queue_scores(reviewer, deck_id, scores)
+            _set_rwkv_review_queue_scores(
+                reviewer,
+                deck_id,
+                scores,
+                target_retentions_by_card_id=_rwkv_review_input_build_target_retentions_by_card_id(
+                    input_build
+                ),
+            )
             set_elapsed_ms = (time.monotonic() - set_start) * 1000
             logger.debug(
                 "prepared RWKV %s scores from backend deck queue: deck_id=%s "
@@ -3120,7 +3200,7 @@ def _prepare_rwkv_review_scores_for_deck(
         card_ids = _review_card_ids_in_deck_tree(reviewer, deck_id)
         card_ids_elapsed_ms = (time.monotonic() - card_ids_start) * 1000
         scores_start = time.monotonic()
-        scores = _rwkv_review_queue_scores(
+        score_result = _rwkv_review_queue_score_result(
             reviewer=reviewer,
             card_ids=card_ids,
             batch_size=batch_size,
@@ -3128,7 +3208,12 @@ def _prepare_rwkv_review_scores_for_deck(
         scores_elapsed_ms = (time.monotonic() - scores_start) * 1000
 
         set_start = time.monotonic()
-        _set_rwkv_review_queue_scores(reviewer, deck_id, scores)
+        _set_rwkv_review_queue_scores(
+            reviewer,
+            deck_id,
+            score_result.scores,
+            target_retentions_by_card_id=score_result.target_retentions_by_card_id,
+        )
         set_elapsed_ms = (time.monotonic() - set_start) * 1000
         logger.debug(
             "prepared RWKV %s scores: deck_id=%s candidates=%s scored=%s "
@@ -3137,7 +3222,7 @@ def _prepare_rwkv_review_scores_for_deck(
             reason,
             deck_id,
             len(card_ids),
-            len(scores),
+            len(score_result.scores),
             warmup_elapsed_ms,
             card_ids_elapsed_ms,
             scores_elapsed_ms,
@@ -10608,6 +10693,222 @@ def _rwkv_review_input_build_inputs(
     ]
 
 
+def _resolve_dynamic_desired_retentions_for_input_build(
+    reviewer: object,
+    input_build: RwkvReviewInputBatchBuild,
+) -> RwkvReviewInputBatchBuild:
+    inputs_by_card_id = _rwkv_review_input_build_inputs(input_build)
+    resolved_inputs_by_card_id = _resolve_dynamic_desired_retentions_for_inputs(
+        reviewer,
+        inputs_by_card_id,
+    )
+    if resolved_inputs_by_card_id is inputs_by_card_id:
+        return input_build
+
+    remaining_by_card_id = dict(resolved_inputs_by_card_id)
+    resolved_inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
+    for batch_size, batch_inputs in input_build.inputs_by_batch_size.items():
+        resolved_batch = [
+            (card_id, remaining_by_card_id.pop(card_id, review_input))
+            for card_id, review_input in batch_inputs
+        ]
+        if resolved_batch:
+            resolved_inputs_by_batch_size[batch_size] = resolved_batch
+
+    return replace(input_build, inputs_by_batch_size=resolved_inputs_by_batch_size)
+
+
+def _resolve_dynamic_desired_retentions_for_inputs(
+    reviewer: object,
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+) -> Sequence[tuple[int, RwkvReviewInput]]:
+    start = time.monotonic()
+    target_retentions_by_card_id = _dynamic_desired_retention_targets_for_inputs(
+        reviewer,
+        inputs_by_card_id,
+    )
+    if not target_retentions_by_card_id:
+        return inputs_by_card_id
+
+    resolved_inputs: list[tuple[int, RwkvReviewInput]] = []
+    updated = 0
+    for card_id, review_input in inputs_by_card_id:
+        target_retention = target_retentions_by_card_id.get(card_id)
+        if target_retention is None:
+            resolved_inputs.append((card_id, review_input))
+            continue
+
+        resolved_input = _rwkv_review_input_with_target_retention(
+            review_input,
+            target_retention,
+        )
+        if resolved_input is not review_input:
+            updated += 1
+        resolved_inputs.append((card_id, resolved_input))
+
+    if not updated:
+        return inputs_by_card_id
+
+    logger.debug(
+        "RWKV Dynamic DR targets resolved: inputs=%s targets=%s updated=%s "
+        "elapsed_ms=%.1f",
+        len(inputs_by_card_id),
+        len(target_retentions_by_card_id),
+        updated,
+        (time.monotonic() - start) * 1000,
+    )
+    return resolved_inputs
+
+
+def _dynamic_desired_retention_targets_for_inputs(
+    reviewer: object,
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+) -> dict[int, float]:
+    info_for_cards = _dynamic_desired_retention_info_for_cards_resolver()
+    if info_for_cards is None:
+        return {}
+
+    current_desired_retentions = {
+        card_id: target_retention
+        for card_id, review_input in inputs_by_card_id
+        if (target_retention := _rwkv_review_input_target_retention(review_input))
+        is not None
+    }
+    if not current_desired_retentions:
+        return {}
+
+    col = _collection(reviewer)
+    get_card = getattr(col, "get_card", None)
+    if not callable(get_card):
+        return {}
+
+    cards = []
+    for card_id in current_desired_retentions:
+        try:
+            card = get_card(card_id)
+        except Exception:
+            logger.debug("failed to load card for RWKV Dynamic DR: card_id=%s", card_id)
+            continue
+        if _card_id(card) == card_id:
+            cards.append(card)
+
+    if not cards:
+        return {}
+
+    info_by_card_id = _dynamic_desired_retention_info_for_cards(
+        collection=col,
+        cards=cards,
+        current_desired_retentions=current_desired_retentions,
+        info_for_cards=info_for_cards,
+    )
+    if not isinstance(info_by_card_id, Mapping):
+        return {}
+
+    target_retentions_by_card_id: dict[int, float] = {}
+    for card in cards:
+        card_id = _card_id(card)
+        if card_id is None:
+            continue
+        info = info_by_card_id.get(card_id)
+        target_retention = getattr(info, "desired_retention", None)
+        if _valid_probability(target_retention):
+            target_retentions_by_card_id[card_id] = float(target_retention)
+
+    return target_retentions_by_card_id
+
+
+def _dynamic_desired_retention_info_for_cards_resolver() -> (
+    Callable[..., object] | None
+):
+    try:
+        dynamic_desired_retention = importlib.import_module("dynamic_desired_retention")
+    except ImportError:
+        return None
+    except Exception:
+        logger.debug("failed to import Dynamic DR provider for RWKV", exc_info=True)
+        return None
+
+    effective_desired_retention_info_for_cards = getattr(
+        dynamic_desired_retention,
+        "effective_desired_retention_info_for_cards",
+        None,
+    )
+    if not callable(effective_desired_retention_info_for_cards):
+        return None
+
+    return effective_desired_retention_info_for_cards
+
+
+def _dynamic_desired_retention_info_for_cards(
+    *,
+    collection: object,
+    cards: Sequence[object],
+    current_desired_retentions: Mapping[int, float | None],
+    info_for_cards: Callable[..., object],
+) -> object | None:
+    try:
+        return info_for_cards(
+            collection=collection,
+            cards=cards,
+            current_desired_retentions=current_desired_retentions,
+        )
+    except Exception:
+        logger.debug("failed to resolve Dynamic DR targets for RWKV", exc_info=True)
+        return None
+
+
+def _rwkv_review_input_with_target_retention(
+    review_input: RwkvReviewInput,
+    target_retention: float,
+) -> RwkvReviewInput:
+    current_target_retention = _rwkv_review_input_target_retention(review_input)
+    if current_target_retention is not None and math.isclose(
+        current_target_retention,
+        target_retention,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        return review_input
+
+    return replace(
+        review_input,
+        target_retentions=(
+            target_retention,
+            target_retention,
+            target_retention,
+            target_retention,
+        ),
+    )
+
+
+def _rwkv_review_input_build_target_retentions_by_card_id(
+    input_build: RwkvReviewInputBatchBuild,
+) -> dict[int, float]:
+    return _rwkv_review_input_target_retentions_by_card_id(
+        _rwkv_review_input_build_inputs(input_build)
+    )
+
+
+def _rwkv_review_input_target_retentions_by_card_id(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+) -> dict[int, float]:
+    return {
+        card_id: target_retention
+        for card_id, review_input in inputs_by_card_id
+        if (target_retention := _rwkv_review_input_target_retention(review_input))
+        is not None
+    }
+
+
+def _rwkv_review_input_target_retention(
+    review_input: RwkvReviewInput,
+) -> float | None:
+    if len(review_input.target_retentions) < 3:
+        return None
+    target_retention = review_input.target_retentions[2]
+    return target_retention if _valid_probability(target_retention) else None
+
+
 def _rwkv_self_correction_features_by_card_id_for_inputs(
     reviewer: object,
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]],
@@ -10676,13 +10977,17 @@ def _candidate_refreshed_rwkv_review_queue_scores_for_deck(
     deck_id: int,
     deck_config: dict[str, object],
     batch_size: int,
-) -> tuple[list[tuple[int, float]], int, int] | None:
+) -> tuple[list[tuple[int, float]], dict[int, float], int, int] | None:
     if not _rwkv_review_candidate_refresh_enabled(deck_config):
         return None
 
     existing_scores = _rwkv_review_queue_score_map_for_deck(reviewer, deck_id)
     if not existing_scores:
         return None
+    existing_target_retentions = _rwkv_review_queue_target_map_for_deck(
+        reviewer,
+        deck_id,
+    )
 
     candidate_ids = _rwkv_review_candidate_refresh_card_ids(
         deck_config,
@@ -10696,20 +11001,36 @@ def _candidate_refreshed_rwkv_review_queue_scores_for_deck(
     if not candidate_ids:
         return None
 
-    fresh_scores = _rwkv_review_queue_scores(
+    fresh_score_result = _rwkv_review_queue_score_result(
         reviewer=reviewer,
         card_ids=candidate_ids,
         batch_size=batch_size,
     )
-    fresh_scores_by_card_id = dict(fresh_scores)
+    fresh_scores_by_card_id = dict(fresh_score_result.scores)
     merged_scores = dict(existing_scores)
+    merged_target_retentions = (
+        dict(existing_target_retentions)
+        if existing_target_retentions is not None
+        else {}
+    )
     for card_id in candidate_ids:
         if card_id in fresh_scores_by_card_id:
             merged_scores[card_id] = fresh_scores_by_card_id[card_id]
+            target_retention = fresh_score_result.target_retentions_by_card_id.get(
+                card_id
+            )
+            if target_retention is not None:
+                merged_target_retentions[card_id] = target_retention
         else:
             merged_scores.pop(card_id, None)
+            merged_target_retentions.pop(card_id, None)
 
-    return sorted(merged_scores.items()), len(candidate_ids), len(fresh_scores)
+    return (
+        sorted(merged_scores.items()),
+        merged_target_retentions,
+        len(candidate_ids),
+        len(fresh_score_result.scores),
+    )
 
 
 def _rwkv_review_candidate_refresh_card_ids(
@@ -10759,6 +11080,10 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
     existing_scores = _rwkv_review_queue_score_map_for_deck(reviewer, deck_id)
     if not existing_scores:
         return None
+    existing_target_retentions = _rwkv_review_queue_target_map_for_deck(
+        reviewer,
+        deck_id,
+    )
 
     candidate_ids = _rwkv_review_candidate_refresh_card_ids(
         deck_config,
@@ -10789,6 +11114,7 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
         return None
 
     return _rwkv_review_queue_async_work_from_input_build(
+        reviewer=reviewer,
         deck_id=deck_id,
         reason=reason,
         batch_size=batch_size,
@@ -10797,6 +11123,11 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
         warmup_elapsed_ms=warmup_elapsed_ms,
         build_start=start,
         existing_scores=tuple(sorted(existing_scores.items())),
+        existing_target_retentions=(
+            tuple(sorted(existing_target_retentions.items()))
+            if existing_target_retentions is not None
+            else None
+        ),
         candidate_card_ids=tuple(candidate_ids),
         fresh_for_backend_state=False,
     )
@@ -10804,6 +11135,7 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
 
 def _rwkv_review_queue_async_work_from_input_build(
     *,
+    reviewer: object,
     deck_id: int,
     reason: str,
     batch_size: int,
@@ -10812,9 +11144,14 @@ def _rwkv_review_queue_async_work_from_input_build(
     warmup_elapsed_ms: float,
     build_start: float,
     existing_scores: tuple[tuple[int, float], ...] | None = None,
+    existing_target_retentions: tuple[tuple[int, float], ...] | None = None,
     candidate_card_ids: tuple[int, ...] = (),
     fresh_for_backend_state: bool,
 ) -> RwkvReviewQueueOrderAsyncWork | None:
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer,
+        input_build,
+    )
     inputs_by_card_id = tuple(_rwkv_review_input_build_inputs(input_build))
     cached = _cached_review_input_predictions_for_inputs(
         [
@@ -10861,6 +11198,7 @@ def _rwkv_review_queue_async_work_from_input_build(
         warmup_elapsed_ms=warmup_elapsed_ms,
         build_elapsed_ms=build_elapsed_ms,
         existing_scores=existing_scores,
+        existing_target_retentions=existing_target_retentions,
         candidate_card_ids=candidate_card_ids,
         fresh_for_backend_state=fresh_for_backend_state,
     )
@@ -10886,6 +11224,10 @@ def _rwkv_review_queue_scores_for_deck(
     if input_build is None:
         return None
 
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer,
+        input_build,
+    )
     score_start = time.monotonic()
     scores: list[tuple[int, float]] = []
     for input_batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
@@ -10926,10 +11268,23 @@ def _rwkv_review_queue_scores(
     card_ids: Sequence[int],
     batch_size: int,
 ) -> list[tuple[int, float]]:
+    return _rwkv_review_queue_score_result(
+        reviewer=reviewer,
+        card_ids=card_ids,
+        batch_size=batch_size,
+    ).scores
+
+
+def _rwkv_review_queue_score_result(
+    *,
+    reviewer: object,
+    card_ids: Sequence[int],
+    batch_size: int,
+) -> RwkvReviewQueueScoreResult:
     start = time.monotonic()
     timing = _timing_today(reviewer)
     if not isinstance(getattr(timing, "days_elapsed", None), int):
-        return []
+        return RwkvReviewQueueScoreResult(scores=[])
 
     use_input_scoring = _reviewer_backend_accepts_review_inputs()
     if use_input_scoring:
@@ -10943,6 +11298,10 @@ def _rwkv_review_queue_scores(
             batch_size_override=batch_size,
         )
         if input_build is not None:
+            input_build = _resolve_dynamic_desired_retentions_for_input_build(
+                reviewer,
+                input_build,
+            )
             score_start = time.monotonic()
             scores: list[tuple[int, float]] = []
             for (
@@ -10983,7 +11342,12 @@ def _rwkv_review_queue_scores(
                     (time.monotonic() - score_start) * 1000,
                     (time.monotonic() - start) * 1000,
                 )
-                return scores
+                return RwkvReviewQueueScoreResult(
+                    scores=scores,
+                    target_retentions_by_card_id=_rwkv_review_input_build_target_retentions_by_card_id(
+                        input_build
+                    ),
+                )
 
     inputs_by_card_id: list[tuple[int, RwkvReviewInput]] = []
     self_correction_features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = {}
@@ -11077,6 +11441,12 @@ def _rwkv_review_queue_scores(
 
     candidate_elapsed_ms = (time.monotonic() - start) * 1000
     score_start = time.monotonic()
+    inputs_by_card_id = list(
+        _resolve_dynamic_desired_retentions_for_inputs(
+            reviewer,
+            inputs_by_card_id,
+        )
+    )
     scores = (
         _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
@@ -11104,7 +11474,12 @@ def _rwkv_review_queue_scores(
         (time.monotonic() - score_start) * 1000,
         (time.monotonic() - start) * 1000,
     )
-    return scores
+    return RwkvReviewQueueScoreResult(
+        scores=scores,
+        target_retentions_by_card_id=_rwkv_review_input_target_retentions_by_card_id(
+            inputs_by_card_id
+        ),
+    )
 
 
 def _rwkv_stats_graph_scores(
@@ -11452,6 +11827,22 @@ def _rwkv_review_queue_score_map_for_deck(
     return scores
 
 
+def _rwkv_review_queue_target_map_for_deck(
+    reviewer: object,
+    deck_id: int,
+) -> dict[int, float] | None:
+    targets = _rwkv_review_queue_target_maps.get(deck_id)
+    if targets is None:
+        return None
+
+    if _rwkv_review_queue_score_config_keys.get(
+        deck_id
+    ) != _rwkv_review_queue_score_config_key(reviewer):
+        return None
+
+    return targets
+
+
 def _fresh_rwkv_review_queue_score_map(reviewer: object) -> dict[int, float]:
     state_generation = _reviewer_backend_state_generation()
     scores: dict[int, float] = {}
@@ -11519,6 +11910,10 @@ def _rwkv_review_reschedule_items_for_deck(
     if input_build is None:
         return None
 
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer,
+        input_build,
+    )
     total_inputs = sum(
         len(inputs) for inputs in input_build.inputs_by_batch_size.values()
     )
@@ -11588,6 +11983,27 @@ def _rwkv_review_reschedule_items(
     timing = _timing_today(reviewer)
     if not isinstance(getattr(timing, "days_elapsed", None), int):
         return []
+
+    if _reviewer_backend_accepts_review_inputs():
+        input_build = _rwkv_review_input_batches_for_ids(
+            reviewer=reviewer,
+            card_ids=card_ids,
+            timing=timing,
+            reason="RWKV reschedule",
+            include_suspended_review=False,
+            supported_state_filter=True,
+            batch_size_override=None,
+            use_enabled_deck_filter=True,
+        )
+        if input_build is not None:
+            input_build = _resolve_dynamic_desired_retentions_for_input_build(
+                reviewer,
+                input_build,
+            )
+            return _rwkv_review_reschedule_items_from_input_build(
+                input_build,
+                progress=progress,
+            )
 
     items: list[RwkvReviewRescheduleItem] = []
     processed_cards = 0
@@ -11706,9 +12122,64 @@ def _rwkv_review_reschedule_items_from_input_predictions(
                 interval_days=prediction.current_interval,
                 elapsed_days=elapsed_days,
                 s90=prediction.current_s90,
+                target_retention=_rwkv_review_input_target_retention(review_input),
             )
         )
 
+    return items
+
+
+def _rwkv_review_reschedule_items_from_input_build(
+    input_build: RwkvReviewInputBatchBuild,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> list[RwkvReviewRescheduleItem]:
+    total_inputs = sum(
+        len(inputs) for inputs in input_build.inputs_by_batch_size.values()
+    )
+    if not total_inputs:
+        return []
+
+    items: list[RwkvReviewRescheduleItem] = []
+    processed_inputs = 0
+    start = time.monotonic()
+    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
+        for batch in _chunks(inputs_by_card_id, batch_size):
+            predictions = _rwkv_review_predictions_for_inputs(
+                batch,
+                batch_size=batch_size,
+            )
+            if predictions is None:
+                return []
+
+            items.extend(
+                _rwkv_review_reschedule_items_from_input_predictions(
+                    batch,
+                    predictions,
+                )
+            )
+            processed_inputs += len(batch)
+            _report_rwkv_state_cache_progress(
+                progress,
+                "Predicting RWKV reschedule intervals...",
+                processed_inputs,
+                total_inputs,
+            )
+
+    logger.debug(
+        "RWKV review reschedule inputs predicted: loaded=%s with_state=%s "
+        "enabled=%s inputs=%s items=%s deck_configs=%s load_elapsed_ms=%.1f "
+        "candidate_elapsed_ms=%.1f elapsed_ms=%.1f",
+        input_build.parsed_cards,
+        input_build.cards_with_state,
+        input_build.eligible_cards,
+        total_inputs,
+        len(items),
+        input_build.deck_configs,
+        input_build.load_elapsed_ms,
+        input_build.candidate_elapsed_ms,
+        (time.monotonic() - start) * 1000,
+    )
     return items
 
 
@@ -11757,12 +12228,14 @@ def _apply_rwkv_review_reschedule(
 
     request = scheduler_pb2.RwkvReviewRescheduleRequest()
     for item in items:
-        request.items.add(
+        request_item = request.items.add(
             card_id=item.card_id,
             interval_days=item.interval_days,
             elapsed_days=item.elapsed_days,
             s90=float(item.s90),
         )
+        if _valid_probability(item.target_retention):
+            request_item.target_retention = item.target_retention
 
     response = OpChangesWithCount()
     response.ParseFromString(apply_raw(request.SerializeToString()))
@@ -12627,47 +13100,79 @@ def _cached_rwkv_review_input_batch_build(
 
     cache.move_to_end(cache_key)
 
-    answered_ids = getattr(reviewer, "_answeredIds", None)
-    exclude_ids: set[int] | None = None
-    if isinstance(answered_ids, list) and answered_ids:
-        exclude_ids = set(answered_ids)
+    cached_inputs_by_card_id = {
+        card_id
+        for inputs in cached.inputs_by_batch_size.values()
+        for card_id, _ in inputs
+    }
+    refresh_ids: list[int] = []
+    seen_refresh_ids: set[int] = set()
+    for card_id in _session_answered_ids(reviewer):
+        if card_id not in cached_inputs_by_card_id or card_id in seen_refresh_ids:
+            continue
+        refresh_ids.append(card_id)
+        seen_refresh_ids.add(card_id)
 
-    if exclude_ids:
+    refreshed_build: RwkvReviewInputBatchBuild | None = None
+    if refresh_ids:
+        refreshed_build = _rwkv_review_input_batches_from_backend_for_ids(
+            reviewer=reviewer,
+            card_ids=refresh_ids,
+            include_suspended_review=False,
+            include_new_cards=cache_key[2],
+            batch_size_override=cache_key[1],
+            use_enabled_deck_filter=True,
+        )
         filtered_inputs_by_batch_size = {
             batch_size: [
                 (card_id, review_input)
                 for card_id, review_input in inputs
-                if card_id not in exclude_ids
+                if card_id not in seen_refresh_ids
             ]
             for batch_size, inputs in cached.inputs_by_batch_size.items()
         }
         filtered_inputs_by_batch_size = {
             k: v for k, v in filtered_inputs_by_batch_size.items() if v
         }
-        filtered_eligible = sum(
-            len(inputs) for inputs in filtered_inputs_by_batch_size.values()
-        )
+        refreshed_input_count = 0
+        refreshed_features = {}
+        if refreshed_build is not None:
+            for batch_size, inputs in refreshed_build.inputs_by_batch_size.items():
+                if not inputs:
+                    continue
+                filtered_inputs_by_batch_size.setdefault(batch_size, []).extend(inputs)
+                refreshed_input_count += len(inputs)
+            refreshed_features = refreshed_build.self_correction_features_by_card_id
+        self_correction_features_by_card_id = {
+            card_id: features
+            for card_id, features in cached.self_correction_features_by_card_id.items()
+            if card_id not in seen_refresh_ids
+        }
+        self_correction_features_by_card_id.update(refreshed_features)
     else:
         filtered_inputs_by_batch_size = cached.inputs_by_batch_size
-        filtered_eligible = cached.eligible_cards
+        refreshed_input_count = 0
+        self_correction_features_by_card_id = cached.self_correction_features_by_card_id
 
     input_count = sum(len(inputs) for inputs in filtered_inputs_by_batch_size.values())
     logger.debug(
         "RWKV review input backend rows reused from cache: deck_id=%s rows=%s "
-        "eligible=%s inputs=%s excluded=%s",
+        "eligible=%s inputs=%s refreshed=%s excluded=%s",
         cache_key[0],
         cached.loaded_rows,
-        filtered_eligible,
         input_count,
-        len(exclude_ids) if exclude_ids else 0,
+        input_count,
+        refreshed_input_count,
+        len(refresh_ids) - refreshed_input_count,
     )
     return replace(
         cached,
         inputs_by_batch_size=filtered_inputs_by_batch_size,
-        eligible_cards=filtered_eligible,
+        eligible_cards=input_count,
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
+        self_correction_features_by_card_id=self_correction_features_by_card_id,
     )
 
 
@@ -13897,6 +14402,7 @@ def _set_rwkv_review_queue_scores(
     deck_id: int,
     scores: Sequence[tuple[int, float]],
     *,
+    target_retentions_by_card_id: Mapping[int, float] | None = None,
     fresh_for_backend_state: bool = True,
 ) -> None:
     mw = getattr(reviewer, "mw", None)
@@ -13904,11 +14410,15 @@ def _set_rwkv_review_queue_scores(
     backend = getattr(col, "_backend", None)
     request = scheduler_pb2.RwkvReviewQueueScoresRequest(deck_id=deck_id)
     intervening_reviews_by_card_id = _session_intervening_reviews_by_card_id(reviewer)
+    target_retentions_by_card_id = target_retentions_by_card_id or {}
     for card_id, retrievability in scores:
         score = request.scores.add(card_id=card_id, retrievability=retrievability)
         intervening_reviews = intervening_reviews_by_card_id.get(card_id)
         if intervening_reviews is not None:
             score.intervening_reviews = intervening_reviews
+        target_retention = target_retentions_by_card_id.get(card_id)
+        if _valid_probability(target_retention):
+            score.target_retention = target_retention
 
     set_scores_raw = getattr(backend, "set_rwkv_review_queue_scores_raw", None)
     if callable(set_scores_raw):
@@ -13923,12 +14433,22 @@ def _set_rwkv_review_queue_scores(
             scores=list(request.scores),
         )
     _rwkv_review_queue_score_maps.clear()
+    _rwkv_review_queue_target_maps.clear()
     _rwkv_review_queue_score_generations.clear()
     _rwkv_review_queue_score_config_keys.clear()
     if scores:
         _rwkv_review_queue_score_maps[deck_id] = {
             card_id: retrievability for card_id, retrievability in scores
         }
+        targets_for_scores = {
+            card_id: target_retention
+            for card_id, _ in scores
+            if (target_retention := target_retentions_by_card_id.get(card_id))
+            is not None
+            and _valid_probability(target_retention)
+        }
+        if targets_for_scores:
+            _rwkv_review_queue_target_maps[deck_id] = targets_for_scores
         _rwkv_review_queue_score_config_keys[deck_id] = (
             _rwkv_review_queue_score_config_key(reviewer)
         )
@@ -13941,21 +14461,36 @@ def _set_rwkv_review_queue_scores(
 
 
 def _session_intervening_reviews_by_card_id(reviewer: object) -> dict[int, int]:
-    answered_ids = getattr(reviewer, "_answeredIds", None)
-    if not isinstance(answered_ids, list):
+    answered_ids = _session_answered_ids(reviewer)
+    if not answered_ids:
         return {}
 
     last_answer_index_by_card_id: dict[int, int] = {}
-    for index, value in enumerate(answered_ids):
-        card_id = _valid_card_id(value)
-        if card_id is not None:
-            last_answer_index_by_card_id[card_id] = index
+    for index, card_id in enumerate(answered_ids):
+        last_answer_index_by_card_id[card_id] = index
 
     answered_count = len(answered_ids)
     return {
         card_id: max(0, answered_count - answer_index - 1)
         for card_id, answer_index in last_answer_index_by_card_id.items()
     }
+
+
+def _session_answered_ids(reviewer: object) -> list[int]:
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    if not isinstance(answered_ids, list):
+        mw = getattr(reviewer, "mw", None)
+        active_reviewer = getattr(mw, "reviewer", None)
+        answered_ids = getattr(active_reviewer, "_answeredIds", None)
+
+    if not isinstance(answered_ids, list):
+        return []
+
+    return [
+        card_id
+        for value in answered_ids
+        if (card_id := _valid_card_id(value)) is not None
+    ]
 
 
 def _set_rwkv_stats_graph_scores(

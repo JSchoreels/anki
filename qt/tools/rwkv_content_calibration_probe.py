@@ -378,13 +378,11 @@ def _analysis_db_path(
 
     copy_dir = Path(tempfile.mkdtemp(prefix="rwkv-content-probe-"))
     copied_db = copy_dir / "collection.anki2"
-    for source in (
-        live_db,
-        live_db.with_name("collection.anki2-wal"),
-        live_db.with_name("collection.anki2-shm"),
-    ):
-        if source.exists():
-            shutil.copy2(source, copy_dir / source.name)
+    temporal._copy_sqlite_db_with_sidecars(live_db, copy_dir)
+    temporal._copy_sqlite_db_with_sidecars(
+        profile_folder / temporal.RWKV_CACHE_DB_FILENAME,
+        copy_dir,
+    )
     if not copied_db.exists():
         raise ProbeError(f"failed to copy collection: {live_db}")
     return copied_db, live_db, copy_dir
@@ -408,13 +406,17 @@ def _load_content_samples(
     answer_time_cap_seconds: float,
     limit: int,
 ) -> tuple[list[ContentReviewSample], int, dict[str, int]]:
-    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    connection = sqlite3.connect(temporal._sqlite_readonly_uri(db_path), uri=True)
     try:
-        if not temporal._table_columns(connection, RWKV_CACHE_TABLE):
-            raise ProbeError(f"missing RWKV cache table: {RWKV_CACHE_TABLE}")
+        cache_table = temporal._rwkv_cache_table_ref(connection, db_path)
         deck_ids = temporal._matched_deck_ids(connection, deck_match)
         field_ords = _field_ord_maps(connection, requested_fields)
-        rows = _cached_content_rows(connection, deck_ids=deck_ids, limit=limit)
+        rows = _cached_content_rows(
+            connection,
+            cache_table=cache_table,
+            deck_ids=deck_ids,
+            limit=limit,
+        )
     finally:
         connection.close()
 
@@ -430,6 +432,7 @@ def _load_content_samples(
 def _cached_content_rows(
     connection: sqlite3.Connection,
     *,
+    cache_table: str,
     deck_ids: Sequence[int] | None,
     limit: int,
 ) -> list[tuple[int, int, int, int, int, int, float, str]]:
@@ -446,7 +449,7 @@ def _cached_content_rows(
     FROM revlog r
     JOIN cards c ON c.id = r.cid
     JOIN notes n ON n.id = c.nid
-    JOIN {RWKV_CACHE_TABLE} cache ON cache.revlog_id = r.id
+    JOIN {cache_table} cache ON cache.revlog_id = r.id
     WHERE r.ease BETWEEN 1 AND 4
       AND (r.type IN (0, 1, 2, 3) OR r.type = 4)
       AND cache.prediction >= 0

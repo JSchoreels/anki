@@ -8,7 +8,7 @@ import json
 import math
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
@@ -61,6 +61,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_pending_keys = set(rwkv_scheduler._reviewer_backend_warmup_pending_keys)
     previous_preset_cache = dict(rwkv_scheduler._resolved_preset_id_cache)
     previous_queue_score_maps = dict(rwkv_scheduler._rwkv_review_queue_score_maps)
+    previous_queue_target_maps = dict(rwkv_scheduler._rwkv_review_queue_target_maps)
     previous_queue_score_generations = dict(
         rwkv_scheduler._rwkv_review_queue_score_generations
     )
@@ -75,6 +76,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._reviewer_backend_warmup_pending_keys.clear()
     rwkv_scheduler._resolved_preset_id_cache.clear()
     rwkv_scheduler._rwkv_review_queue_score_maps.clear()
+    rwkv_scheduler._rwkv_review_queue_target_maps.clear()
     rwkv_scheduler._rwkv_review_queue_score_generations.clear()
     rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
@@ -98,6 +100,8 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._resolved_preset_id_cache.update(previous_preset_cache)
         rwkv_scheduler._rwkv_review_queue_score_maps.clear()
         rwkv_scheduler._rwkv_review_queue_score_maps.update(previous_queue_score_maps)
+        rwkv_scheduler._rwkv_review_queue_target_maps.clear()
+        rwkv_scheduler._rwkv_review_queue_target_maps.update(previous_queue_target_maps)
         rwkv_scheduler._rwkv_review_queue_score_generations.clear()
         rwkv_scheduler._rwkv_review_queue_score_generations.update(
             previous_queue_score_generations
@@ -1168,6 +1172,78 @@ def test_rwkv_review_input_uses_dynamic_desired_retention_per_grade() -> None:
     )
 
     assert review_input.target_retentions == pytest.approx((0.81, 0.82, 0.83, 0.84))
+
+
+def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DynamicRetentionInfo:
+        def __init__(self, desired_retention: float | None) -> None:
+            self.desired_retention = desired_retention
+
+    cards = {1: SimpleNamespace(id=1), 2: SimpleNamespace(id=2)}
+
+    class Collection:
+        def get_card(self, card_id: int) -> object:
+            return cards[card_id]
+
+    col = Collection()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    first = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        target_retentions=(0.90, 0.90, 0.90, 0.90),
+    )
+    second = replace(
+        _rwkv_review_input(card_id=2, note_id=20),
+        target_retentions=(0.81, 0.82, 0.83, 0.84),
+    )
+    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={512: [(1, first), (2, second)]},
+        loaded_rows=2,
+        parsed_cards=2,
+        cards_with_state=2,
+        disabled_config_cards=0,
+        eligible_cards=2,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+
+    def resolver(
+        *,
+        collection: object,
+        cards: Sequence[object],
+        current_desired_retentions: Mapping[int, float | None],
+    ) -> dict[int, DynamicRetentionInfo]:
+        assert collection is col
+        assert [card.id for card in cards] == [1, 2]
+        assert set(current_desired_retentions) == {1, 2}
+        assert current_desired_retentions[1] == pytest.approx(0.90)
+        assert current_desired_retentions[2] == pytest.approx(0.83)
+        return {
+            1: DynamicRetentionInfo(0.50),
+            2: DynamicRetentionInfo(0.83),
+        }
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_info_for_cards_resolver",
+        lambda: resolver,
+    )
+
+    resolved = rwkv_scheduler._resolve_dynamic_desired_retentions_for_input_build(
+        reviewer,
+        input_build,
+    )
+
+    resolved_inputs = dict(resolved.inputs_by_batch_size[512])
+    assert resolved_inputs[1].target_retentions == pytest.approx(
+        (0.50, 0.50, 0.50, 0.50)
+    )
+    assert resolved_inputs[2].target_retentions == pytest.approx(
+        (0.81, 0.82, 0.83, 0.84)
+    )
 
 
 def test_rwkv_review_input_uses_exact_elapsed_seconds_for_review_cards(
@@ -4324,6 +4400,211 @@ def test_prepare_reviewer_queue_order_reuses_backend_deck_review_inputs(
     ]
 
 
+def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def row(elapsed_days: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            card_id=1,
+            note_id=10,
+            deck_id=100,
+            preset_id="addon-preset",
+            card_type=2,
+            card_queue=2,
+            card_due=50,
+            interval_days=4,
+            ease_factor=2500,
+            reps=5,
+            lapses=1,
+            day_offset=42,
+            current_state_kind="normal",
+            current_normal_state_kind="review",
+            current_elapsed_days=elapsed_days,
+            current_elapsed_seconds=elapsed_days * 86_400,
+            target_retention=0.86,
+            batch_size=512,
+        )
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deck_row_calls: list[dict[str, object]] = []
+            self.card_row_calls: list[dict[str, object]] = []
+
+        def rwkv_review_input_rows_for_deck_review_queue(
+            self,
+            *,
+            deck_id: int,
+            include_disabled_decks: bool,
+            include_new_cards: bool,
+        ) -> SimpleNamespace:
+            self.deck_row_calls.append(
+                {
+                    "deck_id": deck_id,
+                    "include_disabled_decks": include_disabled_decks,
+                    "include_new_cards": include_new_cards,
+                }
+            )
+            return SimpleNamespace(
+                rows=[row(39)],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+        def rwkv_review_input_rows_for_cards(
+            self,
+            *,
+            card_ids: list[int],
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+            include_new_cards: bool,
+        ) -> SimpleNamespace:
+            self.card_row_calls.append(
+                {
+                    "card_ids": list(card_ids),
+                    "include_suspended_review": include_suspended_review,
+                    "include_disabled_decks": include_disabled_decks,
+                    "include_new_cards": include_new_cards,
+                }
+            )
+            return SimpleNamespace(
+                rows=[row(0)],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    reviewer._answeredIds = []
+    monkeypatch.setattr(
+        rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_reviewer_queue_order(reviewer)
+        reviewer._answeredIds.append(1)
+        prepare_reviewer_queue_order(reviewer)
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert rpc.deck_row_calls == [
+        {"deck_id": 100, "include_disabled_decks": False, "include_new_cards": False},
+    ]
+    assert rpc.card_row_calls == [
+        {
+            "card_ids": [1],
+            "include_suspended_review": False,
+            "include_disabled_decks": False,
+            "include_new_cards": False,
+        }
+    ]
+    assert [
+        review_input.current_elapsed_days for review_input in runtime.query_inputs
+    ] == [
+        39,
+        0,
+    ]
+    scores = cast(list[object], rpc.calls[-1]["scores"])
+    assert scores[0].intervening_reviews == 0
+
+
+def test_current_deck_count_scoring_uses_active_reviewer_answered_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def row(elapsed_days: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            card_id=1,
+            note_id=10,
+            deck_id=100,
+            preset_id="addon-preset",
+            card_type=2,
+            card_queue=2,
+            card_due=50,
+            interval_days=4,
+            ease_factor=2500,
+            reps=5,
+            lapses=1,
+            day_offset=42,
+            current_state_kind="normal",
+            current_normal_state_kind="review",
+            current_elapsed_days=elapsed_days,
+            current_elapsed_seconds=elapsed_days * 86_400,
+            target_retention=0.86,
+            batch_size=512,
+        )
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.card_row_calls: list[list[int]] = []
+
+        def rwkv_review_input_rows_for_deck_review_queue(
+            self,
+            *,
+            deck_id: int,
+            include_disabled_decks: bool,
+            include_new_cards: bool,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                rows=[row(39)],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+        def rwkv_review_input_rows_for_cards(
+            self,
+            *,
+            card_ids: list[int],
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+            include_new_cards: bool,
+        ) -> SimpleNamespace:
+            self.card_row_calls.append(list(card_ids))
+            return SimpleNamespace(
+                rows=[row(0)],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    rpc = Rpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    reviewer._answeredIds = [1]
+    reviewer.mw.reviewer = reviewer
+    monkeypatch.setattr(
+        rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_reviewer_queue_order(reviewer)
+        rwkv_scheduler.prepare_current_deck_review_queue_scores(
+            reviewer.mw,
+            reason="overview counts",
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert rpc.card_row_calls == [[1]]
+    scores = cast(list[object], rpc.calls[-1]["scores"])
+    assert scores[0].intervening_reviews == 0
+    assert runtime.query_inputs[-1].current_elapsed_days == 0
+
+
 def test_prepare_reviewer_queue_order_candidate_refresh_scores_stale_window() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -4659,6 +4940,40 @@ def test_set_rwkv_review_queue_scores_includes_session_intervening_reviews() -> 
     assert scores_by_card_id[1].intervening_reviews == 1
     assert scores_by_card_id[2].intervening_reviews == 0
     assert not scores_by_card_id[4].HasField("intervening_reviews")
+
+
+def test_set_rwkv_review_queue_scores_includes_target_retention() -> None:
+    class Rpc:
+        def __init__(self) -> None:
+            self.raw_calls: list[scheduler_pb2.RwkvReviewQueueScoresRequest] = []
+
+        def set_rwkv_review_queue_scores_raw(self, message: bytes) -> bytes:
+            request = scheduler_pb2.RwkvReviewQueueScoresRequest()
+            request.ParseFromString(message)
+            self.raw_calls.append(request)
+            return b""
+
+    rpc = Rpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(_backend=rpc)))
+
+    rwkv_scheduler._set_rwkv_review_queue_scores(
+        reviewer,
+        100,
+        [(1, 0.25), (2, 0.75)],
+        target_retentions_by_card_id={1: 0.50, 2: 1.25, 3: 0.40},
+    )
+
+    request = rpc.raw_calls[0]
+    scores_by_card_id = {score.card_id: score for score in request.scores}
+    assert scores_by_card_id[1].target_retention == pytest.approx(0.50)
+    assert not scores_by_card_id[2].HasField("target_retention")
+    target_map = rwkv_scheduler._rwkv_review_queue_target_map_for_deck(
+        reviewer,
+        100,
+    )
+    assert target_map is not None
+    assert set(target_map) == {1}
+    assert target_map[1] == pytest.approx(0.50)
 
 
 def test_set_rwkv_review_queue_scores_replaces_cached_deck_scores() -> None:
@@ -5944,12 +6259,50 @@ def test_rwkv_reschedule_items_use_backend_deck_review_rows() -> None:
         2,
     ]
     assert [
-        (item.card_id, item.interval_days, item.elapsed_days, item.s90)
+        (
+            item.card_id,
+            item.interval_days,
+            item.elapsed_days,
+            item.s90,
+            item.target_retention,
+        )
         for item in items or []
     ] == [
-        (1, 11, 39, 21),
-        (2, 12, 36, 22),
+        (1, 11, 39, 21, pytest.approx(0.86)),
+        (2, 12, 36, 22, pytest.approx(0.86)),
     ]
+
+
+def test_apply_rwkv_review_reschedule_includes_target_retention() -> None:
+    class Rpc:
+        def __init__(self) -> None:
+            self.requests: list[scheduler_pb2.RwkvReviewRescheduleRequest] = []
+
+        def apply_rwkv_review_reschedule_raw(self, message: bytes) -> bytes:
+            request = scheduler_pb2.RwkvReviewRescheduleRequest()
+            request.ParseFromString(message)
+            self.requests.append(request)
+            return b""
+
+    rpc = Rpc()
+    mw = SimpleNamespace(col=SimpleNamespace(_backend=rpc))
+
+    rwkv_scheduler._apply_rwkv_review_reschedule(
+        mw,
+        [
+            rwkv_scheduler.RwkvReviewRescheduleItem(
+                card_id=1,
+                interval_days=12,
+                elapsed_days=4,
+                s90=9.5,
+                target_retention=0.50,
+            )
+        ],
+    )
+
+    item = rpc.requests[0].items[0]
+    assert item.card_id == 1
+    assert item.target_retention == pytest.approx(0.50)
 
 
 def test_prepare_stats_retrievability_scores_waits_for_pending_warmup(

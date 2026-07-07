@@ -118,7 +118,19 @@ same-day reviewed cards blocked by same-day or repeat-spacing guards, are
 removed from review counts even if FSRS says they are due. Scored future review
 cards below target retention are added to review counts. Before a RWKV queue
 score map has been prepared, deck tree counts continue to show the normal FSRS
-due counts.
+due counts. When the deck browser or selected-deck overview renders counts, it
+first prepares and installs the current deck's RWKV queue score map when RWKV
+Instant queue scoring applies, so the displayed review count can reflect the
+number of scored cards at or below their current target retention before the
+reviewer is opened.
+
+When the desktop Dynamic Desired Retention provider is available, RWKV review
+input batches are resolved through its bulk API before queue scoring or RWKV
+rescheduling predictions are made. The resolved target retention is carried with
+each transient queue score, so Rust queue gathering and deck counts compare RWKV
+retrievability against the same target the desktop scorer used. RWKV reschedule
+requests also carry the resolved target and persist it to the card's desired
+retention field together with the new interval and S90 value.
 
 ## Stats And Search
 
