@@ -303,6 +303,24 @@ impl RwkvRetrievabilityScores {
         self.prune_empty_scores();
     }
 
+    fn update_review_queue_intervening_reviews(
+        &mut self,
+        deck_id: DeckId,
+        intervening_reviews_by_card_id: HashMap<CardId, u32>,
+    ) {
+        for (card_id, intervening_reviews) in intervening_reviews_by_card_id {
+            let Some(score) = self.scores.get_mut(&card_id) else {
+                continue;
+            };
+            let Some(review_queue) = score.review_queue.as_mut() else {
+                continue;
+            };
+            if review_queue.deck_id == deck_id {
+                review_queue.entry.intervening_reviews = Some(intervening_reviews);
+            }
+        }
+    }
+
     fn set_card_info_score(&mut self, card_id: CardId, retrievability: Option<f32>) {
         match retrievability {
             Some(retrievability) => {
@@ -467,6 +485,23 @@ impl Collection {
         self.rwkv_retrievability_scores_mut(days_elapsed)
             .set_review_queue_scores(deck_id, scores);
         self.clear_empty_rwkv_retrievability_scores();
+        Ok(())
+    }
+
+    pub(crate) fn update_rwkv_review_queue_intervening_reviews(
+        &mut self,
+        deck_id: DeckId,
+        intervening_reviews_by_card_id: HashMap<CardId, u32>,
+    ) -> Result<()> {
+        let days_elapsed = self.timing_today()?.days_elapsed;
+        if let Some(scores) = self
+            .state
+            .rwkv_retrievability_scores
+            .as_mut()
+            .filter(|scores| scores.days_elapsed == days_elapsed)
+        {
+            scores.update_review_queue_intervening_reviews(deck_id, intervening_reviews_by_card_id);
+        }
         Ok(())
     }
 

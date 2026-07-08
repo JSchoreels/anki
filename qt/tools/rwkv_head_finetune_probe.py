@@ -729,7 +729,7 @@ def _head_description(name: str) -> str:
 
 
 def _int_row_value(row: Mapping[str, object], key: str) -> int:
-    return int(row[key])  # type: ignore[arg-type]
+    return int(row[key])  # type: ignore[call-overload]
 
 
 if __name__ == "__main__":

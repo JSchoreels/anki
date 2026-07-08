@@ -3828,7 +3828,70 @@ def test_reviewer_rwkv_undo_queues_restored_cards_in_reverse_answer_order() -> N
     assert rwkv_scheduler.pop_reviewer_undo_card_id(reviewer) is None
 
 
-def test_reviewer_rwkv_undo_does_not_clear_review_queue_scores() -> None:
+def test_reviewer_rwkv_undo_invalidates_transient_scores() -> None:
+    rpc = _RwkvQueueScoreRpc()
+    rpc.active_scores[1] = 0.77
+    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer._answeredIds = [1]
+    reviewer._rwkv_review_prediction = RwkvReviewerPrediction(
+        card_id=1,
+        retrievability=0.45,
+        review_enabled=True,
+        interval_override_used=False,
+    )
+
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.77}
+    rwkv_scheduler._rwkv_review_queue_target_maps[100] = {1: 0.90}
+    rwkv_scheduler._rwkv_review_queue_score_generations[100] = 12
+    rwkv_scheduler._rwkv_review_queue_score_config_keys[100] = (
+        (),
+        (),
+    )
+    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    assert cache_key is not None
+    rwkv_scheduler._rwkv_review_input_batch_cache(reviewer)[cache_key] = (
+        rwkv_scheduler.RwkvReviewInputBatchBuild(
+            inputs_by_batch_size={
+                512: [(1, _rwkv_review_input(card_id=1, note_id=10))]
+            },
+            loaded_rows=1,
+            parsed_cards=1,
+            cards_with_state=1,
+            disabled_config_cards=0,
+            eligible_cards=1,
+            deck_configs=1,
+            preset_elapsed_ms=0.0,
+            load_elapsed_ms=0.0,
+            candidate_elapsed_ms=0.0,
+        )
+    )
+
+    rwkv_scheduler.queue_reviewer_undo_card_ids(reviewer, [1])
+
+    assert reviewer._answeredIds == []
+    assert rpc.calls[-1] == {"deck_id": 0, "scores": []}
+    assert rpc.card_info_calls[-1] == {"card_id": 1, "retrievability": None}
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+    assert rwkv_scheduler._rwkv_review_queue_target_maps == {}
+    assert rwkv_scheduler._rwkv_review_queue_score_generations == {}
+    assert rwkv_scheduler._rwkv_review_queue_score_config_keys == {}
+    assert rwkv_scheduler._rwkv_review_input_batch_cache(reviewer) == {}
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        fallback_source="FSRS",
+    ) == [
+        ("RWKV computed R", "45%"),
+        ("Retrievability source", "RWKV"),
+    ]
+
+
+def test_reviewer_rwkv_record_undo_does_not_clear_scores_without_reviewer() -> None:
     class Backend:
         def __init__(self) -> None:
             self.undone: list[tuple[int, int | None]] = []
@@ -4482,7 +4545,11 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
     rpc = Rpc()
-    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+        rwkv_min_intervening_reviews=2,
+    )
     reviewer._answeredIds = []
     monkeypatch.setattr(
         rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
@@ -4844,6 +4911,38 @@ def test_invalidate_reviewer_queue_for_child_card_preserves_current_deck_scores(
     ] == [(1, pytest.approx(0.25)), (2, pytest.approx(0.75))]
 
 
+def test_update_reviewer_queue_intervening_reviews_patches_session_cards_only() -> None:
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+        card_count=4,
+        rwkv_min_intervening_reviews=1,
+    )
+    reviewer._answeredIds = [1, 3, 1, 2]
+
+    rwkv_scheduler._set_rwkv_review_queue_scores(
+        reviewer,
+        100,
+        [(1, 0.25), (2, 0.75), (4, 0.50)],
+    )
+    rpc.calls.clear()
+
+    rwkv_scheduler.update_reviewer_queue_intervening_reviews(
+        reviewer,
+        reviewer.cards[2],
+    )
+
+    assert rpc.calls == []
+    assert len(rpc.intervening_calls) == 1
+    request = rpc.intervening_calls[0]
+    assert request.deck_id == 100
+    assert [(item.card_id, item.intervening_reviews) for item in request.items] == [
+        (1, 1),
+        (2, 0),
+    ]
+
+
 def test_prepare_reviewer_queue_order_reuses_resolved_preset_ids() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -4926,20 +5025,90 @@ def test_set_rwkv_review_queue_scores_includes_session_intervening_reviews() -> 
     rpc = Rpc()
     reviewer = SimpleNamespace(
         _answeredIds=[1, 3, 1, 2],
-        mw=SimpleNamespace(col=SimpleNamespace(_backend=rpc)),
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=rpc,
+                decks=SimpleNamespace(
+                    config_dict_for_deck_id=lambda deck_id: {
+                        "rwkvReviewMinInterveningReviews": 2,
+                    }
+                ),
+            )
+        ),
     )
 
     rwkv_scheduler._set_rwkv_review_queue_scores(
         reviewer,
         100,
-        [(1, 0.25), (2, 0.75), (4, 0.50)],
+        [(1, 0.25), (2, 0.75), (3, 0.60), (4, 0.50)],
     )
 
     request = rpc.raw_calls[0]
     scores_by_card_id = {score.card_id: score for score in request.scores}
     assert scores_by_card_id[1].intervening_reviews == 1
     assert scores_by_card_id[2].intervening_reviews == 0
+    assert not scores_by_card_id[3].HasField("intervening_reviews")
     assert not scores_by_card_id[4].HasField("intervening_reviews")
+
+
+def test_set_rwkv_review_queue_scores_includes_revlog_intervening_reviews_for_deck_tree() -> (
+    None
+):
+    class Rpc:
+        def __init__(self) -> None:
+            self.raw_calls: list[scheduler_pb2.RwkvReviewQueueScoresRequest] = []
+
+        def set_rwkv_review_queue_scores_raw(self, message: bytes) -> bytes:
+            request = scheduler_pb2.RwkvReviewQueueScoresRequest()
+            request.ParseFromString(message)
+            self.raw_calls.append(request)
+            return b""
+
+    class DB:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def all(self, sql: str, *args: object) -> list[tuple[int]]:
+            self.calls.append((sql, args))
+            assert "from revlog r" in sql
+            assert "join cards c on c.id = r.cid" in sql
+            assert "c.did in (100,101)" in sql
+            assert args == (3,)
+            return [(2,), (1,), (2,)]
+
+    class Decks:
+        def deck_and_child_ids(self, deck_id: int) -> list[int]:
+            assert deck_id == 100
+            return [100, 101]
+
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {"rwkvReviewMinInterveningReviews": 3}
+
+    rpc = Rpc()
+    db = DB()
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=rpc,
+                db=db,
+                decks=Decks(),
+            )
+        )
+    )
+
+    rwkv_scheduler._set_rwkv_review_queue_scores(
+        reviewer,
+        100,
+        [(1, 0.25), (2, 0.75), (3, 0.50)],
+    )
+
+    assert len(db.calls) == 1
+    request = rpc.raw_calls[0]
+    scores_by_card_id = {score.card_id: score for score in request.scores}
+    assert scores_by_card_id[2].intervening_reviews == 0
+    assert scores_by_card_id[1].intervening_reviews == 1
+    assert not scores_by_card_id[3].HasField("intervening_reviews")
 
 
 def test_set_rwkv_review_queue_scores_includes_target_retention() -> None:
@@ -7991,6 +8160,9 @@ def _undo_result(*, counter: int, next_counter: int) -> SimpleNamespace:
 class _RwkvQueueScoreRpc:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.intervening_calls: list[
+            scheduler_pb2.RwkvReviewQueueInterveningReviewsRequest
+        ] = []
         self.stats_calls: list[dict[str, object]] = []
         self.card_info_calls: list[dict[str, object]] = []
         self.preset_id_calls: list[list[int]] = []
@@ -8004,6 +8176,22 @@ class _RwkvQueueScoreRpc:
         scores: list[object],
     ) -> None:
         self.calls.append({"deck_id": deck_id, "scores": scores})
+        if not scores:
+            self.active_scores.clear()
+        else:
+            self.active_scores = {
+                getattr(score, "card_id"): getattr(score, "retrievability")
+                for score in scores
+            }
+
+    def update_rwkv_review_queue_intervening_reviews_raw(
+        self,
+        message: bytes,
+    ) -> bytes:
+        request = scheduler_pb2.RwkvReviewQueueInterveningReviewsRequest()
+        request.ParseFromString(message)
+        self.intervening_calls.append(request)
+        return b""
 
     def set_rwkv_stats_graph_scores(
         self,
@@ -8014,16 +8202,22 @@ class _RwkvQueueScoreRpc:
         self.stats_calls.append({"search": search, "scores": scores})
 
     def set_rwkv_card_info_score(self, message: Any) -> None:
+        card_id = getattr(message, "card_id")
+        retrievability = (
+            getattr(message, "retrievability")
+            if message.HasField("retrievability")
+            else None
+        )
         self.card_info_calls.append(
             {
-                "card_id": getattr(message, "card_id"),
-                "retrievability": (
-                    getattr(message, "retrievability")
-                    if message.HasField("retrievability")
-                    else None
-                ),
+                "card_id": card_id,
+                "retrievability": retrievability,
             }
         )
+        if retrievability is None:
+            self.active_scores.pop(card_id, None)
+        else:
+            self.active_scores[card_id] = retrievability
 
     def _active_score_response(
         self,
@@ -8064,6 +8258,7 @@ def _rwkv_queue_reviewer(
     rwkv_instant_order_enabled: bool = True,
     rwkv_candidate_refresh_enabled: bool = False,
     rwkv_self_correction_enabled: bool = False,
+    rwkv_min_intervening_reviews: int = 0,
     latest_review_elapsed_days_by_card: dict[int, int] | None = None,
 ) -> SimpleNamespace:
     cards = {
@@ -8156,6 +8351,10 @@ def _rwkv_queue_reviewer(
                     nested["rwkv_review_self_correction_enabled"] = True
                 if batch_size is not None:
                     nested["rwkv_review_batch_size"] = batch_size
+                if rwkv_min_intervening_reviews > 0:
+                    nested["rwkv_review_min_intervening_reviews"] = (
+                        rwkv_min_intervening_reviews
+                    )
                 config["other"] = {"jschoreels.rwkv": nested}
             else:
                 config["rwkvReviewEnabled"] = True
@@ -8166,6 +8365,10 @@ def _rwkv_queue_reviewer(
                     config["rwkvReviewSelfCorrectionEnabled"] = True
                 if batch_size is not None:
                     config["rwkvReviewBatchSize"] = batch_size
+                if rwkv_min_intervening_reviews > 0:
+                    config["rwkvReviewMinInterveningReviews"] = (
+                        rwkv_min_intervening_reviews
+                    )
             return config
 
     class Scheduler:

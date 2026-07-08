@@ -97,6 +97,10 @@ service SchedulerService {
   // queue ordering. Empty scores clear the map.
   rpc SetRwkvReviewQueueScores(RwkvReviewQueueScoresRequest)
       returns (generic.Empty);
+  // Updates session-local repeat-spacing metadata on the active transient RWKV
+  // review queue map without replacing retrievability scores.
+  rpc UpdateRwkvReviewQueueInterveningReviews(
+      RwkvReviewQueueInterveningReviewsRequest) returns (generic.Empty);
   // Installs a transient desktop-only RWKV retrievability map used by stats
   // graphs. Scores are scoped to the supplied search.
   rpc SetRwkvStatsGraphScores(RwkvStatsGraphScoresRequest)
@@ -837,6 +841,15 @@ message RwkvReviewQueueScoresRequest {
   }
   int64 deck_id = 1;
   repeated Score scores = 2;
+}
+
+message RwkvReviewQueueInterveningReviewsRequest {
+  message Item {
+    int64 card_id = 1;
+    uint32 intervening_reviews = 2;
+  }
+  int64 deck_id = 1;
+  repeated Item items = 2;
 }
 
 message RwkvStatsGraphScoresRequest {

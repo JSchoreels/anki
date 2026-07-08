@@ -1647,6 +1647,8 @@ def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
     if not valid_card_ids:
         return
 
+    _invalidate_reviewer_transient_scores_after_undo(reviewer, valid_card_ids)
+
     queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
     if not isinstance(queue, list):
         queue = []
@@ -1662,6 +1664,21 @@ def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
             if answered_ids[index] == card_id:
                 del answered_ids[index]
                 break
+
+
+def _invalidate_reviewer_transient_scores_after_undo(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> None:
+    _rwkv_review_queue_score_maps.clear()
+    _rwkv_review_queue_target_maps.clear()
+    _rwkv_review_queue_score_generations.clear()
+    _rwkv_review_queue_score_config_keys.clear()
+    _clear_rwkv_review_input_batch_cache(reviewer)
+    _clear_rwkv_review_queue_scores(reviewer)
+    _invalidate_resolved_preset_id_cache(reviewer, card_ids=card_ids)
+    for card_id in card_ids:
+        _set_rwkv_card_info_score(reviewer, card_id, None)
 
 
 def pop_reviewer_undo_card_id(reviewer: object) -> int | None:
@@ -11482,6 +11499,83 @@ def _rwkv_review_queue_score_result(
     )
 
 
+def _rwkv_stats_graph_prebuilt_input_scores(
+    *,
+    reviewer: object,
+    card_ids: Sequence[int],
+    include_new_cards: bool,
+    timing: object,
+    start: float,
+    use_input_scoring: bool,
+) -> tuple[list[tuple[int, float]] | None, bool]:
+    if not use_input_scoring:
+        return None, False
+
+    input_build = _rwkv_review_input_batches_for_ids(
+        reviewer=reviewer,
+        card_ids=card_ids,
+        timing=timing,
+        reason="stats graph",
+        include_suspended_review=True,
+        supported_state_filter=True,
+        include_new_cards=include_new_cards,
+    )
+    if input_build is None:
+        return None, True
+
+    input_scores_accum: list[tuple[int, float]] = []
+    queue_score_cache = _fresh_rwkv_review_queue_score_map(reviewer)
+    queue_score_hits = 0
+    score_start = time.monotonic()
+    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
+        cached_scores, inputs_by_card_id = _split_rwkv_queue_score_hits(
+            inputs_by_card_id,
+            queue_score_cache,
+        )
+        queue_score_hits += len(cached_scores)
+        input_scores_accum.extend(cached_scores)
+        if not inputs_by_card_id:
+            continue
+
+        input_scores = _rwkv_review_scores_for_inputs(
+            inputs_by_card_id,
+            batch_size=batch_size,
+            self_correction_features_by_card_id=input_build.self_correction_features_by_card_id,
+        )
+        if input_scores is None:
+            return None, False
+        input_scores_accum.extend(input_scores)
+
+    score_elapsed_ms = (time.monotonic() - score_start) * 1000
+    logger.debug(
+        "RWKV stats graph inputs scored: card_ids=%s loaded=%s "
+        "unsupported_state=%s with_state=%s disabled_config=%s "
+        "enabled=%s scored=%s queue_score_hits=%s deck_configs=%s batches=%s "
+        "preset_elapsed_ms=%.1f load_elapsed_ms=%.1f "
+        "candidate_elapsed_ms=%.1f score_elapsed_ms=%.1f "
+        "elapsed_ms=%.1f",
+        len(card_ids),
+        input_build.parsed_cards,
+        input_build.parsed_cards - input_build.cards_with_state,
+        input_build.cards_with_state,
+        input_build.disabled_config_cards,
+        input_build.eligible_cards,
+        len(input_scores_accum),
+        queue_score_hits,
+        input_build.deck_configs,
+        {
+            batch_size: len(inputs_by_card_id)
+            for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items()
+        },
+        input_build.preset_elapsed_ms,
+        input_build.load_elapsed_ms,
+        input_build.candidate_elapsed_ms,
+        score_elapsed_ms,
+        (time.monotonic() - start) * 1000,
+    )
+    return input_scores_accum, True
+
+
 def _rwkv_stats_graph_scores(
     *,
     reviewer: object,
@@ -11494,75 +11588,16 @@ def _rwkv_stats_graph_scores(
         return []
 
     use_input_scoring = _reviewer_backend_accepts_review_inputs()
-    if use_input_scoring:
-        input_build = _rwkv_review_input_batches_for_ids(
-            reviewer=reviewer,
-            card_ids=card_ids,
-            timing=timing,
-            reason="stats graph",
-            include_suspended_review=True,
-            supported_state_filter=True,
-            include_new_cards=include_new_cards,
-        )
-        if input_build is not None:
-            input_scores_accum: list[tuple[int, float]] = []
-            queue_score_cache = _fresh_rwkv_review_queue_score_map(reviewer)
-            queue_score_hits = 0
-            score_start = time.monotonic()
-            for (
-                batch_size,
-                inputs_by_card_id,
-            ) in input_build.inputs_by_batch_size.items():
-                cached_scores, inputs_by_card_id = _split_rwkv_queue_score_hits(
-                    inputs_by_card_id,
-                    queue_score_cache,
-                )
-                queue_score_hits += len(cached_scores)
-                input_scores_accum.extend(cached_scores)
-                if not inputs_by_card_id:
-                    continue
-
-                input_scores = _rwkv_review_scores_for_inputs(
-                    inputs_by_card_id,
-                    batch_size=batch_size,
-                    self_correction_features_by_card_id=input_build.self_correction_features_by_card_id,
-                )
-                if input_scores is None:
-                    input_scores_accum = []
-                    use_input_scoring = False
-                    break
-                input_scores_accum.extend(input_scores)
-            if use_input_scoring:
-                score_elapsed_ms = (time.monotonic() - score_start) * 1000
-                logger.debug(
-                    "RWKV stats graph inputs scored: card_ids=%s loaded=%s "
-                    "unsupported_state=%s with_state=%s disabled_config=%s "
-                    "enabled=%s scored=%s queue_score_hits=%s deck_configs=%s batches=%s "
-                    "preset_elapsed_ms=%.1f load_elapsed_ms=%.1f "
-                    "candidate_elapsed_ms=%.1f score_elapsed_ms=%.1f "
-                    "elapsed_ms=%.1f",
-                    len(card_ids),
-                    input_build.parsed_cards,
-                    input_build.parsed_cards - input_build.cards_with_state,
-                    input_build.cards_with_state,
-                    input_build.disabled_config_cards,
-                    input_build.eligible_cards,
-                    len(input_scores_accum),
-                    queue_score_hits,
-                    input_build.deck_configs,
-                    {
-                        batch_size: len(inputs_by_card_id)
-                        for batch_size, inputs_by_card_id in (
-                            input_build.inputs_by_batch_size.items()
-                        )
-                    },
-                    input_build.preset_elapsed_ms,
-                    input_build.load_elapsed_ms,
-                    input_build.candidate_elapsed_ms,
-                    score_elapsed_ms,
-                    (time.monotonic() - start) * 1000,
-                )
-                return input_scores_accum
+    input_scores, use_input_scoring = _rwkv_stats_graph_prebuilt_input_scores(
+        reviewer=reviewer,
+        card_ids=card_ids,
+        include_new_cards=include_new_cards,
+        timing=timing,
+        start=start,
+        use_input_scoring=use_input_scoring,
+    )
+    if input_scores is not None:
+        return input_scores
 
     deck_configs: dict[int, dict[str, object] | None] = {}
     candidates_by_batch_size: dict[int, list[RwkvReviewCandidate]] = {}
@@ -11722,6 +11757,122 @@ def _rwkv_stats_graph_scores(
         (time.monotonic() - start) * 1000,
     )
     return scores
+
+
+def update_reviewer_queue_intervening_reviews(
+    reviewer: object,
+    card: object,
+) -> None:
+    """Update session-local RWKV repeat-spacing metadata without replacing scores."""
+
+    min_intervening_reviews = reviewer_queue_order_min_intervening_reviews(
+        reviewer,
+        card,
+    )
+    if min_intervening_reviews <= 0:
+        return
+
+    deck_id = _deck_id(card)
+    current_deck_id = _current_deck_id(reviewer)
+    if deck_id is None:
+        deck_id = current_deck_id
+    if deck_id is None:
+        return
+
+    existing_scores = _rwkv_review_queue_score_map_for_deck(reviewer, deck_id)
+    if (
+        existing_scores is None
+        and current_deck_id is not None
+        and current_deck_id != deck_id
+    ):
+        current_deck_scores = _rwkv_review_queue_score_map_for_deck(
+            reviewer,
+            current_deck_id,
+        )
+        if current_deck_scores is not None:
+            deck_id = current_deck_id
+            existing_scores = current_deck_scores
+    if existing_scores is None:
+        return
+
+    intervening_reviews_by_card_id = {
+        card_id: min(intervening_reviews, min_intervening_reviews)
+        for card_id, intervening_reviews in _session_intervening_reviews_by_card_id(
+            reviewer,
+            max_intervening_reviews=min_intervening_reviews,
+        ).items()
+        if card_id in existing_scores and intervening_reviews <= min_intervening_reviews
+    }
+    if not intervening_reviews_by_card_id:
+        return
+
+    mw = getattr(reviewer, "mw", None)
+    col = getattr(mw, "col", None)
+    backend = getattr(col, "_backend", None)
+    request_type = getattr(
+        scheduler_pb2,
+        "RwkvReviewQueueInterveningReviewsRequest",
+        None,
+    )
+    if request_type is None:
+        invalidate_reviewer_queue_for_card_answer(reviewer, card)
+        return
+
+    request = request_type(deck_id=deck_id)
+    for card_id, intervening_reviews in sorted(intervening_reviews_by_card_id.items()):
+        request.items.add(
+            card_id=card_id,
+            intervening_reviews=intervening_reviews,
+        )
+
+    update_raw = getattr(
+        backend,
+        "update_rwkv_review_queue_intervening_reviews_raw",
+        None,
+    )
+    if callable(update_raw):
+        update_raw(request.SerializeToString())
+        return
+
+    update = getattr(backend, "update_rwkv_review_queue_intervening_reviews", None)
+    if callable(update):
+        update(deck_id=deck_id, items=list(request.items))
+        return
+
+    invalidate_reviewer_queue_for_card_answer(reviewer, card)
+
+
+def reviewer_queue_order_needs_intervening_review_refresh(reviewer: object) -> bool:
+    return reviewer_queue_order_min_intervening_reviews(reviewer) > 0
+
+
+def reviewer_queue_order_min_intervening_reviews(
+    reviewer: object,
+    card: object | None = None,
+) -> int:
+    if card is None:
+        card = getattr(reviewer, "card", None)
+    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    return _rwkv_review_min_intervening_reviews(deck_config) if deck_config else 0
+
+
+def _rwkv_review_min_intervening_reviews(deck_config: dict[str, object]) -> int:
+    nested = _rwkv_other_config(deck_config)
+    if nested is not None:
+        value = nested.get("rwkv_review_min_intervening_reviews")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+
+    value = _rwkv_config_direct_value(
+        deck_config,
+        "rwkvReviewMinInterveningReviews",
+        "rwkv_review_min_intervening_reviews",
+    )
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        else 0
+    )
 
 
 def _rwkv_stats_graph_scores_for_search(
@@ -14409,7 +14560,10 @@ def _set_rwkv_review_queue_scores(
     col = getattr(mw, "col", None)
     backend = getattr(col, "_backend", None)
     request = scheduler_pb2.RwkvReviewQueueScoresRequest(deck_id=deck_id)
-    intervening_reviews_by_card_id = _session_intervening_reviews_by_card_id(reviewer)
+    intervening_reviews_by_card_id = _queue_intervening_reviews_by_card_id(
+        reviewer,
+        deck_id,
+    )
     target_retentions_by_card_id = target_retentions_by_card_id or {}
     for card_id, retrievability in scores:
         score = request.scores.add(card_id=card_id, retrievability=retrievability)
@@ -14460,8 +14614,89 @@ def _set_rwkv_review_queue_scores(
             _rwkv_review_queue_score_generations.pop(deck_id, None)
 
 
-def _session_intervening_reviews_by_card_id(reviewer: object) -> dict[int, int]:
-    answered_ids = _session_answered_ids(reviewer)
+def _queue_intervening_reviews_by_card_id(
+    reviewer: object,
+    deck_id: int,
+) -> dict[int, int]:
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    if not isinstance(deck_config, dict):
+        return {}
+
+    min_intervening_reviews = _rwkv_review_min_intervening_reviews(deck_config)
+    if min_intervening_reviews <= 0:
+        return {}
+
+    intervening_reviews = {
+        card_id: reviews
+        for card_id, reviews in _session_intervening_reviews_by_card_id(
+            reviewer,
+            max_intervening_reviews=min_intervening_reviews - 1,
+        ).items()
+        if reviews < min_intervening_reviews
+    }
+    intervening_reviews.update(
+        _revlog_intervening_reviews_by_card_id(
+            reviewer,
+            deck_id,
+            min_intervening_reviews,
+        )
+    )
+    return intervening_reviews
+
+
+def _revlog_intervening_reviews_by_card_id(
+    reviewer: object,
+    deck_id: int,
+    review_count: int,
+) -> dict[int, int]:
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows) or review_count <= 0:
+        return {}
+
+    deck_ids = _deck_tree_ids(reviewer, deck_id)
+    deck_clause = f"and c.did in {ids2str(deck_ids)}" if deck_ids else ""
+    try:
+        rows = all_rows(
+            f"""
+select r.cid
+from revlog r
+join cards c on c.id = r.cid
+where {_rwkv_historical_answer_sql_condition("r")}
+  {deck_clause}
+order by r.id desc, r.cid desc
+limit ?
+""",
+            review_count,
+        )
+    except Exception:
+        logger.debug(
+            "failed to read recent RWKV review cards: deck_id=%s review_count=%s",
+            deck_id,
+            review_count,
+        )
+        return {}
+
+    intervening_reviews: dict[int, int] = {}
+    for index, row in enumerate(rows):
+        card_id = _valid_card_id(row[0] if isinstance(row, Sequence) else row)
+        if card_id is not None and card_id not in intervening_reviews:
+            intervening_reviews[card_id] = index
+    return intervening_reviews
+
+
+def _session_intervening_reviews_by_card_id(
+    reviewer: object,
+    *,
+    max_intervening_reviews: int | None = None,
+) -> dict[int, int]:
+    answered_ids = _session_answered_ids(
+        reviewer,
+        max_items=(
+            max_intervening_reviews + 1 if max_intervening_reviews is not None else None
+        ),
+    )
     if not answered_ids:
         return {}
 
@@ -14476,7 +14711,11 @@ def _session_intervening_reviews_by_card_id(reviewer: object) -> dict[int, int]:
     }
 
 
-def _session_answered_ids(reviewer: object) -> list[int]:
+def _session_answered_ids(
+    reviewer: object,
+    *,
+    max_items: int | None = None,
+) -> list[int]:
     answered_ids = getattr(reviewer, "_answeredIds", None)
     if not isinstance(answered_ids, list):
         mw = getattr(reviewer, "mw", None)
@@ -14485,6 +14724,11 @@ def _session_answered_ids(reviewer: object) -> list[int]:
 
     if not isinstance(answered_ids, list):
         return []
+
+    if max_items is not None:
+        if max_items <= 0:
+            return []
+        answered_ids = answered_ids[-max_items:]
 
     return [
         card_id

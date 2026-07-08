@@ -37,6 +37,7 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
+use anki_proto::scheduler::RwkvReviewQueueInterveningReviewsRequest;
 use anki_proto::scheduler::RwkvReviewQueueScoresRequest;
 use anki_proto::scheduler::RwkvReviewRescheduleRequest;
 use anki_proto::scheduler::RwkvReviewRetrievabilityCacheRowsRequest;
@@ -864,6 +865,22 @@ impl crate::services::SchedulerService for Collection {
             );
         }
         self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)
+    }
+
+    fn update_rwkv_review_queue_intervening_reviews(
+        &mut self,
+        input: RwkvReviewQueueInterveningReviewsRequest,
+    ) -> Result<()> {
+        let intervening_reviews_by_card_id = input
+            .items
+            .into_iter()
+            .map(|item| (item.card_id.into(), item.intervening_reviews))
+            .collect();
+        Collection::update_rwkv_review_queue_intervening_reviews(
+            self,
+            input.deck_id.into(),
+            intervening_reviews_by_card_id,
+        )
     }
 
     fn set_rwkv_stats_graph_scores(&mut self, input: RwkvStatsGraphScoresRequest) -> Result<()> {

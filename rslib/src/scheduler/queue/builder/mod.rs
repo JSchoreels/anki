@@ -1349,6 +1349,51 @@ mod test {
     }
 
     #[test]
+    fn rwkv_intervening_review_update_patches_existing_queue_score() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_repeat_guards(
+            &mut deck,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.75,
+            2,
+            0,
+        );
+
+        let timing = col.timing_today()?;
+        let card_id = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let mut card = col.storage.get_card(card_id)?.unwrap();
+        card.last_review_time = Some(timing.now);
+        col.storage.update_card(&card)?;
+        col.set_rwkv_review_queue_score_entries(
+            deck.id,
+            HashMap::from([(
+                card_id,
+                RwkvReviewQueueScoreEntry {
+                    retrievability: 0.20,
+                    intervening_reviews: Some(1),
+                    target_retention: None,
+                },
+            )]),
+        )?;
+
+        assert!(col.queue_as_ids(deck.id).is_empty());
+
+        col.update_rwkv_review_queue_intervening_reviews(deck.id, HashMap::from([(card_id, 2)]))?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![card_id]);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_retrievability_order_requires_min_elapsed_secs() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;

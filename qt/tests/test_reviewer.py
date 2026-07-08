@@ -694,16 +694,27 @@ def test_after_answering_refreshes_rwkv_queue_order_after_next_card(
         "reviewer_queue_order_refresh_due",
         lambda reviewer: True,
     )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_needs_intervening_review_refresh",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "update_reviewer_queue_intervening_reviews",
+        lambda reviewer, card: calls.append(f"intervening:{card.id}"),
+    )
 
     reviewer._after_answering(3)
 
-    assert calls == ["record", "next"]
+    assert calls == ["record", "intervening:123", "next"]
     assert reviewer._answeredIds == [123]
 
     reviewer._run_after_question_shown_callbacks()
 
     assert calls == [
         "record",
+        "intervening:123",
         "next",
         "collection",
         "build",
@@ -713,6 +724,55 @@ def test_after_answering_refreshes_rwkv_queue_order_after_next_card(
         "install",
         "undo",
     ]
+    assert reviewer._answeredIds == [123]
+
+
+def test_after_answering_deferred_refresh_skips_queue_rewrite_without_intervening_guard(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "record_reviewer_answer",
+        lambda reviewer, card, ease: calls.append("record"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_due",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_before_next_card",
+        lambda reviewer: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_needs_intervening_review_refresh",
+        lambda reviewer: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "update_reviewer_queue_intervening_reviews",
+        lambda reviewer, card: calls.append("intervening"),
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer.state = "transition"
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: calls.append("next")
+
+    reviewer._after_answering(3)
+
+    assert calls == ["record", "next"]
     assert reviewer._answeredIds == [123]
 
 
@@ -854,16 +914,27 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         "reviewer_queue_order_refresh_due",
         lambda reviewer: len(reviewer._answeredIds) % 2 == 0,
     )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_needs_intervening_review_refresh",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "update_reviewer_queue_intervening_reviews",
+        lambda reviewer, card: calls.append(f"intervening:{card.id}"),
+    )
 
     reviewer._after_answering(3)
 
-    assert calls == ["record:222:3", "next:333"]
+    assert calls == ["record:222:3", "intervening:222", "next:333"]
     assert reviewer._answeredIds == [111, 222]
 
     reviewer._run_after_question_shown_callbacks()
 
     assert calls == [
         "record:222:3",
+        "intervening:222",
         "next:333",
         "collection",
         "build",

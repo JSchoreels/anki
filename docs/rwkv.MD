@@ -78,8 +78,8 @@ back below target. When
 `rwkv_review_allow_same_day_review` is disabled, scored review cards that were
 already answered during the current scheduler day are also withheld until the
 next day. When same-day RWKV re-review is enabled,
-`rwkv_review_min_intervening_reviews` can require a session-local number of
-other answered reviews before the same card is admitted again, and
+`rwkv_review_min_intervening_reviews` can require a number of other answered
+reviews in the selected deck tree before the same card is admitted again, and
 `rwkv_review_min_elapsed_secs` can require that many seconds since the card's
 stored last review time. If both values are nonzero, both guards must be
 satisfied. Due review cards without an RWKV score remain eligible through the
@@ -235,10 +235,15 @@ not synchronously refresh the full deck tree after every answer when the refresh
 interval is greater than `1`, as that can be too expensive for large deck
 trees. Between interval refreshes, Anki refreshes only the answered card's
 installed queue score from the updated RWKV state, so a stale pre-answer low
-score cannot immediately re-admit the same card. Installed score requests also
-record session-local intervening-review counts for cards already answered in
-the current reviewer session, which lets the backend enforce
-`rwkv_review_min_intervening_reviews` without storing a synced per-card counter.
+score cannot immediately re-admit the same card. When a due post-answer refresh
+is deferred until after the next question is shown, Anki patches only the
+needed session-local intervening-review metadata, capped at the configured
+threshold, on the installed score map before selecting that next question.
+Installed score requests also record
+intervening-review counts for recently answered cards in the selected deck tree
+from the revlog, plus cards already answered in the current reviewer session,
+which lets the backend enforce `rwkv_review_min_intervening_reviews` without
+storing a synced per-card counter.
 Due post-answer refreshes show the next question after answer operation
 bookkeeping, then refresh the
 queue-score map for later queue builds. The refresh is split into a short
