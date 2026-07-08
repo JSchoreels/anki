@@ -199,6 +199,7 @@ export function _showQuestion(
 
 function scrollToAnswer(): void {
     document.getElementById("answer")?.scrollIntoView();
+    bridgeCommand("repaintNeeded");
 }
 
 export function _showAnswer(

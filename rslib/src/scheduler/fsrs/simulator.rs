@@ -1378,9 +1378,16 @@ impl Card {
         card: Card,
         days_elapsed: i32,
         memory_state: FsrsMemoryState,
+        desired_retention: f32,
+        parameters: Arc<Vec<f32>>,
     ) -> Option<fsrs::Card> {
-        let parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
-        Self::convert_with_options(card, days_elapsed, memory_state, 0.9, &parameters)
+        Self::convert_with_options(
+            card,
+            days_elapsed,
+            memory_state,
+            desired_retention,
+            &parameters,
+        )
     }
 
     pub(crate) fn convert_with_options(
@@ -1427,7 +1434,7 @@ impl Card {
     }
 }
 
-fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
+pub(crate) fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
     let converted = match params.len() {
         0 => DEFAULT_PARAMETERS.to_vec(),
         17 => {

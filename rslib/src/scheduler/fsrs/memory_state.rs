@@ -25,6 +25,7 @@ use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::round_to_two_decimals;
+use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::search::Negated;
@@ -372,18 +373,7 @@ impl Collection {
                     // reschedule it
                     let days_elapsed = timing.next_day_at.elapsed_days_since(*last_review) as i32;
                     let original_interval = card.interval;
-                    let min_interval = |interval: u32| {
-                        let previous_interval = last_info.previous_interval.unwrap_or(0);
-                        if interval > previous_interval {
-                            // interval grew; don't allow fuzzed interval to
-                            // be less than previous+1
-                            previous_interval + 1
-                        } else {
-                            // interval shrunk; don't restrict negative fuzz
-                            0
-                        }
-                        .max(1)
-                    };
+                    let previous_interval = last_info.previous_interval.unwrap_or(0);
                     let interval = fsrs.next_interval(
                         Some(
                             card.memory_state
@@ -394,12 +384,15 @@ impl Collection {
                             .expect("We set it before this function is called"),
                         0,
                     );
+                    let min_interval =
+                        minimum_review_fuzz_interval(interval, previous_interval, req.max_interval)
+                            .max(1);
                     card.interval = rescheduler
                         .as_mut()
                         .and_then(|r| {
                             r.find_interval(
                                 interval,
-                                min_interval(interval as u32),
+                                min_interval,
                                 req.max_interval,
                                 days_elapsed as u32,
                                 deckconfig_id,
@@ -410,7 +403,7 @@ impl Collection {
                             with_review_fuzz(
                                 card.get_fuzz_factor(true),
                                 interval,
-                                min_interval(interval as u32),
+                                min_interval,
                                 req.max_interval,
                                 req.review_fuzz_config,
                             )

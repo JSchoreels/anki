@@ -12,6 +12,7 @@ use super::SchedulingStates;
 use super::StateContext;
 use crate::card::FsrsMemoryState;
 use crate::revlog::RevlogReviewKind;
+use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 
 pub const INITIAL_EASE_FACTOR: f32 = 2.5;
 pub const MINIMUM_EASE_FACTOR: f32 = 1.3;
@@ -235,7 +236,12 @@ impl ReviewState {
         let hard = constrain_passing_interval(
             ctx,
             states.hard.interval,
-            greater_than_last(states.hard.interval.round() as u32).max(1),
+            minimum_review_fuzz_interval(
+                states.hard.interval,
+                self.scheduled_days,
+                ctx.maximum_review_interval,
+            )
+            .max(1),
             true,
         );
         let good = constrain_passing_interval(

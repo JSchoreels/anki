@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
 import logging
@@ -20,7 +21,7 @@ from errno import EPROTOTYPE
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Generic, cast
 
 import flask
 import stringcase
@@ -32,21 +33,34 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
-from anki import decks_pb2, generic_pb2, hooks
+from anki import decks_pb2, frontend_pb2, generic_pb2, hooks
 from anki.cards import CardId
-from anki.collection import OpChanges, OpChangesOnly, Progress, SearchNode
-from anki.decks import UpdateDeckConfigs
+from anki.collection import (
+    NestedOpChanges,
+    OpChanges,
+    OpChangesOnly,
+    Progress,
+    SearchNode,
+)
+from anki.decks import UpdateDeckConfigs, UpdateDeckConfigsMode
 from anki.scheduler.v3 import SchedulingStatesWithContext, SetSchedulingStatesRequest
 from anki.stats_pb2 import CardStatsResponse, GraphsRequest
-from anki.utils import dev_mode
+from anki.utils import dev_mode, from_json_bytes, to_json_bytes
 from aqt import gui_hooks
 from aqt.changenotetype import ChangeNotetypeDialog
 from aqt.deckoptions import DeckOptionsDialog
 from aqt.operations import on_op_finished
 from aqt.operations.deck import update_deck_configs as update_deck_configs_op
-from aqt.progress import ProgressBarUpdate, ProgressUpdate
+from aqt.progress import ProgressUpdate
 from aqt.qt import *
-from aqt.utils import aqt_data_path, show_warning, tr
+from aqt.utils import (
+    aqt_data_path,
+    askUser,
+    openLink,
+    show_info,
+    show_warning,
+    tr,
+)
 
 # https://forums.ankiweb.net/t/anki-crash-when-using-a-specific-deck/22266
 waitress.wasyncore._DISCONNECTED = waitress.wasyncore._DISCONNECTED.union({EPROTOTYPE})  # type: ignore
@@ -86,10 +100,7 @@ UNTRUSTED_MEDIA_CSP = "; ".join(
 )
 
 
-def _editor_content_security_policy(port: int) -> str:
-    # Only script-src is restricted here. Adding frame-src, object-src, img-src
-    # etc. would break existing user content: YouTube embeds, dictionary iframes,
-    # remote images, and SVG object tags.
+def _legacy_editor_content_security_policy(port: int) -> str:
     csp_paths = (
         f"http://127.0.0.1:{port}/_anki/",
         f"http://127.0.0.1:{port}/_addons/",
@@ -97,10 +108,39 @@ def _editor_content_security_policy(port: int) -> str:
     return "; ".join((f"script-src {' '.join(csp_paths)}",))
 
 
+_editor_content_security_policy = _legacy_editor_content_security_policy
+
+
+_SVELTEKIT_SCRIPT_HASH_RE = re.compile(rb"'sha256-[A-Za-z0-9+/=]+'")
+
+
+def _sveltekit_render_script_hash(html: bytes) -> str | None:
+    """Extract the hash SvelteKit computed for its inline render script.
+
+    SvelteKit (csp.mode = 'hash' in svelte.config.js) bakes this into a
+    <meta http-equiv="content-security-policy"> tag in the built HTML.
+    """
+    match = _SVELTEKIT_SCRIPT_HASH_RE.search(html)
+    return match.group(0).decode("utf-8") if match else None
+
+
+def _sveltekit_content_security_policy(port: int, script_hash: str | None) -> str:
+    csp_paths = [
+        f"http://127.0.0.1:{port}/_anki/",
+        f"http://127.0.0.1:{port}/_app/",
+        f"http://127.0.0.1:{port}/_addons/",
+    ]
+    if script_hash:
+        csp_paths.append(script_hash)
+    return "; ".join((f"script-src {' '.join(csp_paths)}",))
+
+
 @dataclass
 class BundledFileRequest:
     # path relative to aqt data folder
     path: str
+    # set for SvelteKit routes
+    is_sveltekit: bool = False
 
 
 @dataclass
@@ -207,6 +247,22 @@ class MediaServer(threading.Thread):
 def favicon() -> Response:
     request = BundledFileRequest(os.path.join("imgs", "favicon.ico"))
     return _handle_builtin_file_request(request)
+
+
+@app.route("/_anki/readyz")
+def readyz() -> Response:
+    """Reports whether the profile's collection is open.
+
+    The HTTP server starts listening before the profile/collection finishes
+    loading (setupMediaServer() runs synchronously in AnkiQt.__init__, while
+    setupProfile() is deferred via a QTimer), so callers that need the
+    collection open - e.g. the e2e test harness's webServer readiness check -
+    should poll this instead of /favicon.ico, which responds regardless of
+    collection state.
+    """
+    if aqt.mw.col is None:
+        return Response(status=HTTPStatus.SERVICE_UNAVAILABLE)
+    return Response(status=HTTPStatus.OK)
 
 
 def _mime_for_path(path: str) -> str:
@@ -373,6 +429,17 @@ def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
         response = Response(data, mimetype=mimetype)
         if immutable:
             response.headers["Cache-Control"] = "max-age=31536000"
+        if request.is_sveltekit:
+            script_hash = (
+                _sveltekit_render_script_hash(data)
+                if path.endswith("index.html")
+                else None
+            )
+            response.headers["Content-Security-Policy"] = (
+                _sveltekit_content_security_policy(
+                    aqt.mw.mediaServer.getPort(), script_hash
+                )
+            )
         return response
     except FileNotFoundError:
         if dev_mode:
@@ -445,6 +512,7 @@ def is_sveltekit_page(path: str) -> bool:
         "import-csv",
         "import-page",
         "image-occlusion",
+        "editor",
     ]
 
 
@@ -452,7 +520,8 @@ def _extract_internal_request(
     path: str,
 ) -> BundledFileRequest | DynamicRequest | NotFound | None:
     "Catch /_anki references and rewrite them to web export folder."
-    if is_sveltekit_page(path):
+    is_sveltekit = is_sveltekit_page(path)
+    if is_sveltekit:
         path = f"_anki/sveltekit/_app/{path}"
     if path.startswith("_app/"):
         path = path.replace("_app", "_anki/sveltekit/_app")
@@ -497,7 +566,7 @@ def _extract_internal_request(
         path = f"{prefix}{additional_prefix}{base}{ext}"
         print(f"legacy {oldpath} remapped to {path}")
 
-    return BundledFileRequest(path=path[len(prefix) :])
+    return BundledFileRequest(path=path[len(prefix) :], is_sveltekit=is_sveltekit)
 
 
 def _extract_addon_request(path: str) -> LocalFileRequest | NotFound | None:
@@ -559,178 +628,35 @@ def get_deck_configs_for_update() -> bytes:
     return aqt.mw.col._backend.get_deck_configs_for_update_raw(request.data)
 
 
-def _update_deck_configs(*, close_on_success: bool) -> bytes:  # complexipy: ignore
+def _on_update_deck_configs_success(
+    input: UpdateDeckConfigs, *, close_on_success: bool
+) -> None:
+    is_compute_all = (
+        input.mode == UpdateDeckConfigsMode.UPDATE_DECK_CONFIGS_MODE_COMPUTE_ALL_PARAMS
+    )
+    if not is_compute_all and isinstance(
+        window := aqt.mw.app.activeModalWidget(), DeckOptionsDialog
+    ):
+        if close_on_success:
+            window.reject()
+        else:
+            window.web.eval("anki.deckOptionsSaved();")
+
+
+def _update_deck_configs(*, close_on_success: bool) -> bytes:
     # the regular change tracking machinery expects to be started on the main
     # thread and uses a callback on success, so we need to run this op on
     # main, and return immediately from the web request
 
     input = UpdateDeckConfigs()
     input.ParseFromString(request.data)
-    completed_preset_names: set[str] = set()
-    preset_log: list[str] = []
-    zero_review_skip_logged = False
-    first_progress_at: float | None = None
-    smoothed_remaining: float | None = None
-    preset_started_at: dict[str, float] = {}
-    saved_preset_names: set[str] = set()
-    updated_preset_names: set[str] = set()
-
-    def format_elapsed_time(seconds: float) -> str:
-        seconds = int(max(seconds, 0))
-        minutes, seconds = divmod(seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}h {minutes:02d}m {seconds:02d}s"
-        if minutes:
-            return f"{minutes}m {seconds:02d}s"
-        return f"{seconds}s"
-
-    def review_weighted_progress(progress: Any) -> tuple[int, float]:
-        total_reviews = sum(
-            preset.reviews for preset in progress.presets if not preset.skipped
-        )
-        completed_reviews = 0.0
-        for preset in progress.presets:
-            if preset.skipped:
-                continue
-            if preset.finished:
-                completed_reviews += preset.reviews
-            elif preset.total:
-                completed_reviews += preset.reviews * preset.current / preset.total
-        return total_reviews, completed_reviews
-
-    def update_all_params_progress(val: Any, update: ProgressUpdate) -> None:
-        nonlocal first_progress_at, smoothed_remaining, zero_review_skip_logged
-        now = time.monotonic()
-        if first_progress_at is None:
-            first_progress_at = now
-        update.max = max(val.total, 1)
-        update.value = val.current
-        pct = str(int(val.current / val.total * 100) if val.total > 0 else 0)
-        total_reviews, completed_reviews = review_weighted_progress(val)
-        elapsed = now - first_progress_at
-        label_parts = [
-            f"Optimizing presets: {val.current}/{val.total} ({pct}%)",
-            f"elapsed: {format_elapsed_time(elapsed)}",
-        ]
-        if 0 < completed_reviews < total_reviews:
-            remaining = (
-                elapsed * (total_reviews - completed_reviews) / completed_reviews
-            )
-            if smoothed_remaining is None:
-                smoothed_remaining = remaining
-            else:
-                smoothed_remaining = smoothed_remaining * 0.85 + remaining * 0.15
-            label_parts.append(f"remaining: {format_elapsed_time(smoothed_remaining)}")
-        update.label = " | ".join(label_parts)
-        skipped_count = sum(1 for param_preset in val.presets if param_preset.skipped)
-        if skipped_count and not zero_review_skip_logged:
-            preset_log.append(f"[SKIP] {skipped_count} Presets with 0 reviews")
-            zero_review_skip_logged = True
-        for param_preset in val.presets:
-            if (
-                not param_preset.finished
-                and not param_preset.skipped
-                and param_preset.total > 0
-            ):
-                preset_started_at.setdefault(param_preset.name, now)
-            if param_preset.name in completed_preset_names:
-                continue
-            if param_preset.skipped:
-                completed_preset_names.add(param_preset.name)
-            elif param_preset.finished:
-                started_at = preset_started_at.get(param_preset.name, first_progress_at)
-                duration = format_elapsed_time(now - started_at)
-                preset_log.append(
-                    f"[DONE] {param_preset.name} - {duration} "
-                    f"({param_preset.reviews} reviews, "
-                    f"long-term: {param_preset.long_term_reviews}, "
-                    f"same-day: {param_preset.short_term_reviews})"
-                )
-                completed_preset_names.add(param_preset.name)
-        update.details = "\n".join(preset_log[-12:]) if preset_log else None
-        update.bars = [
-            ProgressBarUpdate(
-                label=f"{param_preset.name} ({param_preset.reviews} reviews)",
-                value=param_preset.current
-                if param_preset.total
-                else int(param_preset.finished),
-                max=max(param_preset.total, 1),
-            )
-            for param_preset in sorted(
-                (
-                    param_preset
-                    for param_preset in val.presets
-                    if not param_preset.finished and param_preset.total > 0
-                ),
-                key=lambda param_preset: param_preset.reviews,
-                reverse=True,
-            )
-        ]
-
-    def update_memory_progress(val: Any, update: ProgressUpdate) -> None:
-        total_presets = max(val.total_presets, 1)
-        current_preset = min(max(val.current_preset, 1), total_presets)
-        update.max = total_presets
-        update.value = current_preset
-        preset_name = val.preset_name or tr.deck_config_shared_preset()
-        if val.saving:
-            update.label = val.label
-            for memory_preset in val.presets:
-                if (
-                    not memory_preset.finished
-                    or memory_preset.name in saved_preset_names
-                ):
-                    continue
-                saved_preset_names.add(memory_preset.name)
-                preset_log.append(f"[SAVE] {memory_preset.name}")
-        else:
-            action = "Rescheduling" if val.rescheduling else "Updating"
-            update.label = (
-                f"Saved optimized presets | {action} preset "
-                f"{current_preset}/{total_presets}: {preset_name} | {val.label}"
-            )
-            for memory_preset in val.presets:
-                if (
-                    not memory_preset.finished
-                    or memory_preset.name in updated_preset_names
-                ):
-                    continue
-                updated_preset_names.add(memory_preset.name)
-                done_action = "rescheduled" if memory_preset.rescheduling else "updated"
-                preset_log.append(
-                    f"[DONE] {memory_preset.name} - {done_action} "
-                    f"{memory_preset.total_cards} cards"
-                )
-        update.details = "\n".join(preset_log[-12:]) if preset_log else None
-        update.bars = [
-            ProgressBarUpdate(
-                label=(
-                    memory_preset.name
-                    if val.saving
-                    else (
-                        f"{memory_preset.name} ({memory_preset.total_cards} cards)"
-                        if memory_preset.total_cards
-                        else f"{memory_preset.name} (waiting)"
-                    )
-                ),
-                value=memory_preset.current_cards,
-                max=max(memory_preset.total_cards, 1),
-            )
-            for memory_preset in sorted(
-                (
-                    memory_preset
-                    for memory_preset in val.presets
-                    if not memory_preset.finished
-                ),
-                key=lambda memory_preset: memory_preset.total_cards,
-                reverse=True,
-            )
-        ]
 
     def on_progress(progress: Progress, update: ProgressUpdate) -> None:
         if progress.HasField("compute_memory"):
-            update_memory_progress(progress.compute_memory, update)
+            val = progress.compute_memory
+            update.max = val.total_cards
+            update.value = val.current_cards
+            update.label = val.label
         elif progress.HasField("compute_params"):
             val2 = progress.compute_params
             # prevent an indeterminate progress bar from appearing at the start of each preset
@@ -744,31 +670,20 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:  # complexipy: ign
                 reviews = tr.deck_config_percent_of_reviews(
                     pct=pct, reviews=val2.reviews
                 )
-                reviews += (
-                    f" (long-term: {val2.long_term_reviews}, "
-                    f"same-day: {val2.short_term_reviews})"
-                )
             else:
                 reviews = tr.qt_misc_processing()
 
             update.label = label + "\n" + reviews
-        elif progress.HasField("compute_all_params"):
-            update_all_params_progress(progress.compute_all_params, update)
         else:
             return
         if update.user_wants_abort:
             update.abort = True
 
-    def on_success(changes: OpChanges) -> None:
-        if isinstance(window := aqt.mw.app.activeModalWidget(), DeckOptionsDialog):
-            if close_on_success:
-                window.reject()
-            else:
-                window.web.eval("anki.deckOptionsSaved();")
-
     def handle_on_main() -> None:
         update_deck_configs_op(parent=aqt.mw, input=input).success(
-            on_success
+            lambda _: _on_update_deck_configs_success(
+                input, close_on_success=close_on_success
+            )
         ).with_backend_progress(on_progress).run_in_background()
 
     aqt.mw.taskman.run_on_main(handle_on_main)
@@ -809,36 +724,6 @@ def import_done() -> bytes:
 
     aqt.mw.taskman.run_on_main(update_window_modality)
     return b""
-
-
-def import_request(endpoint: str) -> bytes:
-    output = raw_backend_request(endpoint)()
-    response = OpChangesOnly()
-    response.ParseFromString(output)
-
-    def handle_on_main() -> None:
-        window = aqt.mw.app.activeModalWidget()
-        on_op_finished(aqt.mw, response, window)
-
-    aqt.mw.taskman.run_on_main(handle_on_main)
-
-    return output
-
-
-def import_csv() -> bytes:
-    return import_request("import_csv")
-
-
-def import_anki_package() -> bytes:
-    return import_request("import_anki_package")
-
-
-def import_json_file() -> bytes:
-    return import_request("import_json_file")
-
-
-def import_json_string() -> bytes:
-    return import_request("import_json_string")
 
 
 def search_in_browser() -> bytes:
@@ -887,6 +772,300 @@ def deck_options_ready() -> bytes:
     return b""
 
 
+def get_setting_json(getter: Callable[[str], Any]) -> bytes:
+    req = generic_pb2.String()
+    req.ParseFromString(request.data)
+    value = getter(req.val)
+    output = generic_pb2.Json(json=to_json_bytes(value)).SerializeToString()
+    return output
+
+
+def set_setting_json(setter: Callable[[str, Any], Any]) -> bytes:
+    req = frontend_pb2.SetSettingJsonRequest()
+    req.ParseFromString(request.data)
+    setter(req.key, from_json_bytes(req.value_json))
+    return b""
+
+
+def get_profile_config_json() -> bytes:
+    assert aqt.mw.pm.profile is not None
+    return get_setting_json(aqt.mw.pm.profile.get)
+
+
+def set_profile_config_json() -> bytes:
+    assert aqt.mw.pm.profile is not None
+    return set_setting_json(aqt.mw.pm.profile.__setitem__)
+
+
+def get_meta_json() -> bytes:
+    return get_setting_json(aqt.mw.pm.meta.get)
+
+
+def set_meta_json() -> bytes:
+    return set_setting_json(aqt.mw.pm.meta.__setitem__)
+
+
+def get_config_json() -> bytes:
+    try:
+        return get_setting_json(aqt.mw.col.conf.get_immutable)
+    except KeyError:
+        return generic_pb2.Json(json=b"null").SerializeToString()
+
+
+def set_config_json() -> bytes:
+    return set_setting_json(aqt.mw.col.set_config)
+
+
+def convert_pasted_image() -> bytes:
+    req = frontend_pb2.ConvertPastedImageRequest()
+    req.ParseFromString(request.data)
+    image = QImage.fromData(req.data)
+    buffer = QBuffer()
+    buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+    if req.ext == "png":
+        quality = 50
+    else:
+        quality = 80
+    image.save(buffer, req.ext, quality)
+    buffer.reset()
+    data = bytes(cast(bytes, buffer.readAll()))
+    return frontend_pb2.ConvertPastedImageResponse(data=data).SerializeToString()
+
+
+AsyncRequestReturnType = TypeVar("AsyncRequestReturnType")
+
+
+class AsyncRequestHandler(Generic[AsyncRequestReturnType]):
+    def __init__(self, callback: Callable[[AsyncRequestHandler], None]) -> None:
+        self.callback = callback
+        self.loop = asyncio.get_running_loop()
+        self.future = self.loop.create_future()
+
+    def run(self) -> None:
+        aqt.mw.taskman.run_on_main(lambda: self.callback(self))
+
+    def set_result(self, result: AsyncRequestReturnType) -> None:
+        self.loop.call_soon_threadsafe(self.future.set_result, result)
+
+    async def get_result(self) -> AsyncRequestReturnType:
+        return await self.future
+
+
+async def open_file_picker() -> bytes:
+    req = frontend_pb2.openFilePickerRequest()
+    req.ParseFromString(request.data)
+
+    def callback(request_handler: AsyncRequestHandler) -> None:
+        from aqt.utils import getFile
+
+        def cb(filename: str | None) -> None:
+            request_handler.set_result(filename)
+
+        window = aqt.mw.app.activeWindow()
+        assert window is not None
+        getFile(
+            parent=window,
+            title=req.title,
+            cb=cast(Callable[[Any], None], cb),
+            filter=f"{req.filter_description} ({' '.join(f'*.{ext}' for ext in req.extensions)})",
+            key=req.key,
+        )
+
+    request_handler: AsyncRequestHandler[str | None] = AsyncRequestHandler(callback)
+    request_handler.run()
+    filename = await request_handler.get_result()
+
+    return generic_pb2.String(val=filename if filename else "").SerializeToString()
+
+
+def open_media() -> bytes:
+    from aqt.utils import openFolder
+
+    req = generic_pb2.String()
+    req.ParseFromString(request.data)
+    path = os.path.join(aqt.mw.col.media.dir(), req.val)
+    aqt.mw.taskman.run_on_main(lambda: openFolder(path))
+
+    return b""
+
+
+def show_in_media_folder() -> bytes:
+    from aqt.utils import show_in_folder
+
+    req = generic_pb2.String()
+    req.ParseFromString(request.data)
+    path = os.path.join(aqt.mw.col.media.dir(), req.val)
+    aqt.mw.taskman.run_on_main(lambda: show_in_folder(path))
+
+    return b""
+
+
+async def record_audio() -> bytes:
+    def callback(request_handler: AsyncRequestHandler) -> None:
+        from aqt.sound import record_audio
+
+        def cb(path: str | None) -> None:
+            request_handler.set_result(path)
+
+        window = aqt.mw.app.activeWindow()
+        assert window is not None
+        record_audio(window, aqt.mw, True, cb)
+
+    request_handler: AsyncRequestHandler[str | None] = AsyncRequestHandler(callback)
+    request_handler.run()
+    path = await request_handler.get_result()
+
+    return generic_pb2.String(val=path if path else "").SerializeToString()
+
+
+def read_clipboard() -> bytes:
+    req = frontend_pb2.ReadClipboardRequest()
+    req.ParseFromString(request.data)
+    data = {}
+    clipboard = aqt.mw.app.clipboard()
+    assert clipboard is not None
+    mime_data = clipboard.mimeData(QClipboard.Mode.Clipboard)
+    assert mime_data is not None
+    for type in req.types:
+        data[type] = bytes(mime_data.data(type))  # type: ignore
+
+    return frontend_pb2.ReadClipboardResponse(data=data).SerializeToString()
+
+
+def write_clipboard() -> bytes:
+    req = frontend_pb2.WriteClipboardRequest()
+    req.ParseFromString(request.data)
+    clipboard = aqt.mw.app.clipboard()
+    assert clipboard is not None
+    mime_data = clipboard.mimeData(QClipboard.Mode.Clipboard)
+    assert mime_data is not None
+    for type, data in req.data.items():
+        mime_data.setData(type, data)
+    return b""
+
+
+def close_add_cards() -> bytes:
+    req = generic_pb2.Bool()
+    req.ParseFromString(request.data)
+
+    def handle_on_main() -> None:
+        from aqt.addcards import NewAddCards
+
+        window = aqt.mw.app.activeWindow()
+        if isinstance(window, NewAddCards):
+            window._close_if_user_wants_to_discard_changes(req.val)
+
+    aqt.mw.taskman.run_on_main(lambda: QTimer.singleShot(0, handle_on_main))
+    return b""
+
+
+def close_edit_current() -> bytes:
+    def handle_on_main() -> None:
+        from aqt.editcurrent import NewEditCurrent
+
+        window = aqt.mw.app.activeWindow()
+        if isinstance(window, NewEditCurrent):
+            window.close()
+
+    aqt.mw.taskman.run_on_main(lambda: QTimer.singleShot(0, handle_on_main))
+    return b""
+
+
+def open_link() -> bytes:
+    req = generic_pb2.String()
+    req.ParseFromString(request.data)
+    url = req.val
+    aqt.mw.taskman.run_on_main(lambda: openLink(url))
+    return b""
+
+
+async def ask_user() -> bytes:
+    req = frontend_pb2.AskUserRequest()
+    req.ParseFromString(request.data)
+
+    def callback(request_handler: AsyncRequestHandler) -> None:
+        kwargs: dict[str, Any] = dict(text=req.text)
+        if req.HasField("help"):
+            help_arg: Any
+            if req.help.WhichOneof("value") == "help_page":
+                help_arg = req.help.help_page
+            else:
+                help_arg = req.help.help_link
+            kwargs["help"] = help_arg
+        if req.HasField("title"):
+            kwargs["title"] = req.title
+        if req.HasField("default_no"):
+            kwargs["defaultno"] = req.default_no
+        answer = askUser(**kwargs)
+        request_handler.set_result(answer)
+
+    request_handler: AsyncRequestHandler[bool] = AsyncRequestHandler(callback)
+    request_handler.run()
+    answer = await request_handler.get_result()
+
+    return generic_pb2.Bool(val=answer).SerializeToString()
+
+
+async def show_message_box() -> bytes:
+    req = frontend_pb2.ShowMessageBoxRequest()
+    req.ParseFromString(request.data)
+
+    def callback(request_handler: AsyncRequestHandler) -> None:
+        kwargs: dict[str, Any] = dict(text=req.text)
+        if req.type == frontend_pb2.MessageBoxType.INFO:
+            icon = QMessageBox.Icon.Information
+        elif req.type == frontend_pb2.MessageBoxType.WARNING:
+            icon = QMessageBox.Icon.Warning
+        elif req.type == frontend_pb2.MessageBoxType.CRITICAL:
+            icon = QMessageBox.Icon.Critical
+        kwargs["icon"] = icon
+        if req.HasField("help"):
+            help_arg: Any
+            if req.help.WhichOneof("value") == "help_page":
+                help_arg = req.help.help_page
+            else:
+                help_arg = req.help.help_link
+            kwargs["help"] = help_arg
+        if req.HasField("title"):
+            kwargs["title"] = req.title
+        if req.HasField("text_format"):
+            kwargs["text_format"] = req.text_format
+        show_info(**kwargs)
+        request_handler.set_result(True)
+
+    request_handler: AsyncRequestHandler[bool] = AsyncRequestHandler(callback)
+    request_handler.run()
+    answer = await request_handler.get_result()
+
+    return generic_pb2.Bool(val=answer).SerializeToString()
+
+
+def open_fields_dialog() -> bytes:
+    def handle_on_main() -> None:
+        from aqt.editor import NewEditor
+
+        window = aqt.mw.app.activeWindow()
+        assert window is not None
+        if hasattr(window, "editor") and isinstance(window.editor, NewEditor):
+            window.editor.onFields()
+
+    aqt.mw.taskman.run_on_main(handle_on_main)
+    return b""
+
+
+def open_cards_dialog() -> bytes:
+    def handle_on_main() -> None:
+        from aqt.editor import NewEditor
+
+        window = aqt.mw.app.activeWindow()
+        assert window is not None
+        if hasattr(window, "editor") and isinstance(window.editor, NewEditor):
+            window.editor.onCardLayout()
+
+    aqt.mw.taskman.run_on_main(handle_on_main)
+    return b""
+
+
 def build_rwkv_state_cache() -> bytes:
     aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(aqt.mw)
     return b""
@@ -905,23 +1084,25 @@ def recompute_rwkv_calibration_data() -> bytes:
     return b""
 
 
-def compare_rwkv_extra_feature_metrics() -> bytes:
+def _json_payload() -> dict[str, object]:
     payload_request = generic_pb2.Json()
     payload_request.ParseFromString(request.data)
-    payload: dict[str, object] = {}
-    if payload_request.json:
-        try:
-            value = json.loads(payload_request.json.decode("utf8"))
-        except Exception:
-            logger.debug("failed to decode RWKV extra feature comparison payload")
-        else:
-            if isinstance(value, dict):
-                payload = value
+    if not payload_request.json:
+        return {}
+    try:
+        value = json.loads(payload_request.json.decode("utf8"))
+    except Exception:
+        logger.debug("failed to decode RWKV request payload")
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def compare_rwkv_extra_feature_metrics() -> bytes:
     (
         deck_id,
         extra_feature_override,
     ) = aqt.rwkv_scheduler.rwkv_extra_feature_comparison_request_from_payload(
-        payload,
+        _json_payload(),
     )
     aqt.rwkv_scheduler.compare_rwkv_extra_feature_metrics_with_progress(
         aqt.mw,
@@ -932,23 +1113,12 @@ def compare_rwkv_extra_feature_metrics() -> bytes:
 
 
 def train_rwkv_self_correction_calibration() -> bytes:
-    payload_request = generic_pb2.Json()
-    payload_request.ParseFromString(request.data)
-    payload: dict[str, object] = {}
-    if payload_request.json:
-        try:
-            value = json.loads(payload_request.json.decode("utf8"))
-        except Exception:
-            logger.debug("failed to decode RWKV calibration training payload")
-        else:
-            if isinstance(value, dict):
-                payload = value
     (
         deck_id,
         config_id,
         extra_feature_override,
     ) = aqt.rwkv_scheduler.rwkv_self_correction_training_request_from_payload(
-        payload,
+        _json_payload(),
     )
     aqt.rwkv_scheduler.train_rwkv_self_correction_calibration_with_progress(
         aqt.mw,
@@ -1012,13 +1182,11 @@ def card_stats() -> bytes:
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
     response: CardStatsResponse | None = None
     card: Any | None = None
-    rwkv_review_enabled = False
     if hook_count == 0 and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer):
         response = CardStatsResponse()
         response.ParseFromString(raw_output)
         card = aqt.mw.col.get_card(CardId(response.card_id))
-        rwkv_review_enabled = aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card)
-        if not rwkv_review_enabled:
+        if not aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card):
             logger.debug(
                 "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
                 hook_count,
@@ -1109,10 +1277,6 @@ post_handler_list = [
     set_scheduling_states,
     change_notetype,
     import_done,
-    import_csv,
-    import_anki_package,
-    import_json_file,
-    import_json_string,
     search_in_browser,
     deck_options_require_close,
     deck_options_ready,
@@ -1127,6 +1291,25 @@ post_handler_list = [
     rwkv_workload_result,
     cancel_rwkv_workload,
     rwkv_workload_progress,
+    get_profile_config_json,
+    set_profile_config_json,
+    get_meta_json,
+    set_meta_json,
+    get_config_json,
+    convert_pasted_image,
+    open_file_picker,
+    open_media,
+    show_in_media_folder,
+    record_audio,
+    read_clipboard,
+    write_clipboard,
+    close_add_cards,
+    close_edit_current,
+    open_link,
+    ask_user,
+    show_message_box,
+    open_fields_dialog,
+    open_cards_dialog,
     save_custom_colours,
     card_stats,
     graphs,
@@ -1139,17 +1322,31 @@ exposed_backend_list = [
     "get_custom_colours",
     # DeckService
     "get_deck_names",
+    "get_deck",
     # I18nService
     "i18n_resources",
     # ImportExportService
     "get_csv_metadata",
     "get_import_anki_package_presets",
+    "import_csv",
+    "import_anki_package",
+    "import_json_file",
+    "import_json_string",
     # NotesService
     "get_field_names",
     "get_note",
+    "new_note",
+    "note_fields_check",
+    "defaults_for_adding",
+    "default_deck_for_notetype",
+    "add_note",
+    "update_notes",
+    "update_notetype",
     # NotetypesService
+    "get_notetype",
     "get_notetype_names",
     "get_change_notetype_info",
+    "get_cloze_field_ords",
     # StatsService
     "get_review_logs",
     "get_graph_preferences",
@@ -1180,6 +1377,21 @@ exposed_backend_list = [
     # DeckConfigService
     "get_ignored_before_count",
     "get_retention_workload",
+    # CardRenderingService
+    "encode_iri_paths",
+    "decode_iri_paths",
+    "html_to_text_line",
+    # ConfigService
+    "set_config_json",
+    "get_config_bool",
+    # MediaService
+    "add_media_file",
+    "add_media_from_path",
+    "add_media_from_url",
+    "get_absolute_media_path",
+    "extract_media_files",
+    # CardsService
+    "get_card",
 ]
 
 
@@ -1189,7 +1401,29 @@ def raw_backend_request(endpoint: str) -> Callable[[], bytes]:
 
     assert hasattr(RustBackend, f"{endpoint}_raw")
 
-    return lambda: getattr(aqt.mw.col._backend, f"{endpoint}_raw")(request.data)
+    def wrapped() -> bytes:
+        output = getattr(aqt.mw.col._backend, f"{endpoint}_raw")(request.data)
+        op_changes_type = int(request.headers.get("Anki-Op-Changes", "0"))
+        if op_changes_type:
+            op_message_types = (OpChanges, OpChangesOnly, NestedOpChanges)
+            try:
+                response = op_message_types[op_changes_type - 1]()
+                response.ParseFromString(output)
+                changes: Any = response
+                for _ in range(op_changes_type - 1):
+                    changes = changes.changes
+            except IndexError:
+                raise ValueError(f"unhandled op changes level: {op_changes_type}")
+
+            def handle_on_main() -> None:
+                handler = aqt.mw.app.activeWindow()
+                on_op_finished(aqt.mw, changes, handler)
+
+            aqt.mw.taskman.run_on_main(handle_on_main)
+
+        return output
+
+    return wrapped
 
 
 # all methods in here require a collection
@@ -1208,7 +1442,13 @@ def _extract_collection_post_request(path: str) -> DynamicRequest | NotFound:
         # convert bytes/None into response
         def wrapped() -> Response:
             try:
-                data = handler()
+                import inspect
+
+                if inspect.iscoroutinefunction(handler):
+                    data = asyncio.run(handler())
+                else:
+                    result = handler()
+                    data = result
                 if isinstance(data, Response):
                     response = data
                 elif data:
@@ -1276,7 +1516,7 @@ def legacy_page_data() -> Response:
         # have access to our internal API, and is a security risk.
         if page.context == PageContext.EDITOR:
             response.headers["Content-Security-Policy"] = (
-                _editor_content_security_policy(aqt.mw.mediaServer.getPort())
+                _legacy_editor_content_security_policy(aqt.mw.mediaServer.getPort())
             )
         return response
     else:

@@ -4,6 +4,8 @@
 export interface PostProtoOptions {
     /** True by default. Shows a dialog with the error message, then rethrows. */
     alertOnError?: boolean;
+    /** If this is set, the request can be canceled by calling abort() on the corresponding AbortController. */
+    signal?: AbortSignal;
 }
 
 export interface PostProtoResponse<T> {
@@ -34,8 +36,9 @@ export async function postProto<T>(
     input: { toBinary(): Uint8Array; getType(): { typeName: string } },
     outputType: { fromBinary(arr: Uint8Array): T },
     options: PostProtoOptions = {},
+    opChangesType = 0,
 ): Promise<T> {
-    const { output } = await postProtoWithResponse(method, input, outputType, options);
+    const { output } = await postProtoWithResponse(method, input, outputType, options, opChangesType);
     return output;
 }
 
@@ -44,6 +47,7 @@ export async function postProtoWithResponse<T>(
     input: { toBinary(): Uint8Array; getType(): { typeName: string } },
     outputType: { fromBinary(arr: Uint8Array): T },
     options: PostProtoOptions = {},
+    opChangesType = 0,
 ): Promise<PostProtoResponse<T>> {
     try {
         const start = performance.now();
@@ -55,7 +59,7 @@ export async function postProtoWithResponse<T>(
                 elapsedMs: performance.now() - start,
             });
         }
-        const response = await postProtoInner(path, inputBytes);
+        const response = await postProtoInner(path, inputBytes, opChangesType, options.signal);
         const outputBytes = response.body;
         const fetchElapsedMs = performance.now() - start;
         if (method === "graphs") {
@@ -85,7 +89,9 @@ export async function postProtoWithResponse<T>(
         return { output, headers: response.headers };
     } catch (err) {
         const { alertOnError = true } = options;
-        if (alertOnError && !(err instanceof Error && err.message === "500: Interrupted")) {
+        if (
+            alertOnError && !(err instanceof Error && (err.message === "500: Interrupted" || err.name === "AbortError"))
+        ) {
             alert(err);
         }
         throw err;
@@ -100,6 +106,8 @@ interface PostProtoInnerResponse {
 async function postProtoInner(
     url: string,
     body: Uint8Array,
+    opChangesType: number,
+    signal?: AbortSignal,
 ): Promise<PostProtoInnerResponse> {
     const start = performance.now();
     const graphRequest = url === "/_anki/graphs";
@@ -110,10 +118,9 @@ async function postProtoInner(
     }
     const result = await fetch(url, {
         method: "POST",
-        headers: {
-            "Content-Type": "application/binary",
-        },
+        headers: { "Content-Type": "application/binary", "Anki-Op-Changes": opChangesType.toString() },
         body,
+        signal,
     });
     if (graphRequest) {
         logGraphPostProto("graphs fetch response headers received", {

@@ -1449,14 +1449,27 @@ title="{}" {}>{}</button>""".format(
     # Other menu operations
     ##########################################################################
 
+    def _open_new_or_legacy_dialog(
+        self, name: str, default_to_new: bool = False, *args: Any, **kwargs: Any
+    ) -> Any:
+        shift = KeyboardModifiersPressed().shift
+        want_new = (default_to_new and not shift) or (not default_to_new and shift)
+        if want_new:
+            name = f"New{name}"
+        return aqt.dialogs.open(name, self, *args, **kwargs)
+
     def onAddCard(self) -> None:
-        aqt.dialogs.open("AddCards", self)
+        from aqt.addcards import NewAddCards
+
+        add_cards = self._open_new_or_legacy_dialog("AddCards")
+        if isinstance(add_cards, NewAddCards):
+            add_cards.load_new_note()
 
     def onBrowse(self) -> None:
         aqt.dialogs.open("Browser", self, card=self.reviewer.card)
 
     def onEditCurrent(self) -> None:
-        aqt.dialogs.open("EditCurrent", self)
+        self._open_new_or_legacy_dialog("EditCurrent")
 
     def onOverview(self) -> None:
         self.moveToState("overview")
@@ -1465,22 +1478,10 @@ title="{}" {}>{}</button>""".format(
         deck = self._selectedDeck()
         if not deck:
             return
-        want_old = KeyboardModifiersPressed().shift
-        if want_old:
-            aqt.dialogs.open("DeckStats", self)
-        else:
-            aqt.dialogs.open("NewDeckStats", self)
+        self._open_new_or_legacy_dialog("DeckStats", True)
 
     def onPrefs(self) -> None:
         aqt.dialogs.open("Preferences", self)
-
-    def on_upgrade_downgrade(self) -> None:
-        if not askUser(tr.qt_misc_open_anki_launcher()):
-            return
-
-        from aqt.package import update_and_restart
-
-        update_and_restart()
 
     def on_check_for_updates(self) -> None:
         from packaging.version import Version
@@ -1584,8 +1585,6 @@ title="{}" {}>{}</button>""".format(
     ##########################################################################
 
     def setupMenus(self) -> None:
-        from aqt.package import launcher_executable
-
         m = self.form
 
         # File
@@ -1615,12 +1614,7 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.actionCreateFiltered.triggered, self.onCram)
         qconnect(m.actionEmptyCards.triggered, self.onEmptyCards)
         qconnect(m.actionNoteTypes.triggered, self.onNoteTypes)
-        qconnect(m.action_upgrade_downgrade.triggered, self.on_upgrade_downgrade)
         qconnect(m.action_check_for_updates.triggered, self.on_check_for_updates)
-        if launcher_executable():
-            m.action_check_for_updates.setVisible(False)
-        else:
-            m.action_upgrade_downgrade.setVisible(False)
         qconnect(m.actionPreferences.triggered, self.onPrefs)
 
         # View
@@ -1919,38 +1913,6 @@ title="{}" {}>{}</button>""".format(
             self.hideMenuAccels = True
             self.maybeHideAccelerators()
             self.hideStatusTips()
-        elif is_win:
-            self._setupWin32()
-
-    def _setupWin32(self):
-        """Fix taskbar display/pinning"""
-        if sys.platform != "win32":
-            return
-
-        launcher_path = os.environ.get("ANKI_LAUNCHER")
-        if not launcher_path:
-            return
-
-        from win32com.propsys import propsys, pscon
-        from win32com.propsys.propsys import PROPVARIANTType
-
-        hwnd = int(self.winId())
-        prop_store = propsys.SHGetPropertyStoreForWindow(hwnd)  # type: ignore[call-arg]
-        prop_store.SetValue(
-            pscon.PKEY_AppUserModel_ID, PROPVARIANTType("Ankitects.Anki")
-        )
-        prop_store.SetValue(
-            pscon.PKEY_AppUserModel_RelaunchCommand,
-            PROPVARIANTType(f'"{launcher_path}"'),
-        )
-        prop_store.SetValue(
-            pscon.PKEY_AppUserModel_RelaunchDisplayNameResource, PROPVARIANTType("Anki")
-        )
-        prop_store.SetValue(
-            pscon.PKEY_AppUserModel_RelaunchIconResource,
-            PROPVARIANTType(f"{launcher_path},0"),
-        )
-        prop_store.Commit()
 
     def maybeHideAccelerators(self, tgt: Any | None = None) -> None:
         if not self.hideMenuAccels:

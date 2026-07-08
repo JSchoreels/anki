@@ -207,6 +207,28 @@ pub(crate) fn with_review_fuzz_and_delta(
     }
 }
 
+/// Return the minimum interval to use when fuzzing a review/reschedule
+/// interval, based on the previously scheduled interval.
+pub(crate) fn minimum_review_fuzz_interval(
+    interval: f32,
+    previous_interval: u32,
+    maximum_interval: u32,
+) -> u32 {
+    let rounded = interval.round() as u32;
+    let (_, upper) =
+        constrained_fuzz_bounds(interval, 1, maximum_interval, ReviewFuzzConfig::default());
+
+    if rounded > previous_interval {
+        previous_interval + 1
+    } else if previous_interval <= upper {
+        // interval may not have grown much, but don't let fuzz reduce it
+        previous_interval
+    } else {
+        // interval shrunk, possibly due to changed FSRS params or DR
+        0
+    }
+}
+
 /// Return the bounds of the fuzz range, respecting `minimum` and `maximum`.
 /// Ensure the upper bound is larger than the lower bound, if `maximum` allows
 /// it and it is larger than 1.
@@ -378,5 +400,12 @@ mod test {
         assert_eq!(col.stored_review_fuzz_config(), stored);
         assert_eq!(col.review_fuzz_config(), ReviewFuzzConfig::none());
         Ok(())
+    }
+
+    #[test]
+    fn minimum_review_fuzz_interval_preserves_previous_only_within_range() {
+        assert_eq!(minimum_review_fuzz_interval(2.7269483, 4, 36500), 4);
+        assert_eq!(minimum_review_fuzz_interval(2.7269483, 5, 36500), 0);
+        assert_eq!(minimum_review_fuzz_interval(4.591988, 4, 36500), 5);
     }
 }

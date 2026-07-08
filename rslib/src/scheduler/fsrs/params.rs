@@ -2045,6 +2045,13 @@ pub(crate) mod tests {
         }
     }
 
+    fn revlog_for_card(cid: i64, review_kind: RevlogReviewKind, days_ago: i64) -> RevlogEntry {
+        RevlogEntry {
+            cid: CardId(cid),
+            ..revlog(review_kind, days_ago)
+        }
+    }
+
     pub(crate) fn review(delta_t: u32) -> FSRSReview {
         FSRSReview {
             rating: 3,
@@ -2544,6 +2551,32 @@ pub(crate) mod tests {
             fsrs_items!([review(0), review(2),])
         );
         Ok(())
+    }
+
+    #[test]
+    fn card_ids_align_with_sorted_training_items() {
+        let training_items = fsrs_items_for_training(
+            vec![
+                revlog_for_card(1, RevlogReviewKind::Learning, 10),
+                revlog_for_card(1, RevlogReviewKind::Review, 7),
+                revlog_for_card(1, RevlogReviewKind::Review, 1),
+                revlog_for_card(2, RevlogReviewKind::Learning, 9),
+                revlog_for_card(2, RevlogReviewKind::Review, 8),
+            ],
+            NEXT_DAY_AT,
+            0.into(),
+            true,
+        );
+
+        assert_eq!(training_items.card_ids.as_deref(), Some(&[2, 1, 1][..]));
+        assert_eq!(
+            training_items
+                .items
+                .iter()
+                .map(|item| item.reviews.len())
+                .collect_vec(),
+            vec![2, 2, 3]
+        );
     }
 
     #[test]
