@@ -366,6 +366,7 @@ pub struct ReviewState<'a> {
 
 pub struct ReviewOutput {
     pub retrievability: f32,
+    pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
     pub current_s90: Option<u32>,
     pub intervals: [Option<u32>; 4],
@@ -392,6 +393,7 @@ pub struct ReviewStateOwned {
 
 pub struct ReviewPredictionOutput {
     pub retrievability: f32,
+    pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
     pub current_s90: Option<u32>,
     pub intervals: [Option<u32>; 4],
@@ -544,6 +546,7 @@ impl RwkvInference {
 
         Ok(ReviewOutput {
             retrievability: heads.retrievability,
+            button_probabilities: heads.button_probabilities,
             current_interval,
             current_s90,
             intervals,
@@ -591,6 +594,7 @@ impl RwkvInference {
                     self.current_intervals(&request.input, query_heads);
                 ReviewPredictionOutput {
                     retrievability: query_heads.retrievability,
+                    button_probabilities: query_heads.button_probabilities,
                     current_interval,
                     current_s90,
                     intervals,
@@ -658,6 +662,88 @@ impl RwkvInference {
             .workload_query_predictions_for_inputs(&query_inputs, &state_maps)
             .into_iter()
             .map(|prediction| prediction.retrievability)
+            .collect())
+    }
+
+    pub fn predict_retrievability_many_after_reviews(
+        &self,
+        answers: Vec<ReviewInput>,
+        query_inputs: Vec<ReviewInput>,
+        snapshot: RwkvWorkloadSimulationSnapshot,
+    ) -> io::Result<Vec<Vec<f32>>> {
+        for answer in &answers {
+            if answer.is_query || answer.ease.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV future prediction requires answered review inputs",
+                ));
+            }
+        }
+        if query_inputs.iter().any(|input| !input.is_query) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "RWKV future prediction only supports query inputs",
+            ));
+        }
+
+        let Some(runtime_state) = snapshot.runtime_state.as_deref() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "RWKV future prediction requires a runtime state snapshot",
+            ));
+        };
+        let base_worker = self.worker_from_cache_state(runtime_state)?;
+        let base_state_maps = ReviewStateMaps::from_serialized(
+            &snapshot.card_states,
+            &snapshot.note_states,
+            &snapshot.deck_states,
+            &snapshot.preset_states,
+            snapshot.global_state.as_deref(),
+        )?;
+
+        if query_inputs.is_empty() {
+            return Ok(answers.iter().map(|_| Vec::new()).collect());
+        }
+
+        let answer_work_items = answers
+            .iter()
+            .map(|answer| {
+                let mut features = base_worker.features.clone();
+                ReviewPredictionWorkItem {
+                    features: features.features_for(answer),
+                    state: base_state_maps.state_owned(answer),
+                }
+            })
+            .collect::<Vec<_>>();
+        let answer_heads = base_worker.model.review_many(&answer_work_items);
+
+        let query_count = query_inputs.len();
+        let mut query_work_items = Vec::with_capacity(answers.len() * query_count);
+        for (answer, heads) in answers.into_iter().zip(answer_heads) {
+            let mut features = base_worker.features.clone();
+            features.store_review(&answer);
+            for query_input in &query_inputs {
+                query_work_items.push(ReviewPredictionWorkItem {
+                    features: features.features_for(query_input),
+                    state: base_state_maps.state_owned_after_review(
+                        &answer,
+                        query_input,
+                        &heads.next_state,
+                    ),
+                });
+            }
+        }
+
+        Ok(base_worker
+            .model
+            .review_many(&query_work_items)
+            .chunks_exact(query_count)
+            .map(|heads| {
+                heads
+                    .iter()
+                    .map(|heads| heads.retrievability)
+                    .collect::<Vec<_>>()
+            })
             .collect())
     }
 
@@ -2356,12 +2442,18 @@ impl SrsModel {
 
     /// The retrievability head shared by the per-review and bulk replay
     /// paths. `prehead_x` must already have `prehead_norm` applied.
-    fn retrievability_head(&self, prehead_x: &[f32]) -> f32 {
+    fn button_probabilities_head(&self, prehead_x: &[f32]) -> [f32; 4] {
         let mut head_p = self.head_p_0.apply(prehead_x);
         relu_in_place(&mut head_p);
         let logits = self.p_linear.apply(&head_p);
         let probabilities = softmax(&logits);
-        1.0 - probabilities[0]
+        let mut out = [0.0; 4];
+        out.copy_from_slice(&probabilities);
+        out
+    }
+
+    fn retrievability_head(&self, prehead_x: &[f32]) -> f32 {
+        1.0 - self.button_probabilities_head(prehead_x)[0]
     }
 
     fn review_features(&self, features: &[f32], state: SrsStateRef<'_>) -> ReviewHeads {
@@ -2414,7 +2506,8 @@ impl SrsModel {
         let heads_profile_started = rwkv_warmup_profile_start();
         let x = self.prehead_norm.apply(&x);
         let curve = self.curve_head(&x);
-        let retrievability = self.retrievability_head(&x);
+        let button_probabilities = self.button_probabilities_head(&x);
+        let retrievability = 1.0 - button_probabilities[0];
 
         let next_state = SrsState {
             card: card_state,
@@ -2426,6 +2519,7 @@ impl SrsModel {
 
         let heads = ReviewHeads {
             retrievability,
+            button_probabilities,
             curve,
             next_state,
         };
@@ -2452,6 +2546,7 @@ impl SrsModel {
 
 struct ReviewHeads {
     retrievability: f32,
+    button_probabilities: [f32; 4],
     curve: ReviewCurve,
     next_state: SrsState,
 }
@@ -2559,6 +2654,40 @@ impl ReviewStateMaps {
         }
     }
 
+    fn state_owned_after_review(
+        &self,
+        answer: &ReviewInput,
+        query: &ReviewInput,
+        next_state: &SrsState,
+    ) -> SrsStateOwned {
+        SrsStateOwned {
+            card: if query.card_id == answer.card_id {
+                Some(next_state.card.clone())
+            } else {
+                self.card.get(&query.card_id).cloned()
+            },
+            note: branched_optional_module_state(
+                &self.note,
+                query.note_id,
+                answer.note_id,
+                &next_state.note,
+            ),
+            deck: branched_optional_module_state(
+                &self.deck,
+                query.deck_id,
+                answer.deck_id,
+                &next_state.deck,
+            ),
+            preset: branched_optional_module_state(
+                &self.preset,
+                query.preset_id,
+                answer.preset_id,
+                &next_state.preset,
+            ),
+            global: Some(next_state.global.clone()),
+        }
+    }
+
     fn store(&mut self, input: &ReviewInput, state: SrsState) {
         self.card.insert(input.card_id, state.card);
         if let Some(note_id) = input.note_id {
@@ -2571,6 +2700,19 @@ impl ReviewStateMaps {
             self.preset.insert(preset_id, state.preset);
         }
         self.global = Some(state.global);
+    }
+}
+
+fn branched_optional_module_state(
+    map: &HashMap<i64, ModuleState>,
+    query_id: Option<i64>,
+    answer_id: Option<i64>,
+    next_state: &ModuleState,
+) -> Option<ModuleState> {
+    match query_id {
+        Some(id) if Some(id) == answer_id => Some(next_state.clone()),
+        Some(id) => map.get(&id).cloned(),
+        None => None,
     }
 }
 

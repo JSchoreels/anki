@@ -32,6 +32,7 @@ struct RwkvInferenceState {
 }
 
 type RwkvIntervalTuple = (Option<u32>, Option<u32>, Option<u32>, Option<u32>);
+type RwkvProbabilityTuple = (f32, f32, f32, f32);
 type RwkvSerializedStateMap = Vec<(i64, Py<PyBytes>)>;
 type RwkvWarmUpSnapshot = (
     RwkvSerializedStateMap,
@@ -171,6 +172,7 @@ impl RwkvInference {
         Option<u32>,
         RwkvIntervalTuple,
         RwkvIntervalTuple,
+        RwkvProbabilityTuple,
         Py<PyBytes>,
         Py<PyBytes>,
         Py<PyBytes>,
@@ -215,6 +217,7 @@ impl RwkvInference {
             output.current_s90,
             interval_tuple(output.intervals),
             interval_tuple(output.s90s),
+            probability_tuple(output.button_probabilities),
             PyBytes::new(py, &output.card_state).unbind(),
             PyBytes::new(py, &output.note_state).unbind(),
             PyBytes::new(py, &output.deck_state).unbind(),
@@ -233,6 +236,7 @@ impl RwkvInference {
             Option<u32>,
             RwkvIntervalTuple,
             RwkvIntervalTuple,
+            RwkvProbabilityTuple,
         )>,
     > {
         let mut parsed_requests = Vec::new();
@@ -252,6 +256,7 @@ impl RwkvInference {
                             output.current_s90,
                             interval_tuple(output.intervals),
                             interval_tuple(output.s90s),
+                            probability_tuple(output.button_probabilities),
                         )
                     })
                     .collect()
@@ -298,6 +303,31 @@ impl RwkvInference {
 
         self.inner
             .predict_retrievability_many_after_review(answer, parsed_query_inputs, snapshot)
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    fn predict_retrievability_many_after_reviews(
+        &self,
+        answers: &Bound<'_, PyAny>,
+        query_inputs: &Bound<'_, PyAny>,
+        snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Vec<f32>>> {
+        let mut parsed_answers = Vec::new();
+        for answer in answers.try_iter()? {
+            parsed_answers.push(parse_rwkv_review_input(&answer?)?);
+        }
+        let mut parsed_query_inputs = Vec::new();
+        for query_input in query_inputs.try_iter()? {
+            parsed_query_inputs.push(parse_rwkv_review_input(&query_input?)?);
+        }
+        let snapshot = parse_rwkv_workload_snapshot(snapshot)?;
+
+        self.inner
+            .predict_retrievability_many_after_reviews(
+                parsed_answers,
+                parsed_query_inputs,
+                snapshot,
+            )
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
@@ -839,6 +869,15 @@ fn parse_rwkv_workload_bucket_probabilities(
 
 fn interval_tuple(intervals: [Option<u32>; 4]) -> RwkvIntervalTuple {
     (intervals[0], intervals[1], intervals[2], intervals[3])
+}
+
+fn probability_tuple(probabilities: [f32; 4]) -> RwkvProbabilityTuple {
+    (
+        probabilities[0],
+        probabilities[1],
+        probabilities[2],
+        probabilities[3],
+    )
 }
 
 fn py_state_map(py: Python<'_>, states: Vec<(i64, Vec<u8>)>) -> RwkvSerializedStateMap {

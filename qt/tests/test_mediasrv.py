@@ -24,6 +24,11 @@ from aqt.mediasrv import (
     is_sveltekit_page,
 )
 
+RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
+    "RWKV : R After Review",
+    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
+)
+
 
 class TestEnsureSafePath:
     def setup_method(self) -> None:
@@ -403,6 +408,7 @@ class TestCardStats:
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "61%"),
             ("Retrievability source", "RWKV"),
+            RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
         ]
 
     def test_card_info_reports_rwkv_unavailable_when_backend_missing(
@@ -451,6 +457,7 @@ class TestCardStats:
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "Unavailable"),
             ("Retrievability source", "FSRS (RWKV backend unavailable)"),
+            RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
         ]
 
     def test_card_info_hook_can_append_rows(

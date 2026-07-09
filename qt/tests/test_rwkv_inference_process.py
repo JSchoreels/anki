@@ -677,6 +677,13 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
             assert math.isclose(
                 query_output[0], _RWKV_GOLDEN_ROW34_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
             )
+        button_probabilities = query_output[5]
+        assert math.isclose(sum(button_probabilities), 1.0, abs_tol=_RWKV_ABS_TOL)
+        assert math.isclose(
+            button_probabilities[0],
+            1.0 - query_output[0],
+            abs_tol=_RWKV_ABS_TOL,
+        )
 
         update_output = runtime.review(
             *_rwkv_review_args(
@@ -689,11 +696,11 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
                 global_state=global_state,
             )
         )
-        card_states[review["card_id"]] = update_output[5]
-        note_states[review["note_id"]] = update_output[6]
-        deck_states[review["deck_id"]] = update_output[7]
-        preset_states[review["preset_id"]] = update_output[8]
-        global_state = update_output[9]
+        card_states[review["card_id"]] = update_output[6]
+        note_states[review["note_id"]] = update_output[7]
+        deck_states[review["deck_id"]] = update_output[8]
+        preset_states[review["preset_id"]] = update_output[9]
+        global_state = update_output[10]
         curves = _rwkv_curves_from_cache(runtime.cache_state())
 
 

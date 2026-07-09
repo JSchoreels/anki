@@ -253,6 +253,9 @@ class RwkvIntervalOverride:
     easy: int | None = None
 
 
+RwkvButtonProbabilities = tuple[float, float, float, float]
+
+
 @dataclass(frozen=True)
 class RwkvReviewPrediction:
     retrievability: float | None = None
@@ -260,6 +263,7 @@ class RwkvReviewPrediction:
     current_s90: int | None = None
     interval_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
     s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
+    button_probabilities: RwkvButtonProbabilities | None = None
 
 
 @dataclass(frozen=True)
@@ -269,12 +273,14 @@ class RwkvReviewerPrediction:
     review_enabled: bool = False
     interval_override_used: bool = False
     s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
+    button_probabilities: RwkvButtonProbabilities | None = None
 
 
 @dataclass(frozen=True)
 class RwkvReviewerDiagnostics:
     retrievability: float | None
     retrievability_source: str
+    button_probabilities: RwkvButtonProbabilities | None = None
 
 
 @dataclass(frozen=True)
@@ -1372,6 +1378,64 @@ class RwkvStatefulReviewerBackend:
             (time.monotonic() - start) * 1000,
         )
         return scores
+
+    def predict_retrievability_after_reviews(
+        self,
+        *,
+        answers: Sequence[RwkvReviewInput],
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+        snapshot: RwkvBackendCacheSnapshot,
+    ) -> list[list[tuple[int, float]]] | None:
+        predict_future = getattr(
+            self._runtime,
+            "predict_retrievability_many_after_reviews",
+            None,
+        )
+        if not callable(predict_future):
+            return None
+        if not answers:
+            return []
+        if not inputs_by_card_id:
+            return [[] for _ in answers]
+
+        start = time.monotonic()
+        retrievability_batches = predict_future(
+            answers=answers,
+            query_inputs=[review_input for _, review_input in inputs_by_card_id],
+            snapshot=snapshot,
+        )
+        if len(retrievability_batches) != len(answers):
+            raise ValueError("RWKV future retrievability answer count mismatch")
+        if any(
+            len(retrievabilities) != len(inputs_by_card_id)
+            for retrievabilities in retrievability_batches
+        ):
+            raise ValueError("RWKV future retrievability prediction count mismatch")
+
+        score_batches: list[list[tuple[int, float]]] = []
+        for retrievabilities in retrievability_batches:
+            scores: list[tuple[int, float]] = []
+            for (card_id, _), retrievability in zip(
+                inputs_by_card_id,
+                retrievabilities,
+                strict=True,
+            ):
+                value = float(retrievability)
+                if not math.isfinite(value) or not 0 <= value <= 1:
+                    continue
+                scores.append((card_id, value))
+            score_batches.append(scores)
+
+        logger.debug(
+            "RWKV stateful future retrievability multi-answer predicted: "
+            "answers=%s inputs=%s scored=%s runtime=%s elapsed_ms=%.1f",
+            len(answers),
+            len(inputs_by_card_id),
+            sum(len(scores) for scores in score_batches),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return score_batches
 
     def simulate_workload(
         self,
@@ -3290,6 +3354,7 @@ def current_reviewer_diagnostics(
     return RwkvReviewerDiagnostics(
         retrievability=prediction.retrievability,
         retrievability_source=_retrievability_source(prediction, fallback_source),
+        button_probabilities=prediction.button_probabilities,
     )
 
 
@@ -3308,6 +3373,7 @@ def rwkv_card_info_rows(
     reviewer: object,
     card: object,
     fallback_source: str,
+    include_after_review: bool = True,
 ) -> list[tuple[str, str]]:
     card_id = _card_id(card)
     store_card_info_score = True
@@ -3339,6 +3405,13 @@ def rwkv_card_info_rows(
             retrievability_source=_unavailable_retrievability_source(fallback_source),
         )
 
+    diagnostics = _with_card_info_button_probabilities(
+        diagnostics,
+        reviewer=reviewer,
+        card=card,
+        fallback_source=fallback_source,
+    )
+
     if card_id is not None and store_card_info_score:
         retrievability = (
             diagnostics.retrievability
@@ -3348,10 +3421,163 @@ def rwkv_card_info_rows(
         )
         _set_rwkv_card_info_score(reviewer, card_id, retrievability)
 
-    return [
+    rows = [
         ("RWKV computed R", _format_retrievability(diagnostics.retrievability)),
-        ("Retrievability source", diagnostics.retrievability_source),
     ]
+    if diagnostics.button_probabilities is not None:
+        rows.append(
+            (
+                "RWKV : Answer Button Probability",
+                _format_button_probabilities(diagnostics.button_probabilities),
+            )
+        )
+    rows.append(("Retrievability source", diagnostics.retrievability_source))
+    if include_after_review and rwkv_review_enabled(reviewer, card):
+        rows.append(rwkv_card_info_after_review_row(reviewer, card))
+    return rows
+
+
+def _with_card_info_button_probabilities(
+    diagnostics: RwkvReviewerDiagnostics,
+    *,
+    reviewer: object,
+    card: object,
+    fallback_source: str,
+) -> RwkvReviewerDiagnostics:
+    if diagnostics.button_probabilities is not None:
+        return diagnostics
+    if not rwkv_review_enabled(reviewer, card):
+        return diagnostics
+
+    queried = _queried_card_info_diagnostics(
+        reviewer,
+        card,
+        fallback_source=fallback_source,
+    )
+    if queried is None or queried.button_probabilities is None:
+        return diagnostics
+
+    button_probabilities = queried.button_probabilities
+    if diagnostics.retrievability is not None:
+        button_probabilities = _rwkv_button_probabilities_with_retrievability(
+            button_probabilities,
+            diagnostics.retrievability,
+        )
+
+    return RwkvReviewerDiagnostics(
+        retrievability=diagnostics.retrievability,
+        retrievability_source=diagnostics.retrievability_source,
+        button_probabilities=button_probabilities,
+    )
+
+
+def rwkv_card_info_after_review_row(
+    reviewer: object,
+    card: object,
+) -> tuple[str, str]:
+    try:
+        backend = _reviewer_backend
+        if backend is None:
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        cache_snapshot = getattr(backend, "cache_snapshot", None)
+        predict_after_reviews = getattr(
+            backend,
+            "predict_retrievability_after_reviews",
+            None,
+        )
+        if not callable(cache_snapshot) or not callable(predict_after_reviews):
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        candidate = _card_info_review_candidate(reviewer, card)
+        if not rwkv_review_enabled(candidate.reviewer, candidate.card):
+            return _unavailable_rwkv_card_info_after_review_row()
+        if not _prepare_reviewer_backend_for_card_info(reviewer):
+            logger.debug(
+                "RWKV card info after-review prediction skipped: warm-up pending"
+            )
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        card_id = _card_id(candidate.card)
+        if card_id is None:
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        identity = rwkv_review_identity(candidate.reviewer, candidate.card)
+        if identity is None:
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        deck_config = _rwkv_review_enabled_deck_config(
+            candidate.reviewer,
+            candidate.card,
+        )
+        self_correction_features = (
+            _rwkv_self_correction_features_for_card(
+                candidate.reviewer,
+                candidate.card,
+                now_seconds=time.time(),
+            )
+            if isinstance(deck_config, dict)
+            and _rwkv_review_self_correction_enabled(deck_config)
+            else None
+        )
+        snapshot = cache_snapshot()
+        query_input = rwkv_review_input(
+            reviewer=candidate.reviewer,
+            card=candidate.card,
+            identity=identity,
+            ease=None,
+        )
+        labeled_eases = (
+            ("Again", 1),
+            ("Hard", 2),
+            ("Good", 3),
+            ("Easy", 4),
+        )
+        answer_inputs = [
+            replace(
+                query_input,
+                is_query=False,
+                ease=ease,
+                duration_millis=None,
+            )
+            for _, ease in labeled_eases
+        ]
+        score_batches = predict_after_reviews(
+            answers=answer_inputs,
+            inputs_by_card_id=[(card_id, query_input)],
+            snapshot=snapshot,
+        )
+        if score_batches is None or len(score_batches) != len(labeled_eases):
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        values: list[str] = []
+        have_prediction = False
+        for (label, _), scores in zip(labeled_eases, score_batches, strict=True):
+            score_by_card_id = dict(scores or [])
+            retrievability = score_by_card_id.get(card_id)
+            have_prediction = have_prediction or retrievability is not None
+            if retrievability is not None and self_correction_features is not None:
+                retrievability = _rwkv_score_with_optional_self_correction(
+                    retrievability,
+                    self_correction_features,
+                    deck_config=deck_config,
+                )
+            values.append(f"{label}:{_format_retrievability(retrievability)}")
+
+        if not have_prediction:
+            return _unavailable_rwkv_card_info_after_review_row()
+
+        return ("RWKV : R After Review", " ".join(values))
+    except Exception:
+        logger.exception("RWKV card info after-review prediction failed")
+        return _unavailable_rwkv_card_info_after_review_row()
+
+
+def _unavailable_rwkv_card_info_after_review_row() -> tuple[str, str]:
+    return (
+        "RWKV : R After Review",
+        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
+    )
 
 
 def rwkv_review_enabled(
@@ -3632,6 +3858,10 @@ def _validate_prediction(prediction: RwkvReviewPrediction) -> None:
         prediction.retrievability
     ):
         raise ValueError("retrievability must be between 0 and 1")
+    if prediction.button_probabilities is not None and not _valid_button_probabilities(
+        prediction.button_probabilities
+    ):
+        raise ValueError("button probabilities must be four values between 0 and 1")
     if prediction.current_interval is not None:
         _validated_interval(prediction.current_interval)
     if prediction.current_s90 is not None:
@@ -3659,6 +3889,7 @@ def _store_reviewer_prediction(
 
     deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
     retrievability = prediction.retrievability
+    button_probabilities = prediction.button_probabilities
     if retrievability is not None and deck_config is not None:
         retrievability = _rwkv_score_with_optional_self_correction(
             retrievability,
@@ -3671,6 +3902,10 @@ def _store_reviewer_prediction(
             else None,
             deck_config=deck_config,
         )
+        button_probabilities = _rwkv_button_probabilities_with_retrievability(
+            button_probabilities,
+            retrievability,
+        )
 
     setattr(
         reviewer,
@@ -3681,6 +3916,7 @@ def _store_reviewer_prediction(
             review_enabled=review_enabled,
             interval_override_used=interval_override_used,
             s90_overrides=prediction.s90_overrides,
+            button_probabilities=button_probabilities,
         ),
     )
 
@@ -3758,6 +3994,7 @@ def _queried_card_info_diagnostics(
             candidate.card,
         )
         retrievability = prediction.retrievability
+        button_probabilities = prediction.button_probabilities
         if retrievability is not None and deck_config is not None:
             retrievability = _rwkv_score_with_optional_self_correction(
                 retrievability,
@@ -3770,6 +4007,10 @@ def _queried_card_info_diagnostics(
                 else None,
                 deck_config=deck_config,
             )
+            button_probabilities = _rwkv_button_probabilities_with_retrievability(
+                button_probabilities,
+                retrievability,
+            )
         reviewer_prediction = RwkvReviewerPrediction(
             card_id=card_id,
             retrievability=retrievability,
@@ -3778,6 +4019,7 @@ def _queried_card_info_diagnostics(
                 review_enabled
                 and _has_interval_overrides(prediction.interval_overrides)
             ),
+            button_probabilities=button_probabilities,
         )
         return RwkvReviewerDiagnostics(
             retrievability=reviewer_prediction.retrievability,
@@ -3785,6 +4027,7 @@ def _queried_card_info_diagnostics(
                 reviewer_prediction,
                 fallback_source,
             ),
+            button_probabilities=reviewer_prediction.button_probabilities,
         )
     except Exception:
         logger.exception("RWKV card info prediction failed")
@@ -3891,6 +4134,52 @@ def _format_retrievability(retrievability: float | None) -> str:
         return "Unavailable"
 
     return f"{retrievability * 100:.0f}%"
+
+
+def _format_button_probabilities(probabilities: RwkvButtonProbabilities) -> str:
+    return " ".join(
+        f"{label}:{_format_retrievability(probability)}"
+        for label, probability in zip(
+            ("Again", "Hard", "Good", "Easy"),
+            probabilities,
+            strict=True,
+        )
+    )
+
+
+def _rwkv_button_probabilities_with_retrievability(
+    probabilities: RwkvButtonProbabilities | None,
+    retrievability: float,
+) -> RwkvButtonProbabilities | None:
+    if probabilities is None or not _valid_probability(retrievability):
+        return probabilities
+
+    successful = probabilities[1] + probabilities[2] + probabilities[3]
+    if successful <= 0:
+        return probabilities
+
+    scale = retrievability / successful
+    return (
+        1.0 - retrievability,
+        probabilities[1] * scale,
+        probabilities[2] * scale,
+        probabilities[3] * scale,
+    )
+
+
+def _valid_button_probabilities(value: object) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return False
+    if len(value) != 4:
+        return False
+
+    total = 0.0
+    for probability in value:
+        if not _valid_probability(probability):
+            return False
+        total += float(probability)
+
+    return math.isclose(total, 1.0, abs_tol=0.01)
 
 
 def _card_id(card: object) -> int | None:

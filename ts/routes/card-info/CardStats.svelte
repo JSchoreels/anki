@@ -19,6 +19,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     const rwkvComputedRLabel = "RWKV computed R";
+    const rwkvButtonProbabilityLabel = "RWKV : Answer Button Probability";
+    const rwkvAfterReviewLabel = "RWKV : R After Review";
+    const retrievabilitySourceLabel = "Retrievability source";
 
     function formatStability(stabilityDays: number): string {
         let value = timeSpan(stabilityDays * 86400, false, false);
@@ -35,11 +38,36 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
+        type ExtraRow = (typeof stats.extraRows)[number];
         const statsRows: StatsRow[] = [];
+        const movedRwkvRows = new Set<ExtraRow>();
         const rwkvComputedRRow = stats.extraRows.find(
             (row) => row.label === rwkvComputedRLabel,
         );
-        let movedRwkvComputedRRow = false;
+        const rwkvButtonProbabilityRow = stats.extraRows.find(
+            (row) => row.label === rwkvButtonProbabilityLabel,
+        );
+        const rwkvAfterReviewRow = stats.extraRows.find(
+            (row) => row.label === rwkvAfterReviewLabel,
+        );
+        const retrievabilitySourceRow = stats.extraRows.find(
+            (row) => row.label === retrievabilitySourceLabel,
+        );
+
+        function pushMovedRwkvRow(row: ExtraRow | undefined): void {
+            if (row == null) {
+                return;
+            }
+            statsRows.push(row);
+            movedRwkvRows.add(row);
+        }
+
+        function pushRwkvRows(): void {
+            pushMovedRwkvRow(rwkvComputedRRow);
+            pushMovedRwkvRow(rwkvButtonProbabilityRow);
+            pushMovedRwkvRow(rwkvAfterReviewRow);
+            pushMovedRwkvRow(retrievabilitySourceRow);
+        }
 
         statsRows.push({ label: tr2.cardStatsAdded(), value: dateString(stats.added) });
 
@@ -95,8 +123,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     value: `${retrievability}%`,
                 });
                 if (rwkvComputedRRow != null) {
-                    statsRows.push(rwkvComputedRRow);
-                    movedRwkvComputedRRow = true;
+                    pushRwkvRows();
                 }
             }
         } else {
@@ -134,7 +161,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         statsRows.push({ label: tr2.cardStatsPreset(), value: stats.preset });
 
         for (const row of stats.extraRows) {
-            if (movedRwkvComputedRRow && row === rwkvComputedRRow) {
+            if (movedRwkvRows.has(row)) {
                 continue;
             }
             statsRows.push({ label: row.label, value: row.value });

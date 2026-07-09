@@ -17,6 +17,7 @@ from typing import Any, cast
 
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
+    RwkvButtonProbabilities,
     RwkvIntervalOverride,
     RwkvRecallPoint,
     RwkvReviewCandidate,
@@ -362,6 +363,7 @@ class _RustRwkvRuntime:
                 current_s90,
                 intervals,
                 s90s,
+                button_probabilities,
                 next_card_state,
                 next_note_state,
                 next_deck_state,
@@ -394,6 +396,9 @@ class _RustRwkvRuntime:
                 current_s90=_optional_interval(current_s90),
                 interval_overrides=_interval_override_from_tuple(intervals),
                 s90_overrides=_interval_override_from_tuple(s90s),
+                button_probabilities=_button_probabilities_from_tuple(
+                    button_probabilities
+                ),
             ),
             card_state=next_card_state,
             note_state=next_note_state,
@@ -535,8 +540,18 @@ class _RustRwkvRuntime:
                 current_s90=_optional_interval(current_s90),
                 interval_overrides=_interval_override_from_tuple(intervals),
                 s90_overrides=_interval_override_from_tuple(s90s),
+                button_probabilities=_button_probabilities_from_tuple(
+                    button_probabilities
+                ),
             )
-            for retrievability, current_interval, current_s90, intervals, s90s in outputs
+            for (
+                retrievability,
+                current_interval,
+                current_s90,
+                intervals,
+                s90s,
+                button_probabilities,
+            ) in outputs
         ]
 
     def predict_retrievability_many(
@@ -637,6 +652,57 @@ class _RustRwkvRuntime:
             build_elapsed_ms + predict_elapsed_ms,
         )
         return [float(retrievability) for retrievability in outputs]
+
+    def predict_retrievability_many_after_reviews(
+        self,
+        *,
+        answers: Sequence[RwkvReviewInput],
+        query_inputs: Sequence[RwkvReviewInput],
+        snapshot: RwkvBackendCacheSnapshot,
+    ) -> Sequence[Sequence[float]]:
+        predict_many = getattr(
+            self._process,
+            "predict_retrievability_many_after_reviews",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError("RWKV future retrievability prediction is unavailable")
+
+        build_start = time.monotonic()
+        answer_rows = [_review_input_row(answer) for answer in answers]
+        query_rows = [_review_input_row(review_input) for review_input in query_inputs]
+        snapshot_row = _workload_snapshot(snapshot)
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust future retrievability multi-answer batch bridge "
+            "started: answers=%s requests=%s build_elapsed_ms=%.1f",
+            len(answer_rows),
+            len(query_rows),
+            build_elapsed_ms,
+        )
+        with self._locked_process():
+            outputs = predict_many(answer_rows, query_rows, snapshot_row)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(answers):
+            raise ValueError("RWKV future retrievability answer count mismatch")
+        if any(len(answer_outputs) != len(query_inputs) for answer_outputs in outputs):
+            raise ValueError("RWKV future retrievability prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust future retrievability multi-answer batch predicted: "
+            "answers=%s requests=%s build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f "
+            "elapsed_ms=%.1f",
+            len(answer_rows),
+            len(query_rows),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return [
+            [float(retrievability) for retrievability in answer_outputs]
+            for answer_outputs in outputs
+        ]
 
     def simulate_workload(
         self,
@@ -998,6 +1064,21 @@ def _interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
         good=_optional_interval(values[2]),
         easy=_optional_interval(values[3]),
     )
+
+
+def _button_probabilities_from_tuple(
+    values: object,
+) -> RwkvButtonProbabilities | None:
+    if not isinstance(values, tuple) or len(values) != 4:
+        return None
+
+    probabilities = []
+    for value in values:
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            return None
+        probabilities.append(float(value))
+
+    return cast(RwkvButtonProbabilities, tuple(probabilities))
 
 
 def _optional_interval(value: object) -> int | None:

@@ -53,6 +53,15 @@ from aqt.rwkv_scheduler import (
 )
 from aqt.rwkv_srs_benchmark import _rust_warmup_chunk_size
 
+RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
+    "RWKV : R After Review",
+    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
+)
+RWKV_BUTTON_PROBABILITY_ROW = (
+    "RWKV : Answer Button Probability",
+    "Again:55% Hard:10% Good:20% Easy:15%",
+)
+
 
 @pytest.fixture(autouse=True)
 def reset_rwkv_reviewer_backend() -> Iterator[None]:
@@ -1020,9 +1029,14 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
     ) == [
         ("RWKV computed R", "55%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
     assert runtime.reviewed == [(1, 3)]
-    assert runtime.queries == [(2, None, None), (2, 1, ("deck", 100, 1))]
+    assert runtime.queries == [
+        (2, None, None),
+        (2, 1, ("deck", 100, 1)),
+        (2, 1, ("deck", 100, 1)),
+    ]
     assert runtime.query_inputs[0].is_query is True
     assert runtime.query_inputs[0].ease is None
     assert runtime.query_inputs[0].duration_millis is None
@@ -3888,6 +3902,7 @@ def test_reviewer_rwkv_undo_invalidates_transient_scores() -> None:
     ) == [
         ("RWKV computed R", "45%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
 
 
@@ -6880,12 +6895,95 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
     ) == [
         ("RWKV computed R", "45%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
     assert runtime.query_inputs[0].current_normal_state_kind == "review"
     assert runtime.query_inputs[0].current_elapsed_days == 7
     assert rpc.card_info_calls == [
         {"card_id": 1, "retrievability": pytest.approx(0.45)}
     ]
+
+
+def test_card_info_reports_rwkv_retrievability_after_review() -> None:
+    expected_snapshot = RwkvBackendCacheSnapshot(
+        card_states={},
+        note_states={},
+        deck_states={},
+        preset_states={},
+        global_state=None,
+        runtime_state=b"runtime",
+    )
+
+    class Backend:
+        def __init__(self) -> None:
+            self.answers: list[RwkvReviewInput] = []
+            self.queries: list[RwkvReviewInput] = []
+            self.call_count = 0
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(
+                retrievability=0.45,
+                button_probabilities=(0.55, 0.10, 0.20, 0.15),
+            )
+
+        def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
+            return expected_snapshot
+
+        def predict_retrievability_after_reviews(
+            self,
+            *,
+            answers: Sequence[RwkvReviewInput],
+            inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+            snapshot: RwkvBackendCacheSnapshot,
+        ) -> list[list[tuple[int, float]]]:
+            self.call_count += 1
+            assert snapshot is expected_snapshot
+            score_batches: list[list[tuple[int, float]]] = []
+            for answer in answers:
+                self.answers.append(answer)
+                self.queries.extend(
+                    review_input for _, review_input in inputs_by_card_id
+                )
+                assert answer.ease is not None
+                score_batches.append(
+                    [
+                        (card_id, 0.6 + answer.ease * 0.05)
+                        for card_id, _ in inputs_by_card_id
+                    ]
+                )
+            return score_batches
+
+    backend = Backend()
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(reviewer.mw.col)))
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card.time_taken = lambda capped=True: (_ for _ in ()).throw(
+        AssertionError("Card Info after-review predictions should not read answer time")
+    )
+
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=card,
+        fallback_source="FSRS",
+    ) == [
+        ("RWKV computed R", "45%"),
+        RWKV_BUTTON_PROBABILITY_ROW,
+        ("Retrievability source", "RWKV"),
+        (
+            "RWKV : R After Review",
+            "Again:65% Hard:70% Good:75% Easy:80%",
+        ),
+    ]
+    assert backend.call_count == 1
+    assert [answer.ease for answer in backend.answers] == [1, 2, 3, 4]
+    assert all(query.is_query for query in backend.queries)
+    assert all(query.ease is None for query in backend.queries)
 
 
 def test_card_info_prefers_active_rwkv_score_over_cached_reviewer_prediction() -> None:
@@ -6907,7 +7005,50 @@ def test_card_info_prefers_active_rwkv_score_over_cached_reviewer_prediction() -
     ) == [
         ("RWKV computed R", "67%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
+    assert rpc.active_score_calls == [1]
+    assert rpc.card_info_calls == []
+
+
+def test_card_info_uses_active_rwkv_score_with_queried_button_probabilities() -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            self.calls += 1
+            return RwkvReviewPrediction(
+                retrievability=0.45,
+                button_probabilities=(0.55, 0.10, 0.20, 0.15),
+            )
+
+    backend = Backend()
+    set_reviewer_backend(backend)
+    rpc = _RwkvQueueScoreRpc()
+    rpc.active_scores[1] = 0.67
+    reviewer = _rwkv_reviewer(rpc=rpc)
+    rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(reviewer.mw.col)))
+
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        fallback_source="FSRS",
+    ) == [
+        ("RWKV computed R", "67%"),
+        (
+            "RWKV : Answer Button Probability",
+            "Again:33% Hard:15% Good:30% Easy:22%",
+        ),
+        ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
+    ]
+    assert backend.calls == 1
     assert rpc.active_score_calls == [1]
     assert rpc.card_info_calls == []
 
@@ -6957,6 +7098,7 @@ def test_card_info_uses_shared_card_row_context_for_rwkv_query() -> None:
     ) == [
         ("RWKV computed R", "61%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
     assert backend.review_inputs[0].current_normal_state_kind == "review"
     assert backend.review_inputs[0].current_elapsed_days == 1
@@ -6996,6 +7138,7 @@ def test_card_info_restores_local_state_cache_before_query(
     ) == [
         ("RWKV computed R", "45%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
     assert restored_runtime.reviewed == []
@@ -7015,6 +7158,7 @@ def test_card_info_skips_rwkv_query_until_background_warmup_finishes() -> None:
     ) == [
         ("RWKV computed R", "Unavailable"),
         ("Retrievability source", "FSRS (RWKV unavailable)"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
     assert runtime.queries == []
 
@@ -7073,6 +7217,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
     ) == [
         ("RWKV computed R", "66%"),
         ("Retrievability source", "RWKV"),
+        RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
     ]
     assert created == [
         {
@@ -7412,12 +7557,20 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                 int | None,
                 tuple[int | None, ...],
                 tuple[int | None, ...],
+                tuple[float, float, float, float],
             ]
         ]:
             self.requests.append(requests)
             return [
-                (0.25, 9, 19, (1, 3, 7, 14), (2, 4, 17, 28)),
-                (0.75, None, None, (None, None, None, None), (None, None, None, None)),
+                (0.25, 9, 19, (1, 3, 7, 14), (2, 4, 17, 28), (0.75, 0.05, 0.15, 0.05)),
+                (
+                    0.75,
+                    None,
+                    None,
+                    (None, None, None, None),
+                    (None, None, None, None),
+                    (0.25, 0.10, 0.50, 0.15),
+                ),
             ]
 
     process = Process()
@@ -7464,11 +7617,13 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
         good=17,
         easy=28,
     )
+    assert first.button_probabilities == pytest.approx((0.75, 0.05, 0.15, 0.05))
     assert second is not None
     assert second.current_interval is None
     assert second.current_s90 is None
     assert second.interval_overrides == RwkvIntervalOverride()
     assert second.s90_overrides == RwkvIntervalOverride()
+    assert second.button_probabilities == pytest.approx((0.25, 0.10, 0.50, 0.15))
     assert process.requests == [
         [
             (
