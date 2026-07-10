@@ -220,7 +220,7 @@ class Reviewer:
         gui_hooks.reviewer_will_end()
         if (
             self._answeredIds
-            and aqt.rwkv_scheduler.reviewer_queue_order_refresh_on_exit_enabled(self)
+            and aqt.rwkv_scheduler.reviewer_queue_order_exit_refresh_needed(self)
         ):
             self._prepare_rwkv_queue_order_on_exit()
         self.card = None
@@ -1137,10 +1137,6 @@ class Reviewer:
                 "answered_count=%s elapsed_ms=%.1f",
                 answered_count,
                 (time.monotonic() - start) * 1000,
-            )
-            aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
-                self,
-                reason="review queue exit refresh",
             )
             update_undo_actions = getattr(self.mw, "update_undo_actions", None)
             if callable(update_undo_actions):

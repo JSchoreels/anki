@@ -598,13 +598,18 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
 
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
-        "reviewer_queue_order_refresh_on_exit_enabled",
+        "reviewer_queue_order_exit_refresh_needed",
         lambda reviewer: True,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_reviewer_queue_order",
         lambda reviewer: calls.append("prepare"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda reviewer, *, reason: calls.append("prewarm"),
     )
 
     reviewer = Reviewer.__new__(Reviewer)
@@ -627,7 +632,7 @@ def test_cleanup_skips_rwkv_queue_order_exit_refresh_without_answers(
 
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
-        "reviewer_queue_order_refresh_on_exit_enabled",
+        "reviewer_queue_order_exit_refresh_needed",
         lambda reviewer: True,
     )
     monkeypatch.setattr(

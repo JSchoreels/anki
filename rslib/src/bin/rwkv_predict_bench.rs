@@ -64,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_size,
             args.repeat,
             args.retrievability_only,
+            args.resident_state,
         )?;
 
         println!("weights={}", args.weights.display());
@@ -77,7 +78,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("repeat={}", args.repeat);
         println!(
             "prediction_mode={}",
-            if args.retrievability_only {
+            if args.resident_state {
+                "retrievability_only_resident_state"
+            } else if args.retrievability_only {
                 "retrievability_only"
             } else {
                 "full"
@@ -114,6 +117,7 @@ fn run_prediction_timing(
     batch_size: usize,
     repeat: usize,
     retrievability_only: bool,
+    resident_state: bool,
 ) -> Result<PredictionTiming, Box<dyn std::error::Error>> {
     let query_count = query_inputs.len();
     let mut total_build_ms = 0.0;
@@ -126,15 +130,18 @@ fn run_prediction_timing(
         for offset in (0..query_count).step_by(batch_size) {
             let size = batch_size.min(query_count - offset);
             let build_start = Instant::now();
-            let requests = query_requests(&query_inputs[offset..offset + size], snapshot);
+            let batch_inputs = &query_inputs[offset..offset + size];
+            let requests = (!resident_state).then(|| query_requests(batch_inputs, snapshot));
             total_build_ms += elapsed_ms(build_start);
 
             let predict_start = Instant::now();
-            let retrievabilities = if retrievability_only {
-                inference.predict_retrievability_many(requests)?
+            let retrievabilities = if resident_state {
+                inference.predict_retrievability_many_from_warm_up(batch_inputs.to_vec())?
+            } else if retrievability_only {
+                inference.predict_retrievability_many(requests.unwrap())?
             } else {
                 inference
-                    .predict_many(requests)?
+                    .predict_many(requests.unwrap())?
                     .into_iter()
                     .map(|output| output.retrievability)
                     .collect()
@@ -179,6 +186,7 @@ struct Args {
     target_retention: f32,
     max_interval_days: u32,
     retrievability_only: bool,
+    resident_state: bool,
 }
 
 impl Args {
@@ -192,6 +200,7 @@ impl Args {
         let mut target_retention = 0.9_f32;
         let mut max_interval_days = 36_500_u32;
         let mut retrievability_only = false;
+        let mut resident_state = false;
         let mut args = env::args().skip(1);
 
         while let Some(arg) = args.next() {
@@ -231,6 +240,10 @@ impl Args {
                 "--retrievability-only" => {
                     retrievability_only = true;
                 }
+                "--resident-state" => {
+                    retrievability_only = true;
+                    resident_state = true;
+                }
                 "--help" | "-h" => return Err(usage()),
                 _ => return Err(format!("unknown argument: {arg}\n{}", usage())),
             }
@@ -256,6 +269,7 @@ impl Args {
             target_retention,
             max_interval_days,
             retrievability_only,
+            resident_state,
         })
     }
 }
@@ -289,7 +303,7 @@ fn parse_next<T: std::str::FromStr>(
 fn usage() -> String {
     "usage: rwkv_predict_bench --weights weights.bin [--collection copy.anki2] \
      [--queries N] [--batch-size N|--batch-sizes N,N] [--warmup-reviews N] [--repeat N] \
-     [--target-retention R] [--max-interval-days N] [--retrievability-only]\n\
+     [--target-retention R] [--max-interval-days N] [--retrievability-only] [--resident-state]\n\
      With --collection, --warmup-reviews 0 replays all eligible review history."
         .into()
 }
