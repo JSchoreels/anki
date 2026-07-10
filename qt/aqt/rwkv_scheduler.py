@@ -409,6 +409,7 @@ class RwkvReviewInputBatchBuild:
     self_correction_features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = field(
         default_factory=dict
     )
+    dynamic_desired_retentions_resolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -11218,13 +11219,16 @@ def _resolve_dynamic_desired_retentions_for_input_build(
     reviewer: object,
     input_build: RwkvReviewInputBatchBuild,
 ) -> RwkvReviewInputBatchBuild:
+    if input_build.dynamic_desired_retentions_resolved:
+        return input_build
+
     inputs_by_card_id = _rwkv_review_input_build_inputs(input_build)
     resolved_inputs_by_card_id = _resolve_dynamic_desired_retentions_for_inputs(
         reviewer,
         inputs_by_card_id,
     )
     if resolved_inputs_by_card_id is inputs_by_card_id:
-        return input_build
+        return replace(input_build, dynamic_desired_retentions_resolved=True)
 
     remaining_by_card_id = dict(resolved_inputs_by_card_id)
     resolved_inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
@@ -11236,7 +11240,11 @@ def _resolve_dynamic_desired_retentions_for_input_build(
         if resolved_batch:
             resolved_inputs_by_batch_size[batch_size] = resolved_batch
 
-    return replace(input_build, inputs_by_batch_size=resolved_inputs_by_batch_size)
+    return replace(
+        input_build,
+        inputs_by_batch_size=resolved_inputs_by_batch_size,
+        dynamic_desired_retentions_resolved=True,
+    )
 
 
 def _resolve_dynamic_desired_retentions_for_inputs(
@@ -13738,6 +13746,10 @@ def _rwkv_review_input_batches_for_deck_review_queue(
         source_label="deck_review_queue_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
     )
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer,
+        input_build,
+    )
     if cache_key is not None:
         _cache_rwkv_review_input_batch_build(reviewer, cache_key, input_build)
     return input_build
@@ -13879,6 +13891,10 @@ def _cached_rwkv_review_input_batch_build(
         refreshed_input_count = 0
         refreshed_features = {}
         if refreshed_build is not None:
+            refreshed_build = _resolve_dynamic_desired_retentions_for_input_build(
+                reviewer,
+                refreshed_build,
+            )
             for batch_size, inputs in refreshed_build.inputs_by_batch_size.items():
                 if not inputs:
                     continue
@@ -14418,7 +14434,7 @@ def _rwkv_card_rows_for_ids(
         )
         rows = all_rows(
             f"""
-select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, data,
+select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data,
   n.tags
 from cards
 join notes n on n.id = cards.nid

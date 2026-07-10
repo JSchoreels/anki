@@ -427,9 +427,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => buildRwkvStateCache()}
                 >
                     {#if buildingRwkvStateCache}
-                        Starting RWKV state cache build...
+                        Preparing RWKV review state...
                     {:else}
-                        Build RWKV state cache
+                        Prepare RWKV review state
                     {/if}
                 </button>
 
@@ -439,9 +439,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => forceBuildRwkvStateCache()}
                 >
                     {#if forceBuildingRwkvStateCache}
-                        Starting full RWKV state cache rebuild...
+                        Rebuilding RWKV review state...
                     {:else}
-                        Force rebuild RWKV state cache
+                        Rebuild RWKV review state from scratch
                     {/if}
                 </button>
 
@@ -451,9 +451,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => recomputeRwkvCalibrationData()}
                 >
                     {#if recomputingRwkvCalibrationData}
-                        Starting RWKV calibration recompute...
+                        Recomputing historical RWKV predictions...
                     {:else}
-                        Recompute RWKV Calibration Data
+                        Recompute historical RWKV predictions
                     {/if}
                 </button>
 
@@ -463,9 +463,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => compareRwkvExtraFeatureMetrics()}
                 >
                     {#if comparingRwkvExtraFeatureMetrics}
-                        Computing RWKV feature metrics...
+                        Comparing enabled RWKV features...
                     {:else}
-                        Compare RWKV Extra Features
+                        Compare enabled RWKV features
                     {/if}
                 </button>
 
@@ -475,9 +475,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => trainRwkvSelfCorrectionCalibration()}
                 >
                     {#if trainingRwkvCalibration}
-                        Starting RWKV calibration training...
+                        Training RWKV self-correction...
                     {:else}
-                        Train RWKV Calibration
+                        Train RWKV self-correction
                     {/if}
                 </button>
 
@@ -487,9 +487,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => rescheduleRwkvReviewCards()}
                 >
                     {#if reschedulingRwkvReviewCards}
-                        Starting RWKV reschedule...
+                        Applying RWKV intervals...
                     {:else}
-                        Reschedule & update RWKV memory state
+                        Apply RWKV intervals to review cards
                     {/if}
                 </button>
 
@@ -498,7 +498,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     disabled={rwkvActionInProgress}
                     on:click={() => showRwkvWorkloadModal()}
                 >
-                    RWKV Desired Retention: Help Me Decide
+                    Choose RWKV desired retention
                 </button>
             </div>
         {/if}

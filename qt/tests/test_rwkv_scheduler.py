@@ -52,7 +52,10 @@ from aqt.rwkv_scheduler import (
     set_reviewer_backend,
     update_reviewer_scheduling_states,
 )
-from aqt.rwkv_srs_benchmark import _rust_warmup_chunk_size
+from aqt.rwkv_srs_benchmark import (
+    _rust_warmup_chunk_size,
+    _workload_snapshot_for_review_inputs,
+)
 
 RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
     "RWKV : R After Review",
@@ -78,6 +81,9 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_queue_score_config_keys = dict(
         rwkv_scheduler._rwkv_review_queue_score_config_keys
     )
+    previous_input_batch_cache = (
+        rwkv_scheduler._rwkv_review_input_batch_module_cache.copy()
+    )
     previous_stats_prepare = dict(rwkv_scheduler._rwkv_stats_prepare_in_flight)
     previous_score_prewarm = set(rwkv_scheduler._rwkv_score_prewarm_in_flight)
     previous_workload_job = rwkv_scheduler._rwkv_workload_job
@@ -89,6 +95,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_queue_target_maps.clear()
     rwkv_scheduler._rwkv_review_queue_score_generations.clear()
     rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
+    rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
     rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
     rwkv_scheduler._rwkv_startup_prompt_shown = False
@@ -119,6 +126,10 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
         rwkv_scheduler._rwkv_review_queue_score_config_keys.update(
             previous_queue_score_config_keys
+        )
+        rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
+        rwkv_scheduler._rwkv_review_input_batch_module_cache.update(
+            previous_input_batch_cache
         )
         rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
         rwkv_scheduler._rwkv_stats_prepare_in_flight.update(previous_stats_prepare)
@@ -1290,6 +1301,14 @@ def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
     )
     assert resolved_inputs[2].target_retentions == pytest.approx(
         (0.81, 0.82, 0.83, 0.84)
+    )
+    assert resolved.dynamic_desired_retentions_resolved
+    assert (
+        rwkv_scheduler._resolve_dynamic_desired_retentions_for_input_build(
+            reviewer,
+            resolved,
+        )
+        is resolved
     )
 
 
@@ -4711,8 +4730,27 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
     monkeypatch.setattr(
         rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
     )
+    dynamic_resolution_sizes: list[int] = []
+
+    def resolve_dynamic_targets(
+        reviewer: object,
+        input_build: rwkv_scheduler.RwkvReviewInputBatchBuild,
+    ) -> rwkv_scheduler.RwkvReviewInputBatchBuild:
+        if input_build.dynamic_desired_retentions_resolved:
+            return input_build
+        dynamic_resolution_sizes.append(
+            sum(len(inputs) for inputs in input_build.inputs_by_batch_size.values())
+        )
+        return replace(input_build, dynamic_desired_retentions_resolved=True)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolve_dynamic_desired_retentions_for_input_build",
+        resolve_dynamic_targets,
+    )
     previous_backend = set_reviewer_backend(backend)
     try:
+        prepare_reviewer_queue_order(reviewer)
         prepare_reviewer_queue_order(reviewer)
         reviewer._answeredIds.append(1)
         prepare_reviewer_queue_order(reviewer)
@@ -4736,6 +4774,7 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
         39,
         0,
     ]
+    assert dynamic_resolution_sizes == [1, 1]
     scores = cast(list[object], rpc.calls[-1]["scores"])
     assert scores[0].intervening_reviews == 0
 
@@ -7180,6 +7219,64 @@ def test_card_info_reports_rwkv_retrievability_after_review() -> None:
     assert [answer.ease for answer in backend.answers] == [1, 2, 3, 4]
     assert all(query.is_query for query in backend.queries)
     assert all(query.ease is None for query in backend.queries)
+
+
+def test_future_prediction_snapshot_only_includes_referenced_states() -> None:
+    first = _rwkv_review_input(card_id=1, note_id=10)
+    second = replace(
+        _rwkv_review_input(card_id=2, note_id=20),
+        identity=RwkvReviewIdentity(
+            card_id=2,
+            note_id=20,
+            deck_id=200,
+            preset_id=2000,
+        ),
+    )
+    snapshot = RwkvBackendCacheSnapshot(
+        card_states={1: b"card-1", 2: b"card-2", 3: b"unused-card"},
+        note_states={10: b"note-10", 20: b"note-20", 30: b"unused-note"},
+        deck_states={100: b"deck-100", 200: b"deck-200", 300: b"unused-deck"},
+        preset_states={
+            1000: b"preset-1000",
+            2000: b"preset-2000",
+            3000: b"unused-preset",
+        },
+        global_state=b"global",
+        runtime_state=b"runtime",
+    )
+
+    assert _workload_snapshot_for_review_inputs(snapshot, (first, second)) == (
+        [(1, b"card-1"), (2, b"card-2")],
+        [(10, b"note-10"), (20, b"note-20")],
+        [(100, b"deck-100"), (200, b"deck-200")],
+        [(1000, b"preset-1000"), (2000, b"preset-2000")],
+        b"global",
+        b"runtime",
+    )
+
+
+def test_bulk_card_load_qualifies_cards_data_column() -> None:
+    queries: list[str] = []
+
+    class DB:
+        def all(self, sql: str) -> list[tuple[object, ...]]:
+            queries.append(sql)
+            return []
+
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(col=SimpleNamespace(db=DB())),
+    )
+
+    assert (
+        rwkv_scheduler._rwkv_card_rows_for_ids(
+            reviewer,
+            [1],
+            reason="test",
+        )
+        == []
+    )
+    assert len(queries) == 1
+    assert "cards.data" in queries[0]
 
 
 def test_card_info_prefers_active_rwkv_score_over_cached_reviewer_prediction() -> None:

@@ -557,7 +557,8 @@ def _run_future_score_benchmark(args: argparse.Namespace) -> None:
     if not inputs_by_card_id:
         raise ValueError("future score benchmark needs at least one query input")
 
-    answer_source = inputs_by_card_id[0][1]
+    answer_card_id, answer_source = inputs_by_card_id[0]
+    card_info_inputs_by_card_id = [(answer_card_id, answer_source)]
     inputs_by_card_id = inputs_by_card_id[1:]
     answer_input = replace(
         answer_source,
@@ -602,6 +603,38 @@ def _run_future_score_benchmark(args: argparse.Namespace) -> None:
                     snapshot=snapshot,
                 )
             four_grade_ms += _elapsed_ms(four_grade_start)
+
+        batched_four_grade_ms = 0.0
+        batched_four_grade_scores: list[list[tuple[int, float]]] | None = []
+        for _ in range(args.repeat):
+            batched_four_grade_start = time.monotonic()
+            batched_four_grade_scores = backend.predict_retrievability_after_reviews(
+                answers=[replace(answer_input, ease=ease) for ease in (1, 2, 3, 4)],
+                inputs_by_card_id=inputs_by_card_id,
+                snapshot=snapshot,
+            )
+            batched_four_grade_ms += _elapsed_ms(batched_four_grade_start)
+
+        card_info_four_grade_ms = 0.0
+        card_info_four_grade_scores: list[list[tuple[int, float]]] | None = []
+        for _ in range(args.repeat):
+            card_info_four_grade_start = time.monotonic()
+            card_info_four_grade_scores = backend.predict_retrievability_after_reviews(
+                answers=[replace(answer_input, ease=ease) for ease in (1, 2, 3, 4)],
+                inputs_by_card_id=card_info_inputs_by_card_id,
+                snapshot=snapshot,
+            )
+            card_info_four_grade_ms += _elapsed_ms(card_info_four_grade_start)
+
+        card_info_with_snapshot_ms = 0.0
+        for _ in range(args.repeat):
+            card_info_with_snapshot_start = time.monotonic()
+            backend.predict_retrievability_after_reviews(
+                answers=[replace(answer_input, ease=ease) for ease in (1, 2, 3, 4)],
+                inputs_by_card_id=card_info_inputs_by_card_id,
+                snapshot=backend.cache_snapshot(),
+            )
+            card_info_with_snapshot_ms += _elapsed_ms(card_info_with_snapshot_start)
     finally:
         set_reviewer_backend(previous_backend)
 
@@ -619,14 +652,37 @@ def _run_future_score_benchmark(args: argparse.Namespace) -> None:
     print(f"baseline_after_answer_score_ms={baseline_ms:.3f}")
     print(f"native_after_answer_score_ms={native_ms:.3f}")
     print(f"four_grade_native_score_ms={four_grade_ms:.3f}")
+    print(f"batched_four_grade_native_score_ms={batched_four_grade_ms:.3f}")
+    print(f"card_info_four_grade_native_score_ms={card_info_four_grade_ms:.3f}")
+    print(f"card_info_four_grade_with_snapshot_ms={card_info_with_snapshot_ms:.3f}")
     print(f"per_baseline_after_answer_score_ms={baseline_ms / args.repeat:.3f}")
     print(f"per_native_after_answer_score_ms={native_ms / args.repeat:.3f}")
     print(f"per_four_grade_native_score_ms={four_grade_ms / args.repeat:.3f}")
+    print(
+        "per_batched_four_grade_native_score_ms="
+        f"{batched_four_grade_ms / args.repeat:.3f}"
+    )
+    print(
+        "per_card_info_four_grade_native_score_ms="
+        f"{card_info_four_grade_ms / args.repeat:.3f}"
+    )
+    print(
+        "per_card_info_four_grade_with_snapshot_ms="
+        f"{card_info_with_snapshot_ms / args.repeat:.3f}"
+    )
     print(f"baseline_scores={len(baseline_scores)}")
     print(f"native_scores={len(native_scores)}")
     print(f"baseline_checksum={_score_checksum(baseline_scores):.9f}")
     print(f"native_checksum={_score_checksum(native_scores):.9f}")
     print(f"max_score_delta={_max_score_delta(baseline_scores, native_scores):.9f}")
+    print(
+        "batched_four_grade_scores="
+        f"{sum(len(scores) for scores in batched_four_grade_scores or [])}"
+    )
+    print(
+        "card_info_four_grade_scores="
+        f"{sum(len(scores) for scores in card_info_four_grade_scores or [])}"
+    )
 
 
 def _score_input_batches(

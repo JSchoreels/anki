@@ -359,6 +359,10 @@ impl LimitTreeMap {
         self.get_root_limits().get(kind) == 0
     }
 
+    pub(crate) fn remaining_root_limit(&self, kind: LimitKind) -> u32 {
+        self.get_root_limits().get(kind)
+    }
+
     pub(crate) fn limit_reached(&self, deck_id: DeckId, kind: LimitKind) -> Result<bool> {
         Ok(self.get_deck_limits(deck_id)?.get(kind) == 0)
     }

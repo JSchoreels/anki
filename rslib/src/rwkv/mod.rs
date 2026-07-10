@@ -758,7 +758,7 @@ impl RwkvInference {
                 "RWKV future prediction requires a runtime state snapshot",
             ));
         };
-        let base_worker = self.worker_from_cache_state(runtime_state)?;
+        let base_features = read_runtime_feature_state(runtime_state)?;
         let base_state_maps = ReviewStateMaps::from_serialized(
             &snapshot.card_states,
             &snapshot.note_states,
@@ -771,22 +771,64 @@ impl RwkvInference {
             return Ok(answers.iter().map(|_| Vec::new()).collect());
         }
 
+        if answers.first().is_some_and(|first| {
+            answers
+                .iter()
+                .chain(&query_inputs)
+                .all(|input| same_feature_identity(first, input))
+        }) {
+            let mut features = base_features;
+            let answer_work_items = answers
+                .iter()
+                .map(|answer| ReviewPredictionWorkItem {
+                    features: features.features_for(answer),
+                    state: base_state_maps.state_owned(answer),
+                })
+                .collect::<Vec<_>>();
+            let answer_heads = self.model.review_many(&answer_work_items);
+
+            let query_count = query_inputs.len();
+            let mut query_work_items = Vec::with_capacity(answers.len() * query_count);
+            for (answer, heads) in answers.into_iter().zip(answer_heads) {
+                let feature_state = features.state_for_card(answer.card_id);
+                features.store_review(&answer);
+                for query_input in &query_inputs {
+                    query_work_items.push(ReviewPredictionWorkItem {
+                        features: features.features_for(query_input),
+                        state: base_state_maps.state_owned_after_review(
+                            &answer,
+                            query_input,
+                            &heads.next_state,
+                        ),
+                    });
+                }
+                features.restore_state(&feature_state);
+            }
+
+            return Ok(self
+                .model
+                .review_many(&query_work_items)
+                .chunks_exact(query_count)
+                .map(|heads| heads.iter().map(|heads| heads.retrievability).collect())
+                .collect());
+        }
+
         let answer_work_items = answers
             .iter()
             .map(|answer| {
-                let mut features = base_worker.features.clone();
+                let mut features = base_features.clone();
                 ReviewPredictionWorkItem {
                     features: features.features_for(answer),
                     state: base_state_maps.state_owned(answer),
                 }
             })
             .collect::<Vec<_>>();
-        let answer_heads = base_worker.model.review_many(&answer_work_items);
+        let answer_heads = self.model.review_many(&answer_work_items);
 
         let query_count = query_inputs.len();
         let mut query_work_items = Vec::with_capacity(answers.len() * query_count);
         for (answer, heads) in answers.into_iter().zip(answer_heads) {
-            let mut features = base_worker.features.clone();
+            let mut features = base_features.clone();
             features.store_review(&answer);
             for query_input in &query_inputs {
                 query_work_items.push(ReviewPredictionWorkItem {
@@ -800,7 +842,7 @@ impl RwkvInference {
             }
         }
 
-        Ok(base_worker
+        Ok(self
             .model
             .review_many(&query_work_items)
             .chunks_exact(query_count)
@@ -1448,6 +1490,27 @@ impl RwkvInference {
         let predictions = self.workload_query_predictions_for_inputs(&query_inputs, state_maps);
         Ok(memorized_from_workload_predictions(&predictions))
     }
+}
+
+fn same_feature_identity(left: &ReviewInput, right: &ReviewInput) -> bool {
+    left.card_id == right.card_id
+        && left.note_id == right.note_id
+        && left.deck_id == right.deck_id
+        && left.preset_id == right.preset_id
+}
+
+fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
+    let mut cursor = Cursor::new(bytes);
+    cursor.expect_magic(b"ARWKVPROCSTATE2")?;
+    let features = FeatureState::read_cache_state(&mut cursor)?;
+    let curve_count = cursor.u32()? as usize;
+    for _ in 0..curve_count {
+        cursor.i64()?;
+        cursor.skip_f32_vec()?;
+        cursor.skip_f32_vec()?;
+    }
+    cursor.expect_end()?;
+    Ok(features)
 }
 
 fn read_runtime_cache_state(bytes: &[u8]) -> io::Result<(FeatureState, HashMap<i64, ReviewCurve>)> {
@@ -2482,6 +2545,14 @@ impl<'a> Cursor<'a> {
             values.push(self.f32()?);
         }
         Ok(values)
+    }
+
+    fn skip_f32_vec(&mut self) -> io::Result<()> {
+        let byte_len = (self.u32()? as usize)
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "vector too large"))?;
+        self.bytes(byte_len)?;
+        Ok(())
     }
 }
 
@@ -6461,6 +6532,58 @@ order by r.id, r.cid
                 "runtime cache size diverged (record={record_predictions})"
             );
         }
+    }
+
+    #[test]
+    fn same_card_multi_answer_prediction_matches_individual_branches() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(64);
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        inference.warm_up_reviews(reviews.clone(), false).unwrap();
+
+        let mut query = reviews.last().unwrap().clone();
+        query.is_query = true;
+        query.ease = None;
+        query.duration_millis = None;
+        let answers = ANSWER_EASES
+            .into_iter()
+            .map(|ease| simulated_answer_input(&query, ease))
+            .collect::<Vec<_>>();
+        let snapshot = || {
+            let states = inference.warm_up_snapshot();
+            RwkvWorkloadSimulationSnapshot {
+                card_states: states.card_states,
+                note_states: states.note_states,
+                deck_states: states.deck_states,
+                preset_states: states.preset_states,
+                global_state: states.global_state,
+                runtime_state: Some(inference.cache_state()),
+            }
+        };
+
+        let expected = answers
+            .iter()
+            .map(|answer| {
+                inference
+                    .predict_retrievability_many_after_review(
+                        answer.clone(),
+                        vec![query.clone()],
+                        snapshot(),
+                    )
+                    .unwrap()[0]
+            })
+            .collect::<Vec<_>>();
+        let actual = inference
+            .predict_retrievability_many_after_reviews(answers, vec![query], snapshot())
+            .unwrap()
+            .into_iter()
+            .map(|scores| scores[0])
+            .collect::<Vec<_>>();
+
+        assert_close(&actual, &expected, 1e-6);
     }
 
     #[test]

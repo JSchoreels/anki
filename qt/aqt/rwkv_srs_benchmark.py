@@ -669,7 +669,10 @@ class _RustRwkvRuntime:
         build_start = time.monotonic()
         answer_row = _review_input_row(answer)
         query_rows = [_review_input_row(review_input) for review_input in query_inputs]
-        snapshot_row = _workload_snapshot(snapshot)
+        snapshot_row = _workload_snapshot_for_review_inputs(
+            snapshot,
+            (answer, *query_inputs),
+        )
         build_elapsed_ms = (time.monotonic() - build_start) * 1000
         predict_start = time.monotonic()
         logger.debug(
@@ -712,7 +715,10 @@ class _RustRwkvRuntime:
         build_start = time.monotonic()
         answer_rows = [_review_input_row(answer) for answer in answers]
         query_rows = [_review_input_row(review_input) for review_input in query_inputs]
-        snapshot_row = _workload_snapshot(snapshot)
+        snapshot_row = _workload_snapshot_for_review_inputs(
+            snapshot,
+            (*answers, *query_inputs),
+        )
         build_elapsed_ms = (time.monotonic() - build_start) * 1000
         predict_start = time.monotonic()
         logger.debug(
@@ -943,6 +949,54 @@ def _workload_snapshot(
         snapshot.global_state,
         snapshot.runtime_state,
     )
+
+
+def _workload_snapshot_for_review_inputs(
+    snapshot: RwkvBackendCacheSnapshot,
+    review_inputs: Sequence[RwkvReviewInput],
+) -> tuple[
+    list[tuple[int, bytes]],
+    list[tuple[int, bytes]],
+    list[tuple[int, bytes]],
+    list[tuple[int, bytes]],
+    bytes | None,
+    bytes | None,
+]:
+    card_ids = {review_input.identity.card_id for review_input in review_inputs}
+    note_ids = {
+        note_id
+        for review_input in review_inputs
+        if (note_id := review_input.identity.note_id) is not None
+    }
+    deck_ids = {
+        deck_id
+        for review_input in review_inputs
+        if (deck_id := review_input.identity.deck_id) is not None
+    }
+    preset_ids = {
+        preset_id
+        for review_input in review_inputs
+        if (preset_id := review_input.identity.preset_id) is not None
+    }
+    return (
+        _selected_state_items(snapshot.card_states, card_ids),
+        _selected_state_items(snapshot.note_states, note_ids),
+        _selected_state_items(snapshot.deck_states, deck_ids),
+        _selected_state_items(snapshot.preset_states, preset_ids),
+        snapshot.global_state,
+        snapshot.runtime_state,
+    )
+
+
+def _selected_state_items(
+    states: dict[int, bytes],
+    selected_ids: set[int],
+) -> list[tuple[int, bytes]]:
+    return [
+        (state_id, states[state_id])
+        for state_id in sorted(selected_ids)
+        if state_id in states
+    ]
 
 
 def _workload_bucket_probabilities(

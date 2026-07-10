@@ -1117,6 +1117,47 @@ mod test {
     }
 
     #[test]
+    fn rwkv_retrievability_order_continues_after_an_ineligible_ranked_chunk() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_desired_retention(
+            &mut deck,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.90,
+        );
+        col.set_deck_review_limit(deck.id, 1);
+
+        let timing = col.timing_today()?;
+        let mut scores = HashMap::new();
+        for index in 0..=gathering::RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE {
+            let card_id = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )?;
+            let in_first_chunk = index < gathering::RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE;
+            scores.insert(
+                card_id,
+                RwkvReviewQueueScoreEntry {
+                    retrievability: if in_first_chunk { 0.10 } else { 0.20 },
+                    intervening_reviews: None,
+                    target_retention: Some(if in_first_chunk { 0.05 } else { 0.50 }),
+                },
+            );
+        }
+        let expected = *scores.keys().max().unwrap();
+        col.set_rwkv_review_queue_score_entries(deck.id, scores)?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![expected]);
+        assert_eq!(col.counts(), [0, 0, 1]);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_retrievability_order_excludes_scores_above_desired_retention() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
