@@ -3801,6 +3801,114 @@ def test_warmup_capable_backend_records_review_retrievability_cache(tmp_path) ->
     )
 
 
+def test_state_cache_build_skips_prediction_metadata_without_cache_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class Backend:
+        def warm_up(
+            self,
+            reviews: list[RwkvReviewInput],
+            **kwargs: object,
+        ) -> None:
+            assert len(reviews) == 2
+            assert kwargs.get("prediction_recorder") is None
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_self_correction_features_by_review_id",
+        lambda *args: pytest.fail("state-only build should not prepare predictions"),
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    backend = Backend()
+
+    rwkv_scheduler._warm_up_rwkv_reviews(
+        reviewer,
+        backend,
+        backend.warm_up,
+        [
+            _rwkv_review_input(card_id=1, note_id=10),
+            _rwkv_review_input(card_id=2, note_id=20),
+        ],
+        review_ids=[101, 102],
+        progress=None,
+        label="Building RWKV state cache",
+        record_retrievability_cache=False,
+    )
+
+
+def test_state_cache_build_skips_self_correction_metadata_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class Backend:
+        def warm_up(
+            self,
+            reviews: list[RwkvReviewInput],
+            *,
+            review_ids: list[int] | None = None,
+            prediction_recorder: Any = None,
+            **kwargs: object,
+        ) -> None:
+            assert review_ids == [101, 102]
+            assert prediction_recorder is not None
+            prediction_recorder(101, 0.21)
+            prediction_recorder(102, 0.32)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_self_correction_features_by_review_id",
+        lambda *args: pytest.fail("disabled self-correction should not build features"),
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    backend = Backend()
+
+    rwkv_scheduler._warm_up_rwkv_reviews(
+        reviewer,
+        backend,
+        backend.warm_up,
+        [
+            _rwkv_review_input(card_id=1, note_id=10),
+            _rwkv_review_input(card_id=2, note_id=20),
+        ],
+        review_ids=[101, 102],
+        progress=None,
+        label="Building RWKV state cache",
+    )
+
+    assert [
+        (review_id, prediction, source)
+        for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows
+    ] == [
+        (101, pytest.approx(0.21), "rwkv_state_cache_build"),
+        (102, pytest.approx(0.32), "rwkv_state_cache_build"),
+    ]
+
+
+def test_embedded_warmup_batches_prediction_recording() -> None:
+    from aqt.rwkv_srs_benchmark import _record_warm_up_predictions
+
+    class Recorder:
+        def __call__(self, review_id: int, retrievability: float) -> None:
+            pytest.fail("batch-capable recorder should not be called per prediction")
+
+        def record_many(self, rows: list[tuple[int, float]]) -> None:
+            self.rows.append(rows)
+
+        def __init__(self) -> None:
+            self.rows: list[list[tuple[int, float]]] = []
+
+    recorder = Recorder()
+    _record_warm_up_predictions(
+        recorder,
+        [101, 102, 103, 104],
+        1,
+        [(0, 0.21), (2, 0.43), (9, 0.99)],
+    )
+
+    assert recorder.rows == [[(102, 0.21), (104, 0.43)]]
+
+
 def test_startup_loads_usable_rwkv_state_cache_with_progress(
     monkeypatch,
     tmp_path,

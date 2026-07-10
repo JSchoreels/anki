@@ -437,14 +437,17 @@ class _RustRwkvRuntime:
                         [_review_input_row(review_input) for review_input in chunk],
                         record_predictions,
                     )
-                if record_predictions:
-                    for index, retrievability in predictions:
-                        review_index = processed + int(index)
-                        if 0 <= review_index < len(review_ids):
-                            prediction_recorder(
-                                review_ids[review_index],
-                                retrievability,
-                            )
+                if (
+                    record_predictions
+                    and review_ids is not None
+                    and prediction_recorder is not None
+                ):
+                    _record_warm_up_predictions(
+                        prediction_recorder,
+                        review_ids,
+                        processed,
+                        predictions,
+                    )
 
                 processed += len(chunk)
                 _report_warmup_progress(progress, processed=processed, total=total)
@@ -1007,6 +1010,28 @@ def _workload_bucket_probabilities(
         (int(bucket), float(again), float(hard), float(good), float(easy))
         for bucket, (again, hard, good, easy) in sorted(probabilities.items())
     ]
+
+
+def _record_warm_up_predictions(
+    prediction_recorder: Callable[[int, float], None],
+    review_ids: Sequence[int],
+    processed: int,
+    predictions: Sequence[tuple[int, float]],
+) -> None:
+    rows = [
+        (review_ids[review_index], float(retrievability))
+        for index, retrievability in predictions
+        if 0 <= (review_index := processed + int(index)) < len(review_ids)
+    ]
+    if not rows:
+        return
+
+    record_many = getattr(prediction_recorder, "record_many", None)
+    if callable(record_many):
+        record_many(rows)
+    else:
+        for review_id, retrievability in rows:
+            prediction_recorder(review_id, retrievability)
 
 
 def _prediction_request_row(

@@ -2073,37 +2073,44 @@ class _RwkvReviewRetrievabilityCacheWriter:
         )
         self._self_correction_calibration = self_correction_calibration
         self._deck_configs: dict[int | None, dict[str, object] | None] = {}
-        self._rows: list[tuple[int, float, str, int, str, int]] = []
+        self._rows: list[tuple[int, float, str, int]] = []
+
+    def __call__(self, review_id: int, retrievability: float) -> None:
+        self.record(review_id, retrievability)
 
     def record(self, review_id: int, retrievability: float) -> None:
-        if (
-            self._col is None
-            or review_id <= 0
-            or not math.isfinite(retrievability)
-            or retrievability < 0
-            or retrievability > 1
-        ):
+        self.record_many([(review_id, retrievability)])
+
+    def record_many(self, rows: Sequence[tuple[int, float]]) -> None:
+        if self._col is None:
             return
 
-        prediction = self._prediction_for_review(review_id, retrievability)
-        self._rows.append(
-            (
-                review_id,
-                prediction,
-                self._source,
-                int(time.time() * 1000),
-                self._sample_role_by_review_id.get(
+        for review_id, retrievability in rows:
+            if (
+                review_id <= 0
+                or not math.isfinite(retrievability)
+                or retrievability < 0
+                or retrievability > 1
+            ):
+                continue
+
+            prediction = self._prediction_for_review(review_id, retrievability)
+            self._rows.append(
+                (
                     review_id,
-                    self._default_sample_role,
-                ),
-                self._fold_index_by_review_id.get(
-                    review_id,
-                    self._default_fold_index,
-                ),
+                    prediction,
+                    self._sample_role_by_review_id.get(
+                        review_id,
+                        self._default_sample_role,
+                    ),
+                    self._fold_index_by_review_id.get(
+                        review_id,
+                        self._default_fold_index,
+                    ),
+                )
             )
-        )
-        if len(self._rows) >= 1000:
-            self.flush()
+            if len(self._rows) >= 1000:
+                self.flush()
 
     def _prediction_for_review(
         self,
@@ -2161,7 +2168,7 @@ class _RwkvReviewRetrievabilityCacheWriter:
                         sample_role=sample_role,
                         fold_index=fold_index,
                     )
-                    for review_id, prediction, _, _, sample_role, fold_index in rows
+                    for review_id, prediction, sample_role, fold_index in rows
                 ],
             )
         except Exception:
@@ -5117,12 +5124,17 @@ def _warm_up_rwkv_reviews(
     label: str,
     record_retrievability_cache: bool = True,
 ) -> None:
+    uses_self_correction = (
+        record_retrievability_cache
+        and bool(review_ids)
+        and _rwkv_history_uses_self_correction(reviewer, reviews)
+    )
     review_inputs_by_id = (
-        dict(zip(review_ids, reviews, strict=True)) if review_ids else {}
+        dict(zip(review_ids, reviews, strict=True)) if uses_self_correction else {}
     )
     self_correction_features_by_review_id = (
         _rwkv_self_correction_features_by_review_id(review_ids, reviews)
-        if review_ids
+        if uses_self_correction
         else {}
     )
     started_at = time.monotonic()
@@ -5154,7 +5166,7 @@ def _warm_up_rwkv_reviews(
                 backend.warm_up(
                     reviews,
                     review_ids=review_ids,
-                    prediction_recorder=writer.record,
+                    prediction_recorder=writer,
                     progress=progress_reporter,
                 )
             finally:
@@ -5179,7 +5191,7 @@ def _warm_up_rwkv_reviews(
                     self_correction_features_by_review_id
                 ),
             )
-            kwargs["prediction_recorder"] = writer.record
+            kwargs["prediction_recorder"] = writer
             try:
                 warm_up_callable(reviews, **kwargs)
             finally:
@@ -5187,6 +5199,25 @@ def _warm_up_rwkv_reviews(
             return
 
         warm_up_callable(reviews, **kwargs)
+
+
+def _rwkv_history_uses_self_correction(
+    reviewer: object,
+    reviews: Sequence[RwkvReviewInput],
+) -> bool:
+    enabled_by_deck_id: dict[int | None, bool] = {}
+    for review_input in reviews:
+        deck_id = review_input.identity.deck_id
+        enabled = enabled_by_deck_id.get(deck_id)
+        if enabled is None:
+            deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+            enabled = isinstance(deck_config, dict) and _rwkv_review_self_correction_enabled(
+                deck_config
+            )
+            enabled_by_deck_id[deck_id] = enabled
+        if enabled:
+            return True
+    return False
 
 
 def _callable_parameters(

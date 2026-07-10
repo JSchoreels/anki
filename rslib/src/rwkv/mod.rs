@@ -2672,12 +2672,12 @@ impl SrsModel {
     }
 
     fn review_retrievability_query_refs(&self, items: &[ReviewPredictionQueryRef<'_>]) -> Vec<f32> {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(test)))]
         {
             self.review_retrievability_query_refs_batched(items)
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(any(not(target_os = "macos"), test))]
         {
             self.review_retrievability_query_refs_scalar(items)
         }
