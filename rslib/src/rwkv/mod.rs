@@ -903,12 +903,10 @@ impl RwkvInference {
                 Some(query_features) => {
                     let (retrievability, heads) = rayon::join(
                         || {
-                            model.review_retrievability_query_refs(&[
-                                ReviewPredictionQueryRef {
-                                    features: query_features,
-                                    state,
-                                },
-                            ])[0]
+                            model.review_retrievability_query_refs(&[ReviewPredictionQueryRef {
+                                features: query_features,
+                                state,
+                            }])[0]
                         },
                         || model.review(&features, state),
                     );

@@ -60,7 +60,7 @@ pub(super) fn matrix_times_matrix(
             left.as_ptr(),
             shared,
             right.as_ptr(),
-            shared,
+            columns,
             0.0,
             out.as_mut_ptr(),
             columns,
