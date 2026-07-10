@@ -427,6 +427,7 @@ class RwkvReviewQueueOrderAsyncWork:
     inputs_by_card_id: tuple[tuple[int, RwkvReviewInput], ...]
     predictions: tuple[RwkvReviewPrediction | None, ...]
     requests_by_index: tuple[RwkvReviewPredictionRequestByIndex, ...]
+    resident_inputs_by_index: tuple[tuple[int, RwkvReviewInput], ...]
     cache_hits: int
     warmup_elapsed_ms: float
     build_elapsed_ms: float
@@ -769,6 +770,7 @@ class RwkvStatefulReviewerBackend:
         self._deck_states = dict(snapshot.deck_states)
         self._preset_states = dict(snapshot.preset_states)
         self._global_state = snapshot.global_state
+        _restore_runtime_warm_up_snapshot(self._runtime, snapshot)
         self._advance_state_generation()
         self._undo_frames.clear()
         self._redo_frames.clear()
@@ -1225,6 +1227,21 @@ class RwkvStatefulReviewerBackend:
         if not requests:
             return []
 
+        start = time.monotonic()
+        resident_predictions = self._resident_retrievability_predictions_for_requests(
+            requests,
+            cache_predictions=True,
+        )
+        if resident_predictions is not None:
+            logger.debug(
+                "RWKV stateful request batch predicted from resident state: "
+                "requests=%s runtime=%s elapsed_ms=%.1f",
+                len(requests),
+                type(self._runtime).__name__,
+                (time.monotonic() - start) * 1000,
+            )
+            return resident_predictions
+
         predict_retrievability_many = getattr(
             self._runtime,
             "predict_retrievability_many",
@@ -1233,7 +1250,6 @@ class RwkvStatefulReviewerBackend:
         if not callable(predict_retrievability_many):
             return self.predict_review_requests(requests)
 
-        start = time.monotonic()
         retrievabilities = predict_retrievability_many(requests)
         if len(retrievabilities) != len(requests):
             raise ValueError("RWKV retrievability batch prediction count mismatch")
@@ -1250,6 +1266,97 @@ class RwkvStatefulReviewerBackend:
             for retrievability in retrievabilities
         ]
         return predictions
+
+    def predict_retrievability_inputs_from_warm_up(
+        self,
+        inputs_by_index: Sequence[tuple[int, RwkvReviewInput]],
+    ) -> Sequence[RwkvReviewPrediction | None] | None:
+        cached = self.cached_retrievability_inputs_from_warm_up(inputs_by_index)
+        if cached is None:
+            return None
+
+        start = time.monotonic()
+        predictions, misses, cache_hits = cached
+        if misses:
+            batch_predictions = (
+                self.predict_retrievability_inputs_from_warm_up_uncached(
+                    [review_input for _, review_input in misses]
+                )
+            )
+            if len(batch_predictions) != len(misses):
+                raise ValueError(
+                    "RWKV resident retrievability prediction count mismatch"
+                )
+            for (index, review_input), prediction in zip(
+                misses,
+                batch_predictions,
+                strict=True,
+            ):
+                predictions[index] = prediction
+                self._cache_prediction(review_input, prediction)
+
+        logger.debug(
+            "RWKV stateful resident retrievability inputs predicted: inputs=%s "
+            "cache_hits=%s runtime_requests=%s runtime=%s elapsed_ms=%.1f",
+            len(inputs_by_index),
+            cache_hits,
+            len(misses),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return predictions
+
+    def cached_retrievability_inputs_from_warm_up(
+        self,
+        inputs_by_index: Sequence[tuple[int, RwkvReviewInput]],
+    ) -> (
+        tuple[
+            list[RwkvReviewPrediction | None],
+            list[tuple[int, RwkvReviewInput]],
+            int,
+        ]
+        | None
+    ):
+        predict_many = getattr(
+            self._runtime,
+            "predict_retrievability_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            return None
+
+        predictions: list[RwkvReviewPrediction | None] = [None] * len(inputs_by_index)
+        misses: list[tuple[int, RwkvReviewInput]] = []
+        cache_hits = 0
+        for position, (index, review_input) in enumerate(inputs_by_index):
+            cached, prediction = self._cached_prediction(review_input)
+            if cached:
+                cache_hits += 1
+                predictions[position] = prediction
+            else:
+                misses.append((index, review_input))
+
+        return predictions, misses, cache_hits
+
+    def predict_retrievability_inputs_from_warm_up_uncached(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[RwkvReviewPrediction | None]:
+        if not review_inputs:
+            return []
+
+        predict_many = getattr(
+            self._runtime,
+            "predict_retrievability_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError("RWKV resident retrievability prediction is unavailable")
+        retrievabilities = predict_many(review_inputs)
+        return [
+            RwkvReviewPrediction(retrievability=float(retrievability))
+            for retrievability in retrievabilities
+        ]
 
     def predict_review_requests_uncached(
         self,
@@ -1307,6 +1414,21 @@ class RwkvStatefulReviewerBackend:
         if not requests:
             return []
 
+        start = time.monotonic()
+        resident_predictions = self._resident_retrievability_predictions_for_requests(
+            requests,
+            cache_predictions=False,
+        )
+        if resident_predictions is not None:
+            logger.debug(
+                "RWKV stateful uncached request batch predicted from resident state: "
+                "requests=%s runtime=%s elapsed_ms=%.1f",
+                len(requests),
+                type(self._runtime).__name__,
+                (time.monotonic() - start) * 1000,
+            )
+            return resident_predictions
+
         predict_retrievability_many = getattr(
             self._runtime,
             "predict_retrievability_many",
@@ -1315,7 +1437,6 @@ class RwkvStatefulReviewerBackend:
         if not callable(predict_retrievability_many):
             return self.predict_review_requests_uncached(requests)
 
-        start = time.monotonic()
         retrievabilities = predict_retrievability_many(requests)
         if len(retrievabilities) != len(requests):
             raise ValueError("RWKV retrievability batch prediction count mismatch")
@@ -1331,6 +1452,38 @@ class RwkvStatefulReviewerBackend:
             RwkvReviewPrediction(retrievability=float(retrievability))
             for retrievability in retrievabilities
         ]
+
+    def _resident_retrievability_predictions_for_requests(
+        self,
+        requests: Sequence[RwkvReviewPredictionRequest],
+        *,
+        cache_predictions: bool,
+    ) -> Sequence[RwkvReviewPrediction | None] | None:
+        if not callable(
+            getattr(self._runtime, "predict_retrievability_many_from_warm_up", None)
+        ):
+            return None
+        if any(not request.review_input.is_query for request in requests):
+            return None
+
+        state_generation = self._state_generation
+        for request in requests:
+            current_request = self._prediction_request(
+                request.review_input.identity,
+                request.review_input,
+            )
+            if request != current_request:
+                return None
+
+        predictions = self.predict_retrievability_inputs_from_warm_up_uncached(
+            [request.review_input for request in requests]
+        )
+        if self._state_generation != state_generation:
+            return None
+        if cache_predictions:
+            for request, prediction in zip(requests, predictions, strict=True):
+                self._cache_prediction(request.review_input, prediction)
+        return predictions
 
     def predict_retrievability_after_review(
         self,
@@ -1608,6 +1761,7 @@ class RwkvStatefulReviewerBackend:
         )
         self._global_state = snapshot.global_state
         _restore_runtime_state(self._runtime, snapshot.runtime_state)
+        _restore_runtime_warm_up_state(self._runtime, identity, snapshot)
         self._advance_state_generation()
         self._clear_prediction_cache("review state restored")
 
@@ -1832,6 +1986,25 @@ def _restore_runtime_state(runtime: RwkvReviewRuntime, state: object | None) -> 
     restore = getattr(runtime, "restore", None)
     if callable(restore):
         restore(state)
+
+
+def _restore_runtime_warm_up_snapshot(
+    runtime: RwkvReviewRuntime,
+    snapshot: RwkvBackendCacheSnapshot,
+) -> None:
+    restore = getattr(runtime, "restore_warm_up_snapshot", None)
+    if callable(restore):
+        restore(snapshot)
+
+
+def _restore_runtime_warm_up_state(
+    runtime: RwkvReviewRuntime,
+    identity: RwkvReviewIdentity,
+    snapshot: RwkvReviewerStateSnapshot,
+) -> None:
+    restore = getattr(runtime, "restore_warm_up_state", None)
+    if callable(restore):
+        restore(identity, snapshot)
 
 
 def _cacheable_state_map(states: dict[int, object | None]) -> dict[int, bytes]:
@@ -2425,7 +2598,34 @@ def score_reviewer_queue_order_async_work(
     start = time.monotonic()
     predictions = list(work.predictions)
     requests_by_index = list(work.requests_by_index)
-    runtime_batch_size = _rwkv_retrievability_batch_size(work.batch_size)
+    resident_inputs_by_index = list(work.resident_inputs_by_index)
+    if resident_inputs_by_index:
+        if _reviewer_backend_state_generation() == work.state_generation:
+            resident_predictions = _predict_retrievability_inputs_from_warm_up_uncached(
+                [review_input for _, review_input in resident_inputs_by_index]
+            )
+            if len(resident_predictions) != len(resident_inputs_by_index):
+                raise ValueError("RWKV resident prediction count mismatch")
+            for (index, _), prediction in zip(
+                resident_inputs_by_index,
+                resident_predictions,
+                strict=True,
+            ):
+                predictions[index] = prediction
+        else:
+            logger.debug(
+                "RWKV async %s resident scoring aborted after state advance: "
+                "deck_id=%s state_generation=%s current_generation=%s",
+                work.reason,
+                work.deck_id,
+                work.state_generation,
+                _reviewer_backend_state_generation(),
+            )
+
+    runtime_batch_size = min(
+        _rwkv_retrievability_batch_size(work.batch_size),
+        _MIN_RWKV_REVIEW_BATCH_SIZE,
+    )
     for missing_offset in range(0, len(requests_by_index), runtime_batch_size):
         if _reviewer_backend_state_generation() != work.state_generation:
             logger.debug(
@@ -2528,7 +2728,7 @@ def score_reviewer_queue_order_async_work(
         work.input_build.deck_configs,
         work.batch_size,
         work.cache_hits,
-        len(work.requests_by_index),
+        len(work.requests_by_index) + len(work.resident_inputs_by_index),
         work.input_build.load_elapsed_ms,
         work.input_build.candidate_elapsed_ms,
         score_elapsed_ms,
@@ -2540,7 +2740,8 @@ def score_reviewer_queue_order_async_work(
         scores=tuple(scores),
         input_build=work.input_build,
         cache_hits=work.cache_hits,
-        runtime_requests=len(work.requests_by_index),
+        runtime_requests=len(work.requests_by_index)
+        + len(work.resident_inputs_by_index),
         warmup_elapsed_ms=work.warmup_elapsed_ms,
         build_elapsed_ms=work.build_elapsed_ms,
         score_elapsed_ms=score_elapsed_ms,
@@ -2644,6 +2845,20 @@ def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
         and _rwkv_review_instant_order_enabled(deck_config)
         and _queue_scores_use_retrievability(deck_config)
         and _rwkv_review_refresh_on_exit(deck_config)
+    )
+
+
+def reviewer_queue_order_exit_refresh_needed(reviewer: object) -> bool:
+    """Return whether an enabled exit refresh lacks a current queue-score map."""
+
+    if not reviewer_queue_order_refresh_on_exit_enabled(reviewer):
+        return False
+
+    deck_id = _current_deck_id(reviewer)
+    return (
+        deck_id is not None
+        and _rwkv_review_queue_score_generations.get(deck_id)
+        != _reviewer_backend_state_generation()
     )
 
 
@@ -11459,16 +11674,20 @@ def _rwkv_review_queue_async_work_from_input_build(
         input_build,
     )
     inputs_by_card_id = tuple(_rwkv_review_input_build_inputs(input_build))
-    cached = _cached_review_input_predictions_for_inputs(
-        [
-            (index, review_input)
-            for index, (_, review_input) in enumerate(inputs_by_card_id)
-        ]
-    )
-    if cached is None:
-        return None
-
-    predictions, requests_by_index, cache_hits = cached
+    indexed_inputs = [
+        (index, review_input)
+        for index, (_, review_input) in enumerate(inputs_by_card_id)
+    ]
+    resident_cached = _cached_retrievability_inputs_from_warm_up(indexed_inputs)
+    if resident_cached is not None:
+        predictions, resident_inputs_by_index, cache_hits = resident_cached
+        requests_by_index: Sequence[RwkvReviewPredictionRequestByIndex] = []
+    else:
+        cached = _cached_review_input_predictions_for_inputs(indexed_inputs)
+        if cached is None:
+            return None
+        predictions, requests_by_index, cache_hits = cached
+        resident_inputs_by_index = []
     build_elapsed_ms = (time.monotonic() - build_start) * 1000
     logger.debug(
         "RWKV async %s work prepared: deck_id=%s searched=%s loaded=%s "
@@ -11483,7 +11702,7 @@ def _rwkv_review_queue_async_work_from_input_build(
         input_build.eligible_cards,
         len(inputs_by_card_id),
         cache_hits,
-        len(requests_by_index),
+        len(requests_by_index) + len(resident_inputs_by_index),
         input_build.deck_configs,
         batch_size,
         warmup_elapsed_ms,
@@ -11500,6 +11719,7 @@ def _rwkv_review_queue_async_work_from_input_build(
         inputs_by_card_id=inputs_by_card_id,
         predictions=tuple(predictions),
         requests_by_index=tuple(requests_by_index),
+        resident_inputs_by_index=tuple(resident_inputs_by_index),
         cache_hits=cache_hits,
         warmup_elapsed_ms=warmup_elapsed_ms,
         build_elapsed_ms=build_elapsed_ms,
@@ -12775,6 +12995,23 @@ def _rwkv_review_scores_for_inputs(
     | None = None,
 ) -> list[tuple[int, float]] | None:
     start = time.monotonic()
+    resident_predictions = _resident_retrievability_predictions_for_inputs(
+        inputs_by_card_id
+    )
+    if resident_predictions is not None:
+        scores = _scores_from_input_predictions(
+            inputs_by_card_id,
+            resident_predictions,
+        )
+        logger.debug(
+            "RWKV review inputs scored from resident state: inputs=%s scored=%s "
+            "elapsed_ms=%.1f",
+            len(inputs_by_card_id),
+            len(scores),
+            (time.monotonic() - start) * 1000,
+        )
+        return scores
+
     cached = _cached_review_input_predictions_for_inputs(
         [
             (index, review_input)
@@ -12859,6 +13096,71 @@ def _rwkv_review_scores_for_inputs(
         (time.monotonic() - start) * 1000,
     )
     return scores
+
+
+def _resident_retrievability_predictions_for_inputs(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+) -> Sequence[RwkvReviewPrediction | None] | None:
+    backend = _reviewer_backend
+    predict = getattr(
+        backend,
+        "predict_retrievability_inputs_from_warm_up",
+        None,
+    )
+    if not callable(predict):
+        return None
+    return cast(
+        Sequence[RwkvReviewPrediction | None] | None,
+        predict(
+            [
+                (index, review_input)
+                for index, (_, review_input) in enumerate(inputs_by_card_id)
+            ]
+        ),
+    )
+
+
+def _cached_retrievability_inputs_from_warm_up(
+    inputs_by_index: Sequence[tuple[int, RwkvReviewInput]],
+) -> (
+    tuple[
+        list[RwkvReviewPrediction | None],
+        list[tuple[int, RwkvReviewInput]],
+        int,
+    ]
+    | None
+):
+    backend = _reviewer_backend
+    cached = getattr(
+        backend,
+        "cached_retrievability_inputs_from_warm_up",
+        None,
+    )
+    if not callable(cached):
+        return None
+    return cast(
+        tuple[
+            list[RwkvReviewPrediction | None],
+            list[tuple[int, RwkvReviewInput]],
+            int,
+        ]
+        | None,
+        cached(inputs_by_index),
+    )
+
+
+def _predict_retrievability_inputs_from_warm_up_uncached(
+    review_inputs: Sequence[RwkvReviewInput],
+) -> Sequence[RwkvReviewPrediction | None]:
+    backend = _reviewer_backend
+    predict = getattr(
+        backend,
+        "predict_retrievability_inputs_from_warm_up_uncached",
+        None,
+    )
+    if not callable(predict):
+        raise ValueError("RWKV resident retrievability prediction is unavailable")
+    return cast(Sequence[RwkvReviewPrediction | None], predict(review_inputs))
 
 
 def _rwkv_review_predictions_for_inputs(

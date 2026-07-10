@@ -267,17 +267,20 @@ actual answered ease after the next question has been displayed.
 When `rwkv_review_refresh_on_exit` is enabled, leaving the reviewer after at
 least one answered card also starts a background RWKV queue-score refresh. This
 allows large `rwkv_review_refresh_interval` values during review while still
-refreshing the transient score map after the review session ends.
+refreshing a stale transient score map after the review session ends. If the
+latest review-time refresh has already installed a score map for the current
+RWKV state generation, Anki skips the redundant exit refresh.
 
-After non-interactive full queue-score refreshes, Anki also starts an
+After non-interactive full queue-score refreshes, Anki can also start an
 opportunistic background prewarm of the local RWKV prediction memo for the
 current deck tree and its closest parent deck tree. This prewarm does not
 install or replace transient queue/stat score maps; it only makes a later
 explicit queue or stats score request for the same current-day RWKV state
-cheaper. Post-answer interval refreshes skip this extra prewarm so the review
-collection executor is left available for the next answer operation. The memo
-is cleared whenever the stateful RWKV backend advances or restores review
-state, so post-answer predictions are not reused across a changed RWKV state.
+cheaper. Post-answer interval refreshes and reviewer-exit refreshes skip this
+extra prewarm so leaving the reviewer does not immediately rescore the same
+large deck scope. The memo is cleared whenever the stateful RWKV backend
+advances or restores review state, so post-answer predictions are not reused
+across a changed RWKV state.
 
 When entering the reviewer with a cold RWKV backend, Anki shows the first card
 without waiting for historical warm-up and full queue scoring. RWKV warm-up and
@@ -368,6 +371,22 @@ calls and avoid serialization of next-state blobs that query predictions do not
 use. Answered reviews still update recurrent state sequentially, preserving
 review-history order.
 
+After warm-up or cache restore, the embedded runner keeps deserialized
+recurrent-state maps resident in Rust. Queue and stats R-only scoring can send
+one batch of primitive review-input rows and resolve card, note, deck, preset,
+and global state inside Rust instead of cloning and deserializing five state
+blobs for every card. On macOS, it processes cache-local query chunks on Rayon
+worker lanes and uses Accelerate for dense projections. Other platforms retain
+the existing per-card Rayon query path. The macOS query-only WKV kernel computes
+the retrievability output without retaining transient next-state rows. Answered
+reviews, cache restores, undo, and redo keep the resident maps synchronized
+with the serialized desktop cache.
+
+Legacy R-only request callers also use the resident path when their supplied
+state snapshots match the current warmed state. Requests for another snapshot,
+and full answer-state predictions that need interval and S90 heads, retain the
+serialized path.
+
 The embedded runner also exposes a native after-review R-only path for exact
 post-answer queue preparation. It restores a supplied snapshot into a temporary
 worker, applies one answer state to that worker, and scores the requested query
@@ -455,6 +474,10 @@ these messages:
 - `RWKV review prediction candidates scored`: the outer scorer finished a
   candidate set. `runtime_requests` is the number of candidates sent through
   inference after cache splitting.
+- `RWKV review inputs scored from resident state`: the embedded scorer resolved
+  recurrent state inside Rust and avoided per-card serialized state requests.
+- `RWKV stateful resident retrievability inputs predicted`: reports the
+  resident batch's `cache_hits`, `runtime_requests`, and total elapsed time.
 - `RWKV review prediction candidates scored from cache`: the whole candidate
   set was served from memoized predictions, so no runtime batch was needed.
 - `RWKV stateful request batch predict_many started`: `requests` is the number

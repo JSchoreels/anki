@@ -22,6 +22,8 @@ from aqt.rwkv_scheduler import (
     RwkvRecallPoint,
     RwkvReviewCandidate,
     RwkvReviewerBackend,
+    RwkvReviewerStateSnapshot,
+    RwkvReviewIdentity,
     RwkvReviewInput,
     RwkvReviewPrediction,
     RwkvReviewPredictionRequest,
@@ -610,6 +612,45 @@ class _RustRwkvRuntime:
 
         return [float(retrievability) for retrievability in outputs]
 
+    def predict_retrievability_many_from_warm_up(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[float]:
+        predict_many = getattr(
+            self._process,
+            "predict_retrievability_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError("RWKV resident-state prediction is unavailable")
+
+        build_start = time.monotonic()
+        rows = [_review_input_row(review_input) for review_input in review_inputs]
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust resident retrievability batch started: "
+            "requests=%s build_elapsed_ms=%.1f",
+            len(rows),
+            build_elapsed_ms,
+        )
+        with self._locked_process():
+            outputs = predict_many(rows)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(review_inputs):
+            raise ValueError("RWKV Rust resident prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust resident retrievability batch predicted: "
+            "requests=%s build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f "
+            "elapsed_ms=%.1f",
+            len(rows),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return [float(retrievability) for retrievability in outputs]
+
     def predict_retrievability_many_after_review(
         self,
         *,
@@ -788,6 +829,34 @@ class _RustRwkvRuntime:
     def restore_cache_state(self, state: bytes) -> None:
         with self._locked_process():
             self._process.restore_cache_state(state)
+
+    def restore_warm_up_snapshot(self, snapshot: RwkvBackendCacheSnapshot) -> None:
+        restore = getattr(self._process, "restore_warm_up_snapshot", None)
+        if not callable(restore):
+            raise ValueError("RWKV resident-state snapshot restore is unavailable")
+        with self._locked_process():
+            restore(_workload_snapshot(snapshot))
+
+    def restore_warm_up_state(
+        self,
+        identity: RwkvReviewIdentity,
+        snapshot: RwkvReviewerStateSnapshot,
+    ) -> None:
+        restore = getattr(self._process, "restore_warm_up_state", None)
+        if not callable(restore):
+            raise ValueError("RWKV resident-state restore is unavailable")
+        with self._locked_process():
+            restore(
+                identity.card_id,
+                identity.note_id,
+                identity.deck_id,
+                identity.preset_id,
+                _state_bytes(snapshot.card_state),
+                _state_bytes(snapshot.note_state),
+                _state_bytes(snapshot.deck_state),
+                _state_bytes(snapshot.preset_state),
+                _state_bytes(snapshot.global_state),
+            )
 
 
 def _review_input_row(

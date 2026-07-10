@@ -231,7 +231,7 @@ class Reviewer:
         gui_hooks.reviewer_will_end()
         if (
             self._answeredIds
-            and aqt.rwkv_scheduler.reviewer_queue_order_refresh_on_exit_enabled(self)
+            and aqt.rwkv_scheduler.reviewer_queue_order_exit_refresh_needed(self)
         ):
             self._prepare_rwkv_queue_order_on_exit()
         self.card = None
@@ -1316,7 +1316,7 @@ class Reviewer:
         self._prepare_rwkv_queue_order_async(
             answered_card_id=self._answeredIds[-1],
             reason="review queue exit refresh",
-            prewarm_reason="review queue exit refresh",
+            prewarm_reason=None,
         )
         logger.debug(
             "reviewer RWKV queue order exit refresh queued: "

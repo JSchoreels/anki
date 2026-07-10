@@ -275,6 +275,20 @@ impl RwkvInference {
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn predict_retrievability_many_from_warm_up(
+        &mut self,
+        inputs: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<f32>> {
+        let mut parsed_inputs = Vec::new();
+        for input in inputs.try_iter()? {
+            parsed_inputs.push(parse_rwkv_review_input(&input?)?);
+        }
+
+        self.inner
+            .predict_retrievability_many_from_warm_up(parsed_inputs)
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn predict_retrievability_many_packed(
         &mut self,
         requests: &Bound<'_, PyBytes>,
@@ -376,6 +390,49 @@ impl RwkvInference {
                 .map(|state| PyBytes::new(py, &state).unbind()),
             PyBytes::new(py, &cache_state).unbind(),
         )
+    }
+
+    fn restore_warm_up_snapshot(&mut self, snapshot: &Bound<'_, PyAny>) -> PyResult<()> {
+        let snapshot = parse_rwkv_workload_snapshot(snapshot)?;
+        self.inner
+            .restore_warm_up_snapshot(rwkv::RwkvWarmUpSnapshot {
+                card_states: snapshot.card_states,
+                note_states: snapshot.note_states,
+                deck_states: snapshot.deck_states,
+                preset_states: snapshot.preset_states,
+                global_state: snapshot.global_state,
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restore_warm_up_state(
+        &mut self,
+        card_id: i64,
+        note_id: Option<i64>,
+        deck_id: Option<i64>,
+        preset_id: Option<i64>,
+        card_state: Option<&Bound<'_, PyBytes>>,
+        note_state: Option<&Bound<'_, PyBytes>>,
+        deck_state: Option<&Bound<'_, PyBytes>>,
+        preset_state: Option<&Bound<'_, PyBytes>>,
+        global_state: Option<&Bound<'_, PyBytes>>,
+    ) -> PyResult<()> {
+        self.inner
+            .restore_warm_up_state(
+                card_id,
+                note_id,
+                deck_id,
+                preset_id,
+                rwkv::ReviewStateOwned {
+                    card: card_state.map(|state| state.as_bytes().to_vec()),
+                    note: note_state.map(|state| state.as_bytes().to_vec()),
+                    deck: deck_state.map(|state| state.as_bytes().to_vec()),
+                    preset: preset_state.map(|state| state.as_bytes().to_vec()),
+                    global: global_state.map(|state| state.as_bytes().to_vec()),
+                },
+            )
+            .map_err(|err| PyException::new_err(err.to_string()))
     }
 
     fn simulate_workload(

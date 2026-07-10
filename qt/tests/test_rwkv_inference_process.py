@@ -669,6 +669,19 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
                 global_state=global_state,
             )
         )
+        query_input = _rwkv_review_args(
+            review,
+            is_query=True,
+            card_state=None,
+            note_state=None,
+            deck_state=None,
+            preset_state=None,
+            global_state=None,
+        )[:15]
+        resident_output = runtime.predict_retrievability_many_from_warm_up(
+            [query_input]
+        )
+        assert resident_output == pytest.approx([query_output[0]], abs=_RWKV_ABS_TOL)
         if index == 0:
             assert math.isclose(
                 query_output[0], _RWKV_GOLDEN_ROW0_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
@@ -702,6 +715,48 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         preset_states[review["preset_id"]] = update_output[9]
         global_state = update_output[10]
         curves = _rwkv_curves_from_cache(runtime.cache_state())
+
+    snapshot = runtime.warm_up_snapshot()
+    batch_inputs: list[tuple[object, ...]] = []
+    batch_expected: list[float] = []
+    for review in _RWKV_GOLDEN_REVIEWS[-9:]:
+        batch_expected.append(
+            runtime.review(
+                *_rwkv_review_args(
+                    review,
+                    is_query=True,
+                    card_state=card_states.get(review["card_id"]),
+                    note_state=note_states.get(review["note_id"]),
+                    deck_state=deck_states.get(review["deck_id"]),
+                    preset_state=preset_states.get(review["preset_id"]),
+                    global_state=global_state,
+                )
+            )[0]
+        )
+        batch_inputs.append(
+            _rwkv_review_args(
+                review,
+                is_query=True,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15]
+        )
+    assert runtime.predict_retrievability_many_from_warm_up(
+        batch_inputs
+    ) == pytest.approx(batch_expected, abs=_RWKV_ABS_TOL)
+
+    restored = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    restored.restore_warm_up_snapshot(snapshot)
+    restored.restore_cache_state(snapshot[5])
+    assert restored.predict_retrievability_many_from_warm_up(
+        [query_input]
+    ) == pytest.approx(
+        runtime.predict_retrievability_many_from_warm_up([query_input]),
+        abs=_RWKV_ABS_TOL,
+    )
 
 
 def test_rwkv_inference_process_uses_eval_mode(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,6 +10,8 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 mod bulk;
+#[cfg(target_os = "macos")]
+mod matmul;
 
 const D_MODEL: usize = 128;
 const CARD_FEATURES: usize = 92;
@@ -22,7 +24,6 @@ const S90_TARGET_RETENTION: f32 = 0.9;
 
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
-
 /// Rows per block in the bulk replay's blocked projection kernels. Bounds the
 /// stack scratch used per block; larger blocks amortize weight-matrix streaming
 /// over more rows.
@@ -234,6 +235,12 @@ fn record_rwkv_scan_step(
     });
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+const MAX_CHANNEL_MIXER_DIM: usize = 256;
+#[cfg(any(not(target_os = "macos"), test))]
+const MAX_LORA_RANK: usize = 16;
+#[cfg(any(target_os = "macos", test))]
+const RETRIEVABILITY_GEMM_BATCH_SIZE: usize = 128;
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
 const ID_SPLIT: u64 = 4;
 const TORCH_ID_RNG_STATE_LEN: usize = 624;
@@ -480,6 +487,26 @@ struct ReviewPredictionWorkItem {
     state: SrsStateOwned,
 }
 
+struct ReviewPredictionBorrowedWorkItem<'a> {
+    features: Vec<f32>,
+    state: SrsStateRef<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct ReviewPredictionQueryRef<'a> {
+    features: &'a [f32],
+    state: SrsStateRef<'a>,
+}
+
+impl ReviewPredictionQueryRef<'_> {
+    #[cfg(any(target_os = "macos", test))]
+    fn layer_state(&self, module_id: usize, layer_id: usize) -> Option<&LayerState> {
+        self.state
+            .module(module_id)
+            .and_then(|state| state.layers.get(layer_id))
+    }
+}
+
 struct RwkvSimulationCard {
     review_input: RwkvWorkloadSimulationInput,
     due_day: i64,
@@ -544,6 +571,16 @@ impl RwkvInference {
             .unwrap_or(([None; 4], [None; 4]));
         let (current_interval, current_s90) = self.current_intervals(&input, &heads);
 
+        let card_state = serialize_module_state(&heads.next_state.card);
+        let deck_state = serialize_module_state(&heads.next_state.deck);
+        let note_state = serialize_module_state(&heads.next_state.note);
+        let preset_state = serialize_module_state(&heads.next_state.preset);
+        let global_state = serialize_module_state(&heads.next_state.global);
+
+        if !input.is_query {
+            self.warm_up_states.store(&input, heads.next_state);
+        }
+
         Ok(ReviewOutput {
             retrievability: heads.retrievability,
             button_probabilities: heads.button_probabilities,
@@ -551,11 +588,11 @@ impl RwkvInference {
             current_s90,
             intervals,
             s90s,
-            card_state: serialize_module_state(&heads.next_state.card),
-            deck_state: serialize_module_state(&heads.next_state.deck),
-            note_state: serialize_module_state(&heads.next_state.note),
-            preset_state: serialize_module_state(&heads.next_state.preset),
-            global_state: serialize_module_state(&heads.next_state.global),
+            card_state,
+            deck_state,
+            note_state,
+            preset_state,
+            global_state,
         })
     }
 
@@ -621,6 +658,35 @@ impl RwkvInference {
         }
 
         Ok(self.model.review_retrievability_many(&work_items))
+    }
+
+    pub fn predict_retrievability_many_from_warm_up(
+        &mut self,
+        inputs: Vec<ReviewInput>,
+    ) -> io::Result<Vec<f32>> {
+        for input in &inputs {
+            if !input.is_query {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV batched retrievability prediction only supports query inputs",
+                ));
+            }
+        }
+
+        let features = inputs
+            .iter()
+            .map(|input| self.features.features_for(input))
+            .collect::<Vec<_>>();
+        let work_items = inputs
+            .iter()
+            .zip(features)
+            .map(|(input, features)| ReviewPredictionBorrowedWorkItem {
+                features,
+                state: self.warm_up_states.state_ref(input),
+            })
+            .collect::<Vec<_>>();
+
+        Ok(self.model.review_retrievability_many_borrowed(&work_items))
     }
 
     pub fn predict_retrievability_many_after_review(
@@ -794,7 +860,14 @@ impl RwkvInference {
             let (query_retrievability, heads) = match &query_features {
                 Some(query_features) => {
                     let (retrievability, heads) = rayon::join(
-                        || model.review_retrievability_features(query_features, state),
+                        || {
+                            model.review_retrievability_query_refs(&[
+                                ReviewPredictionQueryRef {
+                                    features: query_features,
+                                    state,
+                                },
+                            ])[0]
+                        },
                         || model.review(&features, state),
                     );
                     (Some(retrievability), heads)
@@ -813,6 +886,44 @@ impl RwkvInference {
         Ok(predictions)
     }
 
+    #[cfg(test)]
+    fn warm_up_reviews_with_state_compression(
+        &mut self,
+        reviews: &[ReviewInput],
+        compression: Option<StateCompression>,
+    ) -> Vec<f32> {
+        let mut predictions = Vec::new();
+        for input in reviews {
+            if input.ease.is_none() {
+                continue;
+            }
+
+            let mut query_input = input.clone();
+            query_input.is_query = true;
+            query_input.ease = None;
+            query_input.duration_millis = None;
+            let features = self.features.features_for(&query_input);
+            let query_heads = self
+                .model
+                .review(&features, self.warm_up_states.state_ref(&query_input));
+            predictions.push(query_heads.retrievability);
+
+            let features = self.features.features_for(input);
+            let heads = self
+                .model
+                .review(&features, self.warm_up_states.state_ref(input));
+            self.features.store_review(input);
+            self.curves.insert(input.card_id, heads.curve.clone());
+            let next_state = match compression {
+                Some(compression) => compressed_srs_state(heads.next_state, compression),
+                None => heads.next_state,
+            };
+            self.warm_up_states.store(input, next_state);
+        }
+
+        predictions
+    }
+
     pub fn warm_up_snapshot(&self) -> RwkvWarmUpSnapshot {
         RwkvWarmUpSnapshot {
             card_states: serialize_state_map(&self.warm_up_states.card),
@@ -825,6 +936,29 @@ impl RwkvInference {
                 .as_ref()
                 .map(serialize_module_state),
         }
+    }
+
+    pub fn restore_warm_up_snapshot(&mut self, snapshot: RwkvWarmUpSnapshot) -> io::Result<()> {
+        self.warm_up_states = ReviewStateMaps::from_serialized(
+            &snapshot.card_states,
+            &snapshot.note_states,
+            &snapshot.deck_states,
+            &snapshot.preset_states,
+            snapshot.global_state.as_deref(),
+        )?;
+        Ok(())
+    }
+
+    pub fn restore_warm_up_state(
+        &mut self,
+        card_id: i64,
+        note_id: Option<i64>,
+        deck_id: Option<i64>,
+        preset_id: Option<i64>,
+        state: ReviewStateOwned,
+    ) -> io::Result<()> {
+        self.warm_up_states
+            .restore_serialized(card_id, note_id, deck_id, preset_id, &state)
     }
 
     pub fn reset_warm_up_state(&mut self) {
@@ -2367,6 +2501,45 @@ struct SrsModel {
     p_linear: Linear,
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+struct ReviewRetrievabilityScratch {
+    feature_hidden: [f32; HEAD_DIM],
+    normalized_features: [f32; HEAD_DIM],
+    module: ModuleQueryScratch,
+    prehead: [f32; D_MODEL],
+    head: [f32; HEAD_DIM],
+    logits: [f32; 4],
+    probabilities: [f32; 4],
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct ReviewRetrievabilityBatchScratch {
+    feature_input: Vec<f32>,
+    feature_hidden: Vec<f32>,
+    normalized_features: Vec<f32>,
+    x: Vec<f32>,
+    module: ModuleQueryBatchScratch,
+    prehead: Vec<f32>,
+    head: Vec<f32>,
+    logits: Vec<f32>,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+impl Default for ReviewRetrievabilityScratch {
+    fn default() -> Self {
+        Self {
+            feature_hidden: [0.0; HEAD_DIM],
+            normalized_features: [0.0; HEAD_DIM],
+            module: ModuleQueryScratch::default(),
+            prehead: [0.0; D_MODEL],
+            head: [0.0; HEAD_DIM],
+            logits: [0.0; 4],
+            probabilities: [0.0; 4],
+        }
+    }
+}
+
 impl SrsModel {
     fn load(path: &PathBuf) -> io::Result<Self> {
         let weights = WeightMap::load(path)?;
@@ -2405,10 +2578,118 @@ impl SrsModel {
     }
 
     fn review_retrievability_many(&self, items: &[ReviewPredictionWorkItem]) -> Vec<f32> {
+        let items = items
+            .iter()
+            .map(|item| ReviewPredictionQueryRef {
+                features: &item.features,
+                state: item.state.as_ref(),
+            })
+            .collect::<Vec<_>>();
+        self.review_retrievability_query_refs(&items)
+    }
+
+    fn review_retrievability_many_borrowed(
+        &self,
+        items: &[ReviewPredictionBorrowedWorkItem<'_>],
+    ) -> Vec<f32> {
+        let items = items
+            .iter()
+            .map(|item| ReviewPredictionQueryRef {
+                features: &item.features,
+                state: item.state,
+            })
+            .collect::<Vec<_>>();
+        self.review_retrievability_query_refs(&items)
+    }
+
+    fn review_retrievability_query_refs(&self, items: &[ReviewPredictionQueryRef<'_>]) -> Vec<f32> {
+        #[cfg(target_os = "macos")]
+        {
+            self.review_retrievability_query_refs_batched(items)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.review_retrievability_query_refs_scalar(items)
+        }
+    }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn review_retrievability_query_refs_scalar(
+        &self,
+        items: &[ReviewPredictionQueryRef<'_>],
+    ) -> Vec<f32> {
         items
             .par_iter()
-            .map(|item| self.review_retrievability_features(&item.features, item.state.as_ref()))
+            .map_init(ReviewRetrievabilityScratch::default, |scratch, item| {
+                self.review_retrievability_features(item.features, item.state, scratch)
+            })
             .collect()
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn review_retrievability_query_refs_batched(
+        &self,
+        items: &[ReviewPredictionQueryRef<'_>],
+    ) -> Vec<f32> {
+        let mut retrievabilities = vec![0.0; items.len()];
+        retrievabilities
+            .par_chunks_mut(RETRIEVABILITY_GEMM_BATCH_SIZE)
+            .zip(items.par_chunks(RETRIEVABILITY_GEMM_BATCH_SIZE))
+            .for_each_init(
+                ReviewRetrievabilityBatchScratch::default,
+                |scratch, (retrievabilities, items)| {
+                    self.review_retrievability_query_batch(items, scratch, retrievabilities);
+                },
+            );
+        retrievabilities
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn review_retrievability_query_batch(
+        &self,
+        items: &[ReviewPredictionQueryRef<'_>],
+        scratch: &mut ReviewRetrievabilityBatchScratch,
+        retrievabilities: &mut [f32],
+    ) {
+        let rows = items.len();
+        scratch.feature_input.clear();
+        scratch.feature_input.reserve(rows * CARD_FEATURES);
+        for item in items {
+            scratch.feature_input.extend_from_slice(item.features);
+        }
+
+        self.features_0
+            .apply_batch(&scratch.feature_input, rows, &mut scratch.feature_hidden);
+        silu_in_place(&mut scratch.feature_hidden);
+        self.features_norm.apply_batch(
+            &scratch.feature_hidden,
+            rows,
+            &mut scratch.normalized_features,
+        );
+        self.features_3
+            .apply_batch(&scratch.normalized_features, rows, &mut scratch.x);
+        silu_in_place(&mut scratch.x);
+
+        for (module_id, module) in self.modules.iter().enumerate() {
+            module.run_query_batch(&mut scratch.x, items, module_id, &mut scratch.module);
+        }
+
+        self.prehead_norm
+            .apply_batch(&scratch.x, rows, &mut scratch.prehead);
+        self.head_p_0
+            .apply_batch(&scratch.prehead, rows, &mut scratch.head);
+        relu_in_place(&mut scratch.head);
+        self.p_linear
+            .apply_batch(&scratch.head, rows, &mut scratch.logits);
+        for (retrievability, logits) in retrievabilities
+            .iter_mut()
+            .zip(scratch.logits.chunks_exact(4))
+        {
+            let mut probabilities = [0.0; 4];
+            softmax_into(logits, &mut probabilities);
+            *retrievability = 1.0 - probabilities[0];
+        }
     }
 
     /// The feature MLP shared by the per-review and bulk replay paths.
@@ -2530,17 +2811,41 @@ impl SrsModel {
         heads
     }
 
-    fn review_retrievability_features(&self, features: &[f32], state: SrsStateRef<'_>) -> f32 {
-        let x = self.feature_mlp(features);
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn review_retrievability_features(
+        &self,
+        features: &[f32],
+        state: SrsStateRef<'_>,
+        scratch: &mut ReviewRetrievabilityScratch,
+    ) -> f32 {
+        self.features_0
+            .apply_into(features, &mut scratch.feature_hidden);
+        silu_in_place(&mut scratch.feature_hidden);
+        self.features_norm
+            .apply_into(&scratch.feature_hidden, &mut scratch.normalized_features);
+        let mut x = [0.0; D_MODEL];
+        self.features_3
+            .apply_into(&scratch.normalized_features, &mut x);
+        silu_in_place(&mut x);
 
-        let (x, _) = self.modules[0].run(&x, state.card);
-        let (x, _) = self.modules[1].run(&x, state.deck);
-        let (x, _) = self.modules[2].run(&x, state.note);
-        let (x, _) = self.modules[3].run(&x, state.preset);
-        let (x, _) = self.modules[4].run(&x, state.global);
+        let states = [
+            state.card,
+            state.deck,
+            state.note,
+            state.preset,
+            state.global,
+        ];
+        for (module, state) in self.modules.iter().zip(states) {
+            x = module.run_query(&x, state, &mut scratch.module);
+        }
 
-        let x = self.prehead_norm.apply(&x);
-        self.retrievability_head(&x)
+        self.prehead_norm.apply_into(&x, &mut scratch.prehead);
+        self.head_p_0
+            .apply_into(&scratch.prehead, &mut scratch.head);
+        relu_in_place(&mut scratch.head);
+        self.p_linear.apply_into(&scratch.head, &mut scratch.logits);
+        softmax_into(&scratch.logits, &mut scratch.probabilities);
+        1.0 - scratch.probabilities[0]
     }
 }
 
@@ -2578,6 +2883,20 @@ struct SrsStateRef<'a> {
     note: Option<&'a ModuleState>,
     preset: Option<&'a ModuleState>,
     global: Option<&'a ModuleState>,
+}
+
+impl<'a> SrsStateRef<'a> {
+    #[cfg(any(target_os = "macos", test))]
+    fn module(self, module_id: usize) -> Option<&'a ModuleState> {
+        match module_id {
+            0 => self.card,
+            1 => self.deck,
+            2 => self.note,
+            3 => self.preset,
+            4 => self.global,
+            _ => None,
+        }
+    }
 }
 
 struct SrsStateOwned {
@@ -2701,6 +3020,46 @@ impl ReviewStateMaps {
         }
         self.global = Some(state.global);
     }
+
+    fn restore_serialized(
+        &mut self,
+        card_id: i64,
+        note_id: Option<i64>,
+        deck_id: Option<i64>,
+        preset_id: Option<i64>,
+        state: &ReviewStateOwned,
+    ) -> io::Result<()> {
+        restore_serialized_state(&mut self.card, card_id, state.card.as_deref())?;
+        restore_optional_serialized_state(&mut self.note, note_id, state.note.as_deref())?;
+        restore_optional_serialized_state(&mut self.deck, deck_id, state.deck.as_deref())?;
+        restore_optional_serialized_state(&mut self.preset, preset_id, state.preset.as_deref())?;
+        self.global = deserialize_module_state(state.global.as_deref())?;
+        Ok(())
+    }
+}
+
+fn restore_serialized_state(
+    states: &mut HashMap<i64, ModuleState>,
+    id: i64,
+    state: Option<&[u8]>,
+) -> io::Result<()> {
+    if let Some(state) = deserialize_module_state(state)? {
+        states.insert(id, state);
+    } else {
+        states.remove(&id);
+    }
+    Ok(())
+}
+
+fn restore_optional_serialized_state(
+    states: &mut HashMap<i64, ModuleState>,
+    id: Option<i64>,
+    state: Option<&[u8]>,
+) -> io::Result<()> {
+    if let Some(id) = id {
+        restore_serialized_state(states, id, state)?;
+    }
+    Ok(())
 }
 
 fn branched_optional_module_state(
@@ -2956,6 +3315,34 @@ struct RwkvModule {
     layers: Vec<RwkvLayer>,
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+struct ModuleQueryScratch {
+    current: [f32; D_MODEL],
+    next: [f32; D_MODEL],
+    v0: [f32; D_MODEL],
+    layer: LayerQueryScratch,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct ModuleQueryBatchScratch {
+    next: Vec<f32>,
+    v0: Vec<f32>,
+    layer: LayerQueryBatchScratch,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+impl Default for ModuleQueryScratch {
+    fn default() -> Self {
+        Self {
+            current: [0.0; D_MODEL],
+            next: [0.0; D_MODEL],
+            v0: [0.0; D_MODEL],
+            layer: LayerQueryScratch::default(),
+        }
+    }
+}
+
 impl RwkvModule {
     fn load(weights: &WeightMap, module_id: usize, layer_count: usize) -> io::Result<Self> {
         let mut layers = Vec::with_capacity(layer_count);
@@ -2991,6 +3378,64 @@ impl RwkvModule {
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleRun, profile_started);
         output
     }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn run_query(
+        &self,
+        input: &[f32],
+        state: Option<&ModuleState>,
+        scratch: &mut ModuleQueryScratch,
+    ) -> [f32; D_MODEL] {
+        let ModuleQueryScratch {
+            current,
+            next,
+            v0,
+            layer: layer_scratch,
+        } = scratch;
+        current.copy_from_slice(input);
+        v0.fill(0.0);
+        let mut current = current;
+        let mut next = next;
+
+        for (layer_id, layer) in self.layers.iter().enumerate() {
+            let layer_state = state.and_then(|state| state.layers.get(layer_id));
+            layer.run_query_into(current, v0, layer_state, next, layer_scratch);
+            std::mem::swap(&mut current, &mut next);
+        }
+
+        *current
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn run_query_batch(
+        &self,
+        x: &mut Vec<f32>,
+        items: &[ReviewPredictionQueryRef<'_>],
+        module_id: usize,
+        scratch: &mut ModuleQueryBatchScratch,
+    ) {
+        let rows = items.len();
+        scratch.v0.resize(rows * D_MODEL, 0.0);
+        scratch.v0.fill(0.0);
+        let mut current = std::mem::take(x);
+        let mut next = std::mem::take(&mut scratch.next);
+
+        for (layer_id, layer) in self.layers.iter().enumerate() {
+            layer.run_query_batch(
+                &current,
+                &mut scratch.v0,
+                items,
+                module_id,
+                layer_id,
+                &mut next,
+                &mut scratch.layer,
+            );
+            std::mem::swap(&mut current, &mut next);
+        }
+
+        *x = current;
+        scratch.next = next;
+    }
 }
 
 #[derive(Clone)]
@@ -3001,6 +3446,32 @@ struct ModuleState {
 struct RwkvLayer {
     time_mixer: TimeMixer,
     channel_mixer: ChannelMixer,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+struct LayerQueryScratch {
+    time_output: [f32; D_MODEL],
+    time: TimeMixerQueryScratch,
+    channel: ChannelMixerQueryScratch,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct LayerQueryBatchScratch {
+    time_output: Vec<f32>,
+    time: TimeMixerQueryBatchScratch,
+    channel: ChannelMixerQueryBatchScratch,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+impl Default for LayerQueryScratch {
+    fn default() -> Self {
+        Self {
+            time_output: [0.0; D_MODEL],
+            time: TimeMixerQueryScratch::default(),
+            channel: ChannelMixerQueryScratch::default(),
+        }
+    }
 }
 
 impl RwkvLayer {
@@ -3032,6 +3503,61 @@ impl RwkvLayer {
             },
         )
     }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn run_query_into(
+        &self,
+        input: &[f32],
+        v0: &mut [f32; D_MODEL],
+        state: Option<&LayerState>,
+        out: &mut [f32; D_MODEL],
+        scratch: &mut LayerQueryScratch,
+    ) {
+        self.time_mixer.run_query_into(
+            input,
+            v0,
+            state.and_then(|state| state.time.as_ref()),
+            &mut scratch.time_output,
+            &mut scratch.time,
+        );
+        self.channel_mixer.run_query_into(
+            &scratch.time_output,
+            state.and_then(|state| state.channel_shift.as_deref()),
+            out,
+            &mut scratch.channel,
+        );
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    #[allow(clippy::too_many_arguments)]
+    fn run_query_batch(
+        &self,
+        input: &[f32],
+        v0: &mut [f32],
+        items: &[ReviewPredictionQueryRef<'_>],
+        module_id: usize,
+        layer_id: usize,
+        out: &mut Vec<f32>,
+        scratch: &mut LayerQueryBatchScratch,
+    ) {
+        self.time_mixer.run_query_batch(
+            input,
+            v0,
+            items,
+            module_id,
+            layer_id,
+            &mut scratch.time_output,
+            &mut scratch.time,
+        );
+        self.channel_mixer.run_query_batch(
+            &scratch.time_output,
+            items,
+            module_id,
+            layer_id,
+            out,
+            &mut scratch.channel,
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -3059,6 +3585,67 @@ struct TimeMixer {
     lora_a_g: Linear,
     lora_b_g: Linear,
     out_group_norm: Norm,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+struct TimeMixerQueryScratch {
+    x: [f32; D_MODEL],
+    mixed: [[f32; D_MODEL]; 8],
+    r: [f32; D_MODEL],
+    k: [f32; D_MODEL],
+    v: [f32; D_MODEL],
+    k_scale: [f32; HEADS],
+    v_scale: [f32; HEADS],
+    a: [f32; D_MODEL],
+    g: [f32; D_MODEL],
+    w: [f32; D_MODEL],
+    k_deformed: [f32; D_MODEL],
+    timestep_out: [f32; D_MODEL],
+    temp: [f32; D_MODEL],
+    lora_hidden: [f32; MAX_LORA_RANK],
+    next_row: [f32; HEAD_SIZE],
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct TimeMixerQueryBatchScratch {
+    x: Vec<f32>,
+    mixed: [Vec<f32>; 8],
+    r: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    k_scale: Vec<f32>,
+    v_scale: Vec<f32>,
+    a: Vec<f32>,
+    g: Vec<f32>,
+    w: Vec<f32>,
+    k_deformed: Vec<f32>,
+    timestep_out: Vec<f32>,
+    temp: Vec<f32>,
+    lora_hidden: Vec<f32>,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+impl Default for TimeMixerQueryScratch {
+    fn default() -> Self {
+        Self {
+            x: [0.0; D_MODEL],
+            mixed: [[0.0; D_MODEL]; 8],
+            r: [0.0; D_MODEL],
+            k: [0.0; D_MODEL],
+            v: [0.0; D_MODEL],
+            k_scale: [0.0; HEADS],
+            v_scale: [0.0; HEADS],
+            a: [0.0; D_MODEL],
+            g: [0.0; D_MODEL],
+            w: [0.0; D_MODEL],
+            k_deformed: [0.0; D_MODEL],
+            timestep_out: [0.0; D_MODEL],
+            temp: [0.0; D_MODEL],
+            lora_hidden: [0.0; MAX_LORA_RANK],
+            next_row: [0.0; HEAD_SIZE],
+        }
+    }
 }
 
 impl TimeMixer {
@@ -3275,6 +3862,301 @@ impl TimeMixer {
         }
         out
     }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn run_query_into(
+        &self,
+        input: &[f32],
+        v0: &mut [f32; D_MODEL],
+        state: Option<&TimeState>,
+        out: &mut [f32; D_MODEL],
+        scratch: &mut TimeMixerQueryScratch,
+    ) {
+        let TimeMixerQueryScratch {
+            x,
+            mixed,
+            r,
+            k,
+            v,
+            k_scale,
+            v_scale,
+            a,
+            g,
+            w,
+            k_deformed,
+            timestep_out,
+            temp,
+            lora_hidden,
+            next_row,
+        } = scratch;
+
+        self.layer_norm.apply_into(input, x);
+        let x_shift = state.map_or(x.as_slice(), |state| state.x_shift.as_slice());
+        for (mix_id, mixed_row) in mixed.iter_mut().enumerate() {
+            let lerp_offset = mix_id * D_MODEL;
+            for channel in 0..D_MODEL {
+                mixed_row[channel] = lerp(
+                    x[channel],
+                    x_shift[channel],
+                    self.rkvdag_lerp[lerp_offset + channel],
+                );
+            }
+        }
+
+        self.w_r.apply_into(&mixed[0], r);
+        self.w_k.apply_into(&mixed[1], k);
+        self.k_scale_linear.apply_into(&mixed[6], k_scale);
+        sigmoid_in_place(k_scale);
+        self.v_scale_linear.apply_into(&mixed[7], v_scale);
+        sigmoid_in_place(v_scale);
+
+        if self.layer_id == 0 {
+            self.w_v.apply_into(&mixed[2], v);
+            v0.copy_from_slice(v);
+        } else {
+            self.v_lora.apply_sigmoid_into(&mixed[2], lora_hidden, v);
+            self.w_v.apply_into(&mixed[2], temp);
+            for channel in 0..D_MODEL {
+                v[channel] = lerp(temp[channel], v0[channel], v[channel]);
+            }
+        }
+
+        self.a_lora.apply_sigmoid_into(&mixed[4], lora_hidden, a);
+        self.lora_a_g.apply_into(&mixed[5], lora_hidden);
+        sigmoid_in_place(lora_hidden);
+        self.lora_b_g.apply_into(lora_hidden, g);
+
+        self.d_lora.apply_tanh_into(&mixed[3], lora_hidden, w);
+        for value in w.iter_mut() {
+            let decay = -0.5 - softplus(-*value);
+            *value = (-decay.exp()).exp();
+        }
+
+        normalize_heads_in_place(k);
+        for head in 0..HEADS {
+            for index in 0..HEAD_SIZE {
+                k[head * HEAD_SIZE + index] *= k_scale[head];
+            }
+        }
+
+        normalize_heads_in_place(v);
+        for head in 0..HEADS {
+            for index in 0..HEAD_SIZE {
+                v[head * HEAD_SIZE + index] *= v_scale[head];
+            }
+        }
+
+        k_deformed.copy_from_slice(k);
+        for channel in 0..D_MODEL {
+            k[channel] *= a[channel];
+        }
+
+        single_timestep_query_into(
+            r,
+            k,
+            v,
+            w,
+            a,
+            k_deformed,
+            state.map(|state| state.matrix.as_slice()),
+            timestep_out,
+            next_row,
+        );
+        self.out_group_norm.apply_into(timestep_out, temp);
+
+        for head in 0..HEADS {
+            let base = head * HEAD_SIZE;
+            let mut bonus_scale = 0.0;
+            for index in 0..HEAD_SIZE {
+                bonus_scale += r[base + index] * self.bonus[base + index] * k[base + index];
+            }
+            for index in 0..HEAD_SIZE {
+                let channel = base + index;
+                temp[channel] = g[channel] * (temp[channel] + bonus_scale * v[channel]);
+            }
+        }
+
+        self.w_o.apply_into(temp, out);
+        for channel in 0..D_MODEL {
+            out[channel] += input[channel];
+        }
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    #[allow(clippy::too_many_arguments)]
+    fn run_query_batch(
+        &self,
+        input: &[f32],
+        v0: &mut [f32],
+        items: &[ReviewPredictionQueryRef<'_>],
+        module_id: usize,
+        layer_id: usize,
+        out: &mut Vec<f32>,
+        scratch: &mut TimeMixerQueryBatchScratch,
+    ) {
+        let rows = items.len();
+        debug_assert_eq!(input.len(), rows * D_MODEL);
+        debug_assert_eq!(v0.len(), rows * D_MODEL);
+
+        self.layer_norm.apply_batch(input, rows, &mut scratch.x);
+        for (mix_id, mixed) in scratch.mixed.iter_mut().enumerate() {
+            mixed.resize(rows * D_MODEL, 0.0);
+            let lerp_weights = &self.rkvdag_lerp[mix_id * D_MODEL..(mix_id + 1) * D_MODEL];
+            mixed
+                .chunks_mut(D_MODEL)
+                .enumerate()
+                .for_each(|(row, mixed)| {
+                    let x = &scratch.x[row * D_MODEL..(row + 1) * D_MODEL];
+                    let x_shift = items[row]
+                        .layer_state(module_id, layer_id)
+                        .and_then(|state| state.time.as_ref())
+                        .map_or(x, |state| state.x_shift.as_slice());
+                    for channel in 0..D_MODEL {
+                        mixed[channel] = lerp(x[channel], x_shift[channel], lerp_weights[channel]);
+                    }
+                });
+        }
+
+        self.w_r
+            .apply_batch(&scratch.mixed[0], rows, &mut scratch.r);
+        self.w_k
+            .apply_batch(&scratch.mixed[1], rows, &mut scratch.k);
+        self.k_scale_linear
+            .apply_batch(&scratch.mixed[6], rows, &mut scratch.k_scale);
+        sigmoid_in_place(&mut scratch.k_scale);
+        self.v_scale_linear
+            .apply_batch(&scratch.mixed[7], rows, &mut scratch.v_scale);
+        sigmoid_in_place(&mut scratch.v_scale);
+
+        if self.layer_id == 0 {
+            self.w_v
+                .apply_batch(&scratch.mixed[2], rows, &mut scratch.v);
+            v0.copy_from_slice(&scratch.v);
+        } else {
+            self.v_lora.apply_sigmoid_batch(
+                &scratch.mixed[2],
+                rows,
+                &mut scratch.lora_hidden,
+                &mut scratch.v,
+            );
+            self.w_v
+                .apply_batch(&scratch.mixed[2], rows, &mut scratch.temp);
+            scratch
+                .v
+                .chunks_mut(D_MODEL)
+                .enumerate()
+                .for_each(|(row, v)| {
+                    let projected = &scratch.temp[row * D_MODEL..(row + 1) * D_MODEL];
+                    let v0 = &v0[row * D_MODEL..(row + 1) * D_MODEL];
+                    for channel in 0..D_MODEL {
+                        v[channel] = lerp(projected[channel], v0[channel], v[channel]);
+                    }
+                });
+        }
+
+        self.a_lora.apply_sigmoid_batch(
+            &scratch.mixed[4],
+            rows,
+            &mut scratch.lora_hidden,
+            &mut scratch.a,
+        );
+        self.lora_a_g
+            .apply_batch(&scratch.mixed[5], rows, &mut scratch.lora_hidden);
+        sigmoid_in_place(&mut scratch.lora_hidden);
+        self.lora_b_g
+            .apply_batch(&scratch.lora_hidden, rows, &mut scratch.g);
+
+        self.d_lora.apply_tanh_batch(
+            &scratch.mixed[3],
+            rows,
+            &mut scratch.lora_hidden,
+            &mut scratch.w,
+        );
+        scratch.w.iter_mut().for_each(|value| {
+            let decay = -0.5 - softplus(-*value);
+            *value = (-decay.exp()).exp();
+        });
+
+        scratch
+            .k
+            .chunks_mut(D_MODEL)
+            .enumerate()
+            .for_each(|(row, k)| {
+                normalize_heads_in_place(k);
+                let scales = &scratch.k_scale[row * HEADS..(row + 1) * HEADS];
+                scale_heads_in_place(k, scales);
+            });
+        scratch
+            .v
+            .chunks_mut(D_MODEL)
+            .enumerate()
+            .for_each(|(row, v)| {
+                normalize_heads_in_place(v);
+                let scales = &scratch.v_scale[row * HEADS..(row + 1) * HEADS];
+                scale_heads_in_place(v, scales);
+            });
+
+        scratch.k_deformed.resize(rows * D_MODEL, 0.0);
+        scratch.k_deformed.copy_from_slice(&scratch.k);
+        scratch
+            .k
+            .iter_mut()
+            .zip(scratch.a.iter())
+            .for_each(|(k, a)| *k *= *a);
+
+        scratch.timestep_out.resize(rows * D_MODEL, 0.0);
+        scratch
+            .timestep_out
+            .chunks_mut(D_MODEL)
+            .enumerate()
+            .for_each(|(row, timestep_out)| {
+                let range = row * D_MODEL..(row + 1) * D_MODEL;
+                let state = items[row]
+                    .layer_state(module_id, layer_id)
+                    .and_then(|state| state.time.as_ref())
+                    .map(|state| state.matrix.as_slice());
+                single_timestep_query_fast_into(
+                    &scratch.r[range.clone()],
+                    &scratch.k[range.clone()],
+                    &scratch.v[range.clone()],
+                    &scratch.w[range.clone()],
+                    &scratch.a[range.clone()],
+                    &scratch.k_deformed[range],
+                    state,
+                    timestep_out,
+                );
+            });
+        self.out_group_norm
+            .apply_batch(&scratch.timestep_out, rows, &mut scratch.temp);
+
+        scratch
+            .temp
+            .chunks_mut(D_MODEL)
+            .enumerate()
+            .for_each(|(row, output)| {
+                let base = row * D_MODEL;
+                for head in 0..HEADS {
+                    let head_base = head * HEAD_SIZE;
+                    let mut bonus_scale = 0.0;
+                    for index in 0..HEAD_SIZE {
+                        let channel = base + head_base + index;
+                        bonus_scale +=
+                            scratch.r[channel] * self.bonus[head_base + index] * scratch.k[channel];
+                    }
+                    for index in 0..HEAD_SIZE {
+                        let local_channel = head_base + index;
+                        let channel = base + local_channel;
+                        output[local_channel] = scratch.g[channel]
+                            * (output[local_channel] + bonus_scale * scratch.v[channel]);
+                    }
+                }
+            });
+
+        self.w_o.apply_batch(&scratch.temp, rows, out);
+        out.iter_mut()
+            .zip(input.iter())
+            .for_each(|(output, input)| *output += *input);
+    }
 }
 
 /// Per-timestep time-mixer coefficients produced ahead of the recurrence.
@@ -3300,6 +4182,35 @@ struct ChannelMixer {
     lerp_k: Vec<f32>,
     w_k: Linear,
     w_v: Linear,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+struct ChannelMixerQueryScratch {
+    x: [f32; D_MODEL],
+    mixed: [f32; D_MODEL],
+    hidden: [f32; MAX_CHANNEL_MIXER_DIM],
+    projected: [f32; D_MODEL],
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct ChannelMixerQueryBatchScratch {
+    x: Vec<f32>,
+    mixed: Vec<f32>,
+    hidden: Vec<f32>,
+    projected: Vec<f32>,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+impl Default for ChannelMixerQueryScratch {
+    fn default() -> Self {
+        Self {
+            x: [0.0; D_MODEL],
+            mixed: [0.0; D_MODEL],
+            hidden: [0.0; MAX_CHANNEL_MIXER_DIM],
+            projected: [0.0; D_MODEL],
+        }
+    }
 }
 
 impl ChannelMixer {
@@ -3348,6 +4259,74 @@ impl ChannelMixer {
         }
         out
     }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn run_query_into(
+        &self,
+        input: &[f32],
+        state: Option<&[f32]>,
+        out: &mut [f32; D_MODEL],
+        scratch: &mut ChannelMixerQueryScratch,
+    ) {
+        self.layer_norm.apply_into(input, &mut scratch.x);
+        let x_shift = state.unwrap_or(&scratch.x);
+        for (channel, mixed) in scratch.mixed.iter_mut().enumerate() {
+            *mixed = lerp(scratch.x[channel], x_shift[channel], self.lerp_k[channel]);
+        }
+
+        let hidden = &mut scratch.hidden[..self.w_k.output];
+        self.w_k.apply_into(&scratch.mixed, hidden);
+        for value in hidden.iter_mut() {
+            *value = value.max(0.0).powi(2);
+        }
+        self.w_v.apply_into(hidden, &mut scratch.projected);
+        for channel in 0..D_MODEL {
+            out[channel] = input[channel] + scratch.projected[channel];
+        }
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn run_query_batch(
+        &self,
+        input: &[f32],
+        items: &[ReviewPredictionQueryRef<'_>],
+        module_id: usize,
+        layer_id: usize,
+        out: &mut Vec<f32>,
+        scratch: &mut ChannelMixerQueryBatchScratch,
+    ) {
+        let rows = items.len();
+        self.layer_norm.apply_batch(input, rows, &mut scratch.x);
+        scratch.mixed.resize(rows * D_MODEL, 0.0);
+        scratch
+            .mixed
+            .chunks_mut(D_MODEL)
+            .enumerate()
+            .for_each(|(row, mixed)| {
+                let x = &scratch.x[row * D_MODEL..(row + 1) * D_MODEL];
+                let x_shift = items[row]
+                    .layer_state(module_id, layer_id)
+                    .and_then(|state| state.channel_shift.as_deref())
+                    .unwrap_or(x);
+                for channel in 0..D_MODEL {
+                    mixed[channel] = lerp(x[channel], x_shift[channel], self.lerp_k[channel]);
+                }
+            });
+
+        self.w_k
+            .apply_batch(&scratch.mixed, rows, &mut scratch.hidden);
+        scratch
+            .hidden
+            .iter_mut()
+            .for_each(|value| *value = value.max(0.0).powi(2));
+        self.w_v
+            .apply_batch(&scratch.hidden, rows, &mut scratch.projected);
+        out.resize(rows * D_MODEL, 0.0);
+        out.iter_mut()
+            .zip(input.iter())
+            .zip(scratch.projected.iter())
+            .for_each(|((output, input), projected)| *output = *input + *projected);
+    }
 }
 
 struct LoraSimple {
@@ -3367,6 +4346,27 @@ impl LoraSimple {
         let mut out = self.b.apply(&self.a.apply(input));
         sigmoid_in_place(&mut out);
         out
+    }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn apply_sigmoid_into(&self, input: &[f32], hidden: &mut [f32], out: &mut [f32]) {
+        let hidden = &mut hidden[..self.a.output];
+        self.a.apply_into(input, hidden);
+        self.b.apply_into(hidden, out);
+        sigmoid_in_place(out);
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn apply_sigmoid_batch(
+        &self,
+        input: &[f32],
+        rows: usize,
+        hidden: &mut Vec<f32>,
+        out: &mut Vec<f32>,
+    ) {
+        self.a.apply_batch(input, rows, hidden);
+        self.b.apply_batch(hidden, rows, out);
+        sigmoid_in_place(out);
     }
 
     fn apply_tanh(&self, input: &[f32]) -> Vec<f32> {
@@ -3401,6 +4401,29 @@ impl LoraSimple {
             *value = value.tanh();
         }
         self.b.apply_block_into(hidden, outs, rows);
+    }
+
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn apply_tanh_into(&self, input: &[f32], hidden: &mut [f32], out: &mut [f32]) {
+        let hidden = &mut hidden[..self.a.output];
+        self.a.apply_into(input, hidden);
+        for value in hidden.iter_mut() {
+            *value = value.tanh();
+        }
+        self.b.apply_into(hidden, out);
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn apply_tanh_batch(
+        &self,
+        input: &[f32],
+        rows: usize,
+        hidden: &mut Vec<f32>,
+        out: &mut Vec<f32>,
+    ) {
+        self.a.apply_batch(input, rows, hidden);
+        hidden.iter_mut().for_each(|value| *value = value.tanh());
+        self.b.apply_batch(hidden, rows, out);
     }
 }
 
@@ -3439,6 +4462,45 @@ impl Linear {
         }
         #[cfg(test)]
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
+        let input_len = rows
+            .checked_mul(self.input)
+            .expect("linear batch input is too large");
+        let output_len = rows
+            .checked_mul(self.output)
+            .expect("linear batch output is too large");
+        assert_eq!(input.len(), input_len);
+        out.resize(output_len, 0.0);
+        if rows == 0 {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        matmul::matrix_times_matrix(
+            input,
+            &self.weight_by_input,
+            rows,
+            self.output,
+            self.input,
+            out,
+        );
+
+        #[cfg(not(target_os = "macos"))]
+        out.par_chunks_mut(self.output)
+            .zip(input.par_chunks(self.input))
+            .for_each(|(output, input)| self.apply_into(input, output));
+
+        #[cfg(target_os = "macos")]
+        if let Some(bias) = &self.bias {
+            out.chunks_mut(self.output).for_each(|output| {
+                for (output, bias) in output.iter_mut().zip(bias) {
+                    *output += bias;
+                }
+            });
+        }
     }
 
     /// Applies the projection to `rows` packed input rows at once, streaming
@@ -3821,7 +4883,6 @@ impl Norm {
     fn apply_into(&self, input: &[f32], out: &mut [f32]) {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
-
         debug_assert_eq!(input.len(), self.dim);
         debug_assert_eq!(out.len(), self.dim);
         let group_size = self.dim / self.groups;
@@ -3847,6 +4908,15 @@ impl Norm {
 
         #[cfg(test)]
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Norm, profile_started);
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
+        debug_assert_eq!(input.len(), rows * self.dim);
+        out.resize(rows * self.dim, 0.0);
+        out.chunks_mut(self.dim)
+            .zip(input.chunks(self.dim))
+            .for_each(|(output, input)| self.apply_into(input, output));
     }
 }
 
@@ -3919,6 +4989,103 @@ fn single_timestep(
     (out, next_state)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+#[allow(clippy::too_many_arguments)]
+fn single_timestep_query_into(
+    r: &[f32],
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    k_deformed: &[f32],
+    state: Option<&[f32]>,
+    out: &mut [f32],
+    next_row: &mut [f32],
+) {
+    debug_assert_eq!(out.len(), D_MODEL);
+    debug_assert_eq!(next_row.len(), HEAD_SIZE);
+    debug_assert!(
+        state.is_none() || state.is_some_and(|state| state.len() == HEADS * HEAD_SIZE * HEAD_SIZE)
+    );
+
+    for head in 0..HEADS {
+        let head_base = head * HEAD_SIZE;
+        let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
+        let mut state_dot_k = [0.0_f32; HEAD_SIZE];
+        let key_deformed = &k_deformed[head_base..head_base + HEAD_SIZE];
+        let receptance = &r[head_base..head_base + HEAD_SIZE];
+
+        if let Some(state) = state {
+            for (row, value) in state_dot_k.iter_mut().enumerate() {
+                let row_start = matrix_base + row * HEAD_SIZE;
+                *value = dot_product(&state[row_start..row_start + HEAD_SIZE], key_deformed);
+            }
+        }
+
+        for row in 0..HEAD_SIZE {
+            for (column, next) in next_row.iter_mut().enumerate().take(HEAD_SIZE) {
+                let channel = head_base + column;
+                let matrix_index = matrix_base + row * HEAD_SIZE + column;
+                let old = state.map_or(0.0, |state| state[matrix_index]);
+                *next = old * w[channel] - state_dot_k[row] * a[channel] * k_deformed[channel]
+                    + v[head_base + row] * k[channel];
+            }
+            out[head_base + row] = dot_product(next_row, receptance);
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[allow(clippy::too_many_arguments)]
+fn single_timestep_query_fast_into(
+    r: &[f32],
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    k_deformed: &[f32],
+    state: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(out.len(), D_MODEL);
+    debug_assert!(
+        state.is_none() || state.is_some_and(|state| state.len() == HEADS * HEAD_SIZE * HEAD_SIZE)
+    );
+
+    for head in 0..HEADS {
+        let head_base = head * HEAD_SIZE;
+        let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
+        let receptance = &r[head_base..head_base + HEAD_SIZE];
+        let key = &k[head_base..head_base + HEAD_SIZE];
+        let key_deformed = &k_deformed[head_base..head_base + HEAD_SIZE];
+        let key_receptance = dot_product(key, receptance);
+
+        let Some(state) = state else {
+            for row in 0..HEAD_SIZE {
+                out[head_base + row] = v[head_base + row] * key_receptance;
+            }
+            continue;
+        };
+
+        let mut decayed_receptance = [0.0; HEAD_SIZE];
+        let mut adaptation_receptance = 0.0;
+        for column in 0..HEAD_SIZE {
+            let channel = head_base + column;
+            decayed_receptance[column] = w[channel] * receptance[column];
+            adaptation_receptance += a[channel] * key_deformed[column] * receptance[column];
+        }
+
+        for row in 0..HEAD_SIZE {
+            let row_start = matrix_base + row * HEAD_SIZE;
+            let state_row = &state[row_start..row_start + HEAD_SIZE];
+            let state_dot_key = dot_product(state_row, key_deformed);
+            let retained = dot_product(state_row, &decayed_receptance);
+            out[head_base + row] = retained - state_dot_key * adaptation_receptance
+                + v[head_base + row] * key_receptance;
+        }
+    }
+}
+
 fn normalize_heads_in_place(values: &mut [f32]) {
     for head in 0..HEADS {
         let start = head * HEAD_SIZE;
@@ -3931,6 +5098,17 @@ fn normalize_heads_in_place(values: &mut [f32]) {
             .max(1e-12);
         for value in &mut values[start..end] {
             *value /= norm;
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn scale_heads_in_place(values: &mut [f32], scales: &[f32]) {
+    debug_assert_eq!(values.len(), D_MODEL);
+    debug_assert_eq!(scales.len(), HEADS);
+    for head in 0..HEADS {
+        for index in 0..HEAD_SIZE {
+            values[head * HEAD_SIZE + index] *= scales[head];
         }
     }
 }
@@ -3949,6 +5127,21 @@ fn softmax(input: &[f32]) -> Vec<f32> {
         *value /= sum;
     }
     out
+}
+
+fn softmax_into(input: &[f32], out: &mut [f32]) {
+    debug_assert_eq!(input.len(), out.len());
+    let max = input
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, |a, b| a.max(b));
+    for (output, value) in out.iter_mut().zip(input) {
+        *output = (*value - max).exp();
+    }
+    let sum = out.iter().sum::<f32>();
+    for value in out {
+        *value /= sum;
+    }
 }
 
 fn sigmoid_in_place(values: &mut [f32]) {
@@ -3993,8 +5186,198 @@ fn lerp(start: f32, end: f32, weight: f32) -> f32 {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy)]
+struct StateCompression {
+    shift_bits: Option<u8>,
+    matrix_rank: usize,
+    matrix_bits: Option<u8>,
+    power_iterations: usize,
+}
+
+#[cfg(test)]
+fn compressed_srs_state(state: SrsState, compression: StateCompression) -> SrsState {
+    SrsState {
+        card: compressed_module_state(state.card, compression),
+        deck: compressed_module_state(state.deck, compression),
+        note: compressed_module_state(state.note, compression),
+        preset: compressed_module_state(state.preset, compression),
+        global: compressed_module_state(state.global, compression),
+    }
+}
+
+#[cfg(test)]
+fn compressed_module_state(mut state: ModuleState, compression: StateCompression) -> ModuleState {
+    for layer in &mut state.layers {
+        if let Some(time) = layer.time.as_mut() {
+            if let Some(bits) = compression.shift_bits {
+                quantize_dequantize_symmetric(&mut time.x_shift, bits);
+            }
+            time.matrix = low_rank_matrix_state(&time.matrix, compression);
+        }
+        if let (Some(bits), Some(channel_shift)) =
+            (compression.shift_bits, layer.channel_shift.as_mut())
+        {
+            quantize_dequantize_symmetric(channel_shift, bits);
+        }
+    }
+    state
+}
+
+#[cfg(test)]
+fn low_rank_matrix_state(matrix: &[f32], compression: StateCompression) -> Vec<f32> {
+    debug_assert_eq!(matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
+    let mut out = vec![0.0; matrix.len()];
+    for head in 0..HEADS {
+        let start = head * HEAD_SIZE * HEAD_SIZE;
+        let end = start + HEAD_SIZE * HEAD_SIZE;
+        low_rank_head_matrix(
+            &matrix[start..end],
+            &mut out[start..end],
+            compression.matrix_rank,
+            compression.matrix_bits,
+            compression.power_iterations,
+        );
+    }
+    out
+}
+
+#[cfg(test)]
+fn low_rank_head_matrix(
+    matrix: &[f32],
+    out: &mut [f32],
+    rank: usize,
+    bits: Option<u8>,
+    power_iterations: usize,
+) {
+    debug_assert_eq!(matrix.len(), HEAD_SIZE * HEAD_SIZE);
+    debug_assert_eq!(out.len(), HEAD_SIZE * HEAD_SIZE);
+    if rank == 0 {
+        return;
+    }
+
+    let mut residual = matrix.to_vec();
+    let mut left = vec![0.0; HEAD_SIZE];
+    let mut right = vec![0.0; HEAD_SIZE];
+    let mut next_left = vec![0.0; HEAD_SIZE];
+
+    for component in 0..rank {
+        initialize_power_vector(&residual, &mut left, component);
+        for _ in 0..power_iterations {
+            multiply_transpose_matrix_vector(&residual, &left, &mut right);
+            let right_norm = normalize_vector(&mut right);
+            if right_norm <= 1e-12 {
+                break;
+            }
+            multiply_matrix_vector(&residual, &right, &mut next_left);
+            let left_norm = normalize_vector(&mut next_left);
+            if left_norm <= 1e-12 {
+                break;
+            }
+            left.copy_from_slice(&next_left);
+        }
+
+        multiply_transpose_matrix_vector(&residual, &left, &mut right);
+        let sigma = normalize_vector(&mut right);
+        if sigma <= 1e-12 || !sigma.is_finite() {
+            break;
+        }
+
+        let root = sigma.sqrt();
+        let mut left_factor = left.iter().map(|value| value * root).collect::<Vec<_>>();
+        let mut right_factor = right.iter().map(|value| value * root).collect::<Vec<_>>();
+        if let Some(bits) = bits {
+            quantize_dequantize_symmetric(&mut left_factor, bits);
+            quantize_dequantize_symmetric(&mut right_factor, bits);
+        }
+
+        for (row, &left) in left_factor.iter().enumerate() {
+            for (column, &right) in right_factor.iter().enumerate() {
+                let index = row * HEAD_SIZE + column;
+                let value = left * right;
+                out[index] += value;
+                residual[index] -= value;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn initialize_power_vector(matrix: &[f32], out: &mut [f32], component: usize) {
+    for (row, out) in out.iter_mut().enumerate().take(HEAD_SIZE) {
+        let row_start = row * HEAD_SIZE;
+        let row_sum = matrix[row_start..row_start + HEAD_SIZE]
+            .iter()
+            .copied()
+            .sum::<f32>();
+        *out = row_sum + 0.001 * ((row + component + 1) as f32);
+    }
+    if normalize_vector(out) <= 1e-12 {
+        out.fill(0.0);
+        out[component % HEAD_SIZE] = 1.0;
+    }
+}
+
+#[cfg(test)]
+fn multiply_matrix_vector(matrix: &[f32], vector: &[f32], out: &mut [f32]) {
+    for (row, out) in out.iter_mut().enumerate().take(HEAD_SIZE) {
+        let row_start = row * HEAD_SIZE;
+        *out = matrix[row_start..row_start + HEAD_SIZE]
+            .iter()
+            .zip(vector)
+            .map(|(left, right)| left * right)
+            .sum();
+    }
+}
+
+#[cfg(test)]
+fn multiply_transpose_matrix_vector(matrix: &[f32], vector: &[f32], out: &mut [f32]) {
+    out.fill(0.0);
+    for (row, &value) in vector.iter().enumerate().take(HEAD_SIZE) {
+        let row_start = row * HEAD_SIZE;
+        for (column, out) in out.iter_mut().enumerate().take(HEAD_SIZE) {
+            *out += matrix[row_start + column] * value;
+        }
+    }
+}
+
+#[cfg(test)]
+fn normalize_vector(values: &mut [f32]) -> f32 {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 && norm.is_finite() {
+        for value in values {
+            *value /= norm;
+        }
+    }
+    norm
+}
+
+#[cfg(test)]
+fn quantize_dequantize_symmetric(values: &mut [f32], bits: u8) {
+    let qmax = (1_i32 << (bits.saturating_sub(1) as u32)) - 1;
+    if qmax <= 0 {
+        values.fill(0.0);
+        return;
+    }
+    let amax = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
+    if amax == 0.0 || !amax.is_finite() {
+        values.fill(0.0);
+        return;
+    }
+    let scale = amax / qmax as f32;
+    for value in values {
+        let quantized = (*value / scale).round().clamp(-(qmax as f32), qmax as f32);
+        *value = quantized * scale;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use rusqlite::Connection;
 
     struct TimeMixerAffineTransform {
         matrix: Vec<f32>,
@@ -5158,6 +6541,197 @@ order by r.id, r.cid
     }
 
     #[test]
+    fn query_timestep_matches_stateful_output_without_retaining_state() {
+        let values = (0..D_MODEL)
+            .map(|index| (index as f32 - 64.0) / 128.0)
+            .collect::<Vec<_>>();
+        let r = values.iter().map(|value| value * 0.7).collect::<Vec<_>>();
+        let k = values.iter().map(|value| value * -0.4).collect::<Vec<_>>();
+        let v = values.iter().map(|value| value * 0.3).collect::<Vec<_>>();
+        let w = values
+            .iter()
+            .map(|value| 0.85 + value * 0.05)
+            .collect::<Vec<_>>();
+        let a = values
+            .iter()
+            .map(|value| 0.5 + value * 0.1)
+            .collect::<Vec<_>>();
+        let k_deformed = values.iter().map(|value| value * -0.2).collect::<Vec<_>>();
+        let state = (0..HEADS * HEAD_SIZE * HEAD_SIZE)
+            .map(|index| (index % 31) as f32 * 0.002 - 0.03)
+            .collect::<Vec<_>>();
+        let zero_state = vec![0.0; state.len()];
+
+        for query_state in [None, Some(state.as_slice())] {
+            let stateful_state = query_state.unwrap_or(&zero_state);
+            let (expected, _) = single_timestep(&r, &k, &v, &w, &a, &k_deformed, stateful_state);
+            let mut actual = [0.0; D_MODEL];
+            let mut next_row = [0.0; HEAD_SIZE];
+            single_timestep_query_into(
+                &r,
+                &k,
+                &v,
+                &w,
+                &a,
+                &k_deformed,
+                query_state,
+                &mut actual,
+                &mut next_row,
+            );
+
+            assert_eq!(actual.as_slice(), expected);
+
+            let mut fast = [0.0; D_MODEL];
+            single_timestep_query_fast_into(
+                &r,
+                &k,
+                &v,
+                &w,
+                &a,
+                &k_deformed,
+                query_state,
+                &mut fast,
+            );
+            let max_delta = fast
+                .iter()
+                .zip(&expected)
+                .map(|(fast, expected)| (fast - expected).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(max_delta <= 1e-6, "max fast timestep delta: {max_delta}");
+        }
+    }
+
+    #[test]
+    fn batched_retrievability_matches_scalar_query_path() {
+        let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+        assert!(model_path.exists(), "RWKV parity model is missing");
+
+        fn input(index: usize, is_query: bool) -> ReviewInput {
+            ReviewInput {
+                card_id: 10_000 + (index % 97) as i64,
+                note_id: Some(20_000 + (index % 53) as i64),
+                deck_id: Some(30_000 + (index % 7) as i64),
+                preset_id: Some(40_000 + (index % 3) as i64),
+                is_query,
+                ease: (!is_query).then_some((index % 4 + 1) as u8),
+                duration_millis: (!is_query).then_some(500 + index as i64 % 2_000),
+                card_type: Some((index % 3) as i64),
+                day_offset: Some((index / 11) as i64),
+                current_elapsed_days: Some((index % 31) as i64),
+                current_elapsed_seconds: Some((index % 31 * 86_400) as i64),
+                target_retentions: [Some(0.9); 4],
+            }
+        }
+
+        let mut inference = RwkvInference::load(model_path, 0.9, 36_500).unwrap();
+        inference
+            .warm_up_reviews((0..257).map(|index| input(index, false)).collect(), false)
+            .unwrap();
+        let inputs = (0..129)
+            .map(|index| input(index + 257, true))
+            .collect::<Vec<_>>();
+        let features = inputs
+            .iter()
+            .map(|input| inference.features.features_for(input))
+            .collect::<Vec<_>>();
+        let items = inputs
+            .iter()
+            .zip(&features)
+            .map(|(input, features)| ReviewPredictionQueryRef {
+                features,
+                state: inference.warm_up_states.state_ref(input),
+            })
+            .collect::<Vec<_>>();
+
+        let scalar = inference
+            .model
+            .review_retrievability_query_refs_scalar(&items);
+        assert!(inference
+            .model
+            .review_retrievability_query_refs_batched(&[])
+            .is_empty());
+        let batched = inference
+            .model
+            .review_retrievability_query_refs_batched(&items);
+        let max_delta = scalar
+            .iter()
+            .zip(&batched)
+            .map(|(scalar, batched)| (scalar - batched).abs())
+            .fold(0.0_f32, f32::max);
+
+        assert!(max_delta <= 1e-6, "max batch prediction delta: {max_delta}");
+    }
+
+    #[test]
+    fn restore_serialized_warm_up_state_replaces_and_removes_scopes() {
+        let serialized = serialize_module_state(&ModuleState {
+            layers: vec![LayerState {
+                time: Some(TimeState {
+                    x_shift: vec![1.0, 2.0],
+                    matrix: vec![3.0, 4.0],
+                }),
+                channel_shift: Some(vec![5.0, 6.0]),
+            }],
+        });
+        let populated = ReviewStateOwned {
+            card: Some(serialized.clone()),
+            note: Some(serialized.clone()),
+            deck: Some(serialized.clone()),
+            preset: Some(serialized.clone()),
+            global: Some(serialized.clone()),
+        };
+        let mut states = ReviewStateMaps::default();
+
+        states
+            .restore_serialized(1, Some(2), Some(3), Some(4), &populated)
+            .unwrap();
+
+        assert_eq!(
+            serialize_module_state(states.card.get(&1).unwrap()),
+            serialized
+        );
+        assert_eq!(
+            serialize_module_state(states.note.get(&2).unwrap()),
+            serialized
+        );
+        assert_eq!(
+            serialize_module_state(states.deck.get(&3).unwrap()),
+            serialized
+        );
+        assert_eq!(
+            serialize_module_state(states.preset.get(&4).unwrap()),
+            serialized
+        );
+        assert_eq!(
+            serialize_module_state(states.global.as_ref().unwrap()),
+            serialized
+        );
+
+        states
+            .restore_serialized(
+                1,
+                Some(2),
+                Some(3),
+                Some(4),
+                &ReviewStateOwned {
+                    card: None,
+                    note: None,
+                    deck: None,
+                    preset: None,
+                    global: None,
+                },
+            )
+            .unwrap();
+
+        assert!(states.card.is_empty());
+        assert!(states.note.is_empty());
+        assert!(states.deck.is_empty());
+        assert!(states.preset.is_empty());
+        assert!(states.global.is_none());
+    }
+
+    #[test]
     fn workload_review_counts_are_monotonic_by_target_dr() {
         fn point(review_count: u32) -> RwkvWorkloadSimulationPoint {
             RwkvWorkloadSimulationPoint {
@@ -5416,5 +6990,335 @@ order by r.id, r.cid
         assert_eq!(features.previous_day_offset, None);
         assert_eq!(features.today_reviews, 0);
         assert_eq!(features.today_new_cards, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn rwkv_state_compression_metrics() {
+        let Ok(collection_path) = env::var("ANKI_RWKV_STATE_COMPRESSION_COLLECTION") else {
+            eprintln!("set ANKI_RWKV_STATE_COMPRESSION_COLLECTION to a copied collection.anki2");
+            return;
+        };
+        let weights_path = env::var("ANKI_RWKV_STATE_COMPRESSION_MODEL")
+            .unwrap_or_else(|_| "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin".into());
+        let limit = env_usize("ANKI_RWKV_STATE_COMPRESSION_LIMIT", 5_000);
+        let power_iterations = env_usize("ANKI_RWKV_STATE_COMPRESSION_POWER_ITERS", 8);
+        let selected_configs = env::var("ANKI_RWKV_STATE_COMPRESSION_CONFIGS")
+            .ok()
+            .map(|configs| {
+                configs
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|config| !config.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|configs| !configs.is_empty());
+
+        let load_start = Instant::now();
+        let (reviews, outcomes) =
+            load_metric_reviews(&collection_path, limit).expect("failed to load metric reviews");
+        assert!(!reviews.is_empty(), "no eligible reviews loaded");
+        eprintln!(
+            "rwkv_state_compression_metric_inputs reviews={} limit={} load_ms={:.1}",
+            reviews.len(),
+            limit,
+            load_start.elapsed().as_secs_f64() * 1000.0
+        );
+        if let Some(configs) = &selected_configs {
+            eprintln!(
+                "rwkv_state_compression_metric_configs configs={}",
+                configs.join(",")
+            );
+        }
+
+        let configs = [
+            ("raw", None),
+            (
+                "shift-int4",
+                Some(StateCompression {
+                    shift_bits: Some(4),
+                    matrix_rank: HEAD_SIZE,
+                    matrix_bits: None,
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank4-int8-shift-int4",
+                Some(StateCompression {
+                    shift_bits: Some(4),
+                    matrix_rank: 4,
+                    matrix_bits: Some(8),
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank4-int8",
+                Some(StateCompression {
+                    shift_bits: None,
+                    matrix_rank: 4,
+                    matrix_bits: Some(8),
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank4-int4-shift-int4",
+                Some(StateCompression {
+                    shift_bits: Some(4),
+                    matrix_rank: 4,
+                    matrix_bits: Some(4),
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank2-int8-shift-int4",
+                Some(StateCompression {
+                    shift_bits: Some(4),
+                    matrix_rank: 2,
+                    matrix_bits: Some(8),
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank2-int8",
+                Some(StateCompression {
+                    shift_bits: None,
+                    matrix_rank: 2,
+                    matrix_bits: Some(8),
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank2-int4-shift-int4",
+                Some(StateCompression {
+                    shift_bits: Some(4),
+                    matrix_rank: 2,
+                    matrix_bits: Some(4),
+                    power_iterations,
+                }),
+            ),
+            (
+                "rank1-int4-shift-int4",
+                Some(StateCompression {
+                    shift_bits: Some(4),
+                    matrix_rank: 1,
+                    matrix_bits: Some(4),
+                    power_iterations,
+                }),
+            ),
+        ];
+
+        let mut baseline = None;
+        println!(
+            "config,reviews,log_loss,delta_log_loss,rmse_bins,delta_rmse_bins,rmse_bins_weighted,delta_rmse_bins_weighted,elapsed_ms"
+        );
+        for (label, compression) in configs {
+            if let Some(configs) = &selected_configs {
+                if !configs.iter().any(|config| config == label) {
+                    continue;
+                }
+            }
+            let start = Instant::now();
+            let mut inference = RwkvInference::load(PathBuf::from(&weights_path), 0.9, 36_500)
+                .expect("RWKV load failed");
+            let predictions =
+                inference.warm_up_reviews_with_state_compression(&reviews, compression);
+            assert_eq!(predictions.len(), outcomes.len());
+            let metrics = MetricAccumulator::from_predictions(&predictions, &outcomes);
+            let baseline_metrics = baseline.get_or_insert(metrics);
+            println!(
+                "{label},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.1}",
+                outcomes.len(),
+                metrics.log_loss,
+                metrics.log_loss - baseline_metrics.log_loss,
+                metrics.rmse_bins,
+                metrics.rmse_bins - baseline_metrics.rmse_bins,
+                metrics.rmse_bins_weighted,
+                metrics.rmse_bins_weighted - baseline_metrics.rmse_bins_weighted,
+                start.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+    }
+
+    fn env_usize(name: &str, default: usize) -> usize {
+        env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    }
+
+    fn load_metric_reviews(
+        collection_path: &str,
+        limit: usize,
+    ) -> rusqlite::Result<(Vec<ReviewInput>, Vec<bool>)> {
+        let connection = Connection::open_with_flags(
+            collection_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let created_secs: i64 =
+            connection.query_row("select crt from col limit 1", [], |row| row.get(0))?;
+        let preset_by_deck = deck_config_ids_by_deck(&connection)?;
+        let mut previous_review_id_by_card = HashMap::new();
+        let mut reviews = Vec::new();
+        let mut outcomes = Vec::new();
+        let sql = format!(
+            "\
+select r.id, r.cid, c.nid, c.did, r.ease, r.time, r.type
+from revlog r
+join cards c on c.id = r.cid
+where r.ease between 1 and 4
+  and (r.type in (0, 1, 2, 3) or r.type = 4)
+order by r.id, r.cid
+{}",
+            if limit > 0 { "limit ?" } else { "" }
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = if limit > 0 {
+            statement.query([limit as i64])?
+        } else {
+            statement.query([])?
+        };
+        while let Some(row) = rows.next()? {
+            let review_id: i64 = row.get(0)?;
+            let card_id: i64 = row.get(1)?;
+            let note_id: i64 = row.get(2)?;
+            let deck_id: i64 = row.get(3)?;
+            let ease: u8 = row.get(4)?;
+            let duration_millis: i64 = row.get(5)?;
+            let review_kind: i64 = row.get(6)?;
+            let previous_review_id = previous_review_id_by_card.insert(card_id, review_id);
+            let elapsed_seconds = previous_review_id
+                .map(|previous| ((review_id - previous) / 1000).max(0))
+                .unwrap_or(-1);
+            let elapsed_days = if elapsed_seconds >= 0 {
+                elapsed_seconds / SECONDS_PER_DAY
+            } else {
+                -1
+            };
+            let review_secs = review_id / 1000;
+            let day_offset = ((review_secs - created_secs).max(0)) / SECONDS_PER_DAY;
+            let preset_id = preset_by_deck
+                .get(&deck_id)
+                .copied()
+                .flatten()
+                .or(Some(deck_id));
+            outcomes.push(ease != 1);
+            reviews.push(ReviewInput {
+                card_id,
+                note_id: Some(note_id),
+                deck_id: Some(deck_id),
+                preset_id,
+                is_query: false,
+                ease: Some(ease),
+                duration_millis: Some(duration_millis),
+                card_type: Some(historical_card_type(review_kind)),
+                day_offset: Some(day_offset),
+                current_elapsed_days: Some(elapsed_days),
+                current_elapsed_seconds: Some(elapsed_seconds),
+                target_retentions: [None; 4],
+            });
+        }
+        Ok((reviews, outcomes))
+    }
+
+    fn deck_config_ids_by_deck(
+        connection: &Connection,
+    ) -> rusqlite::Result<HashMap<i64, Option<i64>>> {
+        let decks_json: String =
+            connection.query_row("select decks from col limit 1", [], |row| row.get(0))?;
+        let decks: serde_json::Value = serde_json::from_str(&decks_json).unwrap_or_default();
+        let mut by_deck = HashMap::new();
+        if let Some(decks) = decks.as_object() {
+            for (id, deck) in decks {
+                if let Ok(deck_id) = id.parse::<i64>() {
+                    let config_id = deck.get("conf").and_then(|value| value.as_i64());
+                    by_deck.insert(deck_id, config_id);
+                }
+            }
+        }
+        Ok(by_deck)
+    }
+
+    fn historical_card_type(review_kind: i64) -> i64 {
+        match review_kind {
+            0 => 1,
+            2 => 3,
+            _ => 2,
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct MetricSummary {
+        log_loss: f64,
+        rmse_bins: f64,
+        rmse_bins_weighted: f64,
+    }
+
+    struct MetricAccumulator {
+        log_loss_sum: f64,
+        bins: [MetricBin; 20],
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct MetricBin {
+        count: usize,
+        prediction_sum: f64,
+        outcome_sum: f64,
+    }
+
+    impl MetricAccumulator {
+        fn from_predictions(predictions: &[f32], outcomes: &[bool]) -> MetricSummary {
+            let mut accumulator = Self {
+                log_loss_sum: 0.0,
+                bins: [MetricBin::default(); 20],
+            };
+            for (&prediction, &outcome) in predictions.iter().zip(outcomes) {
+                accumulator.record(prediction, outcome);
+            }
+            accumulator.finish(predictions.len())
+        }
+
+        fn record(&mut self, prediction: f32, outcome: bool) {
+            let prediction = valid_probability(prediction as f64);
+            let outcome_value = if outcome { 1.0 } else { 0.0 };
+            self.log_loss_sum += -(outcome_value * prediction.ln()
+                + (1.0 - outcome_value) * (1.0 - prediction).ln());
+            let bin =
+                ((prediction * self.bins.len() as f64).floor() as usize).min(self.bins.len() - 1);
+            let metric_bin = &mut self.bins[bin];
+            metric_bin.count += 1;
+            metric_bin.prediction_sum += prediction;
+            metric_bin.outcome_sum += outcome_value;
+        }
+
+        fn finish(self, count: usize) -> MetricSummary {
+            let mut unweighted_sum = 0.0;
+            let mut weighted_sum = 0.0;
+            let mut bin_count = 0;
+            for bin in self.bins {
+                if bin.count == 0 {
+                    continue;
+                }
+                let predicted = bin.prediction_sum / bin.count as f64;
+                let observed = bin.outcome_sum / bin.count as f64;
+                let squared = (predicted - observed).powi(2);
+                unweighted_sum += squared;
+                weighted_sum += squared * bin.count as f64;
+                bin_count += 1;
+            }
+            MetricSummary {
+                log_loss: self.log_loss_sum / count as f64,
+                rmse_bins: (unweighted_sum / bin_count as f64).sqrt(),
+                rmse_bins_weighted: (weighted_sum / count as f64).sqrt(),
+            }
+        }
+    }
+
+    fn valid_probability(value: f64) -> f64 {
+        if value.is_finite() {
+            value.clamp(1e-6, 1.0 - 1e-6)
+        } else {
+            0.5
+        }
     }
 }

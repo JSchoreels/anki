@@ -26,6 +26,7 @@ from aqt.rwkv_scheduler import (
     RwkvRecallPoint,
     RwkvReviewCandidate,
     RwkvReviewerPrediction,
+    RwkvReviewerStateSnapshot,
     RwkvReviewIdentity,
     RwkvReviewInput,
     RwkvReviewPrediction,
@@ -785,6 +786,38 @@ def test_rwkv_queue_refresh_on_exit_uses_nested_config() -> None:
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(decks=Decks())))
 
     assert rwkv_scheduler.reviewer_queue_order_refresh_on_exit_enabled(reviewer)
+    assert rwkv_scheduler.reviewer_queue_order_exit_refresh_needed(reviewer)
+
+
+def test_rwkv_queue_exit_refresh_skips_current_queue_scores() -> None:
+    class Decks:
+        def get_current_id(self) -> int:
+            return 100
+
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {
+                "reviewOrder": 7,
+                "other": {
+                    "jschoreels.rwkv": {
+                        "rwkv_review_enabled": True,
+                        "rwkv_review_instant_order_enabled": True,
+                        "rwkv_review_refresh_on_exit": True,
+                    }
+                },
+            }
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(decks=Decks())))
+    previous_backend = set_reviewer_backend(
+        SimpleNamespace(state_generation=lambda: 7)
+    )
+    try:
+        rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.9}
+        rwkv_scheduler._rwkv_review_queue_score_generations[100] = 7
+
+        assert not rwkv_scheduler.reviewer_queue_order_exit_refresh_needed(reviewer)
+    finally:
+        set_reviewer_backend(previous_backend)
 
 
 def test_rwkv_queue_refresh_due_uses_direct_refresh_interval() -> None:
@@ -1736,6 +1769,79 @@ def test_rwkv_review_scores_use_retrievability_only_batch_path() -> None:
         (3, pytest.approx(0.30)),
     ]
     assert runtime.retrievability_card_ids == [[2, 3]]
+
+
+def test_rwkv_review_input_scores_use_resident_state_and_cache() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resident_card_ids: list[list[int]] = []
+
+        def predict_retrievability_many_from_warm_up(
+            self,
+            review_inputs: list[RwkvReviewInput],
+        ) -> list[float]:
+            card_ids = [review_input.identity.card_id for review_input in review_inputs]
+            self.resident_card_ids.append(card_ids)
+            return [0.10 * card_id for card_id in card_ids]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    inputs = [
+        (2, _rwkv_review_input(card_id=2, note_id=20)),
+        (3, _rwkv_review_input(card_id=3, note_id=30)),
+    ]
+
+    first = rwkv_scheduler._rwkv_review_scores_for_inputs(inputs, batch_size=1)
+    second = rwkv_scheduler._rwkv_review_scores_for_inputs(inputs, batch_size=1)
+
+    assert first == [(2, pytest.approx(0.20)), (3, pytest.approx(0.30))]
+    assert second == first
+    assert runtime.resident_card_ids == [[2, 3]]
+
+
+def test_rwkv_current_retrievability_requests_use_resident_state() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resident_card_ids: list[list[int]] = []
+            self.serialized_card_ids: list[list[int]] = []
+
+        def predict_retrievability_many_from_warm_up(
+            self,
+            review_inputs: list[RwkvReviewInput],
+        ) -> list[float]:
+            card_ids = [review_input.identity.card_id for review_input in review_inputs]
+            self.resident_card_ids.append(card_ids)
+            return [0.10 * card_id for card_id in card_ids]
+
+        def predict_retrievability_many(
+            self,
+            requests: list[RwkvReviewPredictionRequest],
+        ) -> list[float]:
+            card_ids = [request.review_input.identity.card_id for request in requests]
+            self.serialized_card_ids.append(card_ids)
+            return [0.20 * card_id for card_id in card_ids]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    review_input = _rwkv_review_input(card_id=2, note_id=20)
+    request = backend._prediction_request(review_input.identity, review_input)
+
+    current = backend.predict_retrievability_requests([request])
+    snapshot = backend.predict_retrievability_requests(
+        [replace(request, card_state=b"older-state")]
+    )
+
+    assert [prediction.retrievability for prediction in current] == [
+        pytest.approx(0.20)
+    ]
+    assert [prediction.retrievability for prediction in snapshot] == [
+        pytest.approx(0.40)
+    ]
+    assert runtime.resident_card_ids == [[2]]
+    assert runtime.serialized_card_ids == [[2]]
 
 
 def test_rwkv_review_scores_upscale_default_retrievability_batch_size() -> None:
@@ -3828,6 +3934,42 @@ def test_reviewer_rwkv_undo_restores_previous_review_state() -> None:
     assert runtime.runtime_review_count == 0
 
 
+def test_reviewer_rwkv_undo_restores_resident_runtime_state() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resident_restores: list[
+                tuple[RwkvReviewIdentity, RwkvReviewerStateSnapshot]
+            ] = []
+
+        def restore_warm_up_state(
+            self,
+            identity: RwkvReviewIdentity,
+            snapshot: RwkvReviewerStateSnapshot,
+        ) -> None:
+            self.resident_restores.append((identity, snapshot))
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    counter = _UndoCounter(reviewer)
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    counter.set(1)
+    record_reviewer_answer(reviewer, card, ease=3)
+    record_collection_undo(_undo_result(counter=1, next_counter=2))
+
+    assert len(runtime.resident_restores) == 1
+    identity, snapshot = runtime.resident_restores[0]
+    assert identity == RwkvReviewIdentity(1, 10, 100, 1000)
+    assert snapshot.card_state is None
+    assert snapshot.note_state is None
+    assert snapshot.deck_state is None
+    assert snapshot.preset_state is None
+    assert snapshot.global_state is None
+
+
 def test_reviewer_rwkv_undo_queues_restored_cards_in_reverse_answer_order() -> None:
     reviewer = SimpleNamespace(_answeredIds=[1, 2, 3])
 
@@ -5246,6 +5388,60 @@ def test_install_async_reviewer_queue_order_discards_stale_generation() -> None:
 
     assert installed is False
     assert rpc.calls == []
+
+
+def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
+    class Runtime(_SharedReviewRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resident_card_ids: list[list[int]] = []
+
+        def predict_retrievability_many_from_warm_up(
+            self,
+            review_inputs: list[RwkvReviewInput],
+        ) -> list[float]:
+            card_ids = [review_input.identity.card_id for review_input in review_inputs]
+            self.resident_card_ids.append(card_ids)
+            return [0.10 * card_id for card_id in card_ids]
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    inputs = (
+        (2, _rwkv_review_input(card_id=2, note_id=20)),
+        (3, _rwkv_review_input(card_id=3, note_id=30)),
+    )
+    work = rwkv_scheduler.RwkvReviewQueueOrderAsyncWork(
+        deck_id=100,
+        reason="review queue",
+        batch_size=512,
+        state_generation=0,
+        input_build=rwkv_scheduler.RwkvReviewInputBatchBuild(
+            inputs_by_batch_size={512: list(inputs)},
+            loaded_rows=2,
+            parsed_cards=2,
+            cards_with_state=2,
+            disabled_config_cards=0,
+            eligible_cards=2,
+            deck_configs=1,
+            preset_elapsed_ms=0.0,
+            load_elapsed_ms=0.0,
+            candidate_elapsed_ms=0.0,
+        ),
+        inputs_by_card_id=inputs,
+        predictions=(None, None),
+        requests_by_index=(),
+        resident_inputs_by_index=((0, inputs[0][1]), (1, inputs[1][1])),
+        cache_hits=0,
+        warmup_elapsed_ms=0.0,
+        build_elapsed_ms=0.0,
+    )
+
+    result = rwkv_scheduler.score_reviewer_queue_order_async_work(work)
+
+    assert result.scores == ((2, pytest.approx(0.20)), (3, pytest.approx(0.30)))
+    assert result.runtime_requests == 2
+    assert runtime.resident_card_ids == [[2, 3]]
 
 
 def test_prewarm_reviewer_queue_score_cache_scores_parent_scope() -> None:
