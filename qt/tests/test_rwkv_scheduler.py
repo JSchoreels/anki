@@ -819,9 +819,7 @@ def test_rwkv_queue_exit_refresh_skips_current_queue_scores() -> None:
             }
 
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(decks=Decks())))
-    previous_backend = set_reviewer_backend(
-        SimpleNamespace(state_generation=lambda: 7)
-    )
+    previous_backend = set_reviewer_backend(SimpleNamespace(state_generation=lambda: 7))
     try:
         rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.9}
         rwkv_scheduler._rwkv_review_queue_score_generations[100] = 7
@@ -2076,8 +2074,6 @@ def test_reviewer_rwkv_warmup_replays_historical_reviews_once_before_prediction(
 
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert runtime.queries == [
-        (1, None, None),
-        (1, 1, ("deck", 100, 1)),
         (2, 2, ("deck", 100, 2)),
         (2, 2, ("deck", 100, 2)),
     ]
@@ -2519,11 +2515,19 @@ def test_reviewer_rwkv_warmup_reports_review_progress() -> None:
     ]
 
 
-def test_rust_rwkv_warmup_chunk_size_preserves_small_progress_chunks() -> None:
+def test_rust_rwkv_warmup_chunk_size_fills_state_only_wavefront() -> None:
     assert _rust_warmup_chunk_size(0) == 1
-    assert _rust_warmup_chunk_size(2) == 1
-    assert _rust_warmup_chunk_size(4000) == 40
-    assert _rust_warmup_chunk_size(50000) == 4096
+    assert _rust_warmup_chunk_size(2) == 2
+    assert _rust_warmup_chunk_size(4000) == 4000
+    assert _rust_warmup_chunk_size(50000) == 50_000
+    assert _rust_warmup_chunk_size(200000) == 131_072
+
+
+def test_rust_rwkv_calibration_chunk_size_preserves_progress_chunks() -> None:
+    assert _rust_warmup_chunk_size(0, record_predictions=True) == 1
+    assert _rust_warmup_chunk_size(2, record_predictions=True) == 1
+    assert _rust_warmup_chunk_size(4000, record_predictions=True) == 40
+    assert _rust_warmup_chunk_size(50000, record_predictions=True) == 16_384
 
 
 def test_reviewer_rwkv_warmup_progress_label_includes_elapsed_and_remaining() -> None:
@@ -2907,10 +2911,7 @@ def test_reviewer_rwkv_warmup_replays_rated_manual_reviews_as_review_history(
     assert [
         (review_id, prediction, source)
         for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows
-    ] == [
-        (first_review, pytest.approx(0.45), "rwkv_state_cache_build"),
-        (manual_review, pytest.approx(0.45), "rwkv_state_cache_build"),
-    ]
+    ] == []
 
 
 def test_rwkv_model_cache_key_uses_model_content_not_install_path(
@@ -3157,7 +3158,7 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     )
 
 
-def test_rwkv_state_cache_build_can_skip_review_retrievability_cache(
+def test_rwkv_state_cache_build_skips_review_retrievability_cache_by_default(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -3173,8 +3174,6 @@ def test_rwkv_state_cache_build_can_skip_review_retrievability_cache(
         lambda: {"model": "test"},
     )
     monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
-    monkeypatch.setenv("ANKI_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY", "0")
-
     runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
@@ -3213,7 +3212,10 @@ def test_rwkv_state_cache_build_backfills_missing_review_retrievability_cache(
     set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
     _attach_progress_taskman(reviewer.mw)
 
-    rwkv_scheduler.build_rwkv_state_cache_with_progress(reviewer.mw)
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        reviewer.mw,
+        record_retrievability_cache=True,
+    )
 
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert [
@@ -3251,7 +3253,10 @@ def test_rwkv_state_cache_build_backfills_missing_review_cache_when_already_warm
     runtime.reviewed.clear()
     _attach_progress_taskman(reviewer.mw)
 
-    rwkv_scheduler.build_rwkv_state_cache_with_progress(reviewer.mw)
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        reviewer.mw,
+        record_retrievability_cache=True,
+    )
 
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert [
@@ -3329,6 +3334,46 @@ def test_recompute_rwkv_calibration_data_self_corrects_and_restores_state(
     assert after.deck_states == before.deck_states
     assert after.preset_states == before.preset_states
     assert after.global_state == before.global_state
+
+
+def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    before = backend.cache_snapshot()
+    assert reviewer.mw.col.rwkv_retrievability_rows == []
+    assert rwkv_scheduler.rwkv_calibration_data_available(reviewer.mw) is False
+
+    runtime.reviewed.clear()
+    assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
+    assert runtime.reviewed == [(1, 2), (1, 3)]
+    assert backend.cache_snapshot() == before
+    assert rwkv_scheduler.rwkv_calibration_data_available(reviewer.mw) is True
+    assert {row[4] for row in reviewer.mw.col.rwkv_retrievability_rows} == {
+        rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
+        rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD,
+    }
+
+    runtime.reviewed.clear()
+    assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
+    assert runtime.reviewed == []
 
 
 def test_train_rwkv_self_correction_calibration_writes_test_fold_and_saves_model(
@@ -3648,13 +3693,7 @@ def test_rwkv_state_cache_force_rebuild_replays_full_history(
 
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert runtime.restored_cache_states[-1] == b"runtime-cache"
-    assert [
-        (review_id, prediction, source)
-        for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows
-    ] == [
-        (first_review, pytest.approx(0.45), "rwkv_state_cache_build"),
-        (second_review, pytest.approx(0.45), "rwkv_state_cache_build"),
-    ]
+    assert reviewer.mw.col.rwkv_retrievability_rows == []
 
 
 def test_stateful_backend_uses_runtime_bulk_warmup_for_empty_state() -> None:
@@ -8340,9 +8379,9 @@ def test_embedded_rust_runtime_warm_up_falls_back_to_tuple_rows() -> None:
         ]
     )
 
-    # Small histories chunk at the progress interval, so each review arrives
-    # in its own tuple-row call.
-    assert len(process.calls) == 2
+    # State-only replay keeps a small history together so the native
+    # wavefront can schedule all available review chunks.
+    assert len(process.calls) == 1
     assert all(record_predictions is False for _, record_predictions in process.calls)
     rows = [row for chunk_rows, _ in process.calls for row in chunk_rows]
     assert [row[0] for row in rows] == [1, 2]
@@ -9098,6 +9137,20 @@ def _rwkv_cache_reviewer(
             if "select crt from col" in sql:
                 assert args == ()
                 return 12345
+            if "sample_role =" in sql:
+                assert len(args) == 2
+                last_review_id, sample_role = args
+                assert isinstance(last_review_id, int)
+                return next(
+                    (
+                        1
+                        for review_id, prediction, _, _, row_sample_role, _ in rwkv_retrievability_rows
+                        if review_id <= last_review_id
+                        and 0 <= prediction <= 1
+                        and row_sample_role == sample_role
+                    ),
+                    None,
+                )
             assert "from revlog" in sql
             assert len(args) == 1
             if "order by id desc" in sql:

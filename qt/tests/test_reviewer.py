@@ -1133,17 +1133,6 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
         "install_reviewer_queue_order_async_result",
         install_reviewer_queue_order_async_result,
     )
-    monkeypatch.setattr(
-        aqt.rwkv_scheduler,
-        "prewarm_reviewer_queue_score_cache",
-        lambda reviewer, *, reason: calls.append(f"prewarm:{reason}"),
-    )
-    monkeypatch.setattr(
-        aqt.rwkv_scheduler,
-        "prewarm_reviewer_queue_score_cache",
-        lambda reviewer, *, reason: calls.append("prewarm"),
-    )
-
     reviewer = Reviewer.__new__(Reviewer)
     reviewer.card = SimpleNamespace(id=123)
     reviewer._answeredIds = [123]
@@ -1162,7 +1151,6 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
         "score",
         "collection",
         "install",
-        "prewarm:review queue exit refresh",
         "undo",
     ]
     assert reviewer.card is None

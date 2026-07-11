@@ -1067,7 +1067,10 @@ def open_cards_dialog() -> bytes:
 
 
 def build_rwkv_state_cache() -> bytes:
-    aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(aqt.mw)
+    aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        aqt.mw,
+        record_retrievability_cache=False,
+    )
     return b""
 
 
@@ -1075,6 +1078,7 @@ def force_build_rwkv_state_cache() -> bytes:
     aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(
         aqt.mw,
         force_rebuild=True,
+        record_retrievability_cache=False,
     )
     return b""
 

@@ -89,9 +89,6 @@ _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
 _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR = "_rwkv_review_input_batch_cache"
 _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT = 4
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
-_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY_ENV = (
-    "ANKI_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY"
-)
 _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
@@ -187,11 +184,6 @@ _RWKV_SELF_CORRECTION_TRAIN_FRACTION = 0.70
 _RWKV_SELF_CORRECTION_MIN_SAMPLES = 200
 _RWKV_SELF_CORRECTION_L2 = 0.01
 _RWKV_SELF_CORRECTION_MAX_ITERATIONS = 50
-
-
-def _rwkv_state_cache_records_retrievability() -> bool:
-    value = os.environ.get(_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY_ENV)
-    return value is None or value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT = "final_fit"
@@ -4986,7 +4978,7 @@ def _warm_up_reviewer_backend(
     *,
     force_rebuild: bool = False,
     require_retrievability_cache: bool = False,
-    record_retrievability_cache: bool = True,
+    record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> bool:
     backend = _reviewer_backend
@@ -5211,9 +5203,9 @@ def _rwkv_history_uses_self_correction(
         enabled = enabled_by_deck_id.get(deck_id)
         if enabled is None:
             deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-            enabled = isinstance(deck_config, dict) and _rwkv_review_self_correction_enabled(
-                deck_config
-            )
+            enabled = isinstance(
+                deck_config, dict
+            ) and _rwkv_review_self_correction_enabled(deck_config)
             enabled_by_deck_id[deck_id] = enabled
         if enabled:
             return True
@@ -5331,7 +5323,7 @@ def warm_up_rwkv_state(
     *,
     force_rebuild: bool = False,
     require_retrievability_cache: bool = False,
-    record_retrievability_cache: bool = True,
+    record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> bool:
     """Warm and persist RWKV state for the current desktop collection."""
@@ -5340,6 +5332,9 @@ def warm_up_rwkv_state(
     if _reviewer_backend is None:
         return False
 
+    record_retrievability_cache = (
+        record_retrievability_cache or require_retrievability_cache
+    )
     return _warm_up_reviewer_backend(
         SimpleNamespace(mw=mw),
         force_rebuild=force_rebuild,
@@ -5437,6 +5432,68 @@ def recompute_rwkv_calibration_data(
             restore_cache_snapshot(snapshot)
         except Exception:
             logger.exception("failed to restore RWKV backend state after recompute")
+
+
+def rwkv_calibration_data_available(mw: object) -> bool:
+    """Return whether current, role-aware historical RWKV predictions exist."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    metadata = _read_rwkv_state_cache_metadata(reviewer)
+    if metadata is None or not _rwkv_state_cache_metadata_usable(reviewer, metadata):
+        return False
+
+    last_review_id = _int_value(metadata.get("lastReviewId"))
+    review_count = _int_value(metadata.get("reviewCount"))
+    if last_review_id is None or review_count is None:
+        return False
+    if not _rwkv_review_retrievability_cache_complete(
+        reviewer,
+        last_review_id=last_review_id,
+        review_count=review_count,
+    ):
+        return False
+    if review_count < 2:
+        return True
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    scalar = getattr(db, "scalar", None)
+    if not callable(scalar):
+        return False
+    try:
+        available = scalar(
+            f"""
+select 1
+from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+where revlog_id <= ?
+  and prediction between 0 and 1
+  and sample_role = ?
+limit 1
+""",
+            last_review_id,
+            _RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD,
+        )
+    except Exception:
+        logger.debug("failed to check RWKV calibration-data availability")
+        return False
+    return available == 1
+
+
+def ensure_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> bool:
+    """Generate role-aware historical RWKV predictions when they are missing.
+
+    This synchronous API is intended for add-ons running in a background task.
+    Existing complete data is a fast no-op. The active reviewer state is
+    snapshotted and restored by `recompute_rwkv_calibration_data()`.
+    """
+
+    if rwkv_calibration_data_available(mw):
+        return True
+    return recompute_rwkv_calibration_data(mw, progress=progress)
 
 
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
@@ -7176,7 +7233,7 @@ def build_rwkv_state_cache_with_progress(
     mw: object,
     *,
     force_rebuild: bool = False,
-    record_retrievability_cache: bool | None = None,
+    record_retrievability_cache: bool = False,
 ) -> None:
     """Build the local RWKV state cache with a modal progress dialog."""
 
@@ -7184,8 +7241,6 @@ def build_rwkv_state_cache_with_progress(
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
-    if record_retrievability_cache is None:
-        record_retrievability_cache = _rwkv_state_cache_records_retrievability()
     if not callable(with_progress):
         warm_up_rwkv_state(
             mw,
@@ -8532,7 +8587,7 @@ def _restore_reviewer_backend_cache(
     reviewer: object,
     *,
     require_retrievability_cache: bool = False,
-    record_retrievability_cache: bool = True,
+    record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> bool:
     backend = _reviewer_backend
@@ -8661,7 +8716,7 @@ def _rwkv_review_retrievability_cache_complete(
     try:
         cached = scalar(
             f"""
-select count()
+select count(distinct r.id)
 from revlog r
 join {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
   on cache.revlog_id = r.id

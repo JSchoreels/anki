@@ -42,7 +42,8 @@ _PACKED_PREDICTION_REQUEST_MAGIC = b"ARWKVPR1"
 _PACKED_WARM_UP_REVIEW_MAGIC = b"ARWKVWU1"
 _PACKED_PREDICTION_REQUEST_HEADER = struct.Struct("<8sI")
 _PACKED_PREDICTION_REQUEST_ROW = struct.Struct("<IqqqqBBqqqqqffff")
-_RUST_WARMUP_CHUNK_SIZE = 4096
+_RUST_WARMUP_CHUNK_SIZE = 16_384
+_RUST_STATE_ONLY_WARMUP_CHUNK_SIZE = 131_072
 
 
 class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
@@ -418,9 +419,12 @@ class _RustRwkvRuntime:
         progress: RwkvWarmUpProgressCallback | None = None,
     ) -> RwkvBackendCacheSnapshot:
         total = len(reviews)
-        backend_chunk_size = _rust_warmup_chunk_size(total)
-        _report_warmup_progress(progress, processed=0, total=total)
         record_predictions = prediction_recorder is not None and review_ids is not None
+        backend_chunk_size = _rust_warmup_chunk_size(
+            total,
+            record_predictions=record_predictions,
+        )
+        _report_warmup_progress(progress, processed=0, total=total)
         processed = 0
         warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
 
@@ -1177,7 +1181,10 @@ def _warmup_progress_interval(total: int) -> int:
     return max(1, min(1000, total // 100 or 1))
 
 
-def _rust_warmup_chunk_size(total: int) -> int:
+def _rust_warmup_chunk_size(total: int, *, record_predictions: bool = False) -> int:
+    if not record_predictions:
+        return max(1, min(total, _RUST_STATE_ONLY_WARMUP_CHUNK_SIZE))
+
     progress_interval = _warmup_progress_interval(total)
     if total <= _RUST_WARMUP_CHUNK_SIZE:
         return progress_interval

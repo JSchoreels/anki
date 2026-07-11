@@ -4605,6 +4605,42 @@ impl Linear {
         #[cfg(test)]
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
     }
+
+    /// Uses the native matrix backend for non-persisted bulk query rows when
+    /// requested. Answer rows retain `apply_block_into()`'s exact accumulation
+    /// order so warm-up state snapshots remain byte-identical.
+    fn apply_block_approx_into(
+        &self,
+        inputs: &[f32],
+        outs: &mut [f32],
+        rows: usize,
+        approximate: bool,
+    ) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = approximate;
+
+        #[cfg(target_os = "macos")]
+        if approximate && rows >= 16 && self.input * self.output >= 4096 {
+            matmul::matrix_times_matrix(
+                inputs,
+                &self.weight_by_input,
+                rows,
+                self.output,
+                self.input,
+                outs,
+            );
+            if let Some(bias) = &self.bias {
+                for out in outs.chunks_exact_mut(self.output) {
+                    for (value, bias) in out.iter_mut().zip(bias) {
+                        *value += bias;
+                    }
+                }
+            }
+            return;
+        }
+
+        self.apply_block_into(inputs, outs, rows);
+    }
 }
 
 #[inline(always)]
@@ -4998,6 +5034,24 @@ fn single_timestep(
     k_deformed: &[f32],
     state: &[f32],
 ) -> (Vec<f32>, Vec<f32>) {
+    let mut next_state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+    let mut out = vec![0.0; D_MODEL];
+    single_timestep_into(r, k, v, w, a, k_deformed, state, &mut out, &mut next_state);
+    (out, next_state)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn single_timestep_into(
+    r: &[f32],
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    k_deformed: &[f32],
+    state: &[f32],
+    out: &mut [f32],
+    next_state: &mut [f32],
+) {
     #[cfg(test)]
     let profile_started =
         if RWKV_SINGLE_TIMESTEP_PROFILE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -5008,8 +5062,9 @@ fn single_timestep(
     #[cfg(test)]
     let warmup_profile_started = rwkv_warmup_profile_start();
 
-    let mut next_state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
-    let mut out = vec![0.0; D_MODEL];
+    debug_assert_eq!(state.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
+    debug_assert_eq!(next_state.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
+    debug_assert_eq!(out.len(), D_MODEL);
 
     for head in 0..HEADS {
         let head_base = head * HEAD_SIZE;
@@ -5054,8 +5109,6 @@ fn single_timestep(
         RwkvWarmupProfileBucket::SingleTimestep,
         warmup_profile_started,
     );
-
-    (out, next_state)
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -5104,7 +5157,6 @@ fn single_timestep_query_into(
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[allow(clippy::too_many_arguments)]
 fn single_timestep_query_fast_into(
     r: &[f32],
@@ -5441,12 +5493,13 @@ fn quantize_dequantize_symmetric(values: &mut [f32], bits: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::env;
     use std::path::PathBuf;
     use std::time::Instant;
 
     use rusqlite::Connection;
+
+    use super::*;
 
     struct TimeMixerAffineTransform {
         matrix: Vec<f32>,
@@ -6096,7 +6149,13 @@ order by r.id, r.cid
         let chunk_rows = std::env::var("ANKI_RWKV_BULK_BENCH_CHUNK_ROWS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok());
+        let call_rows = std::env::var("ANKI_RWKV_BULK_BENCH_CALL_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&value| value > 0);
         let record_predictions = std::env::var("ANKI_RWKV_BULK_BENCH_RECORD_PREDICTIONS")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let force_fast_query = std::env::var("ANKI_RWKV_BULK_BENCH_FAST_QUERY")
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
         let profile = std::env::var("ANKI_RWKV_BULK_BENCH_PROFILE").map_or(true, |value| {
             !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO")
@@ -6120,7 +6179,43 @@ order by r.id, r.cid
             start_rwkv_warmup_profile();
         }
         let warmup_started = std::time::Instant::now();
-        let predictions = if let Some(chunk_rows) = chunk_rows {
+        let predictions = if let Some(call_rows) = call_rows {
+            let mut predictions = Vec::new();
+            for (call_index, call) in reviews.chunks(call_rows).enumerate() {
+                let offset = call_index * call_rows;
+                let call_predictions = if force_fast_query {
+                    bulk::warm_up_reviews_bulk_fast_query_chunked(
+                        &mut inference,
+                        call.to_vec(),
+                        record_predictions,
+                        chunk_rows.unwrap_or(16_384),
+                    )
+                } else if let Some(chunk_rows) = chunk_rows {
+                    bulk::warm_up_reviews_bulk_chunked(
+                        &mut inference,
+                        call.to_vec(),
+                        record_predictions,
+                        chunk_rows,
+                    )
+                } else {
+                    inference.warm_up_reviews(call.to_vec(), record_predictions)
+                }
+                .expect("RWKV warm-up call failed");
+                predictions.extend(
+                    call_predictions
+                        .into_iter()
+                        .map(|(index, value)| (index + offset, value)),
+                );
+            }
+            Ok::<_, std::io::Error>(predictions)
+        } else if force_fast_query {
+            bulk::warm_up_reviews_bulk_fast_query_chunked(
+                &mut inference,
+                reviews.clone(),
+                record_predictions,
+                chunk_rows.unwrap_or(16_384),
+            )
+        } else if let Some(chunk_rows) = chunk_rows {
             bulk::warm_up_reviews_bulk_chunked(
                 &mut inference,
                 reviews.clone(),
@@ -6139,11 +6234,34 @@ order by r.id, r.cid
         println!("weights={}", weights_path.display());
         println!("collection_reviews={}", reviews.len());
         println!("record_predictions={record_predictions}");
+        println!(
+            "query_path={}",
+            if force_fast_query {
+                "forced-fast-test-hook"
+            } else {
+                "production-default"
+            }
+        );
         println!("profile={profile}");
         if let Some(chunk_rows) = chunk_rows {
             println!("chunk_rows={chunk_rows}");
         }
+        if let Some(call_rows) = call_rows {
+            println!("call_rows={call_rows}");
+        }
         println!("predictions={}", predictions.len());
+        if record_predictions {
+            let prediction_values = predictions
+                .iter()
+                .map(|(_, prediction)| *prediction)
+                .collect::<Vec<_>>();
+            let outcomes = predictions
+                .iter()
+                .map(|(index, _)| reviews[*index].ease != Some(1))
+                .collect::<Vec<_>>();
+            let metrics = MetricAccumulator::from_predictions(&prediction_values, &outcomes);
+            println!("log_loss={:.15}", metrics.log_loss);
+        }
         println!("load_reviews_ms={load_reviews_ms:.3}");
         println!("warmup_ms={warmup_ms:.3}");
         if let Ok(threads) = std::env::var("RAYON_NUM_THREADS") {
@@ -6505,6 +6623,20 @@ order by r.id, r.cid
         }
     }
 
+    fn assert_prediction_close(expected: &[(usize, f32)], actual: &[(usize, f32)], tolerance: f32) {
+        assert_eq!(expected.len(), actual.len(), "prediction counts diverged");
+        for ((expected_index, expected_value), (actual_index, actual_value)) in
+            expected.iter().zip(actual)
+        {
+            assert_eq!(expected_index, actual_index, "prediction order diverged");
+            let delta = (expected_value - actual_value).abs();
+            assert!(
+                delta <= tolerance,
+                "prediction diverged at review {expected_index}: {expected_value} vs {actual_value} (delta {delta})"
+            );
+        }
+    }
+
     #[test]
     fn bulk_warm_up_matches_sequential() {
         let Some(weights) = embedded_weights_path() else {
@@ -6522,7 +6654,7 @@ order by r.id, r.cid
             let bulk_predictions =
                 bulk::warm_up_reviews_bulk(&mut bulk, reviews.clone(), record_predictions).unwrap();
 
-            assert_prediction_parity(&sequential_predictions, &bulk_predictions);
+            assert_prediction_close(&sequential_predictions, &bulk_predictions, 1e-5);
             assert_warm_up_parity(&sequential, &bulk);
             assert_eq!(
                 sequential.cache_state().len(),
@@ -6616,6 +6748,67 @@ order by r.id, r.cid
 
         assert_prediction_parity(&sequential_predictions, &bulk_predictions);
         assert_warm_up_parity(&sequential, &bulk);
+    }
+
+    #[test]
+    fn bulk_state_only_wavefront_matches_sequential_across_chunks() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(160);
+
+        let mut sequential = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        sequential
+            .warm_up_reviews_sequential(reviews.clone(), false)
+            .unwrap();
+
+        let mut wavefront = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let mut offset = 0;
+        for call in [37, 96, 27] {
+            let predictions = bulk::warm_up_reviews_bulk_chunked(
+                &mut wavefront,
+                reviews[offset..offset + call].to_vec(),
+                false,
+                7,
+            )
+            .unwrap();
+            assert!(predictions.is_empty());
+            offset += call;
+        }
+
+        assert_warm_up_parity(&sequential, &wavefront);
+        assert_eq!(sequential.cache_state(), wavefront.cache_state());
+    }
+
+    #[test]
+    fn bulk_fast_query_preserves_state_with_small_prediction_delta() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(160);
+
+        let mut exact = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let exact_predictions =
+            bulk::warm_up_reviews_bulk_chunked(&mut exact, reviews.clone(), true, 7).unwrap();
+        let mut fast = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let fast_predictions =
+            bulk::warm_up_reviews_bulk_fast_query_chunked(&mut fast, reviews, true, 7).unwrap();
+
+        assert_eq!(exact_predictions.len(), fast_predictions.len());
+        let mut max_delta = 0.0_f32;
+        for ((exact_index, exact), (fast_index, fast)) in
+            exact_predictions.iter().zip(&fast_predictions)
+        {
+            assert_eq!(exact_index, fast_index);
+            max_delta = max_delta.max((exact - fast).abs());
+        }
+        assert!(
+            max_delta <= 1e-5,
+            "max fast bulk prediction delta: {max_delta}"
+        );
+        assert_warm_up_parity(&exact, &fast);
     }
 
     #[test]

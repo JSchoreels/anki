@@ -15,31 +15,45 @@
 //! (`Linear::apply_block_into`), which streams each weight column once per
 //! block of rows while preserving the per-output-element operation sequence
 //! of the per-review path exactly (bias init, ascending-column fused
-//! accumulation, identical zero-column skip). Results therefore stay
-//! bit-identical to per-review replay: only the loop order changes, never
-//! the arithmetic performed for a given review.
+//! accumulation, identical zero-column skip). Persisted answer states stay
+//! bit-identical to per-review replay. Query rows use an algebraically
+//! equivalent recurrence projection that avoids materializing their discarded
+//! next state; its different reduction order can introduce tiny score deltas.
 //!
 //! Stream continuity across calls comes from `ReviewStateMaps`, exactly like
 //! the per-review path, so the chunked calls issued by the desktop bridge
 //! replay to the same states as one large call.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 
 use super::*;
 
-/// Rows processed per internal chunk. Chunking bounds scratch-buffer memory
-/// for very large single calls; the desktop bridge already calls in chunks of
-/// at most 1000 reviews.
-const BULK_CHUNK_ROWS: usize = 4096;
+/// Rows processed per internal chunk. This matches the desktop bridge's
+/// measured sweet spot while bounding scratch-buffer memory for large replays.
+const BULK_CHUNK_ROWS: usize = 16_384;
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum QueryRecurrence {
+    Exact,
+    Fast,
+}
 
 pub(super) fn warm_up_reviews_bulk(
     inference: &mut RwkvInference,
     reviews: Vec<ReviewInput>,
     record_predictions: bool,
 ) -> io::Result<Vec<(usize, f32)>> {
-    warm_up_reviews_bulk_impl(inference, reviews, record_predictions, BULK_CHUNK_ROWS)
+    warm_up_reviews_bulk_impl(
+        inference,
+        reviews,
+        record_predictions,
+        BULK_CHUNK_ROWS,
+        QueryRecurrence::Fast,
+    )
 }
 
 /// Test hook: a small chunk size exercises cross-chunk stream continuity
@@ -51,7 +65,29 @@ pub(super) fn warm_up_reviews_bulk_chunked(
     record_predictions: bool,
     chunk_rows: usize,
 ) -> io::Result<Vec<(usize, f32)>> {
-    warm_up_reviews_bulk_impl(inference, reviews, record_predictions, chunk_rows.max(1))
+    warm_up_reviews_bulk_impl(
+        inference,
+        reviews,
+        record_predictions,
+        chunk_rows.max(1),
+        QueryRecurrence::Exact,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn warm_up_reviews_bulk_fast_query_chunked(
+    inference: &mut RwkvInference,
+    reviews: Vec<ReviewInput>,
+    record_predictions: bool,
+    chunk_rows: usize,
+) -> io::Result<Vec<(usize, f32)>> {
+    warm_up_reviews_bulk_impl(
+        inference,
+        reviews,
+        record_predictions,
+        chunk_rows.max(1),
+        QueryRecurrence::Fast,
+    )
 }
 
 fn warm_up_reviews_bulk_impl(
@@ -59,6 +95,7 @@ fn warm_up_reviews_bulk_impl(
     reviews: Vec<ReviewInput>,
     record_predictions: bool,
     chunk_size: usize,
+    query_recurrence: QueryRecurrence,
 ) -> io::Result<Vec<(usize, f32)>> {
     // Feature prepass, in review order. Query features are assigned before
     // answer features for each review so first-seen ID encodings keep the
@@ -99,20 +136,31 @@ fn warm_up_reviews_bulk_impl(
     #[cfg(test)]
     rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeatureMlp, profile_started);
 
-    for (module_id, module) in model.modules.iter().enumerate() {
-        #[cfg(test)]
-        let profile_started = rwkv_warmup_profile_start();
-        run_module(
-            module,
-            module_id,
+    if record_predictions {
+        for (module_id, module) in model.modules.iter().enumerate() {
+            #[cfg(test)]
+            let profile_started = rwkv_warmup_profile_start();
+            run_module(
+                module,
+                module_id,
+                &inputs,
+                &mut inference.warm_up_states,
+                &mut x,
+                x_query.as_deref_mut(),
+                chunk_size,
+                query_recurrence,
+            );
+            #[cfg(test)]
+            rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
+        }
+    } else {
+        x = run_state_only_module_wavefront(
+            &model,
             &inputs,
             &mut inference.warm_up_states,
-            &mut x,
-            x_query.as_deref_mut(),
+            x,
             chunk_size,
         );
-        #[cfg(test)]
-        rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
     }
 
     // Recall curves: the per-review path stores one curve per answered
@@ -176,6 +224,103 @@ fn feature_mlp_rows(model: &SrsModel, features: &[f32], rows: usize) -> Vec<f32>
 
 fn row(buffer: &[f32], index: usize) -> &[f32] {
     &buffer[index * D_MODEL..(index + 1) * D_MODEL]
+}
+
+/// Runs state-only replay as a dependency-safe wavefront over review chunks
+/// and state-scope modules. Node `(chunk, module)` depends only on the previous
+/// module for the same chunk and the previous chunk for the same module, so all
+/// nodes on one anti-diagonal can execute in parallel.
+fn run_state_only_module_wavefront(
+    model: &SrsModel,
+    inputs: &[ReviewInput],
+    states: &mut ReviewStateMaps,
+    mut x: Vec<f32>,
+    chunk_size: usize,
+) -> Vec<f32> {
+    debug_assert_eq!(model.modules.len(), 5);
+    let chunk_size = chunk_size.max(1);
+    let chunks: Vec<Mutex<&mut [f32]>> =
+        x.chunks_mut(chunk_size * D_MODEL).map(Mutex::new).collect();
+    let module_states: Vec<Mutex<ReviewStateMaps>> = (0..model.modules.len())
+        .map(|module_id| Mutex::new(take_module_states(states, module_id)))
+        .collect();
+
+    for diagonal in 0..chunks.len() + model.modules.len() - 1 {
+        (0..model.modules.len())
+            .into_par_iter()
+            .for_each(|module_id| {
+                let Some(chunk_index) = diagonal.checked_sub(module_id) else {
+                    return;
+                };
+                if chunk_index >= chunks.len() {
+                    return;
+                }
+
+                let input_start = chunk_index * chunk_size;
+                let input_end = (input_start + chunk_size).min(inputs.len());
+                let mut module_states = module_states[module_id]
+                    .lock()
+                    .expect("RWKV module state lock poisoned");
+                let mut chunk = chunks[chunk_index]
+                    .lock()
+                    .expect("RWKV replay chunk lock poisoned");
+                #[cfg(test)]
+                let profile_started = rwkv_warmup_profile_start();
+                run_module(
+                    &model.modules[module_id],
+                    module_id,
+                    &inputs[input_start..input_end],
+                    &mut module_states,
+                    &mut chunk,
+                    None,
+                    chunk_size,
+                    QueryRecurrence::Exact,
+                );
+                #[cfg(test)]
+                rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
+            });
+    }
+
+    for (module_id, module_states) in module_states.into_iter().enumerate() {
+        put_module_states(
+            states,
+            module_id,
+            module_states
+                .into_inner()
+                .expect("RWKV module state lock poisoned"),
+        );
+    }
+
+    drop(chunks);
+    x
+}
+
+fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewStateMaps {
+    let mut module_states = ReviewStateMaps::default();
+    match module_id {
+        0 => module_states.card = std::mem::take(&mut states.card),
+        1 => module_states.deck = std::mem::take(&mut states.deck),
+        2 => module_states.note = std::mem::take(&mut states.note),
+        3 => module_states.preset = std::mem::take(&mut states.preset),
+        4 => module_states.global = states.global.take(),
+        _ => unreachable!("unexpected RWKV module {module_id}"),
+    }
+    module_states
+}
+
+fn put_module_states(
+    states: &mut ReviewStateMaps,
+    module_id: usize,
+    mut module_states: ReviewStateMaps,
+) {
+    match module_id {
+        0 => states.card = std::mem::take(&mut module_states.card),
+        1 => states.deck = std::mem::take(&mut module_states.deck),
+        2 => states.note = std::mem::take(&mut module_states.note),
+        3 => states.preset = std::mem::take(&mut module_states.preset),
+        4 => states.global = module_states.global.take(),
+        _ => unreachable!("unexpected RWKV module {module_id}"),
+    }
 }
 
 /// The recurrent-state scope a module's streams are keyed by. `None` means
@@ -294,6 +439,7 @@ fn run_module(
     x: &mut [f32],
     mut x_query: Option<&mut [f32]>,
     chunk_size: usize,
+    query_recurrence: QueryRecurrence,
 ) {
     let rows = inputs.len();
     let plan = ModulePlan::build(module_id, inputs);
@@ -325,6 +471,7 @@ fn run_module(
             v0: &mut v0,
             x_query: x_query.as_deref_mut(),
             v0_query: v0_query.as_deref_mut(),
+            query_recurrence,
         });
     }
 
@@ -346,6 +493,7 @@ struct LayerChunks<'a> {
     v0: &'a mut [f32],
     x_query: Option<&'a mut [f32]>,
     v0_query: Option<&'a mut [f32]>,
+    query_recurrence: QueryRecurrence,
 }
 
 fn run_layer_chunks(chunks: LayerChunks<'_>) {
@@ -360,6 +508,7 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
         v0,
         mut x_query,
         mut v0_query,
+        query_recurrence,
     } = chunks;
 
     let mut time_shifts = initial_time_shifts(stream_layers, layer_id);
@@ -378,6 +527,7 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
         v0_query_snapshot: v0_query
             .as_deref()
             .map(|v0_query| &v0_query[..chunk_size.min(rows) * D_MODEL]),
+        approximate_query_projections: matches!(query_recurrence, QueryRecurrence::Fast),
     }));
 
     while chunk_start < rows {
@@ -412,6 +562,10 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
                         v0_snapshot: &v0_next,
                         x_query_snapshot: x_query_next.as_deref(),
                         v0_query_snapshot: v0_query_next.as_deref(),
+                        approximate_query_projections: matches!(
+                            query_recurrence,
+                            QueryRecurrence::Fast
+                        ),
                     })
                 },
                 || {
@@ -426,6 +580,7 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
                         v0,
                         x_query: x_query.as_deref_mut(),
                         v0_query: v0_query.as_deref_mut(),
+                        query_recurrence,
                     });
                 },
             );
@@ -442,6 +597,7 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
                 v0,
                 x_query: x_query.as_deref_mut(),
                 v0_query: v0_query.as_deref_mut(),
+                query_recurrence,
             });
         }
 
@@ -499,6 +655,7 @@ struct LayerTimeStageInput<'a> {
     v0_snapshot: &'a [f32],
     x_query_snapshot: Option<&'a [f32]>,
     v0_query_snapshot: Option<&'a [f32]>,
+    approximate_query_projections: bool,
 }
 
 fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
@@ -512,6 +669,7 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
         v0_snapshot,
         x_query_snapshot,
         v0_query_snapshot,
+        approximate_query_projections,
     } = input;
     let mixer = &layer.time_mixer;
 
@@ -529,6 +687,7 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
         &x_norm,
         &x_norm,
         v0_snapshot,
+        false,
     );
     let parts_query = x_norm_query.as_ref().map(|x_norm_query| {
         time_parts(
@@ -540,6 +699,7 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
             x_norm_query,
             &x_norm,
             v0_query_snapshot.expect("query v0 buffer"),
+            approximate_query_projections,
         )
     });
 
@@ -563,6 +723,7 @@ struct LayerTimeStageOutput<'a> {
     v0: &'a mut [f32],
     x_query: Option<&'a mut [f32]>,
     v0_query: Option<&'a mut [f32]>,
+    query_recurrence: QueryRecurrence,
 }
 
 fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
@@ -577,6 +738,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
         v0,
         mut x_query,
         v0_query,
+        query_recurrence,
     } = output;
     let LayerTimeStage {
         chunk_start,
@@ -622,6 +784,15 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                 Some(time) => time.matrix,
                 None => vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE],
             };
+            // Separate source/destination matrices let the recurrence kernel
+            // vectorize, while swapping reuses both allocations per stream.
+            let mut next_matrix = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
+            let mut query_next_matrix =
+                if parts_query.is_some() && matches!(query_recurrence, QueryRecurrence::Exact) {
+                    vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE]
+                } else {
+                    Vec::new()
+                };
             let mut outs = vec![0.0; stream_rows.len() * D_MODEL];
             let mut outs_query = if parts_query.is_some() {
                 vec![0.0; stream_rows.len() * D_MODEL]
@@ -630,19 +801,34 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
             };
             for (position, &stream_row) in stream_rows.iter().enumerate() {
                 let index = stream_row as usize - chunk_start;
+                let out = &mut outs[position * D_MODEL..(position + 1) * D_MODEL];
                 if let Some(parts_query) = &parts_query {
-                    let (out, _) = single_timestep(
-                        row(&parts_query.r, index),
-                        row(&parts_query.k, index),
-                        row(&parts_query.v, index),
-                        row(&parts_query.w, index),
-                        row(&parts_query.a, index),
-                        row(&parts_query.k_deformed, index),
-                        &matrix,
-                    );
-                    outs_query[position * D_MODEL..(position + 1) * D_MODEL].copy_from_slice(&out);
+                    let out_query = &mut outs_query[position * D_MODEL..(position + 1) * D_MODEL];
+                    match query_recurrence {
+                        QueryRecurrence::Exact => single_timestep_into(
+                            row(&parts_query.r, index),
+                            row(&parts_query.k, index),
+                            row(&parts_query.v, index),
+                            row(&parts_query.w, index),
+                            row(&parts_query.a, index),
+                            row(&parts_query.k_deformed, index),
+                            &matrix,
+                            out_query,
+                            &mut query_next_matrix,
+                        ),
+                        QueryRecurrence::Fast => single_timestep_query_fast_into(
+                            row(&parts_query.r, index),
+                            row(&parts_query.k, index),
+                            row(&parts_query.v, index),
+                            row(&parts_query.w, index),
+                            row(&parts_query.a, index),
+                            row(&parts_query.k_deformed, index),
+                            Some(&matrix),
+                            out_query,
+                        ),
+                    }
                 }
-                let (out, next_matrix) = single_timestep(
+                single_timestep_into(
                     row(&parts.r, index),
                     row(&parts.k, index),
                     row(&parts.v, index),
@@ -650,9 +836,10 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                     row(&parts.a, index),
                     row(&parts.k_deformed, index),
                     &matrix,
+                    out,
+                    &mut next_matrix,
                 );
-                matrix = next_matrix;
-                outs[position * D_MODEL..(position + 1) * D_MODEL].copy_from_slice(&out);
+                std::mem::swap(&mut matrix, &mut next_matrix);
             }
             if plan.streams[stream_index].key.is_some() {
                 let last = *stream_rows.last().unwrap() as usize - chunk_start;
@@ -681,7 +868,15 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
     }
 
     // Time mixer, pointwise post-recurrence stage.
-    let time_out = time_outputs(mixer, &parts, &recurrence, x, chunk_start, chunk_rows);
+    let time_out = time_outputs(
+        mixer,
+        &parts,
+        &recurrence,
+        x,
+        chunk_start,
+        chunk_rows,
+        false,
+    );
     let time_out_query = parts_query.as_ref().map(|parts_query| {
         time_outputs(
             mixer,
@@ -690,6 +885,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
             x_query.as_deref().expect("query trunk"),
             chunk_start,
             chunk_rows,
+            matches!(query_recurrence, QueryRecurrence::Fast),
         )
     });
 
@@ -712,6 +908,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
         &cm_norm,
         &time_out,
         x,
+        false,
     );
     if let Some(cm_norm_query) = &cm_norm_query {
         channel_outputs(
@@ -725,6 +922,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
             &cm_norm,
             time_out_query.as_ref().expect("query time out"),
             x_query.take().expect("query trunk"),
+            matches!(query_recurrence, QueryRecurrence::Fast),
         );
     }
 
@@ -860,6 +1058,7 @@ fn time_parts(
     x_norm: &[f32],
     x_norm_answer: &[f32],
     v0: &[f32],
+    approximate_projections: bool,
 ) -> BulkTimeMixParts {
     let mut parts = BulkTimeMixParts::zeroed(chunk_rows);
     let block_size = LINEAR_BLOCK_ROWS * D_MODEL;
@@ -885,6 +1084,7 @@ fn time_parts(
                     x_norm,
                     x_norm_answer,
                     v0,
+                    approximate_projections,
                     PartsBlockMut {
                         r,
                         k,
@@ -915,6 +1115,7 @@ fn time_parts_block(
     x_norm: &[f32],
     x_norm_answer: &[f32],
     v0: &[f32],
+    approximate_projections: bool,
     block: PartsBlockMut<'_>,
 ) {
     let rows = block.r.len() / D_MODEL;
@@ -951,10 +1152,14 @@ fn time_parts_block(
     let mixed = &mut mixed[..rows * D_MODEL];
 
     fill_mixed(0, mixed);
-    mixer.w_r.apply_block_into(mixed, block.r, rows);
+    mixer
+        .w_r
+        .apply_block_approx_into(mixed, block.r, rows, approximate_projections);
 
     fill_mixed(1, mixed);
-    mixer.w_k.apply_block_into(mixed, block.k, rows);
+    mixer
+        .w_k
+        .apply_block_approx_into(mixed, block.k, rows, approximate_projections);
 
     fill_mixed(6, mixed);
     let mut k_scale = [0.0f32; LINEAR_BLOCK_ROWS * HEADS];
@@ -970,13 +1175,17 @@ fn time_parts_block(
 
     fill_mixed(2, mixed);
     if mixer.layer_id == 0 {
-        mixer.w_v.apply_block_into(mixed, block.v, rows);
+        mixer
+            .w_v
+            .apply_block_approx_into(mixed, block.v, rows, approximate_projections);
         block.next_v0.copy_from_slice(block.v);
     } else {
         mixer.v_lora.apply_sigmoid_block_into(mixed, block.v, rows);
         let mut w_v = [0.0f32; LINEAR_BLOCK_ROWS * D_MODEL];
         let w_v = &mut w_v[..rows * D_MODEL];
-        mixer.w_v.apply_block_into(mixed, w_v, rows);
+        mixer
+            .w_v
+            .apply_block_approx_into(mixed, w_v, rows, approximate_projections);
         for index in 0..rows {
             let range = index * D_MODEL..(index + 1) * D_MODEL;
             let v0_row = row(v0, block_start + index);
@@ -1042,6 +1251,7 @@ fn time_outputs(
     trunk: &[f32],
     chunk_start: usize,
     chunk_rows: usize,
+    approximate_projections: bool,
 ) -> Vec<f32> {
     let mut out = vec![0.0; chunk_rows * D_MODEL];
     out.par_chunks_mut(LINEAR_BLOCK_ROWS * D_MODEL)
@@ -1075,7 +1285,9 @@ fn time_outputs(
                     }
                 }
             }
-            mixer.w_o.apply_block_into(gated, out_block, rows);
+            mixer
+                .w_o
+                .apply_block_approx_into(gated, out_block, rows, approximate_projections);
             for index in 0..rows {
                 let input = row(trunk, chunk_start + block_start + index);
                 for channel in 0..D_MODEL {
@@ -1098,6 +1310,7 @@ fn channel_outputs(
     cm_norm_answer: &[f32],
     time_out: &[f32],
     trunk: &mut [f32],
+    approximate_projections: bool,
 ) {
     trunk[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL]
         .par_chunks_mut(LINEAR_BLOCK_ROWS * D_MODEL)
@@ -1132,11 +1345,13 @@ fn channel_outputs(
             debug_assert!(channel_dim <= 256);
             let mut k = [0.0f32; LINEAR_BLOCK_ROWS * 256];
             let k = &mut k[..rows * channel_dim];
-            cm.w_k.apply_block_into(mixed, k, rows);
+            cm.w_k
+                .apply_block_approx_into(mixed, k, rows, approximate_projections);
             for value in k.iter_mut() {
                 *value = value.max(0.0).powi(2);
             }
-            cm.w_v.apply_block_into(k, trunk_block, rows);
+            cm.w_v
+                .apply_block_approx_into(k, trunk_block, rows, approximate_projections);
             for index in 0..rows {
                 let input = row(time_out, block_start + index);
                 for channel in 0..D_MODEL {

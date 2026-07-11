@@ -310,25 +310,19 @@ finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
 to the cache, elapsed time, and estimated time remaining.
 
-While building, incrementally updating, or applying an answered review to the
-RWKV state cache, Anki also writes pre-answer review-time predictions to the
-profile-local retrievability cache database, not the synced collection DB. The
-cache table is `search_stats_rwkv_review_retrievability`, attached to the
-collection connection from `collection.retrievability-cache.sqlite`. Rows store
-the query retrievability before the historical answer is applied. The table is
-a derived local cache for calibration/stat consumers; it is separate from the
-profile-local recurrent state cache and from the short-lived in-memory query
-memo, and is not synced as part of collection sync/full upload. Rows are keyed
-by `revlog_id`, `sample_role`, `fold_index`, and `source`. State-cache builds
-write training-only rows with source `rwkv_state_cache_build` and role
-`final_fit`; live review answers write rows with source `rwkv_review` and role
+RWKV review state and historical calibration data are built separately. The
+manual **Prepare RWKV review state** and **Rebuild RWKV review state from
+scratch** actions replay answers and persist recurrent state without computing
+a pre-answer prediction for every historical review. Live review answers still
+write their pre-answer prediction with source `rwkv_review` and role
 `post_optimization`.
 
-For manual state-cache build timing experiments, setting
-`ANKI_RWKV_STATE_CACHE_RECORD_RETRIEVABILITY=0` skips the
-`rwkv_state_cache_build` rows and treats the recurrent state snapshot as usable
-without requiring a complete retrievability cache. Calibration recompute still
-records its own calibration rows.
+Historical calibration predictions live in the profile-local
+`search_stats_rwkv_review_retrievability` table, attached from
+`collection.retrievability-cache.sqlite`; they are not synced. The table is a
+derived cache, separate from the profile-local recurrent state cache and the
+short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
+`fold_index`, and `source`.
 
 The deck options action **Recompute RWKV Calibration Data** replays historical
 queries only for this derived table, uses a chronological 70% train / 30% test
@@ -341,6 +335,11 @@ self-correction layer on the train split for the selected deck tree, stores the
 learned coefficients in the deck preset's RWKV `other` config, and writes the
 same role-aware calibration rows. Calibration graph consumers should ignore
 `final_fit` rows and use only `test_fold` plus future `post_optimization` rows.
+Add-ons that need these rows can call
+`aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
+The synchronous API returns immediately when current role-aware data is
+complete; otherwise it performs the same calibration-only replay while
+snapshotting and restoring active reviewer state.
 The deck options action **Compare RWKV Extra Features** runs an in-memory
 historical replay for the selected deck tree, restores the active RWKV backend
 state afterward, and reports log loss plus RMSE(bins) for clean RWKV versus the
@@ -508,17 +507,18 @@ cards in chronological order and then writes a fresh local cache snapshot.
 UI-time prediction hooks only use that warmed state after it is ready.
 
 Historical replay in the embedded Rust runtime uses a bulk sequence-mode path.
-Each warm-up call is processed layer-at-a-time over per-scope streams:
-pointwise work (norms, lerp mixes, projections, loras, heads) runs in parallel
-across the call's reviews, while the small recurrent-state updates stay
-sequential within each card, note, deck, preset, and global stream. Projection
-stages run through a blocked `Linear` kernel that streams each weight column
-once per block of rows while preserving the per-output-element operation
-sequence of the per-review path exactly, so bulk replay produces bit-identical
-states, recall curves, and recorded calibration predictions; only the loop
-order changes, and parity tests compare the two paths directly. Recorded
-pre-answer query predictions run as a second read-only lane over the same
-pre-review states inside the same pass. On 2026-07-02, a full state-cache
+Pointwise work (norms, lerp mixes, projections, loras, heads) runs in parallel
+across reviews, while recurrent-state updates stay sequential within each card,
+note, deck, preset, and global stream. State-only replay additionally schedules
+review chunks and scope modules as a dependency-safe wavefront: while the
+global module processes one chunk, preset, note, deck, and card can process
+newer chunks concurrently. Answer projection stages run through a blocked
+`Linear` kernel that preserves the per-review accumulation order, so persisted
+states and recall curves remain bit-identical. Optional pre-answer query
+predictions use the original module-at-a-time path and run as a second read-only
+lane over the same pre-review states; on macOS, large query-only projections use
+Accelerate/BLAS and may differ by tiny floating-point rounding amounts without
+affecting persisted state. On 2026-07-02, a full state-cache
 build over a 207,805-review desktop collection measured about 5x faster than
 per-review replay: 153.7s to 30.5s with calibration recording, and 80.3s to
 14.9s without.
@@ -725,6 +725,23 @@ copy of the desktop collection used for the replay measurements lives at
 `/private/tmp/rwkv-main-profile-copy.anki2`; refresh or recreate it before
 trusting new numbers, and check machine load first: a concurrent heavy
 process inflated replay samples by 1.5-2x during this session.
+
+On 2026-07-11, state-only replay gained a second level of pipelining across
+scope modules. A `(chunk, module)` node depends on the previous module for that
+chunk and the previous chunk for that module; nodes on the same anti-diagonal
+therefore run concurrently without changing chronological state application or
+floating-point operation order. On the copied 208,502-review desktop
+collection, the profiled one-call replay fell from 12.44s to 9.88s. Clean
+samples were 9.04s and 9.44s. The cross-call/cross-chunk parity test compares
+the final state snapshot and runtime cache with sequential replay exactly.
+
+The desktop bridge must expose several internal 16,384-row chunks to one native
+call for this wavefront to fill. On the same collection, simulated bridge calls
+of 16,384/65,536/131,072 rows measured 13.48s/10.58s/10.26s. State-only bridge
+calls therefore use up to 131,072 reviews, while calibration recording retains
+the existing 16,384-row calls. The larger state-only call still releases the
+Python GIL, and a roughly 208,000-review rebuild reports progress between its
+two native calls.
 
 When replaying historical reviews, Anki uses each card's current deck config as
 an approximation of the preset routing that existed at review time. By default,
