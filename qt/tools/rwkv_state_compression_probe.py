@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright: Ankitects Pty Ltd and contributors
+# License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
 """Probe low-rank/quantized RWKV state compression on a local state cache.
 
 This is an experimental measurement tool. It reads an Anki desktop RWKV
@@ -17,7 +20,7 @@ import time
 import zlib
 from pathlib import Path
 
-import numpy as np
+import numpy as np  # type: ignore[import-not-found]
 
 SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT7\0"
 MODULE_MAGIC = b"ARWKVMODSTATE1"
@@ -143,7 +146,9 @@ class Probe:
         layer_count = buffer.u32()
         expected_layers = MODULE_LAYERS[scope]
         if layer_count != expected_layers:
-            raise ValueError(f"{scope} state has {layer_count} layers, expected {expected_layers}")
+            raise ValueError(
+                f"{scope} state has {layer_count} layers, expected {expected_layers}"
+            )
 
         self.sampled_by_scope[scope] = self.sampled_by_scope.get(scope, 0) + 1
         self.zlib_ratios.append(len(zlib.compress(state, 1)) / len(state))
@@ -155,20 +160,26 @@ class Probe:
 
             for shift in (x_shift, channel_shift):
                 self.shift_int4_errors.append(
-                    relative_error(shift.astype(np.float32), quantized_dequantized(shift, 4))
+                    relative_error(
+                        shift.astype(np.float32), quantized_dequantized(shift, 4)
+                    )
                 )
 
             if matrix.size != HEADS * HEAD_SIZE * HEAD_SIZE:
                 raise ValueError(f"unexpected matrix size {matrix.size}")
             for head in range(HEADS):
                 start = head * HEAD_SIZE * HEAD_SIZE
-                original = matrix[start : start + HEAD_SIZE * HEAD_SIZE].reshape(
-                    HEAD_SIZE, HEAD_SIZE
-                ).astype(np.float32)
+                original = (
+                    matrix[start : start + HEAD_SIZE * HEAD_SIZE]
+                    .reshape(HEAD_SIZE, HEAD_SIZE)
+                    .astype(np.float32)
+                )
                 self.process_matrix(original)
 
         if buffer.offset != len(state):
-            raise ValueError(f"trailing module state bytes: {len(state) - buffer.offset}")
+            raise ValueError(
+                f"trailing module state bytes: {len(state) - buffer.offset}"
+            )
 
     def process_matrix(self, matrix: np.ndarray) -> None:
         u, singular_values, vh = np.linalg.svd(matrix, full_matrices=False)
@@ -187,10 +198,16 @@ class Probe:
                 reconstructed = np.zeros((HEAD_SIZE, HEAD_SIZE), dtype=np.float32)
                 for index in range(rank):
                     root = math.sqrt(float(singular_values[index]))
-                    left = quantized_dequantized(u[:, index].astype(np.float32) * root, bits)
-                    right = quantized_dequantized(vh[index, :].astype(np.float32) * root, bits)
+                    left = quantized_dequantized(
+                        u[:, index].astype(np.float32) * root, bits
+                    )
+                    right = quantized_dequantized(
+                        vh[index, :].astype(np.float32) * root, bits
+                    )
                     reconstructed += np.outer(left, right).astype(np.float32)
-                self.factor_errors[(rank, bits)].append(relative_error(matrix, reconstructed))
+                self.factor_errors[(rank, bits)].append(
+                    relative_error(matrix, reconstructed)
+                )
 
     def process_state_map(self, reader: Reader, scope: str) -> None:
         count = reader.u32()
@@ -206,7 +223,9 @@ class Probe:
                 self.process_state(scope, state)
                 sampled += 1
 
-    def report(self, snapshot_size: int, metadata_size: int, runtime_size: int, elapsed: float) -> None:
+    def report(
+        self, snapshot_size: int, metadata_size: int, runtime_size: int, elapsed: float
+    ) -> None:
         print(f"snapshot_size_bytes {snapshot_size}")
         print(f"metadata_bytes {metadata_size}")
         print(f"runtime_bytes {runtime_size}")
@@ -239,7 +258,9 @@ class Probe:
         print("Naive low-rank factor quantization relative error")
         for rank in (1, 2, 4):
             for bits in (4, 8):
-                print(f"rank{rank}_int{bits}", summarize(self.factor_errors[(rank, bits)]))
+                print(
+                    f"rank{rank}_int{bits}", summarize(self.factor_errors[(rank, bits)])
+                )
 
         print()
         print("Shift int4 relative error")
@@ -322,7 +343,9 @@ def run(snapshot: Path, sample_limit: int) -> None:
     finally:
         reader.close()
 
-    probe.report(snapshot.stat().st_size, metadata_size, runtime_size, time.monotonic() - start)
+    probe.report(
+        snapshot.stat().st_size, metadata_size, runtime_size, time.monotonic() - start
+    )
 
 
 def main() -> None:
