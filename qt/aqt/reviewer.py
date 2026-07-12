@@ -1096,42 +1096,9 @@ class Reviewer:
             answered_card_id = self.card.id if self.card else None
         initial_state = self.state
         initial_generation = getattr(self, "_review_card_generation", 0)
-        start = time.monotonic()
-        logger.debug(
-            "reviewer RWKV queue order refresh starting: answered_card_id=%s "
-            "main_delay_ms=%.1f",
-            answered_card_id,
-            ((start - queued_at) * 1000) if queued_at is not None else 0.0,
-        )
 
-        def prepare() -> None:
-            prepare_start = time.monotonic()
-            logger.debug(
-                "reviewer RWKV queue order background prepare starting: "
-                "answered_card_id=%s background_delay_ms=%.1f",
-                answered_card_id,
-                (prepare_start - start) * 1000,
-            )
-            aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
-            logger.debug(
-                "reviewer RWKV queue order background prepare finished: "
-                "answered_card_id=%s prepare_elapsed_ms=%.1f",
-                answered_card_id,
-                (time.monotonic() - prepare_start) * 1000,
-            )
-
-        def done(future: Future[None]) -> None:
-            try:
-                future.result()
-            except Exception:
-                logger.exception("RWKV review queue refresh failed")
-
-            logger.debug(
-                "reviewer RWKV queue order refresh finished: answered_card_id=%s elapsed_ms=%.1f",
-                answered_card_id,
-                (time.monotonic() - start) * 1000,
-            )
-            if show_next_card and self._rwkv_queue_refresh_target_is_current(
+        def show_next(_installed: bool | None) -> None:
+            if self._rwkv_queue_refresh_target_is_current(
                 answered_card_id,
                 initial_state,
                 initial_generation,
@@ -1146,15 +1113,12 @@ class Reviewer:
                 and self.card.id == answered_card_id
             ):
                 self.nextCard()
-            aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
-                self,
-                reason="review queue refresh",
-            )
-            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
-            if callable(update_undo_actions):
-                update_undo_actions()
 
-        self.mw.taskman.run_in_background(prepare, done, uses_collection=True)
+        self._prepare_rwkv_queue_order_async(
+            queued_at,
+            answered_card_id=answered_card_id,
+            on_finished=show_next,
+        )
 
     def _prepare_rwkv_queue_order_async(
         self,
@@ -1162,7 +1126,7 @@ class Reviewer:
         *,
         answered_card_id: CardId | None = None,
         reason: str = "review queue",
-        prewarm_reason: str | None = None,
+        on_finished: Callable[[bool | None], None] | None = None,
     ) -> None:
         if answered_card_id is None:
             answered_card_id = self.card.id if self.card else None
@@ -1184,11 +1148,8 @@ class Reviewer:
                 installed,
                 (time.monotonic() - start) * 1000,
             )
-            if prewarm_reason is not None and installed is not False:
-                aqt.rwkv_scheduler.prewarm_reviewer_queue_score_cache(
-                    self,
-                    reason=prewarm_reason,
-                )
+            if on_finished is not None:
+                on_finished(installed)
             update_undo_actions = getattr(self.mw, "update_undo_actions", None)
             if callable(update_undo_actions):
                 update_undo_actions()
@@ -1316,7 +1277,6 @@ class Reviewer:
         self._prepare_rwkv_queue_order_async(
             answered_card_id=self._answeredIds[-1],
             reason="review queue exit refresh",
-            prewarm_reason=None,
         )
         logger.debug(
             "reviewer RWKV queue order exit refresh queued: "

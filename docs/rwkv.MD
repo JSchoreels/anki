@@ -257,6 +257,12 @@ side is visible. If that refresh finishes before the third answer is submitted,
 later queue builds can use the refreshed map; otherwise Anki keeps using the
 previously installed map until a later refresh completes. Skipped post-answer
 interval refreshes fetch the next card after the answered-card score update.
+When the answered card was the last queued card, Anki uses the same split
+prepare/score/install pipeline before requesting the next card. If the backend
+cannot provide the immutable input snapshot, Anki continues with normal queue
+order instead of falling back to a long Python-side full-deck scan. This is
+especially important after undo restores RWKV state and invalidates predictions
+that were computed for the now-undone answer.
 
 With candidate refresh disabled, due interval refreshes remain exact. Anki does
 not precompute post-answer queue maps for all possible answer buttons while the
@@ -271,16 +277,12 @@ refreshing a stale transient score map after the review session ends. If the
 latest review-time refresh has already installed a score map for the current
 RWKV state generation, Anki skips the redundant exit refresh.
 
-After non-interactive full queue-score refreshes, Anki can also start an
-opportunistic background prewarm of the local RWKV prediction memo for the
-current deck tree and its closest parent deck tree. This prewarm does not
-install or replace transient queue/stat score maps; it only makes a later
-explicit queue or stats score request for the same current-day RWKV state
-cheaper. Post-answer interval refreshes and reviewer-exit refreshes skip this
-extra prewarm so leaving the reviewer does not immediately rescore the same
-large deck scope. The memo is cleared whenever the stateful RWKV backend
-advances or restores review state, so post-answer predictions are not reused
-across a changed RWKV state.
+Reviewer queue refreshes do not start an additional prediction-memo prewarm.
+The installed queue-score map already serves later queue builds, and another
+current/parent-deck pass would immediately rescore the same large scope. The
+memo is cleared whenever the stateful RWKV backend advances or restores review
+state, so post-answer predictions are not reused across a changed RWKV state;
+they are rebuilt on demand or after a later state-cache load or build.
 
 When entering the reviewer with a cold RWKV backend, Anki shows the first card
 without waiting for historical warm-up and full queue scoring. RWKV warm-up and
@@ -297,10 +299,11 @@ When RWKV review is enabled and a usable local cache exists, desktop Anki starts
 loading it after profile open with a progress dialog. This restores the saved
 state, replays any cache deltas, and replays only newer revlogs, so stats and
 Card Info can use RWKV without waiting for their first on-demand query. When a
-local cache load or cache build finishes successfully, Anki also starts the same
-opportunistic current/parent deck prediction-memo prewarm in the background.
-When no usable local cache exists, desktop Anki prompts once per session after profile
-open to build the RWKV state cache. This startup build, and the same manual
+local cache load finishes successfully, Anki prewarms only the current deck
+scope to keep automatic startup work bounded. An explicit cache build also
+prewarms the closest parent deck scope. When no usable local cache exists,
+desktop Anki prompts once per session after profile open to build the RWKV state
+cache. This startup build, and the same manual
 build from the RWKV section of deck options, run as a modal progress operation.
 When the startup prompt appears, users can choose a faster state-only build or
 the slower state build that also records historical retrievability rows for

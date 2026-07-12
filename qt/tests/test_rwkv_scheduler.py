@@ -3963,6 +3963,12 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
         "_rwkv_model_cache_key",
         lambda: {"model": "test"},
     )
+    prewarm_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda _reviewer, **kwargs: prewarm_calls.append(kwargs),
+    )
 
     set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
@@ -3981,6 +3987,12 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
     assert taskman.with_progress_kwargs["title"] == "RWKV State Cache"
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
     assert restored_runtime.reviewed == []
+    assert prewarm_calls == [
+        {
+            "reason": "startup cache load",
+            "include_parent_scope": False,
+        }
+    ]
     assert any(
         update["label"] == "Loading new RWKV reviews..." for update in progress_updates
     )
@@ -5743,12 +5755,98 @@ def test_prewarm_reviewer_queue_score_cache_scores_parent_scope() -> None:
     previous_backend = set_reviewer_backend(backend)
     try:
         rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(col)))
+        assert rwkv_scheduler._rwkv_score_prewarm_deck_ids(
+            reviewer,
+            include_parent_scope=False,
+        ) == [100]
         prewarm_reviewer_queue_score_cache(reviewer, reason="test")
     finally:
         set_reviewer_backend(previous_backend)
 
     assert runtime.retrievability_card_ids == [[1, 2], [1, 2, 3]]
     assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+
+
+def test_async_score_prewarm_releases_collection_while_scoring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, int]] = []
+    collection_flags: list[bool] = []
+    finished: list[bool] = []
+
+    def prepare(
+        reviewer: object,
+        *,
+        deck_id: int,
+        reason: str,
+    ) -> SimpleNamespace | None:
+        events.append(("prepare", deck_id))
+        if deck_id == 100:
+            return None
+        return SimpleNamespace(
+            deck_id=deck_id,
+            input_build=SimpleNamespace(searched_rows=3),
+        )
+
+    def score(work: SimpleNamespace) -> SimpleNamespace:
+        events.append(("score", work.deck_id))
+        return SimpleNamespace(scores=((1, 0.5), (2, 0.6)))
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            *,
+            uses_collection: bool,
+        ) -> None:
+            collection_flags.append(uses_collection)
+            future: Future[object] = Future()
+            try:
+                future.set_result(task())
+            except Exception as error:
+                future.set_exception(error)
+            on_done(future)
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_score_prewarm_work_for_deck", prepare)
+    monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
+
+    rwkv_scheduler._prewarm_rwkv_review_scores_for_decks_async(
+        SimpleNamespace(),
+        [100, 10],
+        reason="test",
+        taskman=Taskman(),
+        on_done=lambda: finished.append(True),
+    )
+
+    assert events == [("prepare", 100), ("prepare", 10), ("score", 10)]
+    assert collection_flags == [True, True, False]
+    assert finished == [True]
+
+
+def test_backend_row_failure_logs_exception_details(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Backend:
+        def rwkv_review_input_rows_for_cards_raw(self, message: bytes) -> bytes:
+            raise RuntimeError("backend row failure")
+
+    with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+        response = rwkv_scheduler._rwkv_review_input_rows_backend_response(
+            Backend(),
+            card_ids=[1],
+            include_suspended_review=False,
+            include_new_cards=False,
+        )
+
+    assert response is None
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "failed to load RWKV review input rows from backend"
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
 
 
 def test_rwkv_resolved_preset_cache_invalidates_selected_cards() -> None:

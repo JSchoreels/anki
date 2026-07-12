@@ -3163,10 +3163,14 @@ def prewarm_reviewer_queue_score_cache(
     reviewer: object,
     *,
     reason: str = "reviewer",
+    include_parent_scope: bool = True,
 ) -> None:
     """Opportunistically pre-score likely queue scopes into the RWKV memo."""
 
-    deck_ids = _rwkv_score_prewarm_deck_ids(reviewer)
+    deck_ids = _rwkv_score_prewarm_deck_ids(
+        reviewer,
+        include_parent_scope=include_parent_scope,
+    )
     if not deck_ids:
         return
 
@@ -3181,26 +3185,9 @@ def prewarm_reviewer_queue_score_cache(
 
     start = time.monotonic()
 
-    def prewarm() -> None:
-        _prewarm_rwkv_review_scores_for_decks(
-            reviewer,
-            deck_ids,
-            reason=reason,
-        )
-
-    def done(future: Future[None]) -> None:
+    def finish() -> None:
         if key is not None:
             _finish_rwkv_score_prewarm(key)
-        try:
-            future.result()
-        except Exception:
-            logger.exception(
-                "RWKV score prewarm failed: reason=%s deck_ids=%s",
-                reason,
-                deck_ids,
-            )
-            return
-
         logger.debug(
             "RWKV score prewarm finished: reason=%s deck_ids=%s elapsed_ms=%.1f",
             reason,
@@ -3211,22 +3198,26 @@ def prewarm_reviewer_queue_score_cache(
     taskman = getattr(getattr(reviewer, "mw", None), "taskman", None)
     run_in_background = getattr(taskman, "run_in_background", None)
     if callable(run_in_background):
-        run_in_background(prewarm, done, uses_collection=True)
+        _prewarm_rwkv_review_scores_for_decks_async(
+            reviewer,
+            deck_ids,
+            reason=reason,
+            taskman=taskman,
+            on_done=finish,
+        )
         return
 
     try:
-        prewarm()
+        _prewarm_rwkv_review_scores_for_decks(
+            reviewer,
+            deck_ids,
+            reason=reason,
+        )
     except Exception:
         if key is not None:
             _finish_rwkv_score_prewarm(key)
         raise
-    done(_ImmediateFuture(None))
-
-
-class _ImmediateFuture(Future[None]):
-    def __init__(self, value: None) -> None:
-        super().__init__()
-        self.set_result(value)
+    finish()
 
 
 def _begin_rwkv_score_prewarm(key: RwkvScorePrewarmKey) -> bool:
@@ -3262,12 +3253,19 @@ def _rwkv_score_prewarm_key(
     )
 
 
-def _rwkv_score_prewarm_deck_ids(reviewer: object) -> list[int]:
+def _rwkv_score_prewarm_deck_ids(
+    reviewer: object,
+    *,
+    include_parent_scope: bool = True,
+) -> list[int]:
     current_deck_id = _current_deck_id(reviewer)
     if current_deck_id is None:
         return []
 
     deck_ids = [current_deck_id]
+    if not include_parent_scope:
+        return deck_ids
+
     parent_deck_id = _immediate_parent_deck_id(reviewer, current_deck_id)
     if parent_deck_id is not None and parent_deck_id != current_deck_id:
         deck_ids.append(parent_deck_id)
@@ -3377,6 +3375,146 @@ def _prewarm_rwkv_review_scores_for_decks(
         total_candidates,
         total_scored,
         (time.monotonic() - start) * 1000,
+    )
+
+
+def _prewarm_rwkv_review_scores_for_decks_async(
+    reviewer: object,
+    deck_ids: Sequence[int],
+    *,
+    reason: str,
+    taskman: object,
+    on_done: Callable[[], None],
+) -> None:
+    """Prewarm one deck scope at a time without holding collection access while scoring."""
+
+    run_in_background = getattr(taskman, "run_in_background")
+    remaining_deck_ids = iter(deck_ids)
+    total_candidates = 0
+    total_scored = 0
+    start = time.monotonic()
+
+    def fail(stage: str) -> None:
+        logger.exception(
+            "RWKV score prewarm %s failed: reason=%s deck_ids=%s",
+            stage,
+            reason,
+            list(deck_ids),
+        )
+        on_done()
+
+    def prepare_next_deck() -> None:
+        nonlocal total_candidates, total_scored
+        deck_id = next(remaining_deck_ids, None)
+        if deck_id is None:
+            logger.debug(
+                "RWKV score prewarm scored: reason=%s deck_ids=%s "
+                "candidates=%s scored=%s elapsed_ms=%.1f",
+                reason,
+                list(deck_ids),
+                total_candidates,
+                total_scored,
+                (time.monotonic() - start) * 1000,
+            )
+            on_done()
+            return
+
+        def prepare() -> RwkvReviewQueueOrderAsyncWork | None:
+            return _rwkv_score_prewarm_work_for_deck(
+                reviewer,
+                deck_id=deck_id,
+                reason=reason,
+            )
+
+        def prepared(future: Future[RwkvReviewQueueOrderAsyncWork | None]) -> None:
+            nonlocal total_candidates
+            try:
+                work = future.result()
+            except Exception:
+                fail("preparation")
+                return
+            if work is None:
+                prepare_next_deck()
+                return
+
+            total_candidates += work.input_build.searched_rows
+
+            def score() -> RwkvReviewQueueOrderAsyncResult:
+                return score_reviewer_queue_order_async_work(work)
+
+            def scored(future: Future[RwkvReviewQueueOrderAsyncResult]) -> None:
+                nonlocal total_scored
+                try:
+                    result = future.result()
+                except Exception:
+                    fail("scoring")
+                    return
+                total_scored += len(result.scores)
+                prepare_next_deck()
+
+            run_in_background(score, scored, uses_collection=False)
+
+        run_in_background(prepare, prepared, uses_collection=True)
+
+    prepare_next_deck()
+
+
+def _rwkv_score_prewarm_work_for_deck(
+    reviewer: object,
+    *,
+    deck_id: int,
+    reason: str,
+) -> RwkvReviewQueueOrderAsyncWork | None:
+    """Snapshot optional prewarm work; backend failures intentionally skip fallback."""
+
+    if _reviewer_backend is None:
+        configure_reviewer_backend_from_environment()
+    if _reviewer_backend is None or not _reviewer_backend_accepts_review_inputs():
+        return None
+    if not _prepare_reviewer_backend_for_stats(reviewer):
+        logger.debug(
+            "RWKV score prewarm skipped: reason=%s deck_id=%s warmed_up=False",
+            reason,
+            deck_id,
+        )
+        return None
+
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    if not (
+        isinstance(deck_config, dict)
+        and _rwkv_review_config_enabled(deck_config)
+        and _rwkv_review_instant_order_enabled(deck_config)
+        and _queue_scores_use_retrievability(deck_config)
+    ):
+        return None
+
+    start = time.monotonic()
+    batch_size = _rwkv_review_batch_size(deck_config)
+    input_build = _rwkv_review_input_batches_for_deck_review_queue(
+        reviewer=reviewer,
+        deck_id=deck_id,
+        batch_size_override=batch_size,
+        include_new_cards=_new_gather_uses_retrievability(deck_config),
+    )
+    if input_build is None:
+        logger.debug(
+            "RWKV score prewarm skipped after backend input failure: "
+            "reason=%s deck_id=%s",
+            reason,
+            deck_id,
+        )
+        return None
+
+    return _rwkv_review_queue_async_work_from_input_build(
+        reviewer=reviewer,
+        deck_id=deck_id,
+        reason=f"score prewarm ({reason})",
+        batch_size=batch_size,
+        state_generation=_reviewer_backend_state_generation(),
+        input_build=input_build,
+        warmup_elapsed_ms=0.0,
+        build_start=start,
+        fresh_for_backend_state=False,
     )
 
 
@@ -7209,6 +7347,7 @@ def load_rwkv_state_cache_with_progress(mw: object) -> None:
                 prewarm_reviewer_queue_score_cache(
                     SimpleNamespace(mw=mw),
                     reason="startup cache load",
+                    include_parent_scope=False,
                 )
             else:
                 logger.debug(
@@ -14186,7 +14325,10 @@ def _rwkv_review_input_rows_backend_response(
             response.ParseFromString(raw)
             return response
         except Exception:
-            logger.debug("failed to load RWKV review input rows from backend")
+            logger.debug(
+                "failed to load RWKV review input rows from backend",
+                exc_info=True,
+            )
             return None
 
     get_rows = getattr(backend, "rwkv_review_input_rows_for_cards", None)
@@ -14201,7 +14343,10 @@ def _rwkv_review_input_rows_backend_response(
             include_new_cards=include_new_cards,
         )
     except Exception:
-        logger.debug("failed to load RWKV review input rows from backend")
+        logger.debug(
+            "failed to load RWKV review input rows from backend",
+            exc_info=True,
+        )
         return None
 
 
@@ -14227,7 +14372,8 @@ def _rwkv_review_input_rows_for_search_backend_response(
             return response
         except Exception:
             logger.debug(
-                "failed to load RWKV review input rows for search from backend"
+                "failed to load RWKV review input rows for search from backend",
+                exc_info=True,
             )
             return None
 
@@ -14242,7 +14388,10 @@ def _rwkv_review_input_rows_for_search_backend_response(
             include_disabled_decks=False,
         )
     except Exception:
-        logger.debug("failed to load RWKV review input rows for search from backend")
+        logger.debug(
+            "failed to load RWKV review input rows for search from backend",
+            exc_info=True,
+        )
         return None
 
 
@@ -14272,7 +14421,8 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
             return response
         except Exception:
             logger.debug(
-                "failed to load RWKV review input rows for deck review queue from backend"
+                "failed to load RWKV review input rows for deck review queue from backend",
+                exc_info=True,
             )
             return None
 
@@ -14288,7 +14438,8 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
         )
     except Exception:
         logger.debug(
-            "failed to load RWKV review input rows for deck review queue from backend"
+            "failed to load RWKV review input rows for deck review queue from backend",
+            exc_info=True,
         )
         return None
 

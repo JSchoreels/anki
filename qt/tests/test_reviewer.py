@@ -828,6 +828,63 @@ def test_after_answering_refreshes_rwkv_queue_before_closing_last_card(
     assert reviewer._answeredIds == [123]
 
 
+def test_last_queued_card_uses_async_snapshot_and_advances_when_unavailable(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            uses_collection: bool = True,
+        ) -> None:
+            calls.append("collection" if uses_collection else "free")
+            future: Future[object] = Future()
+            future.set_result(task())
+            on_done(future)
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        lambda reviewer: calls.append("build") or None,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order",
+        lambda reviewer: pytest.fail("last-card refresh must not use legacy fallback"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda *args, **kwargs: pytest.fail("failed snapshot must not prewarm"),
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer.state = "transition"
+    reviewer._review_card_generation = 7
+    reviewer.mw = SimpleNamespace(
+        taskman=Taskman(),
+        update_undo_actions=lambda: calls.append("undo"),
+    )
+
+    def next_card() -> None:
+        calls.append("next")
+        reviewer.card = None
+        reviewer.state = "overview"
+
+    reviewer.nextCard = next_card
+
+    reviewer._prepare_rwkv_queue_order_then_next_card(
+        answered_card_id=123,
+        show_next_card=True,
+    )
+
+    assert calls == ["collection", "build", "next", "undo"]
+
+
 def test_after_answering_interval_refresh_prefetches_during_next_question(
     monkeypatch,
 ) -> None:
@@ -1189,6 +1246,8 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
+    work = object()
+    result = object()
 
     class Taskman:
         def run_in_background(
@@ -1197,11 +1256,9 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
             on_done: Callable[[Future[None]], None],
             uses_collection: bool = True,
         ) -> None:
-            assert uses_collection is True
-            calls.append("background")
-            task()
-            future: Future[None] = Future()
-            future.set_result(None)
+            calls.append("collection" if uses_collection else "free")
+            future: Future[object] = Future()
+            future.set_result(task())
             on_done(future)
 
     def next_card() -> None:
@@ -1216,8 +1273,25 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
-        "prepare_reviewer_queue_order",
-        lambda reviewer: calls.append("prepare"),
+        "prepare_reviewer_queue_order_async_work",
+        lambda reviewer: calls.append("prepare") or work,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "score_reviewer_queue_order_async_work",
+        lambda value: calls.append("score") or result,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        lambda reviewer, value: calls.append("install") or True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda *args, **kwargs: pytest.fail(
+            "installed queue scores must not trigger a redundant prewarm"
+        ),
     )
 
     reviewer = Reviewer.__new__(Reviewer)
@@ -1232,7 +1306,16 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
 
     reviewer.refresh_if_needed()
 
-    assert calls == ["background", "prepare", "next", "fade"]
+    assert calls == [
+        "collection",
+        "prepare",
+        "free",
+        "score",
+        "collection",
+        "install",
+        "next",
+        "fade",
+    ]
     assert reviewer._refresh_needed is None
 
 
@@ -1240,6 +1323,8 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     monkeypatch,
 ) -> None:
     calls: list[str] = []
+    work = object()
+    result = object()
 
     class Taskman:
         def run_in_background(
@@ -1248,11 +1333,9 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
             on_done: Callable[[Future[None]], None],
             uses_collection: bool = True,
         ) -> None:
-            assert uses_collection is True
-            calls.append("background")
-            task()
-            future: Future[None] = Future()
-            future.set_result(None)
+            calls.append("collection" if uses_collection else "free")
+            future: Future[object] = Future()
+            future.set_result(task())
             on_done(future)
 
     def next_card() -> None:
@@ -1267,8 +1350,18 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
-        "prepare_reviewer_queue_order",
-        lambda reviewer: calls.append("prepare"),
+        "prepare_reviewer_queue_order_async_work",
+        lambda reviewer: calls.append("prepare") or work,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "score_reviewer_queue_order_async_work",
+        lambda value: calls.append("score") or result,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        lambda reviewer, value: calls.append("install") or True,
     )
 
     reviewer = Reviewer.__new__(Reviewer)
@@ -1285,7 +1378,16 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     changes.study_queues = True
     dirty = reviewer.op_executed(changes, handler=None, focused=True)
 
-    assert calls == ["background", "prepare", "next", "fade"]
+    assert calls == [
+        "collection",
+        "prepare",
+        "free",
+        "score",
+        "collection",
+        "install",
+        "next",
+        "fade",
+    ]
     assert reviewer.card.id == 456
     assert reviewer._refresh_needed is None
     assert dirty is False
