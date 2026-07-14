@@ -125,11 +125,20 @@ same-day reviewed cards blocked by same-day or repeat-spacing guards, are
 removed from review counts even if FSRS says they are due. Scored future review
 cards below target retention are added to review counts. Before a RWKV queue
 score map has been prepared, deck tree counts continue to show the normal FSRS
-due counts. When the deck browser or selected-deck overview renders counts, it
-first prepares and installs the current deck's RWKV queue score map when RWKV
-Instant queue scoring applies, so the displayed review count can reflect the
-number of scored cards at or below their current target retention before the
-reviewer is opened.
+due counts. The selected-deck overview prepares and installs the current deck's
+RWKV queue score map before rendering its counts. The deck browser renders its
+initial tree without waiting for model inference, then scores disjoint
+RWKV-enabled deck scopes one at a time. Model scoring runs without collection
+access, and each completed scope is installed in a separate transient
+count-only cache so the visible counts can be updated incrementally. The
+currently selected scope is processed first. While a scope is pending, its
+review due count and the review due counts of its descendants display an
+ellipsis instead of the stored FSRS count. A completed scope reveals its RWKV
+count; a skipped or failed scope falls back to its stored count. Leaving or
+refreshing the deck browser cancels later UI updates, and preparing a reviewer
+queue clears the count-only cache. This keeps startup responsive while allowing
+every displayed RWKV scope to converge to its RWKV eligibility counts before
+the reviewer is opened.
 
 When the desktop Dynamic Desired Retention provider is available, RWKV review
 input batches are resolved through its bulk API before queue scoring or RWKV

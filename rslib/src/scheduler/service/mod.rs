@@ -77,6 +77,33 @@ use crate::stats::studied_today;
 use crate::storage::RwkvReviewRetrievabilityCacheRow;
 use crate::storage::RwkvReviewRetrievabilitySampleRole;
 
+fn rwkv_score_entries(
+    scores: Vec<scheduler::rwkv_review_queue_scores_request::Score>,
+) -> Result<HashMap<CardId, RwkvReviewQueueScoreEntry>> {
+    let mut entries = HashMap::with_capacity(scores.len());
+    for score in scores {
+        require!(
+            score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
+            "invalid RWKV retrievability"
+        );
+        if let Some(target_retention) = score.target_retention {
+            require!(
+                target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),
+                "invalid RWKV target retention"
+            );
+        }
+        entries.insert(
+            score.card_id.into(),
+            RwkvReviewQueueScoreEntry {
+                retrievability: score.retrievability,
+                intervening_reviews: score.intervening_reviews,
+                target_retention: score.target_retention,
+            },
+        );
+    }
+    Ok(entries)
+}
+
 impl crate::services::SchedulerService for Collection {
     /// This behaves like _updateCutoff() in older code - it also unburies at
     /// the start of a new day.
@@ -843,28 +870,18 @@ impl crate::services::SchedulerService for Collection {
     }
 
     fn set_rwkv_review_queue_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
-        let mut scores = HashMap::with_capacity(input.scores.len());
-        for score in input.scores {
-            require!(
-                score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
-                "invalid RWKV retrievability"
-            );
-            if let Some(target_retention) = score.target_retention {
-                require!(
-                    target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),
-                    "invalid RWKV target retention"
-                );
-            }
-            scores.insert(
-                score.card_id.into(),
-                RwkvReviewQueueScoreEntry {
-                    retrievability: score.retrievability,
-                    intervening_reviews: score.intervening_reviews,
-                    target_retention: score.target_retention,
-                },
-            );
-        }
+        let scores = rwkv_score_entries(input.scores)?;
         self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)
+    }
+
+    fn set_rwkv_deck_count_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
+        let scores = rwkv_score_entries(input.scores)?;
+        self.set_rwkv_deck_count_score_entries(input.deck_id.into(), scores)
+    }
+
+    fn clear_rwkv_deck_count_scores(&mut self) -> Result<()> {
+        Collection::clear_rwkv_deck_count_scores(self);
+        Ok(())
     }
 
     fn update_rwkv_review_queue_intervening_reviews(

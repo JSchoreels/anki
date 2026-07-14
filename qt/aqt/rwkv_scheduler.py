@@ -41,6 +41,7 @@ from anki.consts import (
     QUEUE_TYPE_REV,
     QUEUE_TYPE_SUSPENDED,
 )
+from anki.decks import DeckTreeNode
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
 from aqt.qt import QMessageBox, QWidget
@@ -3283,6 +3284,189 @@ def prewarm_reviewer_queue_score_cache(
             _finish_rwkv_score_prewarm(key)
         raise
     finish()
+
+
+def deck_browser_rwkv_count_scope_ids(
+    mw: object,
+    tree: DeckTreeNode,
+) -> tuple[int, ...]:
+    """Return disjoint RWKV-enabled deck scopes, prioritizing the current one."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    current_deck_id = _current_deck_id(reviewer)
+
+    def contains_deck(node: DeckTreeNode, deck_id: int | None) -> bool:
+        return deck_id is not None and (
+            getattr(node, "deck_id", None) == deck_id
+            or any(
+                contains_deck(child, deck_id) for child in getattr(node, "children", ())
+            )
+        )
+
+    scopes: list[tuple[int, bool]] = []
+
+    def collect(node: DeckTreeNode) -> None:
+        deck_id = getattr(node, "deck_id", None)
+        if not isinstance(deck_id, int):
+            return
+        deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+        enabled = (
+            isinstance(deck_config, dict)
+            and _rwkv_review_config_enabled(deck_config)
+            and _rwkv_review_instant_order_enabled(deck_config)
+        )
+        if enabled:
+            scopes.append((deck_id, contains_deck(node, current_deck_id)))
+            return
+        for child in getattr(node, "children", ()):
+            collect(child)
+
+    for child in getattr(tree, "children", ()):
+        collect(child)
+    scopes.sort(key=lambda scope: not scope[1])
+    return tuple(deck_id for deck_id, _ in scopes)
+
+
+def clear_deck_browser_rwkv_count_scores(mw: object) -> None:
+    backend = getattr(getattr(mw, "col", None), "_backend", None)
+    clear_scores = getattr(backend, "clear_rwkv_deck_count_scores", None)
+    if callable(clear_scores):
+        clear_scores()
+
+
+def prepare_deck_browser_rwkv_counts_incrementally(
+    mw: object,
+    deck_ids: Sequence[int],
+    *,
+    should_continue: Callable[[], bool],
+    on_update: Callable[[int, DeckTreeNode | None], None],
+    on_done: Callable[[], None] | None = None,
+) -> None:
+    """Score disjoint deck scopes without holding collection access during inference."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    taskman = getattr(mw, "taskman", None)
+    run_in_background = getattr(taskman, "run_in_background", None)
+    if not callable(run_in_background) or not deck_ids:
+        if on_done is not None:
+            on_done()
+        return
+
+    remaining_deck_ids = iter(deck_ids)
+    start = time.monotonic()
+    first_update_elapsed_ms: float | None = None
+    updated_scopes = 0
+
+    def finish() -> None:
+        logger.debug(
+            "RWKV deck browser incremental counts finished: scopes=%s updated=%s "
+            "first_update_elapsed_ms=%s elapsed_ms=%.1f",
+            len(deck_ids),
+            updated_scopes,
+            (
+                f"{first_update_elapsed_ms:.1f}"
+                if first_update_elapsed_ms is not None
+                else None
+            ),
+            (time.monotonic() - start) * 1000,
+        )
+        if on_done is not None:
+            on_done()
+
+    def fail(stage: str) -> None:
+        logger.exception("RWKV deck browser count %s failed", stage)
+        finish()
+
+    def prepare_next_deck() -> None:
+        if not should_continue():
+            finish()
+            return
+        deck_id = next(remaining_deck_ids, None)
+        if deck_id is None:
+            finish()
+            return
+
+        def prepare() -> RwkvReviewQueueOrderAsyncWork | None:
+            return _rwkv_score_prewarm_work_for_deck(
+                reviewer,
+                deck_id=deck_id,
+                reason="deck browser counts",
+            )
+
+        def prepared(future: Future[RwkvReviewQueueOrderAsyncWork | None]) -> None:
+            try:
+                work = future.result()
+            except Exception:
+                fail("preparation")
+                return
+            if work is None:
+                if should_continue():
+                    on_update(deck_id, None)
+                prepare_next_deck()
+                return
+            if not should_continue():
+                prepare_next_deck()
+                return
+
+            def score() -> RwkvReviewQueueOrderAsyncResult:
+                return score_reviewer_queue_order_async_work(work)
+
+            def scored(future: Future[RwkvReviewQueueOrderAsyncResult]) -> None:
+                try:
+                    result = future.result()
+                except Exception:
+                    fail("scoring")
+                    return
+                if not should_continue():
+                    finish()
+                    return
+
+                def install() -> DeckTreeNode | None:
+                    if result.state_generation != _reviewer_backend_state_generation():
+                        return None
+                    install_start = time.monotonic()
+                    _set_rwkv_deck_count_scores(
+                        reviewer,
+                        result.deck_id,
+                        result.scores,
+                        target_retentions_by_card_id=result.target_retentions_by_card_id,
+                    )
+                    set_elapsed_ms = (time.monotonic() - install_start) * 1000
+                    tree = getattr(mw, "col").sched.deck_due_tree()
+                    logger.debug(
+                        "RWKV deck browser count scope installed: deck_id=%s "
+                        "scored=%s set_elapsed_ms=%.1f tree_elapsed_ms=%.1f",
+                        result.deck_id,
+                        len(result.scores),
+                        set_elapsed_ms,
+                        (time.monotonic() - install_start) * 1000 - set_elapsed_ms,
+                    )
+                    return tree
+
+                def installed(future: Future[DeckTreeNode | None]) -> None:
+                    nonlocal first_update_elapsed_ms, updated_scopes
+                    try:
+                        tree = future.result()
+                    except Exception:
+                        fail("installation")
+                        return
+                    if should_continue():
+                        if tree is not None:
+                            updated_scopes += 1
+                            if first_update_elapsed_ms is None:
+                                first_update_elapsed_ms = (
+                                    time.monotonic() - start
+                                ) * 1000
+                        on_update(result.deck_id, tree)
+                    prepare_next_deck()
+
+                run_in_background(install, installed, uses_collection=True)
+
+            run_in_background(score, scored, uses_collection=False)
+
+        run_in_background(prepare, prepared, uses_collection=True)
+
+    prepare_next_deck()
 
 
 def _begin_rwkv_score_prewarm(key: RwkvScorePrewarmKey) -> bool:
@@ -16622,24 +16806,14 @@ def _set_rwkv_review_queue_scores(
     target_retentions_by_card_id: Mapping[int, float] | None = None,
     fresh_for_backend_state: bool = True,
 ) -> None:
-    mw = getattr(reviewer, "mw", None)
-    col = getattr(mw, "col", None)
-    backend = getattr(col, "_backend", None)
-    request = scheduler_pb2.RwkvReviewQueueScoresRequest(deck_id=deck_id)
-    intervening_reviews_by_card_id = _queue_intervening_reviews_by_card_id(
+    backend = getattr(_collection(reviewer), "_backend", None)
+    request = _rwkv_score_request(
         reviewer,
         deck_id,
+        scores,
+        target_retentions_by_card_id=target_retentions_by_card_id,
     )
     target_retentions_by_card_id = target_retentions_by_card_id or {}
-    for card_id, retrievability in scores:
-        score = request.scores.add(card_id=card_id, retrievability=retrievability)
-        intervening_reviews = intervening_reviews_by_card_id.get(card_id)
-        if intervening_reviews is not None:
-            score.intervening_reviews = intervening_reviews
-        target_retention = target_retentions_by_card_id.get(card_id)
-        if _valid_probability(target_retention):
-            score.target_retention = target_retention
-
     set_scores_raw = getattr(backend, "set_rwkv_review_queue_scores_raw", None)
     if callable(set_scores_raw):
         set_scores_raw(request.SerializeToString())
@@ -16678,6 +16852,57 @@ def _set_rwkv_review_queue_scores(
             )
         else:
             _rwkv_review_queue_score_generations.pop(deck_id, None)
+
+
+def _rwkv_score_request(
+    reviewer: object,
+    deck_id: int,
+    scores: Sequence[tuple[int, float]],
+    *,
+    target_retentions_by_card_id: Mapping[int, float] | None = None,
+) -> scheduler_pb2.RwkvReviewQueueScoresRequest:
+    request = scheduler_pb2.RwkvReviewQueueScoresRequest(deck_id=deck_id)
+    intervening_reviews_by_card_id = _queue_intervening_reviews_by_card_id(
+        reviewer,
+        deck_id,
+    )
+    target_retentions_by_card_id = target_retentions_by_card_id or {}
+    for card_id, retrievability in scores:
+        score = request.scores.add(card_id=card_id, retrievability=retrievability)
+        intervening_reviews = intervening_reviews_by_card_id.get(card_id)
+        if intervening_reviews is not None:
+            score.intervening_reviews = intervening_reviews
+        target_retention = target_retentions_by_card_id.get(card_id)
+        if _valid_probability(target_retention):
+            score.target_retention = target_retention
+    return request
+
+
+def _set_rwkv_deck_count_scores(
+    reviewer: object,
+    deck_id: int,
+    scores: Sequence[tuple[int, float]],
+    *,
+    target_retentions_by_card_id: Mapping[int, float] | None = None,
+) -> None:
+    backend = getattr(_collection(reviewer), "_backend", None)
+    request = _rwkv_score_request(
+        reviewer,
+        deck_id,
+        scores,
+        target_retentions_by_card_id=target_retentions_by_card_id,
+    )
+    set_scores_raw = getattr(backend, "set_rwkv_deck_count_scores_raw", None)
+    if callable(set_scores_raw):
+        set_scores_raw(request.SerializeToString())
+    else:
+        set_scores = getattr(backend, "set_rwkv_deck_count_scores", None)
+        if not callable(set_scores):
+            return
+        set_scores(
+            deck_id=deck_id,
+            scores=list(request.scores),
+        )
 
 
 def _queue_intervening_reviews_by_card_id(

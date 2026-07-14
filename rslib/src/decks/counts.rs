@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
-use crate::deckconfig::ReviewCardOrder;
 use crate::prelude::*;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
 use crate::scheduler::rwkv::rwkv_review_score_eligible;
@@ -51,12 +50,50 @@ impl Collection {
         configs: &HashMap<DeckConfigId, DeckConfig>,
         timing: SchedTimingToday,
     ) -> Result<()> {
-        let Some((score_deck_id, scores)) =
-            self.rwkv_review_queue_scores_for_day(timing.days_elapsed)
-        else {
+        let deck_count_scores = self.take_rwkv_deck_count_scores_for_day(timing.days_elapsed);
+        if !deck_count_scores.is_empty() {
+            let result = deck_count_scores
+                .iter()
+                .try_for_each(|(&score_deck_id, scores)| {
+                    self.apply_rwkv_score_scope_counts(
+                        counts,
+                        decks,
+                        configs,
+                        timing,
+                        score_deck_id,
+                        scores,
+                    )
+                });
+            self.restore_rwkv_deck_count_scores(timing.days_elapsed, deck_count_scores);
+            result?;
             return Ok(());
-        };
+        }
 
+        if let Some((score_deck_id, scores)) =
+            self.rwkv_review_queue_scores_for_day(timing.days_elapsed)
+        {
+            self.apply_rwkv_score_scope_counts(
+                counts,
+                decks,
+                configs,
+                timing,
+                score_deck_id,
+                &scores,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn apply_rwkv_score_scope_counts(
+        &mut self,
+        counts: &mut HashMap<DeckId, DueCounts>,
+        decks: &HashMap<DeckId, Deck>,
+        configs: &HashMap<DeckConfigId, DeckConfig>,
+        timing: SchedTimingToday,
+        score_deck_id: DeckId,
+        scores: &HashMap<CardId, crate::collection::RwkvReviewQueueScoreEntry>,
+    ) -> Result<()> {
         let (allow_same_day_review, min_intervening_reviews, min_elapsed_secs) = match decks
             .get(&score_deck_id)
             .and_then(|deck| deck.config_id())
@@ -64,12 +101,7 @@ impl Collection {
         {
             Some(config)
                 if config.inner.rwkv_review_enabled
-                    && config.inner.rwkv_review_instant_order_enabled
-                    && matches!(
-                        config.inner.review_order(),
-                        ReviewCardOrder::RetrievabilityAscending
-                            | ReviewCardOrder::RetrievabilityDescending
-                    ) =>
+                    && config.inner.rwkv_review_instant_order_enabled =>
             {
                 (
                     config.inner.rwkv_review_allow_same_day_review,
@@ -83,7 +115,7 @@ impl Collection {
         let scored_ids: Vec<_> = scores.keys().copied().collect();
         let metadata = rwkv_review_candidate_metadata(self, &scored_ids, timing)?;
         for (card_id, score) in scores {
-            let Some(metadata) = metadata.get(&card_id) else {
+            let Some(metadata) = metadata.get(card_id) else {
                 continue;
             };
 

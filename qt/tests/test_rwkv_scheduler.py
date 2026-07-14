@@ -6330,6 +6330,171 @@ def test_async_score_prewarm_releases_collection_while_scoring(
     assert finished == [True]
 
 
+def test_deck_browser_count_scopes_are_disjoint_and_prioritize_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = SimpleNamespace(
+        children=[
+            SimpleNamespace(
+                deck_id=10,
+                children=[SimpleNamespace(deck_id=11, children=[])],
+            ),
+            SimpleNamespace(
+                deck_id=20,
+                children=[SimpleNamespace(deck_id=21, children=[])],
+            ),
+        ]
+    )
+    enabled_decks = {10, 21}
+    monkeypatch.setattr(rwkv_scheduler, "_current_deck_id", lambda reviewer: 11)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_deck_config_for_deck_id",
+        lambda reviewer, deck_id: {
+            "rwkvReviewEnabled": deck_id in enabled_decks,
+            "rwkvReviewInstantOrderEnabled": deck_id in enabled_decks,
+            "reviewOrder": 0,
+        },
+    )
+
+    assert rwkv_scheduler.deck_browser_rwkv_count_scope_ids(
+        SimpleNamespace(),
+        tree,
+    ) == (10, 21)
+
+
+def test_deck_browser_counts_score_off_collection_and_update_incrementally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, int]] = []
+    collection_flags: list[bool] = []
+    updates: list[tuple[int, int | None]] = []
+    installed_scores: list[int] = []
+    due_tree_calls = 0
+
+    def prepare(
+        reviewer: object,
+        *,
+        deck_id: int,
+        reason: str,
+    ) -> SimpleNamespace | None:
+        events.append(("prepare", deck_id))
+        if deck_id == 20:
+            return None
+        return SimpleNamespace(deck_id=deck_id)
+
+    def score(work: SimpleNamespace) -> SimpleNamespace:
+        events.append(("score", work.deck_id))
+        return SimpleNamespace(
+            deck_id=work.deck_id,
+            state_generation=0,
+            scores=((work.deck_id, 0.5),),
+            target_retentions_by_card_id={},
+        )
+
+    def install(
+        reviewer: object,
+        deck_id: int,
+        scores: Sequence[tuple[int, float]],
+        *,
+        target_retentions_by_card_id: Mapping[int, float],
+    ) -> None:
+        installed_scores.append(deck_id)
+
+    class Scheduler:
+        def deck_due_tree(self) -> SimpleNamespace:
+            nonlocal due_tree_calls
+            due_tree_calls += 1
+            return SimpleNamespace(version=due_tree_calls)
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            *,
+            uses_collection: bool,
+        ) -> None:
+            collection_flags.append(uses_collection)
+            future: Future[object] = Future()
+            try:
+                future.set_result(task())
+            except Exception as error:
+                future.set_exception(error)
+            on_done(future)
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_score_prewarm_work_for_deck", prepare)
+    monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
+    monkeypatch.setattr(rwkv_scheduler, "_set_rwkv_deck_count_scores", install)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_state_generation", lambda: 0)
+    mw = SimpleNamespace(
+        col=SimpleNamespace(sched=Scheduler()),
+        taskman=Taskman(),
+    )
+
+    rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
+        mw,
+        [10, 20, 30],
+        should_continue=lambda: True,
+        on_update=lambda deck_id, tree: updates.append(
+            (deck_id, tree.version if tree is not None else None)
+        ),
+    )
+
+    assert events == [
+        ("prepare", 10),
+        ("score", 10),
+        ("prepare", 20),
+        ("prepare", 30),
+        ("score", 30),
+    ]
+    assert collection_flags == [True, False, True, True, True, False, True]
+    assert installed_scores == [10, 30]
+    assert updates == [(10, 1), (20, None), (30, 2)]
+
+
+def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
+    from aqt.deckbrowser import DeckBrowser
+
+    child = SimpleNamespace(
+        deck_id=11,
+        new_count=3,
+        learn_count=4,
+        review_count=5,
+        children=[],
+    )
+    pending_scope = SimpleNamespace(
+        deck_id=10,
+        new_count=1,
+        learn_count=2,
+        review_count=60,
+        children=[child],
+    )
+    ready_scope = SimpleNamespace(
+        deck_id=20,
+        new_count=6,
+        learn_count=7,
+        review_count=8,
+        children=[],
+    )
+    tree = SimpleNamespace(children=[pending_scope, ready_scope])
+    scripts: list[str] = []
+    browser = DeckBrowser.__new__(DeckBrowser)
+    browser.web = SimpleNamespace(eval=scripts.append)
+    browser._render_data = SimpleNamespace(tree=tree)
+    browser._rwkv_pending_deck_ids = browser._deck_ids_in_rwkv_scopes(tree, [10])
+
+    browser._render_rwkv_deck_counts()
+
+    assert browser._rwkv_pending_deck_ids == {10, 11}
+    assert "[[10, 1, 2, null], [11, 3, 4, null], [20, 6, 7, 8]]" in scripts[0]
+
+
 def test_backend_row_failure_logs_exception_details(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -7826,30 +7991,28 @@ def test_prepare_reviewer_queue_order_uses_unknown_elapsed_without_history() -> 
     } == {1: None, 2: None}
 
 
-def test_prepare_reviewer_queue_order_clears_scores_when_disabled() -> None:
-    class Backend:
-        def predict_review(
-            self,
-            *,
-            reviewer: object,
-            card: object,
-        ) -> RwkvReviewPrediction:
-            raise AssertionError("unexpected RWKV prediction")
-
-        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
-            raise AssertionError("unexpected answer update")
-
+def test_prepare_reviewer_queue_order_supports_due_day_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _SharedReviewRuntime()
     rpc = _RwkvQueueScoreRpc()
     reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=0)
-    previous_backend = set_reviewer_backend(Backend())
+    monkeypatch.setattr(
+        rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
+    )
+    previous_backend = set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
     try:
         prepare_reviewer_queue_order(reviewer)
     finally:
         set_reviewer_backend(previous_backend)
 
+    assert rwkv_scheduler.reviewer_queue_order_enabled(reviewer)
     assert len(rpc.calls) == 1
     assert rpc.calls[0]["deck_id"] == 100
-    assert rpc.calls[0]["scores"] == []
+    assert [
+        (getattr(score, "card_id"), getattr(score, "retrievability"))
+        for score in cast(list[object], rpc.calls[0]["scores"])
+    ] == [(1, pytest.approx(0.45)), (2, pytest.approx(0.45))]
 
 
 def test_reviewer_rwkv_uses_resolved_fsrs_preset_for_card() -> None:
@@ -9694,7 +9857,7 @@ def _rwkv_reviewer(
 def _rwkv_cache_reviewer(
     *,
     profile_folder: Path,
-    rows: list[tuple[int, int, int, int, int, int, int, int, int]],
+    rows: list[tuple[int, ...]],
     rwkv_review_self_correction_enabled: bool = False,
 ) -> SimpleNamespace:
     states = SchedulingStates()
@@ -9729,6 +9892,13 @@ def _rwkv_cache_reviewer(
                     (review_id, prediction)
                     for review_id, prediction, *_ in rwkv_retrievability_rows
                     if review_id in requested_ids
+                ]
+            if "select id, tags" in sql and "from notes" in sql:
+                return [(note_id, "vocabulary") for note_id in {row[2] for row in rows}]
+            if "from notes n" in sql:
+                return [
+                    (note_id, "日本\x1fにほん\x1fニホン\x1f100", 0, 1, 2, 3)
+                    for note_id in {row[2] for row in rows}
                 ]
             assert "from revlog r" in sql
             assert "join cards c" in sql

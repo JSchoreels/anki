@@ -158,6 +158,7 @@ pub struct Collection {
 pub(crate) struct RwkvRetrievabilityScores {
     pub(crate) days_elapsed: u32,
     scores: HashMap<CardId, RwkvRetrievabilityScore>,
+    deck_count_scores: HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -303,6 +304,22 @@ impl RwkvRetrievabilityScores {
         self.prune_empty_scores();
     }
 
+    fn set_deck_count_scores(
+        &mut self,
+        deck_id: DeckId,
+        scores: HashMap<CardId, RwkvReviewQueueScoreEntry>,
+    ) {
+        if scores.is_empty() {
+            self.deck_count_scores.remove(&deck_id);
+        } else {
+            self.deck_count_scores.insert(deck_id, scores);
+        }
+    }
+
+    fn clear_deck_count_scores(&mut self) {
+        self.deck_count_scores.clear();
+    }
+
     fn update_review_queue_intervening_reviews(
         &mut self,
         deck_id: DeckId,
@@ -336,7 +353,7 @@ impl RwkvRetrievabilityScores {
     }
 
     fn is_empty(&self) -> bool {
-        self.scores.is_empty()
+        self.scores.is_empty() && self.deck_count_scores.is_empty()
     }
 
     fn prune_empty_scores(&mut self) {
@@ -443,6 +460,7 @@ impl Collection {
             self.state.rwkv_retrievability_scores = Some(RwkvRetrievabilityScores {
                 days_elapsed,
                 scores: HashMap::new(),
+                deck_count_scores: HashMap::new(),
             });
         }
 
@@ -482,6 +500,7 @@ impl Collection {
     ) -> Result<()> {
         let days_elapsed = self.timing_today()?.days_elapsed;
         self.state.card_queues = None;
+        self.clear_rwkv_deck_count_scores();
         self.rwkv_retrievability_scores_mut(days_elapsed)
             .set_review_queue_scores(deck_id, scores);
         self.clear_empty_rwkv_retrievability_scores();
@@ -526,6 +545,64 @@ impl Collection {
             .as_ref()
             .filter(|scores| scores.days_elapsed == days_elapsed)
             .and_then(RwkvRetrievabilityScores::review_queue_scores_for_any_deck)
+    }
+
+    pub(crate) fn set_rwkv_deck_count_score_entries(
+        &mut self,
+        deck_id: DeckId,
+        scores: HashMap<CardId, RwkvReviewQueueScoreEntry>,
+    ) -> Result<()> {
+        let days_elapsed = self.timing_today()?.days_elapsed;
+        self.rwkv_retrievability_scores_mut(days_elapsed)
+            .set_deck_count_scores(deck_id, scores);
+        self.clear_empty_rwkv_retrievability_scores();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_rwkv_deck_count_scores(
+        &mut self,
+        deck_id: DeckId,
+        scores: HashMap<CardId, f32>,
+    ) -> Result<()> {
+        let scores = scores
+            .into_iter()
+            .map(|(card_id, retrievability)| {
+                (card_id, RwkvReviewQueueScoreEntry::new(retrievability))
+            })
+            .collect();
+        self.set_rwkv_deck_count_score_entries(deck_id, scores)
+    }
+
+    pub(crate) fn clear_rwkv_deck_count_scores(&mut self) {
+        if let Some(scores) = self.state.rwkv_retrievability_scores.as_mut() {
+            scores.clear_deck_count_scores();
+        }
+        self.clear_empty_rwkv_retrievability_scores();
+    }
+
+    pub(crate) fn take_rwkv_deck_count_scores_for_day(
+        &mut self,
+        days_elapsed: u32,
+    ) -> HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>> {
+        self.state
+            .rwkv_retrievability_scores
+            .as_mut()
+            .filter(|scores| scores.days_elapsed == days_elapsed)
+            .map(|scores| std::mem::take(&mut scores.deck_count_scores))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn restore_rwkv_deck_count_scores(
+        &mut self,
+        days_elapsed: u32,
+        deck_count_scores: HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>>,
+    ) {
+        if deck_count_scores.is_empty() {
+            return;
+        }
+        self.rwkv_retrievability_scores_mut(days_elapsed)
+            .deck_count_scores = deck_count_scores;
     }
 
     pub(crate) fn set_rwkv_stats_graph_scores(

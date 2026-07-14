@@ -97,6 +97,12 @@ service SchedulerService {
   // queue ordering. Empty scores clear the map.
   rpc SetRwkvReviewQueueScores(RwkvReviewQueueScoresRequest)
       returns (generic.Empty);
+  // Incrementally installs transient desktop-only RWKV score maps used only
+  // while rendering deck-browser counts. Each request replaces one disjoint
+  // deck scope; ClearRwkvDeckCountScores removes every scope.
+  rpc SetRwkvDeckCountScores(RwkvReviewQueueScoresRequest)
+      returns (generic.Empty);
+  rpc ClearRwkvDeckCountScores(generic.Empty) returns (generic.Empty);
   // Updates session-local repeat-spacing metadata on the active transient RWKV
   // review queue map without replacing retrievability scores.
   rpc UpdateRwkvReviewQueueInterveningReviews(

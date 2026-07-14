@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import html
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +44,7 @@ class RenderData:
     current_deck_id: DeckId
     studied_today: str
     sched_upgrade_required: bool
+    rwkv_count_scope_ids: tuple[int, ...]
 
 
 @dataclass
@@ -73,6 +75,8 @@ class DeckBrowser:
         self.bottom = BottomBar(mw, mw.bottomWeb)
         self.scrollPos = QPoint(0, 0)
         self._refresh_needed = False
+        self._rwkv_count_generation = 0
+        self._rwkv_pending_deck_ids: set[int] = set()
 
     def show(self) -> None:
         av_player.stop_and_clear_queue()
@@ -158,22 +162,41 @@ class DeckBrowser:
 
     def _renderPage(self, reuse: bool = False) -> None:
         if not reuse:
+            self._rwkv_count_generation += 1
+            generation = self._rwkv_count_generation
 
             def get_data(col: Collection) -> RenderData:
-                aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores(
-                    self.mw,
-                    reason="deck browser counts",
-                )
+                aqt.rwkv_scheduler.clear_deck_browser_rwkv_count_scores(self.mw)
+                tree = col.sched.deck_due_tree()
                 return RenderData(
-                    tree=col.sched.deck_due_tree(),
+                    tree=tree,
                     current_deck_id=col.decks.get_current_id(),
                     studied_today=col.studied_today(),
                     sched_upgrade_required=not col.v3_scheduler(),
+                    rwkv_count_scope_ids=(
+                        aqt.rwkv_scheduler.deck_browser_rwkv_count_scope_ids(
+                            self.mw,
+                            tree,
+                        )
+                    ),
                 )
 
             def success(output: RenderData) -> None:
+                if generation != self._rwkv_count_generation:
+                    return
                 self._render_data = output
+                self._rwkv_pending_deck_ids = self._deck_ids_in_rwkv_scopes(
+                    output.tree,
+                    output.rwkv_count_scope_ids,
+                )
                 self.__renderPage(None)
+                aqt.rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
+                    self.mw,
+                    output.rwkv_count_scope_ids,
+                    should_continue=lambda: self._rwkv_count_refresh_active(generation),
+                    on_update=self._update_rwkv_deck_counts,
+                    on_done=lambda: self._finish_rwkv_count_refresh(generation),
+                )
 
             QueryOp(
                 parent=self.mw,
@@ -205,6 +228,95 @@ class DeckBrowser:
         if offset is not None:
             self._scrollToOffset(offset)
         gui_hooks.deck_browser_did_render(self)
+
+    def _rwkv_count_refresh_active(self, generation: int) -> bool:
+        return (
+            generation == self._rwkv_count_generation and self.mw.state == "deckBrowser"
+        )
+
+    def _deck_ids_in_rwkv_scopes(
+        self,
+        tree: DeckTreeNode,
+        scope_ids: tuple[int, ...] | list[int],
+    ) -> set[int]:
+        target_scopes = set(scope_ids)
+        deck_ids: set[int] = set()
+
+        def collect(node: DeckTreeNode, in_scope: bool = False) -> None:
+            in_scope = in_scope or node.deck_id in target_scopes
+            if in_scope:
+                deck_ids.add(node.deck_id)
+            for child in node.children:
+                collect(child, in_scope)
+
+        for child in tree.children:
+            collect(child)
+        return deck_ids
+
+    def _update_rwkv_deck_counts(
+        self,
+        scope_id: int,
+        tree: DeckTreeNode | None,
+    ) -> None:
+        completed_deck_ids = self._deck_ids_in_rwkv_scopes(
+            self._render_data.tree,
+            [scope_id],
+        )
+        self._rwkv_pending_deck_ids.difference_update(completed_deck_ids)
+        if tree is not None:
+            self._render_data.tree = tree
+        self._render_rwkv_deck_counts()
+
+    def _finish_rwkv_count_refresh(self, generation: int) -> None:
+        if not self._rwkv_count_refresh_active(generation):
+            return
+        self._rwkv_pending_deck_ids.clear()
+        self._render_rwkv_deck_counts()
+
+    def _render_rwkv_deck_counts(self) -> None:
+        rows: list[tuple[int, int, int, int | None]] = []
+
+        def collect(node: DeckTreeNode) -> None:
+            rows.append(
+                (
+                    node.deck_id,
+                    node.new_count,
+                    node.learn_count,
+                    (
+                        None
+                        if node.deck_id in self._rwkv_pending_deck_ids
+                        else node.review_count
+                    ),
+                )
+            )
+            for child in node.children:
+                collect(child)
+
+        for child in self._render_data.tree.children:
+            collect(child)
+
+        self.web.eval(
+            """
+            (() => {
+                const rows = %s;
+                const kinds = ["new", "learn", "review"];
+                for (const [deckId, ...counts] of rows) {
+                    kinds.forEach((kind, index) => {
+                        const element = document.getElementById(
+                            `deck-${deckId}-${kind}-count`
+                        );
+                        if (!element) return;
+                        const count = counts[index];
+                        element.textContent = count === null ? "…" : count;
+                        element.className = count === null || count
+                            ? `${kind}-count`
+                            : "zero-count";
+                    });
+                }
+            })();
+            """
+            % json.dumps(rows)
+        )
 
     def _scrollToOffset(self, offset: int) -> None:
         self.web.eval("window.scrollTo(0, %d, 'instant');" % offset)
@@ -281,16 +393,34 @@ class DeckBrowser:
         )
 
         # due counts
-        def nonzeroColour(cnt: int, klass: str) -> str:
+        def nonzeroColour(cnt: int, klass: str, count_id: str) -> str:
             if not cnt:
                 klass = "zero-count"
-            return f'<span class="{klass}">{cnt}</span>'
+            return f'<span id="{count_id}" class="{klass}">{cnt}</span>'
 
-        review = nonzeroColour(node.review_count, "review-count")
-        learn = nonzeroColour(node.learn_count, "learn-count")
+        if node.deck_id in self._rwkv_pending_deck_ids:
+            review = (
+                f'<span id="deck-{node.deck_id}-review-count" '
+                'class="review-count">…</span>'
+            )
+        else:
+            review = nonzeroColour(
+                node.review_count,
+                "review-count",
+                f"deck-{node.deck_id}-review-count",
+            )
+        learn = nonzeroColour(
+            node.learn_count,
+            "learn-count",
+            f"deck-{node.deck_id}-learn-count",
+        )
 
         buf += ("<td align=end>%s</td>" * 3) % (
-            nonzeroColour(node.new_count, "new-count"),
+            nonzeroColour(
+                node.new_count,
+                "new-count",
+                f"deck-{node.deck_id}-new-count",
+            ),
             learn,
             review,
         )

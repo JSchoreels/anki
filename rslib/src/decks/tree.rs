@@ -507,7 +507,7 @@ mod test {
         allow_same_day_review: bool,
     ) -> Result<()> {
         let mut conf = DeckConfig::default();
-        conf.inner.review_order = ReviewCardOrder::RetrievabilityAscending as i32;
+        conf.inner.review_order = ReviewCardOrder::Day as i32;
         conf.inner.rwkv_review_enabled = true;
         conf.inner.rwkv_review_instant_order_enabled = true;
         conf.inner.rwkv_review_allow_same_day_review = allow_same_day_review;
@@ -581,6 +581,62 @@ mod test {
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 1);
         assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_accumulate_disjoint_deck_browser_scopes() -> Result<()> {
+        let mut col = Collection::new();
+        let mut first_deck = col.get_or_create_normal_deck("First")?;
+        let mut second_deck = col.get_or_create_normal_deck("Second")?;
+        enable_rwkv_review_counts(&mut col, &mut first_deck, false)?;
+        enable_rwkv_review_counts(&mut col, &mut second_deck, false)?;
+        let timing = col.timing_today()?;
+
+        let first_high_r = add_review_card(
+            &mut col,
+            first_deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            None,
+        )?;
+        add_review_card(
+            &mut col,
+            first_deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            None,
+        )?;
+        let second_high_r = add_review_card(
+            &mut col,
+            second_deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            None,
+        )?;
+        add_review_card(
+            &mut col,
+            second_deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            None,
+        )?;
+
+        col.set_rwkv_deck_count_scores(first_deck.id, HashMap::from([(first_high_r, 0.80)]))?;
+        col.set_rwkv_deck_count_scores(second_deck.id, HashMap::from([(second_high_r, 0.80)]))?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        let first = get_deck_in_tree(tree.clone(), first_deck.id).unwrap();
+        let second = get_deck_in_tree(tree, second_deck.id).unwrap();
+        assert_eq!(first.review_count, 1);
+        assert_eq!(second.review_count, 1);
+
+        col.clear_rwkv_deck_count_scores();
+        let tree = col.deck_tree(Some(timing.now))?;
+        let first = get_deck_in_tree(tree.clone(), first_deck.id).unwrap();
+        let second = get_deck_in_tree(tree, second_deck.id).unwrap();
+        assert_eq!(first.review_count, 2);
+        assert_eq!(second.review_count, 2);
         Ok(())
     }
 }
