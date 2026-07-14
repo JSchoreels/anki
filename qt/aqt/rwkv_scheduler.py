@@ -63,9 +63,6 @@ class RwkvFirstReviewElapsedSource(enum.Enum):
 
 
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
-_REVIEW_ORDER_RETRIEVABILITY_ASCENDING = (
-    deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING
-)
 _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_DESCENDING
 )
@@ -95,7 +92,7 @@ _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
 _RWKV_WORKLOAD_MIN_DR = 30
-_RWKV_WORKLOAD_MAX_DR = 95
+_RWKV_WORKLOAD_MAX_DR = 99
 _RWKV_SIMULATOR_BUCKET_COUNT = 20
 _RWKV_SIMULATOR_PRIOR_WEIGHT = 4.0
 _RWKV_SIMULATOR_DEFAULT_GRADE_SECONDS = (8.0, 8.0, 8.0, 8.0)
@@ -630,6 +627,8 @@ class _RwkvSimulationCard:
     interval_days: int
     reps: int
     lapses: int
+    is_new: bool
+    suspended: bool = False
 
 
 @dataclass(frozen=True)
@@ -669,6 +668,16 @@ class _RwkvSimulatorReviewModel:
             bucket,
             _fallback_rwkv_grade_probabilities(retrievability),
         )
+
+
+@dataclass(frozen=True)
+class _RwkvWorkloadScheduling:
+    review_limit: int
+    new_limit: int
+    new_cards_ignore_review_limit: bool
+    max_interval: int
+    review_order: int
+    suspend_after_lapses: int | None
 
 
 class _RwkvSimulatorReviewTimeFields(NamedTuple):
@@ -1635,7 +1644,7 @@ class RwkvStatefulReviewerBackend:
         max_dr: int,
         target_dr_step: int,
         days_to_simulate: int,
-        review_limit: int,
+        scheduling: _RwkvWorkloadScheduling,
         state_update_interval: int,
         review_model: _RwkvSimulatorReviewModel,
         progress: RwkvWorkloadProgressCallback | None = None,
@@ -1650,7 +1659,7 @@ class RwkvStatefulReviewerBackend:
             max_dr=max_dr,
             target_dr_step=target_dr_step,
             days_to_simulate=days_to_simulate,
-            review_limit=review_limit,
+            scheduling=scheduling,
             state_update_interval=state_update_interval,
             review_model=review_model,
             progress=progress,
@@ -2418,7 +2427,6 @@ def refresh_answered_card_queue_score(
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
         return
@@ -2515,7 +2523,6 @@ def _prepare_current_deck_review_queue_scores(
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
         return
@@ -2566,7 +2573,6 @@ def prepare_reviewer_queue_order_async_work(
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
         return None
@@ -2866,17 +2872,13 @@ def reviewer_queue_order_enabled(reviewer: object) -> bool:
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
     )
 
 
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     card = getattr(reviewer, "card", None)
     deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
-    if deck_config is None or not (
-        _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
-    ):
+    if deck_config is None or not _rwkv_review_instant_order_enabled(deck_config):
         return False
 
     answered_count = len(_session_answered_ids(reviewer))
@@ -2905,7 +2907,6 @@ def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
         and _rwkv_review_refresh_on_exit(deck_config)
     )
 
@@ -3401,7 +3402,6 @@ def _prewarm_rwkv_review_scores_for_decks(
             isinstance(deck_config, dict)
             and _rwkv_review_config_enabled(deck_config)
             and _rwkv_review_instant_order_enabled(deck_config)
-            and _queue_scores_use_retrievability(deck_config)
         ):
             continue
 
@@ -3546,7 +3546,6 @@ def _rwkv_score_prewarm_work_for_deck(
         isinstance(deck_config, dict)
         and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
-        and _queue_scores_use_retrievability(deck_config)
     ):
         return None
 
@@ -8444,10 +8443,15 @@ def _rwkv_sampled_review_limit(review_limit: int, input_scale: float) -> int:
     return max(1, int(round(review_limit / input_scale)))
 
 
-def _rwkv_workload_review_count_cap(review_limit: int, days_to_simulate: int) -> int:
+def _rwkv_workload_review_count_cap(
+    review_limit: int,
+    additional_new_limit: int,
+    days_to_simulate: int,
+) -> int:
     return min(
         2**32 - 1,
-        max(0, int(review_limit)) * max(0, int(days_to_simulate)),
+        (max(0, int(review_limit)) + max(0, int(additional_new_limit)))
+        * max(0, int(days_to_simulate)),
     )
 
 
@@ -8492,6 +8496,7 @@ def simulate_rwkv_workload(
         reviewer=reviewer,
         search=request.search,
         include_suspended_review=False,
+        include_new_cards=request.new_limit > 0,
         batch_size_override=None,
     )
     if input_build is None:
@@ -8526,9 +8531,20 @@ def simulate_rwkv_workload(
     _apply_rwkv_review_time_model(response, review_model)
     days_to_simulate = max(0, int(request.days_to_simulate))
     review_limit = max(0, int(request.review_limit))
+    new_limit = max(0, int(request.new_limit))
     sampled_review_limit = _rwkv_sampled_review_limit(review_limit, input_scale)
+    sampled_new_limit = _rwkv_sampled_review_limit(new_limit, input_scale)
+    scheduling = _RwkvWorkloadScheduling(
+        review_limit=sampled_review_limit,
+        new_limit=sampled_new_limit,
+        new_cards_ignore_review_limit=request.new_cards_ignore_review_limit,
+        max_interval=max(1, int(request.max_interval)),
+        review_order=int(request.review_order),
+        suspend_after_lapses=request.suspend_after_lapse_count,
+    )
     review_count_cap = _rwkv_workload_review_count_cap(
         review_limit,
+        new_limit if request.new_cards_ignore_review_limit else 0,
         days_to_simulate,
     )
     target_dr_step = _rwkv_workload_target_dr_step(request)
@@ -8553,7 +8569,7 @@ def simulate_rwkv_workload(
             simulation_inputs=simulation_inputs,
             snapshot=original_snapshot,
             days_to_simulate=days_to_simulate,
-            review_limit=sampled_review_limit,
+            scheduling=scheduling,
             target_dr_step=target_dr_step,
             state_update_interval=state_update_interval,
             review_model=review_model,
@@ -8614,7 +8630,7 @@ def simulate_rwkv_workload(
                 simulation_inputs,
                 target_retention=target_retention,
                 days_to_simulate=days_to_simulate,
-                review_limit=sampled_review_limit,
+                scheduling=scheduling,
                 state_update_interval=state_update_interval,
                 review_model=review_model,
             )
@@ -8663,9 +8679,12 @@ def _rwkv_simulation_inputs(
     inputs: list[tuple[int, RwkvReviewInput, int]] = []
     for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
         for card_id, review_input in inputs_by_card_id:
-            if review_input.card_type != CARD_TYPE_REV:
+            if review_input.card_type not in (CARD_TYPE_NEW, CARD_TYPE_REV):
                 continue
-            if review_input.current_elapsed_days is None:
+            if (
+                review_input.card_type == CARD_TYPE_REV
+                and review_input.current_elapsed_days is None
+            ):
                 continue
             inputs.append((card_id, review_input, batch_size))
     return inputs
@@ -8677,7 +8696,7 @@ def _simulate_rwkv_workload_with_embedded_runtime(
     simulation_inputs: Sequence[tuple[int, RwkvReviewInput, int]],
     snapshot: RwkvBackendCacheSnapshot,
     days_to_simulate: int,
-    review_limit: int,
+    scheduling: _RwkvWorkloadScheduling,
     target_dr_step: int,
     state_update_interval: int,
     review_model: _RwkvSimulatorReviewModel,
@@ -8693,7 +8712,7 @@ def _simulate_rwkv_workload_with_embedded_runtime(
         max_dr=_RWKV_WORKLOAD_MAX_DR,
         target_dr_step=target_dr_step,
         days_to_simulate=days_to_simulate,
-        review_limit=review_limit,
+        scheduling=scheduling,
         state_update_interval=state_update_interval,
         review_model=review_model,
         progress=progress,
@@ -8807,7 +8826,7 @@ def _simulate_rwkv_workload_for_target(
     *,
     target_retention: float,
     days_to_simulate: int,
-    review_limit: int,
+    scheduling: _RwkvWorkloadScheduling,
     state_update_interval: int,
     review_model: _RwkvSimulatorReviewModel,
 ) -> _RwkvSimulationPoint:
@@ -8838,11 +8857,43 @@ def _simulate_rwkv_workload_for_target(
     total_cost = 0.0
     review_count = 0
     for day in range(days_to_simulate):
-        due_cards = [card for card in cards if card.due_day <= day]
-        due_cards.sort(
-            key=lambda card: (card.due_day, card.review_input.identity.card_id)
+        due_reviews = [
+            card
+            for card in cards
+            if not card.is_new and not card.suspended and card.due_day <= day
+        ]
+        review_predictions = [
+            _rwkv_simulation_prediction_for_card(
+                card,
+                target_retention=target_retention,
+                day=day,
+            )
+            for card in due_reviews
+        ]
+        due_reviews = [
+            card
+            for card, _ in sorted(
+                zip(due_reviews, review_predictions, strict=True),
+                key=lambda item: _rwkv_simulation_review_sort_key(
+                    item[0], item[1], scheduling.review_order, target_retention
+                ),
+            )
+        ]
+        due_reviews = (
+            due_reviews[: scheduling.review_limit] if scheduling.review_limit else []
         )
-        due_cards = due_cards[:review_limit] if review_limit else []
+
+        due_new = sorted(
+            (
+                card
+                for card in cards
+                if card.is_new and not card.suspended and card.due_day <= day
+            ),
+            key=lambda card: card.review_input.identity.card_id,
+        )[: scheduling.new_limit]
+        if not scheduling.new_cards_ignore_review_limit:
+            due_new = due_new[: max(0, scheduling.review_limit - len(due_reviews))]
+        due_cards = [*due_reviews, *due_new]
 
         for card in due_cards:
             prediction = _rwkv_simulation_prediction_for_card(
@@ -8879,14 +8930,21 @@ def _simulate_rwkv_workload_for_target(
                 _rwkv_simulation_store_answer(answer_input)
 
             interval = _s90_for_ease(prediction.interval_overrides, ease)
-            if interval is None or interval < 1:
-                interval = 1
+            interval = min(scheduling.max_interval, max(1, interval or 1))
             card.interval_days = interval
             card.last_review_day = day
             card.due_day = day + interval
             card.reps += 1
+            if card.is_new:
+                card.is_new = False
+                card.review_input = replace(card.review_input, card_type=CARD_TYPE_REV)
             if ease == 1:
                 card.lapses += 1
+                if (
+                    scheduling.suspend_after_lapses is not None
+                    and card.lapses >= scheduling.suspend_after_lapses
+                ):
+                    card.suspended = True
 
     memorized, weighted_memorized = _rwkv_simulation_memorized_from_cards(
         cards,
@@ -8920,17 +8978,58 @@ def _rwkv_simulation_card(
         interval_days=interval_days,
         reps=review_input.reps or 0,
         lapses=review_input.lapses or 0,
+        is_new=review_input.card_type == CARD_TYPE_NEW,
     )
+
+
+def _rwkv_simulation_review_sort_key(
+    card: _RwkvSimulationCard,
+    prediction: RwkvReviewPrediction | None,
+    review_order: int,
+    target_retention: float,
+) -> tuple[float, int]:
+    card_id = card.review_input.identity.card_id
+    retrievability = _valid_retrievability_or_default(
+        prediction.retrievability if prediction is not None else None,
+        target_retention,
+    )
+    priority: float
+    if review_order == 3:
+        priority = float(card.interval_days)
+    elif review_order == 4:
+        priority = -card.interval_days
+    elif review_order == 5:
+        priority = card.review_input.ease_factor or 0
+    elif review_order == 6:
+        priority = -(card.review_input.ease_factor or 0)
+    elif review_order == 7:
+        priority = retrievability
+    elif review_order == 11:
+        priority = -retrievability
+    elif review_order == 12:
+        priority = retrievability / max(0.0001, target_retention)
+    elif review_order == 8:
+        priority = _rwkv_simulation_unit_hash(card_id, 0, 0)
+    elif review_order == 9:
+        priority = card_id
+    elif review_order == 10:
+        priority = -card_id
+    else:
+        priority = card.due_day
+    return float(priority), card_id
 
 
 def _rwkv_simulation_memorized(
     simulation_inputs: Sequence[tuple[int, RwkvReviewInput, int]],
     day: int,
 ) -> tuple[float, float]:
+    introduced_inputs = [
+        item for item in simulation_inputs if item[1].card_type != CARD_TYPE_NEW
+    ]
     predictions = _rwkv_simulation_predictions(
         [
             (card_id, _rwkv_simulation_query_input(review_input, 0.9, day), batch_size)
-            for card_id, review_input, batch_size in simulation_inputs
+            for card_id, review_input, batch_size in introduced_inputs
         ]
     )
     return _rwkv_memorized_from_predictions(predictions)
@@ -8949,6 +9048,7 @@ def _rwkv_simulation_memorized_from_cards(
             day=day,
         )
         for card in cards
+        if not card.is_new
     ]
     return _rwkv_memorized_from_predictions(predictions)
 
@@ -11983,14 +12083,6 @@ def _rwkv_non_negative_count(value: int | None) -> int:
     )
 
 
-def _review_order_uses_retrievability(deck_config: dict[str, object]) -> bool:
-    value = deck_config.get("reviewOrder", deck_config.get("review_order"))
-    return value in (
-        _REVIEW_ORDER_RETRIEVABILITY_ASCENDING,
-        _REVIEW_ORDER_RETRIEVABILITY_DESCENDING,
-    )
-
-
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
     value = deck_config.get(
         "newCardGatherPriority",
@@ -12004,12 +12096,6 @@ def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
 
 def _search_text_explicitly_includes_new_cards(search: str) -> bool:
     return re.search(r"(?<![-\w:])is:new(?![\w:])", search, re.IGNORECASE) is not None
-
-
-def _queue_scores_use_retrievability(deck_config: dict[str, object]) -> bool:
-    return _review_order_uses_retrievability(
-        deck_config
-    ) or _new_gather_uses_retrievability(deck_config)
 
 
 def _rwkv_review_batch_size(deck_config: dict[str, object]) -> int:
@@ -14758,6 +14844,7 @@ def _rwkv_review_input_batches_for_search(
     reviewer: object,
     search: str,
     include_suspended_review: bool,
+    include_new_cards: bool = False,
     batch_size_override: int | None = None,
     use_enabled_deck_filter: bool = True,
 ) -> RwkvReviewInputBatchBuild | None:
@@ -14774,6 +14861,7 @@ def _rwkv_review_input_batches_for_search(
         backend,
         search=search,
         include_suspended_review=include_suspended_review,
+        include_new_cards=include_new_cards,
     )
     if response is None:
         return None
@@ -15222,6 +15310,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
     *,
     search: str,
     include_suspended_review: bool,
+    include_new_cards: bool = False,
 ) -> object | None:
     get_rows_raw = getattr(backend, "rwkv_review_input_rows_for_search_raw", None)
     if callable(get_rows_raw) and hasattr(
@@ -15232,6 +15321,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
             request = scheduler_pb2.RwkvReviewInputRowsForSearchRequest(
                 search=search,
                 include_suspended_review=include_suspended_review,
+                include_new_cards=include_new_cards,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -15249,11 +15339,14 @@ def _rwkv_review_input_rows_for_search_backend_response(
         return None
 
     try:
-        return get_rows(
+        kwargs: dict[str, object] = dict(
             search=search,
             include_suspended_review=include_suspended_review,
             include_disabled_decks=False,
         )
+        if include_new_cards:
+            kwargs["include_new_cards"] = True
+        return get_rows(**kwargs)
     except Exception:
         logger.debug(
             "failed to load RWKV review input rows for search from backend",

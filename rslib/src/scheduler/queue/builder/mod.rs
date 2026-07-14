@@ -288,13 +288,7 @@ impl Context {
 
 impl QueueSortOptions {
     fn uses_rwkv_review_order(&self) -> bool {
-        self.rwkv_review_enabled
-            && self.rwkv_review_instant_order_enabled
-            && matches!(
-                self.review_order,
-                ReviewCardOrder::RetrievabilityAscending
-                    | ReviewCardOrder::RetrievabilityDescending
-            )
+        self.rwkv_review_enabled && self.rwkv_review_instant_order_enabled
     }
 
     fn uses_rwkv_retrievability_scores(&self) -> bool {
@@ -1029,6 +1023,128 @@ mod test {
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.80)]))?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![first, second, unscored]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_instant_eligibility_applies_to_every_review_order() -> Result<()> {
+        for order in [
+            ReviewCardOrder::Day,
+            ReviewCardOrder::DayThenDeck,
+            ReviewCardOrder::DeckThenDay,
+            ReviewCardOrder::IntervalsAscending,
+            ReviewCardOrder::IntervalsDescending,
+            ReviewCardOrder::EaseAscending,
+            ReviewCardOrder::EaseDescending,
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+            ReviewCardOrder::Random,
+            ReviewCardOrder::Added,
+            ReviewCardOrder::ReverseAdded,
+        ] {
+            let mut col = Collection::new();
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_rwkv_review_order(&mut deck, order);
+
+            let timing = col.timing_today()?;
+            let unscored_due = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32 - 1,
+                2 * 86_400,
+                30.0,
+            )?;
+            let scored_due_above_target = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )?;
+            let scored_future_below_target = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32 + 7,
+                2 * 86_400,
+                30.0,
+            )?;
+            col.set_rwkv_review_queue_score_entries(
+                deck.id,
+                HashMap::from([
+                    (
+                        scored_due_above_target,
+                        RwkvReviewQueueScoreEntry {
+                            retrievability: 0.80,
+                            intervening_reviews: None,
+                            target_retention: Some(0.75),
+                        },
+                    ),
+                    (
+                        scored_future_below_target,
+                        RwkvReviewQueueScoreEntry {
+                            retrievability: 0.20,
+                            intervening_reviews: None,
+                            target_retention: Some(0.75),
+                        },
+                    ),
+                ]),
+            )?;
+
+            let mut actual = col.queue_as_ids(deck.id);
+            actual.sort();
+            let mut expected = vec![unscored_due, scored_future_below_target];
+            expected.sort();
+            assert_eq!(actual, expected, "review order {order:?}");
+            assert_eq!(col.counts(), [0, 0, 2], "review order {order:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_instant_preserves_due_day_review_order() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::Day);
+
+        let timing = col.timing_today()?;
+        let unscored_due = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 - 1,
+            2 * 86_400,
+            30.0,
+        )?;
+        let scored_future = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_score_entries(
+            deck.id,
+            HashMap::from([(
+                scored_future,
+                RwkvReviewQueueScoreEntry {
+                    retrievability: 0.20,
+                    intervening_reviews: None,
+                    target_retention: Some(0.75),
+                },
+            )]),
+        )?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![unscored_due, scored_future]);
         Ok(())
     }
 

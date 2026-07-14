@@ -33,9 +33,9 @@ impl QueueBuilder {
             self.gather_intraday_learning_cards(col)?;
             self.gather_due_cards(col, DueCardKind::Learning)?;
             if self.context.uses_rwkv_review_order() {
-                self.gather_review_cards_with_rwkv_retrievability(col)?;
+                self.gather_review_cards_with_rwkv_scores(col)?;
             } else {
-                self.gather_due_review_cards_without_rwkv_scores(col, &HashSet::new())?;
+                self.gather_due_cards(col, DueCardKind::Review)?;
             }
             self.gather_new_cards(col)?;
             return Ok(());
@@ -55,7 +55,18 @@ impl QueueBuilder {
         Ok(())
     }
 
-    fn gather_review_cards_with_rwkv_retrievability(&mut self, col: &mut Collection) -> Result<()> {
+    fn gather_review_cards_with_rwkv_scores(&mut self, col: &mut Collection) -> Result<()> {
+        if matches!(
+            self.context.sort_options.review_order,
+            ReviewCardOrder::RetrievabilityAscending | ReviewCardOrder::RetrievabilityDescending
+        ) {
+            self.gather_review_cards_by_rwkv_retrievability(col)
+        } else {
+            self.gather_review_cards_by_configured_order(col)
+        }
+    }
+
+    fn gather_review_cards_by_rwkv_retrievability(&mut self, col: &mut Collection) -> Result<()> {
         if self.limits.root_limit_reached(LimitKind::Review) {
             return Ok(());
         }
@@ -137,6 +148,65 @@ impl QueueBuilder {
         }
 
         self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)
+    }
+
+    fn gather_review_cards_by_configured_order(&mut self, col: &mut Collection) -> Result<()> {
+        if self.limits.root_limit_reached(LimitKind::Review) {
+            return Ok(());
+        }
+
+        let scores = self.context.rwkv_review_queue_scores.as_ref().unwrap();
+        let scored_card_ids: Vec<_> = scores.keys().copied().collect();
+        let metadata = rwkv_review_candidate_metadata(col, &scored_card_ids, self.context.timing)?;
+        let eligible_scored_card_ids: HashSet<_> = scores
+            .iter()
+            .filter_map(|(&card_id, score)| {
+                let metadata = metadata.get(&card_id)?;
+                rwkv_review_score_eligible(
+                    score.retrievability,
+                    metadata,
+                    self.context.sort_options.rwkv_review_allow_same_day_review,
+                    self.context
+                        .sort_options
+                        .rwkv_review_min_intervening_reviews,
+                    self.context.sort_options.rwkv_review_min_elapsed_secs,
+                    score.intervening_reviews,
+                    score.target_retention,
+                )
+                .then_some(card_id)
+            })
+            .collect();
+        let scored_card_ids: HashSet<_> = scored_card_ids.into_iter().collect();
+
+        col.storage.for_each_review_card_in_active_decks(
+            self.context.timing,
+            self.context.sort_options.review_order,
+            self.context.fsrs,
+            |card| {
+                if self.limits.root_limit_reached(LimitKind::Review) {
+                    return Ok(false);
+                }
+                let eligible = if scored_card_ids.contains(&card.id) {
+                    eligible_scored_card_ids.contains(&card.id)
+                } else {
+                    card.due <= self.context.timing.days_elapsed as i32
+                };
+                if !eligible {
+                    return Ok(true);
+                }
+                if !self
+                    .limits
+                    .limit_reached(card.current_deck_id, LimitKind::Review)?
+                    && self.add_due_card(card)
+                {
+                    self.limits.decrement_deck_and_parent_limits(
+                        card.current_deck_id,
+                        LimitKind::Review,
+                    )?;
+                }
+                Ok(true)
+            },
+        )
     }
 
     fn gather_due_review_cards_without_rwkv_scores(

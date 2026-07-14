@@ -138,7 +138,8 @@ impl Collection {
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
         let guard = self.search_cards_into_table(&input.search, SortMode::NoOrder)?;
         let searched_cards = guard.cards as u32;
-        let include_new_cards = search_explicitly_includes_new_cards(&parse_search(&input.search)?);
+        let include_new_cards = input.include_new_cards
+            || search_explicitly_includes_new_cards(&parse_search(&input.search)?);
         let cards = guard
             .col
             .storage
@@ -265,11 +266,13 @@ impl Collection {
             .iter()
             .any(|partial| partial.preset_tag_state_enabled)
         {
-            let note_ids: Vec<_> = eligible
+            let mut note_ids: Vec<_> = eligible
                 .iter()
                 .filter(|partial| partial.preset_tag_state_enabled)
                 .map(|partial| partial.card.note_id)
                 .collect();
+            note_ids.sort_unstable();
+            note_ids.dedup();
             self.storage
                 .get_note_tags_by_id_list(&note_ids)?
                 .into_iter()
@@ -1073,6 +1076,45 @@ mod test {
     }
 
     #[test]
+    fn review_input_rows_deduplicate_note_ids_for_tag_state() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.rwkv_review_preset_tag_state_enabled = true;
+        });
+        let mut note = col.basic_notetype().new_note();
+        note.fields_mut()[0] = "front".into();
+        note.tags = vec!["shared-tag".into()];
+        col.add_note(&mut note, DeckId(1))?;
+        let timing = col.timing_today()?;
+        let mut cards = col.storage.all_cards_of_note(note.id)?;
+        let mut second_card = Card::new(note.id, 1, DeckId(1), timing.days_elapsed as i32);
+        col.add_card(&mut second_card)?;
+        cards.push(second_card);
+        for card in &mut cards {
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
+            col.storage.update_card(card)?;
+        }
+
+        let response = col.rwkv_review_input_rows_for_deck_review_queue(
+            RwkvReviewInputRowsForDeckReviewQueueRequest {
+                deck_id: DeckId(1).0,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            },
+        )?;
+
+        assert_eq!(response.rows.len(), 2);
+        assert!(response
+            .rows
+            .iter()
+            .all(|row| row.preset_id.contains("shared-tag")));
+        Ok(())
+    }
+
+    #[test]
     fn review_input_rows_can_fold_japanese_features_into_preset_id() -> Result<()> {
         let mut col = Collection::new();
         col.update_default_deck_config(|config| {
@@ -1311,6 +1353,7 @@ mod test {
                 search: format!("cid:{},{}", review_card.id.0, new_card.id.0),
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
 
         assert_eq!(response.searched_cards, 2);
@@ -1324,6 +1367,7 @@ mod test {
                 search: format!("cid:{},{} is:new", review_card.id.0, new_card.id.0),
                 include_suspended_review: false,
                 include_disabled_decks: false,
+                include_new_cards: false,
             })?;
 
         assert_eq!(response.searched_cards, 1);

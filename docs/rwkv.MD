@@ -67,13 +67,15 @@ fresh full snapshot and compacts the delta log.
 
 ## Queue Scoring
 
-When RWKV review and `rwkv_review_instant_order_enabled` are both enabled, and
-the selected review order is retrievability, the desktop reviewer may install a
-transient per-card RWKV-Instant retrievability map for the current deck tree
-before building the review queue. The map is scoped to the selected deck and
-scheduler day. Queue building uses those RWKV scores for review-card ordering
-and can include review cards whose stored due day is still in the future when
-RWKV considers them due. For RWKV queue ordering, a scored review card is
+When RWKV review and `rwkv_review_instant_order_enabled` are both enabled, the
+desktop reviewer may install a transient per-card RWKV-Instant retrievability
+map for the current deck tree before building the review queue. The map is
+scoped to the selected deck and scheduler day. For every review sort order, the
+RWKV scores determine which scored review cards are eligible. Ascending and
+descending retrievability additionally use the RWKV score as their sort key;
+the other review orders retain their normal sorting behavior after RWKV
+eligibility is applied. This can include review cards whose stored due day is
+still in the future when RWKV considers them due. A scored review card is
 considered due when its RWKV retrievability is at or below the card's current
 target retention; cards above that threshold are not admitted through either the
 RWKV ordering path or the normal due fallback until a later prediction puts them
@@ -109,8 +111,9 @@ is enabled.
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
 After the first full score map has been installed, later refreshes score only
-the best stale candidates in the selected retrievability order and merge those
-fresh scores back into the map. The candidate window is the RWKV batch size.
+the best stale RWKV candidates and merge those fresh scores back into the map.
+Descending retrievability prioritizes the highest scores; all other review
+orders prioritize the lowest scores. The candidate window is the RWKV batch size.
 This accelerates frequent review-time refreshes while preserving the full
 installed score map for cards outside the refreshed window. It is approximate:
 cards outside the refreshed window keep their previous RWKV score until a later
@@ -215,9 +218,14 @@ suspended, and filtered cards are not changed by this maintenance action.
 
 Deck Options also exposes an experimental RWKV Desired Retention "Help Me
 Decide" workload simulator. It is desktop-only and requires a usable local RWKV
-state cache. The simulator runs a fixed target-retention sweep over RWKV-enabled
-review cards matched by the selected deck/preset search, snapshots and restores
-the recurrent RWKV state for each target, and reports the result through the
+state cache. The Deck Options action opens an FSRS/RWKV comparison that overlays
+both curves in one chart. FSRS and RWKV use distinct colors, and the chart hover
+reports both values plus RWKV's relative performance. Both runs are built from
+the same exact per-preset request, including days, new cards/day, reviews/day,
+maximum interval, review order, whether new cards ignore the review limit, and
+leech suspension. The simulator runs a fixed target-retention sweep over RWKV-enabled
+new and review cards matched by the selected deck/preset search, snapshots and
+restores the recurrent RWKV state for each target, and reports the result through the
 same workload chart shape as the FSRS Help Me Decide tool. The embedded Rust
 runtime runs the whole sweep behind one bridge call: it restores the snapshot
 for each target, predicts due reviews, chooses deterministic simulated grades,
@@ -240,15 +248,20 @@ result back up, the DR step skips intermediate target-retention points, and the
 state stride updates the simulated recurrent RWKV state only every Nth simulated
 review. When sampling is active, the daily review limit is scaled down for the
 sample before results are scaled back up, and reported review totals are capped
-at the configured daily limit multiplied by the simulated day count. The Deck
-Options RWKV workload form defaults to a sample cap of `250`, a DR step of `1`,
-a max target retention of `95%`, and a state stride of `10`.
+at the configured daily limit multiplied by the simulated day count. The
+standalone RWKV workload form defaults to a sample cap of `250`, a DR step of
+`1`, a max target retention of `99%`, and a state stride of `10`. The
+combined comparison defaults to exact settings so its RWKV and FSRS curves
+cover the same target-retention points without sampling or skipped state
+updates.
 Exact mode is still available by setting the sample cap to `0`, DR step to `1`,
 and state stride to `1`.
-This first RWKV path does not simulate new cards, learning/relearning cards,
-Dynamic DR/ADR, easy days, leech suspension, or FSRS review-order behavior; it
-uses cached historical RWKV retrievability samples when available to estimate
-grade mix and review time, with a deterministic fallback model otherwise.
+Existing new cards are introduced up to the shared daily limit and transition
+to review scheduling after their first simulated answer. The RWKV path does not
+simulate separate learning/relearning steps, additional synthetic new cards,
+Dynamic DR/ADR, or easy days. It uses cached historical RWKV retrievability
+samples when available to estimate grade mix and review time, with a
+deterministic fallback model otherwise.
 
 After an answer is applied on desktop, the reviewer updates the in-memory RWKV
 state. Every `rwkv_review_refresh_interval` answered reviews, it refreshes the

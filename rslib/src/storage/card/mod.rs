@@ -301,16 +301,7 @@ impl super::SqliteStorage {
         };
         let mut rows = stmt.query(params![queue as i8, timing.days_elapsed])?;
         while let Some(row) = rows.next()? {
-            if !func(DueCard {
-                id: row.get(0)?,
-                note_id: row.get(1)?,
-                due: row.get(2).ok().unwrap_or_default(),
-                mtime: row.get(4)?,
-                current_deck_id: row.get(5)?,
-                original_deck_id: row.get(6)?,
-                reps: row.get(7)?,
-                kind,
-            })? {
+            if !func(due_card_from_review_row(row, kind)?)? {
                 break;
             }
         }
@@ -339,16 +330,35 @@ impl super::SqliteStorage {
         let mut stmt = self.db.prepare(&sql)?;
         let mut rows = stmt.query(params![CardQueue::Review as i8])?;
         while let Some(row) = rows.next()? {
-            if !func(DueCard {
-                id: row.get(0)?,
-                note_id: row.get(1)?,
-                due: row.get(2).ok().unwrap_or_default(),
-                mtime: row.get(4)?,
-                current_deck_id: row.get(5)?,
-                original_deck_id: row.get(6)?,
-                reps: row.get(7)?,
-                kind: DueCardKind::Review,
-            })? {
+            if !func(due_card_from_review_row(row, DueCardKind::Review)?)? {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Call func() for each review card in the active decks, including cards
+    /// whose due day is in the future, in the configured review order.
+    pub(crate) fn for_each_review_card_in_active_decks<F>(
+        &self,
+        timing: SchedTimingToday,
+        order: ReviewCardOrder,
+        fsrs: bool,
+        mut func: F,
+    ) -> Result<()>
+    where
+        F: FnMut(DueCard) -> Result<bool>,
+    {
+        let order_clause = review_order_sql(order, timing, fsrs);
+        let mut stmt = self.db.prepare_cached(&format!(
+            "{} order by {}",
+            include_str!("review_cards_in_active_decks.sql"),
+            order_clause
+        ))?;
+        let mut rows = stmt.query(params![CardQueue::Review as i8])?;
+        while let Some(row) = rows.next()? {
+            if !func(due_card_from_review_row(row, DueCardKind::Review)?)? {
                 break;
             }
         }
@@ -1060,6 +1070,19 @@ WHERE ease IS NOT NULL;",
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     }
+}
+
+fn due_card_from_review_row(row: &Row<'_>, kind: DueCardKind) -> Result<DueCard> {
+    Ok(DueCard {
+        id: row.get(0)?,
+        note_id: row.get(1)?,
+        due: row.get(2).ok().unwrap_or_default(),
+        mtime: row.get(4)?,
+        current_deck_id: row.get(5)?,
+        original_deck_id: row.get(6)?,
+        reps: row.get(7)?,
+        kind,
+    })
 }
 
 #[derive(Clone, Copy)]

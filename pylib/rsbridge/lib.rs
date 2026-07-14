@@ -445,6 +445,11 @@ impl RwkvInference {
         target_dr_step: u32,
         days_to_simulate: u32,
         review_limit: u32,
+        new_limit: u32,
+        new_cards_ignore_review_limit: bool,
+        max_interval: u32,
+        review_order: i32,
+        suspend_after_lapses: Option<u32>,
         state_update_interval: u32,
         grade_seconds: &Bound<'_, PyAny>,
         bucket_probabilities: &Bound<'_, PyAny>,
@@ -460,6 +465,13 @@ impl RwkvInference {
             target_dr_step,
             days_to_simulate,
             review_limit,
+            new_limit,
+            new_cards_ignore_review_limit,
+            max_interval,
+            review_order: review_order
+                .try_into()
+                .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
+            suspend_after_lapses,
             state_update_interval,
             review_model: rwkv::RwkvWorkloadReviewModel {
                 grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
@@ -832,17 +844,18 @@ fn parse_rwkv_workload_simulation_input(
     request: &Bound<'_, PyAny>,
 ) -> PyResult<rwkv::RwkvWorkloadSimulationInput> {
     let tuple = request.cast::<PyTuple>()?;
-    if tuple.len() != 18 {
+    if tuple.len() != 19 {
         return Err(PyException::new_err(
-            "RWKV workload simulation input must contain 18 fields",
+            "RWKV workload simulation input must contain 19 fields",
         ));
     }
 
     Ok(rwkv::RwkvWorkloadSimulationInput {
         review_input: parse_rwkv_review_input_tuple(tuple)?,
         interval_days: tuple.get_item(15)?.extract()?,
-        reps: tuple.get_item(16)?.extract()?,
-        lapses: tuple.get_item(17)?.extract()?,
+        ease_factor: tuple.get_item(16)?.extract()?,
+        reps: tuple.get_item(17)?.extract()?,
+        lapses: tuple.get_item(18)?.extract()?,
     })
 }
 

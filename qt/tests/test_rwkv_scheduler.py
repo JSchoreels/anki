@@ -430,8 +430,15 @@ def test_rwkv_workload_review_model_populates_time_matrix_from_cache() -> None:
     assert len(response.review_time_transition_probs) == 16
 
 
-def test_rwkv_workload_simulation_inputs_require_review_elapsed_days() -> None:
+def test_rwkv_workload_simulation_inputs_include_new_and_eligible_review_cards() -> (
+    None
+):
     review = _rwkv_review_input(card_id=1, note_id=10)
+    new = replace(
+        _rwkv_review_input(card_id=4, note_id=40),
+        card_type=0,
+        current_elapsed_days=None,
+    )
     learning = replace(
         _rwkv_review_input(card_id=2, note_id=20),
         card_type=1,
@@ -442,21 +449,24 @@ def test_rwkv_workload_simulation_inputs_require_review_elapsed_days() -> None:
     )
     input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
         inputs_by_batch_size={
-            64: [(1, review), (2, learning)],
+            64: [(1, review), (2, learning), (4, new)],
             512: [(3, missing_elapsed)],
         },
-        loaded_rows=3,
-        parsed_cards=3,
-        cards_with_state=3,
+        loaded_rows=4,
+        parsed_cards=4,
+        cards_with_state=4,
         disabled_config_cards=0,
-        eligible_cards=3,
+        eligible_cards=4,
         deck_configs=1,
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
     )
 
-    assert rwkv_scheduler._rwkv_simulation_inputs(input_build) == [(1, review, 64)]
+    assert rwkv_scheduler._rwkv_simulation_inputs(input_build) == [
+        (1, review, 64),
+        (4, new, 64),
+    ]
 
 
 def test_rwkv_workload_review_counts_are_monotonic_by_dr() -> None:
@@ -475,6 +485,28 @@ def test_rwkv_workload_review_counts_are_monotonic_by_dr() -> None:
 
     assert dict(response.review_count) == {30: 10, 31: 10, 33: 12, 34: 12}
     assert dict(preset.review_count) == {30: 5, 31: 5, 33: 7}
+
+
+def test_rwkv_workload_review_order_uses_shared_request_order() -> None:
+    short = rwkv_scheduler._rwkv_simulation_card(
+        replace(_rwkv_review_input(card_id=1, note_id=10), interval_days=3),
+        RwkvReviewPrediction(retrievability=0.8),
+        target_retention=0.9,
+    )
+    long = rwkv_scheduler._rwkv_simulation_card(
+        replace(_rwkv_review_input(card_id=2, note_id=20), interval_days=30),
+        RwkvReviewPrediction(retrievability=0.7),
+        target_retention=0.9,
+    )
+
+    short_prediction = RwkvReviewPrediction(retrievability=0.8)
+    long_prediction = RwkvReviewPrediction(retrievability=0.7)
+    assert rwkv_scheduler._rwkv_simulation_review_sort_key(
+        short, short_prediction, 3, 0.9
+    ) < rwkv_scheduler._rwkv_simulation_review_sort_key(long, long_prediction, 3, 0.9)
+    assert rwkv_scheduler._rwkv_simulation_review_sort_key(
+        long, long_prediction, 7, 0.9
+    ) < rwkv_scheduler._rwkv_simulation_review_sort_key(short, short_prediction, 7, 0.9)
 
 
 def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
@@ -530,7 +562,7 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
 
         def simulate_workload(self, **kwargs: object) -> object:
             progress = cast(Callable[[int, int], None], kwargs.pop("progress"))
-            progress(5, 67)
+            progress(5, 71)
             self.calls.append(kwargs)
             return (
                 1.25,
@@ -592,6 +624,11 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
         search="deck:current",
         days_to_simulate=12,
         review_limit=34,
+        new_limit=7,
+        new_cards_ignore_review_limit=True,
+        max_interval=456,
+        review_order=3,
+        suspend_after_lapse_count=9,
     )
     response = rwkv_scheduler.simulate_rwkv_workload(request, mw=SimpleNamespace())
 
@@ -637,15 +674,22 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
             "inputs": [(1, review, 64)],
             "snapshot": snapshot,
             "min_dr": 30,
-            "max_dr": 95,
+            "max_dr": 99,
             "target_dr_step": 1,
             "days_to_simulate": 12,
-            "review_limit": 34,
+            "scheduling": rwkv_scheduler._RwkvWorkloadScheduling(
+                review_limit=34,
+                new_limit=7,
+                new_cards_ignore_review_limit=True,
+                max_interval=456,
+                review_order=3,
+                suspend_after_lapses=9,
+            ),
             "state_update_interval": 1,
             "review_model": review_model,
         }
     ]
-    assert progress_updates == [(0, 0), (0, 67), (5, 67), (67, 67)]
+    assert progress_updates == [(0, 0), (0, 71), (5, 71), (71, 71)]
 
 
 def test_rwkv_workload_background_job_can_be_polled_and_cancelled(

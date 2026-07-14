@@ -905,6 +905,7 @@ message RwkvReviewInputRowsForSearchRequest {
   string search = 1;
   bool include_suspended_review = 2;
   bool include_disabled_decks = 3;
+  bool include_new_cards = 4;
 }
 
 message RwkvReviewInputRowsForDeckReviewQueueRequest {

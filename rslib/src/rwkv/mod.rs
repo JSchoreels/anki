@@ -7,7 +7,10 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
 use rayon::prelude::*;
+
+use crate::card::CardType;
 
 mod bulk;
 #[cfg(target_os = "macos")]
@@ -444,6 +447,7 @@ pub struct RwkvWorkloadSimulationSnapshot {
 pub struct RwkvWorkloadSimulationInput {
     pub review_input: ReviewInput,
     pub interval_days: Option<i64>,
+    pub ease_factor: Option<i64>,
     pub reps: Option<i64>,
     pub lapses: Option<i64>,
 }
@@ -478,6 +482,11 @@ pub struct RwkvWorkloadSimulationConfig {
     pub target_dr_step: u32,
     pub days_to_simulate: u32,
     pub review_limit: u32,
+    pub new_limit: u32,
+    pub new_cards_ignore_review_limit: bool,
+    pub max_interval: u32,
+    pub review_order: ReviewCardOrder,
+    pub suspend_after_lapses: Option<u32>,
     pub state_update_interval: u32,
     pub review_model: RwkvWorkloadReviewModel,
 }
@@ -513,12 +522,21 @@ struct RwkvSimulationCard {
     last_review_day: i64,
     reps: i64,
     lapses: i64,
+    interval_days: i64,
+    ease_factor: i64,
+    is_new: bool,
+    suspended: bool,
 }
 
 struct RwkvWorkloadTargetConfig<'a> {
     dr: u32,
     days_to_simulate: i64,
     review_limit: usize,
+    new_limit: usize,
+    new_cards_ignore_review_limit: bool,
+    max_interval: u32,
+    review_order: ReviewCardOrder,
+    suspend_after_lapses: Option<u32>,
     state_update_interval: u32,
     review_model: &'a RwkvWorkloadReviewModel,
 }
@@ -529,6 +547,11 @@ struct RwkvWorkloadTargetSweep {
     target_drs: Vec<u32>,
     days_to_simulate: i64,
     review_limit: usize,
+    new_limit: usize,
+    new_cards_ignore_review_limit: bool,
+    max_interval: u32,
+    review_order: ReviewCardOrder,
+    suspend_after_lapses: Option<u32>,
     state_update_interval: u32,
     review_model: RwkvWorkloadReviewModel,
     base_features: FeatureState,
@@ -1171,9 +1194,14 @@ impl RwkvInference {
             &snapshot.preset_states,
             snapshot.global_state.as_deref(),
         )?;
+        let introduced_inputs = inputs
+            .iter()
+            .filter(|input| input.review_input.card_type != Some(CardType::New as i64))
+            .cloned()
+            .collect::<Vec<_>>();
         let (reviewless_end_memorized, reviewless_end_weighted_memorized) = reviewless_worker
             .simulation_memorized_for_inputs(
-                &inputs,
+                &introduced_inputs,
                 &reviewless_state_maps,
                 S90_TARGET_RETENTION,
                 config.days_to_simulate as i64,
@@ -1187,6 +1215,11 @@ impl RwkvInference {
                 target_drs,
                 days_to_simulate: config.days_to_simulate as i64,
                 review_limit: config.review_limit as usize,
+                new_limit: config.new_limit as usize,
+                new_cards_ignore_review_limit: config.new_cards_ignore_review_limit,
+                max_interval: config.max_interval.max(1),
+                review_order: config.review_order,
+                suspend_after_lapses: config.suspend_after_lapses,
                 state_update_interval: config.state_update_interval.max(1),
                 review_model: config.review_model,
                 base_features,
@@ -1215,6 +1248,11 @@ impl RwkvInference {
             target_drs,
             days_to_simulate,
             review_limit,
+            new_limit,
+            new_cards_ignore_review_limit,
+            max_interval,
+            review_order,
+            suspend_after_lapses,
             state_update_interval,
             review_model,
             base_features,
@@ -1242,6 +1280,11 @@ impl RwkvInference {
                     dr,
                     days_to_simulate,
                     review_limit,
+                    new_limit,
+                    new_cards_ignore_review_limit,
+                    max_interval,
+                    review_order,
+                    suspend_after_lapses,
                     state_update_interval,
                     review_model: &review_model,
                 },
@@ -1293,20 +1336,53 @@ impl RwkvInference {
         let mut total_cost = 0.0;
         let mut review_count: u32 = 0;
         for day in 0..config.days_to_simulate {
-            let mut due_indexes: Vec<_> = cards
+            let mut due_review_indexes: Vec<_> = cards
                 .iter()
                 .enumerate()
-                .filter_map(|(index, card)| (card.due_day <= day).then_some(index))
+                .filter_map(|(index, card)| {
+                    (!card.is_new && !card.suspended && card.due_day <= day).then_some(index)
+                })
                 .collect();
-            due_indexes.sort_by_key(|index| {
-                let card = &cards[*index];
-                (card.due_day, card.review_input.review_input.card_id)
+            let order_inputs = due_review_indexes
+                .iter()
+                .map(|index| simulation_query_input_for_card(&cards[*index], target_retention, day))
+                .collect::<Vec<_>>();
+            let order_predictions =
+                self.workload_query_predictions_for_inputs(&order_inputs, state_maps);
+            let prediction_by_index = due_review_indexes
+                .iter()
+                .copied()
+                .zip(order_predictions)
+                .collect::<HashMap<_, _>>();
+            due_review_indexes.sort_by_key(|index| {
+                simulation_review_priority(
+                    &cards[*index],
+                    prediction_by_index.get(index),
+                    config.review_order,
+                    target_retention,
+                )
             });
-            if config.review_limit > 0 && due_indexes.len() > config.review_limit {
-                due_indexes.truncate(config.review_limit);
-            } else if config.review_limit == 0 {
-                due_indexes.clear();
+            if config.review_limit > 0 {
+                due_review_indexes.truncate(config.review_limit);
+            } else {
+                due_review_indexes.clear();
             }
+
+            let mut due_new_indexes = cards
+                .iter()
+                .enumerate()
+                .filter_map(|(index, card)| {
+                    (card.is_new && !card.suspended && card.due_day <= day).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            due_new_indexes.sort_by_key(|index| cards[*index].review_input.review_input.card_id);
+            due_new_indexes.truncate(config.new_limit);
+            if !config.new_cards_ignore_review_limit {
+                due_new_indexes
+                    .truncate(config.review_limit.saturating_sub(due_review_indexes.len()));
+            }
+            let mut due_indexes = due_review_indexes;
+            due_indexes.extend(due_new_indexes);
 
             let mut offset = 0;
             while offset < due_indexes.len() {
@@ -1356,19 +1432,30 @@ impl RwkvInference {
                         *ease,
                         duration_millis,
                     );
-                    let mut interval = intervals[position].unwrap_or(1);
+                    let interval = intervals[position]
+                        .unwrap_or(1)
+                        .clamp(1, config.max_interval);
                     if review_count % config.state_update_interval == 0 {
                         self.apply_simulation_answer(&answer_input, state_maps)?;
                     }
 
-                    if interval < 1 {
-                        interval = 1;
-                    }
                     cards[*index].last_review_day = day;
                     cards[*index].due_day = day + interval as i64;
+                    cards[*index].interval_days = interval as i64;
                     cards[*index].reps += 1;
+                    if cards[*index].is_new {
+                        cards[*index].is_new = false;
+                        cards[*index].review_input.review_input.card_type =
+                            Some(CardType::Review as i64);
+                    }
                     if *ease == 1 {
                         cards[*index].lapses += 1;
+                        if config
+                            .suspend_after_lapses
+                            .is_some_and(|threshold| cards[*index].lapses >= threshold as i64)
+                        {
+                            cards[*index].suspended = true;
+                        }
                     }
                 }
                 offset += chunk_len;
@@ -1483,6 +1570,7 @@ impl RwkvInference {
     ) -> io::Result<(f32, f32)> {
         let query_inputs = cards
             .iter()
+            .filter(|card| !card.is_new)
             .map(|card| simulation_query_input_for_card(card, target_retention, day))
             .collect::<Vec<_>>();
         let predictions = self.workload_query_predictions_for_inputs(&query_inputs, state_maps);
@@ -1568,7 +1656,45 @@ fn simulation_card(
         last_review_day: -elapsed_days,
         reps: input.reps.unwrap_or(0),
         lapses: input.lapses.unwrap_or(0),
+        interval_days: input.interval_days.unwrap_or(1).max(1),
+        ease_factor: input.ease_factor.unwrap_or(0),
+        is_new: input.review_input.card_type == Some(CardType::New as i64),
+        suspended: false,
     }
+}
+
+fn simulation_review_priority(
+    card: &RwkvSimulationCard,
+    prediction: Option<&RwkvWorkloadQueryPrediction>,
+    review_order: ReviewCardOrder,
+    target_retention: f32,
+) -> (i64, i64) {
+    let card_id = card.review_input.review_input.card_id;
+    let retrievability = valid_probability_or_default(
+        prediction
+            .map(|prediction| prediction.retrievability)
+            .unwrap_or(target_retention),
+        target_retention,
+    );
+    let scaled_retrievability = (retrievability * 1_000_000.0).round() as i64;
+    let priority = match review_order {
+        ReviewCardOrder::IntervalsAscending => card.interval_days,
+        ReviewCardOrder::IntervalsDescending => -card.interval_days,
+        ReviewCardOrder::EaseAscending => card.ease_factor,
+        ReviewCardOrder::EaseDescending => -card.ease_factor,
+        ReviewCardOrder::RetrievabilityAscending => scaled_retrievability,
+        ReviewCardOrder::RetrievabilityDescending => -scaled_retrievability,
+        ReviewCardOrder::RelativeOverdueness => {
+            (retrievability / target_retention.max(0.0001) * 1_000_000.0).round() as i64
+        }
+        ReviewCardOrder::Random => (simulation_unit_hash(card_id, 0, 0) * i64::MAX as f64) as i64,
+        ReviewCardOrder::Added => card_id,
+        ReviewCardOrder::ReverseAdded => -card_id,
+        ReviewCardOrder::Day | ReviewCardOrder::DayThenDeck | ReviewCardOrder::DeckThenDay => {
+            card.due_day
+        }
+    };
+    (priority, card_id)
 }
 
 fn simulation_query_input(
