@@ -185,11 +185,11 @@ S90 field consumed by stats and Browser stability views. Existing FSRS
 `memory_state.stability_internal` values are not overwritten by the RWKV S90
 write.
 
-Deck Options also exposes a desktop maintenance action to reschedule RWKV
-review cards and update their stored RWKV memory state. The action first warms
-or restores the local RWKV state cache, then queries RWKV for normal review
-cards in the deck tree being edited in Deck Options, filtered to RWKV-enabled
-deck configs. It uses the current/query RWKV-Curve, not a hypothetical
+The desktop backend also supports a maintenance operation that reschedules RWKV
+review cards and updates their stored RWKV memory state. The operation first
+warms or restores the local RWKV state cache, then queries RWKV for normal
+review cards in the requested deck tree, filtered to RWKV-enabled deck configs.
+It uses the current/query RWKV-Curve, not a hypothetical
 answer-button curve, to compute the target-retention interval and the current
 S90 value. The backend applies those values to the card without writing a
 review-log entry: `memory_state.stability` is updated to the RWKV S90, existing

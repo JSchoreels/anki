@@ -16,6 +16,8 @@ decks-filter-2 = Filter 2
 decks-deck = Deck
 decks-learn-header = Learn
 decks-review-header = Due
+decks-rwkv = RWKV
+decks-reschedule-with-rwkv-curve = Reschedule With RWKV-Curve
 
 ##
 decks-unmovable-cards = Show any excluded cards

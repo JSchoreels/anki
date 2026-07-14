@@ -262,6 +262,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </Item>
 
         {#if $config.rwkvReviewEnabled}
+            <button
+                class="btn btn-outline-primary"
+                disabled={rwkvActionInProgress}
+                on:click={() => rescheduleRwkvReviewCards()}
+            >
+                {#if reschedulingRwkvReviewCards}
+                    Rescheduling Cards with RWKV-Curve Intervals...
+                {:else}
+                    Reschedule Cards with RWKV-Curve Intervals
+                {/if}
+            </button>
+
             <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
 
             <SwitchRow
@@ -492,21 +504,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => trainRwkvSelfCorrectionCalibration()}
                 >
                     {#if trainingRwkvCalibration}
-                        Training RWKV self-correction...
+                        Calibrating RWKV for This Preset...
                     {:else}
-                        Train RWKV self-correction
-                    {/if}
-                </button>
-
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => rescheduleRwkvReviewCards()}
-                >
-                    {#if reschedulingRwkvReviewCards}
-                        Applying RWKV intervals...
-                    {:else}
-                        Apply RWKV intervals to review cards
+                        Calibrate RWKV for This Preset
                     {/if}
                 </button>
 
