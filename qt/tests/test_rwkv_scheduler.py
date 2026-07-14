@@ -1053,8 +1053,8 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
     record_reviewer_answer(reviewer, card_a, ease=3)
     after = update_reviewer_scheduling_states(states, reviewer, card_b)
 
-    assert before.good.normal.review.scheduled_days == 3
-    assert after.good.normal.review.scheduled_days == 3
+    assert before.good.normal.review.scheduled_days == 5
+    assert after.good.normal.review.scheduled_days == 6
     assert current_reviewer_retrievability(reviewer, card_b) == pytest.approx(0.55)
     diagnostics = current_reviewer_diagnostics(
         reviewer,
@@ -1076,7 +1076,6 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
     assert runtime.reviewed == [(1, 3)]
     assert runtime.queries == [
         (2, None, None),
-        (2, 1, ("deck", 100, 1)),
         (2, 1, ("deck", 100, 1)),
     ]
     assert runtime.query_inputs[0].is_query is True
@@ -1118,14 +1117,14 @@ def test_reviewer_rwkv_prediction_self_corrects_when_enabled(
             ),
         )
     )
-    assert updated is states
-    assert updated.good.normal.review.scheduled_days == 3
+    assert updated is not states
+    assert updated.good.normal.review.scheduled_days == 5
     assert states.good.normal.review.scheduled_days == 3
 
 
-def test_reviewer_rwkv_prediction_keeps_fsrs_grade_intervals() -> None:
+def test_reviewer_rwkv_prediction_overrides_all_grade_intervals_and_s90() -> None:
     class Backend:
-        def predict_review_retrievability(
+        def predict_review(
             self,
             *,
             reviewer: object,
@@ -1162,15 +1161,19 @@ def test_reviewer_rwkv_prediction_keeps_fsrs_grade_intervals() -> None:
 
     updated = update_reviewer_scheduling_states(states, reviewer, card)
 
-    assert updated is states
-    assert updated.again.normal.review.scheduled_days == 3
-    assert updated.hard.normal.review.scheduled_days == 6
-    assert updated.good.normal.review.scheduled_days == 12
-    assert updated.easy.normal.review.scheduled_days == 24
-    assert updated.again.normal.review.memory_state.stability == pytest.approx(30)
-    assert updated.hard.normal.review.memory_state.stability == pytest.approx(60)
-    assert updated.good.normal.review.memory_state.stability == pytest.approx(120)
-    assert updated.easy.normal.review.memory_state.stability == pytest.approx(240)
+    assert updated is not states
+    assert updated.again.normal.review.scheduled_days == 1
+    assert updated.hard.normal.review.scheduled_days == 4
+    assert updated.good.normal.review.scheduled_days == 9
+    assert updated.easy.normal.review.scheduled_days == 18
+    assert updated.again.normal.review.memory_state.stability == pytest.approx(2)
+    assert updated.hard.normal.review.memory_state.stability == pytest.approx(5)
+    assert updated.good.normal.review.memory_state.stability == pytest.approx(10)
+    assert updated.easy.normal.review.memory_state.stability == pytest.approx(20)
+    assert states.again.normal.review.scheduled_days == 3
+    assert states.hard.normal.review.scheduled_days == 6
+    assert states.good.normal.review.scheduled_days == 12
+    assert states.easy.normal.review.scheduled_days == 24
     diagnostics = current_reviewer_diagnostics(
         reviewer,
         card,
@@ -1541,7 +1544,7 @@ def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
     assert backend.answers == [(1, 4)]
 
 
-def test_set_answer_rwkv_metadata_sets_only_retrievability() -> None:
+def test_set_answer_rwkv_metadata_sets_retrievability_and_selected_s90() -> None:
     reviewer = _rwkv_reviewer()
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
     answer = SimpleNamespace()
@@ -1560,7 +1563,7 @@ def test_set_answer_rwkv_metadata_sets_only_retrievability() -> None:
 
     rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=4)
 
-    assert not hasattr(answer, "rwkv_s90")
+    assert answer.rwkv_s90 == pytest.approx(20)
     assert answer.rwkv_retrievability == pytest.approx(0.62)
 
 
@@ -4342,7 +4345,7 @@ def test_rwkv_review_enabled_reads_top_level_rwkv_key() -> None:
     assert rwkv_review_enabled(reviewer, card) is True
 
 
-def test_reviewer_rwkv_enabled_keeps_fsrs_intervals_when_curve_available() -> None:
+def test_reviewer_rwkv_curve_only_uses_curve_prediction_for_grade_intervals() -> None:
     class Backend:
         def __init__(self) -> None:
             self.calls: list[str] = []
@@ -4353,8 +4356,7 @@ def test_reviewer_rwkv_enabled_keeps_fsrs_intervals_when_curve_available() -> No
             reviewer: object,
             card: object,
         ) -> RwkvReviewPrediction:
-            self.calls.append("retrievability")
-            return RwkvReviewPrediction(retrievability=0.62)
+            raise AssertionError("RWKV-Instant-only prediction should not be used")
 
         def predict_review_uncached(
             self,
@@ -4362,7 +4364,16 @@ def test_reviewer_rwkv_enabled_keeps_fsrs_intervals_when_curve_available() -> No
             reviewer: object,
             card: object,
         ) -> RwkvReviewPrediction:
-            raise AssertionError("RWKV-Curve should not be used for grade intervals")
+            self.calls.append("curve")
+            return RwkvReviewPrediction(
+                retrievability=0.62,
+                interval_overrides=RwkvIntervalOverride(
+                    again=1,
+                    hard=4,
+                    good=9,
+                    easy=18,
+                ),
+            )
 
         def review_answered(
             self,
@@ -4383,8 +4394,8 @@ def test_reviewer_rwkv_enabled_keeps_fsrs_intervals_when_curve_available() -> No
     updated = update_reviewer_scheduling_states(states, reviewer, card)
 
     assert rwkv_review_enabled(reviewer, card) is True
-    assert updated.good.normal.review.scheduled_days == 3
-    assert backend.calls == ["retrievability"]
+    assert updated.good.normal.review.scheduled_days == 9
+    assert backend.calls == ["curve"]
     diagnostics = current_reviewer_diagnostics(
         reviewer,
         card,
@@ -9086,6 +9097,7 @@ def _rwkv_queue_reviewer(
 def _rwkv_reviewer(
     *,
     rwkv_review_enabled: bool = True,
+    rwkv_review_instant_order_enabled: bool = False,
     rwkv_review_dynamic_preset_replay: bool = False,
     rwkv_review_preset_tag_state_enabled: bool = False,
     rwkv_review_japanese_feature_state_enabled: bool = False,
@@ -9127,6 +9139,7 @@ def _rwkv_reviewer(
             config: dict[str, object] = {
                 "id": deck_id * 10,
                 "rwkvReviewEnabled": rwkv_review_enabled,
+                "rwkvReviewInstantOrderEnabled": (rwkv_review_instant_order_enabled),
                 "rwkvReviewDynamicPresetReplay": rwkv_review_dynamic_preset_replay,
                 "rwkvReviewPresetTagStateEnabled": rwkv_review_preset_tag_state_enabled,
                 "rwkvReviewJapaneseFeatureStateEnabled": (

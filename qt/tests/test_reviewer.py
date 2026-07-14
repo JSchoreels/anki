@@ -568,7 +568,7 @@ def test_answer_card_updates_undo_actions_before_after_answering(monkeypatch) ->
     reviewer._answerCard(3)
 
     assert calls == ["undo", "after"]
-    assert not hasattr(captured_answers[0], "rwkv_s90")
+    assert captured_answers[0].rwkv_s90 == 10
     assert captured_answers[0].rwkv_retrievability == 0.62
 
 
@@ -1924,10 +1924,11 @@ def test_answer_card_updates_rwkv_state_used_by_other_card(
     finally:
         aqt.rwkv_scheduler.set_reviewer_backend(previous_backend)
 
-    assert before is states
-    assert after is states
-    assert before.good.normal.review.scheduled_days == 3
-    assert after.good.normal.review.scheduled_days == 3
+    assert before is not states
+    assert after is not states
+    assert before.good.normal.review.scheduled_days == 5
+    assert after.good.normal.review.scheduled_days == 6
+    assert states.good.normal.review.scheduled_days == 3
     assert aqt.rwkv_scheduler.current_reviewer_retrievability(
         reviewer, card_b
     ) == pytest.approx(0.60)

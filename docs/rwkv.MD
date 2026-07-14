@@ -1,10 +1,13 @@
 # RWKV Review Scheduler
 
-The RWKV review scheduler is a desktop-only review-time scheduler. In RWKV
-mode, answer buttons keep the normal FSRS/SM2 scheduler intervals. RWKV-Instant
-retrievability can be recorded on live review answers and can also be used for
-review queue ordering when its separate deck option is enabled. Mobile clients
-do not load the RWKV backend and continue to schedule with FSRS/SM2.
+The RWKV review scheduler is a desktop-only review-time scheduler. When **Use
+RWKV-Curve for answer intervals** is enabled, answer buttons use RWKV-Curve
+intervals and store RWKV-Curve S90 values. RWKV-Instant retrievability is
+recorded on live review answers and can separately be used for review queue
+ordering when **Use RWKV-Instant to choose review cards** is enabled. To use
+RWKV-Curve without RWKV-Instant ordering, enable the first option and leave the
+second disabled. Mobile clients do not load the RWKV backend and continue to
+schedule with FSRS/SM2.
 
 ## Settings And Storage
 
@@ -99,8 +102,9 @@ historical review during state replay.
 If RWKV review is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a
 fallback. Queue gathering treats the review order as normal due-day ordering
-until RWKV-Instant ordering is explicitly enabled. Answer-button scheduling
-still uses the normal FSRS/SM2 scheduler states while RWKV review is enabled.
+until RWKV-Instant ordering is explicitly enabled. This does not affect
+answer-button scheduling: RWKV-Curve intervals are still used while RWKV review
+is enabled.
 
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
@@ -159,19 +163,27 @@ rows, and other non-answer rows are not used as the last review. If neither
 source exists, the query leaves current elapsed unknown instead of inferring it
 from `due - ivl`.
 
-## Answer Button Intervals
+## Answer Button Intervals And S90
 
 When RWKV review is enabled and the desktop RWKV backend is available, the
-reviewer queries RWKV-Instant for the current card's retrievability before the
-answer buttons are rendered. That RWKV retrievability is stored on the answer
-for calibration/history rows when the user grades the card. The answer-button
-scheduling states themselves are not rewritten by RWKV: Again, Hard, Good, and
-Easy keep the intervals and memory states produced by the normal FSRS/SM2
-scheduler.
+reviewer computes each answer button by simulating that rating from the current
+RWKV state. The embedded runtime evaluates the current query plus hypothetical
+Again, Hard, Good, and Easy answer states. Each hypothetical answer state
+returns an RWKV-Curve; Anki uses that curve to find the interval at the target
+retention for that grade.
 
-Live review answers do not write an RWKV S90 value to the card memory-state
-payload. The user-facing stability fields consumed by stats and Browser
-stability views remain owned by the FSRS/SM2 scheduler during normal reviews.
+The target retention is the scheduler's desired retention for the card. If
+Dynamic Desired Retention is active for the scheduling states, RWKV receives the
+per-grade Dynamic DR targets and uses the matching target for Again, Hard, Good,
+and Easy. Otherwise it uses the resolved preset desired retention, with
+deck-config desired retention and `0.9` as fallbacks.
+
+The same per-grade RWKV-Curve is also evaluated at `90%` retrievability. That
+interval is the RWKV S90 equivalent. The selected answer's S90 is written to the
+card memory-state payload as `memory_state.stability`, which is the user-facing
+S90 field consumed by stats and Browser stability views. Existing FSRS
+`memory_state.stability_internal` values are not overwritten by the RWKV S90
+write.
 
 Deck Options also exposes a desktop maintenance action to reschedule RWKV
 review cards and update their stored RWKV memory state. The action first warms
@@ -367,11 +379,11 @@ because it evaluates one query state per card instead of the full per-grade
 answer set; explicit non-default batch-size settings are still respected. The
 embedded Rust runner evaluates those independent query predictions on Rayon
 worker lanes without evaluating the four hypothetical answer states. Reviewer
-current-card prediction uses RWKV only for retrievability metadata; live
-answer-button intervals stay on FSRS/SM2. Both paths avoid per-card Python/Rust
-calls and avoid serialization of next-state blobs that query predictions do not
-use. Answered reviews still update recurrent state sequentially, preserving
-review-history order.
+current-card prediction additionally evaluates the four hypothetical answer
+states needed for RWKV-Curve intervals and S90 values. Both paths avoid
+per-card Python/Rust calls, and the R-only path avoids serialization of
+next-state blobs that query predictions do not use. Answered reviews still
+update recurrent state sequentially, preserving review-history order.
 
 After warm-up or cache restore, the embedded runner keeps deserialized
 recurrent-state maps resident in Rust. Queue and stats R-only scoring can send
@@ -432,8 +444,8 @@ review count, lapse count, and whether the card is in a long-term review. It was
 fit on the Yomitan deck train/test split as a lightweight calibration layer. The
 correction changes displayed/card-info retrievability, stats graph scores, and
 queue-order scores, but it does not retrain RWKV, change the RWKV recurrent
-state, change RWKV-Curve maintenance/simulator projections, or change FSRS/SM2
-answer-button scheduling.
+state, or change RWKV-Curve answer intervals, maintenance projections, or
+simulator projections.
 
 ### Query Prediction Memoization
 

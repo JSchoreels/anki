@@ -248,6 +248,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} api={{}}>
+        <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
+
         <Item>
             <SwitchRow
                 bind:value={$config.rwkvReviewEnabled}
@@ -260,6 +262,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </Item>
 
         {#if $config.rwkvReviewEnabled}
+            <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
+
             <SwitchRow
                 bind:value={$config.rwkvReviewInstantOrderEnabled}
                 defaultValue={defaults.rwkvReviewInstantOrderEnabled}
@@ -269,14 +273,87 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </SwitchRow>
 
-            <SwitchRow
-                bind:value={$config.rwkvReviewCandidateRefreshEnabled}
-                defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvCandidateRefresh")}>
-                    {tr.deckConfigRwkvReviewCandidateRefresh()}
-                </SettingTitle>
-            </SwitchRow>
+            {#if $config.rwkvReviewInstantOrderEnabled}
+                <SwitchRow
+                    bind:value={$config.rwkvReviewCandidateRefreshEnabled}
+                    defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
+                >
+                    <SettingTitle
+                        on:click={() => openSettingHelp("rwkvCandidateRefresh")}
+                    >
+                        {tr.deckConfigRwkvReviewCandidateRefresh()}
+                    </SettingTitle>
+                </SwitchRow>
+
+                <SpinBoxFloatRow
+                    bind:value={$config.rwkvReviewRefreshInterval}
+                    defaultValue={defaults.rwkvReviewRefreshInterval}
+                    min={1}
+                    max={10000}
+                    step={1}
+                >
+                    <SettingTitle
+                        on:click={() => openSettingHelp("rwkvRefreshInterval")}
+                    >
+                        {tr.deckConfigRwkvReviewRefreshInterval()}
+                    </SettingTitle>
+                </SpinBoxFloatRow>
+
+                <SwitchRow
+                    bind:value={$config.rwkvReviewRefreshOnExit}
+                    defaultValue={defaults.rwkvReviewRefreshOnExit}
+                >
+                    <SettingTitle on:click={() => openSettingHelp("rwkvRefreshOnExit")}>
+                        {tr.deckConfigRwkvReviewRefreshOnExit()}
+                    </SettingTitle>
+                </SwitchRow>
+
+                <h2 class="rwkv-subheading">Same-Day Repeats</h2>
+
+                <SwitchRow
+                    bind:value={$config.rwkvReviewAllowSameDayReview}
+                    defaultValue={defaults.rwkvReviewAllowSameDayReview}
+                >
+                    <SettingTitle
+                        on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
+                    >
+                        {tr.deckConfigRwkvReviewAllowSameDayReview()}
+                    </SettingTitle>
+                </SwitchRow>
+
+                {#if $config.rwkvReviewAllowSameDayReview}
+                    <SpinBoxFloatRow
+                        bind:value={$config.rwkvReviewMinInterveningReviews}
+                        defaultValue={defaults.rwkvReviewMinInterveningReviews}
+                        min={0}
+                        max={10000}
+                        step={1}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openSettingHelp("rwkvMinInterveningReviews")}
+                        >
+                            {tr.deckConfigRwkvReviewMinInterveningReviews()}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+
+                    <SpinBoxFloatRow
+                        bind:value={$config.rwkvReviewMinElapsedSecs}
+                        defaultValue={defaults.rwkvReviewMinElapsedSecs}
+                        min={0}
+                        max={86400}
+                        step={1}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvMinElapsedSecs")}
+                        >
+                            {tr.deckConfigRwkvReviewMinElapsedSecs()}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                {/if}
+            {/if}
+
+            <h2 class="rwkv-subheading">Prediction Performance</h2>
 
             <RwkvBatchSizeRow
                 bind:value={$config.rwkvReviewBatchSize}
@@ -287,67 +364,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </RwkvBatchSizeRow>
 
-            <SpinBoxFloatRow
-                bind:value={$config.rwkvReviewRefreshInterval}
-                defaultValue={defaults.rwkvReviewRefreshInterval}
-                min={1}
-                max={10000}
-                step={1}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvRefreshInterval")}>
-                    {tr.deckConfigRwkvReviewRefreshInterval()}
-                </SettingTitle>
-            </SpinBoxFloatRow>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewRefreshOnExit}
-                defaultValue={defaults.rwkvReviewRefreshOnExit}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvRefreshOnExit")}>
-                    {tr.deckConfigRwkvReviewRefreshOnExit()}
-                </SettingTitle>
-            </SwitchRow>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewAllowSameDayReview}
-                defaultValue={defaults.rwkvReviewAllowSameDayReview}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
-                >
-                    {tr.deckConfigRwkvReviewAllowSameDayReview()}
-                </SettingTitle>
-            </SwitchRow>
-
-            {#if $config.rwkvReviewAllowSameDayReview}
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinInterveningReviews}
-                    defaultValue={defaults.rwkvReviewMinInterveningReviews}
-                    min={0}
-                    max={10000}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinInterveningReviews")}
-                    >
-                        {tr.deckConfigRwkvReviewMinInterveningReviews()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinElapsedSecs}
-                    defaultValue={defaults.rwkvReviewMinElapsedSecs}
-                    min={0}
-                    max={86400}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinElapsedSecs")}
-                    >
-                        {tr.deckConfigRwkvReviewMinElapsedSecs()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            {/if}
+            <h2 class="rwkv-subheading">Card History</h2>
 
             <SwitchRow
                 bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
@@ -517,6 +534,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 />
 
 <style>
+    .rwkv-subheading {
+        color: var(--fg-subtle);
+        font-size: 0.875rem;
+        font-weight: 600;
+        margin: 1rem 0 0.25rem;
+    }
+
     .btn {
         margin-bottom: 0.375rem;
     }

@@ -322,16 +322,20 @@ deck-config-interval-modifier-tooltip =
 deck-config-hard-interval-tooltip = The multiplier applied to a review interval when answering `Hard`.
 deck-config-new-interval-tooltip = The multiplier applied to a review interval when answering `Again`.
 deck-config-minimum-interval-tooltip = The minimum interval given to a review card after answering `Again`.
-deck-config-rwkv-review-enabled = Use RWKV for reviews
+deck-config-rwkv-review-enabled = Use RWKV-Curve for answer intervals
 deck-config-rwkv-review-enabled-tooltip =
-    When a desktop RWKV backend is configured, use its review-time
-    retrievability and interval predictions for this preset. Other clients
-    continue to use SM2 or FSRS.
-deck-config-rwkv-review-instant-order = Order reviews by RWKV retrievability
+    On this computer, use RWKV-Curve to calculate the next intervals shown for
+    Again, Hard, Good, and Easy. This does not enable RWKV-Instant review queue
+    ordering; that is controlled by the separate option below. Other devices
+    continue to use FSRS or SM-2.
+deck-config-rwkv-review-instant-order = Use RWKV-Instant to choose review cards
 deck-config-rwkv-review-instant-order-tooltip =
-    When the review sort order is retrievability, use RWKV-Instant
-    retrievability scores for review queue ordering. RWKV-Curve intervals are
-    still used while RWKV review is enabled, even when this is disabled.
+    When the review sort order is set to a retrievability option, RWKV decides
+    which review cards are ready and how to order them. A card may appear before
+    its normal due date, or wait longer, depending on whether your estimated
+    chance of remembering it has fallen to your Desired Retention. This does not
+    change the RWKV-Curve intervals shown on the answer buttons. Leave this off
+    to use RWKV-Curve intervals without RWKV-Instant queue ordering.
 deck-config-rwkv-review-candidate-refresh = Refresh top RWKV candidates only
 deck-config-rwkv-review-candidate-refresh-tooltip =
     When RWKV-Instant ordering is active and an existing queue score map is

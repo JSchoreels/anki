@@ -2270,7 +2270,7 @@ def update_reviewer_scheduling_states(
     reviewer: object,
     card: object,
 ) -> SchedulingStates:
-    """Record desktop RWKV retrievability before answer buttons are rendered."""
+    """Apply desktop RWKV predictions before answer buttons are rendered."""
 
     if _reviewer_backend is None:
         return states
@@ -2280,27 +2280,46 @@ def update_reviewer_scheduling_states(
         if review_enabled and not _prepare_reviewer_backend_for_review(reviewer):
             logger.debug("RWKV scheduling prediction skipped: warm-up pending")
             return states
-        predict_retrievability = getattr(
-            _reviewer_backend,
-            "predict_review_retrievability",
-            None,
-        )
-        prediction = (
-            predict_retrievability(reviewer=reviewer, card=card)
-            if callable(predict_retrievability)
-            else _reviewer_backend.predict_review(reviewer=reviewer, card=card)
-        )
+        if review_enabled:
+            predict_curve = getattr(
+                _reviewer_backend,
+                "predict_review_uncached",
+                None,
+            )
+            prediction = (
+                predict_curve(reviewer=reviewer, card=card)
+                if callable(predict_curve)
+                else _reviewer_backend.predict_review(reviewer=reviewer, card=card)
+            )
+        else:
+            predict_retrievability = getattr(
+                _reviewer_backend,
+                "predict_review_retrievability",
+                None,
+            )
+            prediction = (
+                predict_retrievability(reviewer=reviewer, card=card)
+                if callable(predict_retrievability)
+                else _reviewer_backend.predict_review(reviewer=reviewer, card=card)
+            )
         if prediction is None:
             return states
 
         _validate_prediction(prediction)
+        has_interval_overrides = _has_interval_overrides(prediction.interval_overrides)
         _store_reviewer_prediction(
             reviewer,
             card,
             prediction,
             review_enabled=review_enabled,
-            interval_override_used=False,
+            interval_override_used=review_enabled and has_interval_overrides,
         )
+        if review_enabled and has_interval_overrides:
+            return apply_review_interval_overrides(
+                states,
+                prediction.interval_overrides,
+                prediction.s90_overrides,
+            )
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
 
@@ -4293,13 +4312,24 @@ def set_answer_rwkv_metadata(
     card: object,
     ease: int,
 ) -> None:
-    del ease
     prediction = _current_reviewer_prediction(reviewer, card)
     if prediction is None or not prediction.review_enabled:
         return
 
     if _valid_probability(prediction.retrievability):
         setattr(answer, "rwkv_retrievability", float(prediction.retrievability))
+
+    if not prediction.interval_override_used:
+        return
+
+    s90 = _s90_for_ease(prediction.s90_overrides, ease)
+    if s90 is None:
+        return
+    if not math.isfinite(s90) or s90 <= 0:
+        logger.debug("invalid RWKV S90 ignored for answer: %s", s90)
+        return
+
+    setattr(answer, "rwkv_s90", float(s90))
 
 
 def set_answer_rwkv_s90(

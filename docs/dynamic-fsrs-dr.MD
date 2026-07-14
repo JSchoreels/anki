@@ -20,10 +20,10 @@ Browser Stability and Retrievability sorts read each matching card and its resol
 
 Add-ons that need interval projections for many cards can call the batch desired-retention helper instead of `GetSchedulingStates` once per card. `fsrs_desired_retention_for_intervals_batch()` reads the requested cards, resolves each card's active FSRS preset in a batch, including add-on preset overlay rules, and returns the desired retention to use for interval projection. When Dynamic DR applies, the returned interval target is the Good-button ADR desired retention and the full per-answer ADR desired-retention array is included. When Dynamic DR is disabled, unavailable, or the requested target uses the fixed-FSRS fallback, the returned interval target is the requested fixed desired retention.
 
-Live review answer-button intervals remain owned by the normal FSRS/SM2
-scheduler, so RWKV review-time retrievability does not consume Dynamic DR for
-grade scheduling. RWKV-Curve interval projection used by RWKV
-maintenance/simulation helpers uses the resolved preset desired retention.
+When RWKV review is enabled, live RWKV-Curve answer-button intervals use the
+per-answer Dynamic DR targets exposed on the scheduling states. RWKV-Curve
+interval projection used by RWKV maintenance/simulation helpers uses the
+resolved preset desired retention.
 RWKV historical state-cache replay resolves add-on preset overlays and evaluates
 add-on `simulator_rules` only when `rwkv_review_dynamic_preset_replay` is
 enabled on an RWKV-enabled preset; otherwise, each historical review uses the
