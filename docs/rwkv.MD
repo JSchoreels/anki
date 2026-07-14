@@ -163,6 +163,22 @@ rows, and other non-answer rows are not used as the last review. If neither
 source exists, the query leaves current elapsed unknown instead of inferring it
 from `due - ivl`.
 
+Search Stats Extended can also request an isolated historical RWKV Memorised
+build through `aqt.rwkv_scheduler`. The build uses a separate embedded runtime,
+replays existing-card answers in scheduler-day order, and batch-queries active
+cards after each completed day. It exposes card-day progress and selected-search
+daily aggregates while running, so the add-on can extend its RWKV graph from
+oldest to newest without mutating the active reviewer runtime. The add-on owns
+the compact per-card UInt16 cache in the profile-local retrievability sidecar;
+Anki returns the completed packed series and a producer identity covering the
+model, history checkpoint, scheduler day, and relevant RWKV feature settings.
+When that producer configuration is unchanged and review history has only been
+appended, Anki can reuse the completed cache through the day before the first
+new answer. It reconstructs recurrent state by replaying answers through the
+reused prefix without repeating the cached card-day predictions, then replaces
+the affected day and computes later days. Model or feature-setting changes, or
+non-append changes within the cached review prefix, still require a full build.
+
 ## Answer Button Intervals And S90
 
 When RWKV review is enabled and the desktop RWKV backend is available, the

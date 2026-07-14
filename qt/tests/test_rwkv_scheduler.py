@@ -87,6 +87,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_stats_prepare = dict(rwkv_scheduler._rwkv_stats_prepare_in_flight)
     previous_score_prewarm = set(rwkv_scheduler._rwkv_score_prewarm_in_flight)
     previous_workload_job = rwkv_scheduler._rwkv_workload_job
+    previous_memorised_job = rwkv_scheduler._rwkv_memorised_history_job
     previous_startup_prompt_shown = rwkv_scheduler._rwkv_startup_prompt_shown
     rwkv_scheduler._reviewer_backend_warmup_keys.clear()
     rwkv_scheduler._reviewer_backend_warmup_pending_keys.clear()
@@ -101,11 +102,13 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_startup_prompt_shown = False
     rwkv_scheduler.cancel_rwkv_workload()
     rwkv_scheduler._rwkv_workload_job = None
+    rwkv_scheduler._rwkv_memorised_history_job = None
     try:
         yield
     finally:
         rwkv_scheduler.cancel_rwkv_workload()
         rwkv_scheduler._rwkv_workload_job = previous_workload_job
+        rwkv_scheduler._rwkv_memorised_history_job = previous_memorised_job
         set_reviewer_backend(previous)
         rwkv_scheduler._reviewer_backend_warmup_keys.clear()
         rwkv_scheduler._reviewer_backend_warmup_keys.update(previous_warmup_keys)
@@ -774,6 +777,391 @@ def test_rwkv_workload_target_drs_include_max_endpoint() -> None:
         95,
     ]
     assert rwkv_scheduler._rwkv_workload_progress_total_for_step(30, 95, 10) == 9
+
+
+def test_rwkv_memorised_history_builds_progressive_daily_series(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt import rwkv_srs_benchmark
+
+    review_one = replace(
+        _rwkv_review_input(card_id=1, note_id=101),
+        is_query=False,
+        ease=3,
+        duration_millis=1000,
+        day_offset=10,
+        current_elapsed_days=-1,
+        current_elapsed_seconds=-1,
+    )
+    review_two = replace(
+        _rwkv_review_input(card_id=2, note_id=102),
+        is_query=False,
+        ease=3,
+        duration_millis=1000,
+        day_offset=11,
+        current_elapsed_days=-1,
+        current_elapsed_seconds=-1,
+    )
+    history = rwkv_scheduler.RwkvHistoricalReviewInputs(
+        reviews=[review_one, review_two],
+        review_ids=[1000, 2000],
+        previous_review_id_by_card={1: 1000, 2: 2000},
+        previous_interval_days_by_card={1: 4, 2: 4},
+        review_count_by_card={1: 1, 2: 1},
+        last_review_id=2000,
+        review_count=2,
+    )
+
+    class Runtime:
+        warmups: list[list[RwkvReviewInput]] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def warm_up_reviews_in_place(self, reviews: Sequence[RwkvReviewInput]) -> None:
+            self.warmups.append(list(reviews))
+
+        def predict_retrievability_many_from_warm_up(
+            self, reviews: Sequence[RwkvReviewInput]
+        ) -> list[float]:
+            return [
+                1.0 - 0.1 * (review.current_elapsed_days or 0) for review in reviews
+            ]
+
+    monkeypatch.setattr(rwkv_srs_benchmark, "_RustRwkvRuntime", Runtime)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        lambda _reviewer: history,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_timing_today",
+        lambda _reviewer: SimpleNamespace(days_elapsed=11, next_day_at=1_000_000),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_current_embedded_rwkv_model_path",
+        lambda: Path("model.bin"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_deck_config_for_deck_id",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_memorised_history_identity",
+        lambda *_args, **_kwargs: "identity",
+    )
+    job = rwkv_scheduler.RwkvMemorisedHistoryJob(
+        cancel_event=threading.Event(),
+        display_card_ids=frozenset((1, 2)),
+    )
+
+    rwkv_scheduler._compute_rwkv_memorised_history(SimpleNamespace(), job)
+
+    assert job.current == 3
+    assert job.total == 3
+    assert job.completed_through_day == 11
+    assert job.retrievability_by_day == pytest.approx([1.0, 1.9])
+    assert job.note_retrievability_by_day == pytest.approx([1.0, 1.9])
+    assert job.card_count_by_day == [1, 2]
+    assert job.result is not None
+    assert job.result.identity == "identity"
+    assert [(card.card_id, card.start_day) for card in job.result.cards] == [
+        (1, 10),
+        (2, 11),
+    ]
+    assert [
+        int.from_bytes(job.result.cards[0].values[offset : offset + 2], "little")
+        for offset in (0, 2)
+    ] == [65_535, round(0.9 * 65_535)]
+
+
+def test_rwkv_memorised_cancel_checkpoint_resumes_without_repredicting_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt import rwkv_srs_benchmark
+
+    reviews = [
+        replace(
+            _rwkv_review_input(card_id=1, note_id=101),
+            is_query=False,
+            ease=3,
+            duration_millis=1000,
+            day_offset=10,
+        ),
+        replace(
+            _rwkv_review_input(card_id=2, note_id=102),
+            is_query=False,
+            ease=3,
+            duration_millis=1000,
+            day_offset=11,
+        ),
+    ]
+    history = rwkv_scheduler.RwkvHistoricalReviewInputs(
+        reviews=reviews,
+        review_ids=[1000, 2000],
+        previous_review_id_by_card={1: 1000, 2: 2000},
+        previous_interval_days_by_card={1: 4, 2: 4},
+        review_count_by_card={1: 1, 2: 1},
+        last_review_id=2000,
+        review_count=2,
+    )
+    jobs: list[rwkv_scheduler.RwkvMemorisedHistoryJob] = []
+
+    class Runtime:
+        instances: list[Runtime] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.warmup_sizes: list[int] = []
+            self.prediction_sizes: list[int] = []
+            self.instances.append(self)
+
+        def warm_up_reviews_in_place(self, inputs: Sequence[RwkvReviewInput]) -> None:
+            self.warmup_sizes.append(len(inputs))
+
+        def predict_retrievability_many_from_warm_up(
+            self, inputs: Sequence[RwkvReviewInput]
+        ) -> list[float]:
+            self.prediction_sizes.append(len(inputs))
+            if len(self.instances) == 1:
+                jobs[0].cancel_event.set()
+            return [0.8] * len(inputs)
+
+    monkeypatch.setattr(rwkv_srs_benchmark, "_RustRwkvRuntime", Runtime)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        lambda _reviewer: history,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_timing_today",
+        lambda _reviewer: SimpleNamespace(days_elapsed=11, next_day_at=1_000_000),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_current_embedded_rwkv_model_path",
+        lambda: Path("model.bin"),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_deck_config_for_deck_id", lambda *_args: None)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_memorised_history_identity",
+        lambda *_args, **_kwargs: "identity",
+    )
+
+    cancelled = rwkv_scheduler.RwkvMemorisedHistoryJob(
+        cancel_event=threading.Event(),
+        display_card_ids=frozenset((1, 2)),
+    )
+    jobs.append(cancelled)
+    rwkv_scheduler._compute_rwkv_memorised_history(SimpleNamespace(), cancelled)
+
+    checkpoint = cancelled.result
+    assert checkpoint is not None
+    assert not checkpoint.complete
+    assert checkpoint.completed_through_day == 10
+    assert cancelled.phase == "cancelled"
+
+    resumed = rwkv_scheduler.RwkvMemorisedHistoryJob(
+        cancel_event=threading.Event(),
+        display_card_ids=frozenset((1, 2)),
+        checkpoint=checkpoint,
+    )
+    jobs.append(resumed)
+    rwkv_scheduler._compute_rwkv_memorised_history(SimpleNamespace(), resumed)
+
+    assert resumed.result is not None
+    assert resumed.result.complete
+    assert resumed.result.completed_through_day == 11
+    assert Runtime.instances[1].warmup_sizes == [1, 1]
+    assert Runtime.instances[1].prediction_sizes == [2]
+
+
+def test_rwkv_memorised_completed_cache_reuses_days_before_new_review() -> None:
+    cached_identity = json.dumps(
+        {
+            "version": 1,
+            "model": "same",
+            "dayOffset": 11,
+            "lastReviewId": 1000,
+            "reviewCount": 1,
+        },
+        sort_keys=True,
+    )
+    current_identity = json.dumps(
+        {
+            "version": 1,
+            "model": "same",
+            "dayOffset": 11,
+            "lastReviewId": 2000,
+            "reviewCount": 2,
+        },
+        sort_keys=True,
+    )
+    completed = rwkv_scheduler.RwkvMemorisedHistoryResult(
+        identity=cached_identity,
+        first_day=10,
+        last_day=11,
+        cards=(
+            rwkv_scheduler.RwkvMemorisedCardSeries(
+                card_id=1,
+                note_id=101,
+                start_day=10,
+                values=(50_000).to_bytes(2, "little") + (40_000).to_bytes(2, "little"),
+            ),
+        ),
+        completed_through_day=11,
+        total=2,
+        complete=True,
+    )
+    reviews = [
+        replace(_rwkv_review_input(card_id=1, note_id=101), day_offset=10),
+        replace(_rwkv_review_input(card_id=2, note_id=102), day_offset=11),
+    ]
+
+    checkpoint = rwkv_scheduler._rwkv_memorised_completed_prefix_checkpoint(
+        completed,
+        identity=current_identity,
+        first_day=10,
+        last_day=11,
+        total=3,
+        reviews=reviews,
+        review_ids=[1000, 2000],
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.identity == current_identity
+    assert checkpoint.completed_through_day == 10
+    assert checkpoint.last_day == 11
+    assert checkpoint.total == 3
+    assert not checkpoint.complete
+    assert checkpoint.cards == (
+        replace(completed.cards[0], values=(50_000).to_bytes(2, "little")),
+    )
+
+
+def test_rwkv_memorised_completed_cache_appends_new_scheduler_day() -> None:
+    cached_identity = json.dumps(
+        {
+            "version": 1,
+            "model": "same",
+            "dayOffset": 11,
+            "lastReviewId": 1000,
+            "reviewCount": 1,
+        },
+        sort_keys=True,
+    )
+    current_identity = json.dumps(
+        {
+            "version": 1,
+            "model": "same",
+            "dayOffset": 12,
+            "lastReviewId": 1000,
+            "reviewCount": 1,
+        },
+        sort_keys=True,
+    )
+    completed = rwkv_scheduler.RwkvMemorisedHistoryResult(
+        identity=cached_identity,
+        first_day=10,
+        last_day=11,
+        cards=(
+            rwkv_scheduler.RwkvMemorisedCardSeries(
+                card_id=1,
+                note_id=101,
+                start_day=10,
+                values=(50_000).to_bytes(2, "little") + (40_000).to_bytes(2, "little"),
+            ),
+        ),
+        completed_through_day=11,
+        total=2,
+        complete=True,
+    )
+    reviews = [replace(_rwkv_review_input(card_id=1, note_id=101), day_offset=10)]
+
+    checkpoint = rwkv_scheduler._rwkv_memorised_completed_prefix_checkpoint(
+        completed,
+        identity=current_identity,
+        first_day=10,
+        last_day=12,
+        total=3,
+        reviews=reviews,
+        review_ids=[1000],
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.completed_through_day == 11
+    assert checkpoint.last_day == 12
+    assert checkpoint.cards == completed.cards
+
+
+def test_rwkv_memorised_completed_cache_rejects_model_change() -> None:
+    completed = rwkv_scheduler.RwkvMemorisedHistoryResult(
+        identity=json.dumps(
+            {
+                "version": 1,
+                "model": "old",
+                "dayOffset": 11,
+                "lastReviewId": 1000,
+                "reviewCount": 1,
+            },
+            sort_keys=True,
+        ),
+        first_day=10,
+        last_day=11,
+        cards=(),
+        completed_through_day=11,
+        complete=True,
+    )
+
+    checkpoint = rwkv_scheduler._rwkv_memorised_completed_prefix_checkpoint(
+        completed,
+        identity=json.dumps(
+            {
+                "version": 1,
+                "model": "new",
+                "dayOffset": 12,
+                "lastReviewId": 1000,
+                "reviewCount": 1,
+            },
+            sort_keys=True,
+        ),
+        first_day=10,
+        last_day=12,
+        total=3,
+        reviews=[replace(_rwkv_review_input(card_id=1, note_id=101), day_offset=10)],
+        review_ids=[1000],
+    )
+
+    assert checkpoint is None
+
+
+def test_rust_rwkv_warm_up_in_place_skips_snapshot_serialization() -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    class Process:
+        calls: list[tuple[list[tuple[object, ...]], bool]] = []
+
+        def warm_up_reviews(
+            self,
+            rows: list[tuple[object, ...]],
+            record_predictions: bool,
+        ) -> list[object]:
+            self.calls.append((rows, record_predictions))
+            return []
+
+    runtime = object.__new__(_RustRwkvRuntime)
+    runtime._process = Process()
+    runtime._process_lock = threading.RLock()
+
+    runtime.warm_up_reviews_in_place([_rwkv_review_input(card_id=1, note_id=101)])
+
+    assert len(runtime._process.calls) == 1
+    assert runtime._process.calls[0][1] is False
 
 
 def test_rwkv_queue_refresh_on_exit_uses_nested_config() -> None:
@@ -2672,6 +3060,25 @@ def test_historical_rwkv_review_rows_do_not_repeat_note_payloads() -> None:
     assert "join notes" not in sql
     assert "n.tags" not in sql
     assert "n.flds" not in sql
+
+
+def test_historical_rwkv_review_count_excludes_deleted_cards() -> None:
+    captured_sql: list[str] = []
+
+    class DB:
+        def scalar(self, sql: str, *args: object) -> int:
+            captured_sql.append(sql)
+            assert args == (1234,)
+            return 2
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+    assert rwkv_scheduler._historical_rwkv_review_count_through(reviewer, 1234) == 2
+
+    sql = captured_sql[0].lower()
+    assert "from revlog r" in sql
+    assert "join cards c on c.id = r.cid" in sql
+    assert "r.id <= ?" in sql
 
 
 def test_historical_rwkv_review_inputs_caches_deck_and_inline_note_features(

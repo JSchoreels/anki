@@ -15,10 +15,12 @@ import math
 import os
 import re
 import struct
+import sys
 import tempfile
 import threading
 import time
 import zlib
+from array import array
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
@@ -205,6 +207,7 @@ _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
 _RWKV_RATING_FIELDS = ("again", "hard", "good", "easy")
+_RWKV_MEMORISED_CHECKPOINT_INTERVAL_SECONDS = 30.0
 
 
 def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
@@ -573,10 +576,50 @@ class RwkvWorkloadJob:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class RwkvMemorisedCardSeries:
+    card_id: int
+    note_id: int | None
+    start_day: int
+    values: bytes
+
+
+@dataclass(frozen=True)
+class RwkvMemorisedHistoryResult:
+    identity: str
+    first_day: int
+    last_day: int
+    cards: tuple[RwkvMemorisedCardSeries, ...]
+    completed_through_day: int | None = None
+    total: int = 0
+    complete: bool = True
+
+
+@dataclass
+class RwkvMemorisedHistoryJob:
+    cancel_event: threading.Event
+    display_card_ids: frozenset[int]
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    phase: str = "loading"
+    current: int = 0
+    total: int = 0
+    first_day: int | None = None
+    completed_through_day: int | None = None
+    retrievability_by_day: list[float] = field(default_factory=list)
+    note_retrievability_by_day: list[float] = field(default_factory=list)
+    card_count_by_day: list[int] = field(default_factory=list)
+    result: RwkvMemorisedHistoryResult | None = None
+    checkpoint: RwkvMemorisedHistoryResult | None = None
+    done: bool = False
+    error: str | None = None
+
+
 _rwkv_workload_progress_lock = threading.Lock()
 _rwkv_workload_progress = RwkvWorkloadProgress(current=0, total=0)
 _rwkv_workload_job_lock = threading.Lock()
 _rwkv_workload_job: RwkvWorkloadJob | None = None
+_rwkv_memorised_history_job_lock = threading.Lock()
+_rwkv_memorised_history_job: RwkvMemorisedHistoryJob | None = None
 
 
 @dataclass
@@ -7491,6 +7534,799 @@ def simulate_rwkv_workload_bytes(
     return response.SerializeToString()
 
 
+def rwkv_memorised_history_identity(mw: object) -> str:
+    """Return the stable producer identity used by the local daily-R cache."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    rows = (
+        all_rows(
+            f"""
+select coalesce(max(r.id), 0), count()
+from revlog r
+join cards c on c.id = r.cid
+where {_rwkv_historical_answer_sql_condition("r")}
+"""
+        )
+        if callable(all_rows)
+        else []
+    )
+    last_review_id, review_count = rows[0] if rows else (0, 0)
+    return _rwkv_memorised_history_identity(
+        reviewer,
+        last_review_id=int(last_review_id),
+        review_count=int(review_count),
+    )
+
+
+def _rwkv_memorised_history_identity(
+    reviewer: object,
+    *,
+    last_review_id: int,
+    review_count: int,
+) -> str:
+    value = {
+        "version": 1,
+        "collection": _rwkv_collection_cache_key(reviewer),
+        "model": _rwkv_model_cache_key(),
+        "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
+            reviewer
+        ),
+        "presetTagState": _rwkv_preset_tag_state_config_key(reviewer),
+        "japaneseFeatureState": _rwkv_japanese_feature_state_config_key(reviewer),
+        "selfCorrection": _rwkv_self_correction_config_key(reviewer),
+        "firstReviewElapsed": _rwkv_first_review_elapsed_config_key(reviewer),
+        "lastReviewId": last_review_id,
+        "reviewCount": review_count,
+        "dayOffset": _day_offset(reviewer),
+    }
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def start_rwkv_memorised_history(
+    mw: object,
+    display_card_ids: Sequence[int],
+    resume: RwkvMemorisedHistoryResult | None = None,
+) -> None:
+    """Start an isolated, progressively readable daily RWKV history build."""
+
+    global _rwkv_memorised_history_job
+
+    cancel_rwkv_memorised_history()
+    selected = frozenset(
+        card_id
+        for card_id in display_card_ids
+        if isinstance(card_id, int) and not isinstance(card_id, bool) and card_id > 0
+    )
+    job = RwkvMemorisedHistoryJob(
+        cancel_event=threading.Event(),
+        display_card_ids=selected,
+    )
+    if resume is not None:
+        job.phase = "resuming"
+        job.checkpoint = resume
+        if not resume.complete:
+            (
+                job.retrievability_by_day,
+                job.note_retrievability_by_day,
+                job.card_count_by_day,
+            ) = _rwkv_memorised_aggregate_series(resume, selected)
+            job.current = sum(len(card.values) // 2 for card in resume.cards)
+            job.total = resume.total
+            job.first_day = resume.first_day
+            job.completed_through_day = resume.completed_through_day
+    with _rwkv_memorised_history_job_lock:
+        _rwkv_memorised_history_job = job
+
+    threading.Thread(
+        target=_run_rwkv_memorised_history_job,
+        args=(mw, job),
+        name="rwkv-memorised-history",
+        daemon=True,
+    ).start()
+
+
+def rwkv_memorised_history_progress() -> dict[str, object]:
+    with _rwkv_memorised_history_job_lock:
+        job = _rwkv_memorised_history_job
+    if job is None:
+        return {"phase": "idle", "current": 0, "total": 0, "done": False}
+
+    with job.lock:
+        return {
+            "phase": job.phase,
+            "current": job.current,
+            "total": job.total,
+            "firstDay": job.first_day,
+            "completedThroughDay": job.completed_through_day,
+            "retrievabilityByDay": list(job.retrievability_by_day),
+            "noteRetrievabilityByDay": list(job.note_retrievability_by_day),
+            "cardCountByDay": list(job.card_count_by_day),
+            "done": job.done,
+            "error": job.error,
+        }
+
+
+def rwkv_memorised_history_result() -> RwkvMemorisedHistoryResult | None:
+    with _rwkv_memorised_history_job_lock:
+        job = _rwkv_memorised_history_job
+    if job is None:
+        return None
+    with job.lock:
+        if not job.done:
+            return None
+        if job.error is not None:
+            raise ValueError(job.error)
+        return job.result
+
+
+def rwkv_memorised_history_checkpoint() -> RwkvMemorisedHistoryResult | None:
+    with _rwkv_memorised_history_job_lock:
+        job = _rwkv_memorised_history_job
+    if job is None:
+        return None
+    with job.lock:
+        return job.checkpoint
+
+
+def cancel_rwkv_memorised_history() -> None:
+    with _rwkv_memorised_history_job_lock:
+        job = _rwkv_memorised_history_job
+    if job is not None and not job.done:
+        job.cancel_event.set()
+
+
+def _run_rwkv_memorised_history_job(
+    mw: object,
+    job: RwkvMemorisedHistoryJob,
+) -> None:
+    try:
+        _compute_rwkv_memorised_history(mw, job)
+    except InterruptedError:
+        with job.lock:
+            job.phase = "cancelled"
+    except Exception as exc:
+        logger.exception("RWKV Memorised history build failed")
+        with job.lock:
+            job.phase = "failed"
+            job.error = str(exc)
+    finally:
+        with job.lock:
+            job.done = True
+
+
+def _compute_rwkv_memorised_history(
+    mw: object,
+    job: RwkvMemorisedHistoryJob,
+) -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    reviewer = SimpleNamespace(mw=mw)
+    timing = _timing_today(reviewer)
+    last_day = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(last_day, int) or not isinstance(next_day_at, int):
+        raise ValueError("RWKV scheduler timing is unavailable")
+
+    history = _historical_rwkv_review_inputs(reviewer)
+    review_pairs = [
+        (review_id, review)
+        for review_id, review in zip(history.review_ids, history.reviews, strict=True)
+        if isinstance(review.day_offset, int)
+    ]
+    review_ids = [review_id for review_id, _review in review_pairs]
+    reviews = [review for _review_id, review in review_pairs]
+    identity = _rwkv_memorised_history_identity(
+        reviewer,
+        last_review_id=history.last_review_id,
+        review_count=history.review_count,
+    )
+    if not reviews:
+        with job.lock:
+            job.phase = "complete"
+            job.current = 0
+            job.total = 0
+            job.completed_through_day = last_day
+            job.result = RwkvMemorisedHistoryResult(
+                identity=identity,
+                first_day=last_day,
+                last_day=last_day,
+                cards=(),
+                completed_through_day=last_day,
+            )
+        return
+
+    model_path = _current_embedded_rwkv_model_path()
+    if model_path is None:
+        raise ValueError("RWKV model is unavailable")
+
+    first_day_by_card: dict[int, int] = {}
+    note_id_by_card: dict[int, int | None] = {}
+    for review in reviews:
+        day = review.day_offset
+        card_id = review.identity.card_id
+        first_day_by_card.setdefault(card_id, day)
+        note_id_by_card[card_id] = review.identity.note_id
+    first_day = min(first_day_by_card.values())
+    total = sum(last_day - day + 1 for day in first_day_by_card.values())
+
+    selected_note_counts: dict[int, int] = {}
+    for card_id in job.display_card_ids:
+        note_id = note_id_by_card.get(card_id)
+        if note_id is not None:
+            selected_note_counts[note_id] = selected_note_counts.get(note_id, 0) + 1
+
+    runtime = _RustRwkvRuntime(
+        model_path=model_path,
+        target_retention=_RWKV_DEFAULT_TARGET_RETENTION,
+        max_interval_days=36_500,
+    )
+    (
+        review_index,
+        active_inputs,
+        reps_by_card,
+        lapses_by_card,
+        start_day_by_card,
+        values_by_card,
+        display_retrievability,
+        display_note_retrievability,
+        display_card_count,
+        current,
+        loop_first_day,
+        resumed,
+    ) = _initial_rwkv_memorised_computation_state(
+        job,
+        identity=identity,
+        first_day=first_day,
+        last_day=last_day,
+        total=total,
+        reviews=reviews,
+        review_ids=review_ids,
+        runtime=runtime,
+    )
+    deck_configs: dict[int, dict[str, object] | None] = {}
+    last_checkpoint_at = time.monotonic()
+
+    with job.lock:
+        job.phase = "computing"
+        job.current = current
+        job.total = total
+        job.first_day = first_day
+        job.completed_through_day = loop_first_day - 1 if resumed else None
+        job.retrievability_by_day = list(display_retrievability)
+        job.note_retrievability_by_day = list(display_note_retrievability)
+        job.card_count_by_day = list(display_card_count)
+
+    for day in range(loop_first_day, last_day + 1):
+        if job.cancel_event.is_set():
+            _finish_cancelled_rwkv_memorised_job(
+                job,
+                identity=identity,
+                first_day=first_day,
+                last_day=last_day,
+                total=total,
+                note_id_by_card=note_id_by_card,
+                start_day_by_card=start_day_by_card,
+                values_by_card=values_by_card,
+            )
+            return
+
+        day_start = review_index
+        while review_index < len(reviews) and reviews[review_index].day_offset == day:
+            review_index += 1
+        day_reviews = reviews[day_start:review_index]
+        runtime.warm_up_reviews_in_place(day_reviews)
+
+        for review in day_reviews:
+            card_id = review.identity.card_id
+            active_inputs[card_id] = review
+            reps_by_card[card_id] = reps_by_card.get(card_id, 0) + 1
+            if review.ease == 1 and review.current_normal_state_kind in (
+                "review",
+                "relearning",
+            ):
+                lapses_by_card[card_id] = lapses_by_card.get(card_id, 0) + 1
+            start_day_by_card.setdefault(card_id, day)
+            values_by_card.setdefault(card_id, array("H"))
+
+        card_ids = sorted(active_inputs)
+        query_inputs = []
+        for card_id in card_ids:
+            previous = active_inputs[card_id]
+            elapsed_days = max(0, day - previous.day_offset)
+            query_inputs.append(
+                replace(
+                    previous,
+                    is_query=True,
+                    ease=None,
+                    duration_millis=None,
+                    day_offset=day,
+                    current_elapsed_days=elapsed_days,
+                    current_elapsed_seconds=elapsed_days * 86_400,
+                    reps=reps_by_card.get(card_id, 0),
+                    lapses=lapses_by_card.get(card_id, 0),
+                )
+            )
+
+        predictions = runtime.predict_retrievability_many_from_warm_up(query_inputs)
+        selected_sum = 0.0
+        selected_note_sum = 0.0
+        selected_count = 0
+        now_seconds = next_day_at - (last_day - day) * 86_400 - 1
+        for card_id, query_input, raw_prediction in zip(
+            card_ids,
+            query_inputs,
+            predictions,
+            strict=True,
+        ):
+            prediction = float(raw_prediction)
+            deck_id = query_input.identity.deck_id
+            deck_config = None
+            if deck_id is not None:
+                if deck_id not in deck_configs:
+                    value = _deck_config_for_deck_id(reviewer, deck_id)
+                    deck_configs[deck_id] = value if isinstance(value, dict) else None
+                deck_config = deck_configs[deck_id]
+            if deck_config is not None and _rwkv_review_self_correction_enabled(
+                deck_config
+            ):
+                prediction = _rwkv_score_with_optional_self_correction(
+                    prediction,
+                    _rwkv_self_correction_features_for_input(
+                        query_input,
+                        now_seconds=now_seconds,
+                    ),
+                    deck_config=deck_config,
+                )
+            prediction = min(max(prediction, 0.0), 1.0)
+            values_by_card[card_id].append(round(prediction * 65_535))
+
+            if card_id in job.display_card_ids:
+                selected_sum += prediction
+                selected_count += 1
+                note_id = note_id_by_card.get(card_id)
+                note_count = (
+                    selected_note_counts.get(note_id, 0) if note_id is not None else 0
+                )
+                if note_count:
+                    selected_note_sum += prediction / note_count
+
+        display_retrievability.append(selected_sum)
+        display_note_retrievability.append(selected_note_sum)
+        display_card_count.append(selected_count)
+        current += len(card_ids)
+        with job.lock:
+            job.current = current
+            job.completed_through_day = day
+            job.retrievability_by_day = list(display_retrievability)
+            job.note_retrievability_by_day = list(display_note_retrievability)
+            job.card_count_by_day = list(display_card_count)
+
+        now = time.monotonic()
+        if now - last_checkpoint_at >= _RWKV_MEMORISED_CHECKPOINT_INTERVAL_SECONDS:
+            checkpoint = _rwkv_memorised_result_from_values(
+                identity=identity,
+                first_day=first_day,
+                last_day=last_day,
+                completed_through_day=day,
+                total=total,
+                note_id_by_card=note_id_by_card,
+                start_day_by_card=start_day_by_card,
+                values_by_card=values_by_card,
+                complete=False,
+            )
+            with job.lock:
+                job.checkpoint = checkpoint
+            last_checkpoint_at = now
+
+    result = _rwkv_memorised_result_from_values(
+        identity=identity,
+        first_day=first_day,
+        last_day=last_day,
+        completed_through_day=last_day,
+        total=total,
+        note_id_by_card=note_id_by_card,
+        start_day_by_card=start_day_by_card,
+        values_by_card=values_by_card,
+        complete=True,
+    )
+    with job.lock:
+        job.phase = "complete"
+        job.current = total
+        job.completed_through_day = last_day
+        job.result = result
+        job.checkpoint = None
+
+
+def _initial_rwkv_memorised_computation_state(
+    job: RwkvMemorisedHistoryJob,
+    *,
+    identity: str,
+    first_day: int,
+    last_day: int,
+    total: int,
+    reviews: Sequence[RwkvReviewInput],
+    review_ids: Sequence[int],
+    runtime: object,
+) -> tuple[
+    int,
+    dict[int, RwkvReviewInput],
+    dict[int, int],
+    dict[int, int],
+    dict[int, int],
+    dict[int, array[int]],
+    list[float],
+    list[float],
+    list[int],
+    int,
+    int,
+    bool,
+]:
+    resume = job.checkpoint
+    if resume is not None and resume.complete:
+        resume = _rwkv_memorised_completed_prefix_checkpoint(
+            resume,
+            identity=identity,
+            first_day=first_day,
+            last_day=last_day,
+            total=total,
+            reviews=reviews,
+            review_ids=review_ids,
+        )
+    resumed = _restore_rwkv_memorised_checkpoint(
+        resume,
+        identity=identity,
+        first_day=first_day,
+        last_day=last_day,
+        reviews=reviews,
+        runtime=runtime,
+    )
+    if resumed is None:
+        if job.checkpoint is not None:
+            logger.warning("ignored stale or invalid RWKV Memorised checkpoint")
+            with job.lock:
+                job.checkpoint = None
+        return 0, {}, {}, {}, {}, {}, [], [], [], 0, first_day, False
+
+    (
+        review_index,
+        active_inputs,
+        reps_by_card,
+        lapses_by_card,
+        start_day_by_card,
+        values_by_card,
+    ) = resumed
+    assert resume is not None
+    completed_day = resume.completed_through_day
+    assert completed_day is not None
+    retrievability, note_retrievability, card_count = _rwkv_memorised_aggregate_series(
+        resume, job.display_card_ids
+    )
+    current = sum(len(values) for values in values_by_card.values())
+    logger.debug(
+        "resumed RWKV Memorised history: completed_day=%s current=%s total=%s",
+        completed_day,
+        current,
+        total,
+    )
+    return (
+        review_index,
+        active_inputs,
+        reps_by_card,
+        lapses_by_card,
+        start_day_by_card,
+        values_by_card,
+        retrievability,
+        note_retrievability,
+        card_count,
+        current,
+        completed_day + 1,
+        True,
+    )
+
+
+def _rwkv_memorised_completed_prefix_checkpoint(
+    completed: RwkvMemorisedHistoryResult,
+    *,
+    identity: str,
+    first_day: int,
+    last_day: int,
+    total: int,
+    reviews: Sequence[RwkvReviewInput],
+    review_ids: Sequence[int],
+) -> RwkvMemorisedHistoryResult | None:
+    """Reuse the unaffected day prefix of a completed Memorised cache."""
+
+    if (
+        not completed.complete
+        or completed.completed_through_day != completed.last_day
+        or completed.first_day != first_day
+        or completed.last_day > last_day
+        or len(reviews) != len(review_ids)
+    ):
+        return None
+
+    try:
+        cached_identity = json.loads(completed.identity)
+        current_identity = json.loads(identity)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(cached_identity, dict) or not isinstance(current_identity, dict):
+        return None
+
+    cached_last_review_id = cached_identity.pop("lastReviewId", None)
+    cached_review_count = cached_identity.pop("reviewCount", None)
+    cached_day = cached_identity.pop("dayOffset", None)
+    current_last_review_id = current_identity.pop("lastReviewId", None)
+    current_review_count = current_identity.pop("reviewCount", None)
+    current_day = current_identity.pop("dayOffset", None)
+    if (
+        cached_identity != current_identity
+        or not isinstance(cached_last_review_id, int)
+        or not isinstance(cached_review_count, int)
+        or not isinstance(cached_day, int)
+        or not isinstance(current_last_review_id, int)
+        or not isinstance(current_review_count, int)
+        or not isinstance(current_day, int)
+        or cached_day != completed.last_day
+        or current_day != last_day
+        or cached_day > current_day
+        or cached_last_review_id > current_last_review_id
+        or cached_review_count > current_review_count
+    ):
+        return None
+
+    unchanged_prefix_count = sum(
+        review_id <= cached_last_review_id for review_id in review_ids
+    )
+    if unchanged_prefix_count != cached_review_count:
+        return None
+
+    new_review_days = [
+        review.day_offset
+        for review_id, review in zip(review_ids, reviews, strict=True)
+        if review_id > cached_last_review_id and isinstance(review.day_offset, int)
+    ]
+    if current_last_review_id > cached_last_review_id and not new_review_days:
+        return None
+
+    affected_day = min(new_review_days) if new_review_days else completed.last_day + 1
+    reusable_through_day = min(completed.last_day, affected_day - 1)
+    if reusable_through_day < first_day or reusable_through_day >= last_day:
+        return None
+
+    cards: list[RwkvMemorisedCardSeries] = []
+    for card in completed.cards:
+        if card.start_day > reusable_through_day:
+            continue
+        value_count = reusable_through_day - card.start_day + 1
+        byte_count = value_count * 2
+        if len(card.values) < byte_count or len(card.values) % 2:
+            return None
+        cards.append(replace(card, values=card.values[:byte_count]))
+
+    logger.debug(
+        "reusing completed RWKV Memorised cache prefix: cached_day=%s "
+        "affected_day=%s reusable_through_day=%s cached_reviews=%s "
+        "current_reviews=%s",
+        completed.last_day,
+        affected_day,
+        reusable_through_day,
+        cached_review_count,
+        current_review_count,
+    )
+    return RwkvMemorisedHistoryResult(
+        identity=identity,
+        first_day=first_day,
+        last_day=last_day,
+        cards=tuple(cards),
+        completed_through_day=reusable_through_day,
+        total=total,
+        complete=False,
+    )
+
+
+def _restore_rwkv_memorised_checkpoint(
+    checkpoint: RwkvMemorisedHistoryResult | None,
+    *,
+    identity: str,
+    first_day: int,
+    last_day: int,
+    reviews: Sequence[RwkvReviewInput],
+    runtime: object,
+) -> (
+    tuple[
+        int,
+        dict[int, RwkvReviewInput],
+        dict[int, int],
+        dict[int, int],
+        dict[int, int],
+        dict[int, array[int]],
+    ]
+    | None
+):
+    if (
+        checkpoint is None
+        or checkpoint.complete
+        or checkpoint.identity != identity
+        or checkpoint.first_day != first_day
+        or checkpoint.last_day != last_day
+        or checkpoint.completed_through_day is None
+        or not first_day <= checkpoint.completed_through_day < last_day
+    ):
+        return None
+
+    completed_day = checkpoint.completed_through_day
+    review_index = 0
+    active_inputs: dict[int, RwkvReviewInput] = {}
+    reps_by_card: dict[int, int] = {}
+    lapses_by_card: dict[int, int] = {}
+    start_day_by_card: dict[int, int] = {}
+    while (
+        review_index < len(reviews)
+        and reviews[review_index].day_offset is not None
+        and reviews[review_index].day_offset <= completed_day
+    ):
+        review = reviews[review_index]
+        card_id = review.identity.card_id
+        active_inputs[card_id] = review
+        reps_by_card[card_id] = reps_by_card.get(card_id, 0) + 1
+        if review.ease == 1 and review.current_normal_state_kind in (
+            "review",
+            "relearning",
+        ):
+            lapses_by_card[card_id] = lapses_by_card.get(card_id, 0) + 1
+        assert review.day_offset is not None
+        start_day_by_card.setdefault(card_id, review.day_offset)
+        review_index += 1
+
+    checkpoint_cards = {card.card_id: card for card in checkpoint.cards}
+    values_by_card = {
+        card_id: _u16_array_from_little_endian_bytes(card.values)
+        for card_id, card in checkpoint_cards.items()
+    }
+    if set(values_by_card) != set(active_inputs):
+        return None
+    for card_id, values in values_by_card.items():
+        expected_start = start_day_by_card[card_id]
+        card = checkpoint_cards[card_id]
+        if (
+            card.start_day != expected_start
+            or len(values) != completed_day - expected_start + 1
+        ):
+            return None
+
+    warm_up = getattr(runtime, "warm_up_reviews_in_place", None)
+    if not callable(warm_up):
+        return None
+    warm_up(reviews[:review_index])
+    return (
+        review_index,
+        active_inputs,
+        reps_by_card,
+        lapses_by_card,
+        start_day_by_card,
+        values_by_card,
+    )
+
+
+def _finish_cancelled_rwkv_memorised_job(
+    job: RwkvMemorisedHistoryJob,
+    *,
+    identity: str,
+    first_day: int,
+    last_day: int,
+    total: int,
+    note_id_by_card: dict[int, int | None],
+    start_day_by_card: dict[int, int],
+    values_by_card: dict[int, array[int]],
+) -> None:
+    completed_day = job.completed_through_day
+    checkpoint = (
+        _rwkv_memorised_result_from_values(
+            identity=identity,
+            first_day=first_day,
+            last_day=last_day,
+            completed_through_day=completed_day,
+            total=total,
+            note_id_by_card=note_id_by_card,
+            start_day_by_card=start_day_by_card,
+            values_by_card=values_by_card,
+            complete=False,
+        )
+        if completed_day is not None
+        else None
+    )
+    with job.lock:
+        job.phase = "cancelled"
+        job.checkpoint = checkpoint
+        job.result = checkpoint
+
+
+def _rwkv_memorised_result_from_values(
+    *,
+    identity: str,
+    first_day: int,
+    last_day: int,
+    completed_through_day: int,
+    total: int,
+    note_id_by_card: dict[int, int | None],
+    start_day_by_card: dict[int, int],
+    values_by_card: dict[int, array[int]],
+    complete: bool,
+) -> RwkvMemorisedHistoryResult:
+    return RwkvMemorisedHistoryResult(
+        identity=identity,
+        first_day=first_day,
+        last_day=last_day,
+        cards=tuple(
+            RwkvMemorisedCardSeries(
+                card_id=card_id,
+                note_id=note_id_by_card.get(card_id),
+                start_day=start_day_by_card[card_id],
+                values=_little_endian_u16_bytes(values),
+            )
+            for card_id, values in sorted(values_by_card.items())
+        ),
+        completed_through_day=completed_through_day,
+        total=total,
+        complete=complete,
+    )
+
+
+def _rwkv_memorised_aggregate_series(
+    result: RwkvMemorisedHistoryResult,
+    display_card_ids: frozenset[int],
+) -> tuple[list[float], list[float], list[int]]:
+    completed_day = result.completed_through_day
+    if completed_day is None:
+        return [], [], []
+    length = max(0, completed_day - result.first_day + 1)
+    retrievability = [0.0] * length
+    note_retrievability = [0.0] * length
+    card_count = [0] * length
+    note_counts: dict[int, int] = {}
+    for card in result.cards:
+        if card.card_id in display_card_ids and card.note_id is not None:
+            note_counts[card.note_id] = note_counts.get(card.note_id, 0) + 1
+    for card in result.cards:
+        if card.card_id not in display_card_ids:
+            continue
+        values = _u16_array_from_little_endian_bytes(card.values)
+        offset = card.start_day - result.first_day
+        note_count = note_counts.get(card.note_id, 0) if card.note_id is not None else 0
+        for index, encoded in enumerate(values):
+            day_index = offset + index
+            if not 0 <= day_index < length:
+                continue
+            prediction = encoded / 65_535
+            retrievability[day_index] += prediction
+            card_count[day_index] += 1
+            if note_count:
+                note_retrievability[day_index] += prediction / note_count
+    return retrievability, note_retrievability, card_count
+
+
+def _u16_array_from_little_endian_bytes(raw: bytes) -> array[int]:
+    if len(raw) % 2:
+        raise ValueError("invalid RWKV Memorised UInt16 series")
+    values = array("H")
+    values.frombytes(raw)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values
+
+
+def _little_endian_u16_bytes(values: array[int]) -> bytes:
+    if sys.byteorder == "little":
+        return values.tobytes()
+    copied = array("H", values)
+    copied.byteswap()
+    return copied.tobytes()
+
+
 def start_rwkv_workload_bytes(data: bytes) -> bytes:
     global _rwkv_workload_job
 
@@ -10529,9 +11365,10 @@ where {_rwkv_historical_answer_sql_condition("r")}
     value = scalar(
         f"""
 select count()
-from revlog
-where {_rwkv_historical_answer_sql_condition()}
-  and id <= ?
+from revlog r
+join cards c on c.id = r.cid
+where {_rwkv_historical_answer_sql_condition("r")}
+  and r.id <= ?
 """,
         last_review_id,
     )

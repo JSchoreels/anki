@@ -473,6 +473,33 @@ class _RustRwkvRuntime:
             runtime_state=runtime_state,
         )
 
+    def warm_up_reviews_in_place(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+    ) -> None:
+        """Advance resident historical state without serializing a snapshot."""
+
+        total = len(reviews)
+        if total == 0:
+            return
+        backend_chunk_size = _rust_warmup_chunk_size(
+            total,
+            record_predictions=False,
+        )
+        warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
+        processed = 0
+        with self._locked_process():
+            while processed < total:
+                chunk = reviews[processed : processed + backend_chunk_size]
+                if callable(warm_up_packed):
+                    warm_up_packed(_packed_warm_up_reviews(chunk), False)
+                else:
+                    self._process.warm_up_reviews(
+                        [_review_input_row(review_input) for review_input in chunk],
+                        False,
+                    )
+                processed += len(chunk)
+
     def reset_warm_up_state(self) -> None:
         reset = getattr(self._process, "reset_warm_up_state", None)
         if callable(reset):
