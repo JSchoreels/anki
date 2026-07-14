@@ -42,7 +42,17 @@ export type WorkloadPoint = Point & {
     reviewless_end_memorized: number;
     reviewless_end_weighted_memorized: number;
     weightedMemorized: number;
+    comparisonEngine?: WorkloadComparisonEngine;
+    comparisonKey?: string;
+    comparisonLabel?: string;
 };
+
+export type WorkloadComparisonEngine = "fsrs" | "rwkv";
+
+export interface RwkvRelativePerformance {
+    multiplier: number;
+    change: number;
+}
 
 export enum SimulateSubgraph {
     time,
@@ -60,6 +70,26 @@ export enum SimulateWorkloadSubgraph {
 }
 
 type WorkloadComparisonMode = "fixed" | "adr";
+
+export function rwkvRelativePerformance(
+    fsrs: number,
+    rwkv: number,
+    higherIsBetter: boolean,
+): RwkvRelativePerformance | undefined {
+    if (
+        !Number.isFinite(fsrs)
+        || !Number.isFinite(rwkv)
+        || fsrs <= 0
+        || rwkv <= 0
+    ) {
+        return undefined;
+    }
+
+    return {
+        multiplier: higherIsBetter ? rwkv / fsrs : fsrs / rwkv,
+        change: higherIsBetter ? (rwkv - fsrs) / fsrs : (fsrs - rwkv) / fsrs,
+    };
+}
 
 export function centeredMovingAverage(y: number[], windowSize: number): number[] {
     const size = Math.max(1, Math.floor(windowSize));
@@ -232,12 +262,16 @@ export function renderWorkloadChart(
     bounds: GraphBounds,
     data: WorkloadPoint[],
     subgraph: SimulateWorkloadSubgraph,
+    domainData: WorkloadPoint[] = data,
 ) {
     const validData = data
         .filter((d): d is WorkloadPoint => d !== undefined)
         .sort((a, b) => a.label - b.label || a.x - b.x);
-    const dataXMin = min(validData, (d) => d.x) ?? 1;
-    const dataXMax = max(validData, (d) => d.x) ?? 99;
+    const validDomainData = domainData
+        .filter((d): d is WorkloadPoint => d !== undefined)
+        .sort((a, b) => a.label - b.label || a.x - b.x);
+    const dataXMin = min(validDomainData, (d) => d.x) ?? 1;
+    const dataXMax = max(validDomainData, (d) => d.x) ?? 99;
     const singleX = dataXMin === dataXMax;
     const xMin = singleX ? Math.max(1, dataXMin - 1) : dataXMin;
     const xMax = singleX ? Math.min(99, dataXMax + 1) : dataXMax;
@@ -246,35 +280,42 @@ export function renderWorkloadChart(
         .domain([xMin, xMax])
         .range([bounds.marginLeft, bounds.width - bounds.marginRight]);
 
-    const subgraph_data = {
-        [SimulateWorkloadSubgraph.ratio]: validData.map((d) => ({
-            ...d,
-            y: (60 * 60 * (d.memorized - d.reviewless_end_memorized)) / d.timeCost,
-        })),
-        [SimulateWorkloadSubgraph.weightedRatio]: validData.map((d) => ({
-            ...d,
-            y: (60
-                * 60
-                * (d.weightedMemorized - d.reviewless_end_weighted_memorized))
-                / d.timeCost,
-        })),
-        [SimulateWorkloadSubgraph.time]: validData.map((d) => ({
-            ...d,
-            y: d.timeCost / d.learnSpan,
-        })),
-        [SimulateWorkloadSubgraph.count]: validData.map((d) => ({
-            ...d,
-            y: d.count / d.learnSpan,
-        })),
-        [SimulateWorkloadSubgraph.memorized]: validData.map((d) => ({
-            ...d,
-            y: d.memorized,
-        })),
-        [SimulateWorkloadSubgraph.weightedMemorized]: validData.map((d) => ({
-            ...d,
-            y: d.weightedMemorized,
-        })),
-    }[subgraph].filter((point) => point !== undefined);
+    function subgraphData(points: WorkloadPoint[]) {
+        return {
+            [SimulateWorkloadSubgraph.ratio]: points.map((d) => ({
+                ...d,
+                y: (60 * 60 * (d.memorized - d.reviewless_end_memorized))
+                    / d.timeCost,
+            })),
+            [SimulateWorkloadSubgraph.weightedRatio]: points.map((d) => ({
+                ...d,
+                y: (60
+                    * 60
+                    * (d.weightedMemorized
+                        - d.reviewless_end_weighted_memorized))
+                    / d.timeCost,
+            })),
+            [SimulateWorkloadSubgraph.time]: points.map((d) => ({
+                ...d,
+                y: d.timeCost / d.learnSpan,
+            })),
+            [SimulateWorkloadSubgraph.count]: points.map((d) => ({
+                ...d,
+                y: d.count / d.learnSpan,
+            })),
+            [SimulateWorkloadSubgraph.memorized]: points.map((d) => ({
+                ...d,
+                y: d.memorized,
+            })),
+            [SimulateWorkloadSubgraph.weightedMemorized]: points.map((d) => ({
+                ...d,
+                y: d.weightedMemorized,
+            })),
+        }[subgraph].filter((point) => point !== undefined);
+    }
+
+    const subgraph_data = subgraphData(validData);
+    const domain_subgraph_data = subgraphData(validDomainData);
 
     const yTickFormat = (n: number): string => {
         return subgraph == SimulateWorkloadSubgraph.time
@@ -332,6 +373,24 @@ export function renderWorkloadChart(
         [SimulateWorkloadSubgraph.time]: undefined,
         [SimulateWorkloadSubgraph.count]: undefined,
     }[subgraph];
+    const domainBaseline = {
+        [SimulateWorkloadSubgraph.memorized]: min(
+            domain_subgraph_data,
+            (point) => point.reviewless_end_memorized,
+        ),
+        [SimulateWorkloadSubgraph.weightedMemorized]: min(
+            domain_subgraph_data,
+            (point) => point.reviewless_end_weighted_memorized,
+        ),
+        [SimulateWorkloadSubgraph.ratio]: undefined,
+        [SimulateWorkloadSubgraph.weightedRatio]: undefined,
+        [SimulateWorkloadSubgraph.time]: undefined,
+        [SimulateWorkloadSubgraph.count]: undefined,
+    }[subgraph];
+    const higherIsBetter = ![
+        SimulateWorkloadSubgraph.time,
+        SimulateWorkloadSubgraph.count,
+    ].includes(subgraph);
 
     return _renderSimulationChart(
         svgElem,
@@ -355,7 +414,9 @@ export function renderWorkloadChart(
                 .attr("stroke-dasharray", "5,5")
                 .attr("stroke-width", 1);
         },
-        baseline ?? 0,
+        domainBaseline ?? 0,
+        domain_subgraph_data,
+        higherIsBetter,
     );
 }
 
@@ -441,7 +502,15 @@ export function renderSimulationChart(
 
 function _renderSimulationChart<
     X extends ScaleLinear<number, number> | ScaleTime<number, number>,
-    T extends { x: any; y: any; label: number; labelName?: string },
+    T extends {
+        x: any;
+        y: any;
+        label: number;
+        labelName?: string;
+        comparisonEngine?: WorkloadComparisonEngine;
+        comparisonKey?: string;
+        comparisonLabel?: string;
+    },
 >(
     svgElem: SVGElement,
     bounds: GraphBounds,
@@ -458,6 +527,8 @@ function _renderSimulationChart<
         y: ScaleLinear<number, number, never>,
     ) => void,
     y_min = Infinity,
+    y_domain_data: T[] = subgraph_data,
+    comparisonHigherIsBetter?: boolean,
 ): TableDatum[] {
     const svg = select(svgElem);
     svg.selectAll(".lines").remove();
@@ -482,8 +553,8 @@ function _renderSimulationChart<
         .attr("direction", "ltr");
     // y scale
 
-    const yMax = max(subgraph_data, (d) => d.y)!;
-    let yMin = min(subgraph_data, (d) => d.y)!;
+    const yMax = max(y_domain_data, (d) => d.y)!;
+    let yMin = min(y_domain_data, (d) => d.y)!;
     yMin = min([yMin, y_min])!;
     const y = scaleLinear()
         .range([bounds.height - bounds.marginBottom, bounds.marginTop])
@@ -523,8 +594,30 @@ function _renderSimulationChart<
         (v) => v[0]?.labelName ?? `#${v[0]?.label}`,
         (d) => d.label,
     );
+    const groupComparisonMetadata = rollup(
+        subgraph_data,
+        (values) => ({
+            engine: values[0]?.comparisonEngine,
+            key: values[0]?.comparisonKey,
+            label: values[0]?.comparisonLabel,
+        }),
+        (d) => d.label,
+    );
 
     const color = schemeCategory10;
+    const comparisonColors: Record<WorkloadComparisonEngine, string> = {
+        fsrs: color[0],
+        rwkv: color[1],
+    };
+    const groupColors = new Map(
+        Array.from(groups.keys()).map((group, index) => {
+            const engine = groupComparisonMetadata.get(group)?.engine;
+            return [
+                group,
+                engine ? comparisonColors[engine] : color[index % color.length],
+            ] as const;
+        }),
+    );
 
     svg.append("g")
         .attr("class", "lines")
@@ -536,7 +629,7 @@ function _renderSimulationChart<
         .data(Array.from(groups.entries()))
         .join("path")
         .attr("vector-effect", "non-scaling-stroke")
-        .attr("stroke", (d, i) => color[i % color.length])
+        .attr("stroke", (d) => groupColors.get(d[0])!)
         .attr("d", (d) => line()(d[1].map((p) => [p[0], p[1]])))
         .attr("data-group", (d) => d[0]);
 
@@ -588,15 +681,61 @@ function _renderSimulationChart<
         focusLine.attr("x1", d[0]).attr("x2", d[0]).style("opacity", 1);
 
         let tooltipContent = formatX(date);
+        const comparisons = new Map<
+            string,
+            {
+                fsrs?: number;
+                rwkv?: number;
+                label?: string;
+            }
+        >();
         for (const [key, value] of Object.entries(groupData)) {
             const path = svg.select(`path[data-group="${key}"]`);
             const hidden = path.classed("hidden");
 
             if (!hidden) {
-                const label = groupLabels.get(Number(key)) ?? `#${key}`;
+                const numericKey = Number(key);
+                const label = groupLabels.get(numericKey) ?? `#${key}`;
                 tooltipContent += `<span style="color:${
-                    color[(parseInt(key) - 1) % color.length]
+                    groupColors.get(
+                        numericKey,
+                    )
                 }">■</span> ${label}: ${formatY(value)}<br>`;
+
+                const metadata = groupComparisonMetadata.get(numericKey);
+                if (metadata?.engine && metadata.key) {
+                    const comparison = comparisons.get(metadata.key) ?? {};
+                    comparison[metadata.engine] = value;
+                    comparison.label = metadata.label;
+                    comparisons.set(metadata.key, comparison);
+                }
+            }
+        }
+
+        if (comparisonHigherIsBetter !== undefined) {
+            for (const comparison of comparisons.values()) {
+                if (comparison.fsrs === undefined || comparison.rwkv === undefined) {
+                    continue;
+                }
+                const relativePerformance = rwkvRelativePerformance(
+                    comparison.fsrs,
+                    comparison.rwkv,
+                    comparisonHigherIsBetter,
+                );
+                if (!relativePerformance) {
+                    continue;
+                }
+                const sign = relativePerformance.change > 0 ? "+" : "";
+                const label = comparison.label ? ` (${comparison.label})` : "";
+                tooltipContent += `<strong>RWKV vs FSRS${label}: ${
+                    relativePerformance.multiplier.toFixed(
+                        2,
+                    )
+                }× (${sign}${
+                    (relativePerformance.change * 100).toFixed(
+                        1,
+                    )
+                }%)</strong><br>`;
             }
         }
 
@@ -623,7 +762,7 @@ function _renderSimulationChart<
         .attr("x", bounds.width - bounds.marginRight + 36)
         .attr("width", 12)
         .attr("height", 12)
-        .attr("fill", (d, i) => color[i % color.length]);
+        .attr("fill", (d) => groupColors.get(d)!);
 
     legend
         .append("text")

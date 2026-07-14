@@ -504,7 +504,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     disabled={rwkvActionInProgress}
                     on:click={() => showRwkvWorkloadModal()}
                 >
-                    Choose RWKV desired retention
+                    Compare RWKV with FSRS
                 </button>
             </div>
         {/if}
@@ -515,6 +515,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     bind:modal={rwkvWorkloadModal}
     workload
     rwkvWorkload
+    compareWorkloads
     {state}
     {simulateFsrsRequest}
     computing={rwkvActionInProgress}
