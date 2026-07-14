@@ -329,78 +329,81 @@ deck-config-rwkv-review-enabled-tooltip =
     ordering; that is controlled by the separate option below. Other devices
     continue to use FSRS or SM-2.
 deck-config-rwkv-review-instant-order = Use RWKV-Instant to choose review cards
+deck-config-rwkv-review-instant-order-recommended = Recommended: Use Ascending Retrievability
 deck-config-rwkv-review-instant-order-tooltip =
-    When the review sort order is set to a retrievability option, RWKV decides
-    which review cards are ready and how to order them. A card may appear before
-    its normal due date, or wait longer, depending on whether your estimated
-    chance of remembering it has fallen to your Desired Retention. This does not
-    change the RWKV-Curve intervals shown on the answer buttons. Leave this off
-    to use RWKV-Curve intervals without RWKV-Instant queue ordering.
-deck-config-rwkv-review-candidate-refresh = Refresh top RWKV candidates only
+    RWKV decides which review cards are ready, and your selected review sort
+    order determines how those cards are shown. A card may appear before its
+    normal due date, or wait longer, depending on whether your estimated chance
+    of remembering it has fallen to your Desired Retention. This does not change
+    the RWKV-Curve intervals shown on the answer buttons. Leave this off to use
+    RWKV-Curve intervals without RWKV-Instant queue selection.
+deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
-    When RWKV-Instant ordering is active and an existing queue score map is
-    available, refresh only the best stale candidates in the selected
-    retrievability order instead of rescoring the whole deck tree. The
-    candidate count is the RWKV batch size.
-deck-config-rwkv-review-batch-size = Cards scored per RWKV batch
+    After the first full update, RWKV rechecks only the cards most likely to
+    appear next. This makes queue updates faster for large decks, but other
+    cards keep an older estimate until a later update. The number rechecked is
+    controlled by `Cards processed at once`.
+deck-config-rwkv-review-batch-size = Cards processed at once
 deck-config-rwkv-review-batch-size-tooltip =
-    Number of cards scored per RWKV model call. 512 is recommended for CPU;
-    larger values can improve throughput but use more memory.
-deck-config-rwkv-review-batch-size-current = { $cards } cards per batch
-deck-config-rwkv-review-batch-size-memory = ~{ $memory } state memory
-deck-config-rwkv-review-batch-size-recommended = recommended
-deck-config-rwkv-review-refresh-interval = Re-score review queue every
+    How many cards RWKV checks in one batch. Enter a value from 64 to 2048. 512
+    is recommended when using a CPU. Larger batches may finish faster, but use
+    more memory.
+deck-config-rwkv-review-batch-size-memory = Estimated RAM: ~{ $memory }
+deck-config-rwkv-review-refresh-interval = Update the RWKV queue every
 deck-config-rwkv-review-refresh-interval-tooltip =
-    Number of answered reviews between RWKV queue rescoring runs. 1 updates the
-    queue after every answer; larger values reduce review-time rescoring work.
-deck-config-rwkv-review-refresh-on-exit = Re-score queue after reviewing
+    How many answers to wait between RWKV queue updates. 1 updates the queue
+    after every answer. Higher values reduce the work RWKV does while you
+    review, but the queue may use older estimates between updates.
+deck-config-rwkv-review-refresh-on-exit = Update the RWKV queue after reviewing
 deck-config-rwkv-review-refresh-on-exit-tooltip =
-    When enabled, Anki refreshes RWKV queue scores in the background after you
-    leave the reviewer, if at least one card was answered.
-deck-config-rwkv-review-allow-same-day-review = Allow same-day repeats
+    If you answered at least one card, update the RWKV estimates in the
+    background when you leave the reviewer. This helps prepare an up-to-date
+    queue for your next review session.
+deck-config-rwkv-review-allow-same-day-review = Allow a card to repeat on the same day
 deck-config-rwkv-review-allow-same-day-review-tooltip =
-    When enabled, RWKV may select a review card again after it was already
-    answered today, if its RWKV retrievability is at or below the target
-    retention. When disabled, answered cards wait until tomorrow.
-deck-config-rwkv-review-min-intervening-reviews = Other reviews before repeat
+    When a card's estimated chance of recall is at or below your Desired
+    Retention, RWKV may show it again later the same day. When this is off, a
+    review card you answer will not appear again until the next day.
+deck-config-rwkv-review-min-intervening-reviews = Minimum other reviews before a repeat
 deck-config-rwkv-review-min-intervening-reviews-tooltip =
-    The number of other reviews that must be answered before RWKV may show the
-    same card again. 0 disables this guard.
-deck-config-rwkv-review-min-elapsed-secs = Seconds before repeat
+    How many other cards you must review before RWKV may repeat the same card. 0
+    means no minimum. If you also set a minimum time, both limits must be met.
+deck-config-rwkv-review-min-elapsed-secs = Minimum seconds before a repeat
 deck-config-rwkv-review-min-elapsed-secs-tooltip =
-    The number of seconds that must pass before RWKV may show the same card
-    again. 0 disables this guard.
-deck-config-rwkv-review-first-review-elapsed-from-card-creation = Use card age for first review
+    How long RWKV must wait before repeating the same card. 0 means no minimum.
+    If you also set a minimum number of other reviews, both limits must be met.
+deck-config-rwkv-review-first-review-elapsed-from-card-creation = Use time since card creation for first review
 deck-config-rwkv-review-first-review-elapsed-from-card-creation-tooltip =
-    When enabled, RWKV uses the time since the card was created as the elapsed
-    time for new cards and first historical reviews. When disabled, first-review
-    elapsed time is treated as unknown.
-deck-config-rwkv-review-dynamic-preset-replay = Replay dynamic preset changes
+    For a card with no previous review, use the time since it was created as the
+    elapsed time. When this is off, RWKV treats the time before the card's first
+    review as unknown.
+deck-config-rwkv-review-dynamic-preset-replay = Dynamic Preset Addon Support
 deck-config-rwkv-review-dynamic-preset-replay-tooltip =
-    When enabled, RWKV state-cache building resolves add-on preset overlays and
-    re-evaluates dynamic preset rules during historical replay, so cards can
-    move between preset streams as their interval or repetition count changes.
-    Leave this disabled unless you use dynamic presets that can change a card's
-    preset during its lifetime.
-deck-config-rwkv-review-preset-tag-state = Split RWKV memory by tags
+    Turn this on only if you use a dynamic-preset add-on that can move a card
+    between presets over time. While rebuilding its review history, RWKV will
+    reapply those rules so each review uses the preset that matched the card at
+    that time. Leaving this off makes rebuilding faster.
+deck-config-rwkv-review-preset-tag-state = Use tags to group material for RWKV
 deck-config-rwkv-review-preset-tag-state-tooltip =
-    When enabled, RWKV folds non-outcome note tags into the preset stream, so
-    tagged material can build separate preset memory. Outcome-like tags such as
-    leech, AnkiMorphs am-* tags, and tags with components like fail, lapse,
-    wrong, or missed are ignored.
-deck-config-rwkv-review-japanese-feature-state = Split RWKV memory by Japanese features
+    Lets RWKV learn separate patterns for cards with different note tags,
+    without requiring separate presets. It ignores tags that look like review
+    results, such as `leech`, `fail`, `lapse`, `wrong`, `missed`, and AnkiMorphs
+    `am-*` tags. Use this when tags identify meaningfully different material.
+deck-config-rwkv-review-japanese-feature-state = Use Japanese word features
 deck-config-rwkv-review-japanese-feature-state-tooltip =
-    Experimental. When enabled, RWKV folds coarse Japanese word features into
-    the preset stream, using the configured Kanji and Reading fields plus
-    Front_Kana and Frequency when present. Tags are not used by this option.
+    Experimental. Lets RWKV learn separate patterns for different kinds of
+    Japanese words. It reads the Kanji and Reading fields named below, and also
+    uses `Front_Kana` and `Frequency` when those fields exist. This option does
+    not use tags.
 deck-config-rwkv-review-japanese-kanji-field = Kanji field
 deck-config-rwkv-review-japanese-reading-field = Reading field
-deck-config-rwkv-review-self-correction = Apply RWKV self-correction
+deck-config-rwkv-review-self-correction = Correct RWKV recall estimates
 deck-config-rwkv-review-self-correction-tooltip =
-    Experimental. When enabled, Anki applies a fixed post-RWKV correction layer
-    using the raw confidence bin, local hour, and card maturity/lapse features.
-    This changes displayed, stats, and queue-order retrievability, but does not
-    retrain RWKV or change RWKV-Curve intervals.
+    Experimental. Applies an extra correction to RWKV's recall estimates using
+    the time of day and the card's review history. It affects displayed
+    percentages, statistics, and RWKV review order, but it does not change
+    review intervals or retrain RWKV. `Calibrate RWKV for This Preset` can fit
+    this correction to your own review history.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 

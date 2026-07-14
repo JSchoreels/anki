@@ -262,6 +262,8 @@ def test_rwkv_extra_feature_override_patches_nested_config() -> None:
         preset_tag_state_enabled=True,
         japanese_feature_state_enabled=True,
         self_correction_enabled=True,
+        japanese_kanji_field="Expression",
+        japanese_reading_field="Reading",
     )
 
     patched = rwkv_scheduler._rwkv_deck_config_with_extra_feature_override(
@@ -274,6 +276,10 @@ def test_rwkv_extra_feature_override_patches_nested_config() -> None:
     assert rwkv_scheduler._rwkv_review_preset_tag_state_enabled(patched)
     assert rwkv_scheduler._rwkv_review_japanese_feature_state_enabled(patched)
     assert rwkv_scheduler._rwkv_review_self_correction_enabled(patched)
+    assert rwkv_scheduler._rwkv_japanese_feature_field_names(patched) == (
+        "Expression",
+        "Reading",
+    )
     assert not rwkv_scheduler._rwkv_review_self_correction_enabled(config)
 
 
@@ -286,6 +292,8 @@ def test_rwkv_extra_feature_comparison_payload_parses_string_ids() -> None:
                 "presetTagStateEnabled": True,
                 "japaneseFeatureStateEnabled": False,
                 "selfCorrectionEnabled": True,
+                "japaneseKanjiField": " Expression ",
+                "japaneseReadingField": "Reading",
             }
         )
     )
@@ -297,6 +305,8 @@ def test_rwkv_extra_feature_comparison_payload_parses_string_ids() -> None:
         preset_tag_state_enabled=True,
         japanese_feature_state_enabled=False,
         self_correction_enabled=True,
+        japanese_kanji_field="Expression",
+        japanese_reading_field="Reading",
     )
 
 
@@ -3877,9 +3887,11 @@ def test_train_rwkv_self_correction_calibration_writes_test_fold_and_saves_model
     ]
 
 
-def test_compare_rwkv_extra_feature_metrics_self_corrects_and_restores_state(
+def test_compare_rwkv_extra_feature_metrics_uses_held_out_fold_and_restores_state(
+    monkeypatch,
     tmp_path,
 ) -> None:
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_SELF_CORRECTION_MIN_SAMPLES", 2)
     first_review = (40 * 86_400 + 100) * 1000
     second_review = (41 * 86_400 + 3_700) * 1000
     rows = [
@@ -3912,27 +3924,30 @@ def test_compare_rwkv_extra_feature_metrics_self_corrects_and_restores_state(
         use_extra_feature_state=False,
     )
     predictions = {review_id: 0.45 for review_id in baseline_history.review_ids}
-    expected_baseline = rwkv_scheduler._rwkv_calibration_metrics_for_history(
-        reviewer,
+    baseline_samples = rwkv_scheduler._rwkv_self_correction_training_samples(
         baseline_history,
         predictions,
-        apply_self_correction=False,
     )
-    extra_history = rwkv_scheduler._historical_rwkv_review_inputs(
-        reviewer,
-        deck_id=100,
-        use_extra_feature_state=True,
+    train_samples, test_samples = (
+        rwkv_scheduler._rwkv_train_test_split_self_correction_samples(baseline_samples)
     )
-    expected_extra = rwkv_scheduler._rwkv_calibration_metrics_for_history(
-        reviewer,
-        extra_history,
-        predictions,
-        apply_self_correction=True,
-    )
+    expected_baseline = rwkv_scheduler._rwkv_metrics_for_training_samples(test_samples)
     assert comparison["baseline"] == pytest.approx(expected_baseline)
-    assert comparison["extra"] == pytest.approx(expected_extra)
-    assert comparison["baseline"]["logLoss"] != pytest.approx(
-        comparison["extra"]["logLoss"]
+    assert comparison["split"] == {
+        "trainFraction": 0.70,
+        "train": rwkv_scheduler._rwkv_training_sample_split_summary(train_samples),
+        "test": rwkv_scheduler._rwkv_training_sample_split_summary(test_samples),
+    }
+    features = comparison["features"]
+    assert features["tags"]["metrics"] == pytest.approx(expected_baseline)
+    assert features["japanese"]["metrics"] == pytest.approx(expected_baseline)
+    calibration, _ = rwkv_scheduler._rwkv_fit_self_correction_calibration(train_samples)
+    expected_self_correction = rwkv_scheduler._rwkv_metrics_for_training_samples(
+        test_samples,
+        calibration=calibration,
+    )
+    assert features["selfCorrection"]["metrics"] == pytest.approx(
+        expected_self_correction
     )
 
     after = backend.cache_snapshot()
@@ -3941,12 +3956,14 @@ def test_compare_rwkv_extra_feature_metrics_self_corrects_and_restores_state(
     assert after.deck_states == before.deck_states
     assert after.preset_states == before.preset_states
     assert after.global_state == before.global_state
-    assert runtime.reviewed == [(1, 2), (1, 1), (1, 2), (1, 1)]
+    assert runtime.reviewed == [(1, 2), (1, 1)] * 3
 
 
-def test_compare_rwkv_extra_feature_metrics_uses_extra_feature_override(
+def test_compare_rwkv_extra_feature_metrics_evaluates_each_state_feature(
+    monkeypatch,
     tmp_path,
 ) -> None:
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_SELF_CORRECTION_MIN_SAMPLES", 2)
     first_review = (40 * 86_400 + 100) * 1000
     second_review = (41 * 86_400 + 3_700) * 1000
     rows = [
@@ -3954,7 +3971,8 @@ def test_compare_rwkv_extra_feature_metrics_uses_extra_feature_override(
         (second_review, 1, 10, 100, 1, 2345, 2, 5, 2400),
     ]
 
-    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
     reviewer = _rwkv_cache_reviewer(
         profile_folder=tmp_path,
@@ -3962,12 +3980,16 @@ def test_compare_rwkv_extra_feature_metrics_uses_extra_feature_override(
         rwkv_review_self_correction_enabled=False,
     )
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    runtime.reviewed.clear()
+    runtime.answered_inputs.clear()
     override = rwkv_scheduler.RwkvExtraFeatureConfigOverride(
         deck_id=100,
         config_id=1000,
         preset_tag_state_enabled=False,
         japanese_feature_state_enabled=False,
         self_correction_enabled=True,
+        japanese_kanji_field="Expression",
+        japanese_reading_field="Reading",
     )
 
     comparison = rwkv_scheduler.compare_rwkv_extra_feature_metrics(
@@ -3976,32 +3998,54 @@ def test_compare_rwkv_extra_feature_metrics_uses_extra_feature_override(
         extra_feature_override=override,
     )
 
-    extra_history = rwkv_scheduler._historical_rwkv_review_inputs(
-        reviewer,
-        deck_id=100,
-        use_extra_feature_state=True,
-        extra_feature_override=override,
-    )
-    predictions = {review_id: 0.45 for review_id in extra_history.review_ids}
-    expected_extra = rwkv_scheduler._rwkv_calibration_metrics_for_history(
-        reviewer,
-        extra_history,
-        predictions,
-        apply_self_correction=True,
-        extra_feature_override=override,
-    )
-    saved_config_extra = rwkv_scheduler._rwkv_calibration_metrics_for_history(
-        reviewer,
-        extra_history,
-        predictions,
-        apply_self_correction=True,
-    )
-
     assert comparison["available"] is True
-    assert comparison["extra"] == pytest.approx(expected_extra)
-    assert comparison["extra"]["logLoss"] != pytest.approx(
-        saved_config_extra["logLoss"]
-    )
+    assert comparison["features"]["tags"]["available"] is True
+    assert comparison["features"]["japanese"]["available"] is True
+    baseline_preset_ids = {
+        review_input.identity.preset_id for review_input in runtime.answered_inputs[:2]
+    }
+    tag_preset_ids = {
+        review_input.identity.preset_id for review_input in runtime.answered_inputs[2:4]
+    }
+    japanese_preset_ids = {
+        review_input.identity.preset_id for review_input in runtime.answered_inputs[4:6]
+    }
+    assert tag_preset_ids != baseline_preset_ids
+    assert japanese_preset_ids != baseline_preset_ids
+    assert japanese_preset_ids != tag_preset_ids
+
+
+def test_rwkv_metric_comparison_message_recommends_only_both_improvements() -> None:
+    comparison = {
+        "available": True,
+        "baseline": {"logLoss": 0.5, "rmseBins": 0.2},
+        "split": {"train": {"count": 70}, "test": {"count": 30}},
+        "features": {
+            "tags": {
+                "available": True,
+                "metrics": {"logLoss": 0.4, "rmseBins": 0.1},
+                "helpsBoth": True,
+            },
+            "japanese": {
+                "available": True,
+                "metrics": {"logLoss": 0.4, "rmseBins": 0.3},
+                "helpsBoth": False,
+            },
+            "selfCorrection": {
+                "available": False,
+                "reason": "Need more reviews.",
+            },
+        },
+    }
+
+    message = rwkv_scheduler._rwkv_metric_comparison_message(comparison)
+
+    assert "Held-out RWKV feature evaluation (70% train / 30% test)" in message
+    assert "Tags: helps both" in message
+    assert "Japanese features: does not improve both" in message
+    assert "Self-correction: unavailable" in message
+    assert "Recommended: Tags" in message
+    assert "Samples: 70 train / 30 test" in message
 
 
 def test_rwkv_state_cache_build_satisfies_sse_explicit_revlog_contract(

@@ -38,14 +38,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const reviewFuzzFactorMid = state.reviewFuzzFactorMid;
     const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
 
-    let buildingRwkvStateCache = false;
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
     let comparingRwkvExtraFeatureMetrics = false;
     let trainingRwkvCalibration = false;
     let reschedulingRwkvReviewCards = false;
     $: rwkvActionInProgress =
-        buildingRwkvStateCache ||
         forceBuildingRwkvStateCache ||
         recomputingRwkvCalibrationData ||
         comparingRwkvExtraFeatureMetrics ||
@@ -138,16 +136,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         openHelpModal(settingKeys.indexOf(key));
     }
 
-    async function buildRwkvStateCache(): Promise<void> {
-        buildingRwkvStateCache = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto("buildRwkvStateCache", new Empty({}), Empty);
-        } finally {
-            buildingRwkvStateCache = false;
-        }
-    }
-
     async function forceBuildRwkvStateCache(): Promise<void> {
         forceBuildingRwkvStateCache = true;
         try {
@@ -192,6 +180,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     japaneseFeatureStateEnabled:
                         $config.rwkvReviewJapaneseFeatureStateEnabled,
                     selfCorrectionEnabled: $config.rwkvReviewSelfCorrectionEnabled,
+                    japaneseKanjiField: $config.rwkvReviewJapaneseKanjiField,
+                    japaneseReadingField: $config.rwkvReviewJapaneseReadingField,
                 }),
             ),
         });
@@ -283,6 +273,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <SettingTitle on:click={() => openSettingHelp("rwkvInstantOrder")}>
                     {tr.deckConfigRwkvReviewInstantOrder()}
                 </SettingTitle>
+                <span class="rwkv-recommendation">
+                    {tr.deckConfigRwkvReviewInstantOrderRecommended()}
+                </span>
             </SwitchRow>
 
             {#if $config.rwkvReviewInstantOrderEnabled}
@@ -400,6 +393,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </SwitchRow>
 
+            <h2 class="rwkv-subheading">Optional Prediction Features</h2>
+
             <SwitchRow
                 bind:value={$config.rwkvReviewPresetTagStateEnabled}
                 defaultValue={defaults.rwkvReviewPresetTagStateEnabled}
@@ -449,28 +444,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </SwitchRow>
 
-            <div class="d-flex flex-wrap gap-2">
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => buildRwkvStateCache()}
-                >
-                    {#if buildingRwkvStateCache}
-                        Preparing RWKV review state...
-                    {:else}
-                        Prepare RWKV review state
-                    {/if}
-                </button>
+            <h2 class="rwkv-subheading">Maintenance</h2>
 
+            <div class="d-flex flex-wrap gap-2">
                 <button
                     class="btn btn-outline-primary"
                     disabled={rwkvActionInProgress}
                     on:click={() => forceBuildRwkvStateCache()}
                 >
                     {#if forceBuildingRwkvStateCache}
-                        Rebuilding RWKV review state...
+                        Rebuilding RWKV State...
                     {:else}
-                        Rebuild RWKV review state from scratch
+                        Rebuild RWKV State
                     {/if}
                 </button>
 
@@ -480,21 +465,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     on:click={() => recomputeRwkvCalibrationData()}
                 >
                     {#if recomputingRwkvCalibrationData}
-                        Recomputing historical RWKV predictions...
+                        Calculating Calibration Graph Data...
                     {:else}
-                        Recompute historical RWKV predictions
+                        Calculate Calibration Graph Data
                     {/if}
                 </button>
+            </div>
 
+            <h2 class="rwkv-subheading">Compare and Calibrate</h2>
+
+            <div class="d-flex flex-wrap gap-2">
                 <button
                     class="btn btn-outline-primary"
                     disabled={rwkvActionInProgress}
                     on:click={() => compareRwkvExtraFeatureMetrics()}
                 >
                     {#if comparingRwkvExtraFeatureMetrics}
-                        Comparing enabled RWKV features...
+                        Training and evaluating optional features...
                     {:else}
-                        Compare enabled RWKV features
+                        Evaluate optional features (70/30)
                     {/if}
                 </button>
 
@@ -539,6 +528,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         font-size: 0.875rem;
         font-weight: 600;
         margin: 1rem 0 0.25rem;
+    }
+
+    .rwkv-recommendation {
+        color: var(--fg-subtle);
+        display: block;
+        font-size: 0.875rem;
     }
 
     .btn {

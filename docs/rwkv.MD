@@ -4,7 +4,7 @@ The RWKV review scheduler is a desktop-only review-time scheduler. When **Use
 RWKV-Curve for answer intervals** is enabled, answer buttons use RWKV-Curve
 intervals and store RWKV-Curve S90 values. RWKV-Instant retrievability is
 recorded on live review answers and can separately be used for review queue
-ordering when **Use RWKV-Instant to choose review cards** is enabled. To use
+selection when **Use RWKV-Instant to choose review cards** is enabled. To use
 RWKV-Curve without RWKV-Instant ordering, enable the first option and leave the
 second disabled. Mobile clients do not load the RWKV backend and continue to
 schedule with FSRS/SM2.
@@ -355,8 +355,8 @@ replay, the progress dialog shows how many historical reviews have been applied
 to the cache, elapsed time, and estimated time remaining.
 
 RWKV review state and historical calibration data are built separately. The
-manual **Prepare RWKV review state** and **Rebuild RWKV review state from
-scratch** actions replay answers and persist recurrent state without computing
+manual **Rebuild RWKV State** action replays answers and persists recurrent
+state without computing
 a pre-answer prediction for every historical review. Live review answers still
 write their pre-answer prediction with source `rwkv_review` and role
 `post_optimization`.
@@ -368,13 +368,13 @@ derived cache, separate from the profile-local recurrent state cache and the
 short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 `fold_index`, and `source`.
 
-The deck options action **Recompute RWKV Calibration Data** replays historical
+The deck options action **Calculate Calibration Graph Data** replays historical
 queries only for this derived table, uses a chronological 70% train / 30% test
 split, writes training rows with role `final_fit`, writes held-out rows with
 role `test_fold`, and restores the active RWKV backend state afterward. If RWKV
 self-correction is enabled for a deck preset, both state-cache builds and
 calibration-data recomputes write self-corrected predictions for that preset.
-The deck options action **Train RWKV Calibration** fits a local logistic
+The deck options action **Calibrate RWKV for This Preset** fits a local logistic
 self-correction layer on the train split for the selected deck tree, stores the
 learned coefficients in the deck preset's RWKV `other` config, and writes the
 same role-aware calibration rows. Calibration graph consumers should ignore
@@ -384,12 +384,18 @@ Add-ons that need these rows can call
 The synchronous API returns immediately when current role-aware data is
 complete; otherwise it performs the same calibration-only replay while
 snapshotting and restoring active reviewer state.
-The deck options action **Compare RWKV Extra Features** runs an in-memory
-historical replay for the selected deck tree, restores the active RWKV backend
-state afterward, and reports log loss plus RMSE(bins) for clean RWKV versus the
-currently selected tag, Japanese feature, and self-correction settings. The UI
-sends the open deck-options toggle values with the request, so the comparison
-can preview unsaved toggle changes without saving the preset.
+The deck options action **Evaluate optional features (70/30)** runs an in-memory
+chronological evaluation for the selected preset and restores the active RWKV
+backend state afterward. The first 70% of its eligible reviews warm the
+user-specific tag and Japanese recurrent states and fit a user-specific
+self-correction layer. Each feature is evaluated independently on the same final
+30% of review ids.
+Predictions are recorded before each held-out answer, then the recurrent state is
+updated with that answer before the next prediction, matching online review-time
+use. The popup reports held-out log loss and RMSE(bins) for each feature and
+recommends a toggle only when both metrics improve over clean RWKV. The comparison
+does not change the preset. If self-correction is recommended, **Calibrate RWKV
+for This Preset** persists the user-trained correction layer.
 
 ## Inference Runtime
 

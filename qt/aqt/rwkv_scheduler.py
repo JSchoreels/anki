@@ -533,6 +533,8 @@ class RwkvExtraFeatureConfigOverride:
     preset_tag_state_enabled: bool
     japanese_feature_state_enabled: bool
     self_correction_enabled: bool
+    japanese_kanji_field: str | None = None
+    japanese_reading_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -5793,6 +5795,12 @@ def rwkv_extra_feature_comparison_request_from_payload(
         preset_tag_state_enabled=preset_tag_state_enabled,
         japanese_feature_state_enabled=japanese_feature_state_enabled,
         self_correction_enabled=self_correction_enabled,
+        japanese_kanji_field=_rwkv_optional_field_name(
+            payload.get("japaneseKanjiField")
+        ),
+        japanese_reading_field=_rwkv_optional_field_name(
+            payload.get("japaneseReadingField")
+        ),
     )
 
 
@@ -5820,6 +5828,13 @@ def _rwkv_int_from_json_payload(value: object) -> int | None:
     return None
 
 
+def _rwkv_optional_field_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
 def compare_rwkv_extra_feature_metrics(
     mw: object,
     *,
@@ -5827,7 +5842,7 @@ def compare_rwkv_extra_feature_metrics(
     extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> dict[str, object]:
-    """Compare clean RWKV replay metrics with the currently enabled extras."""
+    """Train and compare each optional RWKV feature on a chronological split."""
 
     configure_reviewer_backend_from_environment()
     backend = _reviewer_backend
@@ -5873,55 +5888,116 @@ def compare_rwkv_extra_feature_metrics(
             progress=progress,
             label="Replaying baseline RWKV history",
         )
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Loading current RWKV feature review history...",
-        )
-        extra_history = _historical_rwkv_review_inputs(
-            reviewer,
+        target_review_ids = _rwkv_extra_feature_target_review_ids(
+            baseline_history,
+            extra_feature_override,
             deck_id=deck_id,
-            use_extra_feature_state=True,
-            extra_feature_override=extra_feature_override,
-            progress=progress,
         )
-        extra_predictions = _rwkv_calibration_predictions_for_history(
-            backend,
-            warm_up,
-            reset_cache_snapshot,
-            extra_history,
-            progress=progress,
-            label="Replaying current RWKV feature history",
+        baseline_samples = _rwkv_samples_for_review_ids(
+            _rwkv_self_correction_training_samples(
+                baseline_history,
+                baseline_predictions,
+            ),
+            target_review_ids,
+        )
+        if len(baseline_samples) < 2:
+            return _rwkv_unavailable_metric_comparison(
+                "At least two eligible RWKV review predictions are needed for a "
+                "chronological train/test split."
+            )
+
+        train_samples, test_samples = _rwkv_train_test_split_self_correction_samples(
+            baseline_samples
+        )
+        test_review_ids = frozenset(sample.review_id for sample in test_samples)
+        baseline_metrics = _rwkv_metrics_for_training_samples(test_samples)
+
+        feature_results: dict[str, object] = {}
+        state_features = (
+            (
+                "tags",
+                "tag",
+                _rwkv_extra_feature_evaluation_override(
+                    extra_feature_override,
+                    deck_id=deck_id,
+                    preset_tag_state_enabled=True,
+                    japanese_feature_state_enabled=False,
+                ),
+            ),
+            (
+                "japanese",
+                "Japanese feature",
+                _rwkv_extra_feature_evaluation_override(
+                    extra_feature_override,
+                    deck_id=deck_id,
+                    preset_tag_state_enabled=False,
+                    japanese_feature_state_enabled=True,
+                ),
+            ),
+        )
+        for feature_key, feature_label, feature_override in state_features:
+            _report_rwkv_state_cache_progress(
+                progress,
+                f"Loading per-user RWKV {feature_label} history...",
+            )
+            feature_history = _historical_rwkv_review_inputs(
+                reviewer,
+                deck_id=deck_id,
+                use_extra_feature_state=True,
+                extra_feature_override=feature_override,
+                progress=progress,
+            )
+            feature_predictions = _rwkv_calibration_predictions_for_history(
+                backend,
+                warm_up,
+                reset_cache_snapshot,
+                feature_history,
+                progress=progress,
+                label=f"Replaying per-user RWKV {feature_label} history",
+            )
+            feature_test_samples = _rwkv_samples_for_review_ids(
+                _rwkv_self_correction_training_samples(
+                    feature_history,
+                    feature_predictions,
+                ),
+                test_review_ids,
+            )
+            feature_results[feature_key] = _rwkv_extra_feature_metric_result(
+                baseline_metrics,
+                _rwkv_metrics_for_training_samples(feature_test_samples),
+            )
+
+        feature_results["selfCorrection"] = _rwkv_trained_self_correction_metric_result(
+            baseline_metrics,
+            baseline_samples=baseline_samples,
+            train_samples=train_samples,
+            test_samples=test_samples,
         )
         _report_rwkv_state_cache_progress(
             progress,
-            "Computing RWKV comparison metrics...",
+            "Computing held-out RWKV feature recommendations...",
         )
         comparison = {
             "available": True,
             "deckId": deck_id or 0,
-            "baseline": _rwkv_calibration_metrics_for_history(
-                reviewer,
-                baseline_history,
-                baseline_predictions,
-                apply_self_correction=False,
-            ),
-            "extra": _rwkv_calibration_metrics_for_history(
-                reviewer,
-                extra_history,
-                extra_predictions,
-                apply_self_correction=True,
-                extra_feature_override=extra_feature_override,
-            ),
+            "split": {
+                "trainFraction": _RWKV_SELF_CORRECTION_TRAIN_FRACTION,
+                "train": _rwkv_training_sample_split_summary(train_samples),
+                "test": _rwkv_training_sample_split_summary(test_samples),
+            },
+            "baseline": baseline_metrics,
+            "features": feature_results,
         }
         logger.debug(
-            "RWKV metric comparison finished: deck_id=%s baseline_reviews=%s "
-            "extra_reviews=%s baseline_predictions=%s extra_predictions=%s "
-            "extra_feature_override=%s elapsed_ms=%.1f",
+            "RWKV held-out feature comparison finished: deck_id=%s "
+            "baseline_reviews=%s baseline_predictions=%s train=%s test=%s "
+            "features=%s extra_feature_override=%s elapsed_ms=%.1f",
             deck_id,
             len(baseline_history.reviews),
-            len(extra_history.reviews),
             len(baseline_predictions),
-            len(extra_predictions),
+            len(train_samples),
+            len(test_samples),
+            feature_results,
             extra_feature_override is not None,
             (time.monotonic() - start) * 1000,
         )
@@ -5936,6 +6012,139 @@ def compare_rwkv_extra_feature_metrics(
             logger.exception(
                 "failed to restore RWKV backend state after metric comparison"
             )
+
+
+def _rwkv_extra_feature_evaluation_override(
+    override: RwkvExtraFeatureConfigOverride | None,
+    *,
+    deck_id: int | None,
+    preset_tag_state_enabled: bool,
+    japanese_feature_state_enabled: bool,
+) -> RwkvExtraFeatureConfigOverride:
+    if override is not None:
+        return replace(
+            override,
+            preset_tag_state_enabled=preset_tag_state_enabled,
+            japanese_feature_state_enabled=japanese_feature_state_enabled,
+            self_correction_enabled=False,
+        )
+    return RwkvExtraFeatureConfigOverride(
+        deck_id=deck_id,
+        config_id=None,
+        preset_tag_state_enabled=preset_tag_state_enabled,
+        japanese_feature_state_enabled=japanese_feature_state_enabled,
+        self_correction_enabled=False,
+    )
+
+
+def _rwkv_extra_feature_target_review_ids(
+    history: RwkvHistoricalReviewInputs,
+    override: RwkvExtraFeatureConfigOverride | None,
+    *,
+    deck_id: int | None,
+) -> frozenset[int]:
+    config_id = override.config_id if override is not None else None
+    target_deck_id = override.deck_id if override is not None else deck_id
+    target_preset_id = (
+        _stable_preset_id(str(config_id)) if config_id is not None else None
+    )
+    return frozenset(
+        review_id
+        for review_id, review_input in zip(
+            history.review_ids,
+            history.reviews,
+            strict=True,
+        )
+        if (
+            target_preset_id is not None
+            and review_input.identity.preset_id == target_preset_id
+        )
+        or (
+            target_preset_id is None
+            and (
+                target_deck_id is None
+                or review_input.identity.deck_id == target_deck_id
+            )
+        )
+    )
+
+
+def _rwkv_samples_for_review_ids(
+    samples: Sequence[RwkvSelfCorrectionTrainingSample],
+    review_ids: frozenset[int],
+) -> list[RwkvSelfCorrectionTrainingSample]:
+    return [sample for sample in samples if sample.review_id in review_ids]
+
+
+def _rwkv_extra_feature_metric_result(
+    baseline: Mapping[str, float | int],
+    metrics: Mapping[str, float | int],
+) -> dict[str, object]:
+    baseline_count = _int_value(baseline.get("count")) or 0
+    count = _int_value(metrics.get("count")) or 0
+    if count != baseline_count:
+        return {
+            "available": False,
+            "reason": (
+                f"Only {count:,} of {baseline_count:,} held-out predictions were "
+                "available."
+            ),
+            "metrics": dict(metrics),
+            "helpsBoth": False,
+        }
+    return {
+        "available": True,
+        "metrics": dict(metrics),
+        "helpsBoth": _rwkv_metrics_improve_both(baseline, metrics),
+    }
+
+
+def _rwkv_trained_self_correction_metric_result(
+    baseline: Mapping[str, float | int],
+    *,
+    baseline_samples: Sequence[RwkvSelfCorrectionTrainingSample],
+    train_samples: Sequence[RwkvSelfCorrectionTrainingSample],
+    test_samples: Sequence[RwkvSelfCorrectionTrainingSample],
+) -> dict[str, object]:
+    if len(baseline_samples) < _RWKV_SELF_CORRECTION_MIN_SAMPLES:
+        return {
+            "available": False,
+            "reason": (
+                f"Only {len(baseline_samples):,} eligible predictions were available; "
+                f"need at least {_RWKV_SELF_CORRECTION_MIN_SAMPLES:,}."
+            ),
+            "metrics": _rwkv_empty_calibration_metrics(),
+            "helpsBoth": False,
+        }
+
+    calibration, iterations = _rwkv_fit_self_correction_calibration(train_samples)
+    result = _rwkv_extra_feature_metric_result(
+        baseline,
+        _rwkv_metrics_for_training_samples(
+            test_samples,
+            calibration=calibration,
+        ),
+    )
+    result["iterations"] = iterations
+    return result
+
+
+def _rwkv_metrics_improve_both(
+    baseline: Mapping[str, float | int],
+    current: Mapping[str, float | int],
+) -> bool:
+    baseline_log_loss = _float_value(baseline.get("logLoss"))
+    current_log_loss = _float_value(current.get("logLoss"))
+    baseline_rmse_bins = _float_value(baseline.get("rmseBins"))
+    current_rmse_bins = _float_value(current.get("rmseBins"))
+    return (
+        baseline_log_loss is not None
+        and current_log_loss is not None
+        and baseline_rmse_bins is not None
+        and current_rmse_bins is not None
+        and current_log_loss < baseline_log_loss
+        and current_rmse_bins < baseline_rmse_bins
+    )
 
 
 def compare_rwkv_first_review_elapsed_metrics(
@@ -6392,37 +6601,77 @@ def _rwkv_metric_comparison_message(comparison: Mapping[str, object]) -> str:
         )
 
     baseline = comparison.get("baseline")
-    extra = comparison.get("extra")
-    if not isinstance(baseline, Mapping) or not isinstance(extra, Mapping):
+    features = comparison.get("features")
+    split = comparison.get("split")
+    if not (
+        isinstance(baseline, Mapping)
+        and isinstance(features, Mapping)
+        and isinstance(split, Mapping)
+    ):
         return "RWKV comparison did not return usable metrics."
 
     baseline_log_loss = _float_value(baseline.get("logLoss")) or 0.0
-    extra_log_loss = _float_value(extra.get("logLoss")) or 0.0
     baseline_rmse_bins = _float_value(baseline.get("rmseBins")) or 0.0
-    extra_rmse_bins = _float_value(extra.get("rmseBins")) or 0.0
-    baseline_count = _int_value(baseline.get("count")) or 0
-    extra_count = _int_value(extra.get("count")) or 0
-    baseline_bins = _int_value(baseline.get("bins")) or 0
-    extra_bins = _int_value(extra.get("bins")) or 0
+    train = split.get("train")
+    test = split.get("test")
+    if not isinstance(train, Mapping) or not isinstance(test, Mapping):
+        return "RWKV comparison did not return a usable train/test split."
 
-    return "\n".join(
+    lines = [
+        "Held-out RWKV feature evaluation (70% train / 30% test)",
+        "",
+        "Baseline:",
+        f"  Log loss: {_format_rwkv_metric_log_loss(baseline_log_loss)}",
+        f"  RMSE(bins): {_format_rwkv_metric_rmse_bins(baseline_rmse_bins)}",
+    ]
+    recommended: list[str] = []
+    for key, label in (
+        ("tags", "Tags"),
+        ("japanese", "Japanese features"),
+        ("selfCorrection", "Self-correction"),
+    ):
+        result = features.get(key)
+        if not isinstance(result, Mapping):
+            lines.extend(["", f"{label}: unavailable"])
+            continue
+        if not result.get("available"):
+            reason = result.get("reason")
+            lines.extend(["", f"{label}: unavailable"])
+            if isinstance(reason, str):
+                lines.append(f"  {reason}")
+            continue
+
+        metrics = result.get("metrics")
+        if not isinstance(metrics, Mapping):
+            lines.extend(["", f"{label}: unavailable"])
+            continue
+        log_loss = _float_value(metrics.get("logLoss")) or 0.0
+        rmse_bins = _float_value(metrics.get("rmseBins")) or 0.0
+        helps_both = result.get("helpsBoth") is True
+        if helps_both:
+            recommended.append(label)
+        lines.extend(
+            [
+                "",
+                f"{label}: {'helps both' if helps_both else 'does not improve both'}",
+                "  Log loss: "
+                f"{_format_rwkv_metric_log_loss(log_loss)} "
+                f"({_format_rwkv_metric_gain(baseline_log_loss, log_loss)} gain)",
+                "  RMSE(bins): "
+                f"{_format_rwkv_metric_rmse_bins(rmse_bins)} "
+                f"({_format_rwkv_metric_gain(baseline_rmse_bins, rmse_bins)} gain)",
+            ]
+        )
+
+    lines.extend(
         [
-            "RWKV:",
-            f"  Log loss: {_format_rwkv_metric_log_loss(baseline_log_loss)}",
-            f"  RMSE(bins): {_format_rwkv_metric_rmse_bins(baseline_rmse_bins)}",
             "",
-            "RWKV + Extra Features:",
-            "  Log loss: "
-            f"{_format_rwkv_metric_log_loss(extra_log_loss)} "
-            f"({_format_rwkv_metric_gain(baseline_log_loss, extra_log_loss)} gain)",
-            "  RMSE(bins): "
-            f"{_format_rwkv_metric_rmse_bins(extra_rmse_bins)} "
-            f"({_format_rwkv_metric_gain(baseline_rmse_bins, extra_rmse_bins)} gain)",
-            "",
-            f"Samples: {extra_count:,} current / {baseline_count:,} baseline",
-            f"Bins: {extra_bins:,} current / {baseline_bins:,} baseline",
+            f"Recommended: {', '.join(recommended) if recommended else 'none'}",
+            f"Samples: {(_int_value(train.get('count')) or 0):,} train / "
+            f"{(_int_value(test.get('count')) or 0):,} test",
         ]
     )
+    return "\n".join(lines)
 
 
 def _format_rwkv_metric_log_loss(value: float) -> str:
@@ -6447,7 +6696,8 @@ def _rwkv_unavailable_metric_comparison(reason: str) -> dict[str, object]:
         "available": False,
         "reason": reason,
         "baseline": _rwkv_empty_calibration_metrics(),
-        "extra": _rwkv_empty_calibration_metrics(),
+        "features": {},
+        "split": {},
     }
 
 
@@ -12288,6 +12538,14 @@ def _rwkv_set_extra_feature_direct_values(
     deck_config["rwkv_review_self_correction_enabled"] = (
         override.self_correction_enabled
     )
+    if override.japanese_kanji_field is not None:
+        deck_config["rwkvReviewJapaneseKanjiField"] = override.japanese_kanji_field
+        deck_config["rwkv_review_japanese_kanji_field"] = override.japanese_kanji_field
+    if override.japanese_reading_field is not None:
+        deck_config["rwkvReviewJapaneseReadingField"] = override.japanese_reading_field
+        deck_config["rwkv_review_japanese_reading_field"] = (
+            override.japanese_reading_field
+        )
 
 
 def _rwkv_set_extra_feature_nested_values(
@@ -12299,6 +12557,10 @@ def _rwkv_set_extra_feature_nested_values(
         override.japanese_feature_state_enabled
     )
     nested["rwkv_review_self_correction_enabled"] = override.self_correction_enabled
+    if override.japanese_kanji_field is not None:
+        nested["rwkv_review_japanese_kanji_field"] = override.japanese_kanji_field
+    if override.japanese_reading_field is not None:
+        nested["rwkv_review_japanese_reading_field"] = override.japanese_reading_field
 
 
 def _rwkv_existing_other_config_key(root: Mapping[str, object]) -> str | None:
