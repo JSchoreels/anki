@@ -779,6 +779,69 @@ would a register-tiled multi-row NEON kernel (reusing one weight load across
 several row accumulators, still bit-exact) be expected to pay off at the
 wall-clock level.
 
+On 2026-07-14, an exact four-row AVX2/FMA projection kernel was measured on a
+Windows 11 Intel Core i7-9700K with eight Rayon workers. The kernel keeps four
+output rows in registers across the input-column loop, reuses each weight-vector
+load, and handles two input columns per inner-loop iteration without changing
+any row's accumulation order. The first register-tiled version reduced a
+deterministic 50,000-review, 5,000-card replay by 4.61%. Two-column unrolling
+then reduced its median from 3.604s to 3.453s in five alternating pairs (4.20%
+by separate medians, 4.50% by the paired median). A direct original-to-final
+comparison reduced the median from 4.007s to 3.690s (7.90%, 1.086x); the final
+build won four of five pairs, with one run reversed by a large background-load
+spike. The isolated projection benchmark showed a 16-20% unrolling gain across
+the representative 16/32/64/128/256-wide model shapes. The awkward-dimension
+unit test covers zero skips and vector, scalar, input-column, and row tails
+bit-for-bit. Prediction-enabled synthetic runs also report logloss, and bulk
+parity now rejects an absolute sequential-vs-bulk logloss change above 1e-7.
+
+Further i7-9700K experiments retained three more changes. First, the 32-wide
+per-head recurrent-state update now uses a runtime-detected AVX2 implementation
+that preserves the scalar multiply/subtract/add order and is bit-exact. It was
+about 25% faster in isolation and reduced the 50,000-row replay by a paired
+median 18.0% (separate medians 2.835s to 2.311s). Fusing the following output
+calculation into that kernel was slower and was not retained. Second, sweeping
+2,048/4,096/8,192/16,384/32,768-row chunks selected 8,192 rows: its three-run
+median was 2.230s versus 2.337s at 16,384 rows, with every 8,192-row sample
+faster. Third, when predictions are requested, answer and query normalization
+and projection stages now enter the Rayon pool together. On 20,000 prediction
+rows this won four of five alternating pairs, improving the paired median by
+1.8%, while every run reported the identical logloss
+`0.728417944047116`.
+
+Several plausible x86 changes were rejected by end-to-end measurements. A
+four-column projection unroll won its isolated microbenchmark but regressed the
+full replay by a paired median 20.8%; an eight-row tile similarly turned a
+0.1-4.3% isolated win into a 5.6% replay regression. A BLAS-style
+`matrixmultiply` backend for disposable query rows was 1.5% slower than the
+exact AVX2 kernel, despite preserving the measured logloss, so adding oneDNN or
+oneMKL packing and deployment overhead is not justified for these 32-row
+matrices. A `target-cpu=native` build was 4.4% faster than the portable runtime-
+dispatched build and preserved synthetic logloss exactly, but remains a useful
+machine-specific build option rather than a distributable binary assumption.
+
+Across the original Windows baseline and the retained portable changes, five
+alternating no-warmup 50,000-row runs reduced the separate median from 3.117s
+to 2.211s (29.0%, 1.409x); the paired median reduction was 28.0%, and the final
+build won all five pairs. The original and final collection benchmark both
+reported logloss `1.228385120180924`. The final deterministic 5,000-row
+prediction benchmark reports logloss `1.130982198417313`.
+
+A final set of 9700K experiments did not justify further production changes.
+Treating answer and query as one 64-row projection block, so an eight-row
+kernel could share weight loads between them, ranged from 0.7% slower to 4.4%
+faster in isolated representative shapes; most large shapes were effectively
+flat, and the equivalent eight-row full-model kernel had already regressed by
+5.6%. A matched Rust 1.97 MSVC PGO build was trained on both 50,000-row
+state-only and 20,000-row prediction workloads. Against an uninstrumented build
+from the same compiler, its state-only paired median was 1.1% slower amid large
+background-load outliers, and its prediction paired median was effectively
+flat (-0.06%); prediction logloss was identical at `0.728417944047116`.
+Finally, a three-round Rayon sweep on 50,000 rows measured medians of
+4.082/3.080/2.815/2.664s for 4/6/7/8 workers, respectively, confirming that all
+eight physical cores should remain active. Prediction logloss was identical at
+`1.130982198417313` for every tested worker count.
+
 The same follow-up pass also moved the desktop warm-up bridge to a packed
 binary payload (`warm_up_reviews_packed`) and released the GIL during warm-up
 chunks and snapshot serialization; these help the Python-side build pipeline

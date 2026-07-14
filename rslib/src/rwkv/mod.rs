@@ -4717,6 +4717,27 @@ impl Linear {
                 out.fill(0.0);
             }
         }
+
+        #[cfg(target_arch = "x86_64")]
+        if rows >= 4 && x86_avx2_fma_available() {
+            // SAFETY: availability was checked above. The helper receives
+            // slices whose dimensions were checked above and only accesses
+            // complete rows and output vectors within those dimensions.
+            unsafe {
+                linear_apply_block_avx2_fma(
+                    inputs,
+                    &self.weight_by_input,
+                    outs,
+                    rows,
+                    self.input,
+                    self.output,
+                );
+            }
+            #[cfg(test)]
+            rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+            return;
+        }
+
         for column in 0..self.input {
             let weight_column =
                 &self.weight_by_input[column * self.output..(column + 1) * self.output];
@@ -4938,6 +4959,206 @@ unsafe fn add_scaled_in_place_avx2_fma(out: &mut [f32], weights: &[f32], scale: 
     while offset < len {
         out[offset] += weights[offset] * scale;
         offset += 1;
+    }
+}
+
+/// Exact four-row linear projection microkernel for AVX2/FMA machines.
+///
+/// Each output accumulator still visits input columns in ascending order and
+/// skips zero scales, matching `Linear::apply_into()`. Changing only the row
+/// and output-vector loop order lets four reviews share each weight load. Two
+/// input columns are handled per inner-loop iteration to reduce loop-control
+/// overhead without changing the per-output accumulation order.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn linear_apply_block_avx2_fma(
+    inputs: &[f32],
+    weights: &[f32],
+    outs: &mut [f32],
+    rows: usize,
+    input: usize,
+    output: usize,
+) {
+    use std::arch::x86_64::*;
+
+    let tiled_rows = rows / 4 * 4;
+    for row_base in (0..tiled_rows).step_by(4) {
+        let mut output_offset = 0;
+        while output_offset + 8 <= output {
+            let mut acc0 = _mm256_loadu_ps(outs.as_ptr().add(row_base * output + output_offset));
+            let mut acc1 =
+                _mm256_loadu_ps(outs.as_ptr().add((row_base + 1) * output + output_offset));
+            let mut acc2 =
+                _mm256_loadu_ps(outs.as_ptr().add((row_base + 2) * output + output_offset));
+            let mut acc3 =
+                _mm256_loadu_ps(outs.as_ptr().add((row_base + 3) * output + output_offset));
+
+            let mut column = 0;
+            while column + 2 <= input {
+                let weight0 =
+                    _mm256_loadu_ps(weights.as_ptr().add(column * output + output_offset));
+                let scale00 = *inputs.get_unchecked(row_base * input + column);
+                let scale10 = *inputs.get_unchecked((row_base + 1) * input + column);
+                let scale20 = *inputs.get_unchecked((row_base + 2) * input + column);
+                let scale30 = *inputs.get_unchecked((row_base + 3) * input + column);
+                if scale00 != 0.0 {
+                    acc0 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale00), acc0);
+                }
+                if scale10 != 0.0 {
+                    acc1 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale10), acc1);
+                }
+                if scale20 != 0.0 {
+                    acc2 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale20), acc2);
+                }
+                if scale30 != 0.0 {
+                    acc3 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale30), acc3);
+                }
+
+                let weight1 =
+                    _mm256_loadu_ps(weights.as_ptr().add((column + 1) * output + output_offset));
+                let scale01 = *inputs.get_unchecked(row_base * input + column + 1);
+                let scale11 = *inputs.get_unchecked((row_base + 1) * input + column + 1);
+                let scale21 = *inputs.get_unchecked((row_base + 2) * input + column + 1);
+                let scale31 = *inputs.get_unchecked((row_base + 3) * input + column + 1);
+                if scale01 != 0.0 {
+                    acc0 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale01), acc0);
+                }
+                if scale11 != 0.0 {
+                    acc1 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale11), acc1);
+                }
+                if scale21 != 0.0 {
+                    acc2 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale21), acc2);
+                }
+                if scale31 != 0.0 {
+                    acc3 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale31), acc3);
+                }
+
+                column += 2;
+            }
+            if column < input {
+                let weight = _mm256_loadu_ps(weights.as_ptr().add(column * output + output_offset));
+                let scale0 = *inputs.get_unchecked(row_base * input + column);
+                let scale1 = *inputs.get_unchecked((row_base + 1) * input + column);
+                let scale2 = *inputs.get_unchecked((row_base + 2) * input + column);
+                let scale3 = *inputs.get_unchecked((row_base + 3) * input + column);
+                if scale0 != 0.0 {
+                    acc0 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale0), acc0);
+                }
+                if scale1 != 0.0 {
+                    acc1 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale1), acc1);
+                }
+                if scale2 != 0.0 {
+                    acc2 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale2), acc2);
+                }
+                if scale3 != 0.0 {
+                    acc3 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale3), acc3);
+                }
+            }
+
+            _mm256_storeu_ps(
+                outs.as_mut_ptr().add(row_base * output + output_offset),
+                acc0,
+            );
+            _mm256_storeu_ps(
+                outs.as_mut_ptr()
+                    .add((row_base + 1) * output + output_offset),
+                acc1,
+            );
+            _mm256_storeu_ps(
+                outs.as_mut_ptr()
+                    .add((row_base + 2) * output + output_offset),
+                acc2,
+            );
+            _mm256_storeu_ps(
+                outs.as_mut_ptr()
+                    .add((row_base + 3) * output + output_offset),
+                acc3,
+            );
+            output_offset += 8;
+        }
+
+        while output_offset < output {
+            let mut acc0 = *outs.get_unchecked(row_base * output + output_offset);
+            let mut acc1 = *outs.get_unchecked((row_base + 1) * output + output_offset);
+            let mut acc2 = *outs.get_unchecked((row_base + 2) * output + output_offset);
+            let mut acc3 = *outs.get_unchecked((row_base + 3) * output + output_offset);
+            let mut column = 0;
+            while column + 2 <= input {
+                let weight0 = *weights.get_unchecked(column * output + output_offset);
+                let scale00 = *inputs.get_unchecked(row_base * input + column);
+                let scale10 = *inputs.get_unchecked((row_base + 1) * input + column);
+                let scale20 = *inputs.get_unchecked((row_base + 2) * input + column);
+                let scale30 = *inputs.get_unchecked((row_base + 3) * input + column);
+                if scale00 != 0.0 {
+                    acc0 += weight0 * scale00;
+                }
+                if scale10 != 0.0 {
+                    acc1 += weight0 * scale10;
+                }
+                if scale20 != 0.0 {
+                    acc2 += weight0 * scale20;
+                }
+                if scale30 != 0.0 {
+                    acc3 += weight0 * scale30;
+                }
+
+                let weight1 = *weights.get_unchecked((column + 1) * output + output_offset);
+                let scale01 = *inputs.get_unchecked(row_base * input + column + 1);
+                let scale11 = *inputs.get_unchecked((row_base + 1) * input + column + 1);
+                let scale21 = *inputs.get_unchecked((row_base + 2) * input + column + 1);
+                let scale31 = *inputs.get_unchecked((row_base + 3) * input + column + 1);
+                if scale01 != 0.0 {
+                    acc0 += weight1 * scale01;
+                }
+                if scale11 != 0.0 {
+                    acc1 += weight1 * scale11;
+                }
+                if scale21 != 0.0 {
+                    acc2 += weight1 * scale21;
+                }
+                if scale31 != 0.0 {
+                    acc3 += weight1 * scale31;
+                }
+
+                column += 2;
+            }
+            if column < input {
+                let weight = *weights.get_unchecked(column * output + output_offset);
+                let scale0 = *inputs.get_unchecked(row_base * input + column);
+                let scale1 = *inputs.get_unchecked((row_base + 1) * input + column);
+                let scale2 = *inputs.get_unchecked((row_base + 2) * input + column);
+                let scale3 = *inputs.get_unchecked((row_base + 3) * input + column);
+                if scale0 != 0.0 {
+                    acc0 += weight * scale0;
+                }
+                if scale1 != 0.0 {
+                    acc1 += weight * scale1;
+                }
+                if scale2 != 0.0 {
+                    acc2 += weight * scale2;
+                }
+                if scale3 != 0.0 {
+                    acc3 += weight * scale3;
+                }
+            }
+            *outs.get_unchecked_mut(row_base * output + output_offset) = acc0;
+            *outs.get_unchecked_mut((row_base + 1) * output + output_offset) = acc1;
+            *outs.get_unchecked_mut((row_base + 2) * output + output_offset) = acc2;
+            *outs.get_unchecked_mut((row_base + 3) * output + output_offset) = acc3;
+            output_offset += 1;
+        }
+    }
+
+    for row in tiled_rows..rows {
+        let out = &mut outs[row * output..(row + 1) * output];
+        for column in 0..input {
+            let scale = *inputs.get_unchecked(row * input + column);
+            if scale == 0.0 {
+                continue;
+            }
+            let weight_column = &weights[column * output..(column + 1) * output];
+            add_scaled_in_place_avx2_fma(out, weight_column, scale);
+        }
     }
 }
 
@@ -5205,15 +5426,16 @@ fn single_timestep_into(
             *value = dot_product(state_row, key_deformed);
         }
 
-        for row in 0..HEAD_SIZE {
-            for column in 0..HEAD_SIZE {
-                let channel = head_base + column;
-                let old = state[matrix_base + row * HEAD_SIZE + column];
-                next_state[matrix_base + row * HEAD_SIZE + column] = old * w[channel]
-                    - state_dot_k[row] * a[channel] * k_deformed[channel]
-                    + v[head_base + row] * k[channel];
-            }
-        }
+        update_recurrence_head(
+            &k[head_base..head_base + HEAD_SIZE],
+            &v[head_base..head_base + HEAD_SIZE],
+            &w[head_base..head_base + HEAD_SIZE],
+            &a[head_base..head_base + HEAD_SIZE],
+            key_deformed,
+            &state[matrix_base..matrix_base + HEAD_SIZE * HEAD_SIZE],
+            &state_dot_k,
+            &mut next_state[matrix_base..matrix_base + HEAD_SIZE * HEAD_SIZE],
+        );
 
         for row in 0..HEAD_SIZE {
             let row_start = matrix_base + row * HEAD_SIZE;
@@ -5235,6 +5457,93 @@ fn single_timestep_into(
         RwkvWarmupProfileBucket::SingleTimestep,
         warmup_profile_started,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn update_recurrence_head(
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    key_deformed: &[f32],
+    state: &[f32],
+    state_dot_k: &[f32; HEAD_SIZE],
+    next_state: &mut [f32],
+) {
+    #[cfg(target_arch = "x86_64")]
+    if x86_avx2_fma_available() {
+        // SAFETY: availability was checked above. Every head is exactly
+        // `HEAD_SIZE` square and `HEAD_SIZE` is a multiple of eight.
+        unsafe {
+            update_recurrence_head_avx2(k, v, w, a, key_deformed, state, state_dot_k, next_state);
+        }
+        return;
+    }
+
+    update_recurrence_head_scalar(k, v, w, a, key_deformed, state, state_dot_k, next_state);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_recurrence_head_scalar(
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    key_deformed: &[f32],
+    state: &[f32],
+    state_dot_k: &[f32; HEAD_SIZE],
+    next_state: &mut [f32],
+) {
+    for row in 0..HEAD_SIZE {
+        for column in 0..HEAD_SIZE {
+            let old = state[row * HEAD_SIZE + column];
+            next_state[row * HEAD_SIZE + column] = old * w[column]
+                - state_dot_k[row] * a[column] * key_deformed[column]
+                + v[row] * k[column];
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2")]
+unsafe fn update_recurrence_head_avx2(
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    key_deformed: &[f32],
+    state: &[f32],
+    state_dot_k: &[f32; HEAD_SIZE],
+    next_state: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+
+    debug_assert_eq!(k.len(), HEAD_SIZE);
+    debug_assert_eq!(v.len(), HEAD_SIZE);
+    debug_assert_eq!(w.len(), HEAD_SIZE);
+    debug_assert_eq!(a.len(), HEAD_SIZE);
+    debug_assert_eq!(key_deformed.len(), HEAD_SIZE);
+    debug_assert_eq!(state.len(), HEAD_SIZE * HEAD_SIZE);
+    debug_assert_eq!(next_state.len(), HEAD_SIZE * HEAD_SIZE);
+
+    for row in 0..HEAD_SIZE {
+        let state_dot = _mm256_set1_ps(state_dot_k[row]);
+        let value = _mm256_set1_ps(v[row]);
+        let row_base = row * HEAD_SIZE;
+        for column in (0..HEAD_SIZE).step_by(8) {
+            let old = _mm256_loadu_ps(state.as_ptr().add(row_base + column));
+            let weighted = _mm256_mul_ps(old, _mm256_loadu_ps(w.as_ptr().add(column)));
+            let penalty = _mm256_mul_ps(
+                _mm256_mul_ps(state_dot, _mm256_loadu_ps(a.as_ptr().add(column))),
+                _mm256_loadu_ps(key_deformed.as_ptr().add(column)),
+            );
+            let injected = _mm256_mul_ps(value, _mm256_loadu_ps(k.as_ptr().add(column)));
+            let updated = _mm256_add_ps(_mm256_sub_ps(weighted, penalty), injected);
+            _mm256_storeu_ps(next_state.as_mut_ptr().add(row_base + column), updated);
+        }
+    }
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -5963,6 +6272,87 @@ mod tests {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn update_recurrence_head_avx2_matches_scalar_bit_exactly() {
+        if !x86_avx2_fma_available() {
+            eprintln!("skipping: AVX2/FMA not available");
+            return;
+        }
+
+        let k = deterministic_simd_values(HEAD_SIZE, 11, 0.0078125);
+        let v = deterministic_simd_values(HEAD_SIZE, 13, -0.015625);
+        let w = deterministic_simd_values(HEAD_SIZE, 17, 0.9921875);
+        let a = deterministic_simd_values(HEAD_SIZE, 19, -0.00390625);
+        let key_deformed = deterministic_simd_values(HEAD_SIZE, 23, 0.01171875);
+        let state = deterministic_simd_values(HEAD_SIZE * HEAD_SIZE, 29, -0.001953125);
+        let state_dot_k_values = deterministic_simd_values(HEAD_SIZE, 31, 0.005859375);
+        let state_dot_k: [f32; HEAD_SIZE] = state_dot_k_values.try_into().unwrap();
+        let mut expected = vec![0.0; HEAD_SIZE * HEAD_SIZE];
+        let mut actual = vec![0.0; HEAD_SIZE * HEAD_SIZE];
+
+        update_recurrence_head_scalar(
+            &k,
+            &v,
+            &w,
+            &a,
+            &key_deformed,
+            &state,
+            &state_dot_k,
+            &mut expected,
+        );
+        // SAFETY: the runtime feature check above confirms AVX2 support.
+        unsafe {
+            update_recurrence_head_avx2(
+                &k,
+                &v,
+                &w,
+                &a,
+                &key_deformed,
+                &state,
+                &state_dot_k,
+                &mut actual,
+            );
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn linear_apply_block_avx2_fma_matches_per_row_path_bit_exactly() {
+        if !x86_avx2_fma_available() {
+            eprintln!("skipping: AVX2/FMA not available");
+            return;
+        }
+
+        let input = 13;
+        let output = 19;
+        let rows = 7;
+        let linear = Linear {
+            input,
+            output,
+            weight_by_input: deterministic_simd_values(input * output, 29, -0.0078125),
+            bias: Some(deterministic_simd_values(output, 11, 0.015625)),
+        };
+        let mut inputs = deterministic_simd_values(rows * input, 17, 0.03125);
+        for index in (0..inputs.len()).step_by(9) {
+            inputs[index] = 0.0;
+        }
+
+        let mut expected = vec![0.0; rows * output];
+        for (input_row, output_row) in inputs
+            .chunks_exact(input)
+            .zip(expected.chunks_exact_mut(output))
+        {
+            linear.apply_into(input_row, output_row);
+        }
+        let mut actual = vec![0.0; rows * output];
+        linear.apply_block_into(&inputs, &mut actual, rows);
+
+        assert_eq!(actual, expected);
+    }
+
     fn sequential_time_mixer_state(steps: &[RwkvScanCapturedStep]) -> Vec<f32> {
         let mut state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
         for step in steps {
@@ -6683,6 +7073,119 @@ order by r.id, r.cid
             .collect()
     }
 
+    fn bulk_benchmark_reviews(count: usize) -> Vec<ReviewInput> {
+        let mut state = 0x243f6a8885a308d3_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as i64
+        };
+        (0..count)
+            .map(|index| {
+                let card_id = 100 + index as i64 % 5_000;
+                ReviewInput {
+                    card_id,
+                    note_id: Some(10_000 + card_id / 2),
+                    deck_id: Some(20_000 + card_id.rem_euclid(8)),
+                    preset_id: Some(30_000 + card_id.rem_euclid(4)),
+                    is_query: false,
+                    ease: Some((next().rem_euclid(4) + 1) as u8),
+                    duration_millis: Some(1_500 + next().rem_euclid(20_000)),
+                    card_type: Some(next().rem_euclid(3)),
+                    day_offset: Some(7_300 + index as i64 / 10),
+                    current_elapsed_days: Some(next().rem_euclid(45) - 1),
+                    current_elapsed_seconds: Some(next().rem_euclid(45 * 86_400) - 1),
+                    target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore]
+    fn rwkv_synthetic_bulk_benchmark() {
+        let rows = scan_bench_env_usize("ANKI_RWKV_SYNTHETIC_BENCH_ROWS", 50_000);
+        let samples = scan_bench_env_usize("ANKI_RWKV_SYNTHETIC_BENCH_SAMPLES", 5).max(1);
+        let warmup_samples = scan_bench_env_usize("ANKI_RWKV_SYNTHETIC_BENCH_WARMUPS", 1);
+        let chunk_rows = std::env::var("ANKI_RWKV_SYNTHETIC_BENCH_CHUNK_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&value| value > 0);
+        let record_predictions = std::env::var("ANKI_RWKV_BULK_BENCH_RECORD_PREDICTIONS")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let model_path = embedded_weights_path().expect("RWKV parity model is missing");
+        let reviews = bulk_benchmark_reviews(rows);
+        let mut timings = Vec::with_capacity(samples);
+        let mut log_losses = Vec::with_capacity(samples);
+
+        println!("synthetic_rows={rows}");
+        println!("samples={samples}");
+        println!("warmup_samples={warmup_samples}");
+        println!("record_predictions={record_predictions}");
+        if let Some(chunk_rows) = chunk_rows {
+            println!("chunk_rows={chunk_rows}");
+        }
+        if let Ok(threads) = std::env::var("RAYON_NUM_THREADS") {
+            println!("rayon_num_threads={threads}");
+        }
+
+        for sample in 0..warmup_samples + samples {
+            let mut inference =
+                RwkvInference::load(model_path.clone(), 0.9, 36_500).expect("RWKV load failed");
+            let sample_reviews = reviews.clone();
+            let started = std::time::Instant::now();
+            let predictions = if let Some(chunk_rows) = chunk_rows {
+                bulk::warm_up_reviews_bulk_fast_query_chunked(
+                    &mut inference,
+                    sample_reviews,
+                    record_predictions,
+                    chunk_rows,
+                )
+            } else {
+                inference.warm_up_reviews(sample_reviews, record_predictions)
+            }
+            .expect("RWKV warm-up failed");
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            let log_loss = record_predictions.then(|| prediction_log_loss(&predictions, &reviews));
+            std::hint::black_box((inference, predictions));
+            if sample < warmup_samples {
+                println!("warmup_{}_ms={elapsed_ms:.3}", sample + 1);
+                if let Some(log_loss) = log_loss {
+                    println!("warmup_{}_log_loss={log_loss:.15}", sample + 1);
+                }
+            } else {
+                println!("sample_{}_ms={elapsed_ms:.3}", sample - warmup_samples + 1);
+                timings.push(elapsed_ms);
+                if let Some(log_loss) = log_loss {
+                    println!(
+                        "sample_{}_log_loss={log_loss:.15}",
+                        sample - warmup_samples + 1
+                    );
+                    log_losses.push(log_loss);
+                }
+            }
+        }
+
+        timings.sort_by(f64::total_cmp);
+        let median_ms = if timings.len() % 2 == 0 {
+            let middle = timings.len() / 2;
+            (timings[middle - 1] + timings[middle]) / 2.0
+        } else {
+            timings[timings.len() / 2]
+        };
+        println!("median_ms={median_ms:.3}");
+        println!("min_ms={:.3}", timings[0]);
+        println!("max_ms={:.3}", timings[timings.len() - 1]);
+        if let Some((&first, rest)) = log_losses.split_first() {
+            assert!(
+                rest.iter().all(|&log_loss| log_loss == first),
+                "logloss changed between benchmark samples: {log_losses:?}"
+            );
+            println!("log_loss={first:.15}");
+        }
+    }
+
     fn sorted_states(mut states: Vec<(i64, Vec<u8>)>) -> Vec<(i64, Vec<u8>)> {
         states.sort_by_key(|(id, _)| *id);
         states
@@ -6763,6 +7266,18 @@ order by r.id, r.cid
         }
     }
 
+    fn prediction_log_loss(predictions: &[(usize, f32)], reviews: &[ReviewInput]) -> f64 {
+        let values = predictions
+            .iter()
+            .map(|(_, prediction)| *prediction)
+            .collect::<Vec<_>>();
+        let outcomes = predictions
+            .iter()
+            .map(|(index, _)| reviews[*index].ease != Some(1))
+            .collect::<Vec<_>>();
+        MetricAccumulator::from_predictions(&values, &outcomes).log_loss
+    }
+
     #[test]
     fn bulk_warm_up_matches_sequential() {
         let Some(weights) = embedded_weights_path() else {
@@ -6781,6 +7296,15 @@ order by r.id, r.cid
                 bulk::warm_up_reviews_bulk(&mut bulk, reviews.clone(), record_predictions).unwrap();
 
             assert_prediction_close(&sequential_predictions, &bulk_predictions, 1e-5);
+            if record_predictions {
+                let sequential_log_loss = prediction_log_loss(&sequential_predictions, &reviews);
+                let bulk_log_loss = prediction_log_loss(&bulk_predictions, &reviews);
+                let log_loss_delta = (bulk_log_loss - sequential_log_loss).abs();
+                assert!(
+                    log_loss_delta <= 1e-7,
+                    "logloss changed: before={sequential_log_loss:.15}, after={bulk_log_loss:.15}, delta={log_loss_delta:.15}"
+                );
+            }
             assert_warm_up_parity(&sequential, &bulk);
             assert_eq!(
                 sequential.cache_state().len(),

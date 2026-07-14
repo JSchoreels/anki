@@ -33,7 +33,7 @@ use super::*;
 
 /// Rows processed per internal chunk. This matches the desktop bridge's
 /// measured sweet spot while bounding scratch-buffer memory for large replays.
-const BULK_CHUNK_ROWS: usize = 16_384;
+const BULK_CHUNK_ROWS: usize = 8_192;
 
 #[derive(Clone, Copy)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -673,35 +673,50 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
     } = input;
     let mixer = &layer.time_mixer;
 
-    let x_norm = normed_rows_from(&mixer.layer_norm, x_snapshot, chunk_rows);
-    let x_norm_query = x_query_snapshot
-        .as_ref()
-        .map(|x_query| normed_rows_from(&mixer.layer_norm, x_query, chunk_rows));
+    let (x_norm, x_norm_query) = if let Some(x_query) = x_query_snapshot {
+        let (answer, query) = rayon::join(
+            || normed_rows_from(&mixer.layer_norm, x_snapshot, chunk_rows),
+            || normed_rows_from(&mixer.layer_norm, x_query, chunk_rows),
+        );
+        (answer, Some(query))
+    } else {
+        (
+            normed_rows_from(&mixer.layer_norm, x_snapshot, chunk_rows),
+            None,
+        )
+    };
 
-    let parts = time_parts(
-        mixer,
-        plan,
-        time_shifts,
-        chunk_start,
-        chunk_rows,
-        &x_norm,
-        &x_norm,
-        v0_snapshot,
-        false,
-    );
-    let parts_query = x_norm_query.as_ref().map(|x_norm_query| {
+    let answer_parts = || {
         time_parts(
             mixer,
             plan,
             time_shifts,
             chunk_start,
             chunk_rows,
-            x_norm_query,
             &x_norm,
-            v0_query_snapshot.expect("query v0 buffer"),
-            approximate_query_projections,
+            &x_norm,
+            v0_snapshot,
+            false,
         )
-    });
+    };
+    let (parts, parts_query) = if let Some(x_norm_query) = x_norm_query.as_ref() {
+        let (answer, query) = rayon::join(answer_parts, || {
+            time_parts(
+                mixer,
+                plan,
+                time_shifts,
+                chunk_start,
+                chunk_rows,
+                x_norm_query,
+                &x_norm,
+                v0_query_snapshot.expect("query v0 buffer"),
+                approximate_query_projections,
+            )
+        });
+        (answer, Some(query))
+    } else {
+        (answer_parts(), None)
+    };
 
     LayerTimeStage {
         chunk_start,
