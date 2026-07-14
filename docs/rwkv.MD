@@ -383,11 +383,14 @@ split, writes training rows with role `final_fit`, writes held-out rows with
 role `test_fold`, and restores the active RWKV backend state afterward. If RWKV
 self-correction is enabled for a deck preset, both state-cache builds and
 calibration-data recomputes write self-corrected predictions for that preset.
-The deck options action **Calibrate RWKV for This Preset** fits a local logistic
-self-correction layer on the train split for the selected deck tree, stores the
-learned coefficients in the deck preset's RWKV `other` config, and writes the
-same role-aware calibration rows. Calibration graph consumers should ignore
-`final_fit` rows and use only `test_fold` plus future `post_optimization` rows.
+The deck options action **Calibrate RWKV for This Preset** first fits a local
+logistic self-correction layer on the chronological 70% train split and reports
+its metrics on the held-out 30%. After validation, it fits a second production
+layer on 100% of the eligible history and stores those final coefficients in the
+deck preset's RWKV `other` config. The role-aware cache rows retain predictions
+from the 70%-trained validation layer, so `test_fold` remains leakage-free.
+Calibration graph consumers should ignore `final_fit` rows and use only
+`test_fold` plus future `post_optimization` rows.
 Add-ons that need these rows can call
 `aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
 The synchronous API returns immediately when current role-aware data is

@@ -3840,7 +3840,7 @@ def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
     assert runtime.reviewed == []
 
 
-def test_train_rwkv_self_correction_calibration_writes_test_fold_and_saves_model(
+def test_train_rwkv_self_correction_calibration_saves_100_percent_final_fit(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -3867,18 +3867,52 @@ def test_train_rwkv_self_correction_calibration_writes_test_fold_and_saves_model
     assert result["available"] is True
     assert result["saved"] is True
     assert result["storedRows"] == len(rows)
+    assert result["finalFit"]["count"] == len(rows)
+    assert "Production fit: 10 reviews (100%)" in (
+        rwkv_scheduler._rwkv_calibration_training_message(result)
+    )
     saved_config = reviewer.mw.col.saved_deck_configs[-1]
     saved_nested = saved_config["other"]["jschoreels.rwkv"]
+    payload = saved_nested["rwkv_review_self_correction_calibration"]
+    assert payload["finalFit"]["count"] == len(rows)
     assert saved_nested["rwkv_review_self_correction_calibration"][
         "featureSignature"
     ] == {
         "presetTagStateEnabled": False,
         "japaneseFeatureStateEnabled": False,
     }
+    history = rwkv_scheduler._historical_rwkv_review_inputs(
+        reviewer,
+        deck_id=100,
+        use_extra_feature_state=True,
+    )
+    samples = rwkv_scheduler._rwkv_self_correction_training_samples(
+        history,
+        {review_id: 0.45 for review_id in history.review_ids},
+    )
+    train_samples, test_samples = (
+        rwkv_scheduler._rwkv_train_test_split_self_correction_samples(samples)
+    )
+    validation_calibration, _ = rwkv_scheduler._rwkv_fit_self_correction_calibration(
+        train_samples
+    )
+    final_calibration, _ = rwkv_scheduler._rwkv_fit_self_correction_calibration(samples)
     assert (
         rwkv_scheduler._rwkv_self_correction_calibration_from_deck_config(saved_config)
-        is not None
+        == final_calibration
     )
+    stored_predictions = {
+        review_id: prediction
+        for review_id, prediction, *_ in reviewer.mw.col.rwkv_retrievability_rows
+    }
+    for sample in test_samples:
+        assert stored_predictions[sample.review_id] == pytest.approx(
+            rwkv_scheduler._rwkv_self_corrected_retrievability(
+                sample.prediction,
+                sample.features,
+                calibration=validation_calibration,
+            )
+        )
     assert [
         (review_id, sample_role, fold_index)
         for review_id, _prediction, _source, _updated_at, sample_role, fold_index in reviewer.mw.col.rwkv_retrievability_rows

@@ -6605,16 +6605,18 @@ def train_rwkv_self_correction_calibration(
         train_samples, test_samples = _rwkv_train_test_split_self_correction_samples(
             samples
         )
-        calibration, iterations = _rwkv_fit_self_correction_calibration(train_samples)
+        validation_calibration, validation_iterations = (
+            _rwkv_fit_self_correction_calibration(train_samples)
+        )
         baseline_train = _rwkv_metrics_for_training_samples(train_samples)
         baseline_test = _rwkv_metrics_for_training_samples(test_samples)
         trained_train = _rwkv_metrics_for_training_samples(
             train_samples,
-            calibration=calibration,
+            calibration=validation_calibration,
         )
         trained_test = _rwkv_metrics_for_training_samples(
             test_samples,
-            calibration=calibration,
+            calibration=validation_calibration,
         )
         fixed_test = _rwkv_metrics_for_training_samples(
             test_samples,
@@ -6622,14 +6624,22 @@ def train_rwkv_self_correction_calibration(
         )
         _report_rwkv_state_cache_progress(
             progress,
-            "Saving RWKV calibration and test-fold rows...",
+            "Fitting final RWKV calibration on all eligible reviews...",
+        )
+        final_calibration, final_fit_iterations = _rwkv_fit_self_correction_calibration(
+            samples
+        )
+        _report_rwkv_state_cache_progress(
+            progress,
+            "Saving 100% final RWKV calibration and held-out test rows...",
         )
         saved = _rwkv_save_self_correction_calibration(
             mw,
             deck_id=deck_id,
             config_id=config_id,
-            calibration=calibration,
+            calibration=final_calibration,
             history=history,
+            final_fit_samples=samples,
             train_samples=train_samples,
             test_samples=test_samples,
             baseline_test=baseline_test,
@@ -6640,7 +6650,7 @@ def train_rwkv_self_correction_calibration(
             mw,
             train_samples=train_samples,
             test_samples=test_samples,
-            calibration=calibration,
+            calibration=validation_calibration,
         )
         result = {
             "available": True,
@@ -6648,7 +6658,10 @@ def train_rwkv_self_correction_calibration(
             "configId": config_id or 0,
             "saved": saved,
             "storedRows": stored_rows,
-            "iterations": iterations,
+            "iterations": final_fit_iterations,
+            "validationIterations": validation_iterations,
+            "finalFitIterations": final_fit_iterations,
+            "finalFit": _rwkv_training_sample_split_summary(samples),
             "split": {
                 "train": _rwkv_training_sample_split_summary(train_samples),
                 "test": _rwkv_training_sample_split_summary(test_samples),
@@ -6667,12 +6680,15 @@ def train_rwkv_self_correction_calibration(
         }
         logger.debug(
             "RWKV calibration training finished: deck_id=%s config_id=%s "
-            "samples=%s train=%s test=%s stored_rows=%s saved=%s elapsed_ms=%.1f",
+            "samples=%s train=%s test=%s validation_iterations=%s "
+            "final_fit_iterations=%s stored_rows=%s saved=%s elapsed_ms=%.1f",
             deck_id,
             config_id,
             len(samples),
             len(train_samples),
             len(test_samples),
+            validation_iterations,
+            final_fit_iterations,
             stored_rows,
             saved,
             (time.monotonic() - start) * 1000,
@@ -6929,11 +6945,19 @@ def _rwkv_calibration_training_message(result: Mapping[str, object]) -> str:
     trained_rmse_bins = _float_value(trained_test.get("rmseBins")) or 0.0
     saved = bool(result.get("saved"))
     stored_rows = _int_value(result.get("storedRows")) or 0
+    final_fit = result.get("finalFit")
+    final_fit_count = (
+        _int_value(final_fit.get("count")) if isinstance(final_fit, Mapping) else None
+    ) or (
+        (_int_value(train_split.get("count")) or 0)
+        + (_int_value(test_split.get("count")) or 0)
+    )
 
     return "\n".join(
         [
             "RWKV calibration training:",
             f"  Saved to preset: {'yes' if saved else 'no'}",
+            f"  Production fit: {final_fit_count:,} reviews (100%)",
             f"  Stored cache rows: {stored_rows:,}",
             "",
             "Held-out test fold:",
@@ -7298,6 +7322,7 @@ def _rwkv_save_self_correction_calibration(
     config_id: int | None,
     calibration: RwkvSelfCorrectionCalibration,
     history: RwkvHistoricalReviewInputs,
+    final_fit_samples: Sequence[RwkvSelfCorrectionTrainingSample],
     train_samples: Sequence[RwkvSelfCorrectionTrainingSample],
     test_samples: Sequence[RwkvSelfCorrectionTrainingSample],
     baseline_test: Mapping[str, float | int],
@@ -7328,6 +7353,7 @@ def _rwkv_save_self_correction_calibration(
         "stds": list(calibration.stds),
         "trainFraction": _RWKV_SELF_CORRECTION_TRAIN_FRACTION,
         "historyReviews": len(history.reviews),
+        "finalFit": _rwkv_training_sample_split_summary(final_fit_samples),
         "train": _rwkv_training_sample_split_summary(train_samples),
         "test": _rwkv_training_sample_split_summary(test_samples),
         "metrics": {
