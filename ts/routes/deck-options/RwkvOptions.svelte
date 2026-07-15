@@ -5,7 +5,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import { DeckId } from "@generated/anki/decks_pb";
     import { UpdateDeckConfigsMode } from "@generated/anki/deck_config_pb";
-    import { Empty, Json } from "@generated/anki/generic_pb";
+    import { Empty } from "@generated/anki/generic_pb";
     import * as tr from "@generated/ftl";
     import { postProto } from "@generated/post";
     import type Carousel from "bootstrap/js/dist/carousel";
@@ -24,7 +24,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SimulatorModal from "./SimulatorModal.svelte";
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
-    import TextInputRow from "./TextInputRow.svelte";
 
     export let state: DeckOptionsState;
     export let onPresetChange: () => void;
@@ -40,14 +39,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
-    let comparingRwkvExtraFeatureMetrics = false;
-    let trainingRwkvCalibration = false;
     let reschedulingRwkvReviewCards = false;
     $: rwkvActionInProgress =
         forceBuildingRwkvStateCache ||
         recomputingRwkvCalibrationData ||
-        comparingRwkvExtraFeatureMetrics ||
-        trainingRwkvCalibration ||
         reschedulingRwkvReviewCards;
 
     const settings = {
@@ -95,18 +90,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewDynamicPresetReplay(),
             help: tr.deckConfigRwkvReviewDynamicPresetReplayTooltip(),
         },
-        rwkvPresetTagState: {
-            title: tr.deckConfigRwkvReviewPresetTagState(),
-            help: tr.deckConfigRwkvReviewPresetTagStateTooltip(),
-        },
-        rwkvJapaneseFeatureState: {
-            title: tr.deckConfigRwkvReviewJapaneseFeatureState(),
-            help: tr.deckConfigRwkvReviewJapaneseFeatureStateTooltip(),
-        },
-        rwkvSelfCorrection: {
-            title: tr.deckConfigRwkvReviewSelfCorrection(),
-            help: tr.deckConfigRwkvReviewSelfCorrectionTooltip(),
-        },
     };
     const settingKeys = Object.keys(settings);
     const helpSections: HelpItem[] = Object.values(settings);
@@ -153,51 +136,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             await postProto("recomputeRwkvCalibrationData", new Empty({}), Empty);
         } finally {
             recomputingRwkvCalibrationData = false;
-        }
-    }
-
-    async function compareRwkvExtraFeatureMetrics(): Promise<void> {
-        comparingRwkvExtraFeatureMetrics = true;
-        try {
-            await commitEditing();
-            await postProto(
-                "compareRwkvExtraFeatureMetrics",
-                rwkvExtraFeatureComparisonRequest(),
-                Empty,
-            );
-        } finally {
-            comparingRwkvExtraFeatureMetrics = false;
-        }
-    }
-
-    function rwkvExtraFeatureComparisonRequest(): Json {
-        return new Json({
-            json: new TextEncoder().encode(
-                JSON.stringify({
-                    deckId: state.getTargetDeckId().toString(),
-                    configId: state.getCurrentConfigId().toString(),
-                    presetTagStateEnabled: $config.rwkvReviewPresetTagStateEnabled,
-                    japaneseFeatureStateEnabled:
-                        $config.rwkvReviewJapaneseFeatureStateEnabled,
-                    selfCorrectionEnabled: $config.rwkvReviewSelfCorrectionEnabled,
-                    japaneseKanjiField: $config.rwkvReviewJapaneseKanjiField,
-                    japaneseReadingField: $config.rwkvReviewJapaneseReadingField,
-                }),
-            ),
-        });
-    }
-
-    async function trainRwkvSelfCorrectionCalibration(): Promise<void> {
-        trainingRwkvCalibration = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto(
-                "trainRwkvSelfCorrectionCalibration",
-                rwkvExtraFeatureComparisonRequest(),
-                Empty,
-            );
-        } finally {
-            trainingRwkvCalibration = false;
         }
     }
 
@@ -393,57 +331,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </SwitchRow>
 
-            <h2 class="rwkv-subheading">Optional Prediction Features</h2>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewPresetTagStateEnabled}
-                defaultValue={defaults.rwkvReviewPresetTagStateEnabled}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvPresetTagState")}>
-                    {tr.deckConfigRwkvReviewPresetTagState()}
-                </SettingTitle>
-            </SwitchRow>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewJapaneseFeatureStateEnabled}
-                defaultValue={defaults.rwkvReviewJapaneseFeatureStateEnabled}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvJapaneseFeatureState")}
-                >
-                    {tr.deckConfigRwkvReviewJapaneseFeatureState()}
-                </SettingTitle>
-            </SwitchRow>
-
-            {#if $config.rwkvReviewJapaneseFeatureStateEnabled}
-                <TextInputRow
-                    bind:value={$config.rwkvReviewJapaneseKanjiField}
-                    defaultValue={defaults.rwkvReviewJapaneseKanjiField}
-                >
-                    <SettingTitle>
-                        {tr.deckConfigRwkvReviewJapaneseKanjiField()}
-                    </SettingTitle>
-                </TextInputRow>
-
-                <TextInputRow
-                    bind:value={$config.rwkvReviewJapaneseReadingField}
-                    defaultValue={defaults.rwkvReviewJapaneseReadingField}
-                >
-                    <SettingTitle>
-                        {tr.deckConfigRwkvReviewJapaneseReadingField()}
-                    </SettingTitle>
-                </TextInputRow>
-            {/if}
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewSelfCorrectionEnabled}
-                defaultValue={defaults.rwkvReviewSelfCorrectionEnabled}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvSelfCorrection")}>
-                    {tr.deckConfigRwkvReviewSelfCorrection()}
-                </SettingTitle>
-            </SwitchRow>
-
             <h2 class="rwkv-subheading">Maintenance</h2>
 
             <div class="d-flex flex-wrap gap-2">
@@ -472,33 +359,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </button>
             </div>
 
-            <h2 class="rwkv-subheading">Compare and Calibrate</h2>
+            <h2 class="rwkv-subheading">Compare</h2>
 
             <div class="d-flex flex-wrap gap-2">
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => compareRwkvExtraFeatureMetrics()}
-                >
-                    {#if comparingRwkvExtraFeatureMetrics}
-                        Training and evaluating optional features...
-                    {:else}
-                        Evaluate optional features (70/30)
-                    {/if}
-                </button>
-
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => trainRwkvSelfCorrectionCalibration()}
-                >
-                    {#if trainingRwkvCalibration}
-                        Calibrating RWKV for This Preset...
-                    {:else}
-                        Calibrate RWKV for This Preset
-                    {/if}
-                </button>
-
                 <button
                     class="btn btn-outline-primary"
                     disabled={rwkvActionInProgress}

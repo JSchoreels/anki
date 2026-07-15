@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import enum
-import json
 import logging
 import mimetypes
 import os
@@ -1088,51 +1087,6 @@ def recompute_rwkv_calibration_data() -> bytes:
     return b""
 
 
-def _json_payload() -> dict[str, object]:
-    payload_request = generic_pb2.Json()
-    payload_request.ParseFromString(request.data)
-    if not payload_request.json:
-        return {}
-    try:
-        value = json.loads(payload_request.json.decode("utf8"))
-    except Exception:
-        logger.debug("failed to decode RWKV request payload")
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def compare_rwkv_extra_feature_metrics() -> bytes:
-    (
-        deck_id,
-        extra_feature_override,
-    ) = aqt.rwkv_scheduler.rwkv_extra_feature_comparison_request_from_payload(
-        _json_payload(),
-    )
-    aqt.rwkv_scheduler.compare_rwkv_extra_feature_metrics_with_progress(
-        aqt.mw,
-        deck_id=deck_id,
-        extra_feature_override=extra_feature_override,
-    )
-    return b""
-
-
-def train_rwkv_self_correction_calibration() -> bytes:
-    (
-        deck_id,
-        config_id,
-        extra_feature_override,
-    ) = aqt.rwkv_scheduler.rwkv_self_correction_training_request_from_payload(
-        _json_payload(),
-    )
-    aqt.rwkv_scheduler.train_rwkv_self_correction_calibration_with_progress(
-        aqt.mw,
-        deck_id=deck_id,
-        config_id=config_id,
-        extra_feature_override=extra_feature_override,
-    )
-    return b""
-
-
 def reschedule_rwkv_review_cards() -> bytes:
     deck_id_request = decks_pb2.DeckId()
     deck_id_request.ParseFromString(request.data)
@@ -1287,8 +1241,6 @@ post_handler_list = [
     build_rwkv_state_cache,
     force_build_rwkv_state_cache,
     recompute_rwkv_calibration_data,
-    compare_rwkv_extra_feature_metrics,
-    train_rwkv_self_correction_calibration,
     reschedule_rwkv_review_cards,
     simulate_rwkv_workload,
     start_rwkv_workload,

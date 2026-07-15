@@ -23,12 +23,7 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
 `rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
-`false`, and
-`rwkv_review_preset_tag_state_enabled`, which defaults to `false`, and
-`rwkv_review_japanese_feature_state_enabled`, which defaults to `false`, and
-`rwkv_review_japanese_kanji_field`, which defaults to `Front`, and
-`rwkv_review_japanese_reading_field`, which defaults to `Reading`, and
-`rwkv_review_self_correction_enabled`, which defaults to `false`.
+`false`.
 
 Development code that reads deck configs through the legacy Python
 `DeckConfigDict` API should tolerate both shapes:
@@ -44,7 +39,11 @@ The warmed RWKV runtime state is stored in a desktop-local profile cache under
 the profile folder. The cache is not part of deck config, is not stored in the
 collection database, and is not synced to mobile or other desktop clients. Cache
 metadata includes the collection identity, RWKV model content identity, last
-processed revlog id, and a count of historical revlogs through that checkpoint.
+processed revlog id, and a count of benchmark-retained historical answers
+through that checkpoint. Historical replay drops cards without a Learning
+start and retains only the sequence beginning at each card's latest Learning
+start, matching the dataset builder. A later card reset therefore invalidates
+any cache checkpoint that still contains the older retained sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Reinstalling or moving the app does not invalidate the cache when the bundled
@@ -55,6 +54,84 @@ collections.
 The cache also stores RWKV ID-feature encodings and the deterministic generator
 state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.
+
+Answered-event state uses the same numeric encoding as the RWKV training
+dataset, not Anki's raw revlog kind: learning `1`, review `2`, relearning `3`,
+filtered `4`, manual `5`, and rescheduled `6`. The retained learning-sequence
+start is `0` in the training data. RWKV subtracts `2` from this value for the
+historical `scaled_state` feature; query rows always use `0` for that feature.
+Changes to this encoding require a state-cache version bump and a full
+recurrent-state cache rebuild. Historical `elapsed_days` likewise follows the
+training data's difference between Anki scheduler-day offsets;
+`elapsed_seconds` remains the wall-clock difference between answers.
+
+### Review Type Contract
+
+Anki's raw revlog kinds and the answered-event states consumed by RWKV are
+related but not interchangeable:
+
+| Answer context | Raw `ReviewKind` | RWKV dataset state |
+| --- | ---: | ---: |
+| First retained learning answer | Learning `0` | `0` |
+| Later learning answer | Learning `0` | `1` |
+| Normal scheduled review | Review `1` | `2` |
+| Relearning step | Relearning `2` | `3` |
+| Filtered/out-of-schedule answer | Filtered `3` | `4` |
+| Rated manual answer | Manual `4` | `5` |
+| Reschedule entry | Rescheduled `5` | `6` |
+
+The dataset builder identifies state `0` from the first answer of the retained
+learning sequence; it is not a separate raw revlog kind. Unrated reschedule
+entries and filtered entries with `factor = 0` are not answer tokens. Live
+answered inputs must use the scheduler state at answer time, before card state
+mutation, instead of copying the persistent card type. When RWKV synthesizes a
+same-day state outside Anki's learning queues, Qt places the corresponding raw
+kind on `CardAnswer`; the Rust answer transaction validates and writes that kind
+to the revlog, so undo and redo keep the card update and review type atomic.
+
+Synthetic scheduling that does not use Anki's learning queues must still track
+the equivalent state transition explicitly:
+
+- A new or reset card starts in Learning. Further answers stay Learning until
+  the simulated step graduates.
+- A normal inter-day review is Review even when RWKV schedules it earlier than
+  a legacy FSRS/SM2 due date. Being early relative to another scheduler does not
+  make a model-scheduled answer Filtered.
+- Review Again followed by another answer on the same scheduler day enters
+  Relearning. Further answers remain Relearning while the simulated relearning
+  step schedules another step.
+- Once Learning or Relearning graduates, another otherwise unsupported
+  same-day answer is Filtered. In particular, Relearning Easy graduates, so a
+  later same-day answer cannot still be Relearning.
+- A same-day repeat after a successful Review answer is Filtered when no normal
+  Review, Learning, or Relearning transition can produce it in the training
+  workflow. On a later scheduler day, an RWKV-scheduled answer is Review.
+- Manual and Rescheduled are reserved for the corresponding Anki operations;
+  they must not be used as generic fallbacks for an unknown state.
+
+`just rwkv-review-type-repair` processes each card chronologically while
+tracking scheduler-day boundaries and the prior effective state/rating. It
+rewrites only `revlog.type`; review id/time, card id, rating, interval, factor,
+duration, and due information remain unchanged. Card-reset entries break the
+inferred sequence, and explicit Filtered answers are preserved. When a real
+Filtered answer hides an original queue state that the revlog cannot
+reconstruct, the row is reported as ambiguous instead of being changed.
+
+The command accepts only an explicit `--collection-copy`, requires the IANA
+timezone that defines historical scheduler days, and defaults to a dry-run:
+
+```sh
+just rwkv-review-type-repair \
+  --collection-copy /path/to/copied/collection.anki2 \
+  --timezone Europe/Brussels \
+  --rollover-hour 4
+```
+
+`--apply-to-copy` makes a sibling backup, applies all `revlog.type` changes in
+one transaction, clears collection-local RWKV retrievability rows, and writes a
+JSON audit containing every changed row and rule. It never locates or opens a
+live profile database. Before using a repaired copy, remove that profile's
+desktop-local `rwkv-state-cache` directory so the recurrent state is rebuilt.
 
 The local state cache is stored as a binary base snapshot plus an append-only
 delta log. A full cache build writes `snapshot-v1.bin` and resets
@@ -198,7 +275,10 @@ reviewer computes each answer button by simulating that rating from the current
 RWKV state. The embedded runtime evaluates the current query plus hypothetical
 Again, Hard, Good, and Easy answer states. Each hypothetical answer state
 returns an RWKV-Curve; Anki uses that curve to find the interval at the target
-retention for that grade.
+retention for that grade. The interval is the first sampled downward crossing
+of the target. A temporary increase while the curve is still above the target
+does not invalidate that crossing; if the curve never reaches the target, the
+configured maximum interval is used.
 
 The target retention is the scheduler's desired retention for the card. If
 Dynamic Desired Retention is active for the scheduling states, RWKV receives the
@@ -380,15 +460,7 @@ short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 The deck options action **Calculate Calibration Graph Data** replays historical
 queries only for this derived table, uses a chronological 70% train / 30% test
 split, writes training rows with role `final_fit`, writes held-out rows with
-role `test_fold`, and restores the active RWKV backend state afterward. If RWKV
-self-correction is enabled for a deck preset, both state-cache builds and
-calibration-data recomputes write self-corrected predictions for that preset.
-The deck options action **Calibrate RWKV for This Preset** first fits a local
-logistic self-correction layer on the chronological 70% train split and reports
-its metrics on the held-out 30%. After validation, it fits a second production
-layer on 100% of the eligible history and stores those final coefficients in the
-deck preset's RWKV `other` config. The role-aware cache rows retain predictions
-from the 70%-trained validation layer, so `test_fold` remains leakage-free.
+role `test_fold`, and restores the active RWKV backend state afterward.
 Calibration graph consumers should ignore `final_fit` rows and use only
 `test_fold` plus future `post_optimization` rows.
 Add-ons that need these rows can call
@@ -396,18 +468,6 @@ Add-ons that need these rows can call
 The synchronous API returns immediately when current role-aware data is
 complete; otherwise it performs the same calibration-only replay while
 snapshotting and restoring active reviewer state.
-The deck options action **Evaluate optional features (70/30)** runs an in-memory
-chronological evaluation for the selected preset and restores the active RWKV
-backend state afterward. The first 70% of its eligible reviews warm the
-user-specific tag and Japanese recurrent states and fit a user-specific
-self-correction layer. Each feature is evaluated independently on the same final
-30% of review ids.
-Predictions are recorded before each held-out answer, then the recurrent state is
-updated with that answer before the next prediction, matching online review-time
-use. The popup reports held-out log loss and RMSE(bins) for each feature and
-recommends a toggle only when both metrics improve over clean RWKV. The comparison
-does not change the preset. If self-correction is recommended, **Calibrate RWKV
-for This Preset** persists the user-trained correction layer.
 
 ## Inference Runtime
 
@@ -466,33 +526,6 @@ target retention, current deck id, batch size, and current elapsed fields, then
 Python only materializes `RwkvReviewInput` objects and batches R-only
 predictions. If the backend method is unavailable, desktop Anki falls back to
 the older Python SQL row builder.
-
-When `rwkv_review_preset_tag_state_enabled` is enabled on a preset, RWKV folds
-the card's current non-outcome note tags into the preset stream identity. This
-lets source or content tags build separate RWKV preset memory without creating
-real scheduler presets. Tags that look like review outcomes are ignored,
-including `leech`, AnkiMorphs `am-*` status tags, and tags with components such
-as `fail`, `lapse`, `wrong`, or `missed`. Current note tags are used for both
-live queries and historical replay, so this remains an approximation for old
-reviews.
-
-When `rwkv_review_japanese_feature_state_enabled` is enabled on a preset, RWKV
-folds a coarse Japanese feature bucket into the preset stream identity. The
-bucket is derived from the configured Kanji field (default `Front`), configured
-Reading field (default `Reading`), and the note's `Front_Kana` and `Frequency`
-fields when present. The bucket includes word length, reading length, kanji
-count, kana count, kanji ratio, front-kana length, rough text shape, and
-frequency rank bin. It does not use note tags.
-
-When `rwkv_review_self_correction_enabled` is enabled on a preset,
-Anki applies a fixed post-RWKV correction layer to retrievability scores. The
-layer uses the raw prediction confidence bin, local hour, elapsed days, prior
-review count, lapse count, and whether the card is in a long-term review. It was
-fit on the Yomitan deck train/test split as a lightweight calibration layer. The
-correction changes displayed/card-info retrievability, stats graph scores, and
-queue-order scores, but it does not retrain RWKV, change the RWKV recurrent
-state, or change RWKV-Curve answer intervals, maintenance projections, or
-simulator projections.
 
 ### Query Prediction Memoization
 
@@ -893,9 +926,7 @@ rules can be applied consistently to newer revlogs after a restart. If the
 count of historical revlogs through the cached checkpoint changes, if the
 configured RWKV model content changes, or if the local cache schema changes, the
 cache is treated as stale and rebuilt from history. Changing
-`rwkv_review_dynamic_preset_replay`, `rwkv_review_preset_tag_state_enabled`,
-`rwkv_review_japanese_feature_state_enabled`, or the configured Japanese
-Kanji/Reading field names also makes the cache stale, because the same
+`rwkv_review_dynamic_preset_replay` also makes the cache stale, because the same
 historical reviews may be replayed into different preset streams.
 
 ## Review Undo And Redo

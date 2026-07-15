@@ -22,8 +22,6 @@ use super::DeckConfigId;
 use super::DeckConfigInner;
 use super::NewCardInsertOrder;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
-use super::DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD;
-use super::DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD;
 use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
 use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
@@ -148,22 +146,6 @@ pub struct DeckConfSchema11 {
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_candidate_refresh_enabled: bool,
     #[serde(default, skip_serializing_if = "is_false")]
-    rwkv_review_preset_tag_state_enabled: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    rwkv_review_japanese_feature_state_enabled: bool,
-    #[serde(
-        default = "default_rwkv_review_japanese_kanji_field",
-        skip_serializing_if = "is_default_or_blank_rwkv_review_japanese_kanji_field"
-    )]
-    rwkv_review_japanese_kanji_field: String,
-    #[serde(
-        default = "default_rwkv_review_japanese_reading_field",
-        skip_serializing_if = "is_default_or_blank_rwkv_review_japanese_reading_field"
-    )]
-    rwkv_review_japanese_reading_field: String,
-    #[serde(default, skip_serializing_if = "is_false")]
-    rwkv_review_self_correction_enabled: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_first_review_elapsed_from_card_creation: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
@@ -219,24 +201,6 @@ fn default_rwkv_review_refresh_interval() -> u32 {
 
 fn is_default_or_zero_rwkv_review_refresh_interval(value: &u32) -> bool {
     *value == 0 || *value == default_rwkv_review_refresh_interval()
-}
-
-fn default_rwkv_review_japanese_kanji_field() -> String {
-    DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD.to_string()
-}
-
-fn default_rwkv_review_japanese_reading_field() -> String {
-    DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD.to_string()
-}
-
-fn is_default_or_blank_rwkv_review_japanese_kanji_field(value: &str) -> bool {
-    let value = value.trim();
-    value.is_empty() || value == DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD
-}
-
-fn is_default_or_blank_rwkv_review_japanese_reading_field(value: &str) -> bool {
-    let value = value.trim();
-    value.is_empty() || value == DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -493,11 +457,6 @@ impl Default for DeckConfSchema11 {
             rwkv_review_instant_order_enabled: false,
             rwkv_review_dynamic_preset_replay: false,
             rwkv_review_candidate_refresh_enabled: false,
-            rwkv_review_preset_tag_state_enabled: false,
-            rwkv_review_japanese_feature_state_enabled: false,
-            rwkv_review_japanese_kanji_field: default_rwkv_review_japanese_kanji_field(),
-            rwkv_review_japanese_reading_field: default_rwkv_review_japanese_reading_field(),
-            rwkv_review_self_correction_enabled: false,
             rwkv_review_first_review_elapsed_from_card_creation: false,
             easy_days_percentages: vec![1.0; 7],
         }
@@ -567,12 +526,6 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_instant_order_enabled: c.rwkv_review_instant_order_enabled,
             rwkv_review_dynamic_preset_replay: c.rwkv_review_dynamic_preset_replay,
             rwkv_review_candidate_refresh_enabled: c.rwkv_review_candidate_refresh_enabled,
-            rwkv_review_preset_tag_state_enabled: c.rwkv_review_preset_tag_state_enabled,
-            rwkv_review_japanese_feature_state_enabled: c
-                .rwkv_review_japanese_feature_state_enabled,
-            rwkv_review_japanese_kanji_field: c.rwkv_review_japanese_kanji_field,
-            rwkv_review_japanese_reading_field: c.rwkv_review_japanese_reading_field,
-            rwkv_review_self_correction_enabled: c.rwkv_review_self_correction_enabled,
             rwkv_review_first_review_elapsed_from_card_creation: c
                 .rwkv_review_first_review_elapsed_from_card_creation,
             disable_autoplay: !c.autoplay,
@@ -769,12 +722,6 @@ impl From<DeckConfig> for DeckConfSchema11 {
             rwkv_review_instant_order_enabled: i.rwkv_review_instant_order_enabled,
             rwkv_review_dynamic_preset_replay: i.rwkv_review_dynamic_preset_replay,
             rwkv_review_candidate_refresh_enabled: i.rwkv_review_candidate_refresh_enabled,
-            rwkv_review_preset_tag_state_enabled: i.rwkv_review_preset_tag_state_enabled,
-            rwkv_review_japanese_feature_state_enabled: i
-                .rwkv_review_japanese_feature_state_enabled,
-            rwkv_review_japanese_kanji_field: i.rwkv_review_japanese_kanji_field,
-            rwkv_review_japanese_reading_field: i.rwkv_review_japanese_reading_field,
-            rwkv_review_self_correction_enabled: i.rwkv_review_self_correction_enabled,
             rwkv_review_first_review_elapsed_from_card_creation: i
                 .rwkv_review_first_review_elapsed_from_card_creation,
             easy_days_percentages: i.easy_days_percentages,
@@ -1068,81 +1015,6 @@ mod test {
 
         let serialized = serde_json::to_value(config)?;
         assert_eq!(serialized["rwkvReviewCandidateRefreshEnabled"], json!(true));
-
-        Ok(())
-    }
-
-    #[test]
-    fn rwkv_preset_tag_state_omits_default_and_serializes_enabled() -> Result<()> {
-        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
-        assert!(serialized.get("rwkvReviewPresetTagStateEnabled").is_none());
-
-        let config = DeckConfSchema11 {
-            rwkv_review_preset_tag_state_enabled: true,
-            ..DeckConfSchema11::default()
-        };
-
-        let serialized = serde_json::to_value(config)?;
-        assert_eq!(serialized["rwkvReviewPresetTagStateEnabled"], json!(true));
-
-        Ok(())
-    }
-
-    #[test]
-    fn rwkv_japanese_feature_state_omits_default_and_serializes_enabled() -> Result<()> {
-        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
-        assert!(serialized
-            .get("rwkvReviewJapaneseFeatureStateEnabled")
-            .is_none());
-
-        let config = DeckConfSchema11 {
-            rwkv_review_japanese_feature_state_enabled: true,
-            ..DeckConfSchema11::default()
-        };
-
-        let serialized = serde_json::to_value(config)?;
-        assert_eq!(
-            serialized["rwkvReviewJapaneseFeatureStateEnabled"],
-            json!(true)
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn rwkv_japanese_feature_fields_omit_default_and_serialize_custom() -> Result<()> {
-        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
-        assert!(serialized.get("rwkvReviewJapaneseKanjiField").is_none());
-        assert!(serialized.get("rwkvReviewJapaneseReadingField").is_none());
-
-        let config = DeckConfSchema11 {
-            rwkv_review_japanese_kanji_field: "Expression".to_string(),
-            rwkv_review_japanese_reading_field: "Kana".to_string(),
-            ..DeckConfSchema11::default()
-        };
-
-        let serialized = serde_json::to_value(config)?;
-        assert_eq!(
-            serialized["rwkvReviewJapaneseKanjiField"],
-            json!("Expression")
-        );
-        assert_eq!(serialized["rwkvReviewJapaneseReadingField"], json!("Kana"));
-
-        Ok(())
-    }
-
-    #[test]
-    fn rwkv_self_correction_omits_default_and_serializes_enabled() -> Result<()> {
-        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
-        assert!(serialized.get("rwkvReviewSelfCorrectionEnabled").is_none());
-
-        let config = DeckConfSchema11 {
-            rwkv_review_self_correction_enabled: true,
-            ..DeckConfSchema11::default()
-        };
-
-        let serialized = serde_json::to_value(config)?;
-        assert_eq!(serialized["rwkvReviewSelfCorrectionEnabled"], json!(true));
 
         Ok(())
     }

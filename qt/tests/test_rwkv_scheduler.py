@@ -31,6 +31,7 @@ from aqt.rwkv_scheduler import (
     RwkvReviewInput,
     RwkvReviewPrediction,
     RwkvReviewPredictionRequest,
+    RwkvReviewState,
     RwkvReviewTransition,
     RwkvStatefulReviewerBackend,
     RwkvWarmUpProgress,
@@ -169,22 +170,6 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
     assert rwkv_scheduler.reviewer_queue_order_refresh_due(reviewer)
 
 
-def test_rwkv_self_correction_reads_direct_and_nested_config() -> None:
-    assert rwkv_scheduler._rwkv_review_self_correction_enabled(
-        {"rwkvReviewSelfCorrectionEnabled": True}
-    )
-    assert rwkv_scheduler._rwkv_review_self_correction_enabled(
-        {
-            "other": {
-                "jschoreels.rwkv": {
-                    "rwkv_review_self_correction_enabled": True,
-                }
-            }
-        }
-    )
-    assert not rwkv_scheduler._rwkv_review_self_correction_enabled({})
-
-
 def test_rwkv_first_review_elapsed_source_reads_direct_and_nested_config() -> None:
     assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
         {"rwkvReviewFirstReviewElapsedFromCardCreation": True}
@@ -240,157 +225,6 @@ def test_rwkv_review_queue_score_config_key_includes_first_review_elapsed_mode()
     assert rwkv_scheduler._rwkv_review_queue_score_config_key(
         missing_elapsed
     ) != rwkv_scheduler._rwkv_review_queue_score_config_key(card_creation_elapsed)
-
-
-def test_rwkv_extra_feature_override_patches_nested_config() -> None:
-    config = {
-        "id": 1000,
-        "rwkvReviewPresetTagStateEnabled": False,
-        "rwkvReviewJapaneseFeatureStateEnabled": False,
-        "rwkvReviewSelfCorrectionEnabled": False,
-        "other": {
-            "jschoreels.rwkv": {
-                "rwkv_review_preset_tag_state_enabled": False,
-                "rwkv_review_japanese_feature_state_enabled": False,
-                "rwkv_review_self_correction_enabled": False,
-            }
-        },
-    }
-    override = rwkv_scheduler.RwkvExtraFeatureConfigOverride(
-        deck_id=100,
-        config_id=1000,
-        preset_tag_state_enabled=True,
-        japanese_feature_state_enabled=True,
-        self_correction_enabled=True,
-        japanese_kanji_field="Expression",
-        japanese_reading_field="Reading",
-    )
-
-    patched = rwkv_scheduler._rwkv_deck_config_with_extra_feature_override(
-        config,
-        override,
-        deck_id=100,
-    )
-
-    assert isinstance(patched, dict)
-    assert rwkv_scheduler._rwkv_review_preset_tag_state_enabled(patched)
-    assert rwkv_scheduler._rwkv_review_japanese_feature_state_enabled(patched)
-    assert rwkv_scheduler._rwkv_review_self_correction_enabled(patched)
-    assert rwkv_scheduler._rwkv_japanese_feature_field_names(patched) == (
-        "Expression",
-        "Reading",
-    )
-    assert not rwkv_scheduler._rwkv_review_self_correction_enabled(config)
-
-
-def test_rwkv_extra_feature_comparison_payload_parses_string_ids() -> None:
-    deck_id, override = (
-        rwkv_scheduler.rwkv_extra_feature_comparison_request_from_payload(
-            {
-                "deckId": "100",
-                "configId": "1000",
-                "presetTagStateEnabled": True,
-                "japaneseFeatureStateEnabled": False,
-                "selfCorrectionEnabled": True,
-                "japaneseKanjiField": " Expression ",
-                "japaneseReadingField": "Reading",
-            }
-        )
-    )
-
-    assert deck_id == 100
-    assert override == rwkv_scheduler.RwkvExtraFeatureConfigOverride(
-        deck_id=100,
-        config_id=1000,
-        preset_tag_state_enabled=True,
-        japanese_feature_state_enabled=False,
-        self_correction_enabled=True,
-        japanese_kanji_field="Expression",
-        japanese_reading_field="Reading",
-    )
-
-
-def test_rwkv_japanese_feature_state_reads_direct_and_nested_config() -> None:
-    assert rwkv_scheduler._rwkv_review_japanese_feature_state_enabled(
-        {"rwkvReviewJapaneseFeatureStateEnabled": True}
-    )
-    assert rwkv_scheduler._rwkv_review_japanese_feature_state_enabled(
-        {
-            "other": {
-                "jschoreels.rwkv": {
-                    "rwkv_review_japanese_feature_state_enabled": True,
-                }
-            }
-        }
-    )
-    assert not rwkv_scheduler._rwkv_review_japanese_feature_state_enabled({})
-
-
-def test_rwkv_japanese_feature_field_names_read_direct_and_nested_config() -> None:
-    assert rwkv_scheduler._rwkv_japanese_feature_field_names(
-        {
-            "rwkvReviewJapaneseKanjiField": "Expression",
-            "rwkvReviewJapaneseReadingField": "Kana",
-        }
-    ) == ("Expression", "Kana")
-    assert rwkv_scheduler._rwkv_japanese_feature_field_names(
-        {
-            "other": {
-                "jschoreels.rwkv": {
-                    "rwkv_review_japanese_kanji_field": "Vocabulary",
-                    "rwkv_review_japanese_reading_field": "Furigana",
-                }
-            }
-        }
-    ) == ("Vocabulary", "Furigana")
-    assert rwkv_scheduler._rwkv_japanese_feature_field_names(
-        {
-            "rwkvReviewJapaneseKanjiField": "  ",
-            "rwkvReviewJapaneseReadingField": "",
-        }
-    ) == ("Front", "Reading")
-
-
-def test_rwkv_japanese_feature_state_cache_key_reads_all_configs() -> None:
-    reviewer = _rwkv_reviewer(rwkv_review_japanese_feature_state_enabled=True)
-
-    assert rwkv_scheduler._rwkv_japanese_feature_state_cache_key(reviewer) == (
-        (100, True, "Front", "Reading"),
-    )
-
-
-def test_scores_from_input_predictions_self_corrects_selected_cards() -> None:
-    inputs = [
-        (1, _rwkv_review_input(card_id=1, note_id=10)),
-        (2, _rwkv_review_input(card_id=2, note_id=20)),
-    ]
-    predictions = [
-        RwkvReviewPrediction(retrievability=0.15),
-        RwkvReviewPrediction(retrievability=0.15),
-    ]
-    features = rwkv_scheduler._rwkv_self_correction_features_for_input(
-        inputs[0][1],
-        now_seconds=43_200,
-    )
-
-    scores = rwkv_scheduler._scores_from_input_predictions(
-        inputs,
-        predictions,
-        self_correction_features_by_card_id={1: features},
-    )
-
-    assert scores == [
-        (
-            1,
-            pytest.approx(
-                rwkv_scheduler._rwkv_self_corrected_retrievability(
-                    0.15,
-                    features,
-                )
-            ),
-        ),
-        (2, pytest.approx(0.15)),
-    ]
 
 
 def test_rwkv_workload_fallback_grade_probabilities_shift_with_retrievability() -> None:
@@ -1535,35 +1369,6 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
     assert states.good.normal.review.scheduled_days == 3
 
 
-def test_reviewer_rwkv_prediction_self_corrects_when_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: 43_200)
-    runtime = _SharedReviewRuntime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_reviewer(rwkv_review_self_correction_enabled=True)
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
-    states = SchedulingStates()
-    states.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
-
-    updated = update_reviewer_scheduling_states(states, reviewer, card)
-
-    assert current_reviewer_retrievability(reviewer, card) == pytest.approx(
-        rwkv_scheduler._rwkv_self_corrected_retrievability(
-            0.45,
-            rwkv_scheduler._rwkv_self_correction_features_for_card(
-                reviewer,
-                card,
-                now_seconds=43_200,
-            ),
-        )
-    )
-    assert updated is not states
-    assert updated.good.normal.review.scheduled_days == 5
-    assert states.good.normal.review.scheduled_days == 3
-
-
 def test_reviewer_rwkv_prediction_overrides_all_grade_intervals_and_s90() -> None:
     class Backend:
         def predict_review(
@@ -1673,6 +1478,120 @@ def test_rwkv_review_input_uses_dynamic_desired_retention_per_grade() -> None:
     )
 
     assert review_input.target_retentions == pytest.approx((0.81, 0.82, 0.83, 0.84))
+
+
+def test_rwkv_review_input_encodes_filtered_state_like_training_data() -> None:
+    reviewer = _rwkv_reviewer()
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.filtered.preview.scheduled_secs = 60
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=3,
+    )
+
+    assert review_input.current_state_kind == "filtered"
+    assert review_input.card_type == int(rwkv_scheduler.RwkvReviewState.FILTERED)
+
+
+@pytest.mark.parametrize(
+    ("review_kind", "expected_state"),
+    [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)],
+)
+def test_historical_review_kind_maps_to_training_dataset_state(
+    review_kind: int,
+    expected_state: int,
+) -> None:
+    assert rwkv_scheduler._historical_review_state(review_kind) == expected_state
+
+
+def test_historical_learning_start_maps_to_zero_and_resets_retained_sequence() -> None:
+    rows = [
+        (1_000, 1, 10, 100, 3, 100, 0, 1, 2500),
+        (2_000, 1, 10, 100, 3, 100, 1, 2, 2500),
+        (3_000, 1, 10, 100, 3, 100, 0, 1, 2500),
+        (4_000, 1, 10, 100, 3, 100, 0, 1, 2500),
+        (5_000, 1, 10, 100, 3, 100, 1, 3, 2500),
+        (6_000, 2, 20, 100, 3, 100, 1, 3, 2500),
+    ]
+
+    retained = rwkv_scheduler._benchmark_retained_historical_review_rows(rows)
+
+    assert [(row[0], state) for row, state in retained] == [
+        (3_000, 0),
+        (4_000, 1),
+        (5_000, 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("previous_kind", "previous_ease", "expected_state"),
+    [
+        (1, 1, RwkvReviewState.RELEARNING),
+        (1, 3, RwkvReviewState.FILTERED),
+        (2, 1, RwkvReviewState.RELEARNING),
+        (2, 2, RwkvReviewState.RELEARNING),
+        (2, 3, RwkvReviewState.FILTERED),
+        (2, 4, RwkvReviewState.FILTERED),
+        (0, 3, RwkvReviewState.FILTERED),
+        (3, 3, RwkvReviewState.REVIEW),
+    ],
+)
+def test_live_same_day_review_uses_scheduler_valid_synthetic_state(
+    previous_kind: int,
+    previous_ease: int,
+    expected_state: RwkvReviewState,
+) -> None:
+    reviewer = _rwkv_reviewer()
+    previous_id = (42 * 86_400 + 50) * 1000
+    reviewer.mw.col.db = SimpleNamespace(
+        first=lambda sql, card_id: (previous_id, previous_ease, previous_kind)
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_state = rwkv_scheduler._rwkv_review_state_for_live_context(
+        reviewer,
+        card,
+        base_review_state=int(RwkvReviewState.REVIEW),
+        answered_at_millis=(42 * 86_400 + 100) * 1000,
+    )
+
+    assert review_state == int(expected_state)
+
+
+def test_live_interday_rwkv_answer_remains_review() -> None:
+    reviewer = _rwkv_reviewer()
+    previous_id = (41 * 86_400 + 50) * 1000
+    reviewer.mw.col.db = SimpleNamespace(first=lambda sql, card_id: (previous_id, 1, 1))
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_state = rwkv_scheduler._rwkv_review_state_for_live_context(
+        reviewer,
+        card,
+        base_review_state=int(RwkvReviewState.REVIEW),
+        answered_at_millis=(42 * 86_400 + 100) * 1000,
+    )
+
+    assert review_state == int(RwkvReviewState.REVIEW)
+
+
+def test_live_review_after_explicit_filtered_answer_respects_scheduler_state() -> None:
+    reviewer = _rwkv_reviewer()
+    previous_id = (42 * 86_400 + 50) * 1000
+    reviewer.mw.col.db = SimpleNamespace(first=lambda sql, card_id: (previous_id, 3, 3))
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    review_state = rwkv_scheduler._rwkv_review_state_for_live_context(
+        reviewer,
+        card,
+        base_review_state=int(RwkvReviewState.REVIEW),
+        answered_at_millis=(42 * 86_400 + 100) * 1000,
+    )
+
+    assert review_state == int(RwkvReviewState.REVIEW)
 
 
 def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
@@ -2007,6 +1926,47 @@ def test_set_answer_rwkv_metadata_sets_retrievability_and_selected_s90() -> None
 
     assert answer.rwkv_s90 == pytest.approx(20)
     assert answer.rwkv_retrievability == pytest.approx(0.62)
+    assert answer.rwkv_review_kind == 1
+
+
+def test_set_answer_rwkv_metadata_persists_same_day_relearning_kind() -> None:
+    reviewer = _rwkv_reviewer()
+    previous_id = (42 * 86_400 + 50) * 1000
+    reviewer.mw.col.db = SimpleNamespace(first=lambda sql, card_id: (previous_id, 1, 1))
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    answer = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+
+    assert answer.rwkv_review_kind == 2
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=3,
+    )
+    assert review_input.card_type == int(RwkvReviewState.RELEARNING)
+    assert review_input.card_queue == int(rwkv_scheduler.QUEUE_TYPE_DAY_LEARN_RELEARN)
+    assert review_input.current_normal_state_kind == "relearning"
+
+
+def test_live_synthetic_filtered_state_chains_within_reviewer_session() -> None:
+    reviewer = _rwkv_reviewer()
+    first_id = (42 * 86_400 + 50) * 1000
+    second_id = (42 * 86_400 + 100) * 1000
+    latest = [(first_id, 3, 1)]
+    reviewer.mw.col.db = SimpleNamespace(first=lambda sql, card_id: latest[0])
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    first_answer = SimpleNamespace(answered_at_millis=second_id)
+
+    rwkv_scheduler.set_answer_rwkv_metadata(first_answer, reviewer, card, ease=3)
+    record_reviewer_answer(reviewer, card, ease=3)
+
+    assert first_answer.rwkv_review_kind == 3
+    latest[0] = (second_id, 3, 3)
+    next_answer = SimpleNamespace(answered_at_millis=second_id + 1_000)
+    rwkv_scheduler.set_answer_rwkv_metadata(next_answer, reviewer, card, ease=3)
+    assert next_answer.rwkv_review_kind == 3
 
 
 def test_stateful_reviewer_backend_batches_runtime_predictions() -> None:
@@ -2569,6 +2529,22 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
     assert deck_config.reviews[0].current_elapsed_days == 3
 
 
+def test_historical_rwkv_inputs_use_scheduler_days_for_elapsed_days() -> None:
+    first_review = (40 * 86_400 + 86_300) * 1000
+    second_review = (41 * 86_400 + 100) * 1000
+    reviewer = _rwkv_reviewer(
+        historical_review_rows=[
+            (first_review, 1, 10, 100, 3, 1234, 1, 3, 2500),
+            (second_review, 1, 10, 100, 3, 2345, 1, 5, 2500),
+        ],
+    )
+
+    history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+
+    assert history.reviews[1].current_elapsed_seconds == 200
+    assert history.reviews[1].current_elapsed_days == 1
+
+
 def test_compare_rwkv_first_review_elapsed_metrics_reports_logloss_change() -> None:
     class ElapsedRuntime:
         def review(
@@ -2654,72 +2630,6 @@ def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
     ]
 
 
-def test_reviewer_rwkv_warmup_folds_clean_tags_into_preset_state() -> None:
-    review_id = (40 * 86_400 + 100) * 1000
-    runtime = _SharedReviewRuntime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_reviewer(
-        rwkv_review_preset_tag_state_enabled=True,
-        historical_review_rows=[
-            (
-                review_id,
-                1,
-                10,
-                100,
-                2,
-                1234,
-                1,
-                3,
-                2500,
-                "Yomitan leech am-ready moeway-debut-idol-fail Claude-Translated",
-            ),
-        ],
-    )
-
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-
-    assert runtime.answered_inputs[0].identity.preset_id == _expected_preset_hash(
-        "rwkv-preset-tags:1000:Claude-Translated\x1fYomitan"
-    )
-
-
-def test_reviewer_rwkv_warmup_folds_japanese_features_into_preset_state() -> None:
-    review_id = (40 * 86_400 + 100) * 1000
-    runtime = _SharedReviewRuntime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_reviewer(
-        rwkv_review_japanese_feature_state_enabled=True,
-        historical_review_rows=[
-            (
-                review_id,
-                1,
-                10,
-                100,
-                2,
-                1234,
-                1,
-                3,
-                2500,
-                None,
-                "食べる\x1fたべる\x1fたべる\x1f1234",
-                0,
-                1,
-                2,
-                3,
-            ),
-        ],
-    )
-
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-
-    assert runtime.answered_inputs[0].identity.preset_id == _expected_preset_hash(
-        "rwkv-japanese-features:1000:"
-        "wl:3|rl:3|kc:1|kana:2|kr:3|shape:mixed|fkl:3|freq:1001-2000"
-    )
-
-
 def test_reviewer_rwkv_warmup_skips_historical_interval_split_rules_by_default() -> (
     None
 ):
@@ -2757,129 +2667,6 @@ def test_reviewer_rwkv_warmup_skips_historical_interval_split_rules_by_default()
         1000,
     ]
     assert rpc.preset_id_calls == []
-
-
-def test_rwkv_review_identity_folds_clean_tags_into_preset_state() -> None:
-    reviewer = _rwkv_reviewer(rwkv_review_preset_tag_state_enabled=True)
-    reviewer.mw.col.get_note = lambda note_id: SimpleNamespace(
-        tags=[
-            "Yomitan",
-            "leech",
-            "am-ready",
-            "moeway-debut-idol-fail",
-            "Claude-Translated",
-        ]
-    )
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
-
-    identity = rwkv_review_identity(reviewer, card)
-
-    assert identity is not None
-    assert identity.preset_id == _expected_preset_hash(
-        "rwkv-preset-tags:1000:Claude-Translated\x1fYomitan"
-    )
-
-
-def test_rwkv_japanese_feature_bucket_uses_coarse_word_features() -> None:
-    assert (
-        rwkv_scheduler._rwkv_japanese_feature_bucket(
-            ("食べる", "たべる", "たべる", "1234")
-        )
-        == "wl:3|rl:3|kc:1|kana:2|kr:3|shape:mixed|fkl:3|freq:1001-2000"
-    )
-
-
-def test_rwkv_review_identity_folds_japanese_features_into_preset_state() -> None:
-    reviewer = _rwkv_reviewer(rwkv_review_japanese_feature_state_enabled=True)
-    card = _rwkv_card(
-        card_id=1,
-        note_id=10,
-        duration_millis=1234,
-        japanese_features=("食べる", "たべる", "たべる", "1234"),
-    )
-
-    identity = rwkv_review_identity(reviewer, card)
-
-    assert identity is not None
-    assert identity.preset_id == _expected_preset_hash(
-        "rwkv-japanese-features:1000:"
-        "wl:3|rl:3|kc:1|kana:2|kr:3|shape:mixed|fkl:3|freq:1001-2000"
-    )
-
-
-def test_rwkv_review_identity_uses_custom_japanese_feature_fields() -> None:
-    captured_args: list[tuple[object, ...]] = []
-
-    class DB:
-        def all(self, _sql: str, *args: object) -> list[tuple[object, ...]]:
-            captured_args.append(args)
-            return [
-                (
-                    10,
-                    "たべる\x1f食べる\x1fたべる\x1f1234",
-                    1,
-                    0,
-                    2,
-                    3,
-                )
-            ]
-
-    reviewer = _rwkv_reviewer(
-        rwkv_review_japanese_feature_state_enabled=True,
-        rwkv_review_japanese_kanji_field="Back",
-        rwkv_review_japanese_reading_field="Front",
-    )
-    reviewer.mw.col.db = DB()
-    card = _rwkv_card(
-        card_id=1,
-        note_id=10,
-        duration_millis=1234,
-        japanese_features=("読まない", "", "", ""),
-    )
-
-    identity = rwkv_review_identity(reviewer, card)
-
-    assert captured_args == [("Back", "Front")]
-    assert identity is not None
-    assert identity.preset_id == _expected_preset_hash(
-        "rwkv-japanese-features:1000:"
-        "wl:3|rl:3|kc:1|kana:2|kr:3|shape:mixed|fkl:3|freq:1001-2000"
-    )
-
-
-def test_rwkv_review_identity_composes_tag_and_japanese_preset_state() -> None:
-    reviewer = _rwkv_reviewer(
-        rwkv_review_preset_tag_state_enabled=True,
-        rwkv_review_japanese_feature_state_enabled=True,
-    )
-    card = _rwkv_card(
-        card_id=1,
-        note_id=10,
-        duration_millis=1234,
-        japanese_features=("食べる", "たべる", "たべる", "1234"),
-    )
-    card.note_tags = [
-        "Yomitan",
-        "leech",
-        "am-ready",
-        "moeway-debut-idol-fail",
-        "Claude-Translated",
-    ]
-
-    identity = rwkv_review_identity(reviewer, card)
-
-    assert identity is not None
-    assert identity.preset_id == _expected_preset_hash(
-        "rwkv-japanese-features:"
-        "rwkv-preset-tags:1000:Claude-Translated\x1fYomitan:"
-        "wl:3|rl:3|kc:1|kana:2|kr:3|shape:mixed|fkl:3|freq:1001-2000"
-    )
-
-
-def test_rwkv_clean_preset_tags_excludes_outcome_tags() -> None:
-    assert rwkv_scheduler._rwkv_clean_preset_tags(
-        "Yomitan leech am-ready moeway-debut-idol-fail wrong::answer Claude-Translated"
-    ) == ["Claude-Translated", "Yomitan"]
 
 
 def test_reviewer_rwkv_prediction_skips_until_background_warmup_finishes() -> None:
@@ -3044,8 +2831,8 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     first_review = (40 * 86_400 + 100) * 1000
     second_review = (41 * 86_400 + 3_700) * 1000
     rows = [
-        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
-        (second_review, 2, 20, 200, 3, 2345, 2, 5, 2400),
+        (first_review, 1, 10, 100, 2, 1234, 0, 3, 2500),
+        (second_review, 2, 20, 200, 3, 2345, 0, 5, 2400),
     ]
     count_calls: list[tuple[int, int | None]] = []
 
@@ -3092,7 +2879,7 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
 
     history = rwkv_scheduler._historical_rwkv_review_inputs(SimpleNamespace())
 
-    assert count_calls == [(second_review, None)]
+    assert count_calls == []
     assert history.deck_id is None
     assert history.review_count == 2
 
@@ -3132,113 +2919,7 @@ def test_historical_rwkv_review_count_excludes_deleted_cards() -> None:
     sql = captured_sql[0].lower()
     assert "from revlog r" in sql
     assert "join cards c on c.id = r.cid" in sql
-    assert "r.id <= ?" in sql
-
-
-def test_historical_rwkv_review_inputs_caches_deck_and_inline_note_features(
-    monkeypatch,
-) -> None:
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 3_700) * 1000
-    rows = [
-        (
-            first_review,
-            1,
-            10,
-            100,
-            2,
-            1234,
-            1,
-            3,
-            2500,
-            "Yomitan keep",
-            "食べる\x1fたべる\x1fたべる\x1f1234",
-            0,
-            1,
-            2,
-            3,
-        ),
-        (
-            second_review,
-            1,
-            10,
-            100,
-            3,
-            2345,
-            2,
-            5,
-            2400,
-            "Yomitan keep",
-            "食べる\x1fたべる\x1fたべる\x1f1234",
-            0,
-            1,
-            2,
-            3,
-        ),
-    ]
-    deck_config_calls: list[int] = []
-    japanese_parse_calls: list[tuple[object, object, object, object, object]] = []
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_timing_today",
-        lambda reviewer: SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400),
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_historical_rwkv_review_rows",
-        lambda reviewer, *, after_review_id=None, deck_id=None: rows,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_dynamic_preset_replay_enabled_for_collection",
-        lambda reviewer: False,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_historical_rwkv_review_count_through",
-        lambda reviewer, last_review_id, *, deck_id=None: len(rows),
-    )
-
-    def deck_config_for_deck_id(reviewer: object, deck_id: int) -> dict[str, object]:
-        deck_config_calls.append(deck_id)
-        return {
-            "id": deck_id * 10,
-            "rwkvReviewPresetTagStateEnabled": True,
-            "rwkvReviewJapaneseFeatureStateEnabled": True,
-        }
-
-    def japanese_features_from_storage(
-        fields_raw: object,
-        front_ord: object,
-        reading_ord: object,
-        front_kana_ord: object,
-        frequency_ord: object,
-    ) -> tuple[str, str, str, str]:
-        japanese_parse_calls.append(
-            (fields_raw, front_ord, reading_ord, front_kana_ord, frequency_ord)
-        )
-        return ("食べる", "たべる", "たべる", "1234")
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_deck_config_for_deck_id",
-        deck_config_for_deck_id,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_japanese_feature_fields_from_storage",
-        japanese_features_from_storage,
-    )
-
-    history = rwkv_scheduler._historical_rwkv_review_inputs(SimpleNamespace())
-
-    assert deck_config_calls == [100]
-    assert len(japanese_parse_calls) == 1
-    assert len(history.reviews) == 2
-    assert (
-        history.reviews[0].identity.preset_id == history.reviews[1].identity.preset_id
-    )
+    assert "e.id <= ?" in sql
 
 
 def test_rwkv_state_cache_refuses_to_persist_deck_scoped_history(
@@ -3344,7 +3025,7 @@ def test_rwkv_delta_writer_batches_small_records(
     ) == list(zip(review_ids, reviews))
 
 
-def test_reviewer_rwkv_warmup_replays_rated_manual_reviews_as_review_history(
+def test_reviewer_rwkv_warmup_preserves_rated_manual_review_state(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -3367,7 +3048,7 @@ def test_reviewer_rwkv_warmup_replays_rated_manual_reviews_as_review_history(
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
     assert runtime.reviewed == [(1, 2), (1, 1)]
     manual_input = runtime.answered_inputs[1]
-    assert manual_input.card_type == int(rwkv_scheduler.CARD_TYPE_REV)
+    assert manual_input.card_type == int(rwkv_scheduler.RwkvReviewState.MANUAL)
     assert manual_input.card_queue == int(rwkv_scheduler.QUEUE_TYPE_REV)
     assert manual_input.current_state_kind == "normal"
     assert manual_input.current_normal_state_kind == "review"
@@ -3732,74 +3413,6 @@ def test_rwkv_state_cache_build_backfills_missing_review_cache_when_already_warm
     ]
 
 
-def test_recompute_rwkv_calibration_data_self_corrects_and_restores_state(
-    tmp_path,
-) -> None:
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 3_700) * 1000
-    rows = [
-        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
-        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
-    ]
-
-    runtime = _CacheRuntime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_cache_reviewer(
-        profile_folder=tmp_path,
-        rows=rows,
-        rwkv_review_self_correction_enabled=True,
-    )
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-    before = backend.cache_snapshot()
-    reviewer.mw.col.rwkv_retrievability_rows.clear()
-    runtime.reviewed.clear()
-
-    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
-
-    history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
-    features_by_review_id = rwkv_scheduler._rwkv_self_correction_features_by_review_id(
-        history.review_ids,
-        history.reviews,
-    )
-    assert [
-        (review_id, prediction, source)
-        for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows
-    ] == [
-        (
-            first_review,
-            pytest.approx(
-                rwkv_scheduler._rwkv_self_corrected_retrievability(
-                    0.45,
-                    features_by_review_id[first_review],
-                )
-            ),
-            "rwkv_calibration_recompute",
-        ),
-        (
-            second_review,
-            pytest.approx(
-                rwkv_scheduler._rwkv_self_corrected_retrievability(
-                    0.45,
-                    features_by_review_id[second_review],
-                )
-            ),
-            "rwkv_calibration_recompute",
-        ),
-    ]
-    assert [(row[4], row[5]) for row in reviewer.mw.col.rwkv_retrievability_rows] == [
-        ("final_fit", -1),
-        ("test_fold", 0),
-    ]
-    assert runtime.reviewed == [(1, 2), (1, 3)]
-    after = backend.cache_snapshot()
-    assert after.card_states == before.card_states
-    assert after.note_states == before.note_states
-    assert after.deck_states == before.deck_states
-    assert after.preset_states == before.preset_states
-    assert after.global_state == before.global_state
-
-
 def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
     monkeypatch,
     tmp_path,
@@ -3838,248 +3451,6 @@ def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
     runtime.reviewed.clear()
     assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
     assert runtime.reviewed == []
-
-
-def test_train_rwkv_self_correction_calibration_saves_100_percent_final_fit(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    monkeypatch.setattr(rwkv_scheduler, "_RWKV_SELF_CORRECTION_MIN_SAMPLES", 4)
-    rows = [
-        ((40 + index) * 86_400 * 1000, 1, 10, 100, ease, 1200, 1, index, 2500)
-        for index, ease in enumerate((2, 1, 3, 1, 2, 4, 1, 3, 2, 1), start=1)
-    ]
-
-    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_cache_reviewer(
-        profile_folder=tmp_path,
-        rows=rows,
-        rwkv_review_self_correction_enabled=True,
-    )
-
-    result = rwkv_scheduler.train_rwkv_self_correction_calibration(
-        reviewer.mw,
-        deck_id=100,
-        config_id=1000,
-    )
-
-    assert result["available"] is True
-    assert result["saved"] is True
-    assert result["storedRows"] == len(rows)
-    assert result["finalFit"]["count"] == len(rows)
-    assert "Production fit: 10 reviews (100%)" in (
-        rwkv_scheduler._rwkv_calibration_training_message(result)
-    )
-    saved_config = reviewer.mw.col.saved_deck_configs[-1]
-    saved_nested = saved_config["other"]["jschoreels.rwkv"]
-    payload = saved_nested["rwkv_review_self_correction_calibration"]
-    assert payload["finalFit"]["count"] == len(rows)
-    assert saved_nested["rwkv_review_self_correction_calibration"][
-        "featureSignature"
-    ] == {
-        "presetTagStateEnabled": False,
-        "japaneseFeatureStateEnabled": False,
-    }
-    history = rwkv_scheduler._historical_rwkv_review_inputs(
-        reviewer,
-        deck_id=100,
-        use_extra_feature_state=True,
-    )
-    samples = rwkv_scheduler._rwkv_self_correction_training_samples(
-        history,
-        {review_id: 0.45 for review_id in history.review_ids},
-    )
-    train_samples, test_samples = (
-        rwkv_scheduler._rwkv_train_test_split_self_correction_samples(samples)
-    )
-    validation_calibration, _ = rwkv_scheduler._rwkv_fit_self_correction_calibration(
-        train_samples
-    )
-    final_calibration, _ = rwkv_scheduler._rwkv_fit_self_correction_calibration(samples)
-    assert (
-        rwkv_scheduler._rwkv_self_correction_calibration_from_deck_config(saved_config)
-        == final_calibration
-    )
-    stored_predictions = {
-        review_id: prediction
-        for review_id, prediction, *_ in reviewer.mw.col.rwkv_retrievability_rows
-    }
-    for sample in test_samples:
-        assert stored_predictions[sample.review_id] == pytest.approx(
-            rwkv_scheduler._rwkv_self_corrected_retrievability(
-                sample.prediction,
-                sample.features,
-                calibration=validation_calibration,
-            )
-        )
-    assert [
-        (review_id, sample_role, fold_index)
-        for review_id, _prediction, _source, _updated_at, sample_role, fold_index in reviewer.mw.col.rwkv_retrievability_rows
-    ] == [(row[0], "final_fit", -1) for row in rows[:7]] + [
-        (row[0], "test_fold", 0) for row in rows[7:]
-    ]
-
-
-def test_compare_rwkv_extra_feature_metrics_uses_held_out_fold_and_restores_state(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    monkeypatch.setattr(rwkv_scheduler, "_RWKV_SELF_CORRECTION_MIN_SAMPLES", 2)
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 3_700) * 1000
-    rows = [
-        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
-        (second_review, 1, 10, 100, 1, 2345, 2, 5, 2400),
-    ]
-
-    runtime = _CacheRuntime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_cache_reviewer(
-        profile_folder=tmp_path,
-        rows=rows,
-        rwkv_review_self_correction_enabled=True,
-    )
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-    before = backend.cache_snapshot()
-    runtime.reviewed.clear()
-
-    comparison = rwkv_scheduler.compare_rwkv_extra_feature_metrics(
-        reviewer.mw,
-        deck_id=100,
-    )
-
-    assert comparison["available"] is True
-    assert comparison["deckId"] == 100
-    baseline_history = rwkv_scheduler._historical_rwkv_review_inputs(
-        reviewer,
-        deck_id=100,
-        use_extra_feature_state=False,
-    )
-    predictions = {review_id: 0.45 for review_id in baseline_history.review_ids}
-    baseline_samples = rwkv_scheduler._rwkv_self_correction_training_samples(
-        baseline_history,
-        predictions,
-    )
-    train_samples, test_samples = (
-        rwkv_scheduler._rwkv_train_test_split_self_correction_samples(baseline_samples)
-    )
-    expected_baseline = rwkv_scheduler._rwkv_metrics_for_training_samples(test_samples)
-    assert comparison["baseline"] == pytest.approx(expected_baseline)
-    assert comparison["split"] == {
-        "trainFraction": 0.70,
-        "train": rwkv_scheduler._rwkv_training_sample_split_summary(train_samples),
-        "test": rwkv_scheduler._rwkv_training_sample_split_summary(test_samples),
-    }
-    features = comparison["features"]
-    assert features["tags"]["metrics"] == pytest.approx(expected_baseline)
-    assert features["japanese"]["metrics"] == pytest.approx(expected_baseline)
-    calibration, _ = rwkv_scheduler._rwkv_fit_self_correction_calibration(train_samples)
-    expected_self_correction = rwkv_scheduler._rwkv_metrics_for_training_samples(
-        test_samples,
-        calibration=calibration,
-    )
-    assert features["selfCorrection"]["metrics"] == pytest.approx(
-        expected_self_correction
-    )
-
-    after = backend.cache_snapshot()
-    assert after.card_states == before.card_states
-    assert after.note_states == before.note_states
-    assert after.deck_states == before.deck_states
-    assert after.preset_states == before.preset_states
-    assert after.global_state == before.global_state
-    assert runtime.reviewed == [(1, 2), (1, 1)] * 3
-
-
-def test_compare_rwkv_extra_feature_metrics_evaluates_each_state_feature(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    monkeypatch.setattr(rwkv_scheduler, "_RWKV_SELF_CORRECTION_MIN_SAMPLES", 2)
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 3_700) * 1000
-    rows = [
-        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
-        (second_review, 1, 10, 100, 1, 2345, 2, 5, 2400),
-    ]
-
-    runtime = _CacheRuntime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_cache_reviewer(
-        profile_folder=tmp_path,
-        rows=rows,
-        rwkv_review_self_correction_enabled=False,
-    )
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-    runtime.reviewed.clear()
-    runtime.answered_inputs.clear()
-    override = rwkv_scheduler.RwkvExtraFeatureConfigOverride(
-        deck_id=100,
-        config_id=1000,
-        preset_tag_state_enabled=False,
-        japanese_feature_state_enabled=False,
-        self_correction_enabled=True,
-        japanese_kanji_field="Expression",
-        japanese_reading_field="Reading",
-    )
-
-    comparison = rwkv_scheduler.compare_rwkv_extra_feature_metrics(
-        reviewer.mw,
-        deck_id=100,
-        extra_feature_override=override,
-    )
-
-    assert comparison["available"] is True
-    assert comparison["features"]["tags"]["available"] is True
-    assert comparison["features"]["japanese"]["available"] is True
-    baseline_preset_ids = {
-        review_input.identity.preset_id for review_input in runtime.answered_inputs[:2]
-    }
-    tag_preset_ids = {
-        review_input.identity.preset_id for review_input in runtime.answered_inputs[2:4]
-    }
-    japanese_preset_ids = {
-        review_input.identity.preset_id for review_input in runtime.answered_inputs[4:6]
-    }
-    assert tag_preset_ids != baseline_preset_ids
-    assert japanese_preset_ids != baseline_preset_ids
-    assert japanese_preset_ids != tag_preset_ids
-
-
-def test_rwkv_metric_comparison_message_recommends_only_both_improvements() -> None:
-    comparison = {
-        "available": True,
-        "baseline": {"logLoss": 0.5, "rmseBins": 0.2},
-        "split": {"train": {"count": 70}, "test": {"count": 30}},
-        "features": {
-            "tags": {
-                "available": True,
-                "metrics": {"logLoss": 0.4, "rmseBins": 0.1},
-                "helpsBoth": True,
-            },
-            "japanese": {
-                "available": True,
-                "metrics": {"logLoss": 0.4, "rmseBins": 0.3},
-                "helpsBoth": False,
-            },
-            "selfCorrection": {
-                "available": False,
-                "reason": "Need more reviews.",
-            },
-        },
-    }
-
-    message = rwkv_scheduler._rwkv_metric_comparison_message(comparison)
-
-    assert "Held-out RWKV feature evaluation (70% train / 30% test)" in message
-    assert "Tags: helps both" in message
-    assert "Japanese features: does not improve both" in message
-    assert "Self-correction: unavailable" in message
-    assert "Recommended: Tags" in message
-    assert "Samples: 70 train / 30 test" in message
 
 
 def test_rwkv_state_cache_build_satisfies_sse_explicit_revlog_contract(
@@ -4373,7 +3744,6 @@ def test_warmup_capable_backend_records_review_retrievability_cache(tmp_path) ->
 
 
 def test_state_cache_build_skips_prediction_metadata_without_cache_rows(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
     class Backend:
@@ -4385,11 +3755,6 @@ def test_state_cache_build_skips_prediction_metadata_without_cache_rows(
             assert len(reviews) == 2
             assert kwargs.get("prediction_recorder") is None
 
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_self_correction_features_by_review_id",
-        lambda *args: pytest.fail("state-only build should not prepare predictions"),
-    )
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
     backend = Backend()
 
@@ -4406,54 +3771,6 @@ def test_state_cache_build_skips_prediction_metadata_without_cache_rows(
         label="Building RWKV state cache",
         record_retrievability_cache=False,
     )
-
-
-def test_state_cache_build_skips_self_correction_metadata_when_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    class Backend:
-        def warm_up(
-            self,
-            reviews: list[RwkvReviewInput],
-            *,
-            review_ids: list[int] | None = None,
-            prediction_recorder: Any = None,
-            **kwargs: object,
-        ) -> None:
-            assert review_ids == [101, 102]
-            assert prediction_recorder is not None
-            prediction_recorder(101, 0.21)
-            prediction_recorder(102, 0.32)
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_self_correction_features_by_review_id",
-        lambda *args: pytest.fail("disabled self-correction should not build features"),
-    )
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
-    backend = Backend()
-
-    rwkv_scheduler._warm_up_rwkv_reviews(
-        reviewer,
-        backend,
-        backend.warm_up,
-        [
-            _rwkv_review_input(card_id=1, note_id=10),
-            _rwkv_review_input(card_id=2, note_id=20),
-        ],
-        review_ids=[101, 102],
-        progress=None,
-        label="Building RWKV state cache",
-    )
-
-    assert [
-        (review_id, prediction, source)
-        for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows
-    ] == [
-        (101, pytest.approx(0.21), "rwkv_state_cache_build"),
-        (102, pytest.approx(0.32), "rwkv_state_cache_build"),
-    ]
 
 
 def test_embedded_warmup_batches_prediction_recording() -> None:
@@ -5621,63 +4938,6 @@ def test_prepare_reviewer_queue_order_candidate_refresh_scores_stale_window() ->
     assert score_pairs[0] == (1, pytest.approx(0.99))
     assert score_pairs[1] == (2, pytest.approx(0.002))
     assert score_pairs[-1] == (65, pytest.approx(0.065))
-
-
-def test_prepare_reviewer_queue_order_self_corrects_when_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: 43_200)
-
-    class Backend:
-        def predict_review(
-            self,
-            *,
-            reviewer: object,
-            card: object,
-        ) -> RwkvReviewPrediction:
-            return RwkvReviewPrediction(retrievability=0.15)
-
-        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
-            raise AssertionError("unexpected answer update")
-
-    rpc = _RwkvQueueScoreRpc()
-    reviewer = _rwkv_queue_reviewer(
-        rpc=rpc,
-        review_order=7,
-        rwkv_self_correction_enabled=True,
-    )
-    previous_backend = set_reviewer_backend(Backend())
-    try:
-        prepare_reviewer_queue_order(reviewer)
-    finally:
-        set_reviewer_backend(previous_backend)
-
-    scores = rpc.calls[0]["scores"]
-    expected_first = rwkv_scheduler._rwkv_self_corrected_retrievability(
-        0.15,
-        rwkv_scheduler._rwkv_self_correction_features(
-            now_seconds=43_200,
-            elapsed_days=4,
-            reps=5,
-            lapses=1,
-        ),
-    )
-    expected_second = rwkv_scheduler._rwkv_self_corrected_retrievability(
-        0.15,
-        rwkv_scheduler._rwkv_self_correction_features(
-            now_seconds=43_200,
-            elapsed_days=1,
-            reps=5,
-            lapses=1,
-        ),
-    )
-    assert [
-        (getattr(score, "card_id"), getattr(score, "retrievability"))
-        for score in scores
-    ] == [
-        (1, pytest.approx(expected_first)),
-        (2, pytest.approx(expected_second)),
-    ]
 
 
 def test_prepare_reviewer_queue_order_skips_when_instant_order_disabled() -> None:
@@ -9653,7 +8913,6 @@ def _rwkv_queue_reviewer(
     rwkv_config_in_other: bool = False,
     rwkv_instant_order_enabled: bool = True,
     rwkv_candidate_refresh_enabled: bool = False,
-    rwkv_self_correction_enabled: bool = False,
     rwkv_min_intervening_reviews: int = 0,
     latest_review_elapsed_days_by_card: dict[int, int] | None = None,
 ) -> SimpleNamespace:
@@ -9743,8 +9002,6 @@ def _rwkv_queue_reviewer(
                 nested["rwkv_review_instant_order_enabled"] = rwkv_instant_order_enabled
                 if rwkv_candidate_refresh_enabled:
                     nested["rwkv_review_candidate_refresh_enabled"] = True
-                if rwkv_self_correction_enabled:
-                    nested["rwkv_review_self_correction_enabled"] = True
                 if batch_size is not None:
                     nested["rwkv_review_batch_size"] = batch_size
                 if rwkv_min_intervening_reviews > 0:
@@ -9757,8 +9014,6 @@ def _rwkv_queue_reviewer(
                 config["rwkvReviewInstantOrderEnabled"] = rwkv_instant_order_enabled
                 if rwkv_candidate_refresh_enabled:
                     config["rwkvReviewCandidateRefreshEnabled"] = True
-                if rwkv_self_correction_enabled:
-                    config["rwkvReviewSelfCorrectionEnabled"] = True
                 if batch_size is not None:
                     config["rwkvReviewBatchSize"] = batch_size
                 if rwkv_min_intervening_reviews > 0:
@@ -9791,11 +9046,6 @@ def _rwkv_reviewer(
     rwkv_review_enabled: bool = True,
     rwkv_review_instant_order_enabled: bool = False,
     rwkv_review_dynamic_preset_replay: bool = False,
-    rwkv_review_preset_tag_state_enabled: bool = False,
-    rwkv_review_japanese_feature_state_enabled: bool = False,
-    rwkv_review_japanese_kanji_field: str = "Front",
-    rwkv_review_japanese_reading_field: str = "Reading",
-    rwkv_review_self_correction_enabled: bool = False,
     rwkv_review_first_review_elapsed_from_card_creation: bool = False,
     resolved_preset_id: str | None = "1000",
     preset_desired_retention: float | None = None,
@@ -9803,6 +9053,10 @@ def _rwkv_reviewer(
     rpc: _RwkvQueueScoreRpc | None = None,
     historical_review_rows: (list[tuple[object, ...]] | None) = None,
 ) -> SimpleNamespace:
+    if historical_review_rows is not None:
+        historical_review_rows = _benchmark_valid_historical_rows(
+            historical_review_rows
+        )
     states = SchedulingStates()
     states.current.normal.review.elapsed_days = 7
 
@@ -9833,15 +9087,6 @@ def _rwkv_reviewer(
                 "rwkvReviewEnabled": rwkv_review_enabled,
                 "rwkvReviewInstantOrderEnabled": (rwkv_review_instant_order_enabled),
                 "rwkvReviewDynamicPresetReplay": rwkv_review_dynamic_preset_replay,
-                "rwkvReviewPresetTagStateEnabled": rwkv_review_preset_tag_state_enabled,
-                "rwkvReviewJapaneseFeatureStateEnabled": (
-                    rwkv_review_japanese_feature_state_enabled
-                ),
-                "rwkvReviewJapaneseKanjiField": rwkv_review_japanese_kanji_field,
-                "rwkvReviewJapaneseReadingField": rwkv_review_japanese_reading_field,
-                "rwkvReviewSelfCorrectionEnabled": (
-                    rwkv_review_self_correction_enabled
-                ),
                 "rwkvReviewFirstReviewElapsedFromCardCreation": (
                     rwkv_review_first_review_elapsed_from_card_creation
                 ),
@@ -9892,8 +9137,8 @@ def _rwkv_cache_reviewer(
     *,
     profile_folder: Path,
     rows: list[tuple[int, ...]],
-    rwkv_review_self_correction_enabled: bool = False,
 ) -> SimpleNamespace:
+    rows[:] = cast(list[tuple[int, ...]], _benchmark_valid_historical_rows(rows))
     states = SchedulingStates()
     rwkv_retrievability_rows: list[tuple[int, float, str, int, str, int]] = []
     saved_deck_configs: list[dict[str, object]] = []
@@ -9926,13 +9171,6 @@ def _rwkv_cache_reviewer(
                     (review_id, prediction)
                     for review_id, prediction, *_ in rwkv_retrievability_rows
                     if review_id in requested_ids
-                ]
-            if "select id, tags" in sql and "from notes" in sql:
-                return [(note_id, "vocabulary") for note_id in {row[2] for row in rows}]
-            if "from notes n" in sql:
-                return [
-                    (note_id, "日本\x1fにほん\x1fニホン\x1f100", 0, 1, 2, 3)
-                    for note_id in {row[2] for row in rows}
                 ]
             assert "from revlog r" in sql
             assert "join cards c" in sql
@@ -10054,9 +9292,6 @@ def _rwkv_cache_reviewer(
             return {
                 "id": deck_id * 10,
                 "rwkvReviewEnabled": True,
-                "rwkvReviewSelfCorrectionEnabled": (
-                    rwkv_review_self_correction_enabled
-                ),
             }
 
     col = SimpleNamespace(
@@ -10074,6 +9309,24 @@ def _rwkv_cache_reviewer(
         pm=SimpleNamespace(profileFolder=lambda: str(profile_folder)),
     )
     return SimpleNamespace(_v3=SimpleNamespace(states=states), mw=mw)
+
+
+def _benchmark_valid_historical_rows(
+    rows: Sequence[tuple[object, ...]],
+) -> list[tuple[object, ...]]:
+    seen_cards: set[int] = set()
+    normalized: list[tuple[object, ...]] = []
+    for row in rows:
+        if len(row) < 7 or not isinstance(row[1], int):
+            normalized.append(row)
+            continue
+        card_id = row[1]
+        if card_id in seen_cards:
+            normalized.append(row)
+            continue
+        seen_cards.add(card_id)
+        normalized.append((*row[:6], 0, *row[7:]))
+    return normalized
 
 
 def _rwkv_sse_harness_review_retrievability(
@@ -10173,7 +9426,6 @@ def _rwkv_card(
     duration_millis: int,
     deck_id: int = 100,
     last_review_time: int | None = None,
-    japanese_features: tuple[str, str, str, str] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=card_id,
@@ -10187,7 +9439,6 @@ def _rwkv_card(
         reps=5,
         lapses=1,
         last_review_time=last_review_time,
-        japanese_features=japanese_features,
         time_taken=lambda capped=True: duration_millis,
     )
 

@@ -359,6 +359,7 @@ pub struct ReviewInput {
     pub is_query: bool,
     pub ease: Option<u8>,
     pub duration_millis: Option<i64>,
+    /// Legacy field name: answered inputs contain the training dataset state.
     pub card_type: Option<i64>,
     pub day_offset: Option<i64>,
     pub current_elapsed_days: Option<i64>,
@@ -3417,9 +3418,6 @@ fn interval_for_curve(
     for day in days {
         let retrievability = predict_curve(curve, day as f32 * SECONDS_PER_DAY as f32);
         if let Some((previous_day, previous_retrievability)) = previous {
-            if retrievability > previous_retrievability + 1e-4 {
-                return None;
-            }
             if retrievability <= target_retention {
                 let span = day - previous_day;
                 let denominator = previous_retrievability - retrievability;
@@ -6475,6 +6473,7 @@ mod tests {
         ease: i64,
         duration_millis: i64,
         review_kind: i64,
+        is_learning_start: bool,
     }
 
     fn collection_reviews_for_scan_bench(
@@ -6498,20 +6497,41 @@ mod tests {
         });
         let sql = format!(
             "
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    {current_deck_id_sql} as deck_id,
+    r.ease,
+    r.time,
+    r.type,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+    {deck_clause}
+), retained_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+)
 select
-  r.id,
-  r.cid,
-  c.nid,
-  {current_deck_id_sql},
-  r.ease,
-  r.time,
-  r.type
-from revlog r
-join cards c on c.id = r.cid
-where r.ease between 1 and 4
-  and (r.type in (0, 1, 2, 3) or r.type = 4)
-  {deck_clause}
-order by r.id, r.cid
+  e.id,
+  e.cid,
+  e.nid,
+  e.deck_id,
+  e.ease,
+  e.time,
+  e.type,
+  e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid
 {limit_clause}"
         );
         let timing = scan_bench_timing();
@@ -6525,6 +6545,7 @@ order by r.id, r.cid
                 ease: row.get(4)?,
                 duration_millis: row.get(5)?,
                 review_kind: row.get(6)?,
+                is_learning_start: row.get(7)?,
             })
         })?;
 
@@ -6533,13 +6554,12 @@ order by r.id, r.cid
         for row in rows {
             let row = row?;
             let previous_review_id = previous_review_id_by_card.insert(row.card_id, row.review_id);
+            let day_offset = scan_bench_historical_day_offset(row.review_id, &timing);
             let elapsed_seconds = previous_review_id
                 .map_or(-1, |previous| ((row.review_id - previous) / 1000).max(0));
-            let elapsed_days = if elapsed_seconds >= 0 {
-                elapsed_seconds / SECONDS_PER_DAY
-            } else {
-                -1
-            };
+            let elapsed_days = previous_review_id.map_or(-1, |previous| {
+                (day_offset - scan_bench_historical_day_offset(previous, &timing)).max(0)
+            });
             reviews.push(ReviewInput {
                 card_id: row.card_id,
                 note_id: Some(row.note_id),
@@ -6548,8 +6568,11 @@ order by r.id, r.cid
                 is_query: false,
                 ease: Some(row.ease as u8),
                 duration_millis: Some(row.duration_millis),
-                card_type: Some(scan_bench_historical_card_type(row.review_kind)),
-                day_offset: Some(scan_bench_historical_day_offset(row.review_id, &timing)),
+                card_type: Some(scan_bench_historical_state(
+                    row.review_kind,
+                    row.is_learning_start,
+                )),
+                day_offset: Some(day_offset),
                 current_elapsed_days: Some(elapsed_days),
                 current_elapsed_seconds: Some(elapsed_seconds),
                 target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
@@ -6582,11 +6605,11 @@ order by r.id, r.cid
         Ok(false)
     }
 
-    fn scan_bench_historical_card_type(review_kind: i64) -> i64 {
-        match review_kind {
-            0 => 1,
-            2 => 3,
-            _ => 2,
+    fn scan_bench_historical_state(review_kind: i64, is_learning_start: bool) -> i64 {
+        if is_learning_start {
+            0
+        } else {
+            review_kind + 1
         }
     }
 
@@ -7479,6 +7502,53 @@ order by r.id, r.cid
     }
 
     #[test]
+    fn interval_for_curve_ignores_increase_above_target() {
+        let curve = ReviewCurve {
+            ahead_logits: vec![0.0, 0.0, 0.0, 8.0, -20.0],
+            weights: vec![1.0],
+        };
+        let max_interval_days = 36_500;
+        let sampled = interval_search_days(max_interval_days)
+            .into_iter()
+            .map(|day| {
+                (
+                    day,
+                    predict_curve(&curve, day as f32 * SECONDS_PER_DAY as f32),
+                )
+            })
+            .collect::<Vec<_>>();
+        let (increase_index, target_retention) = (1..sampled.len())
+            .find_map(|index| {
+                if sampled[index].1 <= sampled[index - 1].1 + 1e-4 {
+                    return None;
+                }
+                let target = sampled[..=index]
+                    .iter()
+                    .map(|sample| sample.1)
+                    .reduce(f32::min)
+                    .unwrap()
+                    / 2.0;
+                sampled[index + 1..]
+                    .iter()
+                    .any(|sample| sample.1 <= target)
+                    .then_some((index, target))
+            })
+            .expect("curve should rise above a target it crosses later");
+        let increase_day = sampled[increase_index].0;
+        assert!(sampled[..=increase_index]
+            .iter()
+            .all(|sample| sample.1 > target_retention));
+
+        let interval = interval_for_curve(&curve, target_retention, max_interval_days)
+            .expect("a pre-crossing rise should not invalidate the interval");
+
+        assert!(interval > increase_day);
+        assert!(
+            predict_curve(&curve, interval as f32 * SECONDS_PER_DAY as f32) <= target_retention
+        );
+    }
+
+    #[test]
     fn simulated_answer_input_preserves_review_context() {
         let input = ReviewInput {
             card_id: 123,
@@ -7753,6 +7823,40 @@ order by r.id, r.cid
     }
 
     #[test]
+    fn feature_state_scales_dataset_review_state() {
+        let input = ReviewInput {
+            card_id: 123,
+            note_id: Some(456),
+            deck_id: Some(789),
+            preset_id: Some(10),
+            is_query: false,
+            ease: Some(3),
+            duration_millis: Some(1234),
+            card_type: Some(2),
+            day_offset: Some(42),
+            current_elapsed_days: Some(3),
+            current_elapsed_seconds: Some(259_200),
+            target_retentions: [None; 4],
+        };
+
+        for (state, expected_scaled_state) in [(2, 0.0), (4, 2.0), (5, 3.0)] {
+            let values = FeatureState::default().features_for(&ReviewInput {
+                card_type: Some(state),
+                ..input.clone()
+            });
+            assert_eq!(values[22], expected_scaled_state);
+        }
+
+        let query_values = FeatureState::default().features_for(&ReviewInput {
+            is_query: true,
+            ease: None,
+            card_type: Some(4),
+            ..input
+        });
+        assert_eq!(query_values[22], 0.0);
+    }
+
+    #[test]
     fn feature_state_normalizes_day_offset_to_first_raw_review_day() {
         let mut features = FeatureState::default();
         let first = ReviewInput {
@@ -7978,10 +8082,12 @@ order by r.id, r.cid
                     .collect::<Vec<_>>()
             })
             .filter(|configs| !configs.is_empty());
+        let target_deck_ids = env_i64s("ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS");
 
         let load_start = Instant::now();
-        let (reviews, outcomes) =
-            load_metric_reviews(&collection_path, limit).expect("failed to load metric reviews");
+        let (reviews, outcomes, target_reviews) =
+            load_metric_reviews(&collection_path, limit, &target_deck_ids)
+                .expect("failed to load metric reviews");
         assert!(!reviews.is_empty(), "no eligible reviews loaded");
         eprintln!(
             "rwkv_state_compression_metric_inputs reviews={} limit={} load_ms={:.1}",
@@ -8088,11 +8194,22 @@ order by r.id, r.cid
             let predictions =
                 inference.warm_up_reviews_with_state_compression(&reviews, compression);
             assert_eq!(predictions.len(), outcomes.len());
-            let metrics = MetricAccumulator::from_predictions(&predictions, &outcomes);
+            let target_predictions = predictions
+                .iter()
+                .zip(&target_reviews)
+                .filter_map(|(prediction, target)| target.then_some(*prediction))
+                .collect::<Vec<_>>();
+            let target_outcomes = outcomes
+                .iter()
+                .zip(&target_reviews)
+                .filter_map(|(outcome, target)| target.then_some(*outcome))
+                .collect::<Vec<_>>();
+            let metrics =
+                MetricAccumulator::from_predictions(&target_predictions, &target_outcomes);
             let baseline_metrics = baseline.get_or_insert(metrics);
             println!(
                 "{label},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.1}",
-                outcomes.len(),
+                target_outcomes.len(),
                 metrics.log_loss,
                 metrics.log_loss - baseline_metrics.log_loss,
                 metrics.rmse_bins,
@@ -8111,10 +8228,23 @@ order by r.id, r.cid
             .unwrap_or(default)
     }
 
+    fn env_i64s(name: &str) -> Vec<i64> {
+        env::var(name)
+            .ok()
+            .map(|values| {
+                values
+                    .split(',')
+                    .filter_map(|value| value.trim().parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn load_metric_reviews(
         collection_path: &str,
         limit: usize,
-    ) -> rusqlite::Result<(Vec<ReviewInput>, Vec<bool>)> {
+        target_deck_ids: &[i64],
+    ) -> rusqlite::Result<(Vec<ReviewInput>, Vec<bool>, Vec<bool>)> {
         let connection = Connection::open_with_flags(
             collection_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -8125,14 +8255,35 @@ order by r.id, r.cid
         let mut previous_review_id_by_card = HashMap::new();
         let mut reviews = Vec::new();
         let mut outcomes = Vec::new();
+        let mut target_reviews = Vec::new();
         let sql = format!(
             "\
-select r.id, r.cid, c.nid, c.did, r.ease, r.time, r.type
-from revlog r
-join cards c on c.id = r.cid
-where r.ease between 1 and 4
-  and (r.type in (0, 1, 2, 3) or r.type = 4)
-order by r.id, r.cid
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    c.did,
+    r.ease,
+    r.time,
+    r.type,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+), retained_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+)
+select e.id, e.cid, e.nid, e.did, e.ease, e.time, e.type, e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid
 {}",
             if limit > 0 { "limit ?" } else { "" }
         );
@@ -8150,23 +8301,25 @@ order by r.id, r.cid
             let ease: u8 = row.get(4)?;
             let duration_millis: i64 = row.get(5)?;
             let review_kind: i64 = row.get(6)?;
+            let is_learning_start: bool = row.get(7)?;
             let previous_review_id = previous_review_id_by_card.insert(card_id, review_id);
             let elapsed_seconds = previous_review_id
                 .map(|previous| ((review_id - previous) / 1000).max(0))
                 .unwrap_or(-1);
-            let elapsed_days = if elapsed_seconds >= 0 {
-                elapsed_seconds / SECONDS_PER_DAY
-            } else {
-                -1
-            };
             let review_secs = review_id / 1000;
             let day_offset = ((review_secs - created_secs).max(0)) / SECONDS_PER_DAY;
+            let elapsed_days = previous_review_id.map_or(-1, |previous| {
+                let previous_secs = previous / 1000;
+                let previous_day_offset = ((previous_secs - created_secs).max(0)) / SECONDS_PER_DAY;
+                (day_offset - previous_day_offset).max(0)
+            });
             let preset_id = preset_by_deck
                 .get(&deck_id)
                 .copied()
                 .flatten()
                 .or(Some(deck_id));
             outcomes.push(ease != 1);
+            target_reviews.push(target_deck_ids.is_empty() || target_deck_ids.contains(&deck_id));
             reviews.push(ReviewInput {
                 card_id,
                 note_id: Some(note_id),
@@ -8175,14 +8328,14 @@ order by r.id, r.cid
                 is_query: false,
                 ease: Some(ease),
                 duration_millis: Some(duration_millis),
-                card_type: Some(historical_card_type(review_kind)),
+                card_type: Some(historical_state(review_kind, is_learning_start)),
                 day_offset: Some(day_offset),
                 current_elapsed_days: Some(elapsed_days),
                 current_elapsed_seconds: Some(elapsed_seconds),
                 target_retentions: [None; 4],
             });
         }
-        Ok((reviews, outcomes))
+        Ok((reviews, outcomes, target_reviews))
     }
 
     fn deck_config_ids_by_deck(
@@ -8203,11 +8356,11 @@ order by r.id, r.cid
         Ok(by_deck)
     }
 
-    fn historical_card_type(review_kind: i64) -> i64 {
-        match review_kind {
-            0 => 1,
-            2 => 3,
-            _ => 2,
+    fn historical_state(review_kind: i64, is_learning_start: bool) -> i64 {
+        if is_learning_start {
+            0
+        } else {
+            review_kind + 1
         }
     }
 

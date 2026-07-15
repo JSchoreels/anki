@@ -223,6 +223,7 @@ impl Collection {
                     desired_retention_override,
                     rwkv_s90: None,
                     rwkv_retrievability: None,
+                    rwkv_review_kind: None,
                 }
                 .into();
                 // Process the card without updating queues yet

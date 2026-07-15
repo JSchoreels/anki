@@ -383,27 +383,6 @@ deck-config-rwkv-review-dynamic-preset-replay-tooltip =
     between presets over time. While rebuilding its review history, RWKV will
     reapply those rules so each review uses the preset that matched the card at
     that time. Leaving this off makes rebuilding faster.
-deck-config-rwkv-review-preset-tag-state = Use tags to group material for RWKV
-deck-config-rwkv-review-preset-tag-state-tooltip =
-    Lets RWKV learn separate patterns for cards with different note tags,
-    without requiring separate presets. It ignores tags that look like review
-    results, such as `leech`, `fail`, `lapse`, `wrong`, `missed`, and AnkiMorphs
-    `am-*` tags. Use this when tags identify meaningfully different material.
-deck-config-rwkv-review-japanese-feature-state = Use Japanese word features
-deck-config-rwkv-review-japanese-feature-state-tooltip =
-    Experimental. Lets RWKV learn separate patterns for different kinds of
-    Japanese words. It reads the Kanji and Reading fields named below, and also
-    uses `Front_Kana` and `Frequency` when those fields exist. This option does
-    not use tags.
-deck-config-rwkv-review-japanese-kanji-field = Kanji field
-deck-config-rwkv-review-japanese-reading-field = Reading field
-deck-config-rwkv-review-self-correction = Correct RWKV recall estimates
-deck-config-rwkv-review-self-correction-tooltip =
-    Experimental. Applies an extra correction to RWKV's recall estimates using
-    the time of day and the card's review history. It affects displayed
-    percentages, statistics, and RWKV review order, but it does not change
-    review intervals or retrain RWKV. `Calibrate RWKV for This Preset` can fit
-    this correction to your own review history.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 

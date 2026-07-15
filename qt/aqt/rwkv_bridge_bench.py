@@ -851,7 +851,8 @@ select
 from cards c
 left join revlog r on r.cid = c.id
   and r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
+  and r.type in (0, 1, 2, 3, 4, 5)
+  and not (r.type = 3 and r.factor = 0)
 where c.type = 2
   and c.queue = 2
 group by c.id
@@ -1065,7 +1066,8 @@ select cid, max(id)
 from revlog
 where cid in ({",".join(str(card_id) for card_id in card_ids)})
   and ease between 1 and 4
-  and type in (0, 1, 2, 3)
+  and type in (0, 1, 2, 3, 4, 5)
+  and not (type = 3 and factor = 0)
 group by cid
 """
         )
@@ -1128,19 +1130,40 @@ def _collection_warmup_reviews(
     limit_clause = "" if limit == 0 else f" limit {limit}"
     rows = db.execute(
         f"""
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    c.did,
+    r.ease,
+    r.time,
+    r.type,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+), retained_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+)
 select
-  r.id,
-  r.cid,
-  c.nid,
-  c.did,
-  r.ease,
-  r.time,
-  r.type
-from revlog r
-join cards c on c.id = r.cid
-where r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
-order by r.id, r.cid
+  e.id,
+  e.cid,
+  e.nid,
+  e.did,
+  e.ease,
+  e.time,
+  e.type,
+  e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid
 {limit_clause}
 """
     )
@@ -1155,16 +1178,20 @@ order by r.id, r.cid
         ease,
         duration_millis,
         review_kind,
+        is_learning_start,
     ) in rows:
         previous_review_id = previous_review_id_by_card.get(card_id)
         previous_review_id_by_card[card_id] = review_id
+        day_offset = _historical_day_offset(review_id, timing)
         elapsed_seconds = (
             max((review_id - previous_review_id) // 1000, 0)
             if previous_review_id is not None
             else -1
         )
         elapsed_days = (
-            elapsed_seconds // _SECONDS_PER_DAY if elapsed_seconds >= 0 else -1
+            max(day_offset - _historical_day_offset(previous_review_id, timing), 0)
+            if previous_review_id is not None
+            else -1
         )
         reviews.append(
             _review_input(
@@ -1174,8 +1201,11 @@ order by r.id, r.cid
                 is_query=False,
                 ease=ease,
                 duration_millis=duration_millis,
-                card_type=_historical_card_type(review_kind),
-                day_offset=_historical_day_offset(review_id, timing),
+                card_type=_historical_state(
+                    review_kind,
+                    is_learning_start=bool(is_learning_start),
+                ),
+                day_offset=day_offset,
                 current_elapsed_days=elapsed_days,
                 current_elapsed_seconds=elapsed_seconds,
                 target_retention=0.9,
@@ -1201,7 +1231,8 @@ select
 from cards c
 left join revlog r on r.cid = c.id
   and r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3)
+  and r.type in (0, 1, 2, 3, 4, 5)
+  and not (r.type = 3 and r.factor = 0)
 where c.type = 2
   and c.queue = 2
 group by c.id
@@ -1327,12 +1358,8 @@ def _warm_up_snapshot(
     )
 
 
-def _historical_card_type(review_kind: int) -> int:
-    if review_kind == 0:
-        return 1
-    if review_kind == 2:
-        return 3
-    return 2
+def _historical_state(review_kind: int, *, is_learning_start: bool = False) -> int:
+    return 0 if is_learning_start else review_kind + 1
 
 
 def _historical_day_offset(review_id: int, timing: _BenchTiming) -> int:

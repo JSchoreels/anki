@@ -6,12 +6,9 @@ use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
 
-use super::normalized_rwkv_japanese_field_name;
 use super::DeckConfigInner;
 use super::FsrsVersion;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
-use super::DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD;
-use super::DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 
 const FSRS_FORK_FIELDS_KEY: &str = "jschoreels.fsrs";
@@ -207,16 +204,6 @@ struct RwkvDeckConfigFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_candidate_refresh_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    rwkv_review_preset_tag_state_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rwkv_review_japanese_feature_state_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rwkv_review_japanese_kanji_field: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rwkv_review_japanese_reading_field: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rwkv_review_self_correction_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_first_review_elapsed_from_card_creation: Option<bool>,
 }
 
@@ -243,23 +230,6 @@ impl RwkvDeckConfigFields {
             rwkv_review_dynamic_preset_replay: true_only(config.rwkv_review_dynamic_preset_replay),
             rwkv_review_candidate_refresh_enabled: true_only(
                 config.rwkv_review_candidate_refresh_enabled,
-            ),
-            rwkv_review_preset_tag_state_enabled: true_only(
-                config.rwkv_review_preset_tag_state_enabled,
-            ),
-            rwkv_review_japanese_feature_state_enabled: true_only(
-                config.rwkv_review_japanese_feature_state_enabled,
-            ),
-            rwkv_review_japanese_kanji_field: non_default_string(
-                &config.rwkv_review_japanese_kanji_field,
-                DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-            ),
-            rwkv_review_japanese_reading_field: non_default_string(
-                &config.rwkv_review_japanese_reading_field,
-                DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-            ),
-            rwkv_review_self_correction_enabled: true_only(
-                config.rwkv_review_self_correction_enabled,
             ),
             rwkv_review_first_review_elapsed_from_card_creation: true_only(
                 config.rwkv_review_first_review_elapsed_from_card_creation,
@@ -297,27 +267,6 @@ impl RwkvDeckConfigFields {
         }
         if let Some(value) = self.rwkv_review_candidate_refresh_enabled {
             config.rwkv_review_candidate_refresh_enabled = value;
-        }
-        if let Some(value) = self.rwkv_review_preset_tag_state_enabled {
-            config.rwkv_review_preset_tag_state_enabled = value;
-        }
-        if let Some(value) = self.rwkv_review_japanese_feature_state_enabled {
-            config.rwkv_review_japanese_feature_state_enabled = value;
-        }
-        if let Some(value) = self.rwkv_review_japanese_kanji_field {
-            config.rwkv_review_japanese_kanji_field = normalized_rwkv_japanese_field_name(
-                &value,
-                DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-            );
-        }
-        if let Some(value) = self.rwkv_review_japanese_reading_field {
-            config.rwkv_review_japanese_reading_field = normalized_rwkv_japanese_field_name(
-                &value,
-                DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-            );
-        }
-        if let Some(value) = self.rwkv_review_self_correction_enabled {
-            config.rwkv_review_self_correction_enabled = value;
         }
         if let Some(value) = self.rwkv_review_first_review_elapsed_from_card_creation {
             config.rwkv_review_first_review_elapsed_from_card_creation = value;
@@ -357,14 +306,6 @@ pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
     }
     if config.rwkv_review_refresh_interval == 0 {
         config.rwkv_review_refresh_interval = DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
-    }
-    if config.rwkv_review_japanese_kanji_field.trim().is_empty() {
-        config.rwkv_review_japanese_kanji_field =
-            DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD.to_string();
-    }
-    if config.rwkv_review_japanese_reading_field.trim().is_empty() {
-        config.rwkv_review_japanese_reading_field =
-            DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD.to_string();
     }
 }
 
@@ -457,11 +398,6 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.rwkv_review_instant_order_enabled = false;
     config.rwkv_review_dynamic_preset_replay = false;
     config.rwkv_review_candidate_refresh_enabled = false;
-    config.rwkv_review_preset_tag_state_enabled = false;
-    config.rwkv_review_japanese_feature_state_enabled = false;
-    config.rwkv_review_japanese_kanji_field.clear();
-    config.rwkv_review_japanese_reading_field.clear();
-    config.rwkv_review_self_correction_enabled = false;
     config.rwkv_review_first_review_elapsed_from_card_creation = false;
 }
 
@@ -470,11 +406,6 @@ fn non_empty_vec(values: &[f32]) -> Option<Vec<f32>> {
 }
 
 fn non_default<T: Copy + PartialEq>(value: T, default: T) -> Option<T> {
-    (value != default).then_some(value)
-}
-
-fn non_default_string(value: &str, default: &str) -> Option<String> {
-    let value = normalized_rwkv_japanese_field_name(value, default);
     (value != default).then_some(value)
 }
 
@@ -525,11 +456,6 @@ mod tests {
             rwkv_review_instant_order_enabled: true,
             rwkv_review_dynamic_preset_replay: true,
             rwkv_review_candidate_refresh_enabled: true,
-            rwkv_review_preset_tag_state_enabled: true,
-            rwkv_review_japanese_feature_state_enabled: true,
-            rwkv_review_japanese_kanji_field: "Expression".into(),
-            rwkv_review_japanese_reading_field: "Kana".into(),
-            rwkv_review_self_correction_enabled: true,
             rwkv_review_first_review_elapsed_from_card_creation: true,
             ..Default::default()
         }
@@ -558,11 +484,6 @@ mod tests {
         assert!(!storage_config.rwkv_review_instant_order_enabled);
         assert!(!storage_config.rwkv_review_dynamic_preset_replay);
         assert!(!storage_config.rwkv_review_candidate_refresh_enabled);
-        assert!(!storage_config.rwkv_review_preset_tag_state_enabled);
-        assert!(!storage_config.rwkv_review_japanese_feature_state_enabled);
-        assert!(storage_config.rwkv_review_japanese_kanji_field.is_empty());
-        assert!(storage_config.rwkv_review_japanese_reading_field.is_empty());
-        assert!(!storage_config.rwkv_review_self_correction_enabled);
         assert!(!storage_config.rwkv_review_first_review_elapsed_from_card_creation);
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
@@ -588,19 +509,6 @@ mod tests {
             .get("rwkv_review_candidate_refresh_enabled")
             .is_none());
         assert!(fsrs_other
-            .get("rwkv_review_preset_tag_state_enabled")
-            .is_none());
-        assert!(fsrs_other
-            .get("rwkv_review_japanese_feature_state_enabled")
-            .is_none());
-        assert!(fsrs_other.get("rwkv_review_japanese_kanji_field").is_none());
-        assert!(fsrs_other
-            .get("rwkv_review_japanese_reading_field")
-            .is_none());
-        assert!(fsrs_other
-            .get("rwkv_review_self_correction_enabled")
-            .is_none());
-        assert!(fsrs_other
             .get("rwkv_review_first_review_elapsed_from_card_creation")
             .is_none());
         assert_eq!(
@@ -616,11 +524,6 @@ mod tests {
                 "rwkv_review_instant_order_enabled": true,
                 "rwkv_review_dynamic_preset_replay": true,
                 "rwkv_review_candidate_refresh_enabled": true,
-                "rwkv_review_preset_tag_state_enabled": true,
-                "rwkv_review_japanese_feature_state_enabled": true,
-                "rwkv_review_japanese_kanji_field": "Expression",
-                "rwkv_review_japanese_reading_field": "Kana",
-                "rwkv_review_self_correction_enabled": true,
                 "rwkv_review_first_review_elapsed_from_card_creation": true,
             }))
         );
@@ -684,26 +587,6 @@ mod tests {
             config.rwkv_review_candidate_refresh_enabled
         );
         assert_eq!(
-            decoded.rwkv_review_preset_tag_state_enabled,
-            config.rwkv_review_preset_tag_state_enabled
-        );
-        assert_eq!(
-            decoded.rwkv_review_japanese_feature_state_enabled,
-            config.rwkv_review_japanese_feature_state_enabled
-        );
-        assert_eq!(
-            decoded.rwkv_review_japanese_kanji_field,
-            config.rwkv_review_japanese_kanji_field
-        );
-        assert_eq!(
-            decoded.rwkv_review_japanese_reading_field,
-            config.rwkv_review_japanese_reading_field
-        );
-        assert_eq!(
-            decoded.rwkv_review_self_correction_enabled,
-            config.rwkv_review_self_correction_enabled
-        );
-        assert_eq!(
             decoded.rwkv_review_first_review_elapsed_from_card_creation,
             config.rwkv_review_first_review_elapsed_from_card_creation
         );
@@ -737,14 +620,6 @@ mod tests {
             config.rwkv_review_refresh_interval,
             DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL
         );
-        assert_eq!(
-            config.rwkv_review_japanese_kanji_field,
-            DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD
-        );
-        assert_eq!(
-            config.rwkv_review_japanese_reading_field,
-            DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD
-        );
     }
 
     #[test]
@@ -762,11 +637,6 @@ mod tests {
                     "rwkv_review_instant_order_enabled": true,
                     "rwkv_review_dynamic_preset_replay": true,
                     "rwkv_review_candidate_refresh_enabled": true,
-                    "rwkv_review_preset_tag_state_enabled": true,
-                    "rwkv_review_japanese_feature_state_enabled": true,
-                    "rwkv_review_japanese_kanji_field": "Expression",
-                    "rwkv_review_japanese_reading_field": "Kana",
-                    "rwkv_review_self_correction_enabled": true,
                     "rwkv_review_first_review_elapsed_from_card_creation": true,
                 },
             }))
@@ -788,11 +658,6 @@ mod tests {
         assert!(config.rwkv_review_instant_order_enabled);
         assert!(config.rwkv_review_dynamic_preset_replay);
         assert!(config.rwkv_review_candidate_refresh_enabled);
-        assert!(config.rwkv_review_preset_tag_state_enabled);
-        assert!(config.rwkv_review_japanese_feature_state_enabled);
-        assert_eq!(config.rwkv_review_japanese_kanji_field, "Expression");
-        assert_eq!(config.rwkv_review_japanese_reading_field, "Kana");
-        assert!(config.rwkv_review_self_correction_enabled);
         assert!(config.rwkv_review_first_review_elapsed_from_card_creation);
     }
 
@@ -811,11 +676,6 @@ mod tests {
                     "rwkv_review_instant_order_enabled": true,
                     "rwkv_review_dynamic_preset_replay": true,
                     "rwkv_review_candidate_refresh_enabled": true,
-                    "rwkv_review_preset_tag_state_enabled": true,
-                    "rwkv_review_japanese_feature_state_enabled": true,
-                    "rwkv_review_japanese_kanji_field": "Expression",
-                    "rwkv_review_japanese_reading_field": "Kana",
-                    "rwkv_review_self_correction_enabled": true,
                     "rwkv_review_first_review_elapsed_from_card_creation": true,
                 },
                 RWKV_FORK_FIELDS_KEY: {
@@ -829,11 +689,6 @@ mod tests {
                     "rwkv_review_instant_order_enabled": false,
                     "rwkv_review_dynamic_preset_replay": false,
                     "rwkv_review_candidate_refresh_enabled": false,
-                    "rwkv_review_preset_tag_state_enabled": false,
-                    "rwkv_review_japanese_feature_state_enabled": false,
-                    "rwkv_review_japanese_kanji_field": "Vocabulary",
-                    "rwkv_review_japanese_reading_field": "Furigana",
-                    "rwkv_review_self_correction_enabled": false,
                     "rwkv_review_first_review_elapsed_from_card_creation": false,
                 },
             }))
@@ -855,11 +710,6 @@ mod tests {
         assert!(!config.rwkv_review_instant_order_enabled);
         assert!(!config.rwkv_review_dynamic_preset_replay);
         assert!(!config.rwkv_review_candidate_refresh_enabled);
-        assert!(!config.rwkv_review_preset_tag_state_enabled);
-        assert!(!config.rwkv_review_japanese_feature_state_enabled);
-        assert_eq!(config.rwkv_review_japanese_kanji_field, "Vocabulary");
-        assert_eq!(config.rwkv_review_japanese_reading_field, "Furigana");
-        assert!(!config.rwkv_review_self_correction_enabled);
         assert!(!config.rwkv_review_first_review_elapsed_from_card_creation);
     }
 }

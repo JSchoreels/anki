@@ -41,8 +41,6 @@ pub(crate) const DEFAULT_RWKV_REVIEW_BATCH_SIZE: u32 = 512;
 pub(crate) const DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL: u32 = 1;
 pub(crate) const DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS: u32 = 0;
 pub(crate) const DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS: u32 = 0;
-pub(crate) const DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD: &str = "Front";
-pub(crate) const DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD: &str = "Reading";
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct DeckConfig {
@@ -86,13 +84,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_instant_order_enabled: false,
     rwkv_review_dynamic_preset_replay: false,
     rwkv_review_candidate_refresh_enabled: false,
-    rwkv_review_preset_tag_state_enabled: false,
-    rwkv_review_self_correction_enabled: false,
-    rwkv_review_japanese_feature_state_enabled: false,
     rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
     rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
-    rwkv_review_japanese_kanji_field: String::new(),
-    rwkv_review_japanese_reading_field: String::new(),
     rwkv_review_first_review_elapsed_from_card_creation: false,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
@@ -148,10 +141,6 @@ impl Default for DeckConfig {
                 learn_steps: vec![1.0, 10.0],
                 relearn_steps: vec![10.0],
                 easy_days_percentages: vec![1.0; 7],
-                rwkv_review_japanese_kanji_field: DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD
-                    .to_string(),
-                rwkv_review_japanese_reading_field: DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD
-                    .to_string(),
                 ..DEFAULT_DECK_CONFIG_INNER
             },
         }
@@ -371,14 +360,6 @@ pub(crate) fn ensure_deck_config_values_valid(config: &mut DeckConfigInner) {
         0,
         86_400,
     );
-    ensure_string_valid(
-        &mut config.rwkv_review_japanese_kanji_field,
-        DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-    );
-    ensure_string_valid(
-        &mut config.rwkv_review_japanese_reading_field,
-        DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-    );
     ensure_u32_valid(
         &mut config.minimum_lapse_interval,
         default.minimum_lapse_interval,
@@ -433,19 +414,6 @@ fn ensure_u32_valid(val: &mut u32, default: u32, min: u32, max: u32) {
     if *val < min || *val > max {
         *val = default;
     }
-}
-
-pub(crate) fn normalized_rwkv_japanese_field_name(value: &str, default: &str) -> String {
-    let value = value.trim();
-    if value.is_empty() {
-        default.to_string()
-    } else {
-        value.to_string()
-    }
-}
-
-fn ensure_string_valid(val: &mut String, default: &str) {
-    *val = normalized_rwkv_japanese_field_name(val, default);
 }
 
 #[cfg(test)]

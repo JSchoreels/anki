@@ -63,7 +63,21 @@ class RwkvFirstReviewElapsedSource(enum.Enum):
     CARD_CREATION = "card_creation"
 
 
+class RwkvReviewState(enum.IntEnum):
+    """State values stored in the training dataset before `scaled_state`."""
+
+    LEARN_START = 0
+    LEARNING = 1
+    REVIEW = 2
+    RELEARNING = 3
+    FILTERED = 4
+    MANUAL = 5
+    RESCHEDULED = 6
+
+
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
+_REVIEWER_PENDING_ANSWER_STATE_ATTR = "_rwkv_pending_answer_state"
+_REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR = "_rwkv_synthetic_answer_states"
 _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_DESCENDING
 )
@@ -79,8 +93,6 @@ _NEW_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY = getattr(
 )
 _DEFAULT_RWKV_REVIEW_BATCH_SIZE = 512
 _DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL = 1
-_DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD = "Front"
-_DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD = "Reading"
 _MIN_RWKV_REVIEW_BATCH_SIZE = 64
 _MAX_RWKV_REVIEW_BATCH_SIZE = 2048
 _MIN_RWKV_REVIEW_REFRESH_INTERVAL = 1
@@ -98,109 +110,22 @@ _RWKV_SIMULATOR_BUCKET_COUNT = 20
 _RWKV_SIMULATOR_PRIOR_WEIGHT = 4.0
 _RWKV_SIMULATOR_DEFAULT_GRADE_SECONDS = (8.0, 8.0, 8.0, 8.0)
 _RWKV_SIMULATOR_MAX_TAKEN_MILLIS = 600_000
-_RWKV_PRESET_TAG_SEPARATOR = "\x1f"
-_RWKV_OUTCOME_TAG_COMPONENTS = frozenset(
-    ("leech", "fail", "failed", "failure", "lapse", "lapsed", "wrong", "missed")
-)
-_RWKV_SELF_CORRECTION_BIAS = 0.07436140406791929
-_RWKV_SELF_CORRECTION_BIN_WEIGHTS = (
-    0.06812872513997538,
-    -0.0025999167840363,
-    -0.03392365010873999,
-    -0.07075911873743307,
-    -0.09516204052294816,
-    -0.139698458760263,
-    -0.2035259016196793,
-    -0.26207799153130085,
-    -0.2356383814634475,
-)
-_RWKV_SELF_CORRECTION_BIN_MEANS = (
-    0.009417690358001798,
-    0.009425788114113579,
-    0.014511178952312314,
-    0.023556372529172167,
-    0.040610246900583846,
-    0.07500951486343134,
-    0.16258674721234745,
-    0.3693062652339037,
-    0.2855025872330777,
-)
-_RWKV_SELF_CORRECTION_BIN_STDS = (
-    0.096586735457425,
-    0.09662785640042636,
-    0.11958513552162861,
-    0.1516623547306286,
-    0.19738554847621817,
-    0.2634066960868383,
-    0.3689882069162315,
-    0.4826169782476465,
-    0.45165347326938227,
-)
-_RWKV_SELF_CORRECTION_DENSE_WEIGHTS = (
-    0.007036814124640436,
-    -0.012041938416663747,
-    -0.014850987120789192,
-    -0.011533121506023432,
-    0.004342593504073833,
-    -0.02359130346939769,
-)
-_RWKV_SELF_CORRECTION_DENSE_MEANS = (
-    -0.5094892776558063,
-    -0.351560610369656,
-    1.4204649474962467,
-    1.982239332191282,
-    1.1338392027895399,
-    0.685053971544485,
-)
-_RWKV_SELF_CORRECTION_DENSE_STDS = (
-    0.44149326739666034,
-    0.6495456165918607,
-    1.265532551159774,
-    1.2108192148513892,
-    0.8668741844422765,
-    0.4644943784542639,
-)
-_RWKV_SELF_CORRECTION_EPSILON = 1e-6
-_RWKV_SELF_CORRECTION_MODEL_VERSION = 1
-_RWKV_SELF_CORRECTION_CALIBRATION_CONFIG_KEY = "rwkv_review_self_correction_calibration"
-_RWKV_SELF_CORRECTION_FEATURE_NAMES = (
-    "pred_bin_1",
-    "pred_bin_2",
-    "pred_bin_3",
-    "pred_bin_4",
-    "pred_bin_5",
-    "pred_bin_6",
-    "pred_bin_7",
-    "pred_bin_8",
-    "pred_bin_9",
-    "hour_sin",
-    "hour_cos",
-    "elapsed_days_log",
-    "prior_long_term_reviews_log",
-    "prior_lapses_log",
-    "is_long_term_review",
-)
-_RWKV_SELF_CORRECTION_TRAIN_FRACTION = 0.70
-_RWKV_SELF_CORRECTION_MIN_SAMPLES = 200
-_RWKV_SELF_CORRECTION_L2 = 0.01
-_RWKV_SELF_CORRECTION_MAX_ITERATIONS = 50
-
-
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT = "final_fit"
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD = "test_fold"
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_POST_OPTIMIZATION = "post_optimization"
 _RWKV_CALIBRATION_METRIC_EPSILON = 1e-6
+_RWKV_CALIBRATION_TRAIN_FRACTION = 0.70
 _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 7
+_RWKV_STATE_CACHE_VERSION = 9
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
-_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT7\0"
-_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS7\0"
+_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT9\0"
+_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS9\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
@@ -212,7 +137,8 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
     prefix = f"{alias}." if alias else ""
     return (
         f"{prefix}ease between 1 and 4 "
-        f"and ({prefix}type in (0, 1, 2, 3) or {prefix}type = 4)"
+        f"and {prefix}type in (0, 1, 2, 3, 4, 5) "
+        f"and not ({prefix}type = 3 and {prefix}factor = 0)"
     )
 
 
@@ -290,6 +216,7 @@ class RwkvReviewInput:
     is_query: bool
     ease: int | None
     duration_millis: int | None
+    # Legacy field name: answered inputs carry RwkvReviewState, not Anki CardType.
     card_type: int | None
     card_queue: int | None
     card_due: int | None
@@ -308,33 +235,6 @@ class RwkvReviewInput:
         float | None,
         float | None,
     ] = (None, None, None, None)
-
-
-@dataclass(frozen=True)
-class RwkvSelfCorrectionFeatures:
-    hour_sin: float
-    hour_cos: float
-    elapsed_days_log: float
-    prior_long_term_reviews_log: float
-    prior_lapses_log: float
-    is_long_term_review: float
-
-
-@dataclass(frozen=True)
-class RwkvSelfCorrectionCalibration:
-    bias: float
-    weights: tuple[float, ...]
-    means: tuple[float, ...]
-    stds: tuple[float, ...]
-
-
-@dataclass(frozen=True)
-class RwkvSelfCorrectionTrainingSample:
-    review_id: int
-    prediction: float
-    outcome: int
-    features: RwkvSelfCorrectionFeatures
-    recall_bin: RwkvCalibrationMetricBin
 
 
 @dataclass(frozen=True)
@@ -358,8 +258,6 @@ class RwkvStatsGraphCard:
     reps: int
     lapses: int
     last_review_time: int | None
-    note_tags: object = None
-    japanese_features: RwkvJapaneseFeatureFields | None = None
 
     def current_deck_id(self) -> int:
         return self.odid or self.did
@@ -379,8 +277,6 @@ class RwkvStatsGraphCardFields(NamedTuple):
     reps: int
     lapses: int
     last_review_time: int | None
-    note_tags: object = None
-    japanese_features: RwkvJapaneseFeatureFields | None = None
 
     def current_deck_id(self) -> int:
         return self.odid or self.did
@@ -399,9 +295,6 @@ class RwkvReviewInputBatchBuild:
     load_elapsed_ms: float
     candidate_elapsed_ms: float
     searched_rows: int = 0
-    self_correction_features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = field(
-        default_factory=dict
-    )
     dynamic_desired_retentions_resolved: bool = False
 
 
@@ -527,15 +420,18 @@ class RwkvHistoricalReviewInputs:
     deck_id: int | None = None
 
 
-@dataclass(frozen=True)
-class RwkvExtraFeatureConfigOverride:
-    deck_id: int | None
-    config_id: int | None
-    preset_tag_state_enabled: bool
-    japanese_feature_state_enabled: bool
-    self_correction_enabled: bool
-    japanese_kanji_field: str | None = None
-    japanese_reading_field: str | None = None
+class _RwkvPendingAnswerState(NamedTuple):
+    card_id: int
+    ease: int
+    review_state: int
+    base_review_state: int | None
+    answered_at_millis: int
+
+
+class _RwkvSyntheticAnswerState(NamedTuple):
+    ease: int
+    review_state: int
+    answered_at_millis: int
 
 
 @dataclass(frozen=True)
@@ -718,16 +614,8 @@ RwkvWorkloadOutput = tuple[
 ]
 RwkvStatsPrepareKey = tuple[int, int, int, int, str]
 RwkvScorePrewarmKey = tuple[int, int, int, int, tuple[int, ...]]
-RwkvPresetTagStateCacheKey = tuple[tuple[object, bool], ...]
-RwkvJapaneseFeatureStateCacheKey = tuple[tuple[object, bool, str, str], ...]
 RwkvFirstReviewElapsedStateCacheKey = tuple[tuple[object, bool], ...]
-RwkvSelfCorrectionCacheKey = tuple[tuple[object, bool], ...]
-RwkvReviewQueueScoreConfigKey = tuple[
-    RwkvFirstReviewElapsedStateCacheKey,
-    RwkvSelfCorrectionCacheKey,
-]
-RwkvJapaneseFeatureFieldNames = tuple[str, str]
-RwkvJapaneseFeatureFields = tuple[str, str, str, str]
+RwkvReviewQueueScoreConfigKey = RwkvFirstReviewElapsedStateCacheKey
 RwkvCalibrationMetricBin = tuple[int, int, int]
 RwkvCalibrationMetricPair = tuple[float, int, RwkvCalibrationMetricBin]
 RwkvReviewInputBatchCacheKey = tuple[
@@ -736,10 +624,7 @@ RwkvReviewInputBatchCacheKey = tuple[
     bool,
     int,
     int,
-    RwkvPresetTagStateCacheKey,
-    RwkvJapaneseFeatureStateCacheKey,
     RwkvFirstReviewElapsedStateCacheKey,
-    RwkvSelfCorrectionCacheKey,
 ]
 
 
@@ -1914,6 +1799,14 @@ def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
         return
 
     _invalidate_reviewer_transient_scores_after_undo(reviewer, valid_card_ids)
+    synthetic_states = getattr(
+        reviewer,
+        _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
+        None,
+    )
+    if isinstance(synthetic_states, dict):
+        for card_id in valid_card_ids:
+            synthetic_states.pop(card_id, None)
 
     queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
     if not isinstance(queue, list):
@@ -2102,24 +1995,13 @@ class _RwkvReviewRetrievabilityCacheWriter:
         default_fold_index: int = -1,
         sample_role_by_review_id: Mapping[int, str] | None = None,
         fold_index_by_review_id: Mapping[int, int] | None = None,
-        review_inputs_by_id: Mapping[int, RwkvReviewInput] | None = None,
-        self_correction_features_by_review_id: Mapping[int, RwkvSelfCorrectionFeatures]
-        | None = None,
-        self_correction_calibration: RwkvSelfCorrectionCalibration | None = None,
     ) -> None:
-        self._reviewer = reviewer
         self._col: Any | None = _collection(reviewer)
         self._source = source
         self._default_sample_role = default_sample_role
         self._default_fold_index = default_fold_index
         self._sample_role_by_review_id = sample_role_by_review_id or {}
         self._fold_index_by_review_id = fold_index_by_review_id or {}
-        self._review_inputs_by_id = review_inputs_by_id or {}
-        self._self_correction_features_by_review_id = (
-            self_correction_features_by_review_id or {}
-        )
-        self._self_correction_calibration = self_correction_calibration
-        self._deck_configs: dict[int | None, dict[str, object] | None] = {}
         self._rows: list[tuple[int, float, str, int]] = []
 
     def __call__(self, review_id: int, retrievability: float) -> None:
@@ -2141,11 +2023,10 @@ class _RwkvReviewRetrievabilityCacheWriter:
             ):
                 continue
 
-            prediction = self._prediction_for_review(review_id, retrievability)
             self._rows.append(
                 (
                     review_id,
-                    prediction,
+                    retrievability,
                     self._sample_role_by_review_id.get(
                         review_id,
                         self._default_sample_role,
@@ -2158,38 +2039,6 @@ class _RwkvReviewRetrievabilityCacheWriter:
             )
             if len(self._rows) >= 1000:
                 self.flush()
-
-    def _prediction_for_review(
-        self,
-        review_id: int,
-        retrievability: float,
-    ) -> float:
-        review_input = self._review_inputs_by_id.get(review_id)
-        features = self._self_correction_features_by_review_id.get(review_id)
-        if review_input is None or features is None:
-            return float(retrievability)
-
-        deck_id = review_input.identity.deck_id
-        if deck_id not in self._deck_configs:
-            deck_config = _deck_config_for_deck_id(self._reviewer, deck_id)
-            self._deck_configs[deck_id] = (
-                deck_config if isinstance(deck_config, dict) else None
-            )
-
-        deck_config = self._deck_configs[deck_id]
-        return float(
-            _rwkv_score_with_optional_self_correction(
-                retrievability,
-                (
-                    features
-                    if deck_config is not None
-                    and _rwkv_review_self_correction_enabled(deck_config)
-                    else None
-                ),
-                deck_config=deck_config,
-                calibration=self._self_correction_calibration,
-            )
-        )
 
     def flush(self) -> None:
         if self._col is None or not self._rows:
@@ -2388,10 +2237,9 @@ def record_reviewer_answer(
 ) -> None:
     """Update desktop RWKV state after a real review has been answered."""
 
-    if _reviewer_backend is None:
-        return
-
     try:
+        if _reviewer_backend is None:
+            return
         if rwkv_review_enabled(
             reviewer, card
         ) and not _prepare_reviewer_backend_for_review(reviewer):
@@ -2408,6 +2256,32 @@ def record_reviewer_answer(
             _invalidate_resolved_preset_id_cache(reviewer, card_ids=[card_id])
     except Exception:
         logger.exception("RWKV review state update failed")
+    finally:
+        pending = getattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR, None)
+        if isinstance(pending, _RwkvPendingAnswerState) and pending.card_id == _card_id(
+            card
+        ):
+            synthetic_states = getattr(
+                reviewer,
+                _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
+                None,
+            )
+            if not isinstance(synthetic_states, dict):
+                synthetic_states = {}
+                setattr(
+                    reviewer,
+                    _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
+                    synthetic_states,
+                )
+            if pending.review_state != pending.base_review_state:
+                synthetic_states[pending.card_id] = _RwkvSyntheticAnswerState(
+                    ease=pending.ease,
+                    review_state=pending.review_state,
+                    answered_at_millis=pending.answered_at_millis,
+                )
+            else:
+                synthetic_states.pop(pending.card_id, None)
+            delattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR)
 
 
 def refresh_answered_card_queue_score(
@@ -2754,7 +2628,6 @@ def score_reviewer_queue_order_async_work(
     scores = _scores_from_input_predictions(
         work.inputs_by_card_id,
         predictions,
-        self_correction_features_by_card_id=work.input_build.self_correction_features_by_card_id,
     )
     target_retentions_by_card_id = (
         _rwkv_review_input_build_target_retentions_by_card_id(work.input_build)
@@ -4106,20 +3979,6 @@ def rwkv_card_info_after_review_row(
         if identity is None:
             return _unavailable_rwkv_card_info_after_review_row()
 
-        deck_config = _rwkv_review_enabled_deck_config(
-            candidate.reviewer,
-            candidate.card,
-        )
-        self_correction_features = (
-            _rwkv_self_correction_features_for_card(
-                candidate.reviewer,
-                candidate.card,
-                now_seconds=time.time(),
-            )
-            if isinstance(deck_config, dict)
-            and _rwkv_review_self_correction_enabled(deck_config)
-            else None
-        )
         snapshot = cache_snapshot()
         query_input = rwkv_review_input(
             reviewer=candidate.reviewer,
@@ -4156,12 +4015,6 @@ def rwkv_card_info_after_review_row(
             score_by_card_id = dict(scores or [])
             retrievability = score_by_card_id.get(card_id)
             have_prediction = have_prediction or retrievability is not None
-            if retrievability is not None and self_correction_features is not None:
-                retrievability = _rwkv_score_with_optional_self_correction(
-                    retrievability,
-                    self_correction_features,
-                    deck_config=deck_config,
-                )
             values.append(f"{label}:{_format_retrievability(retrievability)}")
 
         if not have_prediction:
@@ -4226,32 +4079,12 @@ def rwkv_review_identity(
     if card_id is None:
         return None
     deck_id = _deck_id(card)
-    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-    note_tags = (
-        _note_tags_for_card(reviewer, card)
-        if isinstance(deck_config, dict)
-        and _rwkv_review_preset_tag_state_enabled(deck_config)
-        else None
-    )
-    japanese_features = (
-        _japanese_features_for_card(reviewer, card, deck_config)
-        if isinstance(deck_config, dict)
-        and _rwkv_review_japanese_feature_state_enabled(deck_config)
-        else None
-    )
 
     return RwkvReviewIdentity(
         card_id=card_id,
         note_id=_int_attr(card, "nid"),
         deck_id=deck_id,
-        preset_id=_preset_id(
-            reviewer,
-            card_id,
-            deck_id,
-            deck_config=deck_config,
-            note_tags=note_tags,
-            japanese_features=japanese_features,
-        ),
+        preset_id=_preset_id(reviewer, card_id, deck_id),
     )
 
 
@@ -4279,13 +4112,40 @@ def rwkv_review_input(
             elapsed_seconds // 86_400 if elapsed_seconds is not None else None
         )
 
+    base_review_state = _rwkv_review_state_for_scheduling_state(
+        state_kind=state_kind,
+        normal_state_kind=normal_state_kind,
+        card_type=_int_attr(card, "type"),
+    )
+    review_state = base_review_state
+    pending = getattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR, None)
+    if (
+        ease is not None
+        and isinstance(pending, _RwkvPendingAnswerState)
+        and pending.card_id == identity.card_id
+        and pending.ease == ease
+    ):
+        review_state = pending.review_state
+    elif isinstance(deck_config, dict):
+        review_state = _rwkv_review_state_for_live_context(
+            reviewer,
+            card,
+            base_review_state=base_review_state,
+        )
+
+    if review_state != base_review_state:
+        state_kind, normal_state_kind = _rwkv_review_state_kinds(review_state)
+    card_queue = _int_attr(card, "queue")
+    if ease is not None or review_state != base_review_state:
+        card_queue = _rwkv_review_queue_for_state(review_state, card_queue)
+
     return RwkvReviewInput(
         identity=identity,
         is_query=ease is None,
         ease=ease,
         duration_millis=_duration_millis(card, ease),
-        card_type=_int_attr(card, "type"),
-        card_queue=_int_attr(card, "queue"),
+        card_type=review_state,
+        card_queue=card_queue,
         card_due=_int_attr(card, "due"),
         interval_days=_int_attr(card, "ivl"),
         ease_factor=_int_attr(card, "factor"),
@@ -4302,6 +4162,182 @@ def rwkv_review_input(
             states=_scheduling_states(reviewer),
         ),
     )
+
+
+def _rwkv_review_state_for_scheduling_state(
+    *,
+    state_kind: str | None,
+    normal_state_kind: str | None,
+    card_type: int | None,
+) -> int | None:
+    if state_kind == "filtered":
+        return int(RwkvReviewState.FILTERED)
+
+    normal_states = {
+        "new": RwkvReviewState.LEARN_START,
+        "learning": RwkvReviewState.LEARNING,
+        "review": RwkvReviewState.REVIEW,
+        "relearning": RwkvReviewState.RELEARNING,
+    }
+    if (state := normal_states.get(normal_state_kind)) is not None:
+        return int(state)
+
+    # Anki's persistent card types happen to match dataset states 0 through 3.
+    return card_type
+
+
+def _rwkv_review_state_for_live_context(
+    reviewer: object,
+    card: object,
+    *,
+    base_review_state: int | None,
+    answered_at_millis: int | None = None,
+) -> int | None:
+    if base_review_state != int(RwkvReviewState.REVIEW):
+        return base_review_state
+
+    card_id = _card_id(card)
+    if card_id is None:
+        return base_review_state
+    previous = _latest_eligible_review_for_card(reviewer, card_id)
+    if previous is None:
+        return base_review_state
+    previous_id, previous_ease, previous_kind = previous
+    timing = _timing_today(reviewer)
+    days_elapsed = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(days_elapsed, int) or not isinstance(next_day_at, int):
+        return base_review_state
+
+    if answered_at_millis is None or answered_at_millis <= 0:
+        now = getattr(timing, "now", None)
+        answered_at_millis = (
+            now * 1000 if isinstance(now, int) else int(time.time() * 1000)
+        )
+    if _historical_review_day_offset(
+        previous_id,
+        days_elapsed=days_elapsed,
+        next_day_at=next_day_at,
+    ) != _historical_review_day_offset(
+        answered_at_millis,
+        days_elapsed=days_elapsed,
+        next_day_at=next_day_at,
+    ):
+        return base_review_state
+
+    if previous_kind == 1:
+        return int(
+            RwkvReviewState.RELEARNING
+            if previous_ease == 1
+            else RwkvReviewState.FILTERED
+        )
+    if previous_kind == 2:
+        return int(
+            RwkvReviewState.RELEARNING
+            if previous_ease in (1, 2)
+            else RwkvReviewState.FILTERED
+        )
+    if previous_kind == 0:
+        return int(RwkvReviewState.FILTERED)
+    if previous_kind == 3:
+        synthetic_states = getattr(
+            reviewer,
+            _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
+            None,
+        )
+        synthetic = (
+            synthetic_states.get(card_id)
+            if isinstance(synthetic_states, dict)
+            else None
+        )
+        if (
+            isinstance(synthetic, _RwkvSyntheticAnswerState)
+            and synthetic.review_state == int(RwkvReviewState.FILTERED)
+            and abs(synthetic.answered_at_millis - previous_id) <= 1_000
+        ):
+            return int(RwkvReviewState.FILTERED)
+    return base_review_state
+
+
+def _latest_eligible_review_for_card(
+    reviewer: object,
+    card_id: int,
+) -> tuple[int, int, int] | None:
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    first = getattr(db, "first", None)
+    if not callable(first):
+        return None
+
+    try:
+        row = first(
+            f"""
+select id, ease, type
+from revlog
+where cid = ?
+  and {_rwkv_historical_answer_sql_condition()}
+order by id desc
+limit 1
+""",
+            card_id,
+        )
+    except Exception:
+        logger.debug("failed to load latest eligible RWKV review for card %s", card_id)
+        return None
+    if not isinstance(row, Sequence) or len(row) != 3:
+        return None
+    review_id, ease, review_kind = row
+    if not all(isinstance(value, int) for value in row):
+        return None
+    return review_id, ease, review_kind
+
+
+def _rwkv_review_state_kinds(review_state: int | None) -> tuple[str | None, str | None]:
+    if review_state == int(RwkvReviewState.LEARN_START):
+        return "normal", "new"
+    if review_state == int(RwkvReviewState.LEARNING):
+        return "normal", "learning"
+    if review_state == int(RwkvReviewState.REVIEW):
+        return "normal", "review"
+    if review_state == int(RwkvReviewState.RELEARNING):
+        return "normal", "relearning"
+    if review_state == int(RwkvReviewState.FILTERED):
+        return "filtered", None
+    return None, None
+
+
+def _rwkv_review_queue_for_state(
+    review_state: int | None,
+    fallback: int | None,
+) -> int | None:
+    if review_state in (
+        int(RwkvReviewState.LEARN_START),
+        int(RwkvReviewState.LEARNING),
+    ):
+        return int(QUEUE_TYPE_LRN)
+    if review_state == int(RwkvReviewState.RELEARNING):
+        return int(QUEUE_TYPE_DAY_LEARN_RELEARN)
+    if review_state in (
+        int(RwkvReviewState.REVIEW),
+        int(RwkvReviewState.FILTERED),
+    ):
+        return int(QUEUE_TYPE_REV)
+    return fallback
+
+
+def _rwkv_raw_review_kind(review_state: int | None) -> int | None:
+    if review_state in (
+        int(RwkvReviewState.LEARN_START),
+        int(RwkvReviewState.LEARNING),
+    ):
+        return 0
+    if review_state == int(RwkvReviewState.REVIEW):
+        return 1
+    if review_state == int(RwkvReviewState.RELEARNING):
+        return 2
+    if review_state == int(RwkvReviewState.FILTERED):
+        return 3
+    return None
 
 
 def _rwkv_answer_input(
@@ -4487,36 +4523,16 @@ def _store_reviewer_prediction(
     if card_id is None:
         return
 
-    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
-    retrievability = prediction.retrievability
-    button_probabilities = prediction.button_probabilities
-    if retrievability is not None and deck_config is not None:
-        retrievability = _rwkv_score_with_optional_self_correction(
-            retrievability,
-            _rwkv_self_correction_features_for_card(
-                reviewer,
-                card,
-                now_seconds=time.time(),
-            )
-            if _rwkv_review_self_correction_enabled(deck_config)
-            else None,
-            deck_config=deck_config,
-        )
-        button_probabilities = _rwkv_button_probabilities_with_retrievability(
-            button_probabilities,
-            retrievability,
-        )
-
     setattr(
         reviewer,
         _REVIEWER_PREDICTION_ATTR,
         RwkvReviewerPrediction(
             card_id=card_id,
-            retrievability=retrievability,
+            retrievability=prediction.retrievability,
             review_enabled=review_enabled,
             interval_override_used=interval_override_used,
             s90_overrides=prediction.s90_overrides,
-            button_probabilities=button_probabilities,
+            button_probabilities=prediction.button_probabilities,
         ),
     )
 
@@ -4540,6 +4556,44 @@ def set_answer_rwkv_metadata(
     card: object,
     ease: int,
 ) -> None:
+    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    if deck_config is not None:
+        current_state = _current_scheduling_state(reviewer)
+        state_kind, normal_state_kind = _scheduling_state_kinds(current_state)
+        base_review_state = _rwkv_review_state_for_scheduling_state(
+            state_kind=state_kind,
+            normal_state_kind=normal_state_kind,
+            card_type=_int_attr(card, "type"),
+        )
+        answered_at_millis = _int_attr(answer, "answered_at_millis")
+        if answered_at_millis is None or answered_at_millis <= 0:
+            timing = _timing_today(reviewer)
+            now = getattr(timing, "now", None)
+            answered_at_millis = (
+                now * 1000 if isinstance(now, int) else int(time.time() * 1000)
+            )
+        review_state = _rwkv_review_state_for_live_context(
+            reviewer,
+            card,
+            base_review_state=base_review_state,
+            answered_at_millis=answered_at_millis,
+        )
+        review_kind = _rwkv_raw_review_kind(review_state)
+        card_id = _card_id(card)
+        if review_kind is not None and card_id is not None:
+            setattr(answer, "rwkv_review_kind", review_kind)
+            setattr(
+                reviewer,
+                _REVIEWER_PENDING_ANSWER_STATE_ATTR,
+                _RwkvPendingAnswerState(
+                    card_id,
+                    ease,
+                    review_state,
+                    base_review_state,
+                    answered_at_millis,
+                ),
+            )
+
     prediction = _current_reviewer_prediction(reviewer, card)
     if prediction is None or not prediction.review_enabled:
         return
@@ -4600,28 +4654,7 @@ def _queried_card_info_diagnostics(
             return None
 
         _validate_prediction(prediction)
-        deck_config = _rwkv_review_enabled_deck_config(
-            candidate.reviewer,
-            candidate.card,
-        )
         retrievability = prediction.retrievability
-        button_probabilities = prediction.button_probabilities
-        if retrievability is not None and deck_config is not None:
-            retrievability = _rwkv_score_with_optional_self_correction(
-                retrievability,
-                _rwkv_self_correction_features_for_card(
-                    candidate.reviewer,
-                    candidate.card,
-                    now_seconds=time.time(),
-                )
-                if _rwkv_review_self_correction_enabled(deck_config)
-                else None,
-                deck_config=deck_config,
-            )
-            button_probabilities = _rwkv_button_probabilities_with_retrievability(
-                button_probabilities,
-                retrievability,
-            )
         reviewer_prediction = RwkvReviewerPrediction(
             card_id=card_id,
             retrievability=retrievability,
@@ -4630,7 +4663,7 @@ def _queried_card_info_diagnostics(
                 review_enabled
                 and _has_interval_overrides(prediction.interval_overrides)
             ),
-            button_probabilities=button_probabilities,
+            button_probabilities=prediction.button_probabilities,
         )
         return RwkvReviewerDiagnostics(
             retrievability=reviewer_prediction.retrievability,
@@ -4814,31 +4847,16 @@ def _preset_id(
     reviewer: object,
     card_id: int,
     deck_id: int | None,
-    *,
-    deck_config: object | None = None,
-    note_tags: object = None,
-    japanese_features: object = None,
 ) -> int | None:
     resolved_preset_id = _resolved_fsrs_preset_id(reviewer, card_id)
     if resolved_preset_id is not None:
-        return _rwkv_preset_id_with_features(
-            resolved_preset_id,
-            deck_config,
-            note_tags,
-            japanese_features,
-        )
+        return _stable_preset_id(resolved_preset_id)
 
-    if deck_config is None:
-        deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if isinstance(deck_config, dict):
         value = deck_config.get("id")
         if isinstance(value, int):
-            return _rwkv_preset_id_with_features(
-                value,
-                deck_config,
-                note_tags,
-                japanese_features,
-            )
+            return value
 
     return None
 
@@ -4986,361 +5004,6 @@ def _stable_preset_id(preset_id: str) -> int:
 
     digest = hashlib.blake2b(preset_id.encode("utf8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") & ((1 << 63) - 1)
-
-
-def _rwkv_preset_id_with_tags(
-    base_preset_id: int | str | None,
-    deck_config: object | None,
-    note_tags: object,
-) -> int | None:
-    return _rwkv_preset_id_with_features(
-        base_preset_id,
-        deck_config,
-        note_tags,
-        None,
-    )
-
-
-def _rwkv_preset_id_with_features(
-    base_preset_id: int | str | None,
-    deck_config: object | None,
-    note_tags: object,
-    japanese_features: object,
-) -> int | None:
-    if base_preset_id is None:
-        return None
-
-    base = str(base_preset_id)
-    if isinstance(deck_config, dict) and _rwkv_review_preset_tag_state_enabled(
-        deck_config
-    ):
-        tags = _rwkv_clean_preset_tags(note_tags)
-        if tags:
-            base = f"rwkv-preset-tags:{base}:{_RWKV_PRESET_TAG_SEPARATOR.join(tags)}"
-
-    if isinstance(deck_config, dict) and _rwkv_review_japanese_feature_state_enabled(
-        deck_config
-    ):
-        bucket = _rwkv_japanese_feature_bucket(japanese_features)
-        if bucket:
-            base = f"rwkv-japanese-features:{base}:{bucket}"
-
-    return _stable_preset_id(base)
-
-
-def _rwkv_clean_preset_tags(note_tags: object) -> list[str]:
-    tags = _rwkv_note_tag_list(note_tags)
-    clean_tags = sorted(
-        {
-            tag
-            for tag in tags
-            if isinstance(tag, str) and tag and not _rwkv_preset_tag_is_outcome(tag)
-        }
-    )
-    return clean_tags
-
-
-def _rwkv_note_tag_list(note_tags: object) -> list[str]:
-    if isinstance(note_tags, str):
-        return note_tags.split()
-    if isinstance(note_tags, Sequence):
-        return [tag for tag in note_tags if isinstance(tag, str)]
-    return []
-
-
-def _rwkv_preset_tag_is_outcome(tag: str) -> bool:
-    lowered = tag.lower()
-    if (
-        lowered == "leech"
-        or lowered.startswith("am-")
-        or lowered.startswith("ankimorphs::")
-    ):
-        return True
-
-    return any(
-        part in _RWKV_OUTCOME_TAG_COMPONENTS
-        for part in lowered.replace("/", ":")
-        .replace("\\", ":")
-        .replace("-", ":")
-        .replace("_", ":")
-        .split(":")
-    )
-
-
-def _note_tags_for_card(reviewer: object, card: object) -> object:
-    note_tags = getattr(card, "note_tags", None)
-    if note_tags is not None:
-        return note_tags
-
-    note = getattr(card, "note", None)
-    if callable(note):
-        try:
-            value = note()
-        except Exception:
-            logger.debug("failed to read card note for RWKV preset tag state")
-        else:
-            tags = getattr(value, "tags", None)
-            if tags is not None:
-                return tags
-
-    note_id = _int_attr(card, "nid")
-    if note_id is None:
-        return None
-
-    col = _collection(reviewer)
-    get_note = getattr(col, "get_note", None)
-    if not callable(get_note):
-        return None
-
-    try:
-        note = get_note(note_id)
-    except Exception:
-        logger.debug("failed to read note tags for RWKV preset tag state")
-        return None
-
-    return getattr(note, "tags", None)
-
-
-def _japanese_features_for_card(
-    reviewer: object,
-    card: object,
-    deck_config: Mapping[str, object] | None = None,
-) -> RwkvJapaneseFeatureFields | None:
-    field_names = _rwkv_japanese_feature_field_names(deck_config)
-    features = getattr(card, "japanese_features", None)
-    if (
-        features is not None
-        and field_names == _rwkv_default_japanese_feature_field_names()
-    ):
-        return _rwkv_japanese_feature_fields(features)
-
-    note_id = _int_attr(card, "nid")
-    if note_id is None:
-        return None
-
-    return _rwkv_japanese_features_for_note_ids(
-        reviewer,
-        [note_id],
-        field_names=field_names,
-    ).get(note_id)
-
-
-def _rwkv_japanese_features_for_note_ids(
-    reviewer: object,
-    note_ids: Sequence[int],
-    *,
-    field_names: RwkvJapaneseFeatureFieldNames | None = None,
-) -> dict[int, RwkvJapaneseFeatureFields]:
-    if not note_ids:
-        return {}
-
-    col = _collection(reviewer)
-    db = getattr(col, "db", None)
-    all_rows = getattr(db, "all", None)
-    if not callable(all_rows):
-        return {}
-
-    unique_note_ids = sorted(
-        {note_id for note_id in note_ids if isinstance(note_id, int)}
-    )
-    if not unique_note_ids:
-        return {}
-    field_names = field_names or _rwkv_default_japanese_feature_field_names()
-    kanji_field, reading_field = field_names
-
-    try:
-        rows = all_rows(
-            f"""
-select n.id, n.flds, front.ord, reading.ord, front_kana.ord, frequency.ord
-from notes n
-left join fields front on front.ntid = n.mid and front.name = ?
-left join fields reading on reading.ntid = n.mid and reading.name = ?
-left join fields front_kana on front_kana.ntid = n.mid and front_kana.name = 'Front_Kana'
-left join fields frequency on frequency.ntid = n.mid and frequency.name = 'Frequency'
-where n.id in {ids2str(unique_note_ids)}
-""",
-            kanji_field,
-            reading_field,
-        )
-    except Exception:
-        logger.debug("failed to read note fields for RWKV Japanese feature state")
-        return {}
-
-    features_by_note_id: dict[int, RwkvJapaneseFeatureFields] = {}
-    for row in rows:
-        if len(row) != 6:
-            continue
-        note_id, fields_raw, front_ord, reading_ord, front_kana_ord, frequency_ord = row
-        if not isinstance(note_id, int):
-            continue
-        features = _rwkv_japanese_feature_fields_from_storage(
-            fields_raw,
-            front_ord,
-            reading_ord,
-            front_kana_ord,
-            frequency_ord,
-        )
-        if features is not None:
-            features_by_note_id[note_id] = features
-
-    return features_by_note_id
-
-
-def _rwkv_japanese_feature_fields_from_storage(
-    fields_raw: object,
-    front_ord: object,
-    reading_ord: object,
-    front_kana_ord: object,
-    frequency_ord: object,
-) -> RwkvJapaneseFeatureFields | None:
-    if not isinstance(fields_raw, str):
-        return None
-
-    fields = fields_raw.split("\x1f")
-    return (
-        _rwkv_field_at_ord(fields, front_ord),
-        _rwkv_field_at_ord(fields, reading_ord),
-        _rwkv_field_at_ord(fields, front_kana_ord),
-        _rwkv_field_at_ord(fields, frequency_ord),
-    )
-
-
-def _rwkv_japanese_feature_fields(
-    features: object,
-) -> RwkvJapaneseFeatureFields | None:
-    if (
-        isinstance(features, Sequence)
-        and not isinstance(features, str)
-        and len(features) >= 4
-    ):
-        front, reading, front_kana, frequency = features[:4]
-        if all(
-            isinstance(value, str) for value in (front, reading, front_kana, frequency)
-        ):
-            return (
-                cast(str, front),
-                cast(str, reading),
-                cast(str, front_kana),
-                cast(str, frequency),
-            )
-
-    return None
-
-
-def _rwkv_field_at_ord(fields: Sequence[str], ord_value: object) -> str:
-    if not isinstance(ord_value, int) or isinstance(ord_value, bool):
-        return ""
-    return fields[ord_value] if 0 <= ord_value < len(fields) else ""
-
-
-def _rwkv_japanese_feature_bucket(features: object) -> str | None:
-    fields = _rwkv_japanese_feature_fields(features)
-    if fields is None:
-        return None
-
-    front, reading, front_kana, frequency = fields
-    front_len = _rwkv_non_whitespace_char_count(front)
-    if front_len == 0:
-        return None
-
-    kanji_count = sum(1 for char in front if _rwkv_is_kanji(char))
-    kana_count = sum(1 for char in front if _rwkv_is_kana(char))
-    kanji_ratio_bucket = min(10, (kanji_count * 10 + front_len // 2) // front_len)
-    if kanji_count and kana_count:
-        shape = "mixed"
-    elif kanji_count:
-        shape = "kanji"
-    elif kana_count:
-        shape = "kana"
-    else:
-        shape = "other"
-
-    return (
-        f"wl:{_rwkv_japanese_length_bucket(front_len)}"
-        f"|rl:{_rwkv_japanese_length_bucket(_rwkv_non_whitespace_char_count(reading))}"
-        f"|kc:{_rwkv_japanese_count_bucket(kanji_count)}"
-        f"|kana:{_rwkv_japanese_count_bucket(kana_count)}"
-        f"|kr:{kanji_ratio_bucket}"
-        f"|shape:{shape}"
-        f"|fkl:{_rwkv_japanese_length_bucket(_rwkv_non_whitespace_char_count(front_kana))}"
-        f"|freq:{_rwkv_japanese_frequency_bucket(frequency)}"
-    )
-
-
-def _rwkv_non_whitespace_char_count(value: str) -> int:
-    return sum(1 for char in value if not char.isspace())
-
-
-def _rwkv_japanese_length_bucket(count: int) -> str:
-    if count <= 6:
-        return str(count)
-    if count <= 10:
-        return "7-10"
-    return "11+"
-
-
-def _rwkv_japanese_count_bucket(count: int) -> str:
-    return str(count) if count <= 7 else "8+"
-
-
-def _rwkv_japanese_frequency_bucket(frequency: str) -> str:
-    rank = _rwkv_first_unsigned_number(frequency)
-    if rank is None:
-        return "0" if not frequency.strip() else "text"
-    if rank == 0:
-        return "0"
-    if rank <= 100:
-        return "1-100"
-    if rank <= 500:
-        return "101-500"
-    if rank <= 1_000:
-        return "501-1000"
-    if rank <= 2_000:
-        return "1001-2000"
-    if rank <= 5_000:
-        return "2001-5000"
-    if rank <= 10_000:
-        return "5001-10000"
-    if rank <= 20_000:
-        return "10001-20000"
-    return "20001+"
-
-
-def _rwkv_first_unsigned_number(value: str) -> int | None:
-    digits: list[str] = []
-    in_number = False
-    for char in value:
-        if char.isascii() and char.isdigit():
-            digits.append(char)
-            in_number = True
-        elif in_number:
-            break
-    return int("".join(digits)) if digits else None
-
-
-def _rwkv_is_kanji(char: str) -> bool:
-    codepoint = ord(char)
-    return (
-        0x3400 <= codepoint <= 0x4DBF
-        or 0x4E00 <= codepoint <= 0x9FFF
-        or 0xF900 <= codepoint <= 0xFAFF
-        or 0x20000 <= codepoint <= 0x2A6DF
-        or 0x2A700 <= codepoint <= 0x2B73F
-        or 0x2B740 <= codepoint <= 0x2B81F
-        or 0x2B820 <= codepoint <= 0x2CEAF
-        or 0x2CEB0 <= codepoint <= 0x2EBEF
-        or 0x30000 <= codepoint <= 0x3134F
-        or 0x31350 <= codepoint <= 0x323AF
-    )
-
-
-def _rwkv_is_kana(char: str) -> bool:
-    codepoint = ord(char)
-    return (
-        0x3040 <= codepoint <= 0x30FF
-        or 0x31F0 <= codepoint <= 0x31FF
-        or 0xFF66 <= codepoint <= 0xFF9F
-    )
 
 
 def _deck_config_for_deck_id(
@@ -5512,19 +5175,6 @@ def _warm_up_rwkv_reviews(
     label: str,
     record_retrievability_cache: bool = True,
 ) -> None:
-    uses_self_correction = (
-        record_retrievability_cache
-        and bool(review_ids)
-        and _rwkv_history_uses_self_correction(reviewer, reviews)
-    )
-    review_inputs_by_id = (
-        dict(zip(review_ids, reviews, strict=True)) if uses_self_correction else {}
-    )
-    self_correction_features_by_review_id = (
-        _rwkv_self_correction_features_by_review_id(review_ids, reviews)
-        if uses_self_correction
-        else {}
-    )
     started_at = time.monotonic()
 
     def progress_reporter(replay_progress: RwkvWarmUpProgress) -> None:
@@ -5543,13 +5193,7 @@ def _warm_up_rwkv_reviews(
                 progress=progress_reporter,
             )
         else:
-            writer = _RwkvReviewRetrievabilityCacheWriter(
-                reviewer,
-                review_inputs_by_id=review_inputs_by_id,
-                self_correction_features_by_review_id=(
-                    self_correction_features_by_review_id
-                ),
-            )
+            writer = _RwkvReviewRetrievabilityCacheWriter(reviewer)
             try:
                 backend.warm_up(
                     reviews,
@@ -5572,13 +5216,7 @@ def _warm_up_rwkv_reviews(
         if record_retrievability_cache and _supports_rwkv_warm_up_prediction_recorder(
             warm_up_parameters
         ):
-            writer = _RwkvReviewRetrievabilityCacheWriter(
-                reviewer,
-                review_inputs_by_id=review_inputs_by_id,
-                self_correction_features_by_review_id=(
-                    self_correction_features_by_review_id
-                ),
-            )
+            writer = _RwkvReviewRetrievabilityCacheWriter(reviewer)
             kwargs["prediction_recorder"] = writer
             try:
                 warm_up_callable(reviews, **kwargs)
@@ -5587,25 +5225,6 @@ def _warm_up_rwkv_reviews(
             return
 
         warm_up_callable(reviews, **kwargs)
-
-
-def _rwkv_history_uses_self_correction(
-    reviewer: object,
-    reviews: Sequence[RwkvReviewInput],
-) -> bool:
-    enabled_by_deck_id: dict[int | None, bool] = {}
-    for review_input in reviews:
-        deck_id = review_input.identity.deck_id
-        enabled = enabled_by_deck_id.get(deck_id)
-        if enabled is None:
-            deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-            enabled = isinstance(
-                deck_config, dict
-            ) and _rwkv_review_self_correction_enabled(deck_config)
-            enabled_by_deck_id[deck_id] = enabled
-        if enabled:
-            return True
-    return False
 
 
 def _callable_parameters(
@@ -5789,15 +5408,6 @@ def recompute_rwkv_calibration_data(
             source="rwkv_calibration_recompute",
             sample_role_by_review_id=sample_role_by_review_id,
             fold_index_by_review_id=fold_index_by_review_id,
-            review_inputs_by_id=dict(
-                zip(history.review_ids, history.reviews, strict=True)
-            ),
-            self_correction_features_by_review_id=(
-                _rwkv_self_correction_features_by_review_id(
-                    history.review_ids,
-                    history.reviews,
-                )
-            ),
         )
         started_at = time.monotonic()
         try:
@@ -5957,387 +5567,10 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
     _run_on_main(mw, start_recompute)
 
 
-def rwkv_extra_feature_comparison_request_from_payload(
-    payload: Mapping[str, object],
-) -> tuple[int | None, RwkvExtraFeatureConfigOverride | None]:
-    deck_id = _rwkv_int_from_json_payload(payload.get("deckId"))
-    config_id = _rwkv_int_from_json_payload(payload.get("configId"))
-    preset_tag_state_enabled = payload.get("presetTagStateEnabled")
-    japanese_feature_state_enabled = payload.get("japaneseFeatureStateEnabled")
-    self_correction_enabled = payload.get("selfCorrectionEnabled")
-
-    if not (
-        isinstance(preset_tag_state_enabled, bool)
-        and isinstance(japanese_feature_state_enabled, bool)
-        and isinstance(self_correction_enabled, bool)
-    ):
-        return deck_id, None
-
-    return deck_id, RwkvExtraFeatureConfigOverride(
-        deck_id=deck_id,
-        config_id=config_id,
-        preset_tag_state_enabled=preset_tag_state_enabled,
-        japanese_feature_state_enabled=japanese_feature_state_enabled,
-        self_correction_enabled=self_correction_enabled,
-        japanese_kanji_field=_rwkv_optional_field_name(
-            payload.get("japaneseKanjiField")
-        ),
-        japanese_reading_field=_rwkv_optional_field_name(
-            payload.get("japaneseReadingField")
-        ),
-    )
-
-
-def rwkv_self_correction_training_request_from_payload(
-    payload: Mapping[str, object],
-) -> tuple[int | None, int | None, RwkvExtraFeatureConfigOverride | None]:
-    deck_id, extra_feature_override = (
-        rwkv_extra_feature_comparison_request_from_payload(payload)
-    )
-    return (
-        deck_id,
-        _rwkv_int_from_json_payload(payload.get("configId")),
-        extra_feature_override,
-    )
-
-
-def _rwkv_int_from_json_payload(value: object) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _rwkv_optional_field_name(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    value = value.strip()
-    return value or None
-
-
-def compare_rwkv_extra_feature_metrics(
-    mw: object,
-    *,
-    deck_id: int | None = None,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
-    progress: RwkvStateCacheProgressCallback | None = None,
-) -> dict[str, object]:
-    """Train and compare each optional RWKV feature on a chronological split."""
-
-    configure_reviewer_backend_from_environment()
-    backend = _reviewer_backend
-    if backend is None:
-        return _rwkv_unavailable_metric_comparison("RWKV backend is not available.")
-
-    cache_snapshot = getattr(backend, "cache_snapshot", None)
-    restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
-    reset_cache_snapshot = getattr(backend, "reset_cache_snapshot", None)
-    warm_up = getattr(backend, "warm_up", None)
-    if not (
-        callable(cache_snapshot)
-        and callable(restore_cache_snapshot)
-        and callable(reset_cache_snapshot)
-        and callable(warm_up)
-    ):
-        logger.debug(
-            "RWKV metric comparison skipped: backend does not support snapshots"
-        )
-        return _rwkv_unavailable_metric_comparison(
-            "RWKV backend does not support comparison replay."
-        )
-
-    reviewer = SimpleNamespace(mw=mw)
-    snapshot = cache_snapshot()
-    start = time.monotonic()
-    try:
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Loading baseline RWKV review history...",
-        )
-        baseline_history = _historical_rwkv_review_inputs(
-            reviewer,
-            deck_id=deck_id,
-            use_extra_feature_state=False,
-            progress=progress,
-        )
-        baseline_predictions = _rwkv_calibration_predictions_for_history(
-            backend,
-            warm_up,
-            reset_cache_snapshot,
-            baseline_history,
-            progress=progress,
-            label="Replaying baseline RWKV history",
-        )
-        target_review_ids = _rwkv_extra_feature_target_review_ids(
-            baseline_history,
-            extra_feature_override,
-            deck_id=deck_id,
-        )
-        baseline_samples = _rwkv_samples_for_review_ids(
-            _rwkv_self_correction_training_samples(
-                baseline_history,
-                baseline_predictions,
-            ),
-            target_review_ids,
-        )
-        if len(baseline_samples) < 2:
-            return _rwkv_unavailable_metric_comparison(
-                "At least two eligible RWKV review predictions are needed for a "
-                "chronological train/test split."
-            )
-
-        train_samples, test_samples = _rwkv_train_test_split_self_correction_samples(
-            baseline_samples
-        )
-        test_review_ids = frozenset(sample.review_id for sample in test_samples)
-        baseline_metrics = _rwkv_metrics_for_training_samples(test_samples)
-
-        feature_results: dict[str, object] = {}
-        state_features = (
-            (
-                "tags",
-                "tag",
-                _rwkv_extra_feature_evaluation_override(
-                    extra_feature_override,
-                    deck_id=deck_id,
-                    preset_tag_state_enabled=True,
-                    japanese_feature_state_enabled=False,
-                ),
-            ),
-            (
-                "japanese",
-                "Japanese feature",
-                _rwkv_extra_feature_evaluation_override(
-                    extra_feature_override,
-                    deck_id=deck_id,
-                    preset_tag_state_enabled=False,
-                    japanese_feature_state_enabled=True,
-                ),
-            ),
-        )
-        for feature_key, feature_label, feature_override in state_features:
-            _report_rwkv_state_cache_progress(
-                progress,
-                f"Loading per-user RWKV {feature_label} history...",
-            )
-            feature_history = _historical_rwkv_review_inputs(
-                reviewer,
-                deck_id=deck_id,
-                use_extra_feature_state=True,
-                extra_feature_override=feature_override,
-                progress=progress,
-            )
-            feature_predictions = _rwkv_calibration_predictions_for_history(
-                backend,
-                warm_up,
-                reset_cache_snapshot,
-                feature_history,
-                progress=progress,
-                label=f"Replaying per-user RWKV {feature_label} history",
-            )
-            feature_test_samples = _rwkv_samples_for_review_ids(
-                _rwkv_self_correction_training_samples(
-                    feature_history,
-                    feature_predictions,
-                ),
-                test_review_ids,
-            )
-            feature_results[feature_key] = _rwkv_extra_feature_metric_result(
-                baseline_metrics,
-                _rwkv_metrics_for_training_samples(feature_test_samples),
-            )
-
-        feature_results["selfCorrection"] = _rwkv_trained_self_correction_metric_result(
-            baseline_metrics,
-            baseline_samples=baseline_samples,
-            train_samples=train_samples,
-            test_samples=test_samples,
-        )
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Computing held-out RWKV feature recommendations...",
-        )
-        comparison = {
-            "available": True,
-            "deckId": deck_id or 0,
-            "split": {
-                "trainFraction": _RWKV_SELF_CORRECTION_TRAIN_FRACTION,
-                "train": _rwkv_training_sample_split_summary(train_samples),
-                "test": _rwkv_training_sample_split_summary(test_samples),
-            },
-            "baseline": baseline_metrics,
-            "features": feature_results,
-        }
-        logger.debug(
-            "RWKV held-out feature comparison finished: deck_id=%s "
-            "baseline_reviews=%s baseline_predictions=%s train=%s test=%s "
-            "features=%s extra_feature_override=%s elapsed_ms=%.1f",
-            deck_id,
-            len(baseline_history.reviews),
-            len(baseline_predictions),
-            len(train_samples),
-            len(test_samples),
-            feature_results,
-            extra_feature_override is not None,
-            (time.monotonic() - start) * 1000,
-        )
-        return comparison
-    except Exception:
-        logger.exception("RWKV metric comparison failed")
-        return _rwkv_unavailable_metric_comparison("RWKV comparison failed.")
-    finally:
-        try:
-            restore_cache_snapshot(snapshot)
-        except Exception:
-            logger.exception(
-                "failed to restore RWKV backend state after metric comparison"
-            )
-
-
-def _rwkv_extra_feature_evaluation_override(
-    override: RwkvExtraFeatureConfigOverride | None,
-    *,
-    deck_id: int | None,
-    preset_tag_state_enabled: bool,
-    japanese_feature_state_enabled: bool,
-) -> RwkvExtraFeatureConfigOverride:
-    if override is not None:
-        return replace(
-            override,
-            preset_tag_state_enabled=preset_tag_state_enabled,
-            japanese_feature_state_enabled=japanese_feature_state_enabled,
-            self_correction_enabled=False,
-        )
-    return RwkvExtraFeatureConfigOverride(
-        deck_id=deck_id,
-        config_id=None,
-        preset_tag_state_enabled=preset_tag_state_enabled,
-        japanese_feature_state_enabled=japanese_feature_state_enabled,
-        self_correction_enabled=False,
-    )
-
-
-def _rwkv_extra_feature_target_review_ids(
-    history: RwkvHistoricalReviewInputs,
-    override: RwkvExtraFeatureConfigOverride | None,
-    *,
-    deck_id: int | None,
-) -> frozenset[int]:
-    config_id = override.config_id if override is not None else None
-    target_deck_id = override.deck_id if override is not None else deck_id
-    target_preset_id = (
-        _stable_preset_id(str(config_id)) if config_id is not None else None
-    )
-    return frozenset(
-        review_id
-        for review_id, review_input in zip(
-            history.review_ids,
-            history.reviews,
-            strict=True,
-        )
-        if (
-            target_preset_id is not None
-            and review_input.identity.preset_id == target_preset_id
-        )
-        or (
-            target_preset_id is None
-            and (
-                target_deck_id is None
-                or review_input.identity.deck_id == target_deck_id
-            )
-        )
-    )
-
-
-def _rwkv_samples_for_review_ids(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    review_ids: frozenset[int],
-) -> list[RwkvSelfCorrectionTrainingSample]:
-    return [sample for sample in samples if sample.review_id in review_ids]
-
-
-def _rwkv_extra_feature_metric_result(
-    baseline: Mapping[str, float | int],
-    metrics: Mapping[str, float | int],
-) -> dict[str, object]:
-    baseline_count = _int_value(baseline.get("count")) or 0
-    count = _int_value(metrics.get("count")) or 0
-    if count != baseline_count:
-        return {
-            "available": False,
-            "reason": (
-                f"Only {count:,} of {baseline_count:,} held-out predictions were "
-                "available."
-            ),
-            "metrics": dict(metrics),
-            "helpsBoth": False,
-        }
-    return {
-        "available": True,
-        "metrics": dict(metrics),
-        "helpsBoth": _rwkv_metrics_improve_both(baseline, metrics),
-    }
-
-
-def _rwkv_trained_self_correction_metric_result(
-    baseline: Mapping[str, float | int],
-    *,
-    baseline_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    train_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    test_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-) -> dict[str, object]:
-    if len(baseline_samples) < _RWKV_SELF_CORRECTION_MIN_SAMPLES:
-        return {
-            "available": False,
-            "reason": (
-                f"Only {len(baseline_samples):,} eligible predictions were available; "
-                f"need at least {_RWKV_SELF_CORRECTION_MIN_SAMPLES:,}."
-            ),
-            "metrics": _rwkv_empty_calibration_metrics(),
-            "helpsBoth": False,
-        }
-
-    calibration, iterations = _rwkv_fit_self_correction_calibration(train_samples)
-    result = _rwkv_extra_feature_metric_result(
-        baseline,
-        _rwkv_metrics_for_training_samples(
-            test_samples,
-            calibration=calibration,
-        ),
-    )
-    result["iterations"] = iterations
-    return result
-
-
-def _rwkv_metrics_improve_both(
-    baseline: Mapping[str, float | int],
-    current: Mapping[str, float | int],
-) -> bool:
-    baseline_log_loss = _float_value(baseline.get("logLoss"))
-    current_log_loss = _float_value(current.get("logLoss"))
-    baseline_rmse_bins = _float_value(baseline.get("rmseBins"))
-    current_rmse_bins = _float_value(current.get("rmseBins"))
-    return (
-        baseline_log_loss is not None
-        and current_log_loss is not None
-        and baseline_rmse_bins is not None
-        and current_rmse_bins is not None
-        and current_log_loss < baseline_log_loss
-        and current_rmse_bins < baseline_rmse_bins
-    )
-
-
 def compare_rwkv_first_review_elapsed_metrics(
     mw: object,
     *,
     deck_id: int | None = None,
-    use_extra_feature_state: bool = True,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
-    apply_self_correction: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
 ) -> dict[str, object]:
     """Compare RWKV logloss with first-review elapsed time missing vs card creation."""
@@ -6375,8 +5608,6 @@ def compare_rwkv_first_review_elapsed_metrics(
         missing_history = _historical_rwkv_review_inputs(
             reviewer,
             deck_id=deck_id,
-            use_extra_feature_state=use_extra_feature_state,
-            extra_feature_override=extra_feature_override,
             first_review_elapsed_source=RwkvFirstReviewElapsedSource.MISSING,
             progress=progress,
         )
@@ -6395,8 +5626,6 @@ def compare_rwkv_first_review_elapsed_metrics(
         card_creation_history = _historical_rwkv_review_inputs(
             reviewer,
             deck_id=deck_id,
-            use_extra_feature_state=use_extra_feature_state,
-            extra_feature_override=extra_feature_override,
             first_review_elapsed_source=RwkvFirstReviewElapsedSource.CARD_CREATION,
             progress=progress,
         )
@@ -6416,18 +5645,12 @@ def compare_rwkv_first_review_elapsed_metrics(
             "available": True,
             "deckId": deck_id or 0,
             "missing": _rwkv_calibration_metrics_for_history(
-                reviewer,
                 missing_history,
                 missing_predictions,
-                apply_self_correction=apply_self_correction,
-                extra_feature_override=extra_feature_override,
             ),
             "cardCreation": _rwkv_calibration_metrics_for_history(
-                reviewer,
                 card_creation_history,
                 card_creation_predictions,
-                apply_self_correction=apply_self_correction,
-                extra_feature_override=extra_feature_override,
             ),
         }
         logger.debug(
@@ -6456,441 +5679,6 @@ def compare_rwkv_first_review_elapsed_metrics(
             )
 
 
-def compare_rwkv_extra_feature_metrics_with_progress(
-    mw: object,
-    *,
-    deck_id: int | None = None,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
-) -> None:
-    """Compare RWKV metrics with a modal progress dialog and result popup."""
-
-    from aqt.utils import showInfo, tooltip
-
-    taskman = getattr(mw, "taskman", None)
-    with_progress = getattr(taskman, "with_progress", None)
-    if not callable(with_progress):
-        result = compare_rwkv_extra_feature_metrics(
-            mw,
-            deck_id=deck_id,
-            extra_feature_override=extra_feature_override,
-        )
-        showInfo(
-            _rwkv_metric_comparison_message(result),
-            parent=cast(QWidget | None, mw),
-            title="RWKV Extra Features",
-            textFormat="plain",
-        )
-        return
-
-    def start_compare() -> None:
-        parent = cast(QWidget | None, mw)
-        start = time.monotonic()
-
-        def progress(
-            label: str,
-            value: int | None,
-            maximum: int | None,
-        ) -> None:
-            def update() -> None:
-                progress_manager = getattr(mw, "progress", None)
-                update_progress = getattr(progress_manager, "update", None)
-                if callable(update_progress):
-                    update_progress(label=label, value=value, max=maximum)
-
-            _run_on_main(mw, update)
-
-        def compare() -> dict[str, object]:
-            return compare_rwkv_extra_feature_metrics(
-                mw,
-                deck_id=deck_id,
-                extra_feature_override=extra_feature_override,
-                progress=progress,
-            )
-
-        def done(future: Future[dict[str, object]]) -> None:
-            try:
-                result = future.result()
-            except Exception:
-                logger.exception("RWKV metric comparison failed")
-                tooltip("RWKV metric comparison failed.", parent=parent)
-                return
-
-            logger.debug(
-                "RWKV metric comparison dialog finished: deck_id=%s elapsed_ms=%.1f",
-                deck_id,
-                (time.monotonic() - start) * 1000,
-            )
-            showInfo(
-                _rwkv_metric_comparison_message(result),
-                parent=parent,
-                title="RWKV Extra Features",
-                textFormat="plain",
-            )
-
-        with_progress(
-            compare,
-            done,
-            parent=parent,
-            label="Comparing RWKV extra features...",
-            immediate=True,
-            uses_collection=True,
-            title="RWKV Extra Features",
-        )
-
-    _run_on_main(mw, start_compare)
-
-
-def train_rwkv_self_correction_calibration(
-    mw: object,
-    *,
-    deck_id: int | None = None,
-    config_id: int | None = None,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
-    progress: RwkvStateCacheProgressCallback | None = None,
-) -> dict[str, object]:
-    """Train a local RWKV self-correction layer on a chronological split."""
-
-    configure_reviewer_backend_from_environment()
-    backend = _reviewer_backend
-    if backend is None:
-        return _rwkv_unavailable_calibration_training("RWKV backend is not available.")
-
-    cache_snapshot = getattr(backend, "cache_snapshot", None)
-    restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
-    reset_cache_snapshot = getattr(backend, "reset_cache_snapshot", None)
-    warm_up = getattr(backend, "warm_up", None)
-    if not (
-        callable(cache_snapshot)
-        and callable(restore_cache_snapshot)
-        and callable(reset_cache_snapshot)
-        and callable(warm_up)
-    ):
-        logger.debug(
-            "RWKV calibration training skipped: backend does not support snapshots"
-        )
-        return _rwkv_unavailable_calibration_training(
-            "RWKV backend does not support training replay."
-        )
-
-    reviewer = SimpleNamespace(mw=mw)
-    snapshot = cache_snapshot()
-    start = time.monotonic()
-    try:
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Loading RWKV calibration training history...",
-        )
-        history = _historical_rwkv_review_inputs(
-            reviewer,
-            deck_id=deck_id,
-            use_extra_feature_state=True,
-            extra_feature_override=extra_feature_override,
-            progress=progress,
-        )
-        predictions = _rwkv_calibration_predictions_for_history(
-            backend,
-            warm_up,
-            reset_cache_snapshot,
-            history,
-            progress=progress,
-            label="Replaying RWKV calibration training history",
-        )
-        samples = _rwkv_self_correction_training_samples(history, predictions)
-        if len(samples) < _RWKV_SELF_CORRECTION_MIN_SAMPLES:
-            return _rwkv_unavailable_calibration_training(
-                f"Only {len(samples):,} eligible RWKV review predictions were available; "
-                f"need at least {_RWKV_SELF_CORRECTION_MIN_SAMPLES:,}."
-            )
-
-        train_samples, test_samples = _rwkv_train_test_split_self_correction_samples(
-            samples
-        )
-        validation_calibration, validation_iterations = (
-            _rwkv_fit_self_correction_calibration(train_samples)
-        )
-        baseline_train = _rwkv_metrics_for_training_samples(train_samples)
-        baseline_test = _rwkv_metrics_for_training_samples(test_samples)
-        trained_train = _rwkv_metrics_for_training_samples(
-            train_samples,
-            calibration=validation_calibration,
-        )
-        trained_test = _rwkv_metrics_for_training_samples(
-            test_samples,
-            calibration=validation_calibration,
-        )
-        fixed_test = _rwkv_metrics_for_training_samples(
-            test_samples,
-            calibration=_rwkv_default_self_correction_calibration(),
-        )
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Fitting final RWKV calibration on all eligible reviews...",
-        )
-        final_calibration, final_fit_iterations = _rwkv_fit_self_correction_calibration(
-            samples
-        )
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Saving 100% final RWKV calibration and held-out test rows...",
-        )
-        saved = _rwkv_save_self_correction_calibration(
-            mw,
-            deck_id=deck_id,
-            config_id=config_id,
-            calibration=final_calibration,
-            history=history,
-            final_fit_samples=samples,
-            train_samples=train_samples,
-            test_samples=test_samples,
-            baseline_test=baseline_test,
-            trained_test=trained_test,
-            extra_feature_override=extra_feature_override,
-        )
-        stored_rows = _rwkv_store_self_correction_training_rows(
-            mw,
-            train_samples=train_samples,
-            test_samples=test_samples,
-            calibration=validation_calibration,
-        )
-        result = {
-            "available": True,
-            "deckId": deck_id or 0,
-            "configId": config_id or 0,
-            "saved": saved,
-            "storedRows": stored_rows,
-            "iterations": final_fit_iterations,
-            "validationIterations": validation_iterations,
-            "finalFitIterations": final_fit_iterations,
-            "finalFit": _rwkv_training_sample_split_summary(samples),
-            "split": {
-                "train": _rwkv_training_sample_split_summary(train_samples),
-                "test": _rwkv_training_sample_split_summary(test_samples),
-            },
-            "baseline": {
-                "train": baseline_train,
-                "test": baseline_test,
-            },
-            "fixed": {
-                "test": fixed_test,
-            },
-            "trained": {
-                "train": trained_train,
-                "test": trained_test,
-            },
-        }
-        logger.debug(
-            "RWKV calibration training finished: deck_id=%s config_id=%s "
-            "samples=%s train=%s test=%s validation_iterations=%s "
-            "final_fit_iterations=%s stored_rows=%s saved=%s elapsed_ms=%.1f",
-            deck_id,
-            config_id,
-            len(samples),
-            len(train_samples),
-            len(test_samples),
-            validation_iterations,
-            final_fit_iterations,
-            stored_rows,
-            saved,
-            (time.monotonic() - start) * 1000,
-        )
-        return result
-    except Exception:
-        logger.exception("RWKV calibration training failed")
-        return _rwkv_unavailable_calibration_training(
-            "RWKV calibration training failed."
-        )
-    finally:
-        try:
-            restore_cache_snapshot(snapshot)
-        except Exception:
-            logger.exception("failed to restore RWKV backend state after training")
-
-
-def train_rwkv_self_correction_calibration_with_progress(
-    mw: object,
-    *,
-    deck_id: int | None = None,
-    config_id: int | None = None,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
-) -> None:
-    """Train RWKV self-correction with a modal progress dialog."""
-
-    from aqt.utils import showInfo, tooltip
-
-    taskman = getattr(mw, "taskman", None)
-    with_progress = getattr(taskman, "with_progress", None)
-    if not callable(with_progress):
-        result = train_rwkv_self_correction_calibration(
-            mw,
-            deck_id=deck_id,
-            config_id=config_id,
-            extra_feature_override=extra_feature_override,
-        )
-        showInfo(
-            _rwkv_calibration_training_message(result),
-            parent=cast(QWidget | None, mw),
-            title="RWKV Calibration Training",
-            textFormat="plain",
-        )
-        return
-
-    def start_training() -> None:
-        parent = cast(QWidget | None, mw)
-        start = time.monotonic()
-
-        def progress(
-            label: str,
-            value: int | None,
-            maximum: int | None,
-        ) -> None:
-            def update() -> None:
-                progress_manager = getattr(mw, "progress", None)
-                update_progress = getattr(progress_manager, "update", None)
-                if callable(update_progress):
-                    update_progress(label=label, value=value, max=maximum)
-
-            _run_on_main(mw, update)
-
-        def train() -> dict[str, object]:
-            return train_rwkv_self_correction_calibration(
-                mw,
-                deck_id=deck_id,
-                config_id=config_id,
-                extra_feature_override=extra_feature_override,
-                progress=progress,
-            )
-
-        def done(future: Future[dict[str, object]]) -> None:
-            try:
-                result = future.result()
-            except Exception:
-                logger.exception("RWKV calibration training failed")
-                tooltip("RWKV calibration training failed.", parent=parent)
-                return
-
-            logger.debug(
-                "RWKV calibration training dialog finished: deck_id=%s elapsed_ms=%.1f",
-                deck_id,
-                (time.monotonic() - start) * 1000,
-            )
-            showInfo(
-                _rwkv_calibration_training_message(result),
-                parent=parent,
-                title="RWKV Calibration Training",
-                textFormat="plain",
-            )
-
-        with_progress(
-            train,
-            done,
-            parent=parent,
-            label="Training RWKV calibration...",
-            immediate=True,
-            uses_collection=True,
-            title="RWKV Calibration Training",
-        )
-
-    _run_on_main(mw, start_training)
-
-
-def _rwkv_metric_comparison_message(comparison: Mapping[str, object]) -> str:
-    if not comparison.get("available"):
-        reason = comparison.get("reason")
-        return (
-            reason if isinstance(reason, str) else "RWKV comparison is not available."
-        )
-
-    baseline = comparison.get("baseline")
-    features = comparison.get("features")
-    split = comparison.get("split")
-    if not (
-        isinstance(baseline, Mapping)
-        and isinstance(features, Mapping)
-        and isinstance(split, Mapping)
-    ):
-        return "RWKV comparison did not return usable metrics."
-
-    baseline_log_loss = _float_value(baseline.get("logLoss")) or 0.0
-    baseline_rmse_bins = _float_value(baseline.get("rmseBins")) or 0.0
-    train = split.get("train")
-    test = split.get("test")
-    if not isinstance(train, Mapping) or not isinstance(test, Mapping):
-        return "RWKV comparison did not return a usable train/test split."
-
-    lines = [
-        "Held-out RWKV feature evaluation (70% train / 30% test)",
-        "",
-        "Baseline:",
-        f"  Log loss: {_format_rwkv_metric_log_loss(baseline_log_loss)}",
-        f"  RMSE(bins): {_format_rwkv_metric_rmse_bins(baseline_rmse_bins)}",
-    ]
-    recommended: list[str] = []
-    for key, label in (
-        ("tags", "Tags"),
-        ("japanese", "Japanese features"),
-        ("selfCorrection", "Self-correction"),
-    ):
-        result = features.get(key)
-        if not isinstance(result, Mapping):
-            lines.extend(["", f"{label}: unavailable"])
-            continue
-        if not result.get("available"):
-            reason = result.get("reason")
-            lines.extend(["", f"{label}: unavailable"])
-            if isinstance(reason, str):
-                lines.append(f"  {reason}")
-            continue
-
-        metrics = result.get("metrics")
-        if not isinstance(metrics, Mapping):
-            lines.extend(["", f"{label}: unavailable"])
-            continue
-        log_loss = _float_value(metrics.get("logLoss")) or 0.0
-        rmse_bins = _float_value(metrics.get("rmseBins")) or 0.0
-        helps_both = result.get("helpsBoth") is True
-        if helps_both:
-            recommended.append(label)
-        lines.extend(
-            [
-                "",
-                f"{label}: {'helps both' if helps_both else 'does not improve both'}",
-                "  Log loss: "
-                f"{_format_rwkv_metric_log_loss(log_loss)} "
-                f"({_format_rwkv_metric_gain(baseline_log_loss, log_loss)} gain)",
-                "  RMSE(bins): "
-                f"{_format_rwkv_metric_rmse_bins(rmse_bins)} "
-                f"({_format_rwkv_metric_gain(baseline_rmse_bins, rmse_bins)} gain)",
-            ]
-        )
-
-    lines.extend(
-        [
-            "",
-            f"Recommended: {', '.join(recommended) if recommended else 'none'}",
-            f"Samples: {(_int_value(train.get('count')) or 0):,} train / "
-            f"{(_int_value(test.get('count')) or 0):,} test",
-        ]
-    )
-    return "\n".join(lines)
-
-
-def _format_rwkv_metric_log_loss(value: float) -> str:
-    return f"{value:.6f}" if math.isfinite(value) else "n/a"
-
-
-def _format_rwkv_metric_rmse_bins(value: float) -> str:
-    return f"{value * 100:.2f}%" if math.isfinite(value) else "n/a"
-
-
-def _format_rwkv_metric_gain(baseline: float, current: float) -> str:
-    if not (math.isfinite(baseline) and math.isfinite(current)) or baseline <= 0:
-        return "0.00%"
-
-    gain = (baseline - current) * 100 / baseline
-    sign = "+" if gain > 0 else ""
-    return f"{sign}{gain:.2f}%"
-
-
 def _rwkv_unavailable_metric_comparison(reason: str) -> dict[str, object]:
     return {
         "available": False,
@@ -6899,165 +5687,6 @@ def _rwkv_unavailable_metric_comparison(reason: str) -> dict[str, object]:
         "features": {},
         "split": {},
     }
-
-
-def _rwkv_unavailable_calibration_training(reason: str) -> dict[str, object]:
-    return {
-        "available": False,
-        "reason": reason,
-        "baseline": {"test": _rwkv_empty_calibration_metrics()},
-        "trained": {"test": _rwkv_empty_calibration_metrics()},
-    }
-
-
-def _rwkv_calibration_training_message(result: Mapping[str, object]) -> str:
-    if not result.get("available"):
-        reason = result.get("reason")
-        return (
-            reason if isinstance(reason, str) else "RWKV calibration training failed."
-        )
-
-    baseline = result.get("baseline")
-    trained = result.get("trained")
-    split = result.get("split")
-    if not (
-        isinstance(baseline, Mapping)
-        and isinstance(trained, Mapping)
-        and isinstance(split, Mapping)
-    ):
-        return "RWKV calibration training did not return usable metrics."
-
-    baseline_test = baseline.get("test")
-    trained_test = trained.get("test")
-    train_split = split.get("train")
-    test_split = split.get("test")
-    if not (
-        isinstance(baseline_test, Mapping)
-        and isinstance(trained_test, Mapping)
-        and isinstance(train_split, Mapping)
-        and isinstance(test_split, Mapping)
-    ):
-        return "RWKV calibration training did not return usable metrics."
-
-    baseline_log_loss = _float_value(baseline_test.get("logLoss")) or 0.0
-    trained_log_loss = _float_value(trained_test.get("logLoss")) or 0.0
-    baseline_rmse_bins = _float_value(baseline_test.get("rmseBins")) or 0.0
-    trained_rmse_bins = _float_value(trained_test.get("rmseBins")) or 0.0
-    saved = bool(result.get("saved"))
-    stored_rows = _int_value(result.get("storedRows")) or 0
-    final_fit = result.get("finalFit")
-    final_fit_count = (
-        _int_value(final_fit.get("count")) if isinstance(final_fit, Mapping) else None
-    ) or (
-        (_int_value(train_split.get("count")) or 0)
-        + (_int_value(test_split.get("count")) or 0)
-    )
-
-    return "\n".join(
-        [
-            "RWKV calibration training:",
-            f"  Saved to preset: {'yes' if saved else 'no'}",
-            f"  Production fit: {final_fit_count:,} reviews (100%)",
-            f"  Stored cache rows: {stored_rows:,}",
-            "",
-            "Held-out test fold:",
-            "  Log loss: "
-            f"{_format_rwkv_metric_log_loss(trained_log_loss)} "
-            f"({_format_rwkv_metric_gain(baseline_log_loss, trained_log_loss)} gain)",
-            "  RMSE(bins): "
-            f"{_format_rwkv_metric_rmse_bins(trained_rmse_bins)} "
-            f"({_format_rwkv_metric_gain(baseline_rmse_bins, trained_rmse_bins)} gain)",
-            "",
-            "Baseline test fold:",
-            f"  Log loss: {_format_rwkv_metric_log_loss(baseline_log_loss)}",
-            f"  RMSE(bins): {_format_rwkv_metric_rmse_bins(baseline_rmse_bins)}",
-            "",
-            f"Samples: {(_int_value(train_split.get('count')) or 0):,} train / "
-            f"{(_int_value(test_split.get('count')) or 0):,} test",
-        ]
-    )
-
-
-def _rwkv_self_correction_training_samples(
-    history: RwkvHistoricalReviewInputs,
-    predictions_by_review_id: Mapping[int, float],
-) -> list[RwkvSelfCorrectionTrainingSample]:
-    features_by_review_id = _rwkv_self_correction_features_by_review_id(
-        history.review_ids,
-        history.reviews,
-    )
-    prior_long_term_reviews_by_card: dict[int, int] = {}
-    prior_lapses_by_card: dict[int, int] = {}
-    samples: list[RwkvSelfCorrectionTrainingSample] = []
-
-    for review_id, review_input in zip(
-        history.review_ids,
-        history.reviews,
-        strict=True,
-    ):
-        if review_input.ease is None:
-            continue
-
-        card_id = review_input.identity.card_id
-        elapsed_days = review_input.current_elapsed_days
-        is_long_term_review = (
-            isinstance(elapsed_days, int)
-            and not isinstance(elapsed_days, bool)
-            and elapsed_days >= 1
-        )
-        prior_long_term_reviews = prior_long_term_reviews_by_card.get(card_id, 0)
-        prior_lapses = prior_lapses_by_card.get(card_id, 0)
-        long_term_reviews = prior_long_term_reviews + int(is_long_term_review)
-        prediction = predictions_by_review_id.get(review_id)
-        features = features_by_review_id.get(review_id)
-        if (
-            prediction is not None
-            and features is not None
-            and _valid_probability(prediction)
-        ):
-            samples.append(
-                RwkvSelfCorrectionTrainingSample(
-                    review_id=review_id,
-                    prediction=float(prediction),
-                    outcome=0 if review_input.ease == 1 else 1,
-                    features=features,
-                    recall_bin=(
-                        _rwkv_calibration_metric_delta_t_bin(
-                            elapsed_days if isinstance(elapsed_days, int) else -1
-                        ),
-                        _rwkv_calibration_metric_count_bin(
-                            long_term_reviews + 1.0,
-                            1.99,
-                            1.89,
-                        ),
-                        (
-                            0
-                            if prior_lapses == 0
-                            else _rwkv_calibration_metric_count_bin(
-                                prior_lapses,
-                                1.65,
-                                1.73,
-                            )
-                        ),
-                    ),
-                )
-            )
-
-        prior_long_term_reviews_by_card[card_id] = long_term_reviews
-        if review_input.ease == 1:
-            prior_lapses_by_card[card_id] = prior_lapses + 1
-
-    return samples
-
-
-def _rwkv_train_test_split_self_correction_samples(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-) -> tuple[
-    list[RwkvSelfCorrectionTrainingSample], list[RwkvSelfCorrectionTrainingSample]
-]:
-    train_end = max(1, int(len(samples) * _RWKV_SELF_CORRECTION_TRAIN_FRACTION))
-    train_end = min(train_end, len(samples) - 1)
-    return list(samples[:train_end]), list(samples[train_end:])
 
 
 def _rwkv_calibration_fold_role_maps(
@@ -7075,7 +5704,7 @@ def _rwkv_calibration_fold_role_maps(
     if len(review_ids) < 2:
         return {}, {}
 
-    train_end = max(1, int(len(review_ids) * _RWKV_SELF_CORRECTION_TRAIN_FRACTION))
+    train_end = max(1, int(len(review_ids) * _RWKV_CALIBRATION_TRAIN_FRACTION))
     train_end = min(train_end, len(review_ids) - 1)
     sample_role_by_review_id = {
         review_id: _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT
@@ -7092,404 +5721,6 @@ def _rwkv_calibration_fold_role_maps(
         {review_id: 0 for review_id in review_ids[train_end:]}
     )
     return sample_role_by_review_id, fold_index_by_review_id
-
-
-def _rwkv_training_sample_split_summary(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-) -> dict[str, int]:
-    if not samples:
-        return {"count": 0}
-    return {
-        "count": len(samples),
-        "firstReviewId": samples[0].review_id,
-        "lastReviewId": samples[-1].review_id,
-    }
-
-
-def _rwkv_fit_self_correction_calibration(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-) -> tuple[RwkvSelfCorrectionCalibration, int]:
-    means, stds = _rwkv_self_correction_feature_stats(samples)
-    rows = _rwkv_prepared_self_correction_rows(samples, means, stds)
-    weights = [0.0 for _ in range(len(_RWKV_SELF_CORRECTION_FEATURE_NAMES) + 1)]
-    objective = _rwkv_self_correction_objective(
-        rows,
-        weights,
-        _RWKV_SELF_CORRECTION_L2,
-    )
-    iterations = 0
-    for iterations in range(1, _RWKV_SELF_CORRECTION_MAX_ITERATIONS + 1):
-        gradient, hessian = _rwkv_self_correction_gradient_and_hessian(
-            rows,
-            weights,
-            _RWKV_SELF_CORRECTION_L2,
-        )
-        step = _solve_rwkv_linear_system(hessian, gradient)
-        if max(abs(value) for value in step) < 1e-8:
-            break
-
-        step_scale = 1.0
-        while step_scale >= 1e-4:
-            candidate = [
-                weight - step_scale * delta
-                for weight, delta in zip(weights, step, strict=True)
-            ]
-            candidate_objective = _rwkv_self_correction_objective(
-                rows,
-                candidate,
-                _RWKV_SELF_CORRECTION_L2,
-            )
-            if candidate_objective <= objective:
-                weights = candidate
-                objective = candidate_objective
-                break
-            step_scale *= 0.5
-        else:
-            break
-
-    return (
-        RwkvSelfCorrectionCalibration(
-            bias=weights[0],
-            weights=tuple(weights[1:]),
-            means=tuple(means),
-            stds=tuple(stds),
-        ),
-        iterations,
-    )
-
-
-def _rwkv_self_correction_feature_stats(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-) -> tuple[list[float], list[float]]:
-    columns = [
-        _rwkv_self_correction_feature_values(sample.prediction, sample.features)
-        for sample in samples
-    ]
-    width = len(_RWKV_SELF_CORRECTION_FEATURE_NAMES)
-    means: list[float] = []
-    stds: list[float] = []
-    for index in range(width):
-        values = [row[index] for row in columns]
-        mean = sum(values) / len(values)
-        variance = sum((value - mean) ** 2 for value in values) / len(values)
-        means.append(mean)
-        stds.append(math.sqrt(variance) or 1.0)
-    return means, stds
-
-
-def _rwkv_prepared_self_correction_rows(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    means: Sequence[float],
-    stds: Sequence[float],
-) -> list[tuple[float, int, list[float]]]:
-    rows: list[tuple[float, int, list[float]]] = []
-    for sample in samples:
-        standardized = [
-            (value - mean) / std
-            for value, mean, std in zip(
-                _rwkv_self_correction_feature_values(
-                    sample.prediction,
-                    sample.features,
-                ),
-                means,
-                stds,
-                strict=True,
-            )
-        ]
-        rows.append(
-            (
-                _rwkv_logit(sample.prediction),
-                sample.outcome,
-                [1.0, *standardized],
-            )
-        )
-    return rows
-
-
-def _rwkv_self_correction_gradient_and_hessian(
-    rows: Sequence[tuple[float, int, Sequence[float]]],
-    weights: Sequence[float],
-    l2: float,
-) -> tuple[list[float], list[list[float]]]:
-    width = len(weights)
-    gradient = [0.0 for _ in range(width)]
-    hessian = [[0.0 for _ in range(width)] for _ in range(width)]
-    for base_logit, outcome, features in rows:
-        prediction = _rwkv_sigmoid(base_logit + _rwkv_dot(weights, features))
-        error = prediction - outcome
-        curvature = prediction * (1.0 - prediction)
-        for i, feature_i in enumerate(features):
-            gradient[i] += error * feature_i
-            for j, feature_j in enumerate(features):
-                hessian[i][j] += curvature * feature_i * feature_j
-
-    row_count = len(rows)
-    for i in range(width):
-        gradient[i] /= row_count
-        for j in range(width):
-            hessian[i][j] /= row_count
-    for i in range(1, width):
-        gradient[i] += l2 * weights[i]
-        hessian[i][i] += l2
-    hessian[0][0] += 1e-8
-    return gradient, hessian
-
-
-def _rwkv_self_correction_objective(
-    rows: Sequence[tuple[float, int, Sequence[float]]],
-    weights: Sequence[float],
-    l2: float,
-) -> float:
-    if not rows:
-        return 0.0
-    loss = 0.0
-    for base_logit, outcome, features in rows:
-        prediction = _rwkv_calibration_metric_probability(
-            _rwkv_sigmoid(base_logit + _rwkv_dot(weights, features))
-        )
-        loss -= outcome * math.log(prediction) + (1 - outcome) * math.log(
-            1 - prediction
-        )
-    penalty = 0.5 * l2 * sum(weight * weight for weight in weights[1:])
-    return loss / len(rows) + penalty
-
-
-def _rwkv_dot(left: Sequence[float], right: Sequence[float]) -> float:
-    return sum(
-        left_value * right_value
-        for left_value, right_value in zip(left, right, strict=True)
-    )
-
-
-def _solve_rwkv_linear_system(
-    matrix: Sequence[Sequence[float]],
-    rhs: Sequence[float],
-) -> list[float]:
-    size = len(rhs)
-    augmented = [list(row) + [value] for row, value in zip(matrix, rhs, strict=True)]
-    for column in range(size):
-        pivot = max(range(column, size), key=lambda row: abs(augmented[row][column]))
-        if abs(augmented[pivot][column]) < 1e-12:
-            augmented[column][column] += 1e-6
-            pivot = column
-        augmented[column], augmented[pivot] = augmented[pivot], augmented[column]
-
-        pivot_value = augmented[column][column]
-        for index in range(column, size + 1):
-            augmented[column][index] /= pivot_value
-
-        for row in range(size):
-            if row == column:
-                continue
-            factor = augmented[row][column]
-            if factor == 0:
-                continue
-            for index in range(column, size + 1):
-                augmented[row][index] -= factor * augmented[column][index]
-
-    return [augmented[row][size] for row in range(size)]
-
-
-def _rwkv_metrics_for_training_samples(
-    samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    *,
-    calibration: RwkvSelfCorrectionCalibration | None = None,
-) -> dict[str, float | int]:
-    return _rwkv_calibration_metrics(
-        [
-            (
-                (
-                    _rwkv_self_corrected_retrievability(
-                        sample.prediction,
-                        sample.features,
-                        calibration=calibration,
-                    )
-                    if calibration is not None
-                    else sample.prediction
-                ),
-                sample.outcome,
-                sample.recall_bin,
-            )
-            for sample in samples
-        ]
-    )
-
-
-def _rwkv_save_self_correction_calibration(
-    mw: object,
-    *,
-    deck_id: int | None,
-    config_id: int | None,
-    calibration: RwkvSelfCorrectionCalibration,
-    history: RwkvHistoricalReviewInputs,
-    final_fit_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    train_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    test_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    baseline_test: Mapping[str, float | int],
-    trained_test: Mapping[str, float | int],
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None,
-) -> bool:
-    col = getattr(mw, "col", None)
-    decks = getattr(col, "decks", None)
-    deck_config = _rwkv_deck_config_for_update(
-        decks,
-        deck_id=deck_id,
-        config_id=config_id,
-    )
-    if deck_config is None:
-        return False
-    if extra_feature_override is not None:
-        _rwkv_set_extra_feature_override_values(deck_config, extra_feature_override)
-
-    payload = {
-        "version": _RWKV_SELF_CORRECTION_MODEL_VERSION,
-        "trainedAt": int(time.time() * 1000),
-        "source": "rwkv_calibration_train",
-        "featureNames": list(_RWKV_SELF_CORRECTION_FEATURE_NAMES),
-        "featureSignature": _rwkv_self_correction_feature_signature(deck_config),
-        "bias": calibration.bias,
-        "weights": list(calibration.weights),
-        "means": list(calibration.means),
-        "stds": list(calibration.stds),
-        "trainFraction": _RWKV_SELF_CORRECTION_TRAIN_FRACTION,
-        "historyReviews": len(history.reviews),
-        "finalFit": _rwkv_training_sample_split_summary(final_fit_samples),
-        "train": _rwkv_training_sample_split_summary(train_samples),
-        "test": _rwkv_training_sample_split_summary(test_samples),
-        "metrics": {
-            "baselineTest": dict(baseline_test),
-            "trainedTest": dict(trained_test),
-        },
-    }
-    _rwkv_set_self_correction_calibration_payload(deck_config, payload)
-
-    update_config = getattr(decks, "update_config", None)
-    save = getattr(decks, "save", None)
-    try:
-        if callable(update_config):
-            update_config(deck_config)
-            return True
-        if callable(save):
-            save(deck_config)
-            return True
-    except Exception:
-        logger.exception("failed to save RWKV self-correction calibration")
-    return False
-
-
-def _rwkv_deck_config_for_update(
-    decks: object,
-    *,
-    deck_id: int | None,
-    config_id: int | None,
-) -> dict[str, object] | None:
-    if decks is None:
-        return None
-    if config_id is not None:
-        get_config = getattr(decks, "get_config", None)
-        if callable(get_config):
-            try:
-                config = get_config(config_id)
-            except Exception:
-                logger.debug("failed to load RWKV deck config for calibration save")
-            else:
-                if isinstance(config, dict):
-                    return dict(config)
-
-    if deck_id is not None:
-        config_dict_for_deck_id = getattr(decks, "config_dict_for_deck_id", None)
-        if callable(config_dict_for_deck_id):
-            try:
-                config = config_dict_for_deck_id(deck_id)
-            except Exception:
-                logger.debug("failed to load RWKV deck config from deck id")
-            else:
-                if isinstance(config, dict):
-                    return dict(config)
-    return None
-
-
-def _rwkv_set_self_correction_calibration_payload(
-    deck_config: dict[str, object],
-    payload: Mapping[str, object],
-) -> None:
-    direct_nested_key = _rwkv_existing_other_config_key(deck_config)
-    if direct_nested_key is not None:
-        direct = deck_config.get(direct_nested_key)
-        if isinstance(direct, dict):
-            direct_copy = dict(direct)
-            direct_copy[_RWKV_SELF_CORRECTION_CALIBRATION_CONFIG_KEY] = dict(payload)
-            deck_config[direct_nested_key] = direct_copy
-
-    other = deck_config.get("other")
-    if isinstance(other, dict):
-        root = dict(other)
-    elif isinstance(other, (bytes, bytearray)):
-        root = _json_object_from_text(other.decode("utf8", errors="ignore")) or {}
-    elif isinstance(other, str):
-        root = _json_object_from_text(other) or {}
-    else:
-        root = {}
-
-    nested_key = _rwkv_existing_other_config_key(root) or "jschoreels.rwkv"
-    nested = root.get(nested_key)
-    nested_copy = dict(nested) if isinstance(nested, dict) else {}
-    nested_copy[_RWKV_SELF_CORRECTION_CALIBRATION_CONFIG_KEY] = dict(payload)
-    root[nested_key] = nested_copy
-    deck_config["other"] = root
-
-
-def _rwkv_store_self_correction_training_rows(
-    mw: object,
-    *,
-    train_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    test_samples: Sequence[RwkvSelfCorrectionTrainingSample],
-    calibration: RwkvSelfCorrectionCalibration,
-) -> int:
-    col = getattr(mw, "col", None)
-    backend = getattr(col, "_backend", None)
-    store_rows = getattr(backend, "set_rwkv_review_retrievability_cache_rows", None)
-    if not callable(store_rows):
-        return 0
-
-    rows: list[tuple[RwkvSelfCorrectionTrainingSample, str, int]] = [
-        (sample, _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT, -1)
-        for sample in train_samples
-    ]
-    rows.extend(
-        (
-            sample,
-            _RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD,
-            0,
-        )
-        for sample in test_samples
-    )
-
-    stored = 0
-    for offset in range(0, len(rows), 1000):
-        chunk = rows[offset : offset + 1000]
-        try:
-            result = store_rows(
-                source="rwkv_calibration_train",
-                rows=[
-                    scheduler_pb2.RwkvReviewRetrievabilityCacheRowsRequest.Row(
-                        revlog_id=sample.review_id,
-                        prediction=_rwkv_self_corrected_retrievability(
-                            sample.prediction,
-                            sample.features,
-                            calibration=calibration,
-                        ),
-                        sample_role=sample_role,
-                        fold_index=fold_index,
-                    )
-                    for sample, sample_role, fold_index in chunk
-                ],
-            )
-        except Exception:
-            logger.exception("failed to store RWKV calibration training rows")
-            continue
-        stored += int(result) if isinstance(result, int) else len(chunk)
-    return stored
 
 
 def _rwkv_calibration_predictions_for_history(
@@ -7546,22 +5777,9 @@ def _rwkv_calibration_predictions_for_history(
 
 
 def _rwkv_calibration_metrics_for_history(
-    reviewer: object,
     history: RwkvHistoricalReviewInputs,
     predictions_by_review_id: Mapping[int, float],
-    *,
-    apply_self_correction: bool,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
 ) -> dict[str, float | int]:
-    features_by_review_id = (
-        _rwkv_self_correction_features_by_review_id(
-            history.review_ids,
-            history.reviews,
-        )
-        if apply_self_correction
-        else {}
-    )
-    deck_configs: dict[int | None, dict[str, object] | None] = {}
     prior_long_term_reviews_by_card: dict[int, int] = {}
     prior_lapses_by_card: dict[int, int] = {}
     pairs: list[RwkvCalibrationMetricPair] = []
@@ -7585,31 +5803,6 @@ def _rwkv_calibration_metrics_for_history(
         prior_long_term_reviews = prior_long_term_reviews_by_card.get(card_id, 0)
         prior_lapses = prior_lapses_by_card.get(card_id, 0)
         long_term_reviews = prior_long_term_reviews + int(is_long_term_review)
-
-        if apply_self_correction:
-            deck_id = review_input.identity.deck_id
-            if deck_id not in deck_configs:
-                deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-                deck_config = _rwkv_deck_config_with_extra_feature_override(
-                    deck_config,
-                    extra_feature_override,
-                    deck_id=deck_id,
-                )
-                deck_configs[deck_id] = (
-                    deck_config if isinstance(deck_config, dict) else None
-                )
-
-            deck_config = deck_configs[deck_id]
-            prediction = _rwkv_score_with_optional_self_correction(
-                prediction,
-                (
-                    features_by_review_id.get(review_id)
-                    if deck_config is not None
-                    and _rwkv_review_self_correction_enabled(deck_config)
-                    else None
-                ),
-                deck_config=deck_config,
-            )
 
         pairs.append(
             (
@@ -8033,9 +6226,6 @@ def _rwkv_memorised_history_identity(
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
             reviewer
         ),
-        "presetTagState": _rwkv_preset_tag_state_config_key(reviewer),
-        "japaneseFeatureState": _rwkv_japanese_feature_state_config_key(reviewer),
-        "selfCorrection": _rwkv_self_correction_config_key(reviewer),
         "firstReviewElapsed": _rwkv_first_review_elapsed_config_key(reviewer),
         "lastReviewId": last_review_id,
         "reviewCount": review_count,
@@ -8165,8 +6355,7 @@ def _compute_rwkv_memorised_history(
     reviewer = SimpleNamespace(mw=mw)
     timing = _timing_today(reviewer)
     last_day = getattr(timing, "days_elapsed", None)
-    next_day_at = getattr(timing, "next_day_at", None)
-    if not isinstance(last_day, int) or not isinstance(next_day_at, int):
+    if not isinstance(last_day, int):
         raise ValueError("RWKV scheduler timing is unavailable")
 
     history = _historical_rwkv_review_inputs(reviewer)
@@ -8245,7 +6434,6 @@ def _compute_rwkv_memorised_history(
         review_ids=review_ids,
         runtime=runtime,
     )
-    deck_configs: dict[int, dict[str, object] | None] = {}
     last_checkpoint_at = time.monotonic()
 
     with job.lock:
@@ -8313,7 +6501,6 @@ def _compute_rwkv_memorised_history(
         selected_sum = 0.0
         selected_note_sum = 0.0
         selected_count = 0
-        now_seconds = next_day_at - (last_day - day) * 86_400 - 1
         for card_id, query_input, raw_prediction in zip(
             card_ids,
             query_inputs,
@@ -8321,24 +6508,6 @@ def _compute_rwkv_memorised_history(
             strict=True,
         ):
             prediction = float(raw_prediction)
-            deck_id = query_input.identity.deck_id
-            deck_config = None
-            if deck_id is not None:
-                if deck_id not in deck_configs:
-                    value = _deck_config_for_deck_id(reviewer, deck_id)
-                    deck_configs[deck_id] = value if isinstance(value, dict) else None
-                deck_config = deck_configs[deck_id]
-            if deck_config is not None and _rwkv_review_self_correction_enabled(
-                deck_config
-            ):
-                prediction = _rwkv_score_with_optional_self_correction(
-                    prediction,
-                    _rwkv_self_correction_features_for_input(
-                        query_input,
-                        now_seconds=now_seconds,
-                    ),
-                    deck_config=deck_config,
-                )
             prediction = min(max(prediction, 0.0), 1.0)
             values_by_card[card_id].append(round(prediction * 65_535))
 
@@ -10539,8 +8708,6 @@ def _rwkv_state_cache_metadata(
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
             reviewer
         ),
-        "presetTagState": _rwkv_preset_tag_state_config_key(reviewer),
-        "japaneseFeatureState": _rwkv_japanese_feature_state_config_key(reviewer),
         "snapshotReviewId": snapshot_review_id,
         "lastReviewId": history.last_review_id,
         "reviewCount": history.review_count,
@@ -10564,15 +8731,6 @@ def _rwkv_state_cache_metadata_usable(
         "dynamicPresetReplay"
     ) != _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer):
         return False
-    if metadata.get("version") == _RWKV_STATE_CACHE_VERSION and metadata.get(
-        "presetTagState"
-    ) != _rwkv_preset_tag_state_config_key(reviewer):
-        return False
-    if metadata.get("version") == _RWKV_STATE_CACHE_VERSION and metadata.get(
-        "japaneseFeatureState"
-    ) != _rwkv_japanese_feature_state_config_key(reviewer):
-        return False
-
     last_review_id = _int_value(metadata.get("lastReviewId"))
     review_count = _int_value(metadata.get("reviewCount"))
     if last_review_id is None or review_count is None:
@@ -11165,10 +9323,6 @@ def _rwkv_state_cache_metadata_matches_manifest(
         and snapshot_metadata.get("model") == manifest_metadata.get("model")
         and snapshot_metadata.get("dynamicPresetReplay")
         == manifest_metadata.get("dynamicPresetReplay")
-        and snapshot_metadata.get("presetTagState")
-        == manifest_metadata.get("presetTagState")
-        and snapshot_metadata.get("japaneseFeatureState")
-        == manifest_metadata.get("japaneseFeatureState")
         and _int_value(snapshot_metadata.get("lastReviewId")) == snapshot_review_id
     )
 
@@ -11203,8 +9357,6 @@ def _historical_rwkv_review_inputs(
     *,
     after_review_id: int | None = None,
     deck_id: int | None = None,
-    use_extra_feature_state: bool = True,
-    extra_feature_override: RwkvExtraFeatureConfigOverride | None = None,
     progress: RwkvStateCacheProgressCallback | None = None,
     previous_review_id_by_card: dict[int, int] | None = None,
     previous_interval_days_by_card: dict[int, int] | None = None,
@@ -11229,11 +9381,17 @@ def _historical_rwkv_review_inputs(
         )
 
     rows_start = time.monotonic()
-    rows = _historical_rwkv_review_rows(
+    raw_rows = _historical_rwkv_review_rows(
         reviewer,
-        after_review_id=after_review_id,
         deck_id=deck_id,
     )
+    retained_rows = _benchmark_retained_historical_review_rows(raw_rows)
+    rows = [
+        (row, state)
+        for row, state in retained_rows
+        if after_review_id is None
+        or (isinstance(row[0], int) and row[0] > after_review_id)
+    ]
     rows_elapsed_ms = (time.monotonic() - rows_start) * 1000
     previous_ids = dict(previous_review_id_by_card or {})
     previous_intervals = dict(previous_interval_days_by_card or {})
@@ -11247,39 +9405,22 @@ def _historical_rwkv_review_inputs(
         time.monotonic() - historical_preset_rules_start
     ) * 1000
     deck_config_start = time.monotonic()
-    deck_configs_by_deck_id = _historical_deck_configs_by_deck_id(reviewer, rows)
-    feature_deck_configs_by_deck_id = {
-        row_deck_id: _rwkv_deck_config_with_extra_feature_override(
-            deck_config,
-            extra_feature_override,
-            deck_id=row_deck_id,
-        )
-        for row_deck_id, deck_config in deck_configs_by_deck_id.items()
-    }
+    input_rows = [row for row, _state in rows]
+    deck_configs_by_deck_id = _historical_deck_configs_by_deck_id(reviewer, input_rows)
     deck_config_elapsed_ms = (time.monotonic() - deck_config_start) * 1000
-    note_feature_start = time.monotonic()
-    note_tags_by_note_id, japanese_features_by_note_id = (
-        _historical_rwkv_note_feature_maps(
-            reviewer,
-            rows,
-            use_extra_feature_state=use_extra_feature_state,
-            feature_deck_configs_by_deck_id=feature_deck_configs_by_deck_id,
-        )
-    )
-    note_feature_elapsed_ms = (time.monotonic() - note_feature_start) * 1000
     preset_start = time.monotonic()
     preset_id_by_card: dict[int, int | str | None] = (
         cast(
             dict[int, int | str | None],
             _resolved_fsrs_preset_ids(
                 reviewer,
-                _historical_rwkv_review_card_ids(rows),
+                _historical_rwkv_review_card_ids(input_rows),
             ),
         )
         if dynamic_preset_replay
         else _historical_deck_config_ids_by_card(
             reviewer,
-            rows,
+            input_rows,
             deck_configs_by_deck_id=deck_configs_by_deck_id,
         )
     )
@@ -11297,12 +9438,8 @@ def _historical_rwkv_review_inputs(
         started_at=prepare_started_at,
     )
 
-    for row_index, row in enumerate(rows, start=1):
-        if len(row) == 9:
-            row = (*row, None, None, None, None, None, None)
-        if len(row) == 10:
-            row = (*row, None, None, None, None, None)
-        if len(row) != 15:
+    for row_index, (row, historical_state) in enumerate(rows, start=1):
+        if len(row) < 9:
             continue
         (
             review_id,
@@ -11314,13 +9451,7 @@ def _historical_rwkv_review_inputs(
             review_kind,
             interval_days,
             ease_factor,
-            note_tags,
-            fields_raw,
-            front_ord,
-            reading_ord,
-            front_kana_ord,
-            frequency_ord,
-        ) = row
+        ) = row[:9]
         if not (
             isinstance(review_id, int)
             and isinstance(card_id, int)
@@ -11334,9 +9465,23 @@ def _historical_rwkv_review_inputs(
         ):
             continue
 
+        day_offset = _historical_review_day_offset(
+            review_id,
+            days_elapsed=days_elapsed,
+            next_day_at=next_day_at,
+        )
         previous_review_id = previous_ids.get(card_id)
         if previous_review_id is not None:
             elapsed_seconds = max(0, (review_id - previous_review_id) // 1000)
+            elapsed_days = max(
+                0,
+                day_offset
+                - _historical_review_day_offset(
+                    previous_review_id,
+                    days_elapsed=days_elapsed,
+                    next_day_at=next_day_at,
+                ),
+            )
         else:
             deck_config = deck_configs_by_deck_id.get(row_deck_id)
             elapsed_source = first_review_elapsed_source
@@ -11354,7 +9499,7 @@ def _historical_rwkv_review_inputs(
                 if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
                 else -1
             )
-        elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
+            elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
         review_count_so_far = review_counts.get(card_id, 0)
         historical_interval_days = previous_intervals.get(card_id, 0)
         historical_preset_id = _historical_preset_id_for_review(
@@ -11368,30 +9513,10 @@ def _historical_rwkv_review_inputs(
             historical_preset_rule_matches += 1
         else:
             base_preset_id = preset_id_by_card[card_id]
-        deck_config = deck_configs_by_deck_id.get(row_deck_id)
-        feature_deck_config = deck_config if use_extra_feature_state else None
-        if use_extra_feature_state:
-            feature_deck_config = feature_deck_configs_by_deck_id.get(row_deck_id)
-        note_tags_for_features = (
-            note_tags_by_note_id.get(note_id, note_tags)
-            if use_extra_feature_state
+        preset_id = (
+            _stable_preset_id(str(base_preset_id))
+            if base_preset_id is not None
             else None
-        )
-        japanese_features = (
-            japanese_features_by_note_id.get(
-                (
-                    note_id,
-                    _rwkv_japanese_feature_field_names(feature_deck_config),
-                )
-            )
-            if use_extra_feature_state and isinstance(feature_deck_config, dict)
-            else None
-        )
-        folded_preset_id = _rwkv_preset_id_with_features(
-            base_preset_id,
-            feature_deck_config,
-            note_tags_for_features,
-            japanese_features,
         )
         previous_ids[card_id] = review_id
         previous_intervals[card_id] = interval_days
@@ -11406,23 +9531,19 @@ def _historical_rwkv_review_inputs(
                     card_id=card_id,
                     note_id=note_id,
                     deck_id=row_deck_id,
-                    preset_id=folded_preset_id,
+                    preset_id=preset_id,
                 ),
                 is_query=False,
                 ease=ease,
                 duration_millis=duration_millis,
-                card_type=_historical_review_card_type(review_kind),
+                card_type=historical_state,
                 card_queue=_historical_review_queue(review_kind),
                 card_due=None,
                 interval_days=interval_days,
                 ease_factor=ease_factor,
                 reps=None,
                 lapses=None,
-                day_offset=_historical_review_day_offset(
-                    review_id,
-                    days_elapsed=days_elapsed,
-                    next_day_at=next_day_at,
-                ),
+                day_offset=day_offset,
                 current_state_kind=state_kind,
                 current_normal_state_kind=normal_state_kind,
                 current_elapsed_days=elapsed_days,
@@ -11437,10 +9558,10 @@ def _historical_rwkv_review_inputs(
                 started_at=prepare_started_at,
             )
     count_start = time.monotonic()
-    review_count = _historical_rwkv_review_count_through(
-        reviewer,
-        last_review_id,
-        deck_id=requested_deck_id,
+    review_count = sum(
+        1
+        for row, _state in retained_rows
+        if isinstance(row[0], int) and row[0] <= last_review_id
     )
     count_elapsed_ms = (time.monotonic() - count_start) * 1000
     logger.debug(
@@ -11448,9 +9569,9 @@ def _historical_rwkv_review_inputs(
         "dynamic_preset_replay=%s historical_preset_rules=%s "
         "historical_preset_rule_matches=%s "
         "rows_elapsed_ms=%.1f historical_preset_rules_elapsed_ms=%.1f "
-        "deck_config_elapsed_ms=%.1f note_feature_elapsed_ms=%.1f "
+        "deck_config_elapsed_ms=%.1f "
         "preset_elapsed_ms=%.1f count_elapsed_ms=%.1f elapsed_ms=%.1f "
-        "deck_id=%s use_extra_feature_state=%s extra_feature_override=%s",
+        "deck_id=%s",
         len(rows),
         len(reviews),
         dynamic_preset_replay,
@@ -11459,13 +9580,10 @@ def _historical_rwkv_review_inputs(
         rows_elapsed_ms,
         historical_preset_rules_elapsed_ms,
         deck_config_elapsed_ms,
-        note_feature_elapsed_ms,
         preset_elapsed_ms,
         count_elapsed_ms,
         (time.monotonic() - start) * 1000,
         requested_deck_id,
-        use_extra_feature_state,
-        extra_feature_override is not None,
     )
     return RwkvHistoricalReviewInputs(
         reviews=reviews,
@@ -11516,164 +9634,6 @@ def _historical_rwkv_review_card_ids(rows: Sequence[Sequence[object]]) -> list[i
             seen.add(card_id)
             card_ids.append(card_id)
     return card_ids
-
-
-def _historical_rwkv_note_ids_for_feature(
-    rows: Sequence[Sequence[object]],
-    feature_deck_configs_by_deck_id: Mapping[int, object | None],
-    feature_enabled: Callable[[dict[str, object]], bool],
-    *,
-    inline_column_count: int,
-) -> tuple[set[int], set[int]]:
-    note_ids: set[int] = set()
-    inline_note_ids: set[int] = set()
-    for row in rows:
-        if len(row) < 4:
-            continue
-        note_id = row[2]
-        row_deck_id = row[3]
-        if not isinstance(note_id, int) or not isinstance(row_deck_id, int):
-            continue
-        deck_config = feature_deck_configs_by_deck_id.get(row_deck_id)
-        if not isinstance(deck_config, dict) or not feature_enabled(deck_config):
-            continue
-        note_ids.add(note_id)
-        if len(row) >= inline_column_count:
-            inline_note_ids.add(note_id)
-
-    return note_ids, inline_note_ids
-
-
-def _historical_rwkv_note_feature_maps(
-    reviewer: object,
-    rows: Sequence[Sequence[object]],
-    *,
-    use_extra_feature_state: bool,
-    feature_deck_configs_by_deck_id: Mapping[int, object | None],
-) -> tuple[
-    dict[int, object],
-    dict[tuple[int, RwkvJapaneseFeatureFieldNames], RwkvJapaneseFeatureFields | None],
-]:
-    if not use_extra_feature_state:
-        return {}, {}
-
-    tag_note_ids, inline_tag_note_ids = _historical_rwkv_note_ids_for_feature(
-        rows,
-        feature_deck_configs_by_deck_id,
-        _rwkv_review_preset_tag_state_enabled,
-        inline_column_count=10,
-    )
-    note_tags_by_note_id: dict[int, object] = {}
-    japanese_features_by_note_key: dict[
-        tuple[int, RwkvJapaneseFeatureFieldNames],
-        RwkvJapaneseFeatureFields | None,
-    ] = {}
-    japanese_note_ids_by_fields: dict[RwkvJapaneseFeatureFieldNames, set[int]] = {}
-    for row in rows:
-        if len(row) < 4:
-            continue
-        note_id = row[2]
-        row_deck_id = row[3]
-        if not isinstance(note_id, int) or not isinstance(row_deck_id, int):
-            continue
-        if (
-            len(row) >= 10
-            and note_id in inline_tag_note_ids
-            and note_id not in note_tags_by_note_id
-        ):
-            note_tags_by_note_id[note_id] = row[9]
-
-        deck_config = feature_deck_configs_by_deck_id.get(row_deck_id)
-        if not isinstance(
-            deck_config, dict
-        ) or not _rwkv_review_japanese_feature_state_enabled(deck_config):
-            continue
-        field_names = _rwkv_japanese_feature_field_names(deck_config)
-        note_key = (note_id, field_names)
-        japanese_note_ids_by_fields.setdefault(field_names, set()).add(note_id)
-        if (
-            len(row) >= 15
-            and field_names == _rwkv_default_japanese_feature_field_names()
-            and note_key not in japanese_features_by_note_key
-        ):
-            japanese_features_by_note_key[note_key] = (
-                _rwkv_japanese_feature_fields_from_storage(
-                    row[10],
-                    row[11],
-                    row[12],
-                    row[13],
-                    row[14],
-                )
-            )
-
-    missing_tag_note_ids = sorted(tag_note_ids - set(note_tags_by_note_id))
-    if missing_tag_note_ids:
-        note_tags_by_note_id.update(
-            _rwkv_note_tags_for_note_ids(reviewer, missing_tag_note_ids)
-        )
-
-    for field_names, note_ids in japanese_note_ids_by_fields.items():
-        missing_note_ids = sorted(
-            note_id
-            for note_id in note_ids
-            if (note_id, field_names) not in japanese_features_by_note_key
-        )
-        if not missing_note_ids:
-            continue
-        japanese_features_by_note_key.update(
-            {
-                (note_id, field_names): features
-                for note_id, features in _rwkv_japanese_features_for_note_ids(
-                    reviewer,
-                    missing_note_ids,
-                    field_names=field_names,
-                ).items()
-            }
-        )
-
-    return note_tags_by_note_id, japanese_features_by_note_key
-
-
-def _rwkv_note_tags_for_note_ids(
-    reviewer: object,
-    note_ids: Sequence[int],
-) -> dict[int, object]:
-    if not note_ids:
-        return {}
-
-    col = _collection(reviewer)
-    db = getattr(col, "db", None)
-    all_rows = getattr(db, "all", None)
-    if not callable(all_rows):
-        return {}
-
-    unique_note_ids = sorted(
-        {note_id for note_id in note_ids if isinstance(note_id, int)}
-    )
-    if not unique_note_ids:
-        return {}
-
-    try:
-        rows = all_rows(
-            f"""
-select id, tags
-from notes
-where id in {ids2str(unique_note_ids)}
-"""
-        )
-    except Exception:
-        logger.debug("failed to read note tags for RWKV historical preset tag state")
-        return {}
-
-    tags_by_note_id: dict[int, object] = {}
-    for row in rows:
-        if len(row) != 2:
-            continue
-        note_id, tags = row
-        if isinstance(note_id, int):
-            tags_by_note_id[note_id] = tags
-
-    return tags_by_note_id
 
 
 def _historical_deck_configs_by_deck_id(
@@ -11908,27 +9868,30 @@ def _historical_rwkv_review_count_through(
         return 0
 
     deck_ids = _deck_tree_ids(reviewer, deck_id)
-    if deck_ids:
-        value = scalar(
-            f"""
-select count()
-from revlog r
-join cards c on c.id = r.cid
-where {_rwkv_historical_answer_sql_condition("r")}
-  and r.id <= ?
-  and c.did in {ids2str(deck_ids)}
-""",
-            last_review_id,
-        )
-        return value if isinstance(value, int) else 0
-
+    deck_clause = f"and c.did in {ids2str(deck_ids)}" if deck_ids else ""
     value = scalar(
         f"""
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    r.type,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where {_rwkv_historical_answer_sql_condition("r")}
+    {deck_clause}
+), retained_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+)
 select count()
-from revlog r
-join cards c on c.id = r.cid
-where {_rwkv_historical_answer_sql_condition("r")}
-  and r.id <= ?
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+  and e.id <= ?
 """,
         last_review_id,
     )
@@ -11970,12 +9933,55 @@ def _historical_review_day_offset(
     return max(0, days_elapsed - days_before_today)
 
 
-def _historical_review_card_type(review_kind: int) -> int:
-    if review_kind == 0:
-        return int(CARD_TYPE_LRN)
-    if review_kind == 2:
-        return int(CARD_TYPE_RELEARNING)
-    return int(CARD_TYPE_REV)
+def _benchmark_retained_historical_review_rows(
+    rows: Sequence[Sequence[object]],
+) -> list[tuple[Sequence[object], int]]:
+    latest_start_index_by_card: dict[int, int] = {}
+    previous_kind_by_card: dict[int, int] = {}
+
+    for index, row in enumerate(rows):
+        if len(row) < 7:
+            continue
+        card_id = row[1]
+        review_kind = row[6]
+        if not isinstance(card_id, int) or not isinstance(review_kind, int):
+            continue
+        previous_kind = previous_kind_by_card.get(card_id)
+        if review_kind == 0 and previous_kind != 0:
+            latest_start_index_by_card[card_id] = index
+        previous_kind_by_card[card_id] = review_kind
+
+    retained: list[tuple[Sequence[object], int]] = []
+    for index, row in enumerate(rows):
+        if len(row) < 7:
+            continue
+        card_id = row[1]
+        review_kind = row[6]
+        if not isinstance(card_id, int) or not isinstance(review_kind, int):
+            continue
+        start_index = latest_start_index_by_card.get(card_id)
+        if start_index is None or index < start_index:
+            continue
+        retained.append(
+            (
+                row,
+                _historical_review_state(
+                    review_kind,
+                    is_learning_start=index == start_index,
+                ),
+            )
+        )
+
+    return retained
+
+
+def _historical_review_state(
+    review_kind: int,
+    *,
+    is_learning_start: bool = False,
+) -> int:
+    # The dataset builder increments raw revlog kinds before RWKV scales them.
+    return 0 if is_learning_start else review_kind + 1
 
 
 def _historical_review_queue(review_kind: int) -> int:
@@ -12032,95 +10038,6 @@ def _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer: object) -> bool
     return False
 
 
-def _rwkv_preset_tag_state_config_key(reviewer: object) -> list[list[object]]:
-    col = _collection(reviewer)
-    decks = getattr(col, "decks", None)
-    all_config = getattr(decks, "all_config", None)
-    if not callable(all_config):
-        return []
-
-    try:
-        configs = all_config()
-    except Exception:
-        logger.debug("failed to read deck configs for RWKV preset tag state")
-        return []
-
-    key: list[list[object]] = []
-    for index, config in enumerate(configs):
-        if not isinstance(config, dict):
-            continue
-        config_id = config.get("id")
-        key.append(
-            [
-                config_id if isinstance(config_id, int) else f"index:{index}",
-                _rwkv_review_preset_tag_state_enabled(config),
-            ]
-        )
-
-    return sorted(key, key=lambda item: str(item[0]))
-
-
-def _rwkv_japanese_feature_state_config_key(reviewer: object) -> list[list[object]]:
-    col = _collection(reviewer)
-    decks = getattr(col, "decks", None)
-    all_config = getattr(decks, "all_config", None)
-    if not callable(all_config):
-        return []
-
-    try:
-        configs = all_config()
-    except Exception:
-        logger.debug("failed to read deck configs for RWKV Japanese feature state")
-        return []
-
-    key: list[list[object]] = []
-    for index, config in enumerate(configs):
-        if not isinstance(config, dict):
-            continue
-        config_id = config.get("id")
-        kanji_field, reading_field = _rwkv_japanese_feature_field_names(config)
-        key.append(
-            [
-                config_id if isinstance(config_id, int) else f"index:{index}",
-                _rwkv_review_japanese_feature_state_enabled(config),
-                kanji_field,
-                reading_field,
-            ]
-        )
-
-    return sorted(key, key=lambda item: str(item[0]))
-
-
-def _rwkv_self_correction_config_key(
-    reviewer: object,
-) -> list[list[object]]:
-    col = _collection(reviewer)
-    decks = getattr(col, "decks", None)
-    all_config = getattr(decks, "all_config", None)
-    if not callable(all_config):
-        return []
-
-    try:
-        configs = all_config()
-    except Exception:
-        logger.debug("failed to read deck configs for RWKV self-correction")
-        return []
-
-    key: list[list[object]] = []
-    for index, config in enumerate(configs):
-        if not isinstance(config, dict):
-            continue
-        config_id = config.get("id")
-        key.append(
-            [
-                config_id if isinstance(config_id, int) else f"index:{index}",
-                _rwkv_review_self_correction_enabled(config),
-            ]
-        )
-
-    return sorted(key, key=lambda item: str(item[0]))
-
-
 def _rwkv_first_review_elapsed_config_key(
     reviewer: object,
 ) -> list[list[object]]:
@@ -12166,110 +10083,6 @@ def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
     return value if isinstance(value, bool) else False
 
 
-def _rwkv_review_preset_tag_state_enabled(deck_config: dict[str, object]) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_preset_tag_state_enabled")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewPresetTagStateEnabled",
-        "rwkv_review_preset_tag_state_enabled",
-    )
-    return value if isinstance(value, bool) else False
-
-
-def _rwkv_review_japanese_feature_state_enabled(
-    deck_config: dict[str, object],
-) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_japanese_feature_state_enabled")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewJapaneseFeatureStateEnabled",
-        "rwkv_review_japanese_feature_state_enabled",
-    )
-    return value if isinstance(value, bool) else False
-
-
-def _rwkv_japanese_feature_field_names(
-    deck_config: Mapping[str, object] | None,
-) -> RwkvJapaneseFeatureFieldNames:
-    if not isinstance(deck_config, dict):
-        return _rwkv_default_japanese_feature_field_names()
-
-    nested = _rwkv_other_config(deck_config)
-    kanji_value = None
-    reading_value = None
-    if nested is not None:
-        kanji_value = nested.get("rwkv_review_japanese_kanji_field")
-        reading_value = nested.get("rwkv_review_japanese_reading_field")
-
-    if not isinstance(kanji_value, str):
-        kanji_value = _rwkv_config_direct_value(
-            deck_config,
-            "rwkvReviewJapaneseKanjiField",
-            "rwkv_review_japanese_kanji_field",
-        )
-    if not isinstance(reading_value, str):
-        reading_value = _rwkv_config_direct_value(
-            deck_config,
-            "rwkvReviewJapaneseReadingField",
-            "rwkv_review_japanese_reading_field",
-        )
-
-    return (
-        _rwkv_japanese_feature_field_name_or_default(
-            kanji_value,
-            _DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-        ),
-        _rwkv_japanese_feature_field_name_or_default(
-            reading_value,
-            _DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-        ),
-    )
-
-
-def _rwkv_japanese_feature_field_name_or_default(
-    value: object,
-    default: str,
-) -> str:
-    if not isinstance(value, str):
-        return default
-    value = value.strip()
-    return value or default
-
-
-def _rwkv_default_japanese_feature_field_names() -> RwkvJapaneseFeatureFieldNames:
-    return (
-        _DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-        _DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-    )
-
-
-def _rwkv_review_self_correction_enabled(
-    deck_config: dict[str, object],
-) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_self_correction_enabled")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewSelfCorrectionEnabled",
-        "rwkv_review_self_correction_enabled",
-    )
-    return value if isinstance(value, bool) else False
-
-
 def _rwkv_review_first_review_elapsed_from_card_creation(
     deck_config: dict[str, object],
 ) -> bool:
@@ -12285,262 +10098,6 @@ def _rwkv_review_first_review_elapsed_from_card_creation(
         "rwkv_review_first_review_elapsed_from_card_creation",
     )
     return value if isinstance(value, bool) else False
-
-
-def _rwkv_default_self_correction_calibration() -> RwkvSelfCorrectionCalibration:
-    return RwkvSelfCorrectionCalibration(
-        bias=_RWKV_SELF_CORRECTION_BIAS,
-        weights=(
-            *_RWKV_SELF_CORRECTION_BIN_WEIGHTS,
-            *_RWKV_SELF_CORRECTION_DENSE_WEIGHTS,
-        ),
-        means=(
-            *_RWKV_SELF_CORRECTION_BIN_MEANS,
-            *_RWKV_SELF_CORRECTION_DENSE_MEANS,
-        ),
-        stds=(
-            *_RWKV_SELF_CORRECTION_BIN_STDS,
-            *_RWKV_SELF_CORRECTION_DENSE_STDS,
-        ),
-    )
-
-
-def _rwkv_self_correction_feature_signature(
-    deck_config: dict[str, object],
-) -> dict[str, bool]:
-    return {
-        "presetTagStateEnabled": _rwkv_review_preset_tag_state_enabled(deck_config),
-        "japaneseFeatureStateEnabled": _rwkv_review_japanese_feature_state_enabled(
-            deck_config
-        ),
-    }
-
-
-def _rwkv_self_correction_calibration_from_deck_config(
-    deck_config: dict[str, object],
-) -> RwkvSelfCorrectionCalibration | None:
-    nested = _rwkv_other_config(deck_config)
-    payload = (
-        nested.get(_RWKV_SELF_CORRECTION_CALIBRATION_CONFIG_KEY)
-        if nested is not None
-        else None
-    )
-    if not isinstance(payload, Mapping):
-        return None
-    if payload.get("version") != _RWKV_SELF_CORRECTION_MODEL_VERSION:
-        return None
-    if payload.get("featureSignature") != _rwkv_self_correction_feature_signature(
-        deck_config
-    ):
-        return None
-    if payload.get("featureNames") != list(_RWKV_SELF_CORRECTION_FEATURE_NAMES):
-        return None
-
-    bias = _finite_float_value(payload.get("bias"))
-    weights = _finite_float_tuple(
-        payload.get("weights"),
-        expected_length=len(_RWKV_SELF_CORRECTION_FEATURE_NAMES),
-    )
-    means = _finite_float_tuple(
-        payload.get("means"),
-        expected_length=len(_RWKV_SELF_CORRECTION_FEATURE_NAMES),
-    )
-    stds = _finite_float_tuple(
-        payload.get("stds"),
-        expected_length=len(_RWKV_SELF_CORRECTION_FEATURE_NAMES),
-    )
-    if bias is None or weights is None or means is None or stds is None:
-        return None
-    if any(std <= 0 for std in stds):
-        return None
-
-    return RwkvSelfCorrectionCalibration(
-        bias=bias,
-        weights=weights,
-        means=means,
-        stds=stds,
-    )
-
-
-def _finite_float_value(value: object) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        result = float(value)
-        return result if math.isfinite(result) else None
-    return None
-
-
-def _finite_float_tuple(
-    value: object,
-    *,
-    expected_length: int,
-) -> tuple[float, ...] | None:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return None
-    if len(value) != expected_length:
-        return None
-
-    values: list[float] = []
-    for item in value:
-        parsed = _finite_float_value(item)
-        if parsed is None:
-            return None
-        values.append(parsed)
-    return tuple(values)
-
-
-def _rwkv_self_corrected_retrievability(
-    retrievability: float,
-    features: RwkvSelfCorrectionFeatures,
-    *,
-    calibration: RwkvSelfCorrectionCalibration | None = None,
-) -> float:
-    if not _valid_probability(retrievability):
-        return retrievability
-
-    model = calibration or _rwkv_default_self_correction_calibration()
-    clamped = _rwkv_clamped_self_correction_probability(retrievability)
-    delta = model.bias
-    for value, weight, mean, std in zip(
-        _rwkv_self_correction_feature_values(clamped, features),
-        model.weights,
-        model.means,
-        model.stds,
-        strict=True,
-    ):
-        delta += weight * ((value - mean) / std)
-
-    return _rwkv_sigmoid(_rwkv_logit(clamped) + delta)
-
-
-def _rwkv_score_with_optional_self_correction(
-    retrievability: float,
-    features: RwkvSelfCorrectionFeatures | None,
-    *,
-    deck_config: dict[str, object] | None = None,
-    calibration: RwkvSelfCorrectionCalibration | None = None,
-) -> float:
-    if features is None:
-        return retrievability
-
-    model = calibration
-    if model is None and deck_config is not None:
-        model = _rwkv_self_correction_calibration_from_deck_config(deck_config)
-    return _rwkv_self_corrected_retrievability(
-        retrievability,
-        features,
-        calibration=model,
-    )
-
-
-def _rwkv_self_correction_feature_values(
-    retrievability: float,
-    features: RwkvSelfCorrectionFeatures,
-) -> tuple[float, ...]:
-    bin_index = min(9, int(retrievability * 10.0))
-    return (
-        *(1.0 if bin_index == index else 0.0 for index in range(1, 10)),
-        features.hour_sin,
-        features.hour_cos,
-        features.elapsed_days_log,
-        features.prior_long_term_reviews_log,
-        features.prior_lapses_log,
-        features.is_long_term_review,
-    )
-
-
-def _rwkv_clamped_self_correction_probability(value: float) -> float:
-    return min(
-        max(float(value), _RWKV_SELF_CORRECTION_EPSILON),
-        1.0 - _RWKV_SELF_CORRECTION_EPSILON,
-    )
-
-
-def _rwkv_logit(probability: float) -> float:
-    probability = _rwkv_clamped_self_correction_probability(probability)
-    return math.log(probability / (1.0 - probability))
-
-
-def _rwkv_sigmoid(value: float) -> float:
-    if value >= 0:
-        z = math.exp(-value)
-        return 1.0 / (1.0 + z)
-    z = math.exp(value)
-    return z / (1.0 + z)
-
-
-def _rwkv_self_corrected_scores(
-    scores: Sequence[tuple[int, float]],
-    self_correction_features_by_card_id: Mapping[int, RwkvSelfCorrectionFeatures],
-) -> list[tuple[int, float]]:
-    return [
-        (
-            card_id,
-            _rwkv_score_with_optional_self_correction(
-                retrievability,
-                self_correction_features_by_card_id.get(card_id),
-            ),
-        )
-        for card_id, retrievability in scores
-    ]
-
-
-def _rwkv_self_correction_features_for_input(
-    review_input: RwkvReviewInput,
-    *,
-    now_seconds: float,
-) -> RwkvSelfCorrectionFeatures:
-    return _rwkv_self_correction_features(
-        now_seconds=now_seconds,
-        elapsed_days=review_input.current_elapsed_days,
-        reps=review_input.reps,
-        lapses=review_input.lapses,
-    )
-
-
-def _rwkv_self_correction_features_for_card(
-    reviewer: object,
-    card: object,
-    *,
-    now_seconds: float,
-) -> RwkvSelfCorrectionFeatures:
-    elapsed_days, _elapsed_seconds = _scheduling_state_elapsed(
-        _current_scheduling_state(reviewer)
-    )
-    return _rwkv_self_correction_features(
-        now_seconds=now_seconds,
-        elapsed_days=elapsed_days,
-        reps=_int_attr(card, "reps"),
-        lapses=_int_attr(card, "lapses"),
-    )
-
-
-def _rwkv_self_correction_features(
-    *,
-    now_seconds: float,
-    elapsed_days: int | None,
-    reps: int | None,
-    lapses: int | None,
-) -> RwkvSelfCorrectionFeatures:
-    local_time = time.localtime(now_seconds)
-    hour = local_time.tm_hour + local_time.tm_min / 60 + local_time.tm_sec / (60 * 60)
-    hour_radians = 2 * math.pi * hour / 24
-    elapsed = _rwkv_non_negative_count(elapsed_days)
-    return RwkvSelfCorrectionFeatures(
-        hour_sin=math.sin(hour_radians),
-        hour_cos=math.cos(hour_radians),
-        elapsed_days_log=math.log1p(elapsed),
-        prior_long_term_reviews_log=math.log1p(_rwkv_non_negative_count(reps)),
-        prior_lapses_log=math.log1p(_rwkv_non_negative_count(lapses)),
-        is_long_term_review=1.0 if elapsed >= 1 else 0.0,
-    )
-
-
-def _rwkv_non_negative_count(value: int | None) -> int:
-    return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0
-        else 0
-    )
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
@@ -12657,120 +10214,6 @@ def _valid_rwkv_review_refresh_interval(value: object) -> bool:
         <= value
         <= _MAX_RWKV_REVIEW_REFRESH_INTERVAL
     )
-
-
-def _rwkv_deck_config_with_extra_feature_override(
-    deck_config: object | None,
-    override: RwkvExtraFeatureConfigOverride | None,
-    *,
-    deck_id: int | None,
-) -> object | None:
-    if override is None or not isinstance(deck_config, dict):
-        return deck_config
-    if not _rwkv_extra_feature_override_applies(
-        deck_config,
-        override,
-        deck_id=deck_id,
-    ):
-        return deck_config
-
-    overridden = dict(deck_config)
-    _rwkv_set_extra_feature_override_values(overridden, override)
-    return overridden
-
-
-def _rwkv_extra_feature_override_applies(
-    deck_config: dict[str, object],
-    override: RwkvExtraFeatureConfigOverride,
-    *,
-    deck_id: int | None,
-) -> bool:
-    if override.config_id is not None:
-        return _rwkv_int_from_json_payload(deck_config.get("id")) == override.config_id
-    if override.deck_id is not None and deck_id is not None:
-        return deck_id == override.deck_id
-    return True
-
-
-def _rwkv_set_extra_feature_override_values(
-    deck_config: dict[str, object],
-    override: RwkvExtraFeatureConfigOverride,
-) -> None:
-    _rwkv_set_extra_feature_direct_values(deck_config, override)
-
-    direct_nested_key = _rwkv_existing_other_config_key(deck_config)
-    if direct_nested_key is not None:
-        nested = deck_config.get(direct_nested_key)
-        if isinstance(nested, dict):
-            nested_copy = dict(nested)
-            _rwkv_set_extra_feature_nested_values(nested_copy, override)
-            deck_config[direct_nested_key] = nested_copy
-
-    other = deck_config.get("other")
-    if isinstance(other, dict):
-        root = dict(other)
-    elif isinstance(other, (bytes, bytearray)):
-        root = _json_object_from_text(other.decode("utf8", errors="ignore"))
-    elif isinstance(other, str):
-        root = _json_object_from_text(other)
-    else:
-        return
-    if root is None:
-        return
-
-    nested_key = _rwkv_existing_other_config_key(root)
-    if nested_key is None:
-        return
-    nested = root.get(nested_key)
-    if not isinstance(nested, dict):
-        return
-    nested_copy = dict(nested)
-    _rwkv_set_extra_feature_nested_values(nested_copy, override)
-    root[nested_key] = nested_copy
-    deck_config["other"] = root
-
-
-def _rwkv_set_extra_feature_direct_values(
-    deck_config: dict[str, object],
-    override: RwkvExtraFeatureConfigOverride,
-) -> None:
-    deck_config["rwkvReviewPresetTagStateEnabled"] = override.preset_tag_state_enabled
-    deck_config["rwkv_review_preset_tag_state_enabled"] = (
-        override.preset_tag_state_enabled
-    )
-    deck_config["rwkvReviewJapaneseFeatureStateEnabled"] = (
-        override.japanese_feature_state_enabled
-    )
-    deck_config["rwkv_review_japanese_feature_state_enabled"] = (
-        override.japanese_feature_state_enabled
-    )
-    deck_config["rwkvReviewSelfCorrectionEnabled"] = override.self_correction_enabled
-    deck_config["rwkv_review_self_correction_enabled"] = (
-        override.self_correction_enabled
-    )
-    if override.japanese_kanji_field is not None:
-        deck_config["rwkvReviewJapaneseKanjiField"] = override.japanese_kanji_field
-        deck_config["rwkv_review_japanese_kanji_field"] = override.japanese_kanji_field
-    if override.japanese_reading_field is not None:
-        deck_config["rwkvReviewJapaneseReadingField"] = override.japanese_reading_field
-        deck_config["rwkv_review_japanese_reading_field"] = (
-            override.japanese_reading_field
-        )
-
-
-def _rwkv_set_extra_feature_nested_values(
-    nested: dict[str, object],
-    override: RwkvExtraFeatureConfigOverride,
-) -> None:
-    nested["rwkv_review_preset_tag_state_enabled"] = override.preset_tag_state_enabled
-    nested["rwkv_review_japanese_feature_state_enabled"] = (
-        override.japanese_feature_state_enabled
-    )
-    nested["rwkv_review_self_correction_enabled"] = override.self_correction_enabled
-    if override.japanese_kanji_field is not None:
-        nested["rwkv_review_japanese_kanji_field"] = override.japanese_kanji_field
-    if override.japanese_reading_field is not None:
-        nested["rwkv_review_japanese_reading_field"] = override.japanese_reading_field
 
 
 def _rwkv_existing_other_config_key(root: Mapping[str, object]) -> str | None:
@@ -13088,68 +10531,6 @@ def _rwkv_review_input_target_retention(
     return target_retention if _valid_probability(target_retention) else None
 
 
-def _rwkv_self_correction_features_by_card_id_for_inputs(
-    reviewer: object,
-    inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]],
-) -> dict[int, RwkvSelfCorrectionFeatures]:
-    features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = {}
-    deck_configs: dict[int | None, dict[str, object] | None] = {}
-    now_seconds = time.time()
-    for inputs_by_card_id in inputs_by_batch_size.values():
-        for card_id, review_input in inputs_by_card_id:
-            deck_id = review_input.identity.deck_id
-            if deck_id not in deck_configs:
-                deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-                deck_configs[deck_id] = (
-                    deck_config if isinstance(deck_config, dict) else None
-                )
-            deck_config = deck_configs[deck_id]
-            if (
-                deck_config is not None
-                and _rwkv_review_config_enabled(deck_config)
-                and _rwkv_review_self_correction_enabled(deck_config)
-            ):
-                features_by_card_id[card_id] = _rwkv_self_correction_features_for_input(
-                    review_input,
-                    now_seconds=now_seconds,
-                )
-
-    return features_by_card_id
-
-
-def _rwkv_self_correction_features_by_review_id(
-    review_ids: Sequence[int] | None,
-    reviews: Sequence[RwkvReviewInput],
-) -> dict[int, RwkvSelfCorrectionFeatures]:
-    if review_ids is None:
-        return {}
-
-    features_by_review_id: dict[int, RwkvSelfCorrectionFeatures] = {}
-    prior_reps_by_card: dict[int, int] = {}
-    prior_lapses_by_card: dict[int, int] = {}
-    for review_id, review_input in zip(review_ids, reviews, strict=True):
-        card_id = review_input.identity.card_id
-        prior_reps = prior_reps_by_card.get(
-            card_id,
-            _rwkv_non_negative_count(review_input.reps),
-        )
-        prior_lapses = prior_lapses_by_card.get(
-            card_id,
-            _rwkv_non_negative_count(review_input.lapses),
-        )
-        features_by_review_id[review_id] = _rwkv_self_correction_features(
-            now_seconds=review_id / 1000,
-            elapsed_days=review_input.current_elapsed_days,
-            reps=prior_reps,
-            lapses=prior_lapses,
-        )
-        prior_reps_by_card[card_id] = prior_reps + 1
-        if review_input.ease == 1:
-            prior_lapses_by_card[card_id] = prior_lapses + 1
-
-    return features_by_review_id
-
-
 def _candidate_refreshed_rwkv_review_queue_scores_for_deck(
     *,
     reviewer: object,
@@ -13418,7 +10799,6 @@ def _rwkv_review_queue_scores_for_deck(
         input_scores = _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=input_batch_size,
-            self_correction_features_by_card_id=input_build.self_correction_features_by_card_id,
         )
         if input_scores is None:
             return None
@@ -13495,7 +10875,6 @@ def _rwkv_review_queue_score_result(
                 input_scores = _rwkv_review_scores_for_inputs(
                     batch_inputs_by_card_id,
                     batch_size=input_batch_size,
-                    self_correction_features_by_card_id=input_build.self_correction_features_by_card_id,
                 )
                 if input_scores is None:
                     scores = []
@@ -13534,8 +10913,6 @@ def _rwkv_review_queue_score_result(
                 )
 
     inputs_by_card_id: list[tuple[int, RwkvReviewInput]] = []
-    self_correction_features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = {}
-    now_seconds = time.time()
     candidates: list[RwkvReviewCandidate] = []
     deck_configs: dict[int, dict[str, object] | None] = {}
     loaded_cards = _rwkv_cards_for_ids(
@@ -13599,13 +10976,6 @@ def _rwkv_review_queue_score_result(
             )
             if review_input is not None:
                 inputs_by_card_id.append((card.id, review_input))
-                if _rwkv_review_self_correction_enabled(deck_config):
-                    self_correction_features_by_card_id[card.id] = (
-                        _rwkv_self_correction_features_for_input(
-                            review_input,
-                            now_seconds=now_seconds,
-                        )
-                    )
             continue
 
         states = _stats_graph_scheduling_states(card, timing)
@@ -13635,7 +11005,6 @@ def _rwkv_review_queue_score_result(
         _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=batch_size,
-            self_correction_features_by_card_id=self_correction_features_by_card_id,
         )
         if use_input_scoring
         else None
@@ -13707,7 +11076,6 @@ def _rwkv_stats_graph_prebuilt_input_scores(
         input_scores = _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=batch_size,
-            self_correction_features_by_card_id=input_build.self_correction_features_by_card_id,
         )
         if input_scores is None:
             return None, False
@@ -13769,8 +11137,6 @@ def _rwkv_stats_graph_scores(
     deck_configs: dict[int, dict[str, object] | None] = {}
     candidates_by_batch_size: dict[int, list[RwkvReviewCandidate]] = {}
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
-    self_correction_features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = {}
-    now_seconds = time.time()
     preset_elapsed_ms = 0.0
     load_start = time.monotonic()
     loaded_cards = _stats_graph_cards_for_ids(reviewer, card_ids)
@@ -13843,13 +11209,6 @@ def _rwkv_stats_graph_scores(
                 inputs_by_batch_size.setdefault(batch_size, []).append(
                     (card.id, review_input)
                 )
-                if _rwkv_review_self_correction_enabled(deck_config):
-                    self_correction_features_by_card_id[card.id] = (
-                        _rwkv_self_correction_features_for_input(
-                            review_input,
-                            now_seconds=now_seconds,
-                        )
-                    )
             continue
 
         states = _stats_graph_scheduling_states(
@@ -13878,7 +11237,6 @@ def _rwkv_stats_graph_scores(
             input_scores = _rwkv_review_scores_for_inputs(
                 inputs_by_card_id,
                 batch_size=batch_size,
-                self_correction_features_by_card_id=self_correction_features_by_card_id,
             )
             if input_scores is None:
                 use_input_scoring = False
@@ -14076,7 +11434,6 @@ def _rwkv_stats_graph_scores_for_search(
         input_scores = _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=batch_size,
-            self_correction_features_by_card_id=input_build.self_correction_features_by_card_id,
         )
         if input_scores is None:
             return None
@@ -14649,8 +12006,6 @@ def _rwkv_review_scores_for_inputs(
     inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
     *,
     batch_size: int,
-    self_correction_features_by_card_id: Mapping[int, RwkvSelfCorrectionFeatures]
-    | None = None,
 ) -> list[tuple[int, float]] | None:
     start = time.monotonic()
     resident_predictions = _resident_retrievability_predictions_for_inputs(
@@ -14684,7 +12039,6 @@ def _rwkv_review_scores_for_inputs(
         scores = _scores_from_input_predictions(
             inputs_by_card_id,
             predictions,
-            self_correction_features_by_card_id=self_correction_features_by_card_id,
         )
         logger.debug(
             "RWKV review inputs scored from cache: inputs=%s cache_hits=%s "
@@ -14740,7 +12094,6 @@ def _rwkv_review_scores_for_inputs(
     scores = _scores_from_input_predictions(
         inputs_by_card_id,
         predictions,
-        self_correction_features_by_card_id=self_correction_features_by_card_id,
     )
     logger.debug(
         "RWKV review inputs scored: inputs=%s cache_hits=%s runtime_requests=%s "
@@ -14928,9 +12281,6 @@ def _reviewer_backend_accepts_review_inputs() -> bool:
 def _scores_from_input_predictions(
     inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
     predictions: Sequence[RwkvReviewPrediction | None],
-    *,
-    self_correction_features_by_card_id: Mapping[int, RwkvSelfCorrectionFeatures]
-    | None = None,
 ) -> list[tuple[int, float]]:
     if len(predictions) != len(inputs_by_card_id):
         raise ValueError("RWKV batch prediction count mismatch")
@@ -14941,19 +12291,7 @@ def _scores_from_input_predictions(
             continue
 
         _validate_prediction(prediction)
-        scores.append(
-            (
-                card_id,
-                _rwkv_score_with_optional_self_correction(
-                    prediction.retrievability,
-                    (
-                        self_correction_features_by_card_id.get(card_id)
-                        if self_correction_features_by_card_id is not None
-                        else None
-                    ),
-                ),
-            )
-        )
+        scores.append((card_id, prediction.retrievability))
 
     return scores
 
@@ -15074,7 +12412,6 @@ def _scores_from_review_predictions(
         raise ValueError("RWKV batch prediction count mismatch")
 
     scores: list[tuple[int, float]] = []
-    now_seconds = time.time()
     for candidate, prediction in zip(candidates, predictions, strict=True):
         if prediction is None or prediction.retrievability is None:
             continue
@@ -15082,30 +12419,7 @@ def _scores_from_review_predictions(
         _validate_prediction(prediction)
         card_id = _card_id(candidate.card)
         if card_id is not None:
-            deck_config = _rwkv_review_enabled_deck_config(
-                candidate.reviewer,
-                candidate.card,
-            )
-            features = (
-                _rwkv_self_correction_features_for_card(
-                    candidate.reviewer,
-                    candidate.card,
-                    now_seconds=now_seconds,
-                )
-                if deck_config is not None
-                and _rwkv_review_self_correction_enabled(deck_config)
-                else None
-            )
-            scores.append(
-                (
-                    card_id,
-                    _rwkv_score_with_optional_self_correction(
-                        prediction.retrievability,
-                        features,
-                        deck_config=deck_config,
-                    ),
-                )
-            )
+            scores.append((card_id, prediction.retrievability))
 
     return scores
 
@@ -15224,8 +12538,6 @@ def _rwkv_review_input_batches_for_ids(
     preset_elapsed_ms = (time.monotonic() - preset_start) * 1000
 
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
-    self_correction_features_by_card_id: dict[int, RwkvSelfCorrectionFeatures] = {}
-    now_seconds = time.time()
     for fields, deck_config, state_fields, batch_size in eligible_fields:
         review_input = _rwkv_review_input_for_stats_graph_fields(
             fields=fields,
@@ -15238,13 +12550,6 @@ def _rwkv_review_input_batches_for_ids(
             inputs_by_batch_size.setdefault(batch_size, []).append(
                 (fields.id, review_input)
             )
-            if _rwkv_review_self_correction_enabled(deck_config):
-                self_correction_features_by_card_id[fields.id] = (
-                    _rwkv_self_correction_features_for_input(
-                        review_input,
-                        now_seconds=now_seconds,
-                    )
-                )
 
     return RwkvReviewInputBatchBuild(
         inputs_by_batch_size=inputs_by_batch_size,
@@ -15257,7 +12562,6 @@ def _rwkv_review_input_batches_for_ids(
         preset_elapsed_ms=preset_elapsed_ms,
         load_elapsed_ms=load_elapsed_ms,
         candidate_elapsed_ms=(time.monotonic() - candidate_start) * 1000,
-        self_correction_features_by_card_id=self_correction_features_by_card_id,
     )
 
 
@@ -15426,35 +12730,7 @@ def _rwkv_review_input_batch_cache_key(
         include_new_cards,
         days_elapsed,
         next_day_at,
-        _rwkv_preset_tag_state_cache_key(reviewer),
-        _rwkv_japanese_feature_state_cache_key(reviewer),
         _rwkv_first_review_elapsed_state_cache_key(reviewer),
-        _rwkv_self_correction_cache_key(reviewer),
-    )
-
-
-def _rwkv_preset_tag_state_cache_key(reviewer: object) -> RwkvPresetTagStateCacheKey:
-    return tuple(
-        (item[0], bool(item[1])) for item in _rwkv_preset_tag_state_config_key(reviewer)
-    )
-
-
-def _rwkv_japanese_feature_state_cache_key(
-    reviewer: object,
-) -> RwkvJapaneseFeatureStateCacheKey:
-    return tuple(
-        (
-            item[0],
-            bool(item[1]),
-            item[2]
-            if isinstance(item[2], str)
-            else _DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-            item[3]
-            if isinstance(item[3], str)
-            else _DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-        )
-        for item in _rwkv_japanese_feature_state_config_key(reviewer)
-        if len(item) >= 4
     )
 
 
@@ -15467,21 +12743,10 @@ def _rwkv_first_review_elapsed_state_cache_key(
     )
 
 
-def _rwkv_self_correction_cache_key(
-    reviewer: object,
-) -> RwkvSelfCorrectionCacheKey:
-    return tuple(
-        (item[0], bool(item[1])) for item in _rwkv_self_correction_config_key(reviewer)
-    )
-
-
 def _rwkv_review_queue_score_config_key(
     reviewer: object,
 ) -> RwkvReviewQueueScoreConfigKey:
-    return (
-        _rwkv_first_review_elapsed_state_cache_key(reviewer),
-        _rwkv_self_correction_cache_key(reviewer),
-    )
+    return _rwkv_first_review_elapsed_state_cache_key(reviewer)
 
 
 _rwkv_review_input_batch_module_cache: OrderedDict[
@@ -15541,7 +12806,6 @@ def _cached_rwkv_review_input_batch_build(
             k: v for k, v in filtered_inputs_by_batch_size.items() if v
         }
         refreshed_input_count = 0
-        refreshed_features = {}
         if refreshed_build is not None:
             refreshed_build = _resolve_dynamic_desired_retentions_for_input_build(
                 reviewer,
@@ -15552,17 +12816,9 @@ def _cached_rwkv_review_input_batch_build(
                     continue
                 filtered_inputs_by_batch_size.setdefault(batch_size, []).extend(inputs)
                 refreshed_input_count += len(inputs)
-            refreshed_features = refreshed_build.self_correction_features_by_card_id
-        self_correction_features_by_card_id = {
-            card_id: features
-            for card_id, features in cached.self_correction_features_by_card_id.items()
-            if card_id not in seen_refresh_ids
-        }
-        self_correction_features_by_card_id.update(refreshed_features)
     else:
         filtered_inputs_by_batch_size = cached.inputs_by_batch_size
         refreshed_input_count = 0
-        self_correction_features_by_card_id = cached.self_correction_features_by_card_id
 
     input_count = sum(len(inputs) for inputs in filtered_inputs_by_batch_size.values())
     logger.debug(
@@ -15582,7 +12838,6 @@ def _cached_rwkv_review_input_batch_build(
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
-        self_correction_features_by_card_id=self_correction_features_by_card_id,
     )
 
 
@@ -15665,10 +12920,6 @@ def _rwkv_review_input_batch_build_from_backend_response(
         load_elapsed_ms=elapsed_ms,
         candidate_elapsed_ms=elapsed_ms,
         searched_rows=source_size,
-        self_correction_features_by_card_id=_rwkv_self_correction_features_by_card_id_for_inputs(
-            reviewer,
-            inputs_by_batch_size,
-        ),
     )
 
 
@@ -15722,10 +12973,6 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
         load_elapsed_ms=elapsed_ms,
         candidate_elapsed_ms=elapsed_ms,
         searched_rows=source_size,
-        self_correction_features_by_card_id=_rwkv_self_correction_features_by_card_id_for_inputs(
-            reviewer,
-            inputs_by_batch_size,
-        ),
     )
 
 
@@ -15888,6 +13135,11 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         "target_retention",
         _RWKV_DEFAULT_TARGET_RETENTION,
     )
+    state_kind = _rwkv_backend_non_empty_str(row, "current_state_kind")
+    normal_state_kind = _rwkv_backend_non_empty_str(
+        row,
+        "current_normal_state_kind",
+    )
 
     return RwkvReviewInput(
         identity=RwkvReviewIdentity(
@@ -15899,7 +13151,11 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         is_query=True,
         ease=None,
         duration_millis=None,
-        card_type=_rwkv_backend_int(row, "card_type"),
+        card_type=_rwkv_review_state_for_scheduling_state(
+            state_kind=state_kind,
+            normal_state_kind=normal_state_kind,
+            card_type=_rwkv_backend_int(row, "card_type"),
+        ),
         card_queue=_rwkv_backend_int(row, "card_queue"),
         card_due=_rwkv_backend_int(row, "card_due"),
         interval_days=_rwkv_backend_int(row, "interval_days"),
@@ -15907,11 +13163,8 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         reps=_rwkv_backend_int(row, "reps"),
         lapses=_rwkv_backend_int(row, "lapses"),
         day_offset=_rwkv_backend_int(row, "day_offset"),
-        current_state_kind=_rwkv_backend_non_empty_str(row, "current_state_kind"),
-        current_normal_state_kind=_rwkv_backend_non_empty_str(
-            row,
-            "current_normal_state_kind",
-        ),
+        current_state_kind=state_kind,
+        current_normal_state_kind=normal_state_kind,
         current_elapsed_days=_rwkv_backend_optional_int(row, "current_elapsed_days"),
         current_elapsed_seconds=_rwkv_backend_optional_int(
             row,
@@ -15935,6 +13188,8 @@ def _rwkv_review_input_from_backend_proto_row(
         if _valid_probability(row.target_retention)
         else _RWKV_DEFAULT_TARGET_RETENTION
     )
+    state_kind = row.current_state_kind or None
+    normal_state_kind = row.current_normal_state_kind or None
 
     return RwkvReviewInput(
         identity=RwkvReviewIdentity(
@@ -15946,7 +13201,11 @@ def _rwkv_review_input_from_backend_proto_row(
         is_query=True,
         ease=None,
         duration_millis=None,
-        card_type=row.card_type,
+        card_type=_rwkv_review_state_for_scheduling_state(
+            state_kind=state_kind,
+            normal_state_kind=normal_state_kind,
+            card_type=row.card_type,
+        ),
         card_queue=row.card_queue,
         card_due=row.card_due,
         interval_days=row.interval_days,
@@ -15954,8 +13213,8 @@ def _rwkv_review_input_from_backend_proto_row(
         reps=row.reps,
         lapses=row.lapses,
         day_offset=row.day_offset,
-        current_state_kind=row.current_state_kind or None,
-        current_normal_state_kind=row.current_normal_state_kind or None,
+        current_state_kind=state_kind,
+        current_normal_state_kind=normal_state_kind,
         current_elapsed_days=(
             row.current_elapsed_days if row.HasField("current_elapsed_days") else None
         ),
@@ -16103,10 +13362,8 @@ def _rwkv_card_rows_for_ids(
         )
         rows = all_rows(
             f"""
-select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data,
-  n.tags
+select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data
 from cards
-join notes n on n.id = cards.nid
 where cards.id in {ids2str(card_ids)}
 {_rwkv_supported_state_sql_filter() if supported_state_filter else ""}
 {_rwkv_enabled_deck_sql_filter(enabled_deck_ids)}
@@ -16268,7 +13525,7 @@ group by cid
 def _stats_graph_card_fields_from_row(
     row: Sequence[object],
 ) -> RwkvStatsGraphCardFields | None:
-    if len(row) not in (13, 14, 19):
+    if len(row) != 13:
         return None
 
     (
@@ -16285,7 +13542,6 @@ def _stats_graph_card_fields_from_row(
         reps,
         lapses,
         data,
-        *extra_fields,
     ) = row
     int_values = (
         card_id,
@@ -16304,8 +13560,6 @@ def _stats_graph_card_fields_from_row(
     if not all(isinstance(value, int) for value in int_values):
         return None
 
-    note_tags = extra_fields[0] if extra_fields else None
-
     return RwkvStatsGraphCardFields(
         id=cast(int, card_id),
         nid=cast(int, note_id),
@@ -16320,8 +13574,6 @@ def _stats_graph_card_fields_from_row(
         reps=cast(int, reps),
         lapses=cast(int, lapses),
         last_review_time=_stats_graph_last_review_time(data),
-        note_tags=note_tags,
-        japanese_features=None,
     )
 
 
@@ -16344,8 +13596,6 @@ def _stats_graph_card_from_row(row: Sequence[object]) -> RwkvStatsGraphCard | No
         reps=fields.reps,
         lapses=fields.lapses,
         last_review_time=fields.last_review_time,
-        note_tags=fields.note_tags,
-        japanese_features=fields.japanese_features,
     )
 
 
@@ -16452,14 +13702,16 @@ def _rwkv_review_input_for_stats_graph_card(
             preset_id=_rwkv_preset_id_for_stats_graph_card(
                 deck_config,
                 resolved_preset_id,
-                card.note_tags,
-                card.japanese_features,
             ),
         ),
         is_query=True,
         ease=None,
         duration_millis=None,
-        card_type=card.type,
+        card_type=_rwkv_review_state_for_scheduling_state(
+            state_kind=cast(str | None, state_kind),
+            normal_state_kind=normal_state_kind,
+            card_type=card.type,
+        ),
         card_queue=card.queue,
         card_due=card.due,
         interval_days=card.ivl,
@@ -16512,14 +13764,16 @@ def _rwkv_review_input_for_stats_graph_fields(
             preset_id=_rwkv_preset_id_for_stats_graph_card(
                 deck_config,
                 resolved_preset_id,
-                fields.note_tags,
-                fields.japanese_features,
             ),
         ),
         is_query=True,
         ease=None,
         duration_millis=None,
-        card_type=fields.type,
+        card_type=_rwkv_review_state_for_scheduling_state(
+            state_kind=cast(str | None, state_kind),
+            normal_state_kind=normal_state_kind,
+            card_type=fields.type,
+        ),
         card_queue=fields.queue,
         card_due=fields.due,
         interval_days=fields.ivl,
@@ -16661,28 +13915,12 @@ def _rwkv_target_retention_for_deck_config(deck_config: dict[str, object]) -> fl
 def _rwkv_preset_id_for_stats_graph_card(
     deck_config: dict[str, object],
     resolved_preset_id: str | None,
-    note_tags: object,
-    japanese_features: object,
 ) -> int | None:
     if resolved_preset_id is not None:
-        return _rwkv_preset_id_with_features(
-            resolved_preset_id,
-            deck_config,
-            note_tags,
-            japanese_features,
-        )
+        return _stable_preset_id(resolved_preset_id)
 
     value = deck_config.get("id")
-    return (
-        _rwkv_preset_id_with_features(
-            value,
-            deck_config,
-            note_tags,
-            japanese_features,
-        )
-        if isinstance(value, int) and not isinstance(value, bool)
-        else None
-    )
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _day_offset_from_timing(timing: object) -> int | None:

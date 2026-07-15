@@ -9,20 +9,15 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
-use rusqlite::params;
 
 use crate::card::Card;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
-use crate::deckconfig::normalized_rwkv_japanese_field_name;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
-use crate::deckconfig::DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD;
-use crate::deckconfig::DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD;
 use crate::decks::Deck;
 use crate::decks::DeckId;
-use crate::notes::NoteId;
 use crate::ops::Op;
 use crate::prelude::*;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
@@ -32,7 +27,6 @@ use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
 use crate::search::StateKind;
-use crate::storage::ids_to_string;
 
 pub(crate) struct RwkvReviewRescheduleItem {
     pub(crate) card_id: CardId,
@@ -246,11 +240,6 @@ impl Collection {
             eligible.push(RwkvReviewInputRowPartial {
                 target_retention: deck.effective_desired_retention(config),
                 batch_size: config.inner.rwkv_review_batch_size,
-                preset_tag_state_enabled: config.inner.rwkv_review_preset_tag_state_enabled,
-                japanese_feature_state_enabled: config
-                    .inner
-                    .rwkv_review_japanese_feature_state_enabled,
-                japanese_feature_fields: rwkv_japanese_feature_field_names(&config.inner),
                 card,
                 current_deck_id,
                 state,
@@ -262,85 +251,15 @@ impl Collection {
             .map(|partial| partial.card.clone())
             .collect();
         let presets_by_card = self.fsrs_presets_for_cards(&preset_cards)?;
-        let note_tags_by_id = if eligible
-            .iter()
-            .any(|partial| partial.preset_tag_state_enabled)
-        {
-            let mut note_ids: Vec<_> = eligible
-                .iter()
-                .filter(|partial| partial.preset_tag_state_enabled)
-                .map(|partial| partial.card.note_id)
-                .collect();
-            note_ids.sort_unstable();
-            note_ids.dedup();
-            self.storage
-                .get_note_tags_by_id_list(&note_ids)?
-                .into_iter()
-                .map(|tags| (tags.id, tags.tags))
-                .collect::<HashMap<NoteId, String>>()
-        } else {
-            HashMap::new()
-        };
-        let japanese_features_by_key = if eligible
-            .iter()
-            .any(|partial| partial.japanese_feature_state_enabled)
-        {
-            let mut note_ids_by_fields: HashMap<RwkvJapaneseFeatureFieldNames, Vec<NoteId>> =
-                HashMap::new();
-            for partial in eligible
-                .iter()
-                .filter(|partial| partial.japanese_feature_state_enabled)
-            {
-                note_ids_by_fields
-                    .entry(partial.japanese_feature_fields.clone())
-                    .or_default()
-                    .push(partial.card.note_id);
-            }
-
-            let mut features_by_key = HashMap::new();
-            for (fields, mut note_ids) in note_ids_by_fields {
-                note_ids.sort_unstable();
-                note_ids.dedup();
-                for (note_id, bucket) in
-                    self.rwkv_japanese_feature_buckets_by_note_id(&note_ids, &fields)?
-                {
-                    features_by_key.insert((note_id, fields.clone()), bucket);
-                }
-            }
-            features_by_key
-        } else {
-            HashMap::new()
-        };
         let rows = eligible
             .into_iter()
             .filter_map(|partial| {
                 let preset = presets_by_card.get(&partial.card.id)?;
-                let base_preset_id = rwkv_fsrs_preset_id_to_string(preset.id.clone());
-                let note_tags = partial
-                    .preset_tag_state_enabled
-                    .then(|| {
-                        note_tags_by_id
-                            .get(&partial.card.note_id)
-                            .map(String::as_str)
-                    })
-                    .flatten();
-                let preset_id = rwkv_preset_id_with_tags(&base_preset_id, note_tags);
-                let japanese_features = partial
-                    .japanese_feature_state_enabled
-                    .then(|| {
-                        japanese_features_by_key
-                            .get(&(
-                                partial.card.note_id,
-                                partial.japanese_feature_fields.clone(),
-                            ))
-                            .map(String::as_str)
-                    })
-                    .flatten();
                 Some(scheduler::rwkv_review_input_rows_for_cards_response::Row {
                     card_id: partial.card.id.0,
                     note_id: partial.card.note_id.0,
                     deck_id: partial.current_deck_id.0,
-                    preset_id: rwkv_preset_id_with_japanese_features(&preset_id, japanese_features),
+                    preset_id: rwkv_fsrs_preset_id_to_string(preset.id.clone()),
                     card_type: partial.card.ctype as i32,
                     card_queue: partial.card.queue as i32,
                     card_due: partial.card.due,
@@ -367,55 +286,6 @@ impl Collection {
             deck_configs: deck_config_decks.len() as u32,
             searched_cards: 0,
         })
-    }
-
-    fn rwkv_japanese_feature_buckets_by_note_id(
-        &self,
-        note_ids: &[NoteId],
-        fields: &RwkvJapaneseFeatureFieldNames,
-    ) -> Result<HashMap<NoteId, String>> {
-        if note_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut sql = String::from(
-            "select n.id, n.flds, front.ord, reading.ord, front_kana.ord, frequency.ord \
-             from notes n \
-             left join fields front on front.ntid = n.mid and front.name = ? \
-             left join fields reading on reading.ntid = n.mid and reading.name = ? \
-             left join fields front_kana on front_kana.ntid = n.mid and front_kana.name = 'Front_Kana' \
-             left join fields frequency on frequency.ntid = n.mid and frequency.name = 'Frequency' \
-             where n.id in ",
-        );
-        ids_to_string(&mut sql, note_ids);
-
-        let mut by_note_id = HashMap::new();
-        let mut stmt = self.storage.db.prepare(&sql)?;
-        for row in stmt.query_and_then(
-            params![&fields.kanji, &fields.reading],
-            |row| -> Result<_> {
-                let note_id: NoteId = row.get(0)?;
-                let fields_raw: String = row.get(1)?;
-                let front_ord: Option<i64> = row.get(2)?;
-                let reading_ord: Option<i64> = row.get(3)?;
-                let front_kana_ord: Option<i64> = row.get(4)?;
-                let frequency_ord: Option<i64> = row.get(5)?;
-                let fields = fields_raw.split('\x1f').collect::<Vec<_>>();
-                Ok(rwkv_japanese_feature_bucket(
-                    rwkv_field_at_ord(&fields, front_ord),
-                    rwkv_field_at_ord(&fields, reading_ord),
-                    rwkv_field_at_ord(&fields, front_kana_ord),
-                    rwkv_field_at_ord(&fields, frequency_ord),
-                )
-                .map(|bucket| (note_id, bucket)))
-            },
-        )? {
-            if let Some((note_id, bucket)) = row? {
-                by_note_id.insert(note_id, bucket);
-            }
-        }
-
-        Ok(by_note_id)
     }
 
     fn rwkv_review_input_state(
@@ -666,30 +536,6 @@ struct RwkvReviewInputRowPartial {
     state: RwkvReviewInputState,
     target_retention: f32,
     batch_size: u32,
-    preset_tag_state_enabled: bool,
-    japanese_feature_state_enabled: bool,
-    japanese_feature_fields: RwkvJapaneseFeatureFieldNames,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct RwkvJapaneseFeatureFieldNames {
-    kanji: String,
-    reading: String,
-}
-
-fn rwkv_japanese_feature_field_names(
-    config: &crate::deckconfig::DeckConfigInner,
-) -> RwkvJapaneseFeatureFieldNames {
-    RwkvJapaneseFeatureFieldNames {
-        kanji: normalized_rwkv_japanese_field_name(
-            &config.rwkv_review_japanese_kanji_field,
-            DEFAULT_RWKV_REVIEW_JAPANESE_KANJI_FIELD,
-        ),
-        reading: normalized_rwkv_japanese_field_name(
-            &config.rwkv_review_japanese_reading_field,
-            DEFAULT_RWKV_REVIEW_JAPANESE_READING_FIELD,
-        ),
-    }
 }
 
 #[derive(Debug)]
@@ -705,170 +551,6 @@ fn rwkv_fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
         FsrsPresetId::DeckConfig(id) => id.0.to_string(),
         FsrsPresetId::Addon(id) => id,
     }
-}
-
-fn rwkv_preset_id_with_tags(base_preset_id: &str, note_tags: Option<&str>) -> String {
-    let tags = rwkv_clean_preset_tags(note_tags.unwrap_or_default());
-    if tags.is_empty() {
-        return base_preset_id.to_string();
-    }
-
-    format!("rwkv-preset-tags:{base_preset_id}:{}", tags.join("\x1f"))
-}
-
-fn rwkv_preset_id_with_japanese_features(
-    base_preset_id: &str,
-    feature_bucket: Option<&str>,
-) -> String {
-    match feature_bucket.filter(|bucket| !bucket.is_empty()) {
-        Some(bucket) => format!("rwkv-japanese-features:{base_preset_id}:{bucket}"),
-        None => base_preset_id.to_string(),
-    }
-}
-
-fn rwkv_japanese_feature_bucket(
-    front: &str,
-    reading: &str,
-    front_kana: &str,
-    frequency: &str,
-) -> Option<String> {
-    let front_len = rwkv_non_whitespace_char_count(front);
-    if front_len == 0 {
-        return None;
-    }
-
-    let kanji_count = front.chars().filter(|ch| rwkv_is_kanji(*ch)).count();
-    let kana_count = front.chars().filter(|ch| rwkv_is_kana(*ch)).count();
-    let kanji_ratio_bucket = ((kanji_count * 10) + (front_len / 2)) / front_len;
-    let shape = match (kanji_count > 0, kana_count > 0) {
-        (true, true) => "mixed",
-        (true, false) => "kanji",
-        (false, true) => "kana",
-        (false, false) => "other",
-    };
-
-    Some(format!(
-        "wl:{}|rl:{}|kc:{}|kana:{}|kr:{}|shape:{}|fkl:{}|freq:{}",
-        rwkv_japanese_length_bucket(front_len),
-        rwkv_japanese_length_bucket(rwkv_non_whitespace_char_count(reading)),
-        rwkv_japanese_count_bucket(kanji_count),
-        rwkv_japanese_count_bucket(kana_count),
-        kanji_ratio_bucket.min(10),
-        shape,
-        rwkv_japanese_length_bucket(rwkv_non_whitespace_char_count(front_kana)),
-        rwkv_japanese_frequency_bucket(frequency),
-    ))
-}
-
-fn rwkv_field_at_ord<'a>(fields: &'a [&'a str], ord: Option<i64>) -> &'a str {
-    ord.and_then(|ord| usize::try_from(ord).ok())
-        .and_then(|ord| fields.get(ord).copied())
-        .unwrap_or_default()
-}
-
-fn rwkv_non_whitespace_char_count(value: &str) -> usize {
-    value.chars().filter(|ch| !ch.is_whitespace()).count()
-}
-
-fn rwkv_japanese_length_bucket(count: usize) -> String {
-    match count {
-        0..=6 => count.to_string(),
-        7..=10 => "7-10".to_string(),
-        _ => "11+".to_string(),
-    }
-}
-
-fn rwkv_japanese_count_bucket(count: usize) -> String {
-    match count {
-        0..=7 => count.to_string(),
-        _ => "8+".to_string(),
-    }
-}
-
-fn rwkv_japanese_frequency_bucket(frequency: &str) -> String {
-    let Some(rank) = rwkv_first_unsigned_number(frequency) else {
-        return if frequency.trim().is_empty() {
-            "0"
-        } else {
-            "text"
-        }
-        .to_string();
-    };
-
-    match rank {
-        0 => "0",
-        1..=100 => "1-100",
-        101..=500 => "101-500",
-        501..=1_000 => "501-1000",
-        1_001..=2_000 => "1001-2000",
-        2_001..=5_000 => "2001-5000",
-        5_001..=10_000 => "5001-10000",
-        10_001..=20_000 => "10001-20000",
-        _ => "20001+",
-    }
-    .to_string()
-}
-
-fn rwkv_first_unsigned_number(value: &str) -> Option<u32> {
-    let mut digits = String::new();
-    let mut in_number = false;
-    for ch in value.chars() {
-        if ch.is_ascii_digit() {
-            digits.push(ch);
-            in_number = true;
-        } else if in_number {
-            break;
-        }
-    }
-    digits.parse().ok()
-}
-
-fn rwkv_is_kanji(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x3400..=0x4DBF
-            | 0x4E00..=0x9FFF
-            | 0xF900..=0xFAFF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0x2CEB0..=0x2EBEF
-            | 0x30000..=0x3134F
-            | 0x31350..=0x323AF
-    )
-}
-
-fn rwkv_is_kana(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F
-    )
-}
-
-fn rwkv_clean_preset_tags(note_tags: &str) -> Vec<String> {
-    let mut tags = note_tags
-        .split_whitespace()
-        .filter(|tag| !rwkv_preset_tag_is_outcome(tag))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    tags.sort();
-    tags.dedup();
-    tags
-}
-
-fn rwkv_preset_tag_is_outcome(tag: &str) -> bool {
-    let tag = tag.to_ascii_lowercase();
-    if tag == "leech" || tag.starts_with("am-") || tag.starts_with("ankimorphs::") {
-        return true;
-    }
-
-    tag.split([':', '-', '_', '/', '\\']).any(|part| {
-        matches!(
-            part,
-            "leech" | "fail" | "failed" | "failure" | "lapse" | "lapsed" | "wrong" | "missed"
-        )
-    })
 }
 
 fn valid_rwkv_target_retention(target_retention: f32) -> f32 {
@@ -1029,172 +711,6 @@ mod test {
         assert_eq!(row.batch_size, 1024);
 
         Ok(())
-    }
-
-    #[test]
-    fn review_input_rows_can_fold_clean_tags_into_preset_id() -> Result<()> {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
-            config.rwkv_review_preset_tag_state_enabled = true;
-        });
-        let mut note = col.basic_notetype().new_note();
-        note.fields_mut()[0] = "front".into();
-        note.tags = vec![
-            "Yomitan".into(),
-            "leech".into(),
-            "am-ready".into(),
-            "moeway-debut-idol-fail".into(),
-            "Claude-Translated".into(),
-        ];
-        col.add_note(&mut note, DeckId(1))?;
-        let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
-        let timing = col.timing_today()?;
-        card.ctype = CardType::Review;
-        card.queue = CardQueue::Review;
-        card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
-        col.storage.update_card(&card)?;
-
-        let response =
-            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
-                card_ids: vec![card.id.0],
-                include_suspended_review: false,
-                include_disabled_decks: false,
-                include_new_cards: false,
-            })?;
-
-        assert_eq!(response.rows.len(), 1);
-        assert_eq!(
-            response.rows[0].preset_id,
-            rwkv_preset_id_with_tags(
-                "1",
-                Some("Yomitan leech am-ready moeway-debut-idol-fail Claude-Translated")
-            )
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn review_input_rows_deduplicate_note_ids_for_tag_state() -> Result<()> {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
-            config.rwkv_review_preset_tag_state_enabled = true;
-        });
-        let mut note = col.basic_notetype().new_note();
-        note.fields_mut()[0] = "front".into();
-        note.tags = vec!["shared-tag".into()];
-        col.add_note(&mut note, DeckId(1))?;
-        let timing = col.timing_today()?;
-        let mut cards = col.storage.all_cards_of_note(note.id)?;
-        let mut second_card = Card::new(note.id, 1, DeckId(1), timing.days_elapsed as i32);
-        col.add_card(&mut second_card)?;
-        cards.push(second_card);
-        for card in &mut cards {
-            card.ctype = CardType::Review;
-            card.queue = CardQueue::Review;
-            card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
-            col.storage.update_card(card)?;
-        }
-
-        let response = col.rwkv_review_input_rows_for_deck_review_queue(
-            RwkvReviewInputRowsForDeckReviewQueueRequest {
-                deck_id: DeckId(1).0,
-                include_disabled_decks: false,
-                include_new_cards: false,
-            },
-        )?;
-
-        assert_eq!(response.rows.len(), 2);
-        assert!(response
-            .rows
-            .iter()
-            .all(|row| row.preset_id.contains("shared-tag")));
-        Ok(())
-    }
-
-    #[test]
-    fn review_input_rows_can_fold_japanese_features_into_preset_id() -> Result<()> {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
-            config.rwkv_review_japanese_feature_state_enabled = true;
-        });
-        let mut note = col.basic_notetype().new_note();
-        note.fields_mut()[0] = "食べる".into();
-        col.add_note(&mut note, DeckId(1))?;
-        let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
-        let timing = col.timing_today()?;
-        card.ctype = CardType::Review;
-        card.queue = CardQueue::Review;
-        card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
-        col.storage.update_card(&card)?;
-
-        let response =
-            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
-                card_ids: vec![card.id.0],
-                include_suspended_review: false,
-                include_disabled_decks: false,
-                include_new_cards: false,
-            })?;
-
-        let expected_bucket = rwkv_japanese_feature_bucket("食べる", "", "", "").unwrap();
-        assert_eq!(response.rows.len(), 1);
-        assert_eq!(
-            response.rows[0].preset_id,
-            rwkv_preset_id_with_japanese_features("1", Some(&expected_bucket))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn review_input_rows_use_custom_japanese_feature_fields() -> Result<()> {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
-            config.rwkv_review_japanese_feature_state_enabled = true;
-            config.rwkv_review_japanese_kanji_field = "Back".into();
-            config.rwkv_review_japanese_reading_field = "Front".into();
-        });
-        let mut note = col.basic_notetype().new_note();
-        note.fields_mut()[0] = "たべる".into();
-        note.fields_mut()[1] = "食べる".into();
-        col.add_note(&mut note, DeckId(1))?;
-        let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
-        let timing = col.timing_today()?;
-        card.ctype = CardType::Review;
-        card.queue = CardQueue::Review;
-        card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
-        col.storage.update_card(&card)?;
-
-        let response =
-            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
-                card_ids: vec![card.id.0],
-                include_suspended_review: false,
-                include_disabled_decks: false,
-                include_new_cards: false,
-            })?;
-
-        let expected_bucket = rwkv_japanese_feature_bucket("食べる", "たべる", "", "").unwrap();
-        assert_eq!(response.rows.len(), 1);
-        assert_eq!(
-            response.rows[0].preset_id,
-            rwkv_preset_id_with_japanese_features("1", Some(&expected_bucket))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn clean_preset_tags_exclude_outcome_tags() {
-        assert_eq!(
-            rwkv_clean_preset_tags(
-                "Yomitan leech am-ready moeway-debut-idol-fail Claude-Translated wrong::answer"
-            ),
-            vec!["Claude-Translated".to_string(), "Yomitan".to_string()]
-        );
     }
 
     #[test]

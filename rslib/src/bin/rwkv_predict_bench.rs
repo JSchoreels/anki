@@ -2,7 +2,6 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -35,7 +34,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.warmup_reviews,
             args.queries,
             args.target_retention,
-            &args.preset_tags,
             args.deck_id,
         )?,
         None => CollectionWorkload {
@@ -108,7 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("warmup_reviews={warmup_count}");
         println!("warmup_mix_window={}", args.warmup_mix_window.unwrap_or(0));
         println!("repeat={}", args.repeat);
-        println!("preset_tags={}", args.preset_tags.label());
         if let Some(deck_id) = args.deck_id {
             println!("deck_id={deck_id}");
         }
@@ -234,7 +231,6 @@ struct Args {
     target_retention: f32,
     max_interval_days: u32,
     retrievability_only: bool,
-    preset_tags: PresetTagMode,
     metrics: bool,
     deck_id: Option<i64>,
     warmup_mix_window: Option<usize>,
@@ -252,7 +248,6 @@ impl Args {
         let mut target_retention = 0.9_f32;
         let mut max_interval_days = 36_500_u32;
         let mut retrievability_only = false;
-        let mut preset_tags = PresetTagMode::None;
         let mut metrics = false;
         let mut deck_id = None;
         let mut warmup_mix_window = None;
@@ -296,10 +291,6 @@ impl Args {
                 "--retrievability-only" => {
                     retrievability_only = true;
                 }
-                "--preset-tags" => {
-                    preset_tags =
-                        PresetTagMode::parse(&args.next().ok_or("--preset-tags requires a value")?)?
-                }
                 "--metrics" => {
                     metrics = true;
                 }
@@ -341,7 +332,6 @@ impl Args {
             target_retention,
             max_interval_days,
             retrievability_only,
-            preset_tags,
             metrics,
             deck_id,
             warmup_mix_window,
@@ -380,7 +370,7 @@ fn usage() -> String {
     "usage: rwkv_predict_bench --weights weights.bin [--collection copy.anki2] \
      [--queries N] [--batch-size N|--batch-sizes N,N] [--warmup-reviews N] [--repeat N] \
      [--target-retention R] [--max-interval-days N] [--retrievability-only] \
-     [--preset-tags '*'|tag1,tag2] [--metrics] [--deck-id ID] [--warmup-mix-window N] \
+     [--metrics] [--deck-id ID] [--warmup-mix-window N] \
      [--resident-state]\n\
      With --collection, --warmup-reviews 0 replays all eligible review history."
         .into()
@@ -436,79 +426,6 @@ fn remap_prediction_indices(
                 .map(|original_index| (original_index, prediction))
         })
         .collect()
-}
-
-#[derive(Debug)]
-enum PresetTagMode {
-    None,
-    All,
-    Selected(Vec<String>),
-}
-
-impl PresetTagMode {
-    fn parse(value: &str) -> Result<Self, String> {
-        if value.trim() == "*" {
-            return Ok(Self::All);
-        }
-
-        let tags = value
-            .split(',')
-            .map(str::trim)
-            .filter(|tag| !tag.is_empty())
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        if tags.is_empty() {
-            return Err("--preset-tags requires '*' or at least one tag".into());
-        }
-
-        Ok(Self::Selected(tags))
-    }
-
-    fn label(&self) -> String {
-        match self {
-            Self::None => "none".into(),
-            Self::All => "all".into(),
-            Self::Selected(tags) => tags.join(","),
-        }
-    }
-
-    fn matching_tags(&self, note_tags: &str) -> Vec<String> {
-        match self {
-            Self::None => Vec::new(),
-            Self::All => sorted_tags(note_tags),
-            Self::Selected(selected) => {
-                let note_tags = note_tags.split_whitespace().collect::<HashSet<_>>();
-                selected
-                    .iter()
-                    .filter(|tag| note_tags.contains(tag.as_str()))
-                    .cloned()
-                    .collect()
-            }
-        }
-    }
-}
-
-fn sorted_tags(note_tags: &str) -> Vec<String> {
-    let mut tags = note_tags
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    tags.sort();
-    tags.dedup();
-    tags
-}
-
-fn preset_id_with_tags(base_preset_id: i64, note_tags: &str, mode: &PresetTagMode) -> i64 {
-    let tags = mode.matching_tags(note_tags);
-    if tags.is_empty() {
-        return base_preset_id;
-    }
-
-    let key = format!("rwkv-preset-tags:{base_preset_id}:{}", tags.join("\x1f"));
-    let digest = blake3::hash(key.as_bytes());
-    let mut bytes = [0; 8];
-    bytes.copy_from_slice(&digest.as_bytes()[..8]);
-    (u64::from_be_bytes(bytes) & ((1_u64 << 63) - 1)) as i64
 }
 
 struct RecallMetrics {
@@ -708,7 +625,6 @@ impl CollectionWorkload {
         warmup_limit: usize,
         query_limit: usize,
         target_retention: f32,
-        preset_tags: &PresetTagMode,
         deck_id: Option<i64>,
     ) -> rusqlite::Result<Self> {
         let uri = format!("file:{}?mode=ro&immutable=1", path.to_string_lossy());
@@ -717,16 +633,9 @@ impl CollectionWorkload {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
         )?;
         let timing = BenchTiming::today();
-        let warmup_reviews =
-            collection_warmup_reviews(&db, warmup_limit, &timing, preset_tags, deck_id)?;
-        let query_inputs = collection_query_inputs(
-            &db,
-            query_limit,
-            target_retention,
-            &timing,
-            preset_tags,
-            deck_id,
-        )?;
+        let warmup_reviews = collection_warmup_reviews(&db, warmup_limit, &timing, deck_id)?;
+        let query_inputs =
+            collection_query_inputs(&db, query_limit, target_retention, &timing, deck_id)?;
         Ok(Self {
             source: "collection".into(),
             warmup_reviews,
@@ -761,7 +670,6 @@ fn collection_warmup_reviews(
     db: &Connection,
     limit: usize,
     timing: &BenchTiming,
-    preset_tags: &PresetTagMode,
     deck_id: Option<i64>,
 ) -> rusqlite::Result<Vec<ReviewInput>> {
     let current_deck_id_sql = current_deck_id_sql(db)?;
@@ -780,7 +688,7 @@ fn collection_warmup_reviews(
             ease: row.get(4)?,
             duration_millis: row.get(5)?,
             review_kind: row.get(6)?,
-            tags: row.get(7)?,
+            is_learning_start: row.get(7)?,
         })
     })?;
 
@@ -789,23 +697,22 @@ fn collection_warmup_reviews(
     for row in rows {
         let row = row?;
         let previous_review_id = previous_review_id_by_card.insert(row.card_id, row.review_id);
+        let day_offset = historical_day_offset(row.review_id, timing);
         let elapsed_seconds =
             previous_review_id.map_or(-1, |previous| ((row.review_id - previous) / 1000).max(0));
-        let elapsed_days = if elapsed_seconds >= 0 {
-            elapsed_seconds / 86_400
-        } else {
-            -1
-        };
+        let elapsed_days = previous_review_id.map_or(-1, |previous| {
+            (day_offset - historical_day_offset(previous, timing)).max(0)
+        });
         reviews.push(ReviewInput {
             card_id: row.card_id,
             note_id: Some(row.note_id),
             deck_id: Some(row.deck_id),
-            preset_id: Some(preset_id_with_tags(row.deck_id, &row.tags, preset_tags)),
+            preset_id: Some(row.deck_id),
             is_query: false,
             ease: Some(row.ease as u8),
             duration_millis: Some(row.duration_millis),
-            card_type: Some(historical_card_type(row.review_kind)),
-            day_offset: Some(historical_day_offset(row.review_id, timing)),
+            card_type: Some(historical_state(row.review_kind, row.is_learning_start)),
+            day_offset: Some(day_offset),
             current_elapsed_days: Some(elapsed_days),
             current_elapsed_seconds: Some(elapsed_seconds),
             target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
@@ -826,22 +733,41 @@ fn historical_review_sql(
     });
     format!(
         "
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    {current_deck_id_sql} as deck_id,
+    r.ease,
+    r.time,
+    r.type,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+    {deck_clause}
+), retained_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+)
 select
-  r.id,
-  r.cid,
-  c.nid,
-  {current_deck_id_sql},
-  r.ease,
-  r.time,
-  r.type,
-  n.tags
-from revlog r
-join cards c on c.id = r.cid
-join notes n on n.id = c.nid
-where r.ease between 1 and 4
-  and (r.type in (0, 1, 2, 3) or r.type = 4)
-  {deck_clause}
-order by r.id, r.cid
+  e.id,
+  e.cid,
+  e.nid,
+  e.deck_id,
+  e.ease,
+  e.time,
+  e.type,
+  e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid
 {limit_clause}"
     )
 }
@@ -854,7 +780,7 @@ struct HistoricalReviewRow {
     ease: i64,
     duration_millis: i64,
     review_kind: i64,
-    tags: String,
+    is_learning_start: bool,
 }
 
 fn collection_query_inputs(
@@ -862,7 +788,6 @@ fn collection_query_inputs(
     limit: usize,
     target_retention: f32,
     timing: &BenchTiming,
-    preset_tags: &PresetTagMode,
     deck_id: Option<i64>,
 ) -> rusqlite::Result<Vec<ReviewInput>> {
     let current_deck_id_sql = current_deck_id_sql(db)?;
@@ -875,13 +800,12 @@ select
   c.id,
   c.nid,
   {current_deck_id_sql} as current_did,
-  max(r.id) as last_review_id,
-  n.tags
+  max(r.id) as last_review_id
 from cards c
-join notes n on n.id = c.nid
 left join revlog r on r.cid = c.id
   and r.ease between 1 and 4
-  and (r.type in (0, 1, 2, 3) or r.type = 4)
+  and r.type in (0, 1, 2, 3, 4, 5)
+  and not (r.type = 3 and r.factor = 0)
 where c.type = 2
   and c.queue = 2
   {deck_clause}
@@ -896,13 +820,12 @@ limit {limit}"
             row.get::<_, i64>(1)?,
             row.get::<_, i64>(2)?,
             row.get::<_, Option<i64>>(3)?,
-            row.get::<_, String>(4)?,
         ))
     })?;
 
     let mut inputs = Vec::new();
     for row in rows {
-        let (card_id, note_id, deck_id, last_review_id, tags) = row?;
+        let (card_id, note_id, deck_id, last_review_id) = row?;
         let elapsed_seconds = last_review_id
             .map(|id| (timing.now_secs - id / 1000).max(0))
             .unwrap_or(-1);
@@ -915,7 +838,7 @@ limit {limit}"
             card_id,
             note_id: Some(note_id),
             deck_id: Some(deck_id),
-            preset_id: Some(preset_id_with_tags(deck_id, &tags, preset_tags)),
+            preset_id: Some(deck_id),
             is_query: true,
             ease: None,
             duration_millis: None,
@@ -954,11 +877,11 @@ fn table_has_column(db: &Connection, table: &str, column: &str) -> rusqlite::Res
     Ok(false)
 }
 
-fn historical_card_type(review_kind: i64) -> i64 {
-    match review_kind {
-        0 => 1,
-        2 => 3,
-        _ => 2,
+fn historical_state(review_kind: i64, is_learning_start: bool) -> i64 {
+    if is_learning_start {
+        0
+    } else {
+        review_kind + 1
     }
 }
 

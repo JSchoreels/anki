@@ -200,13 +200,9 @@ message DeckConfig {
     bool rwkv_review_instant_order_enabled = 72;
     bool rwkv_review_dynamic_preset_replay = 73;
     bool rwkv_review_candidate_refresh_enabled = 74;
-    bool rwkv_review_preset_tag_state_enabled = 75;
-    bool rwkv_review_self_correction_enabled = 76;
-    bool rwkv_review_japanese_feature_state_enabled = 77;
+    reserved 75, 76, 77, 80, 81;
     uint32 rwkv_review_min_intervening_reviews = 78;
     uint32 rwkv_review_min_elapsed_secs = 79;
-    string rwkv_review_japanese_kanji_field = 80;
-    string rwkv_review_japanese_reading_field = 81;
     bool rwkv_review_first_review_elapsed_from_card_creation = 82;
 
     bool disable_autoplay = 23;

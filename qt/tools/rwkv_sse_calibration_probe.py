@@ -264,7 +264,8 @@ def _target_review_ids(
 
     conditions = [
         "r.ease BETWEEN 1 AND 4",
-        "(r.type IN (0, 1, 2, 3) OR r.type = 4)",
+        "r.type IN (0, 1, 2, 3, 4, 5)",
+        "NOT (r.type = 3 AND r.factor = 0)",
     ]
     params: list[int | float] = []
     positive_card_ids = _positive_unique_ints(card_ids)

@@ -35,6 +35,7 @@ class ReviewRow:
     ease: int
     duration_millis: int
     review_kind: int
+    is_learning_start: bool
     elapsed_days: int
     elapsed_seconds: int
     day_offset: int
@@ -290,6 +291,7 @@ def _load_review_rows(
         ease,
         duration_millis,
         review_kind,
+        is_learning_start,
     ) in raw_rows:
         previous_review_id = previous_review_id_by_card.get(card_id)
         elapsed_seconds = (
@@ -297,8 +299,23 @@ def _load_review_rows(
             if previous_review_id is not None
             else -1
         )
+        day_offset = _historical_day_offset(
+            review_id,
+            days_elapsed=days_elapsed,
+            next_day_at=next_day_at,
+        )
         elapsed_days = (
-            elapsed_seconds // temporal.DAY_SECONDS if elapsed_seconds >= 0 else -1
+            max(
+                0,
+                day_offset
+                - _historical_day_offset(
+                    previous_review_id,
+                    days_elapsed=days_elapsed,
+                    next_day_at=next_day_at,
+                ),
+            )
+            if previous_review_id is not None
+            else -1
         )
         is_long_term_review = elapsed_days >= 1
         prior_long_term_reviews = prior_long_term_reviews_by_card.get(card_id, 0)
@@ -313,13 +330,10 @@ def _load_review_rows(
                 ease=ease,
                 duration_millis=duration_millis,
                 review_kind=review_kind,
+                is_learning_start=is_learning_start,
                 elapsed_days=elapsed_days,
                 elapsed_seconds=elapsed_seconds,
-                day_offset=_historical_day_offset(
-                    review_id,
-                    days_elapsed=days_elapsed,
-                    next_day_at=next_day_at,
-                ),
+                day_offset=day_offset,
                 recall_bin=(
                     temporal._fsrs_delta_t_bin(elapsed_days),
                     temporal._fsrs_count_bin(long_term_reviews + 1.0, 1.99, 1.89),
@@ -341,7 +355,7 @@ def _historical_rows(
     *,
     deck_ids: Sequence[int] | None,
     limit: int,
-) -> list[tuple[int, int, int, int, int, int, int]]:
+) -> list[tuple[int, int, int, int, int, int, int, bool]]:
     deck_clause = ""
     params: list[int] = []
     if deck_ids is not None:
@@ -351,13 +365,33 @@ def _historical_rows(
         params.extend(deck_ids)
 
     sql = f"""
-    SELECT r.id, r.cid, c.nid, c.did, r.ease, r.time, r.type
-    FROM revlog r
-    JOIN cards c ON c.id = r.cid
-    WHERE r.ease BETWEEN 1 AND 4
-      AND (r.type IN (0, 1, 2, 3) OR r.type = 4)
-      {deck_clause}
-    ORDER BY r.id, r.cid
+    WITH eligible AS (
+      SELECT
+        r.id,
+        r.cid,
+        c.nid,
+        c.did,
+        r.ease,
+        r.time,
+        r.type,
+        lag(r.type) OVER (PARTITION BY r.cid ORDER BY r.id) AS previous_type
+      FROM revlog r
+      JOIN cards c ON c.id = r.cid
+      WHERE r.ease BETWEEN 1 AND 4
+        AND r.type IN (0, 1, 2, 3, 4, 5)
+        AND NOT (r.type = 3 AND r.factor = 0)
+        {deck_clause}
+    ), retained_starts AS (
+      SELECT cid, max(id) AS start_id
+      FROM eligible
+      WHERE type = 0 AND (previous_type IS NULL OR previous_type != 0)
+      GROUP BY cid
+    )
+    SELECT e.id, e.cid, e.nid, e.did, e.ease, e.time, e.type, e.id = s.start_id
+    FROM eligible e
+    JOIN retained_starts s ON s.cid = e.cid
+    WHERE e.id >= s.start_id
+    ORDER BY e.id, e.cid
     """
     if limit > 0:
         sql += "\nLIMIT ?"
@@ -372,6 +406,7 @@ def _historical_rows(
             int(ease),
             int(duration_millis),
             int(review_kind),
+            bool(is_learning_start),
         )
         for (
             review_id,
@@ -381,6 +416,7 @@ def _historical_rows(
             ease,
             duration_millis,
             review_kind,
+            is_learning_start,
         ) in connection.execute(sql, params)
     ]
 
@@ -523,17 +559,16 @@ def _model_row(row: ReviewRow) -> dict[str, object]:
         "elapsed_seconds": row.elapsed_seconds,
         "day_offset": row.day_offset,
         "duration": float(row.duration_millis),
-        "state": _historical_card_type(row.review_kind),
+        "state": _historical_state(
+            row.review_kind,
+            is_learning_start=row.is_learning_start,
+        ),
         "rating": row.ease,
     }
 
 
-def _historical_card_type(review_kind: int) -> int:
-    if review_kind == 0:
-        return 1
-    if review_kind == 2:
-        return 3
-    return 2
+def _historical_state(review_kind: int, *, is_learning_start: bool = False) -> int:
+    return 0 if is_learning_start else review_kind + 1
 
 
 def _historical_day_offset(

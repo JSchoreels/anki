@@ -371,6 +371,9 @@ message CardAnswer {
   optional float desired_retention_override = 7;
   optional float rwkv_s90 = 8;
   optional float rwkv_retrievability = 9;
+  // Raw revlog kind selected by RWKV's synthetic same-day state machine.
+  // Only Learning through Filtered (0-3) are accepted by the backend.
+  optional uint32 rwkv_review_kind = 10;
 }
 
 message CustomStudyRequest {

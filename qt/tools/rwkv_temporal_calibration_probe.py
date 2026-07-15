@@ -504,7 +504,8 @@ def _cached_review_rows(
     JOIN cards c ON c.id = r.cid
     JOIN {cache_table} cache ON cache.revlog_id = r.id
     WHERE r.ease BETWEEN 1 AND 4
-      AND (r.type IN (0, 1, 2, 3) OR r.type = 4)
+      AND r.type IN (0, 1, 2, 3, 4, 5)
+      AND NOT (r.type = 3 AND r.factor = 0)
       AND cache.prediction >= 0
       AND cache.prediction <= 1
       {deck_clause}

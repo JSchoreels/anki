@@ -78,12 +78,13 @@ def test_fit_binary_head_can_learn_simple_signal() -> None:
     assert result["test"]["brier"] < 0.10
 
 
-def test_historical_card_type_matches_existing_benchmark_mapping() -> None:
-    assert probe._historical_card_type(0) == 1
-    assert probe._historical_card_type(1) == 2
-    assert probe._historical_card_type(2) == 3
-    assert probe._historical_card_type(3) == 2
-    assert probe._historical_card_type(4) == 2
+def test_historical_state_matches_training_dataset_mapping() -> None:
+    assert probe._historical_state(0, is_learning_start=True) == 0
+    assert probe._historical_state(0) == 1
+    assert probe._historical_state(1) == 2
+    assert probe._historical_state(2) == 3
+    assert probe._historical_state(3) == 4
+    assert probe._historical_state(4) == 5
 
 
 def _samples(

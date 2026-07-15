@@ -33,6 +33,7 @@ use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
 use crate::prelude::*;
+use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionStates;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
@@ -68,6 +69,7 @@ pub struct CardAnswer {
     pub desired_retention_override: Option<f32>,
     pub rwkv_s90: Option<f32>,
     pub rwkv_retrievability: Option<f32>,
+    pub rwkv_review_kind: Option<u32>,
     pub from_queue: bool,
 }
 
@@ -411,8 +413,18 @@ impl Collection {
             answer.current_state,
         );
 
-        let revlog_partial =
+        let mut revlog_partial =
             updater.apply_study_state(current_state, answer.new_state, answer.rating)?;
+        if let Some(review_kind) = answer.rwkv_review_kind {
+            require!(review_kind <= 3, "invalid RWKV review kind");
+            revlog_partial.set_review_kind(match review_kind {
+                0 => RevlogReviewKind::Learning,
+                1 => RevlogReviewKind::Review,
+                2 => RevlogReviewKind::Relearning,
+                3 => RevlogReviewKind::Filtered,
+                _ => unreachable!(),
+            });
+        }
         let revlog_id = self.add_partial_revlog(revlog_partial, usn, answer)?;
         if let Some(prediction) = updater.fsrs_review_retrievability {
             if let Err(err) = self.storage.set_fsrs_review_retrievability_predictions(
@@ -901,6 +913,7 @@ pub mod test_helpers {
                 desired_retention_override: None,
                 rwkv_s90: None,
                 rwkv_retrievability: None,
+                rwkv_review_kind: None,
                 from_queue: true,
             })?;
             Ok(PostAnswerState {
@@ -1047,6 +1060,7 @@ pub(crate) mod test {
             desired_retention_override: None,
             rwkv_s90: Some(20.0),
             rwkv_retrievability: Some(0.62),
+            rwkv_review_kind: None,
             from_queue: true,
         })?;
 
@@ -1060,6 +1074,35 @@ pub(crate) mod test {
             |row| row.get(0),
         )?;
         assert!((cached_retrievability - 0.62).abs() < 1e-6);
+        assert_eq!(col.can_undo(), Some(&Op::AnswerCard));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_review_kind_is_written_in_answer_transaction() -> Result<()> {
+        let mut col = Collection::new();
+        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+        let states = col.get_scheduling_states(cid)?;
+
+        col.answer_card(&mut CardAnswer {
+            card_id: cid,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: Some(RevlogReviewKind::Relearning as u32),
+            from_queue: true,
+        })?;
+
+        let revlogs = col.storage.get_revlog_entries_for_card(cid)?;
+        assert_eq!(revlogs.len(), 1);
+        assert_eq!(revlogs[0].review_kind, RevlogReviewKind::Relearning);
         assert_eq!(col.can_undo(), Some(&Op::AnswerCard));
 
         Ok(())
@@ -1232,6 +1275,7 @@ pub(crate) mod test {
             desired_retention_override: Some(0.95),
             rwkv_s90: None,
             rwkv_retrievability: None,
+            rwkv_review_kind: None,
             from_queue: true,
         })?;
 
@@ -1395,6 +1439,7 @@ pub(crate) mod test {
             desired_retention_override: Some(0.95),
             rwkv_s90: None,
             rwkv_retrievability: None,
+            rwkv_review_kind: None,
             from_queue: true,
         })?;
 
@@ -1559,6 +1604,7 @@ pub(crate) mod test {
             desired_retention_override: None,
             rwkv_s90: None,
             rwkv_retrievability: None,
+            rwkv_review_kind: None,
             from_queue: true,
         })?;
 
