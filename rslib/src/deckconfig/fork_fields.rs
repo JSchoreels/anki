@@ -8,7 +8,11 @@ use serde_json::Value;
 
 use super::DeckConfigInner;
 use super::FsrsVersion;
+use super::DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
+use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
+use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 
 const FSRS_FORK_FIELDS_KEY: &str = "jschoreels.fsrs";
@@ -220,19 +224,26 @@ impl RwkvDeckConfigFields {
                 DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
             ),
             rwkv_review_refresh_on_exit: true_only(config.rwkv_review_refresh_on_exit),
-            rwkv_review_allow_same_day_review: true_only(config.rwkv_review_allow_same_day_review),
+            rwkv_review_allow_same_day_review: non_default(
+                config.rwkv_review_allow_same_day_review,
+                DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW,
+            ),
             rwkv_review_min_intervening_reviews: non_default(
                 config.rwkv_review_min_intervening_reviews,
-                0,
+                DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
             ),
-            rwkv_review_min_elapsed_secs: non_default(config.rwkv_review_min_elapsed_secs, 0),
+            rwkv_review_min_elapsed_secs: non_default(
+                config.rwkv_review_min_elapsed_secs,
+                DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
+            ),
             rwkv_review_instant_order_enabled: true_only(config.rwkv_review_instant_order_enabled),
             rwkv_review_dynamic_preset_replay: true_only(config.rwkv_review_dynamic_preset_replay),
             rwkv_review_candidate_refresh_enabled: true_only(
                 config.rwkv_review_candidate_refresh_enabled,
             ),
-            rwkv_review_first_review_elapsed_from_card_creation: true_only(
+            rwkv_review_first_review_elapsed_from_card_creation: non_default(
                 config.rwkv_review_first_review_elapsed_from_card_creation,
+                DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
             ),
         }
     }
@@ -282,6 +293,20 @@ impl RwkvDeckConfigFields {
 }
 
 pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
+    if !config.rwkv_review_allow_same_day_review {
+        config.rwkv_review_allow_same_day_review = DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW;
+    }
+    if config.rwkv_review_min_intervening_reviews == 0 {
+        config.rwkv_review_min_intervening_reviews = DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
+    }
+    if config.rwkv_review_min_elapsed_secs == 0 {
+        config.rwkv_review_min_elapsed_secs = DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
+    }
+    if !config.rwkv_review_first_review_elapsed_from_card_creation {
+        config.rwkv_review_first_review_elapsed_from_card_creation =
+            DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
+    }
+
     if let Some(fields) = fork_fields_from_other(&config.other) {
         fields.apply_to_config(config);
     }
@@ -450,13 +475,13 @@ mod tests {
             rwkv_review_batch_size: 1024,
             rwkv_review_refresh_interval: 5,
             rwkv_review_refresh_on_exit: true,
-            rwkv_review_allow_same_day_review: true,
+            rwkv_review_allow_same_day_review: false,
             rwkv_review_min_intervening_reviews: 3,
             rwkv_review_min_elapsed_secs: 300,
             rwkv_review_instant_order_enabled: true,
             rwkv_review_dynamic_preset_replay: true,
             rwkv_review_candidate_refresh_enabled: true,
-            rwkv_review_first_review_elapsed_from_card_creation: true,
+            rwkv_review_first_review_elapsed_from_card_creation: false,
             ..Default::default()
         }
     }
@@ -518,13 +543,13 @@ mod tests {
                 "rwkv_review_batch_size": 1024,
                 "rwkv_review_refresh_interval": 5,
                 "rwkv_review_refresh_on_exit": true,
-                "rwkv_review_allow_same_day_review": true,
+                "rwkv_review_allow_same_day_review": false,
                 "rwkv_review_min_intervening_reviews": 3,
                 "rwkv_review_min_elapsed_secs": 300,
                 "rwkv_review_instant_order_enabled": true,
                 "rwkv_review_dynamic_preset_replay": true,
                 "rwkv_review_candidate_refresh_enabled": true,
-                "rwkv_review_first_review_elapsed_from_card_creation": true,
+                "rwkv_review_first_review_elapsed_from_card_creation": false,
             }))
         );
     }
@@ -603,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn default_rwkv_batch_size_is_restored_from_cleared_storage_field() {
+    fn default_rwkv_fields_are_restored_from_cleared_storage_fields() {
         let mut config = DeckConfigInner {
             rwkv_review_batch_size: 0,
             rwkv_review_refresh_interval: 0,
@@ -619,6 +644,22 @@ mod tests {
         assert_eq!(
             config.rwkv_review_refresh_interval,
             DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            config.rwkv_review_allow_same_day_review,
+            DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW
+        );
+        assert_eq!(
+            config.rwkv_review_min_intervening_reviews,
+            DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS
+        );
+        assert_eq!(
+            config.rwkv_review_min_elapsed_secs,
+            DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS
+        );
+        assert_eq!(
+            config.rwkv_review_first_review_elapsed_from_card_creation,
+            DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
         );
     }
 

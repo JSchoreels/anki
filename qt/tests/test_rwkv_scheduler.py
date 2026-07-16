@@ -183,7 +183,25 @@ def test_rwkv_first_review_elapsed_source_reads_direct_and_nested_config() -> No
             }
         }
     )
-    assert not rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation({})
+    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation({})
+    assert not rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
+        {"rwkvReviewFirstReviewElapsedFromCardCreation": False}
+    )
+
+
+def test_rwkv_min_intervening_reviews_defaults_to_five_and_allows_zero() -> None:
+    assert rwkv_scheduler._rwkv_review_min_intervening_reviews({}) == 5
+    assert (
+        rwkv_scheduler._rwkv_review_min_intervening_reviews(
+            {"rwkvReviewMinInterveningReviews": 0}
+        )
+        == 0
+    )
+
+
+def test_rwkv_review_batch_size_accepts_8192_and_rejects_larger_values() -> None:
+    assert rwkv_scheduler._rwkv_review_batch_size({"rwkvReviewBatchSize": 8192}) == 8192
+    assert rwkv_scheduler._rwkv_review_batch_size({"rwkvReviewBatchSize": 8193}) == 512
 
 
 def test_rwkv_review_input_batch_cache_key_includes_first_review_elapsed_mode() -> None:
@@ -2267,6 +2285,9 @@ def test_rwkv_current_retrievability_requests_use_resident_state() -> None:
 
 
 def test_rwkv_review_scores_upscale_default_retrievability_batch_size() -> None:
+    assert rwkv_scheduler._rwkv_retrievability_batch_size(512) == 2048
+    assert rwkv_scheduler._rwkv_retrievability_batch_size(8192) == 8192
+
     class Runtime(_SharedReviewRuntime):
         def __init__(self) -> None:
             super().__init__()
@@ -2882,6 +2903,42 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     assert count_calls == []
     assert history.deck_id is None
     assert history.review_count == 2
+
+
+def test_historical_rwkv_review_inputs_skips_full_scan_when_cache_is_current(
+    monkeypatch,
+) -> None:
+    queries: list[tuple[str, tuple[object, ...]]] = []
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            queries.append((sql, args))
+            return []
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_timing_today",
+        lambda reviewer: pytest.fail("unchanged history should return before timing"),
+    )
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+    history = rwkv_scheduler._historical_rwkv_review_inputs(
+        reviewer,
+        after_review_id=1234,
+        previous_review_id_by_card={1: 1234},
+        previous_interval_days_by_card={1: 10},
+        review_count_by_card={1: 3, 2: 2},
+    )
+
+    assert len(queries) == 1
+    sql, args = queries[0]
+    assert "r.id > ?" in sql
+    assert "limit 1" in sql
+    assert args == (1234,)
+    assert history.reviews == []
+    assert history.review_ids == []
+    assert history.last_review_id == 1234
+    assert history.review_count == 5
 
 
 def test_historical_rwkv_review_rows_do_not_repeat_note_payloads() -> None:
@@ -3845,6 +3902,45 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
     assert any(
         update["label"] == "Loading new RWKV reviews..." for update in progress_updates
     )
+
+
+def test_startup_cache_check_reuses_deck_config_scan(monkeypatch) -> None:
+    config_reads = 0
+    cache_checks: list[bool | None] = []
+    load_calls: list[object] = []
+
+    class Decks:
+        def all_config(self) -> list[dict[str, object]]:
+            nonlocal config_reads
+            config_reads += 1
+            return [
+                {
+                    "rwkvReviewEnabled": True,
+                    "rwkvReviewDynamicPresetReplay": True,
+                }
+            ]
+
+    def cache_usable(
+        mw: object,
+        *,
+        dynamic_preset_replay_enabled: bool | None = None,
+    ) -> bool:
+        cache_checks.append(dynamic_preset_replay_enabled)
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_state_cache_usable", cache_usable)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache_with_progress",
+        load_calls.append,
+    )
+    mw = SimpleNamespace(col=SimpleNamespace(decks=Decks()))
+
+    rwkv_scheduler.prepare_rwkv_state_cache_on_startup(mw)
+
+    assert config_reads == 1
+    assert cache_checks == [True]
+    assert load_calls == [mw]
 
 
 def test_startup_prompt_can_build_rwkv_state_cache_only(

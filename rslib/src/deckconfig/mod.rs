@@ -39,8 +39,10 @@ pub const DEFAULT_REVIEW_FUZZ_FACTOR_LONG: f32 = 0.05;
 pub const DEFAULT_REVIEW_FUZZ_ENABLED: bool = true;
 pub(crate) const DEFAULT_RWKV_REVIEW_BATCH_SIZE: u32 = 512;
 pub(crate) const DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL: u32 = 1;
-pub(crate) const DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS: u32 = 0;
-pub(crate) const DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS: u32 = 0;
+pub(crate) const DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW: bool = true;
+pub(crate) const DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS: u32 = 5;
+pub(crate) const DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS: u32 = 30;
+pub(crate) const DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION: bool = true;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct DeckConfig {
@@ -80,13 +82,14 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
     rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
     rwkv_review_refresh_on_exit: false,
-    rwkv_review_allow_same_day_review: false,
+    rwkv_review_allow_same_day_review: DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW,
     rwkv_review_instant_order_enabled: false,
     rwkv_review_dynamic_preset_replay: false,
     rwkv_review_candidate_refresh_enabled: false,
     rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
     rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
-    rwkv_review_first_review_elapsed_from_card_creation: false,
+    rwkv_review_first_review_elapsed_from_card_creation:
+        DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,
@@ -340,7 +343,7 @@ pub(crate) fn ensure_deck_config_values_valid(config: &mut DeckConfigInner) {
         &mut config.rwkv_review_batch_size,
         default.rwkv_review_batch_size,
         64,
-        2048,
+        8192,
     );
     ensure_u32_valid(
         &mut config.rwkv_review_refresh_interval,
@@ -441,9 +444,19 @@ mod tests {
     }
 
     #[test]
+    fn maximum_rwkv_batch_size_is_preserved() {
+        let mut config = DeckConfig::default().inner;
+        config.rwkv_review_batch_size = 8192;
+
+        ensure_deck_config_values_valid(&mut config);
+
+        assert_eq!(config.rwkv_review_batch_size, 8192);
+    }
+
+    #[test]
     fn invalid_rwkv_batch_size_uses_default() {
         let mut config = DeckConfig::default().inner;
-        config.rwkv_review_batch_size = 4096;
+        config.rwkv_review_batch_size = 8193;
 
         ensure_deck_config_values_valid(&mut config);
 

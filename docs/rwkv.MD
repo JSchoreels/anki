@@ -16,14 +16,14 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_batch_size`, which defaults to `512`, and
 `rwkv_review_refresh_interval`, which defaults to `1`,
 `rwkv_review_refresh_on_exit`, which defaults to `false`, and
-`rwkv_review_allow_same_day_review`, which defaults to `false`, and
-`rwkv_review_min_intervening_reviews`, which defaults to `0`, and
-`rwkv_review_min_elapsed_secs`, which defaults to `0`, and
+`rwkv_review_allow_same_day_review`, which defaults to `true`, and
+`rwkv_review_min_intervening_reviews`, which defaults to `5`, and
+`rwkv_review_min_elapsed_secs`, which defaults to `30`, and
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
 `rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
-`false`.
+`true`.
 
 Development code that reads deck configs through the legacy Python
 `DeckConfigDict` API should tolerate both shapes:
@@ -70,15 +70,15 @@ training data's difference between Anki scheduler-day offsets;
 Anki's raw revlog kinds and the answered-event states consumed by RWKV are
 related but not interchangeable:
 
-| Answer context | Raw `ReviewKind` | RWKV dataset state |
-| --- | ---: | ---: |
-| First retained learning answer | Learning `0` | `0` |
-| Later learning answer | Learning `0` | `1` |
-| Normal scheduled review | Review `1` | `2` |
-| Relearning step | Relearning `2` | `3` |
-| Filtered/out-of-schedule answer | Filtered `3` | `4` |
-| Rated manual answer | Manual `4` | `5` |
-| Reschedule entry | Rescheduled `5` | `6` |
+| Answer context                  | Raw `ReviewKind` | RWKV dataset state |
+| ------------------------------- | ---------------: | -----------------: |
+| First retained learning answer  |     Learning `0` |                `0` |
+| Later learning answer           |     Learning `0` |                `1` |
+| Normal scheduled review         |       Review `1` |                `2` |
+| Relearning step                 |   Relearning `2` |                `3` |
+| Filtered/out-of-schedule answer |     Filtered `3` |                `4` |
+| Rated manual answer             |       Manual `4` |                `5` |
+| Reschedule entry                |  Rescheduled `5` |                `6` |
 
 The dataset builder identifies state `0` from the first answer of the retained
 learning sequence; it is not a separate raw revlog kind. Unrated reschedule
@@ -173,10 +173,10 @@ score remain after scored new cards in ascending-position fallback order. These
 gather modes are desktop-only in practice, because the RWKV score map is
 transient desktop state.
 
-By default, RWKV treats elapsed time before a card's first review as unknown.
-When `rwkv_review_first_review_elapsed_from_card_creation` is enabled, RWKV uses
-the time since the card was created for new-card inputs and for the first
-historical review during state replay.
+By default, RWKV uses the time since a card was created for new-card inputs and
+for the first historical review during state replay. Disable
+`rwkv_review_first_review_elapsed_from_card_creation` to treat elapsed time
+before a card's first review as unknown instead.
 
 If RWKV review is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a

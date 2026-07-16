@@ -21,7 +21,9 @@ use super::DeckConfig;
 use super::DeckConfigId;
 use super::DeckConfigInner;
 use super::NewCardInsertOrder;
+use super::DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
 use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
 use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
@@ -133,11 +135,20 @@ pub struct DeckConfSchema11 {
     rwkv_review_refresh_interval: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_refresh_on_exit: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default = "default_rwkv_review_allow_same_day_review",
+        skip_serializing_if = "is_default_rwkv_review_allow_same_day_review"
+    )]
     rwkv_review_allow_same_day_review: bool,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(
+        default = "default_rwkv_review_min_intervening_reviews",
+        skip_serializing_if = "is_default_rwkv_review_min_intervening_reviews"
+    )]
     rwkv_review_min_intervening_reviews: u32,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(
+        default = "default_rwkv_review_min_elapsed_secs",
+        skip_serializing_if = "is_default_rwkv_review_min_elapsed_secs"
+    )]
     rwkv_review_min_elapsed_secs: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_instant_order_enabled: bool,
@@ -145,7 +156,10 @@ pub struct DeckConfSchema11 {
     rwkv_review_dynamic_preset_replay: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     rwkv_review_candidate_refresh_enabled: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default = "default_rwkv_review_first_review_elapsed_from_card_creation",
+        skip_serializing_if = "is_default_rwkv_review_first_review_elapsed_from_card_creation"
+    )]
     rwkv_review_first_review_elapsed_from_card_creation: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
@@ -203,8 +217,36 @@ fn is_default_or_zero_rwkv_review_refresh_interval(value: &u32) -> bool {
     *value == 0 || *value == default_rwkv_review_refresh_interval()
 }
 
-fn is_zero_u32(value: &u32) -> bool {
-    *value == 0
+fn default_rwkv_review_allow_same_day_review() -> bool {
+    DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW
+}
+
+fn is_default_rwkv_review_allow_same_day_review(value: &bool) -> bool {
+    *value == default_rwkv_review_allow_same_day_review()
+}
+
+fn default_rwkv_review_min_intervening_reviews() -> u32 {
+    DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS
+}
+
+fn is_default_rwkv_review_min_intervening_reviews(value: &u32) -> bool {
+    *value == default_rwkv_review_min_intervening_reviews()
+}
+
+fn default_rwkv_review_min_elapsed_secs() -> u32 {
+    DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS
+}
+
+fn is_default_rwkv_review_min_elapsed_secs(value: &u32) -> bool {
+    *value == default_rwkv_review_min_elapsed_secs()
+}
+
+fn default_rwkv_review_first_review_elapsed_from_card_creation() -> bool {
+    DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
+}
+
+fn is_default_rwkv_review_first_review_elapsed_from_card_creation(value: &bool) -> bool {
+    *value == default_rwkv_review_first_review_elapsed_from_card_creation()
 }
 
 fn is_default_dynamic_desired_retention_min(value: &f32) -> bool {
@@ -451,13 +493,14 @@ impl Default for DeckConfSchema11 {
             rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
             rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
             rwkv_review_refresh_on_exit: false,
-            rwkv_review_allow_same_day_review: false,
+            rwkv_review_allow_same_day_review: DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW,
             rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
             rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
             rwkv_review_instant_order_enabled: false,
             rwkv_review_dynamic_preset_replay: false,
             rwkv_review_candidate_refresh_enabled: false,
-            rwkv_review_first_review_elapsed_from_card_creation: false,
+            rwkv_review_first_review_elapsed_from_card_creation:
+                DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
             easy_days_percentages: vec![1.0; 7],
         }
     }
@@ -935,36 +978,36 @@ mod test {
     }
 
     #[test]
-    fn rwkv_allow_same_day_review_omits_default_and_serializes_enabled() -> Result<()> {
+    fn rwkv_allow_same_day_review_omits_default_and_serializes_disabled() -> Result<()> {
         let serialized = serde_json::to_value(DeckConfSchema11::default())?;
         assert!(serialized.get("rwkvReviewAllowSameDayReview").is_none());
 
         let config = DeckConfSchema11 {
-            rwkv_review_allow_same_day_review: true,
+            rwkv_review_allow_same_day_review: false,
             ..DeckConfSchema11::default()
         };
 
         let serialized = serde_json::to_value(config)?;
-        assert_eq!(serialized["rwkvReviewAllowSameDayReview"], json!(true));
+        assert_eq!(serialized["rwkvReviewAllowSameDayReview"], json!(false));
 
         Ok(())
     }
 
     #[test]
-    fn rwkv_repeat_guards_omit_default_and_serialize_nonzero() -> Result<()> {
+    fn rwkv_repeat_guards_omit_default_and_serialize_zero() -> Result<()> {
         let serialized = serde_json::to_value(DeckConfSchema11::default())?;
         assert!(serialized.get("rwkvReviewMinInterveningReviews").is_none());
         assert!(serialized.get("rwkvReviewMinElapsedSecs").is_none());
 
         let config = DeckConfSchema11 {
-            rwkv_review_min_intervening_reviews: 3,
-            rwkv_review_min_elapsed_secs: 300,
+            rwkv_review_min_intervening_reviews: 0,
+            rwkv_review_min_elapsed_secs: 0,
             ..DeckConfSchema11::default()
         };
 
         let serialized = serde_json::to_value(config)?;
-        assert_eq!(serialized["rwkvReviewMinInterveningReviews"], json!(3));
-        assert_eq!(serialized["rwkvReviewMinElapsedSecs"], json!(300));
+        assert_eq!(serialized["rwkvReviewMinInterveningReviews"], json!(0));
+        assert_eq!(serialized["rwkvReviewMinElapsedSecs"], json!(0));
 
         Ok(())
     }
@@ -1020,21 +1063,21 @@ mod test {
     }
 
     #[test]
-    fn rwkv_first_review_elapsed_omits_default_and_serializes_enabled() -> Result<()> {
+    fn rwkv_first_review_elapsed_omits_default_and_serializes_disabled() -> Result<()> {
         let serialized = serde_json::to_value(DeckConfSchema11::default())?;
         assert!(serialized
             .get("rwkvReviewFirstReviewElapsedFromCardCreation")
             .is_none());
 
         let config = DeckConfSchema11 {
-            rwkv_review_first_review_elapsed_from_card_creation: true,
+            rwkv_review_first_review_elapsed_from_card_creation: false,
             ..DeckConfSchema11::default()
         };
 
         let serialized = serde_json::to_value(config)?;
         assert_eq!(
             serialized["rwkvReviewFirstReviewElapsedFromCardCreation"],
-            json!(true)
+            json!(false)
         );
 
         Ok(())

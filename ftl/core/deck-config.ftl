@@ -345,7 +345,7 @@ deck-config-rwkv-review-candidate-refresh-tooltip =
     controlled by `Cards processed at once`.
 deck-config-rwkv-review-batch-size = Cards processed at once
 deck-config-rwkv-review-batch-size-tooltip =
-    How many cards RWKV checks in one batch. Enter a value from 64 to 2048. 512
+    How many cards RWKV checks in one batch. Enter a value from 64 to 8192. 512
     is recommended when using a CPU. Larger batches may finish faster, but use
     more memory.
 deck-config-rwkv-review-batch-size-memory = Estimated RAM: ~{ $memory }

@@ -75,6 +75,11 @@ class RwkvReviewState(enum.IntEnum):
     RESCHEDULED = 6
 
 
+class _RwkvCollectionConfigState(NamedTuple):
+    review_enabled: bool
+    dynamic_preset_replay_enabled: bool
+
+
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
 _REVIEWER_PENDING_ANSWER_STATE_ATTR = "_rwkv_pending_answer_state"
 _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR = "_rwkv_synthetic_answer_states"
@@ -93,8 +98,11 @@ _NEW_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY = getattr(
 )
 _DEFAULT_RWKV_REVIEW_BATCH_SIZE = 512
 _DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL = 1
+_DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS = 5
+_DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION = True
 _MIN_RWKV_REVIEW_BATCH_SIZE = 64
-_MAX_RWKV_REVIEW_BATCH_SIZE = 2048
+_MAX_RWKV_REVIEW_BATCH_SIZE = 8192
+_AUTO_RWKV_RETRIEVABILITY_BATCH_SIZE = 2048
 _MIN_RWKV_REVIEW_REFRESH_INTERVAL = 1
 _MAX_RWKV_REVIEW_REFRESH_INTERVAL = 10_000
 _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
@@ -4040,22 +4048,33 @@ def rwkv_review_enabled(
     return _rwkv_review_enabled_deck_config(reviewer, card) is not None
 
 
-def _collection_has_rwkv_review_enabled(mw: object) -> bool:
-    col = getattr(mw, "col", None)
+def _rwkv_collection_config_state(
+    reviewer: object,
+) -> _RwkvCollectionConfigState:
+    col = _collection(reviewer)
     decks = getattr(col, "decks", None)
     all_config = getattr(decks, "all_config", None)
     if not callable(all_config):
-        return False
+        return _RwkvCollectionConfigState(False, False)
 
     try:
         configs = all_config()
     except Exception:
-        logger.debug("failed to read deck configs for RWKV cache prompt")
-        return False
+        logger.debug("failed to read deck configs for RWKV collection state")
+        return _RwkvCollectionConfigState(False, False)
 
-    return any(
-        isinstance(config, dict) and _rwkv_review_config_enabled(config)
-        for config in configs
+    review_enabled = False
+    dynamic_preset_replay_enabled = False
+    for config in configs:
+        if not isinstance(config, dict) or not _rwkv_review_config_enabled(config):
+            continue
+        review_enabled = True
+        if _rwkv_review_dynamic_preset_replay(config):
+            dynamic_preset_replay_enabled = True
+
+    return _RwkvCollectionConfigState(
+        review_enabled=review_enabled,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     )
 
 
@@ -5942,12 +5961,20 @@ def load_rwkv_state_cache(
     )
 
 
-def rwkv_state_cache_usable(mw: object) -> bool:
+def rwkv_state_cache_usable(
+    mw: object,
+    *,
+    dynamic_preset_replay_enabled: bool | None = None,
+) -> bool:
     """Return true when the current collection has a usable local RWKV cache."""
 
     context = SimpleNamespace(mw=mw)
     metadata = _read_rwkv_state_cache_metadata(context)
-    if metadata is None or not _rwkv_state_cache_metadata_usable(context, metadata):
+    if metadata is None or not _rwkv_state_cache_metadata_usable(
+        context,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+    ):
         return False
 
     if metadata.get("version") != _RWKV_STATE_CACHE_VERSION:
@@ -5962,31 +5989,46 @@ def rwkv_state_cache_usable(mw: object) -> bool:
 def prepare_rwkv_state_cache_on_startup(mw: object) -> None:
     """Restore or prompt for RWKV state cache preparation after profile open."""
 
-    if not _collection_has_rwkv_review_enabled(mw):
+    config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
+    if not config_state.review_enabled:
         return
 
-    if rwkv_state_cache_usable(mw):
+    if rwkv_state_cache_usable(
+        mw,
+        dynamic_preset_replay_enabled=config_state.dynamic_preset_replay_enabled,
+    ):
         load_rwkv_state_cache_with_progress(mw)
     else:
-        maybe_prompt_for_rwkv_state_cache(mw)
+        _show_rwkv_state_cache_prompt(mw)
 
 
 def maybe_prompt_for_rwkv_state_cache(mw: object) -> None:
     """Prompt once per session to build the local RWKV state cache if needed."""
 
-    global _rwkv_startup_prompt_shown
-    parent = cast(QWidget | None, mw)
-
     if _rwkv_startup_prompt_shown:
         return
-    if not _collection_has_rwkv_review_enabled(mw):
+    config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
+    if not config_state.review_enabled:
         return
-    if rwkv_state_cache_usable(mw):
+    if rwkv_state_cache_usable(
+        mw,
+        dynamic_preset_replay_enabled=config_state.dynamic_preset_replay_enabled,
+    ):
+        return
+
+    _show_rwkv_state_cache_prompt(mw)
+
+
+def _show_rwkv_state_cache_prompt(mw: object) -> None:
+    global _rwkv_startup_prompt_shown
+
+    if _rwkv_startup_prompt_shown:
         return
     if not configure_reviewer_backend_from_environment():
         return
 
     _rwkv_startup_prompt_shown = True
+    parent = cast(QWidget | None, mw)
 
     def prompt() -> None:
         from aqt.utils import ask_user_dialog
@@ -8717,6 +8759,8 @@ def _rwkv_state_cache_metadata(
 def _rwkv_state_cache_metadata_usable(
     reviewer: object,
     metadata: dict[str, object],
+    *,
+    dynamic_preset_replay_enabled: bool | None = None,
 ) -> bool:
     if metadata.get("version") not in (
         _RWKV_STATE_CACHE_VERSION,
@@ -8727,9 +8771,14 @@ def _rwkv_state_cache_metadata_usable(
         return False
     if not _rwkv_state_cache_model_usable(metadata.get("model")):
         return False
-    if metadata.get("version") == _RWKV_STATE_CACHE_VERSION and metadata.get(
-        "dynamicPresetReplay"
-    ) != _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer):
+    if dynamic_preset_replay_enabled is None:
+        dynamic_preset_replay_enabled = (
+            _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
+        )
+    if (
+        metadata.get("version") == _RWKV_STATE_CACHE_VERSION
+        and metadata.get("dynamicPresetReplay") != dynamic_preset_replay_enabled
+    ):
         return False
     last_review_id = _int_value(metadata.get("lastReviewId"))
     review_count = _int_value(metadata.get("reviewCount"))
@@ -9365,6 +9414,46 @@ def _historical_rwkv_review_inputs(
 ) -> RwkvHistoricalReviewInputs:
     start = time.monotonic()
     requested_deck_id = deck_id
+    previous_ids = dict(previous_review_id_by_card or {})
+    previous_intervals = dict(previous_interval_days_by_card or {})
+    review_counts = dict(review_count_by_card or {})
+
+    have_previous_state = all(
+        value is not None
+        for value in (
+            previous_review_id_by_card,
+            previous_interval_days_by_card,
+            review_count_by_card,
+        )
+    )
+    if after_review_id is not None and have_previous_state:
+        incremental_rows = _historical_rwkv_review_rows(
+            reviewer,
+            after_review_id=after_review_id,
+            deck_id=deck_id,
+            limit=1,
+        )
+        if not incremental_rows:
+            review_count = sum(review_counts.values())
+            logger.debug(
+                "RWKV historical review inputs unchanged: "
+                "last_review_id=%s review_count=%s deck_id=%s elapsed_ms=%.1f",
+                after_review_id,
+                review_count,
+                requested_deck_id,
+                (time.monotonic() - start) * 1000,
+            )
+            return RwkvHistoricalReviewInputs(
+                reviews=[],
+                review_ids=[],
+                previous_review_id_by_card=previous_ids,
+                previous_interval_days_by_card=previous_intervals,
+                review_count_by_card=review_counts,
+                last_review_id=after_review_id,
+                review_count=review_count,
+                deck_id=requested_deck_id,
+            )
+
     timing = _timing_today(reviewer)
     days_elapsed = getattr(timing, "days_elapsed", None)
     next_day_at = getattr(timing, "next_day_at", None)
@@ -9372,9 +9461,9 @@ def _historical_rwkv_review_inputs(
         return RwkvHistoricalReviewInputs(
             reviews=[],
             review_ids=[],
-            previous_review_id_by_card=dict(previous_review_id_by_card or {}),
-            previous_interval_days_by_card=dict(previous_interval_days_by_card or {}),
-            review_count_by_card=dict(review_count_by_card or {}),
+            previous_review_id_by_card=previous_ids,
+            previous_interval_days_by_card=previous_intervals,
+            review_count_by_card=review_counts,
             last_review_id=after_review_id or 0,
             review_count=0,
             deck_id=requested_deck_id,
@@ -9393,9 +9482,6 @@ def _historical_rwkv_review_inputs(
         or (isinstance(row[0], int) and row[0] > after_review_id)
     ]
     rows_elapsed_ms = (time.monotonic() - rows_start) * 1000
-    previous_ids = dict(previous_review_id_by_card or {})
-    previous_intervals = dict(previous_interval_days_by_card or {})
-    review_counts = dict(review_count_by_card or {})
     dynamic_preset_replay = _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
     historical_preset_rules_start = time.monotonic()
     historical_preset_rules = (
@@ -9808,6 +9894,7 @@ def _historical_rwkv_review_rows(
     *,
     after_review_id: int | None = None,
     deck_id: int | None = None,
+    limit: int | None = None,
 ) -> list[Sequence[object]]:
     col = _collection(reviewer)
     db = getattr(col, "db", None)
@@ -9818,6 +9905,7 @@ def _historical_rwkv_review_rows(
     after_clause = "and r.id > ?" if after_review_id is not None else ""
     deck_ids = _deck_tree_ids(reviewer, deck_id)
     deck_clause = f"and c.did in {ids2str(deck_ids)}" if deck_ids else ""
+    limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
     sql = f"""
 select
   r.id,
@@ -9835,6 +9923,7 @@ where {_rwkv_historical_answer_sql_condition("r")}
   {after_clause}
   {deck_clause}
 order by r.id, r.cid
+{limit_clause}
 """
     start = time.monotonic()
     logger.debug(
@@ -10019,23 +10108,7 @@ def _rwkv_review_config_enabled(deck_config: dict[str, object]) -> bool:
 
 
 def _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer: object) -> bool:
-    col = _collection(reviewer)
-    decks = getattr(col, "decks", None)
-    all_config = getattr(decks, "all_config", None)
-    if callable(all_config):
-        try:
-            configs = all_config()
-        except Exception:
-            logger.debug("failed to read deck configs for RWKV preset replay mode")
-        else:
-            return any(
-                isinstance(config, dict)
-                and _rwkv_review_config_enabled(config)
-                and _rwkv_review_dynamic_preset_replay(config)
-                for config in configs
-            )
-
-    return False
+    return _rwkv_collection_config_state(reviewer).dynamic_preset_replay_enabled
 
 
 def _rwkv_first_review_elapsed_config_key(
@@ -10097,7 +10170,11 @@ def _rwkv_review_first_review_elapsed_from_card_creation(
         "rwkvReviewFirstReviewElapsedFromCardCreation",
         "rwkv_review_first_review_elapsed_from_card_creation",
     )
-    return value if isinstance(value, bool) else False
+    return (
+        value
+        if isinstance(value, bool)
+        else _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
+    )
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
@@ -11385,7 +11462,7 @@ def _rwkv_review_min_intervening_reviews(deck_config: dict[str, object]) -> int:
     nested = _rwkv_other_config(deck_config)
     if nested is not None:
         value = nested.get("rwkv_review_min_intervening_reviews")
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
 
     value = _rwkv_config_direct_value(
@@ -11393,11 +11470,9 @@ def _rwkv_review_min_intervening_reviews(deck_config: dict[str, object]) -> int:
         "rwkvReviewMinInterveningReviews",
         "rwkv_review_min_intervening_reviews",
     )
-    return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0
-        else 0
-    )
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return _DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS
 
 
 def _rwkv_stats_graph_scores_for_search(
@@ -12298,7 +12373,7 @@ def _scores_from_input_predictions(
 
 def _rwkv_retrievability_batch_size(batch_size: int) -> int:
     if batch_size == _DEFAULT_RWKV_REVIEW_BATCH_SIZE:
-        return _MAX_RWKV_REVIEW_BATCH_SIZE
+        return _AUTO_RWKV_RETRIEVABILITY_BATCH_SIZE
     return batch_size
 
 
