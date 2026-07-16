@@ -478,6 +478,8 @@ mod test {
             conf.inner.rwkv_review_instant_order_enabled = true;
             conf.inner.desired_retention = desired_retention;
             conf.inner.rwkv_review_allow_same_day_review = allow_same_day_review;
+            conf.inner.rwkv_review_min_intervening_reviews = 0;
+            conf.inner.rwkv_review_min_elapsed_secs = 0;
             self.add_or_update_deck_config(&mut conf).unwrap();
             deck.normal_mut().unwrap().config_id = conf.id.0;
             self.add_or_update_deck(deck).unwrap();

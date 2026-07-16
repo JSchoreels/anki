@@ -1801,9 +1801,7 @@ def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
     assert review_input.current_elapsed_seconds == 30
 
 
-def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_for_new_cards() -> (
-    None
-):
+def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -> None:
     now = 42 * 86_400 + 100
     card = rwkv_scheduler.RwkvStatsGraphCard(
         id=(now - 90_000) * 1000,
@@ -1826,7 +1824,6 @@ def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_for_new_cards(
         deck_config={
             "id": 1000,
             "rwkvReviewEnabled": True,
-            "rwkvReviewFirstReviewElapsedFromCardCreation": True,
         },
         timing=SimpleNamespace(
             now=now,
@@ -1842,7 +1839,7 @@ def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_for_new_cards(
     assert review_input.current_elapsed_seconds == 90_000
 
 
-def test_rwkv_stats_graph_new_card_elapsed_missing_by_default() -> None:
+def test_rwkv_stats_graph_new_card_creation_elapsed_can_be_disabled() -> None:
     now = 42 * 86_400 + 100
     card = rwkv_scheduler.RwkvStatsGraphCard(
         id=(now - 90_000) * 1000,
@@ -1862,7 +1859,11 @@ def test_rwkv_stats_graph_new_card_elapsed_missing_by_default() -> None:
 
     review_input = rwkv_scheduler._rwkv_review_input_for_stats_graph_card(
         card=card,
-        deck_config={"id": 1000, "rwkvReviewEnabled": True},
+        deck_config={
+            "id": 1000,
+            "rwkvReviewEnabled": True,
+            "rwkvReviewFirstReviewElapsedFromCardCreation": False,
+        },
         timing=SimpleNamespace(
             now=now,
             days_elapsed=42,
@@ -9047,7 +9048,8 @@ def _rwkv_queue_reviewer(
             assert requested_ids <= set(cards)
             if "from revlog" in sql:
                 assert "ease between 1 and 4" in sql
-                assert "type = 4" in sql
+                assert "type in (0, 1, 2, 3, 4, 5)" in sql
+                assert "not (type = 3 and factor = 0)" in sql
                 return [
                     (
                         card_id,
@@ -9096,26 +9098,24 @@ def _rwkv_queue_reviewer(
             if rwkv_config_in_other:
                 nested: dict[str, object] = {"rwkv_review_enabled": True}
                 nested["rwkv_review_instant_order_enabled"] = rwkv_instant_order_enabled
+                nested["rwkv_review_min_intervening_reviews"] = (
+                    rwkv_min_intervening_reviews
+                )
+                nested["rwkv_review_min_elapsed_secs"] = 0
                 if rwkv_candidate_refresh_enabled:
                     nested["rwkv_review_candidate_refresh_enabled"] = True
                 if batch_size is not None:
                     nested["rwkv_review_batch_size"] = batch_size
-                if rwkv_min_intervening_reviews > 0:
-                    nested["rwkv_review_min_intervening_reviews"] = (
-                        rwkv_min_intervening_reviews
-                    )
                 config["other"] = {"jschoreels.rwkv": nested}
             else:
                 config["rwkvReviewEnabled"] = True
                 config["rwkvReviewInstantOrderEnabled"] = rwkv_instant_order_enabled
+                config["rwkvReviewMinInterveningReviews"] = rwkv_min_intervening_reviews
+                config["rwkvReviewMinElapsedSecs"] = 0
                 if rwkv_candidate_refresh_enabled:
                     config["rwkvReviewCandidateRefreshEnabled"] = True
                 if batch_size is not None:
                     config["rwkvReviewBatchSize"] = batch_size
-                if rwkv_min_intervening_reviews > 0:
-                    config["rwkvReviewMinInterveningReviews"] = (
-                        rwkv_min_intervening_reviews
-                    )
             return config
 
     class Scheduler:

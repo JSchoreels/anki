@@ -894,8 +894,8 @@ mod test {
         assert_eq!(row.card_id, new_card.id.0);
         assert_eq!(row.current_state_kind, "normal");
         assert_eq!(row.current_normal_state_kind, "new");
-        assert_eq!(row.current_elapsed_days, None);
-        assert_eq!(row.current_elapsed_seconds, None);
+        assert_eq!(row.current_elapsed_days, Some(0));
+        assert_eq!(row.current_elapsed_seconds, Some(0));
 
         Ok(())
     }
