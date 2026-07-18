@@ -932,23 +932,22 @@ the existing 16,384-row calls. The larger state-only call still releases the
 Python GIL, and a roughly 208,000-review rebuild reports progress between its
 two native calls.
 
-When replaying historical reviews, Anki uses each card's current deck config as
-an approximation of the preset routing that existed at review time. By default,
-it does not resolve add-on preset overlays or re-evaluate dynamic preset routing
-for every historical review, which keeps RWKV state-cache building faster for
-collections that do not route a card between presets during its lifetime.
+When replaying historical reviews, Anki resolves each card's current FSRS preset
+once, including any matching add-on preset overlay, and uses that preset for the
+card's retained review history. This approximates the card as staying in its
+currently resolved preset for its lifetime without repeatedly evaluating add-on
+routing rules.
 
 If `rwkv_review_dynamic_preset_replay` is enabled on any RWKV-enabled preset,
-RWKV first resolves each historical card's current FSRS preset, including any
-matching add-on preset overlay. If the current FSRS preset overlay includes
-structured `simulator_rules`, as produced by the dynamic preset add-on for
-interval-split presets, RWKV evaluates those rules against historical replay
-facts where available. In particular, interval bounds use the card's previous
-historical interval at the time of the review, so a card that crosses an `ivl`
-threshold during replay can move from the young preset stream to the mature
-preset stream. Rules that depend on mutable present-day searches, note fields,
-tags, or deck membership are still evaluated from the current collection state
-and remain an approximation for old reviews.
+and the current FSRS preset overlay includes structured `simulator_rules`, as
+produced by the dynamic preset add-on for interval-split presets, RWKV
+re-evaluates those rules against historical replay facts for every review. In
+particular, interval bounds use the card's previous historical interval at the
+time of the review, so a card that crosses an `ivl` threshold during replay can
+move from the young preset stream to the mature preset stream. Rules that depend
+on mutable present-day searches, note fields, tags, or deck membership are still
+evaluated from the current collection state and remain an approximation for old
+reviews.
 
 The cache also stores the previous review id per card, because incremental
 replay needs the elapsed time from each card's prior review. It also stores the

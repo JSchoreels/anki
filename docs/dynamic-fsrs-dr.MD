@@ -24,10 +24,11 @@ When RWKV review is enabled, live RWKV-Curve answer-button intervals use the
 per-answer Dynamic DR targets exposed on the scheduling states. RWKV-Curve
 interval projection used by RWKV maintenance/simulation helpers uses the
 resolved preset desired retention.
-RWKV historical state-cache replay resolves add-on preset overlays and evaluates
-add-on `simulator_rules` only when `rwkv_review_dynamic_preset_replay` is
-enabled on an RWKV-enabled preset; otherwise, each historical review uses the
-card's current deck config as the preset stream.
+RWKV historical state-cache replay always resolves each card's current add-on
+preset overlay once. With `rwkv_review_dynamic_preset_replay` disabled, that
+resolved preset is reused for the card's retained history. Enabling the option on
+an RWKV-enabled preset additionally evaluates add-on `simulator_rules` for every
+historical review, allowing a card to move between preset streams.
 
 When FSRS-7 params are optimized with Dynamic DR enabled, Anki first optimizes the normal FSRS params, then trains the ADR policy for that preset with the default ADR retention bounds `0.30-0.995`. The ADR simulator is shaped from the selected training slice: deck size is the number of reviewed cards, learn span is the number of days with learning reviews, and learn limit is the rounded cards-per-learning-day rate. The optimize request may override the ADR simulator review limit and daily cost budget in minutes; defaults are `9999` reviews and `720` minutes. It then computes simulation-backed calibration weights by bisection for evenly spaced average ADR desired-retention targets, stores the subset of those weights that can be mapped to fixed-FSRS equivalent DRs, and stores the efficient fixed-target frontier points from ADR training. It stores the policy coefficients, all calibration families, and the bounds in deck config. When Dynamic DR is disabled, optimization leaves any stored Dynamic DR data unchanged and uses the normal fixed desired-retention scheduler path.
 

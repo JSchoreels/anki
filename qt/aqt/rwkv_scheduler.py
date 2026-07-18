@@ -125,15 +125,16 @@ _RWKV_CALIBRATION_METRIC_EPSILON = 1e-6
 _RWKV_CALIBRATION_TRAIN_FRACTION = 0.70
 _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 9
+_RWKV_STATE_CACHE_VERSION = 10
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 2
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
-_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT9\0"
-_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS9\0"
+_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT10\0"
+_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS10\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
@@ -6396,7 +6397,7 @@ def _rwkv_memorised_history_identity(
     review_count: int,
 ) -> str:
     value = {
-        "version": 1,
+        "version": 2,
         "collection": _rwkv_collection_cache_key(reviewer),
         "model": _rwkv_model_cache_key(),
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
@@ -8879,6 +8880,7 @@ def _rwkv_state_cache_metadata(
 ) -> dict[str, object]:
     return {
         "version": _RWKV_STATE_CACHE_VERSION,
+        "presetReplaySemantics": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "collection": _rwkv_collection_cache_key(reviewer),
         "model": _rwkv_model_cache_key(),
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
@@ -8900,6 +8902,8 @@ def _rwkv_state_cache_metadata_usable(
         _RWKV_STATE_CACHE_VERSION,
         _RWKV_STATE_CACHE_LEGACY_JSON_VERSION,
     ):
+        return False
+    if metadata.get("presetReplaySemantics") != _RWKV_PRESET_REPLAY_SEMANTICS_VERSION:
         return False
     if metadata.get("collection") != _rwkv_collection_cache_key(reviewer):
         return False
@@ -9502,6 +9506,8 @@ def _rwkv_state_cache_metadata_matches_manifest(
     snapshot_review_id = _int_value(manifest_metadata.get("snapshotReviewId"))
     return (
         snapshot_metadata.get("version") == _RWKV_STATE_CACHE_VERSION
+        and snapshot_metadata.get("presetReplaySemantics")
+        == manifest_metadata.get("presetReplaySemantics")
         and snapshot_metadata.get("collection") == manifest_metadata.get("collection")
         and snapshot_metadata.get("model") == manifest_metadata.get("model")
         and snapshot_metadata.get("dynamicPresetReplay")
@@ -9629,19 +9635,15 @@ def _historical_rwkv_review_inputs(
     deck_configs_by_deck_id = _historical_deck_configs_by_deck_id(reviewer, input_rows)
     deck_config_elapsed_ms = (time.monotonic() - deck_config_start) * 1000
     preset_start = time.monotonic()
-    preset_id_by_card: dict[int, int | str | None] = (
-        cast(
-            dict[int, int | str | None],
-            _resolved_fsrs_preset_ids(
-                reviewer,
-                _historical_rwkv_review_card_ids(input_rows),
-            ),
-        )
-        if dynamic_preset_replay
-        else _historical_deck_config_ids_by_card(
+    preset_id_by_card = _historical_deck_config_ids_by_card(
+        reviewer,
+        input_rows,
+        deck_configs_by_deck_id=deck_configs_by_deck_id,
+    )
+    preset_id_by_card.update(
+        _resolved_fsrs_preset_ids(
             reviewer,
-            input_rows,
-            deck_configs_by_deck_id=deck_configs_by_deck_id,
+            _historical_rwkv_review_card_ids(input_rows),
         )
     )
     preset_elapsed_ms = (time.monotonic() - preset_start) * 1000

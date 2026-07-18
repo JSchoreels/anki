@@ -2851,23 +2851,26 @@ def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
     ]
 
 
-def test_reviewer_rwkv_warmup_skips_historical_interval_split_rules_by_default() -> (
-    None
-):
+def test_reviewer_rwkv_warmup_pins_resolved_preset_without_dynamic_replay() -> None:
     first_review = (39 * 86_400 + 100) * 1000
     second_review = (40 * 86_400 + 100) * 1000
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
-    rpc = _RwkvQueueScoreRpc()
     set_reviewer_backend(backend)
     reviewer = _rwkv_reviewer(
-        rpc=rpc,
-        resolved_preset_id="addon:test:current",
+        resolved_preset_id=None,
         historical_review_rows=[
             (first_review, 1, 10, 100, 2, 1234, 1, 20, 2500),
             (second_review, 1, 10, 100, 3, 2345, 1, 30, 2400),
         ],
     )
+    resolved_card_ids: list[int] = []
+
+    def resolve_preset(card_id: int) -> SimpleNamespace:
+        resolved_card_ids.append(card_id)
+        return SimpleNamespace(id="addon:test:current")
+
+    reviewer.mw.col.fsrs_preset_for_card = resolve_preset
     reviewer.mw.col.get_config = lambda key: {
         "simulator_rules": [
             {
@@ -2884,10 +2887,10 @@ def test_reviewer_rwkv_warmup_skips_historical_interval_split_rules_by_default()
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
     assert [item.identity.preset_id for item in runtime.answered_inputs] == [
-        1000,
-        1000,
+        _expected_preset_hash("addon:test:current"),
+        _expected_preset_hash("addon:test:current"),
     ]
-    assert rpc.preset_id_calls == []
+    assert resolved_card_ids == [1]
 
 
 def test_reviewer_rwkv_prediction_skips_until_background_warmup_finishes() -> None:
@@ -3079,6 +3082,11 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     )
     monkeypatch.setattr(
         rwkv_scheduler,
+        "_resolved_fsrs_preset_ids",
+        lambda reviewer, card_ids: {},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
         "_deck_config_for_deck_id",
         lambda reviewer, deck_id: {"id": deck_id * 10},
     )
@@ -3103,6 +3111,7 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     assert count_calls == []
     assert history.deck_id is None
     assert history.review_count == 2
+    assert [review.identity.preset_id for review in history.reviews] == [1000, 2000]
 
 
 def test_historical_rwkv_review_inputs_skips_full_scan_when_cache_is_current(

@@ -385,10 +385,10 @@ deck-config-rwkv-review-first-review-elapsed-from-card-creation-tooltip =
     review as unknown.
 deck-config-rwkv-review-dynamic-preset-replay = Dynamic Preset Addon Support
 deck-config-rwkv-review-dynamic-preset-replay-tooltip =
-    Turn this on only if you use a dynamic-preset add-on that can move a card
-    between presets over time. While rebuilding its review history, RWKV will
-    reapply those rules so each review uses the preset that matched the card at
-    that time. Leaving this off makes rebuilding faster.
+    RWKV always resolves each card's current add-on preset once when rebuilding
+    review history. Turn this on only if the add-on can move a card between
+    presets over time; RWKV will then reapply its rules at every historical
+    review. Leaving this off reuses the initially resolved preset for the card.
 deck-config-custom-scheduling = Custom scheduling
 deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at your own risk!
 
