@@ -43,6 +43,7 @@ pub(crate) const DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW: bool = true;
 pub(crate) const DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS: u32 = 5;
 pub(crate) const DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS: u32 = 30;
 pub(crate) const DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION: bool = true;
+pub(crate) const DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER: bool = true;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct DeckConfig {
@@ -90,6 +91,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
     rwkv_review_first_review_elapsed_from_card_creation:
         DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
+    rwkv_review_enforce_grade_order: DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,

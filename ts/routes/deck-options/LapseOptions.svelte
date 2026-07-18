@@ -141,7 +141,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 >
                     <SettingTitle>
                         <GlobalLabel
-                            title={"Skip learning/relearning queues with FSRS"}
+                            title={"Skip learning/relearning queues with FSRS/RWKV"}
                         />
                     </SettingTitle>
                 </SwitchRow>

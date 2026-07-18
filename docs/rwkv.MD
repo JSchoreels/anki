@@ -6,8 +6,9 @@ intervals and store RWKV-Curve S90 values. RWKV-Instant retrievability is
 recorded on live review answers and can separately be used for review queue
 selection when **Use RWKV-Instant to choose review cards** is enabled. To use
 RWKV-Curve without RWKV-Instant ordering, enable the first option and leave the
-second disabled. Mobile clients do not load the RWKV backend and continue to
-schedule with FSRS/SM2.
+second disabled. To use FSRS intervals with RWKV-Instant queue selection, leave
+the first option disabled and enable the second. Mobile clients do not load the
+RWKV backend and continue to schedule with FSRS/SM2.
 
 ## Settings And Storage
 
@@ -23,7 +24,7 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
 `rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
-`true`.
+`true`, and `rwkv_review_enforce_grade_order`, which defaults to `true`.
 
 Development code that reads deck configs through the legacy Python
 `DeckConfigDict` API should tolerate both shapes:
@@ -144,15 +145,16 @@ fresh full snapshot and compacts the delta log.
 
 ## Queue Scoring
 
-When RWKV review and `rwkv_review_instant_order_enabled` are both enabled, the
-desktop reviewer may install a transient per-card RWKV-Instant retrievability
-map for the current deck tree before building the review queue. The map is
-scoped to the selected deck and scheduler day. For every review sort order, the
-RWKV scores determine which scored review cards are eligible. Ascending and
-descending retrievability additionally use the RWKV score as their sort key;
-the other review orders retain their normal sorting behavior after RWKV
-eligibility is applied. This can include review cards whose stored due day is
-still in the future when RWKV considers them due. A scored review card is
+When `rwkv_review_instant_order_enabled` is enabled, independently of
+`rwkv_review_enabled`, the desktop reviewer may install a transient per-card
+RWKV-Instant retrievability map for the current deck tree before building the
+review queue. The map is scoped to the selected deck and scheduler day. For
+every review sort order, the RWKV scores determine which scored review cards
+are eligible. Ascending and descending retrievability additionally use the
+RWKV score as their sort key; the other review orders retain their normal
+sorting behavior after RWKV eligibility is applied. This can include review
+cards whose stored due day is still in the future when RWKV considers them
+due. A scored review card is
 considered due when its RWKV retrievability is at or below the card's current
 target retention; cards above that threshold are not admitted through either the
 RWKV ordering path or the normal due fallback until a later prediction puts them
@@ -178,12 +180,12 @@ for the first historical review during state replay. Disable
 `rwkv_review_first_review_elapsed_from_card_creation` to treat elapsed time
 before a card's first review as unknown instead.
 
-If RWKV review is enabled but `rwkv_review_instant_order_enabled` is disabled,
+If RWKV-Curve is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a
 fallback. Queue gathering treats the review order as normal due-day ordering
 until RWKV-Instant ordering is explicitly enabled. This does not affect
-answer-button scheduling: RWKV-Curve intervals are still used while RWKV review
-is enabled.
+answer-button scheduling: RWKV-Curve intervals are still used. If both options
+are disabled, FSRS interval and queue behavior is unchanged.
 
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
@@ -236,21 +238,39 @@ Card Info score takes precedence, then the active review-queue score, then the
 broader stats graph score. Cards without a current RWKV score continue to use
 exact FSRS retrievability.
 
-Card Info, review queue scoring, and stats graph scoring all use the same active
-RWKV score cache. If a current-day score is already installed for a card, Card
-Info displays that active score so it matches Browser `prop:r`, review queue
-ordering, and stats graphs. If no active score exists, Card Info queries RWKV
-through the same review-candidate prediction path and installs the resulting
-card-specific score. Queue and stats requests batch many cards; Card Info sends
-a one-card batch when it needs to query RWKV.
+Card Info refreshes its score through the RWKV review-candidate prediction path
+each time it renders instead of reusing a score installed by Card Info, review
+queue ordering, or stats graphs. It then installs the refreshed card-specific
+score in the shared active cache, so Browser `prop:r` and other consumers use
+the latest Card Info value. Queue and stats requests batch many cards; Card Info
+sends a one-card batch. When current scheduling states are available, Card Info
+uses them directly so Filtered cards report the same Curve and S90 values as
+their rendered answer buttons; bulk card-state reconstruction is only a
+fallback. The stateful prediction memo may reuse that query only
+while the RWKV state and the card's complete query input remain unchanged; an
+answered review clears the memo before the next Card Info refresh.
 
-Current-card RWKV queries derive elapsed time from the card's stored
-`last_review_time` when present. If that value is missing, the backend falls
-back to the scheduler's latest eligible revlog lookup for the card. Rated
-manual review rows are treated like normal review rows; reset rows, reschedule
-rows, and other non-answer rows are not used as the last review. If neither
-source exists, the query leaves current elapsed unknown instead of inferring it
-from `due - ivl`.
+Current-card Review, Relearning, and Filtered RWKV queries derive both elapsed
+days and elapsed seconds from the card's stored `last_review_time`, so an early
+review cannot combine its scheduled interval with its wall-clock elapsed time.
+If that value is missing, the backend falls back to the scheduler's latest
+eligible revlog lookup for the card. Rated manual review rows are treated like
+normal review rows; reset rows, reschedule rows, and other non-answer rows are
+not used as the last review. If neither source exists, the query leaves current
+elapsed unknown instead of inferring it from `due - ivl`.
+
+Card Info also simulates Again, Hard, Good, and Easy independently from one
+shared RWKV state snapshot. **R After Review** queries the simulated state with
+zero elapsed days and seconds. **R After 10min** queries the same simulated
+state with zero elapsed days and 600 elapsed seconds. These rows report
+RWKV-Instant predictions after each hypothetical answer; they are separate from
+the RWKV-Curve predictions used for answer-button intervals.
+
+For RWKV-Curve-enabled cards, **RWKV Curve Next S90** reports the Curve S90
+predicted for each hypothetical answer, while **FSRS Next S90** reports Anki's
+FSRS S90 from the unmodified scheduling states for the same four answers.
+Learning and relearning steps may therefore show a short answer-button delay
+even when their underlying next S90 is much longer.
 
 Search Stats Extended can also request an isolated historical RWKV Memorised
 build through `aqt.rwkv_scheduler`. The build uses a separate embedded runtime,
@@ -270,15 +290,26 @@ non-append changes within the cached review prefix, still require a full build.
 
 ## Answer Button Intervals And S90
 
-When RWKV review is enabled and the desktop RWKV backend is available, the
+When RWKV-Curve is enabled and the desktop RWKV backend is available, the
 reviewer computes each answer button by simulating that rating from the current
 RWKV state. The embedded runtime evaluates the current query plus hypothetical
 Again, Hard, Good, and Easy answer states. Each hypothetical answer state
-returns an RWKV-Curve; Anki uses that curve to find the interval at the target
-retention for that grade. The interval is the first sampled downward crossing
-of the target. A temporary increase while the curve is still above the target
-does not invalidate that crossing; if the curve never reaches the target, the
-configured maximum interval is used.
+returns an RWKV-Curve. Anki evaluates its monotonic exponential-mixture base and
+uses that curve to find the interval at the target retention for that grade.
+The model's experimental piecewise `ahead_logits` correction is deliberately
+ignored because it can make predicted retrievability increase with elapsed
+time. The interval is the first sampled downward crossing of the target; if the
+curve never reaches the target, the configured maximum interval is used.
+
+**Keep RWKV intervals in answer order** is enabled by default. It keeps
+`Again <= Hard <= Good <= Easy` for both the target-retention intervals and the
+per-grade S90 values. When neighboring RWKV predictions conflict, Anki replaces
+the conflicting estimates with their shared average until they are in order,
+then chooses the intervals from those adjusted estimates. This is the Pool
+Adjacent Violators Algorithm (PAVA). With per-grade Dynamic DR targets, Anki
+applies the same balancing to each prediction's distance from its own target.
+Disabling the option uses the raw, independently calculated RWKV-Curve
+crossings.
 
 The target retention is the scheduler's desired retention for the card. If
 Dynamic Desired Retention is active for the scheduling states, RWKV receives the

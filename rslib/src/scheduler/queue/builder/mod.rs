@@ -288,7 +288,7 @@ impl Context {
 
 impl QueueSortOptions {
     fn uses_rwkv_review_order(&self) -> bool {
-        self.rwkv_review_enabled && self.rwkv_review_instant_order_enabled
+        self.rwkv_review_instant_order_enabled
     }
 
     fn uses_rwkv_retrievability_scores(&self) -> bool {
@@ -301,7 +301,7 @@ impl QueueSortOptions {
     }
 
     fn gather_review_order(&self) -> ReviewCardOrder {
-        if self.rwkv_review_enabled
+        if (self.rwkv_review_enabled || self.rwkv_review_instant_order_enabled)
             && matches!(
                 self.review_order,
                 ReviewCardOrder::RetrievabilityAscending
@@ -446,10 +446,10 @@ mod test {
             self.add_or_update_deck(deck).unwrap();
         }
 
-        fn set_deck_rwkv_review_order(&mut self, deck: &mut Deck, order: ReviewCardOrder) {
+        fn set_deck_rwkv_instant_order(&mut self, deck: &mut Deck, order: ReviewCardOrder) {
             let mut conf = DeckConfig::default();
             conf.inner.review_order = order as i32;
-            conf.inner.rwkv_review_enabled = true;
+            conf.inner.rwkv_review_enabled = false;
             conf.inner.rwkv_review_instant_order_enabled = true;
             self.add_or_update_deck_config(&mut conf).unwrap();
             deck.normal_mut().unwrap().config_id = conf.id.0;
@@ -1047,7 +1047,7 @@ mod test {
         ] {
             let mut col = Collection::new();
             let mut deck = col.get_or_create_normal_deck("Default")?;
-            col.set_deck_rwkv_review_order(&mut deck, order);
+            col.set_deck_rwkv_instant_order(&mut deck, order);
 
             let timing = col.timing_today()?;
             let unscored_due = add_memory_state_card(
@@ -1113,7 +1113,7 @@ mod test {
     fn rwkv_instant_preserves_due_day_review_order() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::Day);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::Day);
 
         let timing = col.timing_today()?;
         let unscored_due = add_memory_state_card(
@@ -1155,7 +1155,7 @@ mod test {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         let other_deck = col.get_or_create_normal_deck("Other")?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
 
         let timing = col.timing_today()?;
         let due_review = add_memory_state_card(
@@ -1203,7 +1203,7 @@ mod test {
     fn rwkv_retrievability_order_keeps_due_reviews_without_scores() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
 
         let timing = col.timing_today()?;
         let due_review_without_score = add_memory_state_card(
@@ -1597,7 +1597,7 @@ mod test {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
 
         let timing = col.timing_today()?;
         let older_due_high_r = add_memory_state_card(
@@ -1646,7 +1646,7 @@ mod test {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
 
         let timing = col.timing_today()?;
         let older_due_high_r = add_memory_state_card(
@@ -1731,7 +1731,7 @@ mod test {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_current_deck(deck.id)?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
 
         let timing = col.timing_today()?;
         let first = add_memory_state_card(
@@ -1780,7 +1780,7 @@ mod test {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_current_deck(deck.id)?;
-        col.set_deck_rwkv_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
 
         let timing = col.timing_today()?;
         let first = add_memory_state_card(

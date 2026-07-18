@@ -99,16 +99,11 @@ impl Collection {
             .and_then(|deck| deck.config_id())
             .and_then(|config_id| configs.get(&config_id))
         {
-            Some(config)
-                if config.inner.rwkv_review_enabled
-                    && config.inner.rwkv_review_instant_order_enabled =>
-            {
-                (
-                    config.inner.rwkv_review_allow_same_day_review,
-                    config.inner.rwkv_review_min_intervening_reviews,
-                    config.inner.rwkv_review_min_elapsed_secs,
-                )
-            }
+            Some(config) if config.inner.rwkv_review_instant_order_enabled => (
+                config.inner.rwkv_review_allow_same_day_review,
+                config.inner.rwkv_review_min_intervening_reviews,
+                config.inner.rwkv_review_min_elapsed_secs,
+            ),
             _ => return Ok(()),
         };
 

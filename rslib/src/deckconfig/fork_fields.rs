@@ -10,6 +10,7 @@ use super::DeckConfigInner;
 use super::FsrsVersion;
 use super::DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER;
 use super::DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
 use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
 use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
@@ -209,6 +210,8 @@ struct RwkvDeckConfigFields {
     rwkv_review_candidate_refresh_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_first_review_elapsed_from_card_creation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_enforce_grade_order: Option<bool>,
 }
 
 impl RwkvDeckConfigFields {
@@ -244,6 +247,10 @@ impl RwkvDeckConfigFields {
             rwkv_review_first_review_elapsed_from_card_creation: non_default(
                 config.rwkv_review_first_review_elapsed_from_card_creation,
                 DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
+            ),
+            rwkv_review_enforce_grade_order: non_default(
+                config.rwkv_review_enforce_grade_order,
+                DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
             ),
         }
     }
@@ -282,6 +289,9 @@ impl RwkvDeckConfigFields {
         if let Some(value) = self.rwkv_review_first_review_elapsed_from_card_creation {
             config.rwkv_review_first_review_elapsed_from_card_creation = value;
         }
+        if let Some(value) = self.rwkv_review_enforce_grade_order {
+            config.rwkv_review_enforce_grade_order = value;
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -305,6 +315,9 @@ pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
     if !config.rwkv_review_first_review_elapsed_from_card_creation {
         config.rwkv_review_first_review_elapsed_from_card_creation =
             DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
+    }
+    if !config.rwkv_review_enforce_grade_order {
+        config.rwkv_review_enforce_grade_order = DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER;
     }
 
     if let Some(fields) = fork_fields_from_other(&config.other) {
@@ -424,6 +437,7 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.rwkv_review_dynamic_preset_replay = false;
     config.rwkv_review_candidate_refresh_enabled = false;
     config.rwkv_review_first_review_elapsed_from_card_creation = false;
+    config.rwkv_review_enforce_grade_order = false;
 }
 
 fn non_empty_vec(values: &[f32]) -> Option<Vec<f32>> {
@@ -482,6 +496,7 @@ mod tests {
             rwkv_review_dynamic_preset_replay: true,
             rwkv_review_candidate_refresh_enabled: true,
             rwkv_review_first_review_elapsed_from_card_creation: false,
+            rwkv_review_enforce_grade_order: false,
             ..Default::default()
         }
     }
@@ -510,6 +525,7 @@ mod tests {
         assert!(!storage_config.rwkv_review_dynamic_preset_replay);
         assert!(!storage_config.rwkv_review_candidate_refresh_enabled);
         assert!(!storage_config.rwkv_review_first_review_elapsed_from_card_creation);
+        assert!(!storage_config.rwkv_review_enforce_grade_order);
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
         let fsrs_other = other.get(FSRS_FORK_FIELDS_KEY).unwrap();
@@ -536,6 +552,7 @@ mod tests {
         assert!(fsrs_other
             .get("rwkv_review_first_review_elapsed_from_card_creation")
             .is_none());
+        assert!(fsrs_other.get("rwkv_review_enforce_grade_order").is_none());
         assert_eq!(
             other.get(RWKV_FORK_FIELDS_KEY),
             Some(&json!({
@@ -550,6 +567,7 @@ mod tests {
                 "rwkv_review_dynamic_preset_replay": true,
                 "rwkv_review_candidate_refresh_enabled": true,
                 "rwkv_review_first_review_elapsed_from_card_creation": false,
+                "rwkv_review_enforce_grade_order": false,
             }))
         );
     }
@@ -615,6 +633,10 @@ mod tests {
             decoded.rwkv_review_first_review_elapsed_from_card_creation,
             config.rwkv_review_first_review_elapsed_from_card_creation
         );
+        assert_eq!(
+            decoded.rwkv_review_enforce_grade_order,
+            config.rwkv_review_enforce_grade_order
+        );
     }
 
     #[test]
@@ -661,6 +683,10 @@ mod tests {
             config.rwkv_review_first_review_elapsed_from_card_creation,
             DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
         );
+        assert_eq!(
+            config.rwkv_review_enforce_grade_order,
+            DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER
+        );
     }
 
     #[test]
@@ -679,6 +705,7 @@ mod tests {
                     "rwkv_review_dynamic_preset_replay": true,
                     "rwkv_review_candidate_refresh_enabled": true,
                     "rwkv_review_first_review_elapsed_from_card_creation": true,
+                    "rwkv_review_enforce_grade_order": false,
                 },
             }))
             .unwrap(),
@@ -700,6 +727,7 @@ mod tests {
         assert!(config.rwkv_review_dynamic_preset_replay);
         assert!(config.rwkv_review_candidate_refresh_enabled);
         assert!(config.rwkv_review_first_review_elapsed_from_card_creation);
+        assert!(!config.rwkv_review_enforce_grade_order);
     }
 
     #[test]
@@ -718,6 +746,7 @@ mod tests {
                     "rwkv_review_dynamic_preset_replay": true,
                     "rwkv_review_candidate_refresh_enabled": true,
                     "rwkv_review_first_review_elapsed_from_card_creation": true,
+                    "rwkv_review_enforce_grade_order": true,
                 },
                 RWKV_FORK_FIELDS_KEY: {
                     "rwkv_review_enabled": false,
@@ -731,6 +760,7 @@ mod tests {
                     "rwkv_review_dynamic_preset_replay": false,
                     "rwkv_review_candidate_refresh_enabled": false,
                     "rwkv_review_first_review_elapsed_from_card_creation": false,
+                    "rwkv_review_enforce_grade_order": false,
                 },
             }))
             .unwrap(),
@@ -752,5 +782,6 @@ mod tests {
         assert!(!config.rwkv_review_dynamic_preset_replay);
         assert!(!config.rwkv_review_candidate_refresh_enabled);
         assert!(!config.rwkv_review_first_review_elapsed_from_card_creation);
+        assert!(!config.rwkv_review_enforce_grade_order);
     }
 }

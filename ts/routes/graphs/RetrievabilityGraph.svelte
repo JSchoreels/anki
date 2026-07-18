@@ -19,6 +19,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         prepareData,
         type RetrievabilityHistogramData,
         retrievabilityHistogramGraph,
+        shouldShowRetrievabilityGraph,
     } from "./retrievability";
     import TableData from "./TableData.svelte";
     import PercentageRange from "./PercentageRange.svelte";
@@ -50,7 +51,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const subtitle = tr.statisticsRetrievabilitySubtitle();
 </script>
 
-{#if sourceData?.fsrs}
+{#if shouldShowRetrievabilityGraph(sourceData)}
     <Graph {title} {subtitle}>
         <PercentageRange bind:range />
 

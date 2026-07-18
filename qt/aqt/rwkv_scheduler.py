@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple, Protocol, TypeVar, cast
 
-from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
+from anki import collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.consts import (
     CARD_TYPE_LRN,
     CARD_TYPE_NEW,
@@ -138,6 +138,10 @@ _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
 _RWKV_RATING_FIELDS = ("again", "hard", "good", "easy")
+_RWKV_AFTER_REVIEW_HORIZONS = (
+    ("RWKV : R After Review", 0),
+    ("RWKV : R After 10min", 600),
+)
 _RWKV_MEMORISED_CHECKPOINT_INTERVAL_SECONDS = 30.0
 
 
@@ -208,6 +212,7 @@ class RwkvReviewerDiagnostics:
     retrievability: float | None
     retrievability_source: str
     button_probabilities: RwkvButtonProbabilities | None = None
+    s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
 
 
 @dataclass(frozen=True)
@@ -243,6 +248,7 @@ class RwkvReviewInput:
         float | None,
         float | None,
     ] = (None, None, None, None)
+    enforce_grade_order: bool = True
 
 
 @dataclass(frozen=True)
@@ -2188,11 +2194,12 @@ def update_reviewer_scheduling_states(
         return states
 
     try:
-        review_enabled = rwkv_review_enabled(reviewer, card)
-        if review_enabled and not _prepare_reviewer_backend_for_review(reviewer):
+        curve_enabled = rwkv_review_enabled(reviewer, card)
+        review_active = rwkv_review_active(reviewer, card)
+        if review_active and not _prepare_reviewer_backend_for_review(reviewer):
             logger.debug("RWKV scheduling prediction skipped: warm-up pending")
             return states
-        if review_enabled:
+        if curve_enabled:
             predict_curve = getattr(
                 _reviewer_backend,
                 "predict_review_uncached",
@@ -2223,10 +2230,10 @@ def update_reviewer_scheduling_states(
             reviewer,
             card,
             prediction,
-            review_enabled=review_enabled,
-            interval_override_used=review_enabled and has_interval_overrides,
+            review_enabled=review_active,
+            interval_override_used=curve_enabled and has_interval_overrides,
         )
-        if review_enabled and has_interval_overrides:
+        if curve_enabled and has_interval_overrides:
             return apply_review_interval_overrides(
                 states,
                 prediction.interval_overrides,
@@ -2248,7 +2255,7 @@ def record_reviewer_answer(
     try:
         if _reviewer_backend is None:
             return
-        if rwkv_review_enabled(
+        if rwkv_review_active(
             reviewer, card
         ) and not _prepare_reviewer_backend_for_review(reviewer):
             logger.debug("RWKV answer update skipped: warm-up pending")
@@ -2310,7 +2317,6 @@ def refresh_answered_card_queue_score(
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if not (
         isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
@@ -2406,7 +2412,6 @@ def _prepare_current_deck_review_queue_scores(
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if not (
         isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
@@ -2456,7 +2461,6 @@ def prepare_reviewer_queue_order_async_work(
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if not (
         isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
@@ -2752,16 +2756,14 @@ def reviewer_queue_order_enabled(reviewer: object) -> bool:
         return False
 
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-    return (
-        isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
-        and _rwkv_review_instant_order_enabled(deck_config)
+    return isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
+        deck_config
     )
 
 
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     card = getattr(reviewer, "card", None)
-    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    deck_config = _rwkv_review_active_deck_config(reviewer, card)
     if deck_config is None or not _rwkv_review_instant_order_enabled(deck_config):
         return False
 
@@ -2789,7 +2791,6 @@ def reviewer_queue_order_refresh_on_exit_enabled(reviewer: object) -> bool:
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     return (
         isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
         and _rwkv_review_refresh_on_exit(deck_config)
     )
@@ -3191,10 +3192,8 @@ def deck_browser_rwkv_count_scope_ids(
         if not isinstance(deck_id, int):
             return
         deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-        enabled = (
-            isinstance(deck_config, dict)
-            and _rwkv_review_config_enabled(deck_config)
-            and _rwkv_review_instant_order_enabled(deck_config)
+        enabled = isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
+            deck_config
         )
         if enabled:
             scopes.append((deck_id, contains_deck(node, current_deck_id)))
@@ -3467,7 +3466,6 @@ def _prewarm_rwkv_review_scores_for_decks(
         deck_config = _deck_config_for_deck_id(reviewer, deck_id)
         if not (
             isinstance(deck_config, dict)
-            and _rwkv_review_config_enabled(deck_config)
             and _rwkv_review_instant_order_enabled(deck_config)
         ):
             continue
@@ -3611,7 +3609,6 @@ def _rwkv_score_prewarm_work_for_deck(
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if not (
         isinstance(deck_config, dict)
-        and _rwkv_review_config_enabled(deck_config)
         and _rwkv_review_instant_order_enabled(deck_config)
     ):
         return None
@@ -3804,24 +3801,6 @@ def current_reviewer_retrievability(
     return prediction.retrievability if prediction else None
 
 
-def _active_rwkv_card_info_diagnostics(
-    reviewer: object,
-    card: object,
-) -> RwkvReviewerDiagnostics | None:
-    card_id = _card_id(card)
-    if card_id is None or not rwkv_review_enabled(reviewer, card):
-        return None
-
-    retrievability = _active_rwkv_retrievability_score(reviewer, card_id)
-    if retrievability is None:
-        return None
-
-    return RwkvReviewerDiagnostics(
-        retrievability=retrievability,
-        retrievability_source="RWKV",
-    )
-
-
 def current_reviewer_diagnostics(
     reviewer: object,
     card: object,
@@ -3836,6 +3815,7 @@ def current_reviewer_diagnostics(
         retrievability=prediction.retrievability,
         retrievability_source=_retrievability_source(prediction, fallback_source),
         button_probabilities=prediction.button_probabilities,
+        s90_overrides=prediction.s90_overrides,
     )
 
 
@@ -3857,51 +3837,61 @@ def rwkv_card_info_rows(
     include_after_review: bool = True,
 ) -> list[tuple[str, str]]:
     card_id = _card_id(card)
-    store_card_info_score = True
-    diagnostics = _active_rwkv_card_info_diagnostics(reviewer, card)
-    if diagnostics is not None:
-        store_card_info_score = False
-    else:
+    if not rwkv_review_active(reviewer, card):
         diagnostics = current_reviewer_diagnostics(
             reviewer,
             card,
             fallback_source=fallback_source,
         )
-    if diagnostics is None:
-        if _reviewer_backend is None and rwkv_review_enabled(reviewer, card):
-            configure_reviewer_backend_from_environment()
-        diagnostics = _queried_card_info_diagnostics(
-            reviewer,
-            card,
-            fallback_source=fallback_source,
-        )
-    if diagnostics is None:
-        if not rwkv_review_enabled(reviewer, card):
-            card_id = _card_id(card)
+        if diagnostics is not None:
             if card_id is not None:
                 _set_rwkv_card_info_score(reviewer, card_id, None)
-            return []
+            return _card_info_diagnostic_rows(diagnostics)
+        if card_id is not None:
+            _set_rwkv_card_info_score(reviewer, card_id, None)
+        return []
+
+    if _reviewer_backend is None:
+        configure_reviewer_backend_from_environment()
+    diagnostics = _queried_card_info_diagnostics(
+        reviewer,
+        card,
+        fallback_source=fallback_source,
+    )
+    if diagnostics is None:
         diagnostics = RwkvReviewerDiagnostics(
             retrievability=None,
             retrievability_source=_unavailable_retrievability_source(fallback_source),
         )
 
-    diagnostics = _with_card_info_button_probabilities(
-        diagnostics,
-        reviewer=reviewer,
-        card=card,
-        fallback_source=fallback_source,
-    )
+    diagnostics = _with_card_info_prediction_details(diagnostics)
 
-    if card_id is not None and store_card_info_score:
+    if card_id is not None:
         retrievability = (
             diagnostics.retrievability
             if diagnostics.retrievability is not None
-            and rwkv_review_enabled(reviewer, card)
+            and rwkv_review_active(reviewer, card)
             else None
         )
         _set_rwkv_card_info_score(reviewer, card_id, retrievability)
 
+    rows = _card_info_diagnostic_rows(diagnostics)
+    if rwkv_review_enabled(reviewer, card):
+        rows.extend(
+            _rwkv_card_info_next_s90_rows(
+                reviewer,
+                card,
+                rwkv_s90_overrides=diagnostics.s90_overrides,
+            )
+        )
+    if include_after_review and rwkv_review_active(reviewer, card):
+        rows.extend(rwkv_card_info_after_review_rows(reviewer, card))
+    return rows
+
+
+def _card_info_diagnostic_rows(
+    diagnostics: RwkvReviewerDiagnostics,
+) -> list[tuple[str, str]]:
     rows = [
         ("RWKV computed R", _format_retrievability(diagnostics.retrievability)),
     ]
@@ -3913,33 +3903,14 @@ def rwkv_card_info_rows(
             )
         )
     rows.append(("Retrievability source", diagnostics.retrievability_source))
-    if include_after_review and rwkv_review_enabled(reviewer, card):
-        rows.append(rwkv_card_info_after_review_row(reviewer, card))
     return rows
 
 
-def _with_card_info_button_probabilities(
+def _with_card_info_prediction_details(
     diagnostics: RwkvReviewerDiagnostics,
-    *,
-    reviewer: object,
-    card: object,
-    fallback_source: str,
 ) -> RwkvReviewerDiagnostics:
-    if diagnostics.button_probabilities is not None:
-        return diagnostics
-    if not rwkv_review_enabled(reviewer, card):
-        return diagnostics
-
-    queried = _queried_card_info_diagnostics(
-        reviewer,
-        card,
-        fallback_source=fallback_source,
-    )
-    if queried is None or queried.button_probabilities is None:
-        return diagnostics
-
-    button_probabilities = queried.button_probabilities
-    if diagnostics.retrievability is not None:
+    button_probabilities = diagnostics.button_probabilities
+    if button_probabilities is not None and diagnostics.retrievability is not None:
         button_probabilities = _rwkv_button_probabilities_with_retrievability(
             button_probabilities,
             diagnostics.retrievability,
@@ -3949,17 +3920,105 @@ def _with_card_info_button_probabilities(
         retrievability=diagnostics.retrievability,
         retrievability_source=diagnostics.retrievability_source,
         button_probabilities=button_probabilities,
+        s90_overrides=diagnostics.s90_overrides,
     )
+
+
+def _rwkv_card_info_next_s90_rows(
+    reviewer: object,
+    card: object,
+    *,
+    rwkv_s90_overrides: RwkvIntervalOverride,
+) -> list[tuple[str, str]]:
+    rwkv_values = tuple(
+        getattr(rwkv_s90_overrides, rating) for rating in _RWKV_RATING_FIELDS
+    )
+    states = _scheduling_states_for_card(reviewer, card)
+    fsrs_values = (
+        tuple(
+            _s90_for_scheduling_state(getattr(states, rating))
+            for rating in _RWKV_RATING_FIELDS
+        )
+        if states is not None
+        else (None, None, None, None)
+    )
+    return [
+        ("RWKV Curve Next S90", _format_next_s90_values(rwkv_values)),
+        ("FSRS Next S90", _format_next_s90_values(fsrs_values)),
+    ]
+
+
+def _s90_for_scheduling_state(state: SchedulingState) -> float | None:
+    state_kind = state.WhichOneof("kind")
+    if state_kind == "normal":
+        return _s90_for_normal_scheduling_state(state.normal)
+    if state_kind == "filtered" and state.filtered.WhichOneof("kind") == "rescheduling":
+        return _s90_for_normal_scheduling_state(
+            state.filtered.rescheduling.original_state
+        )
+    return None
+
+
+def _s90_for_normal_scheduling_state(normal: Any) -> float | None:
+    normal_kind = normal.WhichOneof("kind")
+    if normal_kind == "learning":
+        return _s90_from_memory_state(normal.learning.memory_state)
+    if normal_kind == "review":
+        return _s90_from_memory_state(normal.review.memory_state)
+    if normal_kind == "relearning":
+        return _s90_from_memory_state(
+            normal.relearning.learning.memory_state
+        ) or _s90_from_memory_state(normal.relearning.review.memory_state)
+    return None
+
+
+def _s90_from_memory_state(memory_state: object) -> float | None:
+    value = getattr(memory_state, "stability", None)
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    ):
+        return float(value)
+    return None
+
+
+def _format_next_s90_values(values: Sequence[float | int | None]) -> str:
+    return " ".join(
+        f"{label}:{_format_s90_days(value)}"
+        for label, value in zip(
+            ("Again", "Hard", "Good", "Easy"),
+            values,
+            strict=True,
+        )
+    )
+
+
+def _format_s90_days(value: float | int | None) -> str:
+    if value is None or not math.isfinite(value) or value <= 0:
+        return "Unavailable"
+    amount = f"{value:.2f}".rstrip("0").rstrip(".")
+    return f"{amount}d"
 
 
 def rwkv_card_info_after_review_row(
     reviewer: object,
     card: object,
 ) -> tuple[str, str]:
+    """Return the immediate post-review row for compatibility with callers."""
+
+    return rwkv_card_info_after_review_rows(reviewer, card)[0]
+
+
+def rwkv_card_info_after_review_rows(
+    reviewer: object,
+    card: object,
+) -> list[tuple[str, str]]:
     try:
         backend = _reviewer_backend
         if backend is None:
-            return _unavailable_rwkv_card_info_after_review_row()
+            return _unavailable_rwkv_card_info_after_review_rows()
 
         cache_snapshot = getattr(backend, "cache_snapshot", None)
         predict_after_reviews = getattr(
@@ -3968,24 +4027,24 @@ def rwkv_card_info_after_review_row(
             None,
         )
         if not callable(cache_snapshot) or not callable(predict_after_reviews):
-            return _unavailable_rwkv_card_info_after_review_row()
+            return _unavailable_rwkv_card_info_after_review_rows()
 
         candidate = _card_info_review_candidate(reviewer, card)
-        if not rwkv_review_enabled(candidate.reviewer, candidate.card):
-            return _unavailable_rwkv_card_info_after_review_row()
+        if not rwkv_review_active(candidate.reviewer, candidate.card):
+            return _unavailable_rwkv_card_info_after_review_rows()
         if not _prepare_reviewer_backend_for_card_info(reviewer):
             logger.debug(
                 "RWKV card info after-review prediction skipped: warm-up pending"
             )
-            return _unavailable_rwkv_card_info_after_review_row()
+            return _unavailable_rwkv_card_info_after_review_rows()
 
         card_id = _card_id(candidate.card)
         if card_id is None:
-            return _unavailable_rwkv_card_info_after_review_row()
+            return _unavailable_rwkv_card_info_after_review_rows()
 
         identity = rwkv_review_identity(candidate.reviewer, candidate.card)
         if identity is None:
-            return _unavailable_rwkv_card_info_after_review_row()
+            return _unavailable_rwkv_card_info_after_review_rows()
 
         snapshot = cache_snapshot()
         query_input = rwkv_review_input(
@@ -4009,43 +4068,86 @@ def rwkv_card_info_after_review_row(
             )
             for _, ease in labeled_eases
         ]
+        horizon_inputs = [
+            (
+                horizon_index,
+                replace(
+                    query_input,
+                    current_elapsed_days=0,
+                    current_elapsed_seconds=elapsed_seconds,
+                ),
+            )
+            for horizon_index, (_, elapsed_seconds) in enumerate(
+                _RWKV_AFTER_REVIEW_HORIZONS
+            )
+        ]
         score_batches = predict_after_reviews(
             answers=answer_inputs,
-            inputs_by_card_id=[(card_id, query_input)],
+            inputs_by_card_id=horizon_inputs,
             snapshot=snapshot,
         )
         if score_batches is None or len(score_batches) != len(labeled_eases):
-            return _unavailable_rwkv_card_info_after_review_row()
+            return _unavailable_rwkv_card_info_after_review_rows()
 
-        values: list[str] = []
-        have_prediction = False
-        for (label, _), scores in zip(labeled_eases, score_batches, strict=True):
-            score_by_card_id = dict(scores or [])
-            retrievability = score_by_card_id.get(card_id)
-            have_prediction = have_prediction or retrievability is not None
-            values.append(f"{label}:{_format_retrievability(retrievability)}")
+        rows: list[tuple[str, str]] = []
+        for horizon_index, (row_label, _) in enumerate(_RWKV_AFTER_REVIEW_HORIZONS):
+            values: list[str] = []
+            have_prediction = False
+            for (rating_label, _), scores in zip(
+                labeled_eases,
+                score_batches,
+                strict=True,
+            ):
+                score_by_horizon = dict(scores or [])
+                retrievability = score_by_horizon.get(horizon_index)
+                have_prediction = have_prediction or retrievability is not None
+                values.append(
+                    f"{rating_label}:{_format_retrievability(retrievability)}"
+                )
 
-        if not have_prediction:
-            return _unavailable_rwkv_card_info_after_review_row()
+            rows.append(
+                (
+                    row_label,
+                    " ".join(values)
+                    if have_prediction
+                    else _unavailable_rwkv_card_info_after_review_value(),
+                )
+            )
 
-        return ("RWKV : R After Review", " ".join(values))
+        return rows
     except Exception:
         logger.exception("RWKV card info after-review prediction failed")
-        return _unavailable_rwkv_card_info_after_review_row()
+        return _unavailable_rwkv_card_info_after_review_rows()
+
+
+def _unavailable_rwkv_card_info_after_review_value() -> str:
+    return "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable"
+
+
+def _unavailable_rwkv_card_info_after_review_rows() -> list[tuple[str, str]]:
+    return [
+        (label, _unavailable_rwkv_card_info_after_review_value())
+        for label, _ in _RWKV_AFTER_REVIEW_HORIZONS
+    ]
 
 
 def _unavailable_rwkv_card_info_after_review_row() -> tuple[str, str]:
-    return (
-        "RWKV : R After Review",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    )
+    return _unavailable_rwkv_card_info_after_review_rows()[0]
 
 
 def rwkv_review_enabled(
     reviewer: object,
     card: object,
 ) -> bool:
-    return _rwkv_review_enabled_deck_config(reviewer, card) is not None
+    deck_config = _deck_config_for_deck_id(reviewer, _deck_id(card))
+    return isinstance(deck_config, dict) and _rwkv_review_config_enabled(deck_config)
+
+
+def rwkv_review_active(
+    reviewer: object,
+    card: object,
+) -> bool:
+    return _rwkv_review_active_deck_config(reviewer, card) is not None
 
 
 def _rwkv_collection_config_state(
@@ -4066,7 +4168,7 @@ def _rwkv_collection_config_state(
     review_enabled = False
     dynamic_preset_replay_enabled = False
     for config in configs:
-        if not isinstance(config, dict) or not _rwkv_review_config_enabled(config):
+        if not isinstance(config, dict) or not _rwkv_review_config_active(config):
             continue
         review_enabled = True
         if _rwkv_review_dynamic_preset_replay(config):
@@ -4078,7 +4180,7 @@ def _rwkv_collection_config_state(
     )
 
 
-def _rwkv_review_enabled_deck_config(
+def _rwkv_review_active_deck_config(
     reviewer: object,
     card: object,
 ) -> dict[str, object] | None:
@@ -4087,7 +4189,7 @@ def _rwkv_review_enabled_deck_config(
     if not isinstance(deck_config, dict):
         return None
 
-    return deck_config if _rwkv_review_config_enabled(deck_config) else None
+    return deck_config if _rwkv_review_config_active(deck_config) else None
 
 
 def rwkv_review_identity(
@@ -4117,9 +4219,7 @@ def rwkv_review_input(
     current_state = _current_scheduling_state(reviewer)
     state_kind, normal_state_kind = _scheduling_state_kinds(current_state)
     elapsed_days, elapsed_seconds = _scheduling_state_elapsed(current_state)
-    if normal_state_kind == "review" and elapsed_seconds is None:
-        elapsed_seconds = _elapsed_seconds_since_card_last_review(card)
-    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    deck_config = _rwkv_review_active_deck_config(reviewer, card)
     if (
         normal_state_kind == "new"
         and elapsed_seconds is None
@@ -4152,6 +4252,16 @@ def rwkv_review_input(
             base_review_state=base_review_state,
         )
 
+    if review_state in (
+        int(RwkvReviewState.REVIEW),
+        int(RwkvReviewState.RELEARNING),
+        int(RwkvReviewState.FILTERED),
+    ):
+        elapsed_days, elapsed_seconds = _elapsed_since_card_last_review(
+            reviewer,
+            card,
+        )
+
     if review_state != base_review_state:
         state_kind, normal_state_kind = _rwkv_review_state_kinds(review_state)
     card_queue = _int_attr(card, "queue")
@@ -4179,6 +4289,10 @@ def rwkv_review_input(
             reviewer=reviewer,
             card=card,
             states=_scheduling_states(reviewer),
+        ),
+        enforce_grade_order=(
+            not isinstance(deck_config, dict)
+            or _rwkv_review_enforce_grade_order_config(deck_config)
         ),
     )
 
@@ -4575,7 +4689,7 @@ def set_answer_rwkv_metadata(
     card: object,
     ease: int,
 ) -> None:
-    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    deck_config = _rwkv_review_active_deck_config(reviewer, card)
     if deck_config is not None:
         current_state = _current_scheduling_state(reviewer)
         state_kind, normal_state_kind = _scheduling_state_kinds(current_state)
@@ -4663,7 +4777,7 @@ def _queried_card_info_diagnostics(
 
     try:
         candidate = _card_info_review_candidate(reviewer, card)
-        review_enabled = rwkv_review_enabled(candidate.reviewer, candidate.card)
+        review_enabled = rwkv_review_active(candidate.reviewer, candidate.card)
         if review_enabled and not _prepare_reviewer_backend_for_card_info(reviewer):
             logger.debug("RWKV card info prediction skipped: warm-up pending")
             return None
@@ -4682,6 +4796,7 @@ def _queried_card_info_diagnostics(
                 review_enabled
                 and _has_interval_overrides(prediction.interval_overrides)
             ),
+            s90_overrides=prediction.s90_overrides,
             button_probabilities=prediction.button_probabilities,
         )
         return RwkvReviewerDiagnostics(
@@ -4691,6 +4806,7 @@ def _queried_card_info_diagnostics(
                 fallback_source,
             ),
             button_probabilities=reviewer_prediction.button_probabilities,
+            s90_overrides=reviewer_prediction.s90_overrides,
         )
     except Exception:
         logger.exception("RWKV card info prediction failed")
@@ -4698,19 +4814,19 @@ def _queried_card_info_diagnostics(
 
 
 def _card_info_review_candidate(reviewer: object, card: object) -> RwkvReviewCandidate:
+    states = _scheduling_states_for_card(reviewer, card)
+    if states is not None:
+        context = SimpleNamespace(
+            mw=getattr(reviewer, "mw", None),
+            _v3=SimpleNamespace(states=states),
+        )
+        return RwkvReviewCandidate(reviewer=context, card=card)
+
     candidate = _shared_card_info_review_candidate(reviewer, card)
     if candidate is not None:
         return candidate
 
-    states = _scheduling_states_for_card(reviewer, card)
-    if states is None:
-        return RwkvReviewCandidate(reviewer=reviewer, card=card)
-
-    context = SimpleNamespace(
-        mw=getattr(reviewer, "mw", None),
-        _v3=SimpleNamespace(states=states),
-    )
-    return RwkvReviewCandidate(reviewer=context, card=card)
+    return RwkvReviewCandidate(reviewer=reviewer, card=card)
 
 
 def _shared_card_info_review_candidate(
@@ -6238,10 +6354,28 @@ def rwkv_memorised_history_identity(mw: object) -> str:
     rows = (
         all_rows(
             f"""
-select coalesce(max(r.id), 0), count()
-from revlog r
-join cards c on c.id = r.cid
-where {_rwkv_historical_answer_sql_condition("r")}
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    r.type,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where {_rwkv_historical_answer_sql_condition("r")}
+), retained_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+), retained as (
+  select e.id
+  from eligible e
+  join retained_starts s on s.cid = e.cid
+  where e.id >= s.start_id
+)
+select coalesce(max(id), 0), count()
+from retained
 """
         )
         if callable(all_rows)
@@ -10107,6 +10241,27 @@ def _rwkv_review_config_enabled(deck_config: dict[str, object]) -> bool:
     return False
 
 
+def _rwkv_review_enforce_grade_order_config(deck_config: dict[str, object]) -> bool:
+    nested = _rwkv_other_config(deck_config)
+    if nested is not None:
+        value = nested.get("rwkv_review_enforce_grade_order")
+        if isinstance(value, bool):
+            return value
+
+    value = _rwkv_config_direct_value(
+        deck_config,
+        "rwkvReviewEnforceGradeOrder",
+        "rwkv_review_enforce_grade_order",
+    )
+    return value if isinstance(value, bool) else True
+
+
+def _rwkv_review_config_active(deck_config: dict[str, object]) -> bool:
+    return _rwkv_review_config_enabled(
+        deck_config
+    ) or _rwkv_review_instant_order_enabled(deck_config)
+
+
 def _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer: object) -> bool:
     return _rwkv_collection_config_state(reviewer).dynamic_preset_replay_enabled
 
@@ -11022,7 +11177,7 @@ def _rwkv_review_queue_score_result(
             deck_configs[deck_id] = (
                 deck_config
                 if isinstance(deck_config, dict)
-                and _rwkv_review_config_enabled(deck_config)
+                and _rwkv_review_config_active(deck_config)
                 else None
             )
 
@@ -11247,7 +11402,7 @@ def _rwkv_stats_graph_scores(
             deck_configs[deck_id] = (
                 deck_config
                 if isinstance(deck_config, dict)
-                and _rwkv_review_config_enabled(deck_config)
+                and _rwkv_review_config_active(deck_config)
                 else None
             )
 
@@ -11454,7 +11609,7 @@ def reviewer_queue_order_min_intervening_reviews(
 ) -> int:
     if card is None:
         card = getattr(reviewer, "card", None)
-    deck_config = _rwkv_review_enabled_deck_config(reviewer, card)
+    deck_config = _rwkv_review_active_deck_config(reviewer, card)
     return _rwkv_review_min_intervening_reviews(deck_config) if deck_config else 0
 
 
@@ -11660,6 +11815,7 @@ def _rwkv_review_reschedule_items_for_deck(
     if input_build is None:
         return None
 
+    input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
     input_build = _resolve_dynamic_desired_retentions_for_input_build(
         reviewer,
         input_build,
@@ -11746,6 +11902,7 @@ def _rwkv_review_reschedule_items(
             use_enabled_deck_filter=True,
         )
         if input_build is not None:
+            input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
             input_build = _resolve_dynamic_desired_retentions_for_input_build(
                 reviewer,
                 input_build,
@@ -11836,6 +11993,37 @@ def _rwkv_review_reschedule_items(
         len(items),
     )
     return items
+
+
+def _rwkv_curve_enabled_input_build(
+    reviewer: object,
+    input_build: RwkvReviewInputBatchBuild,
+) -> RwkvReviewInputBatchBuild:
+    curve_enabled_by_deck_id: dict[int | None, bool] = {}
+    inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
+
+    for batch_size, inputs in input_build.inputs_by_batch_size.items():
+        enabled_inputs: list[tuple[int, RwkvReviewInput]] = []
+        for card_id, review_input in inputs:
+            deck_id = review_input.identity.deck_id
+            if deck_id not in curve_enabled_by_deck_id:
+                deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+                curve_enabled_by_deck_id[deck_id] = isinstance(
+                    deck_config, dict
+                ) and _rwkv_review_config_enabled(deck_config)
+            if curve_enabled_by_deck_id[deck_id]:
+                enabled_inputs.append((card_id, review_input))
+        if enabled_inputs:
+            inputs_by_batch_size[batch_size] = enabled_inputs
+
+    eligible_cards = sum(len(inputs) for inputs in inputs_by_batch_size.values())
+    removed_cards = max(0, input_build.eligible_cards - eligible_cards)
+    return replace(
+        input_build,
+        inputs_by_batch_size=inputs_by_batch_size,
+        disabled_config_cards=input_build.disabled_config_cards + removed_cards,
+        eligible_cards=eligible_cards,
+    )
 
 
 def _rwkv_review_reschedule_items_from_input_predictions(
@@ -12583,7 +12771,7 @@ def _rwkv_review_input_batches_for_ids(
             deck_configs[deck_id] = (
                 deck_config
                 if isinstance(deck_config, dict)
-                and _rwkv_review_config_enabled(deck_config)
+                and _rwkv_review_config_active(deck_config)
                 else None
             )
 
@@ -13535,7 +13723,7 @@ def _all_deck_ids(reviewer: object) -> set[int] | None:
 
 def _rwkv_deck_id_enabled(reviewer: object, deck_id: int) -> bool:
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-    return isinstance(deck_config, dict) and _rwkv_review_config_enabled(deck_config)
+    return isinstance(deck_config, dict) and _rwkv_review_config_active(deck_config)
 
 
 def _latest_eligible_review_times_for_cards(
@@ -13804,6 +13992,7 @@ def _rwkv_review_input_for_stats_graph_card(
             target_retention,
             target_retention,
         ),
+        enforce_grade_order=_rwkv_review_enforce_grade_order_config(deck_config),
     )
 
 
@@ -13866,6 +14055,7 @@ def _rwkv_review_input_for_stats_graph_fields(
             target_retention,
             target_retention,
         ),
+        enforce_grade_order=_rwkv_review_enforce_grade_order_config(deck_config),
     )
 
 
@@ -14030,8 +14220,27 @@ def _stats_graph_elapsed_seconds_for_review_time(
     return _elapsed_seconds_since_review_time(last_review_time)
 
 
-def _elapsed_seconds_since_card_last_review(card: object) -> int | None:
-    return _elapsed_seconds_since_review_time(getattr(card, "last_review_time", None))
+def _elapsed_since_card_last_review(
+    reviewer: object,
+    card: object,
+) -> tuple[int | None, int | None]:
+    last_review_time = getattr(card, "last_review_time", None)
+    if not isinstance(last_review_time, int) or isinstance(last_review_time, bool):
+        card_id = _card_id(card)
+        previous = (
+            _latest_eligible_review_for_card(reviewer, card_id)
+            if card_id is not None
+            else None
+        )
+        last_review_time = previous[0] // 1000 if previous is not None else None
+
+    return (
+        _stats_graph_elapsed_days_for_review_time(
+            last_review_time,
+            _timing_today(reviewer),
+        ),
+        _elapsed_seconds_since_review_time(last_review_time),
+    )
 
 
 def _elapsed_seconds_since_review_time(last_review_time: object) -> int | None:
@@ -14407,48 +14616,6 @@ def _set_rwkv_card_info_score(
     if retrievability is not None:
         request.retrievability = retrievability
     set_score(request)
-
-
-def _active_rwkv_retrievability_score(
-    reviewer: object,
-    card_id: int,
-) -> float | None:
-    mw = getattr(reviewer, "mw", None)
-    col = getattr(mw, "col", None)
-    backend = getattr(col, "_backend", None)
-    get_score_raw = getattr(backend, "get_rwkv_retrievability_score_raw", None)
-    get_score = getattr(backend, "get_rwkv_retrievability_score", None)
-    if not callable(get_score_raw) and not callable(get_score):
-        return None
-
-    try:
-        if callable(get_score_raw):
-            request = cards_pb2.CardId(cid=card_id)
-            response = scheduler_pb2.RwkvRetrievabilityScoreResponse()
-            response.ParseFromString(get_score_raw(request.SerializeToString()))
-        else:
-            response = get_score(card_id)
-    except Exception:
-        logger.debug(
-            "failed to read active RWKV retrievability score: card_id=%s",
-            card_id,
-        )
-        return None
-
-    if isinstance(response, float):
-        return response if math.isfinite(response) and 0 <= response <= 1 else None
-
-    has_field = getattr(response, "HasField", None)
-    if callable(has_field) and not has_field("retrievability"):
-        return None
-
-    retrievability = getattr(response, "retrievability", None)
-    if not isinstance(retrievability, float) or not math.isfinite(retrievability):
-        return None
-    if not 0 <= retrievability <= 1:
-        return None
-
-    return retrievability
 
 
 def _clear_rwkv_review_queue_scores(

@@ -61,6 +61,10 @@ export interface RetrievabilityHistogramData {
 const fsrsColour = "#2f9e44";
 const rwkvColour = "#d6a21d";
 
+export function shouldShowRetrievabilityGraph(data: GraphsResponse | null): boolean {
+    return Boolean(data?.fsrs || data?.retrievability?.rwkv);
+}
+
 function gatherSeries(data: ProtobufRetrievabilitySeries): SeriesData {
     return {
         retrievability: numericMap(data.retrievability),

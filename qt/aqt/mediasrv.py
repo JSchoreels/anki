@@ -1144,7 +1144,7 @@ def card_stats() -> bytes:
         response = CardStatsResponse()
         response.ParseFromString(raw_output)
         card = aqt.mw.col.get_card(CardId(response.card_id))
-        if not aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card):
+        if not aqt.rwkv_scheduler.rwkv_review_active(reviewer, card):
             logger.debug(
                 "card stats served: hook_count=%s backend_elapsed_ms=%.1f elapsed_ms=%.1f",
                 hook_count,

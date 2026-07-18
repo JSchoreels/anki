@@ -328,15 +328,21 @@ deck-config-rwkv-review-enabled-tooltip =
     Again, Hard, Good, and Easy. This does not enable RWKV-Instant review queue
     ordering; that is controlled by the separate option below. Other devices
     continue to use FSRS or SM-2.
+deck-config-rwkv-review-enforce-grade-order = Keep RWKV intervals in answer order
+deck-config-rwkv-review-enforce-grade-order-tooltip =
+    Keep Again, Hard, Good, and Easy in a sensible interval order. When RWKV's
+    four predictions disagree, Anki gently balances the conflicting predictions
+    before choosing the intervals. Turn this off to use the raw RWKV-Curve
+    results.
 deck-config-rwkv-review-instant-order = Use RWKV-Instant to choose review cards
 deck-config-rwkv-review-instant-order-recommended = Recommended: Use Ascending Retrievability
 deck-config-rwkv-review-instant-order-tooltip =
     RWKV decides which review cards are ready, and your selected review sort
     order determines how those cards are shown. A card may appear before its
     normal due date, or wait longer, depending on whether your estimated chance
-    of remembering it has fallen to your Desired Retention. This does not change
-    the RWKV-Curve intervals shown on the answer buttons. Leave this off to use
-    RWKV-Curve intervals without RWKV-Instant queue selection.
+    of remembering it has fallen to your Desired Retention. This setting is
+    independent of RWKV-Curve: turn Curve off to keep FSRS intervals, or leave
+    this off to use RWKV-Curve intervals without RWKV-Instant queue selection.
 deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to

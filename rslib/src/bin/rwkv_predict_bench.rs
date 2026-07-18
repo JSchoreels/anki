@@ -716,6 +716,7 @@ fn collection_warmup_reviews(
             current_elapsed_days: Some(elapsed_days),
             current_elapsed_seconds: Some(elapsed_seconds),
             target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+            enforce_grade_order: true,
         });
     }
 
@@ -852,6 +853,7 @@ limit {limit}"
                 Some(target_retention),
                 Some(target_retention),
             ],
+            enforce_grade_order: true,
         });
     }
 
@@ -953,5 +955,6 @@ fn synthetic_input(index: usize, card_id: i64, is_query: bool, ease: Option<u8>)
         current_elapsed_days: Some(1 + (index % 120) as i64),
         current_elapsed_seconds: None,
         target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+        enforce_grade_order: true,
     }
 }

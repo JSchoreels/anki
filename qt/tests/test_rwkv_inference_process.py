@@ -560,6 +560,7 @@ def _rwkv_review_args(
         deck_state,
         preset_state,
         global_state,
+        True,
     )
 
 
@@ -669,15 +670,18 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
                 global_state=global_state,
             )
         )
-        query_input = _rwkv_review_args(
-            review,
-            is_query=True,
-            card_state=None,
-            note_state=None,
-            deck_state=None,
-            preset_state=None,
-            global_state=None,
-        )[:15]
+        query_input = (
+            *_rwkv_review_args(
+                review,
+                is_query=True,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
         resident_output = runtime.predict_retrievability_many_from_warm_up(
             [query_input]
         )
@@ -734,15 +738,18 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
             )[0]
         )
         batch_inputs.append(
-            _rwkv_review_args(
-                review,
-                is_query=True,
-                card_state=None,
-                note_state=None,
-                deck_state=None,
-                preset_state=None,
-                global_state=None,
-            )[:15]
+            (
+                *_rwkv_review_args(
+                    review,
+                    is_query=True,
+                    card_state=None,
+                    note_state=None,
+                    deck_state=None,
+                    preset_state=None,
+                    global_state=None,
+                )[:15],
+                True,
+            )
         )
     assert runtime.predict_retrievability_many_from_warm_up(
         batch_inputs

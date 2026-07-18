@@ -8,6 +8,7 @@ mod transact;
 pub(crate) mod undo;
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::path::PathBuf;
@@ -158,21 +159,25 @@ pub struct Collection {
 pub(crate) struct RwkvRetrievabilityScores {
     pub(crate) days_elapsed: u32,
     scores: HashMap<CardId, RwkvRetrievabilityScore>,
+    stats_graph_scores: VecDeque<RwkvStatsGraphScores>,
     deck_count_scores: HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct RwkvRetrievabilityScore {
-    stats_graph: Option<RwkvStatsGraphScore>,
     review_queue: Option<RwkvReviewQueueScore>,
     card_info: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
-struct RwkvStatsGraphScore {
+struct RwkvStatsGraphScores {
     search: String,
-    retrievability: f32,
+    scores: HashMap<CardId, f32>,
 }
+
+// Different stats filters can be prepared concurrently. Keep a small set of
+// recent snapshots so one request cannot invalidate another before it renders.
+const MAX_RWKV_STATS_GRAPH_SEARCHES: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
 struct RwkvReviewQueueScore {
@@ -202,35 +207,44 @@ impl RwkvRetrievabilityScores {
     fn active_score_for_card(&self, card_id: CardId, stats_search: Option<&str>) -> Option<f32> {
         self.scores
             .get(&card_id)
-            .and_then(|score| score.active_score(stats_search))
+            .and_then(RwkvRetrievabilityScore::active_score)
+            .or_else(|| self.stats_graph_score_for_card(card_id, stats_search))
     }
 
     fn active_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
-        let scores: HashMap<_, _> = self
-            .scores
-            .iter()
-            .filter_map(|(&card_id, score)| {
-                score
-                    .active_score(stats_search)
-                    .map(|retrievability| (card_id, retrievability))
-            })
-            .collect();
+        let mut scores = self.stats_graph_scores(stats_search).unwrap_or_default();
+        for (&card_id, score) in &self.scores {
+            if let Some(retrievability) = score.active_score() {
+                scores.insert(card_id, retrievability);
+            }
+        }
 
         (!scores.is_empty()).then_some(scores)
     }
 
     fn stats_graph_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
-        let scores: HashMap<_, _> = self
-            .scores
-            .iter()
-            .filter_map(|(&card_id, score)| {
-                score
-                    .stats_graph_score(stats_search)
-                    .map(|retrievability| (card_id, retrievability))
-            })
-            .collect();
+        self.stats_graph_score_map(stats_search).cloned()
+    }
 
-        (!scores.is_empty()).then_some(scores)
+    fn stats_graph_score_map(&self, stats_search: Option<&str>) -> Option<&HashMap<CardId, f32>> {
+        match stats_search {
+            Some(search) => self
+                .stats_graph_scores
+                .iter()
+                .rev()
+                .find(|entry| entry.search == search),
+            None => self.stats_graph_scores.back(),
+        }
+        .map(|entry| &entry.scores)
+    }
+
+    fn stats_graph_score_for_card(
+        &self,
+        card_id: CardId,
+        stats_search: Option<&str>,
+    ) -> Option<f32> {
+        self.stats_graph_score_map(stats_search)
+            .and_then(|scores| scores.get(&card_id).copied())
     }
 
     fn review_queue_scores(
@@ -277,16 +291,15 @@ impl RwkvRetrievabilityScores {
     }
 
     fn set_stats_graph_scores(&mut self, search: String, scores: HashMap<CardId, f32>) {
-        for score in self.scores.values_mut() {
-            score.stats_graph = None;
+        self.stats_graph_scores
+            .retain(|entry| entry.search != search);
+        if !scores.is_empty() {
+            self.stats_graph_scores
+                .push_back(RwkvStatsGraphScores { search, scores });
+            while self.stats_graph_scores.len() > MAX_RWKV_STATS_GRAPH_SEARCHES {
+                self.stats_graph_scores.pop_front();
+            }
         }
-        for (card_id, retrievability) in scores {
-            self.scores.entry(card_id).or_default().stats_graph = Some(RwkvStatsGraphScore {
-                search: search.clone(),
-                retrievability,
-            });
-        }
-        self.prune_empty_scores();
     }
 
     fn set_review_queue_scores(
@@ -353,7 +366,9 @@ impl RwkvRetrievabilityScores {
     }
 
     fn is_empty(&self) -> bool {
-        self.scores.is_empty() && self.deck_count_scores.is_empty()
+        self.scores.is_empty()
+            && self.stats_graph_scores.is_empty()
+            && self.deck_count_scores.is_empty()
     }
 
     fn prune_empty_scores(&mut self) {
@@ -362,21 +377,13 @@ impl RwkvRetrievabilityScores {
 }
 
 impl RwkvRetrievabilityScore {
-    fn active_score(&self, stats_search: Option<&str>) -> Option<f32> {
+    fn active_score(&self) -> Option<f32> {
         self.card_info
             .or_else(|| self.review_queue.map(|score| score.entry.retrievability))
-            .or_else(|| self.stats_graph_score(stats_search))
-    }
-
-    fn stats_graph_score(&self, stats_search: Option<&str>) -> Option<f32> {
-        self.stats_graph
-            .as_ref()
-            .filter(|score| stats_search.map_or(true, |search| score.search == search))
-            .map(|score| score.retrievability)
     }
 
     fn is_empty(&self) -> bool {
-        self.stats_graph.is_none() && self.review_queue.is_none() && self.card_info.is_none()
+        self.review_queue.is_none() && self.card_info.is_none()
     }
 }
 
@@ -460,6 +467,7 @@ impl Collection {
             self.state.rwkv_retrievability_scores = Some(RwkvRetrievabilityScores {
                 days_elapsed,
                 scores: HashMap::new(),
+                stats_graph_scores: VecDeque::new(),
                 deck_count_scores: HashMap::new(),
             });
         }

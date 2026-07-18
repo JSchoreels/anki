@@ -365,6 +365,7 @@ pub struct ReviewInput {
     pub current_elapsed_days: Option<i64>,
     pub current_elapsed_seconds: Option<i64>,
     pub target_retentions: [Option<f32>; 4],
+    pub enforce_grade_order: bool,
 }
 
 pub struct ReviewState<'a> {
@@ -1092,18 +1093,25 @@ impl RwkvInference {
         input: &ReviewInput,
         answer_heads: &[ReviewHeads],
     ) -> ([Option<u32>; 4], [Option<u32>; 4]) {
-        let mut intervals = [None; 4];
-        let mut s90s = [None; 4];
+        let curves = std::array::from_fn(|index| &answer_heads[index].curve);
+        let target_retentions = std::array::from_fn(|index| {
+            input.target_retentions[index].unwrap_or(self.target_retention)
+        });
 
-        for (index, heads) in answer_heads.iter().enumerate().take(4) {
-            let target_retention = input.target_retentions[index].unwrap_or(self.target_retention);
-            intervals[index] =
-                interval_for_curve(&heads.curve, target_retention, self.max_interval_days);
-            s90s[index] =
-                interval_for_curve(&heads.curve, S90_TARGET_RETENTION, self.max_interval_days);
-        }
-
-        (intervals, s90s)
+        (
+            intervals_for_answer_curves(
+                curves,
+                target_retentions,
+                self.max_interval_days,
+                input.enforce_grade_order,
+            ),
+            intervals_for_answer_curves(
+                curves,
+                [S90_TARGET_RETENTION; 4],
+                self.max_interval_days,
+                input.enforce_grade_order,
+            ),
+        )
     }
 
     fn current_intervals(
@@ -3439,6 +3447,153 @@ fn interval_for_curve(
     Some(max_interval_days)
 }
 
+fn intervals_for_answer_curves(
+    curves: [&ReviewCurve; 4],
+    target_retentions: [f32; 4],
+    max_interval_days: u32,
+    enforce_grade_order: bool,
+) -> [Option<u32>; 4] {
+    if !enforce_grade_order
+        || max_interval_days < 1
+        || target_retentions
+            .iter()
+            .any(|target| !(0.0..=1.0).contains(target))
+    {
+        return std::array::from_fn(|index| {
+            interval_for_curve(curves[index], target_retentions[index], max_interval_days)
+        });
+    }
+
+    intervals_for_pava_adjusted_samples(target_retentions, max_interval_days, |day| {
+        std::array::from_fn(|index| {
+            predict_curve(curves[index], day as f32 * SECONDS_PER_DAY as f32)
+        })
+    })
+}
+
+fn intervals_for_pava_adjusted_samples(
+    target_retentions: [f32; 4],
+    max_interval_days: u32,
+    mut retrievabilities_for_day: impl FnMut(u32) -> [f32; 4],
+) -> [Option<u32>; 4] {
+    if max_interval_days < 1
+        || target_retentions
+            .iter()
+            .any(|target| !(0.0..=1.0).contains(target))
+    {
+        return [None; 4];
+    }
+
+    let mut intervals = [None; 4];
+    let mut previous: [Option<(u32, f32)>; 4] = [None; 4];
+    for day in interval_search_days(max_interval_days) {
+        // Pool distance-to-target values rather than raw probabilities so that
+        // per-grade Dynamic DR targets retain the same crossing-order guarantee.
+        let retrievabilities = retrievabilities_for_day(day);
+        let margins =
+            std::array::from_fn(|index| retrievabilities[index] - target_retentions[index]);
+        let adjusted_margins = pava_non_decreasing(margins);
+
+        for index in 0..4 {
+            if intervals[index].is_some() {
+                continue;
+            }
+
+            let margin = adjusted_margins[index];
+            if margin <= 0.0 {
+                intervals[index] = Some(match previous[index] {
+                    Some((previous_day, previous_margin)) => interpolated_crossing_interval(
+                        previous_day,
+                        previous_margin,
+                        day,
+                        margin,
+                        max_interval_days,
+                    ),
+                    None => day.clamp(1, max_interval_days),
+                });
+            }
+            previous[index] = Some((day, margin));
+        }
+        if intervals.iter().all(Option::is_some) {
+            break;
+        }
+    }
+
+    std::array::from_fn(|index| Some(intervals[index].unwrap_or(max_interval_days)))
+}
+
+fn interpolated_crossing_interval(
+    previous_day: u32,
+    previous_margin: f32,
+    day: u32,
+    margin: f32,
+    max_interval_days: u32,
+) -> u32 {
+    let span = day - previous_day;
+    let denominator = previous_margin - margin;
+    let interpolated = if denominator <= 0.0 {
+        day as f32
+    } else {
+        previous_day as f32 + span as f32 * previous_margin / denominator
+    };
+    clamped_interval_days(interpolated, max_interval_days)
+}
+
+fn pava_non_decreasing(values: [f32; 4]) -> [f32; 4] {
+    #[derive(Clone, Copy)]
+    struct Block {
+        first: usize,
+        last: usize,
+        sum: f32,
+        count: usize,
+    }
+
+    impl Block {
+        fn mean(self) -> f32 {
+            self.sum / self.count as f32
+        }
+    }
+
+    let empty_block = Block {
+        first: 0,
+        last: 0,
+        sum: 0.0,
+        count: 0,
+    };
+    let mut blocks = [empty_block; 4];
+    let mut block_count = 0;
+    for (index, value) in values.into_iter().enumerate() {
+        blocks[block_count] = Block {
+            first: index,
+            last: index,
+            sum: value,
+            count: 1,
+        };
+        block_count += 1;
+        while block_count >= 2 {
+            let right = blocks[block_count - 1];
+            let left = blocks[block_count - 2];
+            if left.mean() <= right.mean() {
+                break;
+            }
+
+            blocks[block_count - 2] = Block {
+                first: left.first,
+                last: right.last,
+                sum: left.sum + right.sum,
+                count: left.count + right.count,
+            };
+            block_count -= 1;
+        }
+    }
+
+    let mut adjusted = [0.0; 4];
+    for block in &blocks[..block_count] {
+        adjusted[block.first..=block.last].fill(block.mean());
+    }
+    adjusted
+}
+
 fn interval_search_days(max_interval_days: u32) -> Vec<u32> {
     if max_interval_days <= 30 {
         return (1..=max_interval_days).collect();
@@ -3466,33 +3621,7 @@ fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
         let s_space = 0.1 + (s_space_raw - 1.0) * (22.0_f32 - 18.5).exp();
         raw_probability += weight * 0.9_f32.powf(elapsed_seconds / s_space);
     }
-    let curve_probability = 1e-5 + (1.0 - 2e-5) * raw_probability;
-    let curve_logits = (curve_probability / (1.0 - curve_probability)).ln();
-    sigmoid(curve_logits + interp_ahead_logits(&curve.ahead_logits, elapsed_seconds))
-}
-
-fn interp_ahead_logits(ahead_logits: &[f32], elapsed_seconds: f32) -> f32 {
-    let point_count = ahead_logits.len();
-    if point_count < 2 {
-        return ahead_logits.first().copied().unwrap_or(0.0);
-    }
-
-    let point = |index| {
-        let raw = linspace_exp(index, point_count, 18.5);
-        0.5 + (raw - 1.0) * (21.0_f32 - 18.5).exp()
-    };
-
-    let mut right = 0;
-    while right + 1 < point_count && point(right) < elapsed_seconds {
-        right += 1;
-    }
-    let right = right.clamp(1, point_count - 1);
-    let left = right - 1;
-    let xl = point(left);
-    let xr = point(right);
-    let yl = ahead_logits[left];
-    let yr = ahead_logits[right];
-    1e-5 + (1.0 - 2e-5) * (yl + (yr - yl) * (elapsed_seconds - xl) / (xr - xl))
+    1e-5 + (1.0 - 2e-5) * raw_probability
 }
 
 fn linspace_exp(index: usize, count: usize, point_spread: f32) -> f32 {
@@ -6576,6 +6705,7 @@ order by e.id, e.cid
                 current_elapsed_days: Some(elapsed_days),
                 current_elapsed_seconds: Some(elapsed_seconds),
                 target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                enforce_grade_order: true,
             });
         }
 
@@ -7091,6 +7221,7 @@ order by e.id, e.cid
                     current_elapsed_days: Some(next().rem_euclid(45) - 1),
                     current_elapsed_seconds: Some(next().rem_euclid(45 * 86_400) - 1),
                     target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                    enforce_grade_order: true,
                 }
             })
             .collect()
@@ -7120,6 +7251,7 @@ order by e.id, e.cid
                     current_elapsed_days: Some(next().rem_euclid(45) - 1),
                     current_elapsed_seconds: Some(next().rem_euclid(45 * 86_400) - 1),
                     target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                    enforce_grade_order: true,
                 }
             })
             .collect()
@@ -7498,54 +7630,90 @@ order by e.id, e.cid
             weights: vec![1.0],
         };
 
-        assert_eq!(interval_for_curve(&curve, 0.30, 365), Some(365));
+        assert_eq!(interval_for_curve(&curve, 0.0, 365), Some(365));
     }
 
     #[test]
-    fn interval_for_curve_ignores_increase_above_target() {
+    fn predict_curve_ignores_ahead_logits_and_is_monotonic() {
         let curve = ReviewCurve {
-            ahead_logits: vec![0.0, 0.0, 0.0, 8.0, -20.0],
-            weights: vec![1.0],
+            ahead_logits: vec![-20.0, 20.0, -20.0, 20.0],
+            weights: vec![0.2, 0.3, 0.5],
         };
-        let max_interval_days = 36_500;
-        let sampled = interval_search_days(max_interval_days)
-            .into_iter()
-            .map(|day| {
-                (
-                    day,
-                    predict_curve(&curve, day as f32 * SECONDS_PER_DAY as f32),
-                )
-            })
-            .collect::<Vec<_>>();
-        let (increase_index, target_retention) = (1..sampled.len())
-            .find_map(|index| {
-                if sampled[index].1 <= sampled[index - 1].1 + 1e-4 {
-                    return None;
-                }
-                let target = sampled[..=index]
-                    .iter()
-                    .map(|sample| sample.1)
-                    .reduce(f32::min)
-                    .unwrap()
-                    / 2.0;
-                sampled[index + 1..]
-                    .iter()
-                    .any(|sample| sample.1 <= target)
-                    .then_some((index, target))
-            })
-            .expect("curve should rise above a target it crosses later");
-        let increase_day = sampled[increase_index].0;
-        assert!(sampled[..=increase_index]
-            .iter()
-            .all(|sample| sample.1 > target_retention));
+        let same_weights = ReviewCurve {
+            ahead_logits: vec![20.0, -20.0, 20.0, -20.0],
+            weights: curve.weights.clone(),
+        };
+        let elapsed_seconds = [1.0, 60.0, 3_600.0, 86_400.0, 2_592_000.0];
+        let values = elapsed_seconds.map(|seconds| predict_curve(&curve, seconds));
 
-        let interval = interval_for_curve(&curve, target_retention, max_interval_days)
-            .expect("a pre-crossing rise should not invalidate the interval");
-
-        assert!(interval > increase_day);
-        assert!(
-            predict_curve(&curve, interval as f32 * SECONDS_PER_DAY as f32) <= target_retention
+        assert_eq!(
+            values,
+            elapsed_seconds.map(|seconds| predict_curve(&same_weights, seconds))
         );
+        assert!(values.windows(2).all(|pair| pair[0] >= pair[1]));
+    }
+
+    #[test]
+    fn pava_averages_adjacent_grade_order_violations() {
+        let adjusted = pava_non_decreasing([0.30, 0.25, 0.60, 0.90]);
+
+        assert!((adjusted[0] - 0.275).abs() < 1e-6);
+        assert!((adjusted[1] - 0.275).abs() < 1e-6);
+        assert_eq!(adjusted[2], 0.60);
+        assert_eq!(adjusted[3], 0.90);
+    }
+
+    #[test]
+    fn pava_merges_again_when_an_averaged_block_still_violates_order() {
+        let adjusted = pava_non_decreasing([0.55, 0.40, 0.35, 0.90]);
+        let pooled = (0.55 + 0.40 + 0.35) / 3.0;
+
+        assert!(adjusted[..3]
+            .iter()
+            .all(|value| (*value - pooled).abs() < 1e-6));
+        assert_eq!(adjusted[3], 0.90);
+    }
+
+    #[test]
+    fn pava_crossings_are_ordered_with_per_grade_targets() {
+        let targets = [0.50, 0.625, 0.75, 0.875];
+        let raw_crossing_days = [80.0, 20.0, 60.0, 90.0];
+
+        let intervals = intervals_for_pava_adjusted_samples(targets, 100, |day| {
+            std::array::from_fn(|index| {
+                targets[index] + (raw_crossing_days[index] - day as f32) / 1_024.0
+            })
+        });
+
+        assert_eq!(intervals, [Some(50), Some(50), Some(60), Some(90)]);
+    }
+
+    #[test]
+    fn answer_curve_grade_order_enforcement_can_be_disabled() {
+        let curve_for_basis_index = |basis_index: usize| {
+            let mut weights = vec![0.0; basis_index + 1];
+            weights[basis_index] = 1.0;
+            ReviewCurve {
+                ahead_logits: vec![0.0],
+                weights,
+            }
+        };
+        let curves = [
+            curve_for_basis_index(100),
+            curve_for_basis_index(80),
+            curve_for_basis_index(90),
+            curve_for_basis_index(110),
+        ];
+        let curve_refs = std::array::from_fn(|index| &curves[index]);
+
+        let raw = intervals_for_answer_curves(curve_refs, [0.75; 4], 36_500, false);
+        let adjusted = intervals_for_answer_curves(curve_refs, [0.75; 4], 36_500, true);
+
+        assert!(raw[0] > raw[1]);
+        assert!(adjusted
+            .windows(2)
+            .all(|pair| pair[0].unwrap() <= pair[1].unwrap()));
+        assert_ne!(adjusted, raw);
     }
 
     #[test]
@@ -7563,6 +7731,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [Some(0.81), Some(0.82), Some(0.83), Some(0.84)],
+            enforce_grade_order: true,
         };
 
         let good = simulated_answer_input(&input, 3);
@@ -7572,6 +7741,7 @@ order by e.id, e.cid
         assert_eq!(good.card_id, input.card_id);
         assert_eq!(good.current_elapsed_days, input.current_elapsed_days);
         assert_eq!(good.target_retentions, input.target_retentions);
+        assert!(good.enforce_grade_order);
     }
 
     #[test]
@@ -7655,6 +7825,7 @@ order by e.id, e.cid
                 current_elapsed_days: Some((index % 31) as i64),
                 current_elapsed_seconds: Some((index % 31 * 86_400) as i64),
                 target_retentions: [Some(0.9); 4],
+                enforce_grade_order: true,
             }
         }
 
@@ -7807,6 +7978,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
 
         let values = features.features_for(&input);
@@ -7837,6 +8009,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
 
         for (state, expected_scaled_state) in [(2, 0.0), (4, 2.0), (5, 3.0)] {
@@ -7872,6 +8045,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
         let second = ReviewInput {
             card_id: 124,
@@ -7903,6 +8077,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
 
         features.features_for(&input);
@@ -7931,6 +8106,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
 
         let values = features.features_for(&input);
@@ -7969,6 +8145,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
 
         let values = features.features_for(&input);
@@ -7993,6 +8170,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
         let first_values = features.features_for(&input);
 
@@ -8034,6 +8212,7 @@ order by e.id, e.cid
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
+            enforce_grade_order: true,
         };
 
         features.store_review(&input);
@@ -8333,6 +8512,7 @@ order by e.id, e.cid
                 current_elapsed_days: Some(elapsed_days),
                 current_elapsed_seconds: Some(elapsed_seconds),
                 target_retentions: [None; 4],
+                enforce_grade_order: true,
             });
         }
         Ok((reviews, outcomes, target_reviews))

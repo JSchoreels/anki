@@ -223,7 +223,7 @@ impl Collection {
             let Some(config) = configs_by_id.get(&config_id) else {
                 continue;
             };
-            if !config.inner.rwkv_review_enabled && !include_disabled_decks {
+            if !rwkv_config_active(config) && !include_disabled_decks {
                 disabled_config_cards += 1;
                 continue;
             }
@@ -571,10 +571,14 @@ fn rwkv_enabled_deck_ids(
             let config_id = deck.config_id()?;
             configs_by_id
                 .get(&config_id)
-                .is_some_and(|config| config.inner.rwkv_review_enabled)
+                .is_some_and(rwkv_config_active)
                 .then_some(*deck_id)
         })
         .collect()
+}
+
+fn rwkv_config_active(config: &DeckConfig) -> bool {
+    config.inner.rwkv_review_enabled || config.inner.rwkv_review_instant_order_enabled
 }
 
 fn card_desired_retention(card: &Card) -> Option<f32> {
@@ -657,10 +661,11 @@ mod test {
     }
 
     #[test]
-    fn review_input_rows_return_eligible_review_cards() -> Result<()> {
+    fn review_input_rows_return_cards_when_only_instant_is_enabled() -> Result<()> {
         let mut col = Collection::new();
         col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
+            config.rwkv_review_enabled = false;
+            config.rwkv_review_instant_order_enabled = true;
             config.rwkv_review_batch_size = 1024;
             config.desired_retention = 0.86;
         });

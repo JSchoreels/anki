@@ -37,8 +37,9 @@ of FSRS7 settings before committing to them:
   you want to compare against long-term review behavior only.
 - The "Allow same day review for (re)learning steps" option lets FSRS schedule
   short-term learning/relearning reviews on the same day.
-- The "Skip learning/relearning queues with FSRS" option lets FSRS schedule
-  review states directly instead of using the learning/relearning queues.
+- The "Skip learning/relearning queues with FSRS/RWKV" option lets FSRS/RWKV
+  schedule review states directly instead of using the learning/relearning
+  queues.
 
 ## Before You Use It
 

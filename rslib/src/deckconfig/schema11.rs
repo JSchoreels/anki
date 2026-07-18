@@ -23,6 +23,7 @@ use super::DeckConfigInner;
 use super::NewCardInsertOrder;
 use super::DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW;
 use super::DEFAULT_RWKV_REVIEW_BATCH_SIZE;
+use super::DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER;
 use super::DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
 use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
 use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
@@ -161,6 +162,11 @@ pub struct DeckConfSchema11 {
         skip_serializing_if = "is_default_rwkv_review_first_review_elapsed_from_card_creation"
     )]
     rwkv_review_first_review_elapsed_from_card_creation: bool,
+    #[serde(
+        default = "default_rwkv_review_enforce_grade_order",
+        skip_serializing_if = "is_default_rwkv_review_enforce_grade_order"
+    )]
+    rwkv_review_enforce_grade_order: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
     #[serde(default)]
@@ -247,6 +253,14 @@ fn default_rwkv_review_first_review_elapsed_from_card_creation() -> bool {
 
 fn is_default_rwkv_review_first_review_elapsed_from_card_creation(value: &bool) -> bool {
     *value == default_rwkv_review_first_review_elapsed_from_card_creation()
+}
+
+fn default_rwkv_review_enforce_grade_order() -> bool {
+    DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER
+}
+
+fn is_default_rwkv_review_enforce_grade_order(value: &bool) -> bool {
+    *value == default_rwkv_review_enforce_grade_order()
 }
 
 fn is_default_dynamic_desired_retention_min(value: &f32) -> bool {
@@ -501,6 +515,7 @@ impl Default for DeckConfSchema11 {
             rwkv_review_candidate_refresh_enabled: false,
             rwkv_review_first_review_elapsed_from_card_creation:
                 DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
+            rwkv_review_enforce_grade_order: DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
             easy_days_percentages: vec![1.0; 7],
         }
     }
@@ -571,6 +586,7 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_candidate_refresh_enabled: c.rwkv_review_candidate_refresh_enabled,
             rwkv_review_first_review_elapsed_from_card_creation: c
                 .rwkv_review_first_review_elapsed_from_card_creation,
+            rwkv_review_enforce_grade_order: c.rwkv_review_enforce_grade_order,
             disable_autoplay: !c.autoplay,
             cap_answer_time_to_secs: c.max_taken.max(0) as u32,
             show_timer: c.timer != 0,
@@ -632,6 +648,7 @@ impl From<DeckConfSchema11> for DeckConfig {
 // latest schema -> schema 11
 impl From<DeckConfig> for DeckConfSchema11 {
     fn from(c: DeckConfig) -> DeckConfSchema11 {
+        let rwkv_review_enforce_grade_order = c.inner.rwkv_review_enforce_grade_order;
         let i = deck_config_inner_for_storage(&c.inner);
         // split extra json up
         let mut top_other: HashMap<String, Value>;
@@ -767,6 +784,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
             rwkv_review_candidate_refresh_enabled: i.rwkv_review_candidate_refresh_enabled,
             rwkv_review_first_review_elapsed_from_card_creation: i
                 .rwkv_review_first_review_elapsed_from_card_creation,
+            rwkv_review_enforce_grade_order,
             easy_days_percentages: i.easy_days_percentages,
         }
     }
@@ -821,6 +839,7 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "rwkvReviewInstantOrderEnabled",
     "rwkvReviewDynamicPresetReplay",
     "rwkvReviewCandidateRefreshEnabled",
+    "rwkvReviewEnforceGradeOrder",
     "rwkvReviewPresetTagStateEnabled",
     "rwkvReviewJapaneseFeatureStateEnabled",
     "rwkvReviewJapaneseKanjiField",
@@ -1079,6 +1098,23 @@ mod test {
             serialized["rwkvReviewFirstReviewElapsedFromCardCreation"],
             json!(false)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_enforce_grade_order_omits_default_and_serializes_disabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("rwkvReviewEnforceGradeOrder").is_none());
+
+        let default_config = DeckConfSchema11::from(DeckConfig::default());
+        let serialized = serde_json::to_value(default_config)?;
+        assert!(serialized.get("rwkvReviewEnforceGradeOrder").is_none());
+
+        let mut disabled_config = DeckConfig::default();
+        disabled_config.inner.rwkv_review_enforce_grade_order = false;
+        let serialized = serde_json::to_value(DeckConfSchema11::from(disabled_config))?;
+        assert_eq!(serialized["rwkvReviewEnforceGradeOrder"], json!(false));
 
         Ok(())
     }

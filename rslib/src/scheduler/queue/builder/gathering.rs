@@ -359,6 +359,7 @@ impl QueueBuilder {
         }
         if self.context.fsrs
             && !self.context.sort_options.rwkv_review_enabled
+            && !self.context.sort_options.rwkv_review_instant_order_enabled
             && matches!(
                 self.context.sort_options.review_order,
                 ReviewCardOrder::RetrievabilityAscending

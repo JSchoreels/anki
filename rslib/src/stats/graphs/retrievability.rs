@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn retrievability_graph_uses_matching_stats_rwkv_scores() -> Result<()> {
+    fn retrievability_graph_keeps_rwkv_scores_isolated_by_search() -> Result<()> {
         let mut col = Collection::new();
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -268,7 +268,23 @@ mod tests {
         col.set_rwkv_stats_graph_scores("deck:other".into(), HashMap::from([(cid, 0.91)]))?;
         let graphs = col.graph_data_for_search("", 365)?;
         let retrievability = graphs.retrievability.unwrap();
-        assert!(retrievability.rwkv.is_none());
+        let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
+        assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
+
+        let other_scores = col
+            .rwkv_stats_graph_scores_for_search(timing.days_elapsed, Some("deck:other"))
+            .unwrap();
+        assert_eq!(other_scores.get(&cid), Some(&0.91));
+
+        col.set_rwkv_stats_graph_scores("".into(), HashMap::new())?;
+        let graphs = col.graph_data_for_search("", 365)?;
+        assert!(graphs.retrievability.unwrap().rwkv.is_none());
+        assert_eq!(
+            col.rwkv_stats_graph_scores_for_search(timing.days_elapsed, Some("deck:other"),)
+                .unwrap()
+                .get(&cid),
+            Some(&0.91)
+        );
         Ok(())
     }
 }

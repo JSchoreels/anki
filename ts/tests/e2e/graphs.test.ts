@@ -1,6 +1,11 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import {
+    GraphsResponse,
+    GraphsResponse_Retrievability,
+    GraphsResponse_Retrievability_Series,
+} from "@generated/anki/stats_pb";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
@@ -56,6 +61,29 @@ test("graphs page clears loading state after graph data arrives", async ({ page 
         body: graphConsoleMessages.join("\n") || "(no graph console messages)",
         contentType: "text/plain",
     });
+});
+
+test("RWKV retrievability graph is visible when FSRS is disabled", async ({ page }) => {
+    await page.route("**/_anki/graphs", async (route) => {
+        const response = await route.fetch();
+        const graphs = GraphsResponse.fromBinary(await response.body());
+        graphs.fsrs = false;
+        graphs.retrievability ??= new GraphsResponse_Retrievability();
+        graphs.retrievability.rwkv = new GraphsResponse_Retrievability_Series({
+            retrievability: { 75: 1 },
+            average: 75,
+            sumByCard: 0.75,
+            sumByNote: 0.75,
+        });
+        await route.fulfill({
+            response,
+            body: Buffer.from(graphs.toBinary()),
+        });
+    });
+
+    await page.goto(graphDebugPath);
+
+    await expect(page.getByRole("heading", { name: "Card Retrievability" })).toBeVisible();
 });
 
 test("seeded RWKV graphs page clears loading after bulk stats scoring", async ({ page }) => {

@@ -28,6 +28,24 @@ RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
     "RWKV : R After Review",
     "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
 )
+RWKV_AFTER_TEN_MINUTES_UNAVAILABLE_ROW = (
+    "RWKV : R After 10min",
+    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
+)
+RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS = [
+    RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
+    RWKV_AFTER_TEN_MINUTES_UNAVAILABLE_ROW,
+]
+NEXT_S90_UNAVAILABLE_ROWS = [
+    (
+        "RWKV Curve Next S90",
+        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
+    ),
+    (
+        "FSRS Next S90",
+        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
+    ),
+]
 
 
 class TestEnsureSafePath:
@@ -408,7 +426,8 @@ class TestCardStats:
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "61%"),
             ("Retrievability source", "RWKV"),
-            RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
+            *NEXT_S90_UNAVAILABLE_ROWS,
+            *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
         ]
 
     def test_card_info_reports_rwkv_unavailable_when_backend_missing(
@@ -457,7 +476,8 @@ class TestCardStats:
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "Unavailable"),
             ("Retrievability source", "FSRS (RWKV backend unavailable)"),
-            RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
+            *NEXT_S90_UNAVAILABLE_ROWS,
+            *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
         ]
 
     def test_card_info_hook_can_append_rows(

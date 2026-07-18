@@ -39,10 +39,10 @@ from aqt.rwkv_scheduler import (
 
 logger = logging.getLogger(__name__)
 
-_PACKED_PREDICTION_REQUEST_MAGIC = b"ARWKVPR1"
-_PACKED_WARM_UP_REVIEW_MAGIC = b"ARWKVWU1"
+_PACKED_PREDICTION_REQUEST_MAGIC = b"ARWKVPR2"
+_PACKED_WARM_UP_REVIEW_MAGIC = b"ARWKVWU2"
 _PACKED_PREDICTION_REQUEST_HEADER = struct.Struct("<8sI")
-_PACKED_PREDICTION_REQUEST_ROW = struct.Struct("<IqqqqBBqqqqqffff")
+_PACKED_PREDICTION_REQUEST_ROW = struct.Struct("<IqqqqBBqqqqqffffB")
 _RUST_WARMUP_CHUNK_SIZE = 16_384
 _RUST_STATE_ONLY_WARMUP_CHUNK_SIZE = 131_072
 
@@ -391,6 +391,7 @@ class _RustRwkvRuntime:
                 _state_bytes(deck_state),
                 _state_bytes(preset_state),
                 _state_bytes(global_state),
+                review_input.enforce_grade_order,
             )
 
         return RwkvReviewTransition(
@@ -540,6 +541,7 @@ class _RustRwkvRuntime:
                 request.review_input.current_elapsed_days,
                 request.review_input.current_elapsed_seconds,
                 *request.review_input.target_retentions,
+                request.review_input.enforce_grade_order,
                 _state_bytes(request.card_state),
                 _state_bytes(request.note_state),
                 _state_bytes(request.deck_state),
@@ -923,6 +925,7 @@ def _review_input_row(
     float | None,
     float | None,
     float | None,
+    bool,
 ]:
     identity = review_input.identity
     return (
@@ -938,6 +941,7 @@ def _review_input_row(
         review_input.current_elapsed_days,
         review_input.current_elapsed_seconds,
         *review_input.target_retentions,
+        review_input.enforce_grade_order,
     )
 
 
@@ -959,6 +963,7 @@ def _workload_input_row(
     float | None,
     float | None,
     float | None,
+    bool,
     int | None,
     int | None,
     int | None,
@@ -1091,6 +1096,7 @@ def _prediction_request_row(
     float | None,
     float | None,
     float | None,
+    bool,
     bytes | None,
     bytes | None,
     bytes | None,
@@ -1195,6 +1201,7 @@ def _packed_review_input_row(review_input: RwkvReviewInput) -> bytes:
         target_retention_hard,
         target_retention_good,
         target_retention_easy,
+        1 if review_input.enforce_grade_order else 0,
     )
 
 

@@ -142,6 +142,7 @@ impl RwkvInference {
         deck_state=None,
         preset_state=None,
         global_state=None,
+        enforce_grade_order=true,
     ))]
     fn review(
         &mut self,
@@ -166,6 +167,7 @@ impl RwkvInference {
         deck_state: Option<&Bound<'_, PyBytes>>,
         preset_state: Option<&Bound<'_, PyBytes>>,
         global_state: Option<&Bound<'_, PyBytes>>,
+        enforce_grade_order: bool,
     ) -> PyResult<(
         f32,
         Option<u32>,
@@ -200,6 +202,7 @@ impl RwkvInference {
                         target_retention_good,
                         target_retention_easy,
                     ],
+                    enforce_grade_order,
                 },
                 rwkv::ReviewState {
                     card: card_state.map(|state| state.as_bytes()),
@@ -548,9 +551,9 @@ fn parse_rwkv_prediction_request(
     request: &Bound<'_, PyAny>,
 ) -> PyResult<rwkv::ReviewPredictionRequest> {
     let tuple = request.cast::<PyTuple>()?;
-    if tuple.len() != 20 {
+    if tuple.len() != 21 {
         return Err(PyException::new_err(
-            "RWKV prediction request must contain 20 fields",
+            "RWKV prediction request must contain 21 fields",
         ));
     }
 
@@ -573,18 +576,19 @@ fn parse_rwkv_prediction_request(
                 tuple.get_item(13)?.extract()?,
                 tuple.get_item(14)?.extract()?,
             ],
+            enforce_grade_order: tuple.get_item(15)?.extract()?,
         },
         state: rwkv::ReviewStateOwned {
-            card: optional_bytes(&tuple.get_item(15)?)?,
-            note: optional_bytes(&tuple.get_item(16)?)?,
-            deck: optional_bytes(&tuple.get_item(17)?)?,
-            preset: optional_bytes(&tuple.get_item(18)?)?,
-            global: optional_bytes(&tuple.get_item(19)?)?,
+            card: optional_bytes(&tuple.get_item(16)?)?,
+            note: optional_bytes(&tuple.get_item(17)?)?,
+            deck: optional_bytes(&tuple.get_item(18)?)?,
+            preset: optional_bytes(&tuple.get_item(19)?)?,
+            global: optional_bytes(&tuple.get_item(20)?)?,
         },
     })
 }
 
-const PACKED_PREDICTION_REQUEST_MAGIC: &[u8; 8] = b"ARWKVPR1";
+const PACKED_PREDICTION_REQUEST_MAGIC: &[u8; 8] = b"ARWKVPR2";
 
 fn parse_packed_rwkv_prediction_requests(
     requests: &[u8],
@@ -615,7 +619,7 @@ fn parse_packed_rwkv_prediction_requests(
     Ok(parsed_requests)
 }
 
-const PACKED_WARM_UP_REVIEW_MAGIC: &[u8; 8] = b"ARWKVWU1";
+const PACKED_WARM_UP_REVIEW_MAGIC: &[u8; 8] = b"ARWKVWU2";
 
 fn parse_packed_rwkv_review_inputs(reviews: &[u8]) -> PyResult<Vec<rwkv::ReviewInput>> {
     let mut cursor = PackedPredictionRequestCursor::new(reviews);
@@ -660,6 +664,7 @@ fn read_packed_rwkv_review_input(
     let target_retention_hard = cursor.read_f32()?;
     let target_retention_good = cursor.read_f32()?;
     let target_retention_easy = cursor.read_f32()?;
+    let enforce_grade_order = cursor.read_bool()?;
 
     Ok(rwkv::ReviewInput {
         card_id,
@@ -679,6 +684,7 @@ fn read_packed_rwkv_review_input(
             optional_f32(presence, 11, target_retention_good),
             optional_f32(presence, 12, target_retention_easy),
         ],
+        enforce_grade_order,
     })
 }
 
@@ -809,9 +815,9 @@ impl<'a> PackedPredictionRequestCursor<'a> {
 
 fn parse_rwkv_review_input(request: &Bound<'_, PyAny>) -> PyResult<rwkv::ReviewInput> {
     let tuple = request.cast::<PyTuple>()?;
-    if tuple.len() != 15 {
+    if tuple.len() != 16 {
         return Err(PyException::new_err(
-            "RWKV review input must contain 15 fields",
+            "RWKV review input must contain 16 fields",
         ));
     }
 
@@ -837,6 +843,7 @@ fn parse_rwkv_review_input_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<rwkv::R
             tuple.get_item(13)?.extract()?,
             tuple.get_item(14)?.extract()?,
         ],
+        enforce_grade_order: tuple.get_item(15)?.extract()?,
     })
 }
 
@@ -844,18 +851,18 @@ fn parse_rwkv_workload_simulation_input(
     request: &Bound<'_, PyAny>,
 ) -> PyResult<rwkv::RwkvWorkloadSimulationInput> {
     let tuple = request.cast::<PyTuple>()?;
-    if tuple.len() != 19 {
+    if tuple.len() != 20 {
         return Err(PyException::new_err(
-            "RWKV workload simulation input must contain 19 fields",
+            "RWKV workload simulation input must contain 20 fields",
         ));
     }
 
     Ok(rwkv::RwkvWorkloadSimulationInput {
         review_input: parse_rwkv_review_input_tuple(tuple)?,
-        interval_days: tuple.get_item(15)?.extract()?,
-        ease_factor: tuple.get_item(16)?.extract()?,
-        reps: tuple.get_item(17)?.extract()?,
-        lapses: tuple.get_item(18)?.extract()?,
+        interval_days: tuple.get_item(16)?.extract()?,
+        ease_factor: tuple.get_item(17)?.extract()?,
+        reps: tuple.get_item(18)?.extract()?,
+        lapses: tuple.get_item(19)?.extract()?,
     })
 }
 

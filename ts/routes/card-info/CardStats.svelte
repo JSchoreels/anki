@@ -20,7 +20,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const rwkvComputedRLabel = "RWKV computed R";
     const rwkvButtonProbabilityLabel = "RWKV : Answer Button Probability";
+    const rwkvCurveNextS90Label = "RWKV Curve Next S90";
+    const fsrsNextS90Label = "FSRS Next S90";
     const rwkvAfterReviewLabel = "RWKV : R After Review";
+    const rwkvAfterTenMinutesLabel = "RWKV : R After 10min";
     const retrievabilitySourceLabel = "Retrievability source";
 
     function formatStability(stabilityDays: number): string {
@@ -47,8 +50,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const rwkvButtonProbabilityRow = stats.extraRows.find(
             (row) => row.label === rwkvButtonProbabilityLabel,
         );
+        const rwkvCurveNextS90Row = stats.extraRows.find(
+            (row) => row.label === rwkvCurveNextS90Label,
+        );
+        const fsrsNextS90Row = stats.extraRows.find(
+            (row) => row.label === fsrsNextS90Label,
+        );
         const rwkvAfterReviewRow = stats.extraRows.find(
             (row) => row.label === rwkvAfterReviewLabel,
+        );
+        const rwkvAfterTenMinutesRow = stats.extraRows.find(
+            (row) => row.label === rwkvAfterTenMinutesLabel,
         );
         const retrievabilitySourceRow = stats.extraRows.find(
             (row) => row.label === retrievabilitySourceLabel,
@@ -65,7 +77,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         function pushRwkvRows(): void {
             pushMovedRwkvRow(rwkvComputedRRow);
             pushMovedRwkvRow(rwkvButtonProbabilityRow);
+            pushMovedRwkvRow(rwkvCurveNextS90Row);
+            pushMovedRwkvRow(fsrsNextS90Row);
             pushMovedRwkvRow(rwkvAfterReviewRow);
+            pushMovedRwkvRow(rwkvAfterTenMinutesRow);
             pushMovedRwkvRow(retrievabilitySourceRow);
         }
 
