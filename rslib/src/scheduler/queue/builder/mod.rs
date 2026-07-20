@@ -9,6 +9,7 @@ mod sorting;
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use intersperser::Intersperser;
 use sized_chain::SizedChain;
@@ -16,14 +17,17 @@ use sized_chain::SizedChain;
 use super::BuryMode;
 use super::CardQueues;
 use super::Counts;
+use super::DeferredRwkvReview;
 use super::LearningQueueEntry;
 use super::MainQueueEntry;
 use super::MainQueueEntryKind;
+use crate::card::CardQueue;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::NewCardSortOrder;
 use crate::deckconfig::ReviewCardOrder;
 use crate::deckconfig::ReviewMix;
+use crate::decks::limits::LimitKind;
 use crate::decks::limits::LimitTreeMap;
 use crate::prelude::*;
 use crate::scheduler::states::load_balancer::LoadBalancer;
@@ -115,6 +119,8 @@ pub(super) struct QueueBuilder {
     pub(super) learning: Vec<DueCard>,
     pub(super) day_learning: Vec<DueCard>,
     pub(super) r_sorted_non_new: Vec<DueCard>,
+    pinned_card_id: Option<CardId>,
+    deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     limits: LimitTreeMap,
     load_balancer: Option<LoadBalancer>,
     context: Context,
@@ -130,7 +136,7 @@ struct Context {
     seen_note_ids: HashMap<NoteId, BuryMode>,
     deck_map: HashMap<DeckId, Deck>,
     fsrs: bool,
-    rwkv_review_queue_scores: Option<HashMap<CardId, RwkvReviewQueueScoreEntry>>,
+    rwkv_review_queue_scores: Option<Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>>,
 }
 
 impl QueueBuilder {
@@ -188,6 +194,8 @@ impl QueueBuilder {
             learning: Vec::new(),
             day_learning: Vec::new(),
             r_sorted_non_new: Vec::new(),
+            pinned_card_id: None,
+            deferred_rwkv_reviews: HashMap::new(),
             limits,
             load_balancer,
             context: Context {
@@ -201,6 +209,88 @@ impl QueueBuilder {
                 rwkv_review_queue_scores,
             },
         })
+    }
+
+    fn pin_current_card(&mut self, card: &Card) -> Result<()> {
+        require!(
+            self.pinned_card_id.is_none(),
+            "a queue can only preserve one current card"
+        );
+
+        let current_deck_id = card.deck_id;
+        let original_deck_id = card.original_deck_id;
+        match card.queue {
+            CardQueue::New => {
+                let card = NewCard {
+                    id: card.id,
+                    note_id: card.note_id,
+                    mtime: card.mtime,
+                    current_deck_id,
+                    original_deck_id,
+                    template_index: card.template_idx as u32,
+                    hash: 0,
+                };
+                require!(self.add_new_card(card), "current new card was buried");
+                self.limits.reserve_new_card(current_deck_id)?;
+            }
+            CardQueue::Learn | CardQueue::PreviewRepeat => {
+                let card = DueCard {
+                    id: card.id,
+                    note_id: card.note_id,
+                    mtime: card.mtime,
+                    due: card.due,
+                    current_deck_id,
+                    original_deck_id,
+                    kind: DueCardKind::Learning,
+                    reps: card.reps,
+                };
+                self.get_and_update_bury_mode_for_note(card.into());
+                if self.context.non_news_sorted_by_retrievability()
+                    && card.due <= self.context.timing.now.0 as i32
+                {
+                    self.r_sorted_non_new.push(card);
+                } else {
+                    self.learning.push(card);
+                }
+            }
+            CardQueue::Review | CardQueue::DayLearn => {
+                let card = DueCard {
+                    id: card.id,
+                    note_id: card.note_id,
+                    mtime: card.mtime,
+                    due: card.due,
+                    current_deck_id,
+                    original_deck_id,
+                    kind: if card.queue == CardQueue::Review {
+                        DueCardKind::Review
+                    } else {
+                        DueCardKind::Learning
+                    },
+                    reps: card.reps,
+                };
+                if self.context.non_news_sorted_by_retrievability() {
+                    require!(
+                        self.add_due_card_for_retrievability_sort(card, true),
+                        "current review card was buried"
+                    );
+                    self.r_sorted_non_new.push(card);
+                } else {
+                    require!(self.add_due_card(card), "current review card was buried");
+                }
+                self.limits
+                    .decrement_deck_and_parent_limits(current_deck_id, LimitKind::Review)?;
+            }
+            CardQueue::Suspended | CardQueue::SchedBuried | CardQueue::UserBuried => {
+                invalid_input!("current card is not eligible for the review queue")
+            }
+        }
+
+        self.pinned_card_id = Some(card.id);
+        Ok(())
+    }
+
+    fn card_is_pinned(&self, card_id: CardId) -> bool {
+        self.pinned_card_id == Some(card_id)
     }
 
     pub(super) fn build(mut self, learn_ahead_secs: i64) -> CardQueues {
@@ -266,6 +356,7 @@ impl QueueBuilder {
             current_learning_cutoff: now,
             shown_top_card: None,
             non_news_sorted_by_retrievability: shared_r_sort,
+            deferred_rwkv_reviews: self.deferred_rwkv_reviews,
         }
     }
 }
@@ -377,13 +468,27 @@ fn sort_learning(learning: Vec<DueCard>) -> VecDeque<LearningQueueEntry> {
 
 impl Collection {
     pub(crate) fn build_queues(&mut self, deck_id: DeckId) -> Result<CardQueues> {
+        self.build_queues_with_current_card(deck_id, None)
+    }
+
+    pub(crate) fn build_queues_with_current_card(
+        &mut self,
+        deck_id: DeckId,
+        current_card: Option<&Card>,
+    ) -> Result<CardQueues> {
         let mut queues = QueueBuilder::new(self, deck_id)?;
         self.storage
             .update_active_decks(&queues.context.root_deck)?;
 
+        if let Some(card) = current_card {
+            queues.pin_current_card(card)?;
+        }
         queues.gather_cards(self)?;
 
-        let queues = queues.build(self.learn_ahead_secs() as i64);
+        let mut queues = queues.build(self.learn_ahead_secs() as i64);
+        if let Some(card) = current_card {
+            queues.preserve_current_card(card.id)?;
+        }
 
         Ok(queues)
     }
@@ -547,6 +652,167 @@ mod test {
         let queued = col.get_queued_cards(1, false, false).unwrap();
         assert_eq!(queued.cards.len(), 1);
         assert!(queued.cards[0].states.is_some());
+    }
+
+    #[test]
+    fn preserved_current_card_reuses_rebuilt_rwkv_queue() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_current_deck(deck.id)?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+
+        let timing = col.timing_today()?;
+        let current = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let next = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let last = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.10), (next, 0.20), (last, 0.30)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.80), (next, 0.10), (last, 0.20)]),
+        )?;
+        let counts = col.rebuild_queued_cards_preserving_current_card(current)?;
+        assert!(counts.cards.is_empty());
+        assert_eq!(
+            (counts.new_count, counts.learning_count, counts.review_count),
+            (0, 0, 3)
+        );
+
+        let cached = col.state.card_queues.as_ref().unwrap();
+        let build_time = cached.build_time;
+        assert_eq!(cached.shown_top_card, Some(current));
+        assert_eq!(cached.main.front().unwrap().id, current);
+
+        col.answer_good();
+        let next_card = col.get_queued_cards(1, false, true)?;
+        assert_eq!(next_card.cards[0].card.id, next);
+        assert_eq!(
+            col.state.card_queues.as_ref().unwrap().build_time,
+            build_time
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preserved_current_card_applies_sibling_burying_first() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_current_deck(deck.id)?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let config_id = deck.config_id().unwrap();
+        let mut config = col.get_deck_config(config_id, false)?.unwrap();
+        config.inner.bury_reviews = true;
+        col.add_or_update_deck_config(&mut config)?;
+
+        let siblings = CardAdder::new()
+            .siblings(2)
+            .deck(deck.id)
+            .due_dates(["0", "0"])
+            .add(&mut col);
+        let current = siblings[0].id;
+        let sibling = siblings[1].id;
+        let unrelated = CardAdder::new()
+            .deck(deck.id)
+            .due_dates(["0"])
+            .add(&mut col)[0]
+            .id;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.10), (sibling, 0.20), (unrelated, 0.30)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.80), (sibling, 0.10), (unrelated, 0.20)]),
+        )?;
+        let counts = col.rebuild_queued_cards_preserving_current_card(current)?;
+        assert_eq!(counts.review_count, 2);
+        assert_eq!(col.queued_card_ids(10)?, vec![current, unrelated]);
+        Ok(())
+    }
+
+    #[test]
+    fn preserved_current_new_card_reserves_review_capacity() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_current_deck(deck.id)?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let config_id = deck.config_id().unwrap();
+        let mut config = col.get_deck_config(config_id, false)?.unwrap();
+        config.inner.new_mix = ReviewMix::BeforeReviews as i32;
+        config.inner.new_per_day = 1;
+        config.inner.reviews_per_day = 2;
+        col.add_or_update_deck_config(&mut config)?;
+
+        let current = CardAdder::new().deck(deck.id).add(&mut col)[0].id;
+        let timing = col.timing_today()?;
+        let first_review = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        let second_review = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(first_review, 0.95), (second_review, 0.95)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(first_review, 0.10), (second_review, 0.20)]),
+        )?;
+        let counts = col.rebuild_queued_cards_preserving_current_card(current)?;
+        assert_eq!(
+            (counts.new_count, counts.learning_count, counts.review_count),
+            (1, 0, 1)
+        );
+
+        col.answer_good();
+        let next_card = col.get_queued_cards(1, false, true)?;
+        assert_eq!(next_card.cards[0].card.id, first_review);
+        Ok(())
     }
 
     #[test]
@@ -1151,6 +1417,186 @@ mod test {
     }
 
     #[test]
+    fn answered_card_score_patch_preserves_retained_queue() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+
+        let timing = col.timing_today()?;
+        let queued_card = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let answered_card = CardId(9_999_999_999);
+        col.set_rwkv_review_queue_score_entries(
+            deck.id,
+            HashMap::from([(
+                answered_card,
+                RwkvReviewQueueScoreEntry {
+                    retrievability: 0.20,
+                    intervening_reviews: None,
+                    target_retention: Some(0.75),
+                },
+            )]),
+        )?;
+        col.get_queued_cards(1, false, true)?;
+        let build_time = col.state.card_queues.as_ref().unwrap().build_time;
+
+        col.patch_answered_card_rwkv_review_queue_score_entry(
+            deck.id,
+            answered_card,
+            Some(RwkvReviewQueueScoreEntry {
+                retrievability: 0.80,
+                intervening_reviews: Some(1),
+                target_retention: Some(0.75),
+            }),
+        )?;
+
+        assert_eq!(
+            col.state.card_queues.as_ref().unwrap().build_time,
+            build_time
+        );
+        let scores = col
+            .rwkv_review_queue_scores(deck.id, timing.days_elapsed)
+            .unwrap();
+        assert_eq!(scores[&answered_card].retrievability, 0.80);
+        assert!(col
+            .patch_answered_card_rwkv_review_queue_score_entry(
+                deck.id,
+                queued_card,
+                Some(RwkvReviewQueueScoreEntry::new(0.50)),
+            )
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn eligible_answered_card_score_patch_invalidates_retained_queue() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_options(
+            &mut deck,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.75,
+            true,
+        );
+        let timing = col.timing_today()?;
+        let answered_card = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let remaining_card = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(answered_card, 0.10), (remaining_card, 0.20)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![answered_card]);
+        col.state
+            .card_queues
+            .as_mut()
+            .unwrap()
+            .pop_entry(answered_card)?;
+        let mut card = col.storage.get_card(answered_card)?.unwrap();
+        card.last_review_time = Some(timing.now);
+        col.storage.update_card(&card)?;
+
+        col.patch_answered_card_rwkv_review_queue_score_entry(
+            deck.id,
+            answered_card,
+            Some(RwkvReviewQueueScoreEntry {
+                retrievability: 0.10,
+                intervening_reviews: Some(0),
+                target_retention: Some(0.75),
+            }),
+        )?;
+
+        assert!(col.state.card_queues.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_answered_card_patch_rebuilds_when_repeat_guard_is_ready() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_repeat_guards(
+            &mut deck,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.75,
+            2,
+            0,
+        );
+        let timing = col.timing_today()?;
+        let answered_card = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let remaining_card = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(answered_card, 0.10), (remaining_card, 0.20)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![answered_card]);
+        col.state
+            .card_queues
+            .as_mut()
+            .unwrap()
+            .pop_entry(answered_card)?;
+        let mut card = col.storage.get_card(answered_card)?.unwrap();
+        card.last_review_time = Some(timing.now);
+        col.storage.update_card(&card)?;
+
+        col.patch_answered_card_rwkv_review_queue_score_entry(
+            deck.id,
+            answered_card,
+            Some(RwkvReviewQueueScoreEntry {
+                retrievability: 0.10,
+                intervening_reviews: Some(0),
+                target_retention: Some(0.75),
+            }),
+        )?;
+        assert!(col.state.card_queues.is_some());
+
+        col.update_rwkv_review_queue_intervening_reviews(
+            deck.id,
+            HashMap::from([(answered_card, 2)]),
+        )?;
+
+        assert!(col.state.card_queues.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_retrievability_order_can_include_future_review_cards() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
@@ -1544,11 +1990,13 @@ mod test {
             )]),
         )?;
 
-        assert!(col.queue_as_ids(deck.id).is_empty());
+        assert!(col.queued_card_ids(1)?.is_empty());
+        assert!(col.state.card_queues.is_some());
 
         col.update_rwkv_review_queue_intervening_reviews(deck.id, HashMap::from([(card_id, 2)]))?;
 
-        assert_eq!(col.queue_as_ids(deck.id), vec![card_id]);
+        assert!(col.state.card_queues.is_none());
+        assert_eq!(col.queued_card_ids(1)?, vec![card_id]);
         Ok(())
     }
 

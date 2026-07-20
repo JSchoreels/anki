@@ -377,6 +377,15 @@ impl LimitTreeMap {
         Ok(())
     }
 
+    pub(crate) fn reserve_new_card(&mut self, deck_id: DeckId) -> Result<()> {
+        let new_counts_towards_review_limit = self.get_root_limits().cap_new_to_review;
+        self.decrement_deck_and_parent_limits(deck_id, LimitKind::New)?;
+        if new_counts_towards_review_limit {
+            self.decrement_deck_and_parent_limits(deck_id, LimitKind::Review)?;
+        }
+        Ok(())
+    }
+
     fn decrement_node_and_parent_limits(&mut self, node_id: &NodeId, kind: LimitKind) {
         let node = self.tree.get_mut(node_id).unwrap();
         let parent = node.parent().cloned();

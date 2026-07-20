@@ -26,8 +26,14 @@ use crate::error::Result;
 use crate::notetype::Notetype;
 use crate::notetype::NotetypeId;
 use crate::progress::ProgressState;
+use crate::require;
 use crate::scheduler::fsrs::preset::FsrsPresetOverlayCache;
 use crate::scheduler::queue::CardQueues;
+use crate::scheduler::queue::DeferredRwkvReview;
+use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
+use crate::scheduler::rwkv::rwkv_review_score_eligibility;
+use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
+use crate::scheduler::timing::SchedTimingToday;
 use crate::scheduler::SchedulerInfo;
 use crate::storage::SchemaVersion;
 use crate::storage::SqliteStorage;
@@ -159,13 +165,13 @@ pub struct Collection {
 pub(crate) struct RwkvRetrievabilityScores {
     pub(crate) days_elapsed: u32,
     scores: HashMap<CardId, RwkvRetrievabilityScore>,
+    review_queue_scores: Option<RwkvReviewQueueScores>,
     stats_graph_scores: VecDeque<RwkvStatsGraphScores>,
     deck_count_scores: HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct RwkvRetrievabilityScore {
-    review_queue: Option<RwkvReviewQueueScore>,
     card_info: Option<f32>,
 }
 
@@ -179,10 +185,10 @@ struct RwkvStatsGraphScores {
 // recent snapshots so one request cannot invalidate another before it renders.
 const MAX_RWKV_STATS_GRAPH_SEARCHES: usize = 8;
 
-#[derive(Debug, Clone, Copy)]
-struct RwkvReviewQueueScore {
+#[derive(Debug, Clone)]
+struct RwkvReviewQueueScores {
     deck_id: DeckId,
-    entry: RwkvReviewQueueScoreEntry,
+    scores: Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -208,11 +214,25 @@ impl RwkvRetrievabilityScores {
         self.scores
             .get(&card_id)
             .and_then(RwkvRetrievabilityScore::active_score)
+            .or_else(|| {
+                self.review_queue_scores
+                    .as_ref()
+                    .and_then(|queue| queue.scores.get(&card_id))
+                    .map(|entry| entry.retrievability)
+            })
             .or_else(|| self.stats_graph_score_for_card(card_id, stats_search))
     }
 
     fn active_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
         let mut scores = self.stats_graph_scores(stats_search).unwrap_or_default();
+        if let Some(queue) = self.review_queue_scores.as_ref() {
+            scores.extend(
+                queue
+                    .scores
+                    .iter()
+                    .map(|(&card_id, entry)| (card_id, entry.retrievability)),
+            );
+        }
         for (&card_id, score) in &self.scores {
             if let Some(retrievability) = score.active_score() {
                 scores.insert(card_id, retrievability);
@@ -250,30 +270,19 @@ impl RwkvRetrievabilityScores {
     fn review_queue_scores(
         &self,
         deck_id: DeckId,
-    ) -> Option<HashMap<CardId, RwkvReviewQueueScoreEntry>> {
-        let scores: HashMap<_, _> = self
-            .scores
-            .iter()
-            .filter_map(|(&card_id, score)| {
-                score
-                    .review_queue
-                    .filter(|review_queue| review_queue.deck_id == deck_id)
-                    .map(|review_queue| (card_id, review_queue.entry))
-            })
-            .collect();
-
-        (!scores.is_empty()).then_some(scores)
+    ) -> Option<Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>> {
+        self.review_queue_scores
+            .as_ref()
+            .filter(|queue| queue.deck_id == deck_id)
+            .map(|queue| Arc::clone(&queue.scores))
     }
 
     fn review_queue_scores_for_any_deck(
         &self,
-    ) -> Option<(DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>)> {
-        let deck_id = self
-            .scores
-            .values()
-            .find_map(|score| score.review_queue.map(|score| score.deck_id))?;
-        self.review_queue_scores(deck_id)
-            .map(|scores| (deck_id, scores))
+    ) -> Option<(DeckId, Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>)> {
+        self.review_queue_scores
+            .as_ref()
+            .map(|queue| (queue.deck_id, Arc::clone(&queue.scores)))
     }
 
     fn card_info_scores(&self) -> Option<HashMap<CardId, f32>> {
@@ -307,14 +316,38 @@ impl RwkvRetrievabilityScores {
         deck_id: DeckId,
         scores: HashMap<CardId, RwkvReviewQueueScoreEntry>,
     ) {
-        for score in self.scores.values_mut() {
-            score.review_queue = None;
+        self.review_queue_scores = (!scores.is_empty()).then_some(RwkvReviewQueueScores {
+            deck_id,
+            scores: Arc::new(scores),
+        });
+    }
+
+    fn patch_review_queue_score(
+        &mut self,
+        deck_id: DeckId,
+        card_id: CardId,
+        entry: Option<RwkvReviewQueueScoreEntry>,
+    ) {
+        let Some(queue) = self
+            .review_queue_scores
+            .as_mut()
+            .filter(|queue| queue.deck_id == deck_id)
+        else {
+            return;
+        };
+        let scores = Arc::make_mut(&mut queue.scores);
+
+        match entry {
+            Some(entry) => {
+                scores.insert(card_id, entry);
+            }
+            None => {
+                scores.remove(&card_id);
+            }
         }
-        for (card_id, entry) in scores {
-            self.scores.entry(card_id).or_default().review_queue =
-                Some(RwkvReviewQueueScore { deck_id, entry });
+        if scores.is_empty() {
+            self.review_queue_scores = None;
         }
-        self.prune_empty_scores();
     }
 
     fn set_deck_count_scores(
@@ -338,15 +371,17 @@ impl RwkvRetrievabilityScores {
         deck_id: DeckId,
         intervening_reviews_by_card_id: HashMap<CardId, u32>,
     ) {
+        let Some(queue) = self
+            .review_queue_scores
+            .as_mut()
+            .filter(|queue| queue.deck_id == deck_id)
+        else {
+            return;
+        };
+        let scores = Arc::make_mut(&mut queue.scores);
         for (card_id, intervening_reviews) in intervening_reviews_by_card_id {
-            let Some(score) = self.scores.get_mut(&card_id) else {
-                continue;
-            };
-            let Some(review_queue) = score.review_queue.as_mut() else {
-                continue;
-            };
-            if review_queue.deck_id == deck_id {
-                review_queue.entry.intervening_reviews = Some(intervening_reviews);
+            if let Some(score) = scores.get_mut(&card_id) {
+                score.intervening_reviews = Some(intervening_reviews);
             }
         }
     }
@@ -367,6 +402,7 @@ impl RwkvRetrievabilityScores {
 
     fn is_empty(&self) -> bool {
         self.scores.is_empty()
+            && self.review_queue_scores.is_none()
             && self.stats_graph_scores.is_empty()
             && self.deck_count_scores.is_empty()
     }
@@ -379,11 +415,10 @@ impl RwkvRetrievabilityScores {
 impl RwkvRetrievabilityScore {
     fn active_score(&self) -> Option<f32> {
         self.card_info
-            .or_else(|| self.review_queue.map(|score| score.entry.retrievability))
     }
 
     fn is_empty(&self) -> bool {
-        self.review_queue.is_none() && self.card_info.is_none()
+        self.card_info.is_none()
     }
 }
 
@@ -467,6 +502,7 @@ impl Collection {
             self.state.rwkv_retrievability_scores = Some(RwkvRetrievabilityScores {
                 days_elapsed,
                 scores: HashMap::new(),
+                review_queue_scores: None,
                 stats_graph_scores: VecDeque::new(),
                 deck_count_scores: HashMap::new(),
             });
@@ -515,12 +551,102 @@ impl Collection {
         Ok(())
     }
 
+    pub(crate) fn patch_answered_card_rwkv_review_queue_score_entry(
+        &mut self,
+        deck_id: DeckId,
+        card_id: CardId,
+        entry: Option<RwkvReviewQueueScoreEntry>,
+    ) -> Result<()> {
+        require!(
+            self.state
+                .card_queues
+                .as_ref()
+                .map_or(true, |queues| !queues.main_contains(card_id)),
+            "cannot patch RWKV queue score before the answered card is removed"
+        );
+        let timing = self.timing_today()?;
+        let eligibility = if self.state.card_queues.is_some() {
+            entry
+                .map(|entry| {
+                    self.rwkv_answered_card_score_eligibility(deck_id, card_id, entry, timing)
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        if let Some(scores) = self
+            .state
+            .rwkv_retrievability_scores
+            .as_mut()
+            .filter(|scores| scores.days_elapsed == timing.days_elapsed)
+        {
+            scores.patch_review_queue_score(deck_id, card_id, entry);
+        }
+        match eligibility {
+            Some(RwkvReviewScoreEligibility::Eligible) => {
+                self.state.card_queues = None;
+            }
+            Some(eligibility @ RwkvReviewScoreEligibility::Deferred { .. }) => {
+                if let Some(queues) = self.state.card_queues.as_mut() {
+                    queues.defer_rwkv_review(
+                        card_id,
+                        DeferredRwkvReview::from_eligibility(eligibility, timing.now).unwrap(),
+                    );
+                }
+            }
+            Some(RwkvReviewScoreEligibility::Blocked) | None => {
+                if let Some(queues) = self.state.card_queues.as_mut() {
+                    queues.remove_deferred_rwkv_review(card_id);
+                }
+            }
+        }
+        self.clear_rwkv_deck_count_scores();
+        self.clear_empty_rwkv_retrievability_scores();
+        Ok(())
+    }
+
+    fn rwkv_answered_card_score_eligibility(
+        &mut self,
+        deck_id: DeckId,
+        card_id: CardId,
+        entry: RwkvReviewQueueScoreEntry,
+        timing: SchedTimingToday,
+    ) -> Result<Option<RwkvReviewScoreEligibility>> {
+        let Some(deck) = self.storage.get_deck(deck_id)? else {
+            return Ok(None);
+        };
+        let Some(config_id) = deck.config_id() else {
+            return Ok(None);
+        };
+        let Some(config) = self.storage.get_deck_config(config_id)? else {
+            return Ok(None);
+        };
+        let Some(metadata) =
+            rwkv_review_candidate_metadata(self, &[card_id], timing)?.remove(&card_id)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(rwkv_review_score_eligibility(
+            entry.retrievability,
+            &metadata,
+            config.inner.rwkv_review_allow_same_day_review,
+            config.inner.rwkv_review_min_intervening_reviews,
+            config.inner.rwkv_review_min_elapsed_secs,
+            entry.intervening_reviews,
+            entry.target_retention,
+        )))
+    }
+
     pub(crate) fn update_rwkv_review_queue_intervening_reviews(
         &mut self,
         deck_id: DeckId,
         intervening_reviews_by_card_id: HashMap<CardId, u32>,
     ) -> Result<()> {
         let days_elapsed = self.timing_today()?.days_elapsed;
+        let queue_rebuild_required = self.state.card_queues.as_mut().is_some_and(|queues| {
+            queues.update_deferred_rwkv_intervening_reviews(&intervening_reviews_by_card_id)
+        });
         if let Some(scores) = self
             .state
             .rwkv_retrievability_scores
@@ -529,6 +655,9 @@ impl Collection {
         {
             scores.update_review_queue_intervening_reviews(deck_id, intervening_reviews_by_card_id);
         }
+        if queue_rebuild_required {
+            self.state.card_queues = None;
+        }
         Ok(())
     }
 
@@ -536,7 +665,7 @@ impl Collection {
         &self,
         deck_id: DeckId,
         days_elapsed: u32,
-    ) -> Option<HashMap<CardId, RwkvReviewQueueScoreEntry>> {
+    ) -> Option<Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>> {
         self.state
             .rwkv_retrievability_scores
             .as_ref()
@@ -547,7 +676,7 @@ impl Collection {
     pub(crate) fn rwkv_review_queue_scores_for_day(
         &self,
         days_elapsed: u32,
-    ) -> Option<(DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>)> {
+    ) -> Option<(DeckId, Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>)> {
         self.state
             .rwkv_retrievability_scores
             .as_ref()

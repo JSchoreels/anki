@@ -31,6 +31,7 @@ use anki_proto::scheduler::FsrsPresetIdsForCardsResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
+use anki_proto::scheduler::RwkvAnsweredCardQueueScorePatchRequest;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
 use anki_proto::scheduler::RwkvRetrievabilityScoreResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
@@ -82,26 +83,29 @@ fn rwkv_score_entries(
 ) -> Result<HashMap<CardId, RwkvReviewQueueScoreEntry>> {
     let mut entries = HashMap::with_capacity(scores.len());
     for score in scores {
-        require!(
-            score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
-            "invalid RWKV retrievability"
-        );
-        if let Some(target_retention) = score.target_retention {
-            require!(
-                target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),
-                "invalid RWKV target retention"
-            );
-        }
-        entries.insert(
-            score.card_id.into(),
-            RwkvReviewQueueScoreEntry {
-                retrievability: score.retrievability,
-                intervening_reviews: score.intervening_reviews,
-                target_retention: score.target_retention,
-            },
-        );
+        entries.insert(score.card_id.into(), rwkv_score_entry(score)?);
     }
     Ok(entries)
+}
+
+fn rwkv_score_entry(
+    score: scheduler::rwkv_review_queue_scores_request::Score,
+) -> Result<RwkvReviewQueueScoreEntry> {
+    require!(
+        score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
+        "invalid RWKV retrievability"
+    );
+    if let Some(target_retention) = score.target_retention {
+        require!(
+            target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),
+            "invalid RWKV target retention"
+        );
+    }
+    Ok(RwkvReviewQueueScoreEntry {
+        retrievability: score.retrievability,
+        intervening_reviews: score.intervening_reviews,
+        target_retention: score.target_retention,
+    })
 }
 
 impl crate::services::SchedulerService for Collection {
@@ -333,6 +337,13 @@ impl crate::services::SchedulerService for Collection {
             input.skip_scheduling_states,
         )
         .map(Into::into)
+    }
+
+    fn rebuild_queued_cards_preserving_current_card(
+        &mut self,
+        input: cards::CardId,
+    ) -> Result<scheduler::QueuedCards> {
+        Collection::rebuild_queued_cards_preserving_current_card(self, input.into()).map(Into::into)
     }
 
     fn custom_study(
@@ -872,6 +883,18 @@ impl crate::services::SchedulerService for Collection {
     fn set_rwkv_review_queue_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
         let scores = rwkv_score_entries(input.scores)?;
         self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)
+    }
+
+    fn patch_answered_card_rwkv_review_queue_score(
+        &mut self,
+        input: RwkvAnsweredCardQueueScorePatchRequest,
+    ) -> Result<()> {
+        let entry = input.score.map(rwkv_score_entry).transpose()?;
+        self.patch_answered_card_rwkv_review_queue_score_entry(
+            input.deck_id.into(),
+            input.card_id.into(),
+            entry,
+        )
     }
 
     fn set_rwkv_deck_count_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {

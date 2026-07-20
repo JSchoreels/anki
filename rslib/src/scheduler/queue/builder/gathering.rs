@@ -8,13 +8,16 @@ use super::DueCard;
 use super::NewCard;
 use super::QueueBuilder;
 use crate::card::Card;
+use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
+use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
-use crate::scheduler::rwkv::rwkv_review_score_eligible;
+use crate::scheduler::rwkv::rwkv_review_score_eligibility;
+use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::card::NewCardSorting;
 
@@ -82,21 +85,23 @@ impl QueueBuilder {
                 score.retrievability.is_finite().then_some((card_id, score))
             })
             .collect();
-        ranked_scores.sort_by(|(card_id_a, score_a), (card_id_b, score_b)| {
-            let ord = score_a.retrievability.total_cmp(&score_b.retrievability);
-            let ord = if descending { ord.reverse() } else { ord };
-            ord.then_with(|| card_id_a.cmp(card_id_b))
-        });
-        let scored_card_ids: HashSet<_> =
-            ranked_scores.iter().map(|(card_id, _)| *card_id).collect();
-
-        let mut offset = 0;
+        let compare_scores =
+            |(card_id_a, score_a): &(CardId, RwkvReviewQueueScoreEntry),
+             (card_id_b, score_b): &(CardId, RwkvReviewQueueScoreEntry)| {
+                let ord = score_a.retrievability.total_cmp(&score_b.retrievability);
+                let ord = if descending { ord.reverse() } else { ord };
+                ord.then_with(|| card_id_a.cmp(card_id_b))
+            };
+        let mut remaining_scores = ranked_scores.as_mut_slice();
         let mut chunk_size = (self.limits.remaining_root_limit(LimitKind::Review) as usize)
             .max(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE)
-            .min(ranked_scores.len());
-        while offset < ranked_scores.len() && !self.limits.root_limit_reached(LimitKind::Review) {
-            let end = (offset + chunk_size).min(ranked_scores.len());
-            let score_chunk = &ranked_scores[offset..end];
+            .min(remaining_scores.len());
+        while !remaining_scores.is_empty() && !self.limits.root_limit_reached(LimitKind::Review) {
+            if chunk_size < remaining_scores.len() {
+                remaining_scores.select_nth_unstable_by(chunk_size, compare_scores);
+            }
+            let (score_chunk, rest) = remaining_scores.split_at_mut(chunk_size);
+            score_chunk.sort_unstable_by(compare_scores);
             let chunk_card_ids: Vec<_> = score_chunk.iter().map(|(card_id, _)| *card_id).collect();
             let mut cards_by_id = HashMap::with_capacity(score_chunk.len());
             col.storage
@@ -108,15 +113,15 @@ impl QueueBuilder {
             let candidate_metadata =
                 rwkv_review_candidate_metadata(col, &active_card_ids, self.context.timing)?;
 
-            for (card_id, score) in score_chunk {
+            for &(card_id, score) in score_chunk.iter() {
                 if self.limits.root_limit_reached(LimitKind::Review) {
                     break;
                 }
-                let Some(card) = cards_by_id.get(card_id).copied() else {
+                let Some(card) = cards_by_id.get(&card_id).copied() else {
                     continue;
                 };
-                let metadata = candidate_metadata.get(card_id).or_not_found(*card_id)?;
-                if !rwkv_review_score_eligible(
+                let metadata = candidate_metadata.get(&card_id).or_not_found(card_id)?;
+                let eligibility = rwkv_review_score_eligibility(
                     score.retrievability,
                     metadata,
                     self.context.sort_options.rwkv_review_allow_same_day_review,
@@ -126,8 +131,21 @@ impl QueueBuilder {
                     self.context.sort_options.rwkv_review_min_elapsed_secs,
                     score.intervening_reviews,
                     score.target_retention,
-                ) {
-                    continue;
+                );
+                match eligibility {
+                    RwkvReviewScoreEligibility::Eligible => {}
+                    RwkvReviewScoreEligibility::Deferred { .. } => {
+                        self.deferred_rwkv_reviews.insert(
+                            card_id,
+                            DeferredRwkvReview::from_eligibility(
+                                eligibility,
+                                self.context.timing.now,
+                            )
+                            .unwrap(),
+                        );
+                        continue;
+                    }
+                    RwkvReviewScoreEligibility::Blocked => continue,
                 }
                 if !self
                     .limits
@@ -141,12 +159,15 @@ impl QueueBuilder {
                 }
             }
 
-            offset = end;
-            chunk_size = chunk_size
-                .saturating_mul(2)
-                .min(ranked_scores.len() - offset);
+            remaining_scores = rest;
+            chunk_size = chunk_size.saturating_mul(2).min(remaining_scores.len());
         }
 
+        if self.limits.root_limit_reached(LimitKind::Review) {
+            return Ok(());
+        }
+
+        let scored_card_ids = ranked_scores.iter().map(|(card_id, _)| *card_id).collect();
         self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)
     }
 
@@ -158,24 +179,38 @@ impl QueueBuilder {
         let scores = self.context.rwkv_review_queue_scores.as_ref().unwrap();
         let scored_card_ids: Vec<_> = scores.keys().copied().collect();
         let metadata = rwkv_review_candidate_metadata(col, &scored_card_ids, self.context.timing)?;
-        let eligible_scored_card_ids: HashSet<_> = scores
-            .iter()
-            .filter_map(|(&card_id, score)| {
-                let metadata = metadata.get(&card_id)?;
-                rwkv_review_score_eligible(
-                    score.retrievability,
-                    metadata,
-                    self.context.sort_options.rwkv_review_allow_same_day_review,
-                    self.context
-                        .sort_options
-                        .rwkv_review_min_intervening_reviews,
-                    self.context.sort_options.rwkv_review_min_elapsed_secs,
-                    score.intervening_reviews,
-                    score.target_retention,
-                )
-                .then_some(card_id)
-            })
-            .collect();
+        let mut eligible_scored_card_ids = HashSet::new();
+        let mut deferred_reviews = Vec::new();
+        for (&card_id, score) in scores.iter() {
+            let Some(metadata) = metadata.get(&card_id) else {
+                continue;
+            };
+            let eligibility = rwkv_review_score_eligibility(
+                score.retrievability,
+                metadata,
+                self.context.sort_options.rwkv_review_allow_same_day_review,
+                self.context
+                    .sort_options
+                    .rwkv_review_min_intervening_reviews,
+                self.context.sort_options.rwkv_review_min_elapsed_secs,
+                score.intervening_reviews,
+                score.target_retention,
+            );
+            match eligibility {
+                RwkvReviewScoreEligibility::Eligible => {
+                    eligible_scored_card_ids.insert(card_id);
+                }
+                RwkvReviewScoreEligibility::Deferred { .. } => {
+                    deferred_reviews.push((
+                        card_id,
+                        DeferredRwkvReview::from_eligibility(eligibility, self.context.timing.now)
+                            .unwrap(),
+                    ));
+                }
+                RwkvReviewScoreEligibility::Blocked => {}
+            }
+        }
+        self.deferred_rwkv_reviews.extend(deferred_reviews);
         let scored_card_ids: HashSet<_> = scored_card_ids.into_iter().collect();
 
         col.storage.for_each_review_card_in_active_decks(
@@ -300,6 +335,9 @@ impl QueueBuilder {
         col.storage.for_each_intraday_card_in_active_decks(
             self.context.timing.next_day_at,
             |card| {
+                if self.card_is_pinned(card.id) {
+                    return;
+                }
                 self.get_and_update_bury_mode_for_note(card.into());
                 self.learning.push(card);
             },
@@ -316,6 +354,9 @@ impl QueueBuilder {
         col.storage.for_each_intraday_card_in_active_decks(
             self.context.timing.next_day_at,
             |card| {
+                if self.card_is_pinned(card.id) {
+                    return;
+                }
                 if card.due <= self.context.timing.now.0 as i32 {
                     due_cards.push(DueCardForRetrievabilitySort {
                         card,
@@ -576,7 +617,10 @@ impl QueueBuilder {
     }
 
     /// True if limit should be decremented.
-    fn add_due_card(&mut self, card: DueCard) -> bool {
+    pub(super) fn add_due_card(&mut self, card: DueCard) -> bool {
+        if self.card_is_pinned(card.id) {
+            return false;
+        }
         let added = self.add_due_card_for_retrievability_sort(card, true);
         if added {
             match card.kind {
@@ -588,11 +632,14 @@ impl QueueBuilder {
         added
     }
 
-    fn add_due_card_for_retrievability_sort(
+    pub(super) fn add_due_card_for_retrievability_sort(
         &mut self,
         card: DueCard,
         interday_or_review: bool,
     ) -> bool {
+        if self.card_is_pinned(card.id) {
+            return false;
+        }
         let bury_this_card = self
             .get_and_update_bury_mode_for_note(card.into())
             .map(|mode| match card.kind {
@@ -605,7 +652,10 @@ impl QueueBuilder {
     }
 
     // True if limit should be decremented.
-    fn add_new_card(&mut self, card: NewCard) -> bool {
+    pub(super) fn add_new_card(&mut self, card: NewCard) -> bool {
+        if self.card_is_pinned(card.id) {
+            return false;
+        }
         let bury_this_card = self
             .get_and_update_bury_mode_for_note(card.into())
             .map(|mode| mode.bury_new)

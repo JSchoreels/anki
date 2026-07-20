@@ -176,6 +176,13 @@ score remain after scored new cards in ascending-position fallback order. These
 gather modes are desktop-only in practice, because the RWKV score map is
 transient desktop state.
 
+When a review-time queue refresh runs after the next question is displayed,
+the reviewer temporarily shows an ellipsis for the review due count. After the
+new RWKV score map is installed, the footer is updated asynchronously from a
+fresh reviewer queue that preserves the already-visible card at its head. That
+queue is retained for the following card instead of being rebuilt a second
+time. A late refresh is ignored after the reviewer advances to another card.
+
 By default, RWKV uses the time since a card was created for new-card inputs and
 for the first historical review during state replay. Disable
 `rwkv_review_first_review_elapsed_from_card_creation` to treat elapsed time

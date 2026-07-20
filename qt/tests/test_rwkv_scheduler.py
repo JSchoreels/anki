@@ -101,6 +101,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_queue_score_config_keys = dict(
         rwkv_scheduler._rwkv_review_queue_score_config_keys
     )
+    previous_queue_collection_key = rwkv_scheduler._rwkv_review_queue_collection_key
     previous_input_batch_cache = (
         rwkv_scheduler._rwkv_review_input_batch_module_cache.copy()
     )
@@ -116,6 +117,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_queue_target_maps.clear()
     rwkv_scheduler._rwkv_review_queue_score_generations.clear()
     rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
+    rwkv_scheduler._rwkv_review_queue_collection_key = None
     rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
     rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
@@ -150,6 +152,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_review_queue_score_config_keys.update(
             previous_queue_score_config_keys
         )
+        rwkv_scheduler._rwkv_review_queue_collection_key = previous_queue_collection_key
         rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
         rwkv_scheduler._rwkv_review_input_batch_module_cache.update(
             previous_input_batch_cache
@@ -260,8 +263,88 @@ def test_rwkv_review_queue_score_config_key_includes_first_review_elapsed_mode()
     )
 
     assert rwkv_scheduler._rwkv_review_queue_score_config_key(
-        missing_elapsed
-    ) != rwkv_scheduler._rwkv_review_queue_score_config_key(card_creation_elapsed)
+        missing_elapsed,
+        100,
+    ) != rwkv_scheduler._rwkv_review_queue_score_config_key(
+        card_creation_elapsed,
+        100,
+    )
+
+
+def test_rwkv_queue_caches_are_scoped_to_collection() -> None:
+    first = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    second = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+
+    first_input_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=first,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    second_input_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=second,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+
+    assert first_input_key is not None
+    assert second_input_key is not None
+    assert first_input_key != second_input_key
+
+    rwkv_scheduler._set_rwkv_review_queue_scores(first, 100, [(1, 0.25)])
+    assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(first, 100) == {
+        1: pytest.approx(0.25)
+    }
+    assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(second, 100) is None
+
+
+def test_async_reviewer_queue_result_rejects_changed_queue_context() -> None:
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_reviewer(
+        rpc=rpc,
+        rwkv_review_instant_order_enabled=True,
+    )
+    reviewer.mw.col.decks.get_current_id = lambda: 100
+    reviewer.mw.col.decks.deck_and_child_ids = lambda deck_id: [deck_id]
+    context = rwkv_scheduler._rwkv_review_queue_context(reviewer, 100)
+    assert context is not None
+    result = rwkv_scheduler.RwkvReviewQueueOrderAsyncResult(
+        context=context,
+        deck_id=100,
+        reason="review queue",
+        state_generation=0,
+        scores=((1, 0.25),),
+        input_build=rwkv_scheduler.RwkvReviewInputBatchBuild(
+            inputs_by_batch_size={},
+            loaded_rows=0,
+            parsed_cards=0,
+            cards_with_state=0,
+            disabled_config_cards=0,
+            eligible_cards=0,
+            deck_configs=0,
+            preset_elapsed_ms=0.0,
+            load_elapsed_ms=0.0,
+            candidate_elapsed_ms=0.0,
+        ),
+        cache_hits=0,
+        runtime_requests=1,
+        warmup_elapsed_ms=0.0,
+        build_elapsed_ms=0.0,
+        score_elapsed_ms=0.0,
+    )
+
+    reviewer.mw.col.sched._timing_today = lambda: SimpleNamespace(
+        now=43 * 86_400 + 100,
+        days_elapsed=43,
+        next_day_at=44 * 86_400,
+    )
+
+    assert not rwkv_scheduler.install_reviewer_queue_order_async_result(
+        reviewer,
+        result,
+    )
+    assert rpc.calls == []
 
 
 def test_rwkv_workload_fallback_grade_probabilities_shift_with_retrievability() -> None:
@@ -2201,6 +2284,42 @@ def test_failed_answer_retry_replaces_pending_rwkv_input() -> None:
     assert review_input.card_due == 75
 
 
+def test_ineligible_answer_retry_clears_pending_rwkv_input() -> None:
+    reviewer = _rwkv_reviewer()
+    previous_id = (40 * 86_400 + 100) * 1000
+    reviewer.mw.col.db = SimpleNamespace(first=lambda sql, card_id: (previous_id, 3, 0))
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1_234)
+
+    rwkv_scheduler.set_answer_rwkv_metadata(
+        SimpleNamespace(answered_at_millis=(42 * 86_400 + 50) * 1000),
+        reviewer,
+        card,
+        ease=3,
+    )
+
+    card.did = 200
+    card.due = 75
+    reviewer.mw.col.decks.config_dict_for_deck_id = lambda deck_id: {
+        "id": deck_id * 10,
+        "rwkvReviewEnabled": deck_id == 100,
+    }
+    rwkv_scheduler.set_answer_rwkv_metadata(
+        SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000),
+        reviewer,
+        card,
+        ease=3,
+    )
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=200),
+        ease=3,
+    )
+    assert review_input.identity.deck_id == 200
+    assert review_input.card_due == 75
+
+
 def test_live_answer_after_card_reload_matches_historical_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3671,6 +3790,12 @@ def test_rwkv_state_cache_build_uses_modal_progress(
         lambda: {"model": "test"},
     )
     monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+    prewarm_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda _reviewer, **kwargs: prewarm_calls.append(kwargs),
+    )
 
     set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
@@ -3682,6 +3807,12 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     assert taskman.with_progress_kwargs["immediate"] is True
     assert taskman.with_progress_kwargs["uses_collection"] is True
     assert taskman.with_progress_kwargs["title"] == "RWKV State Cache"
+    assert prewarm_calls == [
+        {
+            "reason": "state cache build",
+            "include_parent_scope": False,
+        }
+    ]
     assert rwkv_scheduler.rwkv_state_cache_usable(reviewer.mw) is True
     assert any(
         update["value"] == 0
@@ -5280,6 +5411,7 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
         prepare_reviewer_queue_order(reviewer)
         reviewer._answeredIds.append(1)
         prepare_reviewer_queue_order(reviewer)
+        prepare_reviewer_queue_order(reviewer)
     finally:
         set_reviewer_backend(previous_backend)
 
@@ -5303,6 +5435,146 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
     assert dynamic_resolution_sizes == [1, 1]
     scores = cast(list[object], rpc.calls[-1]["scores"])
     assert scores[0].intervening_reviews == 0
+
+
+def test_cached_queue_inputs_add_newly_eligible_answered_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def row(card_id: int, elapsed_days: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            card_id=card_id,
+            note_id=card_id * 10,
+            deck_id=100,
+            preset_id="addon-preset",
+            card_type=2,
+            card_queue=2,
+            card_due=50,
+            interval_days=4,
+            ease_factor=2500,
+            reps=5,
+            lapses=1,
+            day_offset=42,
+            current_state_kind="normal",
+            current_normal_state_kind="review",
+            current_elapsed_days=elapsed_days,
+            current_elapsed_seconds=elapsed_days * 86_400,
+            target_retention=0.86,
+            batch_size=512,
+        )
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.card_row_calls: list[list[int]] = []
+
+        def rwkv_review_input_rows_for_deck_review_queue(
+            self,
+            *,
+            deck_id: int,
+            include_disabled_decks: bool,
+            include_new_cards: bool,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                rows=[row(1, 39)],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+        def rwkv_review_input_rows_for_cards(
+            self,
+            *,
+            card_ids: list[int],
+            include_suspended_review: bool,
+            include_disabled_decks: bool,
+            include_new_cards: bool,
+        ) -> SimpleNamespace:
+            self.card_row_calls.append(list(card_ids))
+            return SimpleNamespace(
+                rows=[row(2, 0)],
+                loaded_cards=1,
+                cards_with_supported_state=1,
+                disabled_config_cards=0,
+                deck_configs=1,
+                searched_cards=1,
+            )
+
+    backend = RwkvStatefulReviewerBackend(_SharedReviewRuntime())
+    rpc = Rpc()
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+        rwkv_min_intervening_reviews=2,
+    )
+    reviewer._answeredIds = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_warm_up_reviewer_backend",
+        lambda reviewer: True,
+    )
+    previous_backend = set_reviewer_backend(backend)
+    try:
+        prepare_reviewer_queue_order(reviewer)
+        reviewer._answeredIds.append(2)
+        prepare_reviewer_queue_order(reviewer)
+        prepare_reviewer_queue_order(reviewer)
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert rpc.card_row_calls == [[2]]
+    assert set(rpc.active_scores) == {1, 2}
+
+
+def test_cached_queue_input_refresh_retries_after_backend_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer._answeredIds = [2]
+    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    assert cache_key is not None
+    cached = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={512: [(1, _rwkv_review_input(card_id=1, note_id=10))]},
+        loaded_rows=1,
+        parsed_cards=1,
+        cards_with_state=1,
+        disabled_config_cards=0,
+        eligible_cards=1,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+    rwkv_scheduler._rwkv_review_input_batch_cache(reviewer)[cache_key] = cached
+    refreshed = replace(
+        cached,
+        inputs_by_batch_size={512: [(2, _rwkv_review_input(card_id=2, note_id=20))]},
+    )
+    responses = iter([None, refreshed])
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_batches_from_backend_for_ids",
+        lambda **kwargs: next(responses),
+    )
+
+    first = rwkv_scheduler._cached_rwkv_review_input_batch_build(reviewer, cache_key)
+    second = rwkv_scheduler._cached_rwkv_review_input_batch_build(reviewer, cache_key)
+
+    assert first is not None
+    assert first.session_answered_ids == ()
+    assert second is not None
+    assert second.session_answered_ids == (2,)
+    assert {
+        card_id
+        for inputs in second.inputs_by_batch_size.values()
+        for card_id, _ in inputs
+    } == {1, 2}
 
 
 def test_current_deck_count_scoring_uses_active_reviewer_answered_ids(
@@ -5512,13 +5784,41 @@ def test_refresh_answered_card_queue_score_replaces_stale_score() -> None:
     finally:
         set_reviewer_backend(previous_backend)
 
-    assert len(rpc.calls) == 2
-    scores = rpc.calls[1]["scores"]
-    assert isinstance(scores, list)
-    assert [
-        (getattr(score, "card_id"), getattr(score, "retrievability"))
-        for score in scores
-    ] == [(1, pytest.approx(0.95)), (2, pytest.approx(0.40))]
+    assert len(rpc.calls) == 1
+    assert len(rpc.patch_calls) == 1
+    patch = rpc.patch_calls[0]
+    assert patch.deck_id == 100
+    assert patch.card_id == 1
+    assert patch.score.retrievability == pytest.approx(0.95)
+    assert rpc.active_scores == {
+        1: pytest.approx(0.95),
+        2: pytest.approx(0.40),
+    }
+
+
+def test_answered_card_queue_score_patch_can_remove_score() -> None:
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    rwkv_scheduler._set_rwkv_review_queue_scores(
+        reviewer,
+        100,
+        [(1, 0.25), (2, 0.75)],
+    )
+
+    assert rwkv_scheduler._patch_answered_card_rwkv_review_queue_score(
+        reviewer,
+        100,
+        1,
+        None,
+        target_retention=None,
+    )
+
+    assert not rpc.patch_calls[0].HasField("score")
+    assert rpc.active_scores == {2: pytest.approx(0.75)}
+    assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(
+        reviewer,
+        100,
+    ) == {2: pytest.approx(0.75)}
 
 
 def test_invalidate_reviewer_queue_for_card_answer_preserves_queue_scores() -> None:
@@ -5863,6 +6163,15 @@ def test_install_async_reviewer_queue_order_discards_stale_generation() -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(_backend=rpc)))
     result = rwkv_scheduler.RwkvReviewQueueOrderAsyncResult(
+        context=rwkv_scheduler.RwkvReviewQueueContext(
+            collection_key=(1, 2),
+            selected_deck_id=100,
+            deck_id=100,
+            deck_scope=(100,),
+            days_elapsed=42,
+            next_day_at=43 * 86_400,
+            config_key="",
+        ),
         deck_id=100,
         reason="review queue",
         state_generation=0,
@@ -5920,6 +6229,15 @@ def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
         (3, _rwkv_review_input(card_id=3, note_id=30)),
     )
     work = rwkv_scheduler.RwkvReviewQueueOrderAsyncWork(
+        context=rwkv_scheduler.RwkvReviewQueueContext(
+            collection_key=(1, 2),
+            selected_deck_id=100,
+            deck_id=100,
+            deck_scope=(100,),
+            days_elapsed=42,
+            next_day_at=43 * 86_400,
+            config_key="",
+        ),
         deck_id=100,
         reason="review queue",
         batch_size=512,
@@ -5946,10 +6264,66 @@ def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
     )
 
     result = rwkv_scheduler.score_reviewer_queue_order_async_work(work)
+    backend.cache_review_input_predictions(result.prediction_cache_entries)
+    cached = backend.cached_retrievability_inputs_from_warm_up(
+        [(0, inputs[0][1]), (1, inputs[1][1])]
+    )
 
     assert result.scores == ((2, pytest.approx(0.20)), (3, pytest.approx(0.30)))
     assert result.runtime_requests == 2
-    assert runtime.resident_card_ids == [[2, 3]]
+    assert cached is not None
+    cached_predictions, misses, cache_hits = cached
+    assert [
+        prediction.retrievability for prediction in cached_predictions if prediction
+    ] == [
+        pytest.approx(0.20),
+        pytest.approx(0.30),
+    ]
+    assert misses == []
+    assert cache_hits == 2
+
+    overlapping_inputs = (
+        *inputs,
+        (4, _rwkv_review_input(card_id=4, note_id=40)),
+    )
+    overlapping_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={512: list(overlapping_inputs)},
+        loaded_rows=3,
+        parsed_cards=3,
+        cards_with_state=3,
+        disabled_config_cards=0,
+        eligible_cards=3,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+        dynamic_desired_retentions_resolved=True,
+    )
+    overlapping_work = rwkv_scheduler._rwkv_review_queue_async_work_from_input_build(
+        reviewer=SimpleNamespace(),
+        deck_id=10,
+        reason="parent prewarm",
+        batch_size=512,
+        state_generation=0,
+        context=replace(work.context, deck_id=10),
+        input_build=overlapping_build,
+        warmup_elapsed_ms=0.0,
+        build_start=time.monotonic(),
+        fresh_for_backend_state=False,
+    )
+
+    assert overlapping_work is not None
+    assert overlapping_work.cache_hits == 2
+    assert len(overlapping_work.resident_inputs_by_index) == 1
+    overlapping_result = rwkv_scheduler.score_reviewer_queue_order_async_work(
+        overlapping_work
+    )
+    assert overlapping_result.scores == (
+        (2, pytest.approx(0.20)),
+        (3, pytest.approx(0.30)),
+        (4, pytest.approx(0.40)),
+    )
+    assert runtime.resident_card_ids == [[2, 3], [4]]
 
 
 def test_prewarm_reviewer_queue_score_cache_scores_parent_scope() -> None:
@@ -6082,6 +6456,7 @@ def test_async_score_prewarm_releases_collection_while_scoring(
 ) -> None:
     events: list[tuple[str, int]] = []
     collection_flags: list[bool] = []
+    cached_deck_ids: list[int] = []
     finished: list[bool] = []
 
     def prepare(
@@ -6100,7 +6475,17 @@ def test_async_score_prewarm_releases_collection_while_scoring(
 
     def score(work: SimpleNamespace) -> SimpleNamespace:
         events.append(("score", work.deck_id))
-        return SimpleNamespace(scores=((1, 0.5), (2, 0.6)))
+        return SimpleNamespace(
+            deck_id=work.deck_id,
+            scores=((1, 0.5), (2, 0.6)),
+        )
+
+    def cache_predictions(
+        reviewer: object,
+        result: SimpleNamespace,
+    ) -> bool:
+        cached_deck_ids.append(result.deck_id)
+        return True
 
     class Taskman:
         def run_in_background(
@@ -6120,6 +6505,11 @@ def test_async_score_prewarm_releases_collection_while_scoring(
 
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_score_prewarm_work_for_deck", prepare)
     monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "cache_reviewer_queue_order_async_result_predictions",
+        cache_predictions,
+    )
 
     rwkv_scheduler._prewarm_rwkv_review_scores_for_decks_async(
         SimpleNamespace(),
@@ -6130,7 +6520,8 @@ def test_async_score_prewarm_releases_collection_while_scoring(
     )
 
     assert events == [("prepare", 100), ("prepare", 10), ("score", 10)]
-    assert collection_flags == [True, True, False]
+    assert collection_flags == [True, True, False, True]
+    assert cached_deck_ids == [10]
     assert finished == [True]
 
 
@@ -6175,6 +6566,7 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
     updates: list[tuple[int, int | None]] = []
     installed_scores: list[int] = []
     due_tree_calls = 0
+    context = object()
 
     def prepare(
         reviewer: object,
@@ -6185,12 +6577,13 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
         events.append(("prepare", deck_id))
         if deck_id == 20:
             return None
-        return SimpleNamespace(deck_id=deck_id)
+        return SimpleNamespace(deck_id=deck_id, context=context)
 
     def score(work: SimpleNamespace) -> SimpleNamespace:
         events.append(("score", work.deck_id))
         return SimpleNamespace(
             deck_id=work.deck_id,
+            context=work.context,
             state_generation=0,
             scores=((work.deck_id, 0.5),),
             target_retentions_by_card_id={},
@@ -6231,6 +6624,11 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
     monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
     monkeypatch.setattr(rwkv_scheduler, "_set_rwkv_deck_count_scores", install)
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_state_generation", lambda: 0)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_queue_context",
+        lambda reviewer, deck_id: context,
+    )
     mw = SimpleNamespace(
         col=SimpleNamespace(sched=Scheduler()),
         taskman=Taskman(),
@@ -9506,6 +9904,9 @@ def _undo_result(*, counter: int, next_counter: int) -> SimpleNamespace:
 class _RwkvQueueScoreRpc:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.patch_calls: list[
+            scheduler_pb2.RwkvAnsweredCardQueueScorePatchRequest
+        ] = []
         self.intervening_calls: list[
             scheduler_pb2.RwkvReviewQueueInterveningReviewsRequest
         ] = []
@@ -9529,6 +9930,19 @@ class _RwkvQueueScoreRpc:
                 getattr(score, "card_id"): getattr(score, "retrievability")
                 for score in scores
             }
+
+    def patch_answered_card_rwkv_review_queue_score_raw(
+        self,
+        message: bytes,
+    ) -> bytes:
+        request = scheduler_pb2.RwkvAnsweredCardQueueScorePatchRequest()
+        request.ParseFromString(message)
+        self.patch_calls.append(request)
+        if request.HasField("score"):
+            self.active_scores[request.card_id] = request.score.retrievability
+        else:
+            self.active_scores.pop(request.card_id, None)
+        return b""
 
     def update_rwkv_review_queue_intervening_reviews_raw(
         self,

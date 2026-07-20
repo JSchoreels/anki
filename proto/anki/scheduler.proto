@@ -16,6 +16,10 @@ import "anki/deck_config.proto";
 
 service SchedulerService {
   rpc GetQueuedCards(GetQueuedCardsRequest) returns (QueuedCards);
+  // Rebuilds and retains the queue while treating the supplied card as already
+  // displayed, and returns the resulting counts without fetching another card.
+  rpc RebuildQueuedCardsPreservingCurrentCard(cards.CardId)
+      returns (QueuedCards);
   rpc AnswerCard(CardAnswer) returns (collection.OpChanges);
   rpc SchedTimingToday(generic.Empty) returns (SchedTimingTodayResponse);
   rpc StudiedToday(generic.Empty) returns (generic.String);
@@ -97,6 +101,10 @@ service SchedulerService {
   // queue ordering. Empty scores clear the map.
   rpc SetRwkvReviewQueueScores(RwkvReviewQueueScoresRequest)
       returns (generic.Empty);
+  // Updates or removes one already-answered card's transient queue score
+  // without invalidating the retained queue behind it.
+  rpc PatchAnsweredCardRwkvReviewQueueScore(
+      RwkvAnsweredCardQueueScorePatchRequest) returns (generic.Empty);
   // Incrementally installs transient desktop-only RWKV score maps used only
   // while rendering deck-browser counts. Each request replaces one disjoint
   // deck scope; ClearRwkvDeckCountScores removes every scope.
@@ -852,6 +860,12 @@ message RwkvReviewQueueScoresRequest {
   }
   int64 deck_id = 1;
   repeated Score scores = 2;
+}
+
+message RwkvAnsweredCardQueueScorePatchRequest {
+  int64 deck_id = 1;
+  int64 card_id = 2;
+  optional RwkvReviewQueueScoresRequest.Score score = 3;
 }
 
 message RwkvReviewQueueInterveningReviewsRequest {

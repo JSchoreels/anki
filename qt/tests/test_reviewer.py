@@ -707,14 +707,13 @@ def test_after_answering_refreshes_rwkv_queue_order_after_next_card(
 
     reviewer._after_answering(3)
 
-    assert calls == ["record", "intervening:123", "next"]
+    assert calls == ["record", "next"]
     assert reviewer._answeredIds == [123]
 
     reviewer._run_after_question_shown_callbacks()
 
     assert calls == [
         "record",
-        "intervening:123",
         "next",
         "collection",
         "build",
@@ -885,12 +884,110 @@ def test_last_queued_card_uses_async_snapshot_and_advances_when_unavailable(
     assert calls == ["collection", "build", "next", "undo"]
 
 
+def test_rwkv_queue_refresh_coalesces_overlapping_requests(monkeypatch) -> None:
+    jobs: list[
+        tuple[
+            Callable[[], object],
+            Callable[[Future[object]], None],
+            bool,
+        ]
+    ] = []
+    calls: list[str] = []
+    completed: list[str] = []
+    build_count = 0
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            uses_collection: bool = True,
+        ) -> None:
+            jobs.append((task, on_done, uses_collection))
+
+    def prepare(reviewer: object) -> object:
+        nonlocal build_count
+        build_count += 1
+        calls.append(f"build:{build_count}")
+        return SimpleNamespace(number=build_count)
+
+    def score(work: object) -> object:
+        number = getattr(work, "number")
+        calls.append(f"score:{number}")
+        return SimpleNamespace(number=number)
+
+    def install(reviewer: object, result: object) -> bool:
+        calls.append(f"install:{getattr(result, 'number')}")
+        return True
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        prepare,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "score_reviewer_queue_order_async_work",
+        score,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        install,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._review_card_generation = 1
+    reviewer.mw = SimpleNamespace(
+        taskman=Taskman(),
+        update_undo_actions=lambda: calls.append("undo"),
+    )
+
+    reviewer._prepare_rwkv_queue_order_async(
+        on_finished=lambda installed: completed.append("first"),
+    )
+    reviewer._prepare_rwkv_queue_order_async(
+        on_finished=lambda installed: completed.append("second"),
+    )
+    reviewer._prepare_rwkv_queue_order_async(
+        on_finished=lambda installed: completed.append("third"),
+    )
+
+    assert len(jobs) == 1
+    while jobs:
+        task, on_done, _uses_collection = jobs.pop(0)
+        future: Future[object] = Future()
+        future.set_result(task())
+        on_done(future)
+
+    assert calls == [
+        "build:1",
+        "score:1",
+        "install:1",
+        "undo",
+        "build:2",
+        "score:2",
+        "install:2",
+        "undo",
+    ]
+    assert completed == ["first", "second", "third"]
+    assert reviewer._rwkv_queue_refresh_in_flight is False
+    assert not hasattr(reviewer, "_rwkv_queue_refresh_pending")
+
+
 def test_after_answering_interval_refresh_prefetches_during_next_question(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
+    bottom_scripts: list[str] = []
     work = object()
-    result = object()
+    result = SimpleNamespace(deck_id=123)
+    queued_cards = SimpleNamespace(
+        new_count=2,
+        learning_count=1,
+        review_count=9,
+    )
 
     def record_reviewer_answer(reviewer: object, card: object, ease: int) -> None:
         calls.append(f"record:{card.id}:{ease}")
@@ -913,6 +1010,19 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         calls.append("install")
         return True
 
+    class Scheduler:
+        def rebuild_queued_cards_preserving_current_card(
+            self,
+            current_card_id: int,
+        ) -> object:
+            assert current_card_id == 333
+            calls.append("counts")
+            return SimpleNamespace(
+                new_count=5,
+                learning_count=4,
+                review_count=7,
+            )
+
     class Taskman:
         def run_in_background(
             self,
@@ -930,16 +1040,36 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
     reviewer.card = SimpleNamespace(id=222)
     reviewer._answeredIds = [111]
     reviewer.state = "transition"
+    reviewer._review_card_generation = 4
     reviewer.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            conf={"dueCounts": True},
+            sched=Scheduler(),
+        ),
         taskman=Taskman(),
         update_undo_actions=lambda: calls.append("undo"),
+    )
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: bottom_scripts.append(script))
     )
     reviewer.check_timebox = lambda: False
 
     def next_card() -> None:
         calls.append("next:333")
+        reviewer._review_card_generation += 1
         reviewer.card = SimpleNamespace(id=333)
         reviewer.state = "question"
+        reviewer._v3 = SimpleNamespace(
+            queued_cards=queued_cards,
+            counts=lambda: (
+                2,
+                [
+                    queued_cards.new_count,
+                    queued_cards.learning_count,
+                    queued_cards.review_count,
+                ],
+            ),
+        )
 
     reviewer.nextCard = next_card
 
@@ -984,14 +1114,14 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
 
     reviewer._after_answering(3)
 
-    assert calls == ["record:222:3", "intervening:222", "next:333"]
+    assert calls == ["record:222:3", "next:333"]
     assert reviewer._answeredIds == [111, 222]
+    assert "<u>…</u>" in reviewer._remaining()
 
     reviewer._run_after_question_shown_callbacks()
 
     assert calls == [
         "record:222:3",
-        "intervening:222",
         "next:333",
         "collection",
         "build",
@@ -999,9 +1129,74 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         "score",
         "collection",
         "install",
+        "counts",
         "undo",
     ]
     assert reviewer._answeredIds == [111, 222]
+    assert queued_cards.review_count == 9
+    assert "<span class=new-count>5</span>" in reviewer._remaining()
+    assert "<span class=learn-count>4</span>" in reviewer._remaining()
+    assert "<u>7</u>" in reviewer._remaining()
+    assert len(bottom_scripts) == 1
+    assert "setRemainingCounts(5, 4, 7)" in bottom_scripts[0]
+
+
+def test_deferred_rwkv_count_update_ignores_stale_card_generation() -> None:
+    scripts: list[str] = []
+    queued_cards = SimpleNamespace(
+        new_count=1,
+        learning_count=2,
+        review_count=9,
+    )
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=456)
+    reviewer.state = "question"
+    reviewer._review_card_generation = 6
+    reviewer._rwkv_remaining_count_override = (5, None)
+    reviewer._v3 = SimpleNamespace(queued_cards=queued_cards)
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: scripts.append(script))
+    )
+
+    reviewer._finish_rwkv_remaining_count_refresh(
+        card_id=333,
+        generation=5,
+        counts=(3, 4, 7),
+    )
+
+    assert (
+        queued_cards.new_count,
+        queued_cards.learning_count,
+        queued_cards.review_count,
+    ) == (1, 2, 9)
+    assert scripts == []
+
+
+def test_failed_deferred_rwkv_count_refresh_restores_queued_count() -> None:
+    scripts: list[str] = []
+    queued_cards = SimpleNamespace(
+        new_count=1,
+        learning_count=2,
+        review_count=9,
+    )
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=333)
+    reviewer.state = "question"
+    reviewer._review_card_generation = 5
+    reviewer._rwkv_remaining_count_override = (5, None)
+    reviewer._v3 = SimpleNamespace(queued_cards=queued_cards)
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: scripts.append(script))
+    )
+
+    reviewer._finish_rwkv_remaining_count_refresh(
+        card_id=333,
+        generation=5,
+        counts=None,
+    )
+
+    assert reviewer._rwkv_remaining_count_override is None
+    assert scripts == ["setRemainingCounts(1, 2, 9);"]
 
 
 def test_after_answering_rwkv_new_gather_refreshes_before_next_card(
@@ -1097,6 +1292,52 @@ def test_after_answering_skips_rwkv_queue_order_until_refresh_due(
 
     assert calls == ["record", "next"]
     assert reviewer._answeredIds == [123]
+
+
+def test_after_answering_updates_repeat_guards_between_full_refreshes(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "record_reviewer_answer",
+        lambda reviewer, card, ease: calls.append("record"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_due",
+        lambda reviewer: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_needs_intervening_review_refresh",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "update_reviewer_queue_intervening_reviews",
+        lambda reviewer, card: calls.append("guards"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_answered_card_queue_score",
+        lambda reviewer, card: calls.append("score"),
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: calls.append("next")
+
+    reviewer._after_answering(3)
+
+    assert calls == ["record", "guards", "score", "next"]
 
 
 def test_after_answering_without_rwkv_queue_order_fetches_next_immediately(

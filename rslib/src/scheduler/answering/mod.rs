@@ -968,6 +968,7 @@ pub(crate) mod test {
     use crate::config::BoolKey;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::LeechAction;
+    use crate::deckconfig::ReviewCardOrder;
     use crate::deckconfig::ReviewMix;
     use crate::ops::Op;
     use crate::scheduler::fsrs::preset::AddonFsrsPreset;
@@ -1617,7 +1618,7 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn fsrs_learning_queue_bypass_graduates_learning_and_relearning() -> Result<()> {
+    fn fsrs_learning_queue_bypass_keeps_rwkv_relearning_answer_in_review_queue() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
         col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
@@ -1669,6 +1670,46 @@ pub(crate) mod test {
             states.good,
             CardState::Normal(NormalState::Review(_))
         ));
+
+        col.answer_card(&mut CardAnswer {
+            card_id: relearn_card.id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: Some(RevlogReviewKind::Relearning as u32),
+            from_queue: true,
+        })?;
+
+        let card = col.storage.get_card(relearn_card.id)?.unwrap();
+        assert_eq!(card.ctype, CardType::Review);
+        assert_eq!(card.queue, CardQueue::Review);
+        let revlogs = col.storage.get_revlog_entries_for_card(card.id)?;
+        assert_eq!(revlogs.len(), 1);
+        assert_eq!(revlogs[0].review_kind, RevlogReviewKind::Relearning);
+
+        col.update_default_deck_config(|config| {
+            config.review_order = ReviewCardOrder::RetrievabilityAscending as i32;
+            config.rwkv_review_instant_order_enabled = true;
+            config.rwkv_review_allow_same_day_review = true;
+            config.rwkv_review_min_intervening_reviews = 0;
+            config.rwkv_review_min_elapsed_secs = 0;
+        });
+        col.set_rwkv_review_queue_scores(
+            DeckId(1),
+            std::collections::HashMap::from([(card.id, 0.1)]),
+        )?;
+
+        assert_eq!(col.counts(), [0, 0, 1]);
+        let queued = col.get_next_card()?.unwrap();
+        assert_eq!(queued.card.id, card.id);
+        assert_eq!(queued.card.ctype, CardType::Review);
+        assert_eq!(queued.card.queue, CardQueue::Review);
         Ok(())
     }
 

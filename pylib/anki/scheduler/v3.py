@@ -52,7 +52,7 @@ class Scheduler(SchedulerBaseWithLegacy):
         fetch_limit: int = 1,
         intraday_learning_only: bool = False,
     ) -> QueuedCards:
-        "Returns zero or more pending cards, and the remaining counts. Idempotent."
+        """Returns zero or more pending cards and the remaining counts. Idempotent."""
         return self.col._backend.get_queued_cards(
             fetch_limit=fetch_limit,
             intraday_learning_only=intraday_learning_only,
@@ -65,11 +65,20 @@ class Scheduler(SchedulerBaseWithLegacy):
         fetch_limit: int = 1,
         intraday_learning_only: bool = False,
     ) -> QueuedCards:
-        "Like get_queued_cards(), but skips computing scheduling states."
+        """Like get_queued_cards(), but skips computing scheduling states."""
         return self.col._backend.get_queued_cards(
             fetch_limit=fetch_limit,
             intraday_learning_only=intraday_learning_only,
             skip_scheduling_states=True,
+        )
+
+    def rebuild_queued_cards_preserving_current_card(
+        self,
+        current_card_id: CardId,
+    ) -> QueuedCards:
+        """Return fresh counts and retain the queue behind the displayed card."""
+        return self.col._backend.rebuild_queued_cards_preserving_current_card(
+            current_card_id
         )
 
     def describe_next_states(self, next_states: SchedulingStates) -> Sequence[str]:

@@ -94,6 +94,27 @@ function showQuestion(txt: string, maxTime_: number): void {
     }, 1000);
 }
 
+function setRemainingCounts(
+    newCount: number,
+    learningCount: number,
+    reviewCount: number,
+): void {
+    const counts = new Map([
+        ["new", newCount],
+        ["learn", learningCount],
+        ["review", reviewCount],
+    ]);
+    for (const [kind, count] of counts) {
+        const container = document.querySelector<HTMLElement>(
+            `#ansbut .${kind}-count`,
+        );
+        if (container) {
+            const target = container.querySelector("u") ?? container;
+            target.textContent = String(count);
+        }
+    }
+}
+
 function showAnswer(txt: string, stopTimer = false): void {
     document.getElementById("middle").innerHTML = txt;
     timerStopped = stopTimer;

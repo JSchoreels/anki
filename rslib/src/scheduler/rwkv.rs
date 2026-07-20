@@ -480,15 +480,67 @@ pub(crate) fn rwkv_review_score_eligible(
     intervening_reviews: Option<u32>,
     target_retention: Option<f32>,
 ) -> bool {
+    matches!(
+        rwkv_review_score_eligibility(
+            score,
+            metadata,
+            allow_same_day_review,
+            min_intervening_reviews,
+            min_elapsed_secs,
+            intervening_reviews,
+            target_retention,
+        ),
+        RwkvReviewScoreEligibility::Eligible
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RwkvReviewScoreEligibility {
+    Eligible,
+    Deferred {
+        required_intervening_reviews: Option<u32>,
+        intervening_reviews: Option<u32>,
+        remaining_elapsed_secs: Option<u32>,
+    },
+    Blocked,
+}
+
+pub(crate) fn rwkv_review_score_eligibility(
+    score: f32,
+    metadata: &RwkvReviewCandidateMetadata,
+    allow_same_day_review: bool,
+    min_intervening_reviews: u32,
+    min_elapsed_secs: u32,
+    intervening_reviews: Option<u32>,
+    target_retention: Option<f32>,
+) -> RwkvReviewScoreEligibility {
     let target_retention = target_retention
         .filter(|target| target.is_finite() && (0.0..=1.0).contains(target))
         .unwrap_or(metadata.target_retention);
 
-    score.is_finite()
-        && score <= target_retention
-        && (allow_same_day_review || !metadata.reviewed_today)
-        && rwkv_review_intervening_reviews_elapsed(intervening_reviews, min_intervening_reviews)
-        && rwkv_review_min_elapsed_secs_elapsed(metadata, min_elapsed_secs)
+    if !score.is_finite()
+        || score > target_retention
+        || (!allow_same_day_review && metadata.reviewed_today)
+    {
+        return RwkvReviewScoreEligibility::Blocked;
+    }
+
+    let required_intervening_reviews =
+        (!rwkv_review_intervening_reviews_elapsed(intervening_reviews, min_intervening_reviews))
+            .then_some(min_intervening_reviews);
+    let remaining_elapsed_secs = metadata
+        .elapsed_secs_since_last_review
+        .filter(|elapsed_secs| *elapsed_secs < min_elapsed_secs)
+        .map(|elapsed_secs| min_elapsed_secs - elapsed_secs);
+    if required_intervening_reviews.is_some() || remaining_elapsed_secs.is_some() {
+        RwkvReviewScoreEligibility::Deferred {
+            required_intervening_reviews,
+            intervening_reviews,
+            remaining_elapsed_secs,
+        }
+    } else {
+        RwkvReviewScoreEligibility::Eligible
+    }
 }
 
 fn rwkv_review_intervening_reviews_elapsed(
@@ -497,16 +549,6 @@ fn rwkv_review_intervening_reviews_elapsed(
 ) -> bool {
     min_intervening_reviews == 0
         || intervening_reviews.map_or(true, |reviews| reviews >= min_intervening_reviews)
-}
-
-fn rwkv_review_min_elapsed_secs_elapsed(
-    metadata: &RwkvReviewCandidateMetadata,
-    min_elapsed_secs: u32,
-) -> bool {
-    min_elapsed_secs == 0
-        || metadata
-            .elapsed_secs_since_last_review
-            .map_or(true, |elapsed_secs| elapsed_secs >= min_elapsed_secs)
 }
 
 #[derive(Debug, Clone, Copy)]
