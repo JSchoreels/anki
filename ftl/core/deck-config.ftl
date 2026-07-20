@@ -348,13 +348,14 @@ deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to
     appear next. This makes queue updates faster for large decks, but other
     cards keep an older estimate until a later update. The number rechecked is
-    controlled by `Cards processed at once`.
-deck-config-rwkv-review-batch-size = Cards processed at once
+    controlled by `Cards scored at once`.
+deck-config-rwkv-review-batch-size = Cards scored at once
 deck-config-rwkv-review-batch-size-tooltip =
-    How many cards RWKV checks in one batch. Enter a value from 64 to 8192. 512
-    is recommended when using a CPU. Larger batches may finish faster, but use
-    more memory.
-deck-config-rwkv-review-batch-size-memory = Estimated RAM: ~{ $memory }
+    How many cards RWKV checks in one batch for queue and statistics scoring.
+    Enter a value from 64 to 8192. 512 is recommended when using a CPU. Larger
+    batches may finish faster, but use more memory. RWKV-Curve bulk rescheduling
+    always uses a fixed batch of 128 and is not affected by this setting.
+deck-config-rwkv-review-batch-size-memory = Estimated scoring RAM: ~{ $memory }
 deck-config-rwkv-review-refresh-interval = Update the RWKV queue every
 deck-config-rwkv-review-refresh-interval-tooltip =
     How many answers to wait between RWKV queue updates. 1 updates the queue

@@ -14,7 +14,8 @@ RWKV backend and continue to schedule with FSRS/SM2.
 
 Desktop-only RWKV review settings are stored in deck config `other` under the
 `jschoreels.rwkv` key. This includes `rwkv_review_enabled` and
-`rwkv_review_batch_size`, which defaults to `512`, and
+`rwkv_review_batch_size`, which defaults to `512` for queue and statistics
+scoring, and
 `rwkv_review_refresh_interval`, which defaults to `1`,
 `rwkv_review_refresh_on_exit`, which defaults to `false`, and
 `rwkv_review_allow_same_day_review`, which defaults to `true`, and
@@ -328,13 +329,16 @@ The desktop backend also supports a maintenance operation that reschedules RWKV
 review cards and updates their stored RWKV memory state. The operation first
 warms or restores the local RWKV state cache, then queries RWKV for normal
 review cards in the requested deck tree, filtered to RWKV-enabled deck configs.
-It uses the current/query RWKV-Curve, not a hypothetical
-answer-button curve, to compute the target-retention interval and the current
-S90 value. The backend applies those values to the card without writing a
-review-log entry: `memory_state.stability` is updated to the RWKV S90, existing
-`memory_state.stability_internal` is preserved, the review interval and due day
-are recomputed from the card's last review day. New, learning, relearning,
-suspended, and filtered cards are not changed by this maintenance action.
+Full interval/S90 predictions use a fixed batch size of `128`, independent of
+the deck option `rwkv_review_batch_size`, to bound the transient recurrent-state
+memory used by this operation. It uses the current/query RWKV-Curve, not a
+hypothetical answer-button curve, to compute the target-retention interval and
+the current S90 value. The backend applies those values to the card without
+writing a review-log entry: `memory_state.stability` is updated to the RWKV S90,
+existing `memory_state.stability_internal` is preserved, the review interval and
+due day are recomputed from the card's last review day. New, learning,
+relearning, suspended, and filtered cards are not changed by this maintenance
+action.
 
 Deck Options also exposes an experimental RWKV Desired Retention "Help Me
 Decide" workload simulator. It is desktop-only and requires a usable local RWKV
@@ -515,6 +519,8 @@ embedded runner in batches using the deck option `rwkv_review_batch_size`. The
 R-only path may raise the effective batch size from the default `512` to `2048`
 because it evaluates one query state per card instead of the full per-grade
 answer set; explicit non-default batch-size settings are still respected. The
+RWKV-Curve maintenance reschedule does not use this option; its full
+interval/S90 predictions use the fixed batch size documented above. The
 embedded Rust runner evaluates those independent query predictions on Rayon
 worker lanes without evaluating the four hypothetical answer states. Reviewer
 current-card prediction additionally evaluates the four hypothetical answer

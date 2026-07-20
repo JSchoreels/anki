@@ -2168,6 +2168,143 @@ def test_set_answer_rwkv_metadata_persists_same_day_relearning_kind() -> None:
     assert review_input.current_normal_state_kind == "relearning"
 
 
+def test_failed_answer_retry_replaces_pending_rwkv_input() -> None:
+    reviewer = _rwkv_reviewer()
+    previous_id = (40 * 86_400 + 100) * 1000
+    reviewer.mw.col.db = SimpleNamespace(first=lambda sql, card_id: (previous_id, 3, 0))
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1_234)
+
+    rwkv_scheduler.set_answer_rwkv_metadata(
+        SimpleNamespace(answered_at_millis=(42 * 86_400 + 50) * 1000),
+        reviewer,
+        card,
+        ease=3,
+    )
+
+    # Simulate an answer operation failure followed by a retry after card changes.
+    card.did = 200
+    card.due = 75
+    rwkv_scheduler.set_answer_rwkv_metadata(
+        SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000),
+        reviewer,
+        card,
+        ease=3,
+    )
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=200),
+        ease=3,
+    )
+    assert review_input.identity.deck_id == 200
+    assert review_input.card_due == 75
+
+
+def test_live_answer_after_card_reload_matches_historical_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_review_id = (40 * 86_400 + 100) * 1000 + 123
+    answered_at_millis = (42 * 86_400 + 100) * 1000 + 987
+    raw_duration_millis = 9_000
+    persisted_duration_millis = 5_000
+    monkeypatch.setattr(
+        rwkv_scheduler.time,
+        "time",
+        lambda: answered_at_millis / 1000,
+    )
+    rows: list[tuple[object, ...]] = [
+        (
+            previous_review_id,
+            1,
+            10,
+            100,
+            3,
+            1_234,
+            0,
+            4,
+            2_500,
+        ),
+    ]
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert "from revlog r" in sql
+            assert args == ()
+            return list(rows)
+
+        def first(self, sql: str, card_id: int) -> tuple[int, int, int]:
+            assert "from revlog" in sql
+            assert card_id == 1
+            row = rows[-1]
+            return int(row[0]), int(row[4]), int(row[6])
+
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = DB()
+    rwkv_scheduler._reviewer_backend_warmup_keys.add((id(backend), id(reviewer.mw.col)))
+    card = _rwkv_card(
+        card_id=1,
+        note_id=10,
+        duration_millis=raw_duration_millis,
+        last_review_time=previous_review_id // 1000,
+    )
+    card.time_limit = lambda: persisted_duration_millis
+    answer = SimpleNamespace(
+        answered_at_millis=answered_at_millis,
+        milliseconds_taken=raw_duration_millis,
+    )
+
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+
+    assert runtime.answered_inputs == []
+    rows.append(
+        (
+            answered_at_millis,
+            1,
+            10,
+            100,
+            3,
+            persisted_duration_millis,
+            1,
+            5,
+            2_400,
+        )
+    )
+    # Simulate Card.load() after the answer operation has persisted the new row.
+    card.last_review_time = answered_at_millis // 1000
+    card.time_taken = lambda capped=True: raw_duration_millis + 2_000
+    card.ivl = 5
+    card.factor = 2_400
+    card.reps = 6
+
+    record_reviewer_answer(reviewer, card, ease=3)
+
+    live = runtime.answered_inputs[-1]
+    rebuilt = rwkv_scheduler._historical_rwkv_review_inputs(reviewer).reviews[-1]
+    assert (
+        live.identity,
+        live.ease,
+        live.duration_millis,
+        live.card_type,
+        live.day_offset,
+        live.current_elapsed_days,
+        live.current_elapsed_seconds,
+    ) == (
+        rebuilt.identity,
+        rebuilt.ease,
+        rebuilt.duration_millis,
+        rebuilt.card_type,
+        rebuilt.day_offset,
+        rebuilt.current_elapsed_days,
+        rebuilt.current_elapsed_seconds,
+    )
+    assert live.duration_millis == persisted_duration_millis
+    assert (live.current_elapsed_days, live.current_elapsed_seconds) == (2, 172_800)
+
+
 def test_live_synthetic_filtered_state_chains_within_reviewer_session() -> None:
     reviewer = _rwkv_reviewer()
     first_id = (42 * 86_400 + 50) * 1000
@@ -7117,6 +7254,54 @@ def test_rwkv_reschedule_items_use_current_interval_and_s90() -> None:
         (1, 12, 39, 22),
         (2, 13, 39, 23),
     ]
+
+
+def test_rwkv_reschedule_uses_fixed_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = [
+        (card_id, _rwkv_review_input(card_id=card_id, note_id=card_id + 1000))
+        for card_id in range(1, 130)
+    ]
+    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={8192: inputs},
+        loaded_rows=len(inputs),
+        parsed_cards=len(inputs),
+        cards_with_state=len(inputs),
+        disabled_config_cards=0,
+        eligible_cards=len(inputs),
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+    prediction_batches: list[tuple[int, int]] = []
+
+    def predict(
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+        *,
+        batch_size: int,
+    ) -> list[RwkvReviewPrediction]:
+        prediction_batches.append((len(inputs_by_card_id), batch_size))
+        return [
+            RwkvReviewPrediction(
+                retrievability=0.5,
+                current_interval=10,
+                current_s90=20,
+            )
+            for _ in inputs_by_card_id
+        ]
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_predictions_for_inputs",
+        predict,
+    )
+
+    items = rwkv_scheduler._rwkv_review_reschedule_items_from_input_build(input_build)
+
+    assert len(items) == 129
+    assert prediction_batches == [(128, 128), (1, 128)]
 
 
 def test_rwkv_reschedule_card_ids_use_requested_deck_tree() -> None:

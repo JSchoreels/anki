@@ -97,6 +97,7 @@ _NEW_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY = getattr(
     7,
 )
 _DEFAULT_RWKV_REVIEW_BATCH_SIZE = 512
+_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE = 128
 _DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL = 1
 _DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS = 5
 _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION = True
@@ -441,6 +442,7 @@ class _RwkvPendingAnswerState(NamedTuple):
     review_state: int
     base_review_state: int | None
     answered_at_millis: int
+    review_input: RwkvReviewInput
 
 
 class _RwkvSyntheticAnswerState(NamedTuple):
@@ -2277,26 +2279,27 @@ def record_reviewer_answer(
         if isinstance(pending, _RwkvPendingAnswerState) and pending.card_id == _card_id(
             card
         ):
-            synthetic_states = getattr(
-                reviewer,
-                _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
-                None,
-            )
-            if not isinstance(synthetic_states, dict):
-                synthetic_states = {}
-                setattr(
+            if pending.ease == ease:
+                synthetic_states = getattr(
                     reviewer,
                     _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
-                    synthetic_states,
+                    None,
                 )
-            if pending.review_state != pending.base_review_state:
-                synthetic_states[pending.card_id] = _RwkvSyntheticAnswerState(
-                    ease=pending.ease,
-                    review_state=pending.review_state,
-                    answered_at_millis=pending.answered_at_millis,
-                )
-            else:
-                synthetic_states.pop(pending.card_id, None)
+                if not isinstance(synthetic_states, dict):
+                    synthetic_states = {}
+                    setattr(
+                        reviewer,
+                        _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR,
+                        synthetic_states,
+                    )
+                if pending.review_state != pending.base_review_state:
+                    synthetic_states[pending.card_id] = _RwkvSyntheticAnswerState(
+                        ease=pending.ease,
+                        review_state=pending.review_state,
+                        answered_at_millis=pending.answered_at_millis,
+                    )
+                else:
+                    synthetic_states.pop(pending.card_id, None)
             delattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR)
 
 
@@ -4216,7 +4219,18 @@ def rwkv_review_input(
     card: object,
     identity: RwkvReviewIdentity,
     ease: int | None,
+    _use_pending_answer: bool = True,
 ) -> RwkvReviewInput:
+    pending = getattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR, None)
+    if (
+        _use_pending_answer
+        and ease is not None
+        and isinstance(pending, _RwkvPendingAnswerState)
+        and pending.card_id == identity.card_id
+        and pending.ease == ease
+    ):
+        return pending.review_input
+
     current_state = _current_scheduling_state(reviewer)
     state_kind, normal_state_kind = _scheduling_state_kinds(current_state)
     elapsed_days, elapsed_seconds = _scheduling_state_elapsed(current_state)
@@ -4238,15 +4252,7 @@ def rwkv_review_input(
         card_type=_int_attr(card, "type"),
     )
     review_state = base_review_state
-    pending = getattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR, None)
-    if (
-        ease is not None
-        and isinstance(pending, _RwkvPendingAnswerState)
-        and pending.card_id == identity.card_id
-        and pending.ease == ease
-    ):
-        review_state = pending.review_state
-    elif isinstance(deck_config, dict):
+    if isinstance(deck_config, dict):
         review_state = _rwkv_review_state_for_live_context(
             reviewer,
             card,
@@ -4684,6 +4690,136 @@ def _current_reviewer_prediction(
     return prediction
 
 
+def _rwkv_pending_answer_review_input(
+    *,
+    answer: object,
+    reviewer: object,
+    card: object,
+    ease: int,
+    deck_config: dict[str, object],
+    review_state: int,
+    answered_at_millis: int,
+) -> RwkvReviewInput | None:
+    identity = rwkv_review_identity(reviewer, card)
+    if identity is None:
+        return None
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=identity,
+        ease=ease,
+        _use_pending_answer=False,
+    )
+    day_offset, elapsed_days, elapsed_seconds = _rwkv_answer_elapsed(
+        reviewer=reviewer,
+        card=card,
+        deck_config=deck_config,
+        review_state=review_state,
+        answered_at_millis=answered_at_millis,
+    )
+    state_kind, normal_state_kind = _rwkv_review_state_kinds(review_state)
+    return replace(
+        review_input,
+        duration_millis=_rwkv_answer_duration_millis(answer, card, ease),
+        card_type=review_state,
+        card_queue=_rwkv_review_queue_for_state(
+            review_state,
+            _int_attr(card, "queue"),
+        ),
+        day_offset=day_offset,
+        current_state_kind=state_kind,
+        current_normal_state_kind=normal_state_kind,
+        current_elapsed_days=elapsed_days,
+        current_elapsed_seconds=elapsed_seconds,
+    )
+
+
+def _rwkv_answer_elapsed(
+    *,
+    reviewer: object,
+    card: object,
+    deck_config: dict[str, object],
+    review_state: int,
+    answered_at_millis: int,
+) -> tuple[int | None, int | None, int | None]:
+    timing = _timing_today(reviewer)
+    days_elapsed = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    have_scheduler_days = isinstance(days_elapsed, int) and isinstance(next_day_at, int)
+    day_offset = (
+        _historical_review_day_offset(
+            answered_at_millis,
+            days_elapsed=days_elapsed,
+            next_day_at=next_day_at,
+        )
+        if have_scheduler_days
+        else _day_offset(reviewer)
+    )
+
+    card_id = _card_id(card)
+    previous = (
+        _latest_eligible_review_for_card(reviewer, card_id)
+        if card_id is not None and review_state != int(RwkvReviewState.LEARN_START)
+        else None
+    )
+    if previous is not None:
+        previous_review_id = previous[0]
+        elapsed_seconds = max(
+            0,
+            (answered_at_millis - previous_review_id) // 1000,
+        )
+        elapsed_days = (
+            max(
+                0,
+                day_offset
+                - _historical_review_day_offset(
+                    previous_review_id,
+                    days_elapsed=days_elapsed,
+                    next_day_at=next_day_at,
+                ),
+            )
+            if have_scheduler_days and day_offset is not None
+            else None
+        )
+        return day_offset, elapsed_days, elapsed_seconds
+
+    if card_id is not None and _rwkv_review_first_review_elapsed_from_card_creation(
+        deck_config
+    ):
+        elapsed_seconds = max(0, (answered_at_millis - card_id) // 1000)
+        return day_offset, elapsed_seconds // 86_400, elapsed_seconds
+
+    return day_offset, -1, -1
+
+
+def _rwkv_answer_duration_millis(
+    answer: object,
+    card: object,
+    ease: int,
+) -> int | None:
+    duration_millis = _int_value(getattr(answer, "milliseconds_taken", None))
+    if duration_millis is None:
+        return _duration_millis(card, ease)
+
+    duration_millis = max(0, duration_millis)
+    time_limit = getattr(card, "time_limit", None)
+    if not callable(time_limit):
+        return duration_millis
+
+    try:
+        limit_millis = _int_value(time_limit())
+    except Exception:
+        logger.debug("failed to read answer time limit for RWKV review input")
+        return duration_millis
+
+    return (
+        min(duration_millis, max(0, limit_millis))
+        if limit_millis is not None
+        else duration_millis
+    )
+
+
 def set_answer_rwkv_metadata(
     answer: object,
     reviewer: object,
@@ -4714,19 +4850,34 @@ def set_answer_rwkv_metadata(
         )
         review_kind = _rwkv_raw_review_kind(review_state)
         card_id = _card_id(card)
-        if review_kind is not None and card_id is not None:
-            setattr(answer, "rwkv_review_kind", review_kind)
-            setattr(
-                reviewer,
-                _REVIEWER_PENDING_ANSWER_STATE_ATTR,
-                _RwkvPendingAnswerState(
-                    card_id,
-                    ease,
-                    review_state,
-                    base_review_state,
-                    answered_at_millis,
-                ),
+        if (
+            review_kind is not None
+            and card_id is not None
+            and isinstance(review_state, int)
+        ):
+            review_input = _rwkv_pending_answer_review_input(
+                answer=answer,
+                reviewer=reviewer,
+                card=card,
+                ease=ease,
+                deck_config=deck_config,
+                review_state=review_state,
+                answered_at_millis=answered_at_millis,
             )
+            setattr(answer, "rwkv_review_kind", review_kind)
+            if review_input is not None:
+                setattr(
+                    reviewer,
+                    _REVIEWER_PENDING_ANSWER_STATE_ATTR,
+                    _RwkvPendingAnswerState(
+                        card_id,
+                        ease,
+                        review_state,
+                        base_review_state,
+                        answered_at_millis,
+                        review_input,
+                    ),
+                )
 
     prediction = _current_reviewer_prediction(reviewer, card)
     if prediction is None or not prediction.review_enabled:
@@ -11811,7 +11962,7 @@ def _rwkv_review_reschedule_items_for_deck(
     input_build = _rwkv_review_input_batches_for_deck_review_queue(
         reviewer=reviewer,
         deck_id=deck_id,
-        batch_size_override=None,
+        batch_size_override=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         include_new_cards=False,
     )
     if input_build is None:
@@ -11840,11 +11991,14 @@ def _rwkv_review_reschedule_items_for_deck(
     items: list[RwkvReviewRescheduleItem] = []
     processed_inputs = 0
     start = time.monotonic()
-    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
-        for batch in _chunks(inputs_by_card_id, batch_size):
+    for inputs_by_card_id in input_build.inputs_by_batch_size.values():
+        for batch in _chunks(
+            inputs_by_card_id,
+            _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
+        ):
             predictions = _rwkv_review_predictions_for_inputs(
                 batch,
-                batch_size=batch_size,
+                batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
             )
             if predictions is None:
                 return None
@@ -11866,7 +12020,8 @@ def _rwkv_review_reschedule_items_for_deck(
     logger.debug(
         "RWKV review reschedule deck inputs predicted: deck_id=%s searched=%s "
         "loaded=%s with_state=%s enabled=%s inputs=%s items=%s deck_configs=%s "
-        "load_elapsed_ms=%.1f candidate_elapsed_ms=%.1f elapsed_ms=%.1f",
+        "batch_size=%s load_elapsed_ms=%.1f candidate_elapsed_ms=%.1f "
+        "elapsed_ms=%.1f",
         deck_id,
         input_build.searched_rows,
         input_build.parsed_cards,
@@ -11875,6 +12030,7 @@ def _rwkv_review_reschedule_items_for_deck(
         total_inputs,
         len(items),
         input_build.deck_configs,
+        _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         input_build.load_elapsed_ms,
         input_build.candidate_elapsed_ms,
         (time.monotonic() - start) * 1000,
@@ -11900,7 +12056,7 @@ def _rwkv_review_reschedule_items(
             reason="RWKV reschedule",
             include_suspended_review=False,
             supported_state_filter=True,
-            batch_size_override=None,
+            batch_size_override=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
             use_enabled_deck_filter=True,
         )
         if input_build is not None:
@@ -11919,7 +12075,7 @@ def _rwkv_review_reschedule_items(
     total_cards = len(card_ids)
     for chunk in _chunks(list(card_ids), 5000):
         deck_configs: dict[int, dict[str, object] | None] = {}
-        candidates_by_batch_size: dict[int, list[RwkvReviewCandidate]] = {}
+        candidates: list[RwkvReviewCandidate] = []
         elapsed_days_by_card_id: dict[int, int] = {}
         preset_ids_by_card = _resolved_fsrs_preset_ids(reviewer, chunk)
         loaded_cards = _rwkv_cards_for_ids(
@@ -11954,10 +12110,7 @@ def _rwkv_review_reschedule_items(
                 continue
 
             elapsed_days_by_card_id[card.id] = current.normal.review.elapsed_days
-            candidates_by_batch_size.setdefault(
-                _rwkv_review_batch_size(deck_config),
-                [],
-            ).append(
+            candidates.append(
                 RwkvReviewCandidate(
                     reviewer=_stats_graph_reviewer_context(
                         deck_config=deck_config,
@@ -11969,17 +12122,16 @@ def _rwkv_review_reschedule_items(
                 )
             )
 
-        for batch_size, candidates in candidates_by_batch_size.items():
-            for batch in _chunks(candidates, batch_size):
-                predictions = _predict_review_batch(batch)
-                for candidate, prediction in zip(batch, predictions, strict=True):
-                    item = _rwkv_review_reschedule_item(
-                        candidate,
-                        prediction,
-                        elapsed_days_by_card_id,
-                    )
-                    if item is not None:
-                        items.append(item)
+        for batch in _chunks(candidates, _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE):
+            predictions = _predict_review_batch(batch)
+            for candidate, prediction in zip(batch, predictions, strict=True):
+                item = _rwkv_review_reschedule_item(
+                    candidate,
+                    prediction,
+                    elapsed_days_by_card_id,
+                )
+                if item is not None:
+                    items.append(item)
 
         processed_cards += len(chunk)
         _report_rwkv_state_cache_progress(
@@ -11990,9 +12142,10 @@ def _rwkv_review_reschedule_items(
         )
 
     logger.debug(
-        "RWKV review reschedule items built: cards=%s items=%s",
+        "RWKV review reschedule items built: cards=%s items=%s batch_size=%s",
         len(card_ids),
         len(items),
+        _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
     )
     return items
 
@@ -12083,11 +12236,14 @@ def _rwkv_review_reschedule_items_from_input_build(
     items: list[RwkvReviewRescheduleItem] = []
     processed_inputs = 0
     start = time.monotonic()
-    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
-        for batch in _chunks(inputs_by_card_id, batch_size):
+    for inputs_by_card_id in input_build.inputs_by_batch_size.values():
+        for batch in _chunks(
+            inputs_by_card_id,
+            _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
+        ):
             predictions = _rwkv_review_predictions_for_inputs(
                 batch,
-                batch_size=batch_size,
+                batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
             )
             if predictions is None:
                 return []
@@ -12108,14 +12264,15 @@ def _rwkv_review_reschedule_items_from_input_build(
 
     logger.debug(
         "RWKV review reschedule inputs predicted: loaded=%s with_state=%s "
-        "enabled=%s inputs=%s items=%s deck_configs=%s load_elapsed_ms=%.1f "
-        "candidate_elapsed_ms=%.1f elapsed_ms=%.1f",
+        "enabled=%s inputs=%s items=%s deck_configs=%s batch_size=%s "
+        "load_elapsed_ms=%.1f candidate_elapsed_ms=%.1f elapsed_ms=%.1f",
         input_build.parsed_cards,
         input_build.cards_with_state,
         input_build.eligible_cards,
         total_inputs,
         len(items),
         input_build.deck_configs,
+        _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         input_build.load_elapsed_ms,
         input_build.candidate_elapsed_ms,
         (time.monotonic() - start) * 1000,
