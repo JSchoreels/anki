@@ -20,6 +20,7 @@ import { bridgeCommand } from "@tslib/bridgecommand";
 import { registerPackage } from "@tslib/runtime-require";
 
 import { allImagesLoaded, preloadAnswerImages } from "./images";
+import { waitForNextPaint } from "./paint";
 import { preloadResources } from "./preload";
 
 declare const MathJax: any;
@@ -220,8 +221,10 @@ export function _showAnswer(
                 // avoid scrolling to the answer until images load
                 allImagesLoaded().then(scrollToAnswer);
             },
-            function() {
-                /* noop */
+            async function() {
+                // Let Chromium commit the answer before the host enables grading
+                // and requests a repaint, or it can present a stale reviewer frame.
+                await waitForNextPaint();
             },
             updateContext,
         )

@@ -21,6 +21,7 @@ import aqt.operations
 import aqt.rwkv_scheduler
 from anki.cards import Card, CardId
 from anki.collection import Config, OpChanges, OpChangesWithCount
+from anki.errors import NotFoundError
 from anki.lang import with_collapsed_whitespace
 from anki.scheduler.base import ScheduleCardsAsNew
 from anki.scheduler.v3 import (
@@ -281,7 +282,10 @@ class Reviewer:
                 self.nextCard()
                 self.mw.fade_in_webview()
                 self._refresh_needed = None
-            elif self._current_card_is_rwkv_undo_restored():
+            elif (
+                self._current_card_is_rwkv_undo_restored()
+                and not self._current_card_was_deleted()
+            ):
                 logger.debug(
                     "ignored study queue refresh while RWKV undo-restored card is active: card_id=%s",
                     self.card.id if self.card else None,
@@ -343,6 +347,18 @@ class Reviewer:
                 False,
             )
         )
+
+    def _current_card_was_deleted(self) -> bool:
+        assert self.card is not None
+        try:
+            self.card.load()
+        except NotFoundError:
+            logger.debug(
+                "advancing past deleted RWKV undo-restored card: card_id=%s",
+                self.card.id,
+            )
+            return True
+        return False
 
     def _redraw_current_card(self) -> None:
         self.card.load()

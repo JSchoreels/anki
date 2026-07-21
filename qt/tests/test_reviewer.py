@@ -1736,7 +1736,7 @@ def test_study_queue_refresh_while_rwkv_undo_restored_card_is_active_is_ignored(
     )
 
     reviewer = Reviewer.__new__(Reviewer)
-    reviewer.card = SimpleNamespace(id=456)
+    reviewer.card = SimpleNamespace(id=456, load=lambda: None)
     reviewer.state = "question"
     reviewer._refresh_needed = None
     reviewer._rwkv_undo_restored_card_requires_queue_invalidation = True
@@ -1749,6 +1749,47 @@ def test_study_queue_refresh_while_rwkv_undo_restored_card_is_active_is_ignored(
     dirty = reviewer.op_executed(changes, handler=None, focused=focused)
 
     assert reviewer.card.id == 456
+    assert reviewer._refresh_needed is None
+    assert dirty is False
+
+
+def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class DeletedCard:
+        id = 456
+
+        def load(self) -> None:
+            raise reviewer_module.NotFoundError("No such card", None, None, None)
+
+    def prepare_then_next(*args: object, **kwargs: object) -> None:
+        assert kwargs == {"fade_after": True, "show_next_card": True}
+        calls.append("prepare")
+        reviewer.nextCard()
+        reviewer.mw.fade_in_webview()
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = DeletedCard()
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._rwkv_undo_restored_card_requires_queue_invalidation = True
+    reviewer.nextCard = lambda: calls.append("next")
+    reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
+    reviewer.mw = SimpleNamespace(fade_in_webview=lambda: calls.append("fade"))
+
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=False)
+
+    assert calls == ["prepare", "next", "fade"]
     assert reviewer._refresh_needed is None
     assert dirty is False
 
