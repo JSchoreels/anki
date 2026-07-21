@@ -246,7 +246,10 @@ rescheduling predictions are made. The resolved target retention is carried with
 each transient queue score, so Rust queue gathering and deck counts compare RWKV
 retrievability against the same target the desktop scorer used. RWKV reschedule
 requests also carry the resolved target and persist it to the card's desired
-retention field together with the new interval and S90 value.
+retention field together with the new interval and S90 value. When the provider
+reports that its rules changed, RWKV discards resolved targets and transient
+scores, rejects in-flight work prepared with the old rules, and refreshes the
+current screen's study queues and due counts.
 
 ## Stats And Search
 

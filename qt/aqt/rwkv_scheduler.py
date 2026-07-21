@@ -165,6 +165,7 @@ _rwkv_review_queue_target_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_score_generations: dict[int, int] = {}
 _rwkv_review_queue_score_config_keys: dict[int, RwkvReviewQueueScoreConfigKey] = {}
 _rwkv_review_queue_collection_key: RwkvReviewQueueCollectionKey | None = None
+_dynamic_desired_retention_generation = 0
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _rwkv_stats_prepare_lock = threading.Lock()
 _rwkv_stats_prepare_in_flight: dict[RwkvStatsPrepareKey, threading.Event] = {}
@@ -331,6 +332,7 @@ class RwkvReviewQueueContext:
     days_elapsed: int
     next_day_at: int
     config_key: str
+    dynamic_desired_retention_generation: int
 
 
 @dataclass(frozen=True)
@@ -664,6 +666,7 @@ RwkvReviewQueueScoreConfigKey = tuple[
     int,
     str,
     tuple[int, ...],
+    int,
 ]
 RwkvCalibrationMetricBin = tuple[int, int, int]
 RwkvCalibrationMetricPair = tuple[float, int, RwkvCalibrationMetricBin]
@@ -676,6 +679,7 @@ RwkvReviewInputBatchCacheKey = tuple[
     RwkvReviewQueueCollectionKey,
     str,
     tuple[int, ...],
+    int,
 ]
 
 
@@ -10941,6 +10945,7 @@ def _rwkv_review_queue_context(
         days_elapsed=days_elapsed,
         next_day_at=next_day_at,
         config_key=_rwkv_review_queue_configuration_key(reviewer),
+        dynamic_desired_retention_generation=(_dynamic_desired_retention_generation),
     )
 
 
@@ -11007,6 +11012,31 @@ def _resolve_dynamic_desired_retentions_for_input_build(
         input_build,
         inputs_by_batch_size=resolved_inputs_by_batch_size,
         dynamic_desired_retentions_resolved=True,
+    )
+
+
+def dynamic_desired_retention_did_change(mw: object) -> None:
+    """Invalidate RWKV targets and refresh study queues after provider changes."""
+
+    global _dynamic_desired_retention_generation
+
+    _dynamic_desired_retention_generation += 1
+    _clear_rwkv_review_queue_score_cache()
+    _rwkv_review_input_batch_module_cache.clear()
+    with _rwkv_score_prewarm_lock:
+        _rwkv_score_prewarm_in_flight.clear()
+
+    reviewer = SimpleNamespace(mw=mw)
+    _clear_rwkv_review_queue_scores(reviewer)
+    clear_deck_browser_rwkv_count_scores(mw)
+
+    reset = getattr(mw, "reset", None)
+    if callable(reset):
+        reset()
+
+    logger.debug(
+        "RWKV Dynamic DR caches invalidated: generation=%s",
+        _dynamic_desired_retention_generation,
     )
 
 
@@ -13460,6 +13490,7 @@ def _rwkv_review_input_batch_cache_key(
         collection_key,
         _rwkv_review_queue_configuration_key(reviewer),
         _rwkv_review_deck_scope_key(reviewer, deck_id),
+        _dynamic_desired_retention_generation,
     )
 
 
@@ -13486,6 +13517,7 @@ def _rwkv_review_queue_score_config_key(
         next_day_at if isinstance(next_day_at, int) else -1,
         _rwkv_review_queue_configuration_key(reviewer),
         _rwkv_review_deck_scope_key(reviewer, deck_id),
+        _dynamic_desired_retention_generation,
     )
 
 

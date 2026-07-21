@@ -102,6 +102,9 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_review_queue_score_config_keys
     )
     previous_queue_collection_key = rwkv_scheduler._rwkv_review_queue_collection_key
+    previous_dynamic_dr_generation = (
+        rwkv_scheduler._dynamic_desired_retention_generation
+    )
     previous_input_batch_cache = (
         rwkv_scheduler._rwkv_review_input_batch_module_cache.copy()
     )
@@ -118,6 +121,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_queue_score_generations.clear()
     rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
     rwkv_scheduler._rwkv_review_queue_collection_key = None
+    rwkv_scheduler._dynamic_desired_retention_generation = 0
     rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
     rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
@@ -153,6 +157,9 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
             previous_queue_score_config_keys
         )
         rwkv_scheduler._rwkv_review_queue_collection_key = previous_queue_collection_key
+        rwkv_scheduler._dynamic_desired_retention_generation = (
+            previous_dynamic_dr_generation
+        )
         rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
         rwkv_scheduler._rwkv_review_input_batch_module_cache.update(
             previous_input_batch_cache
@@ -297,6 +304,65 @@ def test_rwkv_queue_caches_are_scoped_to_collection() -> None:
         1: pytest.approx(0.25)
     }
     assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(second, 100) is None
+
+
+def test_dynamic_desired_retention_change_invalidates_rwkv_and_resets_ui() -> None:
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deck_count_clears = 0
+
+        def clear_rwkv_deck_count_scores(self) -> None:
+            self.deck_count_clears += 1
+
+    rpc = Rpc()
+    reviewer = _rwkv_reviewer(
+        rpc=rpc,
+        rwkv_review_instant_order_enabled=True,
+    )
+    reviewer.mw.col.decks.get_current_id = lambda: 100
+    reviewer.mw.col.decks.deck_and_child_ids = lambda deck_id: [deck_id]
+    resets: list[bool] = []
+    reviewer.mw.reset = lambda: resets.append(True)
+
+    context_before = rwkv_scheduler._rwkv_review_queue_context(reviewer, 100)
+    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    assert context_before is not None
+    assert cache_key is not None
+
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.75}
+    rwkv_scheduler._rwkv_review_queue_target_maps[100] = {1: 0.90}
+    rwkv_scheduler._rwkv_review_input_batch_module_cache[cache_key] = (
+        rwkv_scheduler.RwkvReviewInputBatchBuild(
+            inputs_by_batch_size={},
+            loaded_rows=0,
+            parsed_cards=0,
+            cards_with_state=0,
+            disabled_config_cards=0,
+            eligible_cards=0,
+            deck_configs=0,
+            preset_elapsed_ms=0.0,
+            load_elapsed_ms=0.0,
+            candidate_elapsed_ms=0.0,
+        )
+    )
+    rwkv_scheduler._rwkv_score_prewarm_in_flight.add((1, 2, 3, 4, (100,)))
+
+    rwkv_scheduler.dynamic_desired_retention_did_change(reviewer.mw)
+
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+    assert rwkv_scheduler._rwkv_review_queue_target_maps == {}
+    assert rwkv_scheduler._rwkv_review_input_batch_module_cache == {}
+    assert rwkv_scheduler._rwkv_score_prewarm_in_flight == set()
+    assert rpc.calls[-1] == {"deck_id": 100, "scores": []}
+    assert rpc.deck_count_clears == 1
+    assert resets == [True]
+    assert rwkv_scheduler._rwkv_review_queue_context(reviewer, 100) != context_before
 
 
 def test_async_reviewer_queue_result_rejects_changed_queue_context() -> None:
@@ -6171,6 +6237,7 @@ def test_install_async_reviewer_queue_order_discards_stale_generation() -> None:
             days_elapsed=42,
             next_day_at=43 * 86_400,
             config_key="",
+            dynamic_desired_retention_generation=0,
         ),
         deck_id=100,
         reason="review queue",
@@ -6237,6 +6304,7 @@ def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
             days_elapsed=42,
             next_day_at=43 * 86_400,
             config_key="",
+            dynamic_desired_retention_generation=0,
         ),
         deck_id=100,
         reason="review queue",
