@@ -471,29 +471,6 @@ pub(crate) fn rwkv_review_candidate_metadata(
     Ok(metadata)
 }
 
-pub(crate) fn rwkv_review_score_eligible(
-    score: f32,
-    metadata: &RwkvReviewCandidateMetadata,
-    allow_same_day_review: bool,
-    min_intervening_reviews: u32,
-    min_elapsed_secs: u32,
-    intervening_reviews: Option<u32>,
-    target_retention: Option<f32>,
-) -> bool {
-    matches!(
-        rwkv_review_score_eligibility(
-            score,
-            metadata,
-            allow_same_day_review,
-            min_intervening_reviews,
-            min_elapsed_secs,
-            intervening_reviews,
-            target_retention,
-        ),
-        RwkvReviewScoreEligibility::Eligible
-    )
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RwkvReviewScoreEligibility {
     Eligible,
@@ -514,12 +491,62 @@ pub(crate) fn rwkv_review_score_eligibility(
     intervening_reviews: Option<u32>,
     target_retention: Option<f32>,
 ) -> RwkvReviewScoreEligibility {
-    let target_retention = target_retention
-        .filter(|target| target.is_finite() && (0.0..=1.0).contains(target))
-        .unwrap_or(metadata.target_retention);
+    rwkv_review_score_eligibility_inner(
+        score,
+        metadata,
+        allow_same_day_review,
+        min_intervening_reviews,
+        min_elapsed_secs,
+        intervening_reviews,
+        RwkvReviewTarget::Enforce(target_retention),
+    )
+}
+
+pub(crate) fn rwkv_review_score_eligibility_ignoring_retention(
+    score: f32,
+    metadata: &RwkvReviewCandidateMetadata,
+    allow_same_day_review: bool,
+    min_intervening_reviews: u32,
+    min_elapsed_secs: u32,
+    intervening_reviews: Option<u32>,
+) -> RwkvReviewScoreEligibility {
+    rwkv_review_score_eligibility_inner(
+        score,
+        metadata,
+        allow_same_day_review,
+        min_intervening_reviews,
+        min_elapsed_secs,
+        intervening_reviews,
+        RwkvReviewTarget::Ignore,
+    )
+}
+
+enum RwkvReviewTarget {
+    Enforce(Option<f32>),
+    Ignore,
+}
+
+fn rwkv_review_score_eligibility_inner(
+    score: f32,
+    metadata: &RwkvReviewCandidateMetadata,
+    allow_same_day_review: bool,
+    min_intervening_reviews: u32,
+    min_elapsed_secs: u32,
+    intervening_reviews: Option<u32>,
+    target: RwkvReviewTarget,
+) -> RwkvReviewScoreEligibility {
+    let score_above_target = match target {
+        RwkvReviewTarget::Enforce(target_retention) => {
+            let target_retention = target_retention
+                .filter(|target| target.is_finite() && (0.0..=1.0).contains(target))
+                .unwrap_or(metadata.target_retention);
+            score > target_retention
+        }
+        RwkvReviewTarget::Ignore => false,
+    };
 
     if !score.is_finite()
-        || score > target_retention
+        || score_above_target
         || (!allow_same_day_review && metadata.reviewed_today)
     {
         return RwkvReviewScoreEligibility::Blocked;

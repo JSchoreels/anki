@@ -22,6 +22,7 @@ scoring, and
 `rwkv_review_min_intervening_reviews`, which defaults to `5`, and
 `rwkv_review_min_elapsed_secs`, which defaults to `30`, and
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
+`rwkv_review_minimum_reviews_per_day`, which defaults to `0`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
 `rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
@@ -167,8 +168,20 @@ next day. When same-day RWKV re-review is enabled,
 reviews in the selected deck tree before the same card is admitted again, and
 `rwkv_review_min_elapsed_secs` can require that many seconds since the card's
 stored last review time. If both values are nonzero, both guards must be
-satisfied. Due review cards without an RWKV score remain eligible through the
-normal due-card path. When the new-card gather order is `Ascending
+satisfied.
+
+`rwkv_review_minimum_reviews_per_day` sets a floor for the number of reviews
+RWKV-Instant offers in a scheduler day. Normally eligible review and interday
+learning cards, plus reviews already completed today, count toward the floor.
+If the floor has not been met, RWKV pulls forward scored review cards above
+their target-retention threshold, starting with the lowest retrievability.
+Ordinary maximum review limits, sibling burying, and same-day/repeat-spacing
+guards still take precedence. A deck's completed and queued reviews also count
+toward every ancestor deck's floor; when a parent deck is studied, unmet
+subdeck floors are enforced within their respective subtrees.
+
+Due review cards without an RWKV score remain eligible through the normal
+due-card path. When the new-card gather order is `Ascending
 retrievability (RWKV)` or `Descending retrievability (RWKV)`, queue scoring also
 requests new-card inputs and the new queue gathers finite scored new cards by
 RWKV retrievability in the selected direction. New cards without a current RWKV

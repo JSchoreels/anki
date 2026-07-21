@@ -4,9 +4,12 @@ use std::collections::HashMap;
 
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
+use crate::decks::limits::LimitTreeMap;
 use crate::prelude::*;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
-use crate::scheduler::rwkv::rwkv_review_score_eligible;
+use crate::scheduler::rwkv::rwkv_review_score_eligibility;
+use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
+use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 
 #[derive(Debug)]
@@ -109,12 +112,13 @@ impl Collection {
 
         let scored_ids: Vec<_> = scores.keys().copied().collect();
         let metadata = rwkv_review_candidate_metadata(self, &scored_ids, timing)?;
+        let mut pull_candidates = Vec::new();
         for (card_id, score) in scores {
             let Some(metadata) = metadata.get(card_id) else {
                 continue;
             };
 
-            let rwkv_due = rwkv_review_score_eligible(
+            let eligibility = rwkv_review_score_eligibility(
                 score.retrievability,
                 metadata,
                 allow_same_day_review,
@@ -123,17 +127,58 @@ impl Collection {
                 score.intervening_reviews,
                 score.target_retention,
             );
-            if rwkv_due == metadata.fsrs_due_today {
-                continue;
+            let rwkv_due = matches!(eligibility, RwkvReviewScoreEligibility::Eligible);
+            if rwkv_due != metadata.fsrs_due_today {
+                let Some(counts) = counts.get_mut(&metadata.current_deck_id) else {
+                    continue;
+                };
+                if rwkv_due {
+                    counts.review = counts.review.saturating_add(1);
+                } else {
+                    counts.review = counts.review.saturating_sub(1);
+                }
             }
 
-            let Some(counts) = counts.get_mut(&metadata.current_deck_id) else {
+            if matches!(eligibility, RwkvReviewScoreEligibility::Blocked)
+                && matches!(
+                    rwkv_review_score_eligibility_ignoring_retention(
+                        score.retrievability,
+                        metadata,
+                        allow_same_day_review,
+                        min_intervening_reviews,
+                        min_elapsed_secs,
+                        score.intervening_reviews,
+                    ),
+                    RwkvReviewScoreEligibility::Eligible
+                )
+            {
+                pull_candidates.push((*card_id, score.retrievability, metadata.current_deck_id));
+            }
+        }
+
+        let root_deck = decks.get(&score_deck_id).or_not_found(score_deck_id)?;
+        let mut scope_decks = self.storage.child_decks(root_deck)?;
+        scope_decks.insert(0, root_deck.clone());
+        let mut minimums = LimitTreeMap::build(&scope_decks, configs, timing.days_elapsed, false);
+        for deck in &scope_decks {
+            if let Some(count) = counts.get(&deck.id) {
+                minimums.reserve_rwkv_reviews(
+                    deck.id,
+                    count.review.saturating_add(count.interday_learning),
+                )?;
+            }
+        }
+
+        pull_candidates.sort_unstable_by(|(card_a, score_a, _), (card_b, score_b, _)| {
+            score_a.total_cmp(score_b).then_with(|| card_a.cmp(card_b))
+        });
+        for (_, _, deck_id) in pull_candidates {
+            if !minimums.rwkv_review_minimum_remaining(deck_id)? {
                 continue;
-            };
-            if rwkv_due {
+            }
+            if let Some(counts) = counts.get_mut(&deck_id) {
                 counts.review = counts.review.saturating_add(1);
-            } else {
-                counts.review = counts.review.saturating_sub(1);
+                minimums.reserve_rwkv_reviews(deck_id, 1)?;
             }
         }
 

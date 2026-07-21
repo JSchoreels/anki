@@ -187,8 +187,9 @@ interprets these values should accept both shapes, while writes should continue
 to target the nested `other` storage documented above.
 
 Older fork builds wrote those values to numbered `DeckConfig.Config` protobuf
-fields `47-65` and `67-81`. A short-lived fork build also wrote RWKV fields into
-`other["jschoreels.fsrs"]`. Current code still reads those legacy locations, but
+fields `47-65`, `67-74`, `78-79`, and `82-84`. A short-lived fork build also
+wrote RWKV fields into `other["jschoreels.fsrs"]`. Current code still reads
+those legacy locations, but
 normal deck config writes migrate FSRS fields into `other["jschoreels.fsrs"]`,
 RWKV fields into `other["jschoreels.rwkv"]`, and clear the numbered fork fields
 before encoding. This avoids collisions if upstream later assigns one of those

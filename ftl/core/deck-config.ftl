@@ -343,6 +343,15 @@ deck-config-rwkv-review-instant-order-tooltip =
     of remembering it has fallen to your Desired Retention. This setting is
     independent of RWKV-Curve: turn Curve off to keep FSRS intervals, or leave
     this off to use RWKV-Curve intervals without RWKV-Instant queue selection.
+deck-config-rwkv-review-minimum-reviews-per-day = Minimum reviews per day
+deck-config-rwkv-review-minimum-reviews-per-day-tooltip =
+    If RWKV-Instant finds fewer reviews than this daily target, pull forward the
+    lowest-retrievability review cards until the target is met. Reviews already
+    completed today count toward the target, including reviews completed in
+    subdecks when this deck is studied. Subdeck targets are also respected when
+    studying a parent deck. The normal maximum review limits and same-day repeat
+    safeguards still apply. Set this to 0 to let RWKV alone decide how many
+    reviews are ready.
 deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to

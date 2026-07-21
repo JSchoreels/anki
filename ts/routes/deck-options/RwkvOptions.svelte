@@ -58,6 +58,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewInstantOrder(),
             help: tr.deckConfigRwkvReviewInstantOrderTooltip(),
         },
+        rwkvMinimumReviewsPerDay: {
+            title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
+            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
+        },
         rwkvCandidateRefresh: {
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
             help: tr.deckConfigRwkvReviewCandidateRefreshTooltip(),
@@ -233,6 +237,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SwitchRow>
 
         {#if $config.rwkvReviewInstantOrderEnabled}
+            <SpinBoxFloatRow
+                bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
+                min={0}
+                max={9999}
+                step={1}
+            >
+                <SettingTitle
+                    on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
+                >
+                    {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
+                </SettingTitle>
+            </SpinBoxFloatRow>
+
             <SwitchRow
                 bind:value={$config.rwkvReviewCandidateRefreshEnabled}
                 defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}

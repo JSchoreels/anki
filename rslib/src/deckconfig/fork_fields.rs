@@ -212,6 +212,8 @@ struct RwkvDeckConfigFields {
     rwkv_review_first_review_elapsed_from_card_creation: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_enforce_grade_order: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_minimum_reviews_per_day: Option<u32>,
 }
 
 impl RwkvDeckConfigFields {
@@ -252,6 +254,10 @@ impl RwkvDeckConfigFields {
                 config.rwkv_review_enforce_grade_order,
                 DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
             ),
+            rwkv_review_minimum_reviews_per_day: non_default(
+                config.rwkv_review_minimum_reviews_per_day,
+                0,
+            ),
         }
     }
 
@@ -291,6 +297,9 @@ impl RwkvDeckConfigFields {
         }
         if let Some(value) = self.rwkv_review_enforce_grade_order {
             config.rwkv_review_enforce_grade_order = value;
+        }
+        if let Some(value) = self.rwkv_review_minimum_reviews_per_day {
+            config.rwkv_review_minimum_reviews_per_day = value;
         }
     }
 
@@ -438,6 +447,7 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.rwkv_review_candidate_refresh_enabled = false;
     config.rwkv_review_first_review_elapsed_from_card_creation = false;
     config.rwkv_review_enforce_grade_order = false;
+    config.rwkv_review_minimum_reviews_per_day = 0;
 }
 
 fn non_empty_vec(values: &[f32]) -> Option<Vec<f32>> {
@@ -497,6 +507,7 @@ mod tests {
             rwkv_review_candidate_refresh_enabled: true,
             rwkv_review_first_review_elapsed_from_card_creation: false,
             rwkv_review_enforce_grade_order: false,
+            rwkv_review_minimum_reviews_per_day: 42,
             ..Default::default()
         }
     }
@@ -526,6 +537,7 @@ mod tests {
         assert!(!storage_config.rwkv_review_candidate_refresh_enabled);
         assert!(!storage_config.rwkv_review_first_review_elapsed_from_card_creation);
         assert!(!storage_config.rwkv_review_enforce_grade_order);
+        assert_eq!(storage_config.rwkv_review_minimum_reviews_per_day, 0);
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
         let fsrs_other = other.get(FSRS_FORK_FIELDS_KEY).unwrap();
@@ -568,6 +580,7 @@ mod tests {
                 "rwkv_review_candidate_refresh_enabled": true,
                 "rwkv_review_first_review_elapsed_from_card_creation": false,
                 "rwkv_review_enforce_grade_order": false,
+                "rwkv_review_minimum_reviews_per_day": 42,
             }))
         );
     }
@@ -636,6 +649,10 @@ mod tests {
         assert_eq!(
             decoded.rwkv_review_enforce_grade_order,
             config.rwkv_review_enforce_grade_order
+        );
+        assert_eq!(
+            decoded.rwkv_review_minimum_reviews_per_day,
+            config.rwkv_review_minimum_reviews_per_day
         );
     }
 

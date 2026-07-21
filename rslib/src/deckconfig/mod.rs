@@ -92,6 +92,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_first_review_elapsed_from_card_creation:
         DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
     rwkv_review_enforce_grade_order: DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
+    rwkv_review_minimum_reviews_per_day: 0,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,
@@ -364,6 +365,12 @@ pub(crate) fn ensure_deck_config_values_valid(config: &mut DeckConfigInner) {
         default.rwkv_review_min_elapsed_secs,
         0,
         86_400,
+    );
+    ensure_u32_valid(
+        &mut config.rwkv_review_minimum_reviews_per_day,
+        default.rwkv_review_minimum_reviews_per_day,
+        0,
+        9999,
     );
     ensure_u32_valid(
         &mut config.minimum_lapse_interval,

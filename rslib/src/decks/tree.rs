@@ -538,6 +538,49 @@ mod test {
     }
 
     #[test]
+    fn rwkv_deck_tree_counts_include_daily_minimum_reviews() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+        let config_id = deck.config_id().unwrap();
+        let mut config = col.get_deck_config(config_id, false)?.unwrap();
+        config.inner.rwkv_review_minimum_reviews_per_day = 2;
+        col.add_or_update_deck_config(&mut config)?;
+        let timing = col.timing_today()?;
+
+        let first = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let second = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let third = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(first, 0.80), (second, 0.90), (third, 0.95)]),
+        )?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 2);
+        assert_eq!(tree.children[0].review_uncapped, 2);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_deck_tree_counts_include_future_eligible_scored_reviews() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
