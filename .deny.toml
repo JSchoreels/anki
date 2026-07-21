@@ -9,28 +9,8 @@ ignore = [
   "RUSTSEC-2024-0436",
   # bincode is unmaintained (via burn). Alternatives: postcard, bitcode, rkyv, wincode
   "RUSTSEC-2025-0141",
-  # ammonia: SVG/MathML mutation XSS
-  "RUSTSEC-2025-0071",
-  # bytes: integer overflow in BytesMut::reserve
-  "RUSTSEC-2026-0007",
-  # rand: unsound with custom logger
-  "RUSTSEC-2026-0097",
   # rustls-pemfile is unmaintained. Alternative: use rustls-pki-types directly (PemObject trait)
   "RUSTSEC-2025-0134",
-  # rustls-webpki: CRL distribution point matching
-  "RUSTSEC-2026-0049",
-  # rustls-webpki: URI name constraints
-  "RUSTSEC-2026-0098",
-  # rustls-webpki: wildcard name constraints
-  "RUSTSEC-2026-0099",
-  # rustls-webpki: panic in CRL parsing
-  "RUSTSEC-2026-0104",
-  # tar: symlink chmod
-  "RUSTSEC-2026-0067",
-  # tar: PAX size header ignored
-  "RUSTSEC-2026-0068",
-  # time: stack exhaustion DoS via RFC 2822 parsing
-  "RUSTSEC-2026-0009",
   # unic-* crates are unmaintained (used for Unicode category detection).
   # Alternative: icu_properties
   "RUSTSEC-2025-0081", # unic-char-property
