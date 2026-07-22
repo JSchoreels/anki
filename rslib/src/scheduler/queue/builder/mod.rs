@@ -2396,7 +2396,9 @@ mod test {
             30.0,
         )?;
         let mut card = col.storage.get_card(card_id)?.unwrap();
-        card.last_review_time = Some(timing.now.adding_secs(-299));
+        // Leave enough margin that a slow CI runner cannot cross the eligibility
+        // boundary between storing the card and rebuilding the queue.
+        card.last_review_time = Some(timing.now.adding_secs(-250));
         col.storage.update_card(&card)?;
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(card_id, 0.20)]))?;
 
@@ -2404,7 +2406,7 @@ mod test {
         assert_eq!(col.counts(), [0, 0, 0]);
 
         let mut card = col.storage.get_card(card_id)?.unwrap();
-        card.last_review_time = Some(timing.now.adding_secs(-300));
+        card.last_review_time = Some(timing.now.adding_secs(-350));
         col.storage.update_card(&card)?;
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(card_id, 0.20)]))?;
 
