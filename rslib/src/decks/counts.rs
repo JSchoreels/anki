@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
@@ -110,6 +111,11 @@ impl Collection {
             _ => return Ok(()),
         };
 
+        let root_deck = decks.get(&score_deck_id).or_not_found(score_deck_id)?;
+        let mut scope_decks = self.storage.child_decks(root_deck)?;
+        scope_decks.insert(0, root_deck.clone());
+        let scope_deck_ids: HashSet<_> = scope_decks.iter().map(|deck| deck.id).collect();
+
         let scored_ids: Vec<_> = scores.keys().copied().collect();
         let metadata = rwkv_review_candidate_metadata(self, &scored_ids, timing)?;
         let mut pull_candidates = Vec::new();
@@ -117,6 +123,9 @@ impl Collection {
             let Some(metadata) = metadata.get(card_id) else {
                 continue;
             };
+            if !scope_deck_ids.contains(&metadata.current_deck_id) {
+                continue;
+            }
 
             let eligibility = rwkv_review_score_eligibility(
                 score.retrievability,
@@ -156,9 +165,6 @@ impl Collection {
             }
         }
 
-        let root_deck = decks.get(&score_deck_id).or_not_found(score_deck_id)?;
-        let mut scope_decks = self.storage.child_decks(root_deck)?;
-        scope_decks.insert(0, root_deck.clone());
         let mut minimums = LimitTreeMap::build(&scope_decks, configs, timing.days_elapsed, false);
         for deck in &scope_decks {
             if let Some(count) = counts.get(&deck.id) {

@@ -6,9 +6,12 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import aqt.errors
 import aqt.main
+import aqt.rwkv_scheduler
+from anki.collection import OpChanges
 from aqt.main import (
     OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS,
     AnkiQt,
@@ -55,6 +58,53 @@ def setup_mw() -> tuple[AnkiQt, list[str], Progress]:
     mw.unloadProfileAndExit = lambda: calls.append("unload")  # type: ignore[method-assign]
 
     return mw, calls, progress
+
+
+def test_study_queue_mutation_invalidates_rwkv_before_screen_refresh(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.state = "deckBrowser"
+    mw.reviewer = object()
+    mw.deckBrowser = SimpleNamespace(
+        op_executed=lambda _changes, _handler, _focused: calls.append("screen") or False
+    )
+    monkeypatch.setattr(aqt.main, "current_window", lambda: mw)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "study_queues_did_change",
+        lambda _owner, _initiator: calls.append("rwkv"),
+    )
+    changes = OpChanges()
+    changes.study_queues = True
+
+    mw.on_operation_did_execute(changes, handler=object())
+
+    assert calls == ["rwkv", "screen"]
+
+
+def test_non_queue_preset_mutation_invalidates_rwkv_before_screen_refresh(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.state = "deckBrowser"
+    mw.deckBrowser = SimpleNamespace(
+        op_executed=lambda _changes, _handler, _focused: calls.append("screen") or False
+    )
+    monkeypatch.setattr(aqt.main, "current_window", lambda: mw)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "fsrs_preset_resolution_did_change",
+        lambda _owner: calls.append("rwkv preset"),
+    )
+    changes = OpChanges()
+    changes.tag = True
+
+    mw.on_operation_did_execute(changes, handler=object())
+
+    assert calls == ["rwkv preset", "screen"]
 
 
 def test_close_event_unloads_profile_when_no_background_op() -> None:

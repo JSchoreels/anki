@@ -189,12 +189,22 @@ score remain after scored new cards in ascending-position fallback order. These
 gather modes are desktop-only in practice, because the RWKV score map is
 transient desktop state.
 
+The backend enforces the declared deck scope when it consumes a score map. A
+map prepared for a parent deck can be reused while studying one of its
+descendants, but a map prepared for an unrelated deck is ignored. Deck-count
+adjustments likewise ignore scored cards that no longer belong to the declared
+deck tree.
+
 When a review-time queue refresh runs after the next question is displayed,
 the reviewer temporarily shows an ellipsis for the review due count. After the
 new RWKV score map is installed, the footer is updated asynchronously from a
 fresh reviewer queue that preserves the already-visible card at its head. That
 queue is retained for the following card instead of being rebuilt a second
 time. A late refresh is ignored after the reviewer advances to another card.
+Non-answer operations that change study queues, such as moving, rescheduling,
+suspending, or restoring cards, discard transient scores and cached inputs and
+advance a queue generation. Model work prepared before that mutation is
+rejected when it tries to install.
 
 By default, RWKV uses the time since a card was created for new-card inputs and
 for the first historical review during state replay. Disable
@@ -226,19 +236,22 @@ removed from review counts even if FSRS says they are due. Scored future review
 cards below target retention are added to review counts. Before a RWKV queue
 score map has been prepared, deck tree counts continue to show the normal FSRS
 due counts. The selected-deck overview prepares and installs the current deck's
-RWKV queue score map before rendering its counts. The deck browser renders its
-initial tree without waiting for model inference, then scores disjoint
+RWKV queue score map before rendering its counts. If profile startup is still
+restoring the RWKV state cache, the overview keeps the review count pending as
+an ellipsis and refreshes it when restoration finishes. The deck browser renders
+its initial tree without waiting for model inference, then scores disjoint
 RWKV-enabled deck scopes one at a time. Model scoring runs without collection
 access, and each completed scope is installed in a separate transient
 count-only cache so the visible counts can be updated incrementally. The
 currently selected scope is processed first. While a scope is pending, its
 review due count and the review due counts of its descendants display an
 ellipsis instead of the stored FSRS count. A completed scope reveals its RWKV
-count; a skipped or failed scope falls back to its stored count. Leaving or
-refreshing the deck browser cancels later UI updates, and preparing a reviewer
-queue clears the count-only cache. This keeps startup responsive while allowing
-every displayed RWKV scope to converge to its RWKV eligibility counts before
-the reviewer is opened.
+count; a skipped or failed scope falls back to its stored count. A scope deferred
+during state-cache restoration remains pending until the completion refresh
+starts a fresh count pass. Leaving or refreshing the deck browser cancels later
+UI updates, and preparing a reviewer queue clears the count-only cache. This
+keeps startup responsive while allowing every displayed RWKV scope to converge
+to its RWKV eligibility counts before the reviewer is opened.
 
 When the desktop Dynamic Desired Retention provider is available, RWKV review
 input batches are resolved through its bulk API before queue scoring or RWKV

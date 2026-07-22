@@ -166,6 +166,7 @@ _rwkv_review_queue_score_generations: dict[int, int] = {}
 _rwkv_review_queue_score_config_keys: dict[int, RwkvReviewQueueScoreConfigKey] = {}
 _rwkv_review_queue_collection_key: RwkvReviewQueueCollectionKey | None = None
 _dynamic_desired_retention_generation = 0
+_rwkv_study_queue_generation = 0
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _rwkv_stats_prepare_lock = threading.Lock()
 _rwkv_stats_prepare_in_flight: dict[RwkvStatsPrepareKey, threading.Event] = {}
@@ -333,6 +334,7 @@ class RwkvReviewQueueContext:
     next_day_at: int
     config_key: str
     dynamic_desired_retention_generation: int
+    study_queue_generation: int
 
 
 @dataclass(frozen=True)
@@ -667,6 +669,7 @@ RwkvReviewQueueScoreConfigKey = tuple[
     str,
     tuple[int, ...],
     int,
+    int,
 ]
 RwkvCalibrationMetricBin = tuple[int, int, int]
 RwkvCalibrationMetricPair = tuple[float, int, RwkvCalibrationMetricBin]
@@ -679,6 +682,7 @@ RwkvReviewInputBatchCacheKey = tuple[
     RwkvReviewQueueCollectionKey,
     str,
     tuple[int, ...],
+    int,
     int,
 ]
 
@@ -3357,29 +3361,34 @@ def prepare_deck_browser_rwkv_counts_incrementally(
     *,
     should_continue: Callable[[], bool],
     on_update: Callable[[int, DeckTreeNode | None], None],
-    on_done: Callable[[], None] | None = None,
+    on_done: Callable[[bool], None] | None = None,
 ) -> None:
-    """Score disjoint deck scopes without holding collection access during inference."""
+    """Score deck scopes, reporting if unresolved loading state may be cleared."""
 
     reviewer = SimpleNamespace(mw=mw)
     taskman = getattr(mw, "taskman", None)
     run_in_background = getattr(taskman, "run_in_background", None)
     if not callable(run_in_background) or not deck_ids:
         if on_done is not None:
-            on_done()
+            on_done(True)
         return
 
     remaining_deck_ids = iter(deck_ids)
     start = time.monotonic()
     first_update_elapsed_ms: float | None = None
     updated_scopes = 0
+    deferred_scopes = 0
 
-    def finish() -> None:
+    def finish(*, clear_pending: bool | None = None) -> None:
+        if clear_pending is None:
+            clear_pending = deferred_scopes == 0
         logger.debug(
             "RWKV deck browser incremental counts finished: scopes=%s updated=%s "
-            "first_update_elapsed_ms=%s elapsed_ms=%.1f",
+            "deferred=%s clear_pending=%s first_update_elapsed_ms=%s elapsed_ms=%.1f",
             len(deck_ids),
             updated_scopes,
+            deferred_scopes,
+            clear_pending,
             (
                 f"{first_update_elapsed_ms:.1f}"
                 if first_update_elapsed_ms is not None
@@ -3388,11 +3397,11 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             (time.monotonic() - start) * 1000,
         )
         if on_done is not None:
-            on_done()
+            on_done(clear_pending)
 
     def fail(stage: str) -> None:
         logger.exception("RWKV deck browser count %s failed", stage)
-        finish()
+        finish(clear_pending=True)
 
     def prepare_next_deck() -> None:
         if not should_continue():
@@ -3403,21 +3412,33 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             finish()
             return
 
-        def prepare() -> RwkvReviewQueueOrderAsyncWork | None:
-            return _rwkv_score_prewarm_work_for_deck(
+        def prepare() -> tuple[RwkvReviewQueueOrderAsyncWork | None, bool]:
+            loading = rwkv_state_cache_loading(mw)
+            work = _rwkv_score_prewarm_work_for_deck(
                 reviewer,
                 deck_id=deck_id,
                 reason="deck browser counts",
             )
+            return work, loading or rwkv_state_cache_loading(mw)
 
-        def prepared(future: Future[RwkvReviewQueueOrderAsyncWork | None]) -> None:
+        def prepared(
+            future: Future[tuple[RwkvReviewQueueOrderAsyncWork | None, bool]],
+        ) -> None:
+            nonlocal deferred_scopes
             try:
-                work = future.result()
+                work, loading = future.result()
             except Exception:
                 fail("preparation")
                 return
             if work is None:
-                if should_continue():
+                if loading:
+                    deferred_scopes += 1
+                    logger.debug(
+                        "RWKV deck browser count deferred during state cache load: "
+                        "deck_id=%s",
+                        deck_id,
+                    )
+                elif should_continue():
                     on_update(deck_id, None)
                 prepare_next_deck()
                 return
@@ -6504,13 +6525,66 @@ def _show_rwkv_state_cache_prompt(mw: object) -> None:
         prompt()
 
 
+def rwkv_state_cache_loading(mw: object) -> bool:
+    """Return whether count preparation must wait for RWKV state restoration."""
+
+    if getattr(mw, "_rwkv_state_cache_loading", False):
+        return True
+    return _reviewer_backend_warmup_pending(SimpleNamespace(mw=mw))
+
+
+def _set_rwkv_state_cache_loading(mw: object, loading: bool) -> None:
+    setattr(mw, "_rwkv_state_cache_loading", loading)
+
+
+def _refresh_active_rwkv_count_view(mw: object) -> bool:
+    if getattr(mw, "state", None) not in ("deckBrowser", "overview"):
+        return False
+    refresh = getattr(mw, "onRefreshTimer", None)
+    if not callable(refresh):
+        return False
+    logger.debug("refreshing active count view after RWKV state cache operation")
+    refresh()
+    return True
+
+
+def _finish_rwkv_state_cache_operation(
+    mw: object,
+    *,
+    ready: bool,
+    prewarm_reason: str,
+) -> None:
+    _set_rwkv_state_cache_loading(mw, False)
+    if _refresh_active_rwkv_count_view(mw) or not ready:
+        return
+    prewarm_reviewer_queue_score_cache(
+        SimpleNamespace(mw=mw),
+        reason=prewarm_reason,
+        include_parent_scope=False,
+    )
+
+
 def load_rwkv_state_cache_with_progress(mw: object) -> None:
     """Restore the local RWKV state cache with a lightweight progress dialog."""
 
+    _set_rwkv_state_cache_loading(mw, True)
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
-        load_rwkv_state_cache(mw)
+        try:
+            loaded = load_rwkv_state_cache(mw)
+        except Exception:
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=False,
+                prewarm_reason="startup cache load",
+            )
+            raise
+        _finish_rwkv_state_cache_operation(
+            mw,
+            ready=loaded,
+            prewarm_reason="startup cache load",
+        )
         return
 
     def start_load() -> None:
@@ -6537,6 +6611,11 @@ def load_rwkv_state_cache_with_progress(mw: object) -> None:
             try:
                 loaded = future.result()
             except Exception:
+                _finish_rwkv_state_cache_operation(
+                    mw,
+                    ready=False,
+                    prewarm_reason="startup cache load",
+                )
                 logger.exception("RWKV state cache startup load failed")
                 return
 
@@ -6546,26 +6625,34 @@ def load_rwkv_state_cache_with_progress(mw: object) -> None:
                     "RWKV state cache startup load finished: elapsed_ms=%.1f",
                     elapsed_ms,
                 )
-                prewarm_reviewer_queue_score_cache(
-                    SimpleNamespace(mw=mw),
-                    reason="startup cache load",
-                    include_parent_scope=False,
-                )
             else:
                 logger.debug(
                     "RWKV state cache startup load skipped: elapsed_ms=%.1f",
                     elapsed_ms,
                 )
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=loaded,
+                prewarm_reason="startup cache load",
+            )
 
-        with_progress(
-            load,
-            done,
-            parent=parent,
-            label="Loading RWKV state cache...",
-            immediate=True,
-            uses_collection=True,
-            title="RWKV State Cache",
-        )
+        try:
+            with_progress(
+                load,
+                done,
+                parent=parent,
+                label="Loading RWKV state cache...",
+                immediate=True,
+                uses_collection=True,
+                title="RWKV State Cache",
+            )
+        except Exception:
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=False,
+                prewarm_reason="startup cache load",
+            )
+            raise
 
     _run_on_main(mw, start_load)
 
@@ -6580,14 +6667,28 @@ def build_rwkv_state_cache_with_progress(
 
     from aqt.utils import tooltip
 
+    _set_rwkv_state_cache_loading(mw, True)
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
-        warm_up_rwkv_state(
+        try:
+            built = warm_up_rwkv_state(
+                mw,
+                force_rebuild=force_rebuild,
+                require_retrievability_cache=record_retrievability_cache,
+                record_retrievability_cache=record_retrievability_cache,
+            )
+        except Exception:
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=False,
+                prewarm_reason="state cache build",
+            )
+            raise
+        _finish_rwkv_state_cache_operation(
             mw,
-            force_rebuild=force_rebuild,
-            require_retrievability_cache=record_retrievability_cache,
-            record_retrievability_cache=record_retrievability_cache,
+            ready=built,
+            prewarm_reason="state cache build",
         )
         return
 
@@ -6621,6 +6722,11 @@ def build_rwkv_state_cache_with_progress(
             try:
                 built = future.result()
             except Exception:
+                _finish_rwkv_state_cache_operation(
+                    mw,
+                    ready=False,
+                    prewarm_reason="state cache build",
+                )
                 logger.exception("RWKV state cache build failed")
                 tooltip("RWKV state cache build failed.", parent=parent)
                 return
@@ -6632,23 +6738,31 @@ def build_rwkv_state_cache_with_progress(
                     "RWKV state cache build finished: elapsed_ms=%.1f",
                     elapsed_ms,
                 )
-                prewarm_reviewer_queue_score_cache(
-                    SimpleNamespace(mw=mw),
-                    reason="state cache build",
-                    include_parent_scope=False,
-                )
             else:
                 tooltip("RWKV state cache could not be built.", parent=parent)
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=built,
+                prewarm_reason="state cache build",
+            )
 
-        with_progress(
-            build,
-            done,
-            parent=parent,
-            label="Building RWKV state cache...",
-            immediate=True,
-            uses_collection=True,
-            title="RWKV State Cache",
-        )
+        try:
+            with_progress(
+                build,
+                done,
+                parent=parent,
+                label="Building RWKV state cache...",
+                immediate=True,
+                uses_collection=True,
+                title="RWKV State Cache",
+            )
+        except Exception:
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=False,
+                prewarm_reason="state cache build",
+            )
+            raise
 
     _run_on_main(mw, start_build)
 
@@ -10946,6 +11060,7 @@ def _rwkv_review_queue_context(
         next_day_at=next_day_at,
         config_key=_rwkv_review_queue_configuration_key(reviewer),
         dynamic_desired_retention_generation=(_dynamic_desired_retention_generation),
+        study_queue_generation=_rwkv_study_queue_generation,
     )
 
 
@@ -11037,6 +11152,38 @@ def dynamic_desired_retention_did_change(mw: object) -> None:
     logger.debug(
         "RWKV Dynamic DR caches invalidated: generation=%s",
         _dynamic_desired_retention_generation,
+    )
+
+
+def fsrs_preset_resolution_did_change(mw: object) -> None:
+    """Discard cached per-card preset assignments after collection changes."""
+
+    _invalidate_resolved_preset_id_cache(SimpleNamespace(mw=mw))
+
+
+def study_queues_did_change(mw: object, initiator: object | None) -> None:
+    """Discard RWKV queue work after a non-answer study-queue mutation."""
+
+    global _rwkv_study_queue_generation
+
+    reviewer = getattr(mw, "reviewer", None)
+    if reviewer is not None and initiator is reviewer:
+        return
+
+    transient_reviewer = SimpleNamespace(mw=mw)
+    _rwkv_study_queue_generation += 1
+    _clear_rwkv_review_queue_score_cache()
+    _rwkv_review_input_batch_module_cache.clear()
+    with _rwkv_score_prewarm_lock:
+        _rwkv_score_prewarm_in_flight.clear()
+
+    _invalidate_resolved_preset_id_cache(transient_reviewer)
+    _clear_rwkv_review_queue_scores(transient_reviewer)
+    clear_deck_browser_rwkv_count_scores(mw)
+    logger.debug(
+        "RWKV study queue caches invalidated: generation=%s initiator=%s",
+        _rwkv_study_queue_generation,
+        type(initiator).__name__ if initiator is not None else None,
     )
 
 
@@ -13491,6 +13638,7 @@ def _rwkv_review_input_batch_cache_key(
         _rwkv_review_queue_configuration_key(reviewer),
         _rwkv_review_deck_scope_key(reviewer, deck_id),
         _dynamic_desired_retention_generation,
+        _rwkv_study_queue_generation,
     )
 
 
@@ -13518,6 +13666,7 @@ def _rwkv_review_queue_score_config_key(
         _rwkv_review_queue_configuration_key(reviewer),
         _rwkv_review_deck_scope_key(reviewer, deck_id),
         _dynamic_desired_retention_generation,
+        _rwkv_study_queue_generation,
     )
 
 
@@ -13531,6 +13680,32 @@ def _rwkv_review_input_batch_cache(
 ) -> OrderedDict[RwkvReviewInputBatchCacheKey, RwkvReviewInputBatchBuild]:
     _ensure_rwkv_review_collection_scope(reviewer)
     return _rwkv_review_input_batch_module_cache
+
+
+def _rwkv_review_card_ids_in_deck_scope(
+    reviewer: object,
+    card_ids: Sequence[int],
+    deck_ids: Sequence[int],
+) -> set[int] | None:
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    list_rows = getattr(db, "list", None)
+    if not callable(list_rows):
+        return None
+
+    try:
+        rows = list_rows(
+            f"select id from cards where id in {ids2str(card_ids)} "
+            f"and did in {ids2str(deck_ids)}"
+        )
+    except Exception:
+        logger.debug(
+            "failed to filter answered RWKV cards by deck scope",
+            exc_info=True,
+        )
+        return None
+
+    return {card_id for value in rows if (card_id := _valid_card_id(value)) is not None}
 
 
 def _cached_rwkv_review_input_batch_build(
@@ -13600,6 +13775,41 @@ def _cached_rwkv_review_input_batch_build(
             candidate_elapsed_ms=0.0,
         )
 
+    cached_input_card_ids = {
+        card_id
+        for inputs in cached.inputs_by_batch_size.values()
+        for card_id, _ in inputs
+    }
+    deck_scope = set(cache_key[7])
+    scoped_refresh_ids = _rwkv_review_card_ids_in_deck_scope(
+        reviewer,
+        refresh_ids,
+        cache_key[7],
+    )
+    refreshed_inputs_by_batch_size: dict[
+        int,
+        list[tuple[int, RwkvReviewInput]],
+    ] = {}
+    for batch_size, inputs in refreshed_build.inputs_by_batch_size.items():
+        scoped_inputs = [
+            (card_id, review_input)
+            for card_id, review_input in inputs
+            if (
+                card_id in scoped_refresh_ids
+                if scoped_refresh_ids is not None
+                else card_id in cached_input_card_ids
+                or review_input.identity.deck_id in deck_scope
+            )
+        ]
+        if scoped_inputs:
+            refreshed_inputs_by_batch_size[batch_size] = scoped_inputs
+    refreshed_build = replace(
+        refreshed_build,
+        inputs_by_batch_size=refreshed_inputs_by_batch_size,
+        eligible_cards=sum(
+            len(inputs) for inputs in refreshed_inputs_by_batch_size.values()
+        ),
+    )
     refreshed_build = _resolve_dynamic_desired_retentions_for_input_build(
         reviewer,
         refreshed_build,

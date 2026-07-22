@@ -998,6 +998,23 @@ class AnkiQt(QMainWindow):
         self, changes: OpChanges, handler: object | None
     ) -> None:
         "Notify current screen of changes."
+        if changes.study_queues:
+            from aqt import rwkv_scheduler
+
+            rwkv_scheduler.study_queues_did_change(self, handler)
+        elif (
+            changes.card
+            or changes.note
+            or changes.deck
+            or changes.deck_config
+            or changes.tag
+            or changes.notetype
+            or changes.config
+        ):
+            from aqt import rwkv_scheduler
+
+            rwkv_scheduler.fsrs_preset_resolution_did_change(self)
+
         focused = current_window() == self
         if self.state == "review":
             dirty = self.reviewer.op_executed(changes, handler, focused)

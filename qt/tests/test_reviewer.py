@@ -159,23 +159,25 @@ def test_answer_rendered_updates_web_and_enables_answering() -> None:
     main_web = MainWeb()
     reviewer.mw = SimpleNamespace(web=main_web)
     reviewer.state = "answer"
-    reviewer.card = object()
+    reviewer.card = SimpleNamespace(id=123)
     reviewer._answer_update_id = 12
     reviewer._answer_rendered = False
+    reviewer._qa_transition_active = True
     calls: list[str] = []
     reviewer._showEaseButtons = lambda: calls.append("buttons")
     reviewer._auto_advance_to_question_if_enabled = lambda: calls.append("auto")
 
-    reviewer._linkHandler("qaUpdated:answer:11")
+    reviewer._linkHandler("qaPresented:answer:11:123")
 
     assert reviewer.web.update_count == 0
     assert reviewer._answer_rendered is False
     assert calls == []
 
-    reviewer._linkHandler("qaUpdated:answer:12")
+    reviewer._linkHandler("qaPresented:answer:12:123")
 
     assert reviewer.web.update_count == 1
     assert reviewer._answer_rendered is True
+    assert reviewer._qa_transition_active is False
     assert main_web.focused is True
     assert calls == ["buttons", "auto"]
 
@@ -194,16 +196,85 @@ def test_question_rendered_updates_only_current_question() -> None:
     reviewer.card = SimpleNamespace(id=123)
     reviewer._question_update_id = 12
     reviewer._question_rendered = False
+    reviewer._qa_transition_active = True
+    reviewer.mw = SimpleNamespace(web=SimpleNamespace(setFocus=lambda: None))
+    reviewer._showAnswerButton = lambda: None
+    reviewer._auto_advance_to_answer_if_enabled = lambda: None
+    reviewer._run_after_question_shown_callbacks = lambda: None
 
-    reviewer._linkHandler("qaUpdated:question:11")
+    reviewer._linkHandler("qaPresented:question:11:123")
 
     assert reviewer.web.update_count == 0
     assert reviewer._question_rendered is False
 
-    reviewer._linkHandler("qaUpdated:question:12")
+    reviewer._linkHandler("qaPresented:question:12:123")
 
     assert reviewer.web.update_count == 1
     assert reviewer._question_rendered is True
+    assert reviewer._qa_transition_active is False
+
+
+def test_paint_stall_keeps_transition_blocked_and_retries_current_repaint() -> None:
+    class Web:
+        def __init__(self) -> None:
+            self.update_count = 0
+            self.repaint_count = 0
+
+        def update(self) -> None:
+            self.update_count += 1
+
+        def repaint(self) -> None:
+            self.repaint_count += 1
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.web = Web()
+    reviewer.state = "question"
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._question_update_id = 12
+    reviewer._question_rendered = False
+    reviewer._qa_transition_active = True
+
+    reviewer._linkHandler("qaPaintPending:question:11:123")
+    reviewer._linkHandler("qaPaintPending:question:12:456")
+    reviewer._linkHandler("qaPaintRetry:question:11:123")
+    reviewer._linkHandler("qaPaintRetry:question:12:456")
+
+    assert reviewer.web.update_count == 0
+    assert reviewer.web.repaint_count == 0
+    assert reviewer._review_actions_are_blocked() is True
+
+    reviewer._linkHandler("qaPaintPending:question:12:123")
+    reviewer._linkHandler("qaPaintRetry:question:12:123")
+
+    assert reviewer.web.update_count == 2
+    assert reviewer.web.repaint_count == 2
+    assert reviewer._question_rendered is False
+    assert reviewer._review_actions_are_blocked() is True
+
+
+def test_qa_transition_block_is_independent_of_operation_block() -> None:
+    calls: list[str] = []
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.web = SimpleNamespace(update=lambda: calls.append("update"))
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: calls.append(script))
+    )
+    reviewer._review_actions_blocked = True
+
+    reviewer._begin_qa_transition()
+    reviewer._begin_qa_transition()
+    reviewer.set_review_actions_blocked(False)
+
+    assert reviewer._review_actions_are_blocked() is True
+
+    reviewer._finish_qa_transition()
+
+    assert reviewer._review_actions_are_blocked() is False
+    assert calls == [
+        "setReviewerTransitionActive(true);",
+        "update",
+        "setReviewerTransitionActive(false);",
+    ]
 
 
 def test_show_answer_ignored_until_current_question_rendered(monkeypatch) -> None:
@@ -240,7 +311,10 @@ def test_show_answer_ignored_until_current_question_rendered(monkeypatch) -> Non
     reviewer._showAnswer()
 
     assert reviewer.state == "answer"
-    assert len(calls) == 1
+    assert calls == [
+        "_setQAInteractionEnabled(false);",
+        '_showAnswer("back", null, "answer:2:123");',
+    ]
 
 
 def test_typed_answer_waits_for_current_question_rendered() -> None:
@@ -408,6 +482,7 @@ def test_show_question_preserves_existing_review_action_block(
     reviewer._showQuestion()
 
     assert reviewer._review_actions_are_blocked() is True
+    assert "button" not in calls
 
     reviewer._showAnswer = lambda: calls.append("answer")
     reviewer._linkHandler("ans")
@@ -415,7 +490,8 @@ def test_show_question_preserves_existing_review_action_block(
     assert "answer" not in calls
 
     reviewer.set_review_actions_blocked(False)
-    reviewer._linkHandler("qaUpdated:question:1")
+    reviewer._linkHandler("qaPresented:question:1:123")
+    assert "button" in calls
     reviewer._linkHandler("ans")
 
     assert calls[-1] == "answer"
@@ -1849,13 +1925,17 @@ def test_rwkv_undo_stale_previous_front_cannot_trigger_show_answer() -> None:
     reviewer._question_update_id = 2
     reviewer._question_rendered = False
     reviewer._showAnswer = lambda: calls.append(f"answer:{reviewer.card.id}")
+    reviewer.mw = SimpleNamespace(web=SimpleNamespace(setFocus=lambda: None))
+    reviewer._showAnswerButton = lambda: None
+    reviewer._auto_advance_to_answer_if_enabled = lambda: None
+    reviewer._run_after_question_shown_callbacks = lambda: None
 
-    reviewer._linkHandler("qaUpdated:question:1")
+    reviewer._linkHandler("qaPresented:question:1:123")
     reviewer._linkHandler("ans")
 
     assert calls == []
 
-    reviewer._linkHandler("qaUpdated:question:2")
+    reviewer._linkHandler("qaPresented:question:2:123")
     reviewer._linkHandler("ans")
 
     assert calls == ["update", "getTypedAnswer();", "answer:123"]

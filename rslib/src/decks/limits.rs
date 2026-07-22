@@ -2,7 +2,6 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
-use std::iter::Peekable;
 
 use anki_proto::decks::deck::normal::DayLimit;
 use id_tree::InsertBehavior;
@@ -10,6 +9,7 @@ use id_tree::Node;
 use id_tree::NodeId;
 use id_tree::Tree;
 
+use super::immediate_parent_name;
 use super::Deck;
 use super::NormalDeck;
 use crate::deckconfig::DeckConfig;
@@ -190,8 +190,6 @@ pub(crate) fn remaining_limits_map<'a>(
 /// Wrapper of [RemainingLimits] with some additional meta data.
 #[derive(Debug, Clone, Copy)]
 struct NodeLimits {
-    /// absolute level in the deck hierarchy
-    level: usize,
     limits: RemainingLimits,
     /// Reviews still needed to satisfy this deck's RWKV daily floor.
     rwkv_review_minimum: u32,
@@ -205,7 +203,6 @@ impl NodeLimits {
         new_cards_ignore_review_limit: bool,
     ) -> Self {
         Self {
-            level: deck.name.components().count(),
             limits: RemainingLimits::new(
                 deck,
                 deck.config_id().and_then(|id| config.get(&id)),
@@ -260,73 +257,30 @@ impl LimitTreeMap {
         map.insert(decks[0].id, root_id.clone());
 
         let mut limits = Self { tree, map };
-        let mut remaining_decks = decks[1..].iter().peekable();
-        limits.add_child_nodes(
-            root_id,
-            &mut remaining_decks,
-            config,
-            today,
-            new_cards_ignore_review_limit,
-        );
+        let mut node_ids_by_name =
+            HashMap::from([(decks[0].name.as_native_str(), root_id.clone())]);
+        for deck in &decks[1..] {
+            let mut parent_name = immediate_parent_name(deck.name.as_native_str());
+            let parent_node_id = loop {
+                let Some(name) = parent_name else {
+                    break root_id.clone();
+                };
+                if let Some(node_id) = node_ids_by_name.get(name) {
+                    break node_id.clone();
+                }
+                parent_name = immediate_parent_name(name);
+            };
+            let child_node_id = limits.insert_child_node(
+                deck,
+                parent_node_id,
+                config,
+                today,
+                new_cards_ignore_review_limit,
+            );
+            node_ids_by_name.insert(deck.name.as_native_str(), child_node_id);
+        }
 
         limits
-    }
-
-    /// Recursively appends descendants to the provided parent [Node], and adds
-    /// them to the [HashMap].
-    /// Given [Deck]s are assumed to arrive in depth-first order.
-    /// The tree-from-deck-list logic is taken from
-    /// [crate::decks::tree::add_child_nodes].
-    fn add_child_nodes<'d>(
-        &mut self,
-        parent_node_id: NodeId,
-        remaining_decks: &mut Peekable<impl Iterator<Item = &'d Deck>>,
-        config: &HashMap<DeckConfigId, DeckConfig>,
-        today: u32,
-        new_cards_ignore_review_limit: bool,
-    ) {
-        let parent = *self.tree.get(&parent_node_id).unwrap().data();
-        while let Some(deck) = remaining_decks.peek() {
-            match deck.name.components().count() {
-                l if l <= parent.level => {
-                    // next item is at a higher level
-                    break;
-                }
-                l if l == parent.level + 1 => {
-                    // next item is an immediate descendent of parent
-                    self.insert_child_node(
-                        deck,
-                        parent_node_id.clone(),
-                        config,
-                        today,
-                        new_cards_ignore_review_limit,
-                    );
-                    remaining_decks.next();
-                }
-                _ => {
-                    // next item is at a lower level
-                    if let Some(last_child_node_id) = self
-                        .tree
-                        .get(&parent_node_id)
-                        .unwrap()
-                        .children()
-                        .last()
-                        .cloned()
-                    {
-                        self.add_child_nodes(
-                            last_child_node_id,
-                            remaining_decks,
-                            config,
-                            today,
-                            new_cards_ignore_review_limit,
-                        )
-                    } else {
-                        // immediate parent is missing, skip the deck until a DB check is run
-                        remaining_decks.next();
-                    }
-                }
-            }
-        }
     }
 
     fn insert_child_node(
@@ -336,7 +290,7 @@ impl LimitTreeMap {
         config: &HashMap<DeckConfigId, DeckConfig>,
         today: u32,
         new_cards_ignore_review_limit: bool,
-    ) {
+    ) -> NodeId {
         let mut child_limits =
             NodeLimits::new(child_deck, config, today, new_cards_ignore_review_limit);
         child_limits
@@ -349,7 +303,8 @@ impl LimitTreeMap {
                 InsertBehavior::UnderNode(&parent_node_id),
             )
             .unwrap();
-        self.map.insert(child_deck.id, child_node_id);
+        self.map.insert(child_deck.id, child_node_id.clone());
+        child_node_id
     }
 
     fn get_node_id(&self, deck_id: DeckId) -> Result<&NodeId> {

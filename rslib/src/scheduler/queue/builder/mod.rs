@@ -160,11 +160,18 @@ impl QueueBuilder {
         );
         let sort_options = sort_options(&root_deck, &config_map);
         let rwkv_review_queue_scores = if sort_options.uses_rwkv_retrievability_scores() {
-            col.rwkv_review_queue_scores(root_deck.id, timing.days_elapsed)
-                .or_else(|| {
-                    col.rwkv_review_queue_scores_for_day(timing.days_elapsed)
-                        .map(|(_, scores)| scores)
-                })
+            if let Some(scores) = col.rwkv_review_queue_scores(root_deck.id, timing.days_elapsed) {
+                Some(scores)
+            } else if let Some((score_deck_id, scores)) =
+                col.rwkv_review_queue_scores_for_day(timing.days_elapsed)
+            {
+                col.storage
+                    .get_deck(score_deck_id)?
+                    .filter(|score_root| deck_is_within_scope(&root_deck, score_root))
+                    .map(|_| scores)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -359,6 +366,14 @@ impl QueueBuilder {
     }
 }
 
+fn deck_is_within_scope(deck: &Deck, scope_root: &Deck) -> bool {
+    let mut deck_components = deck.name.components();
+    scope_root
+        .name
+        .components()
+        .all(|component| deck_components.next() == Some(component))
+}
+
 impl Context {
     fn non_news_sorted_by_retrievability(&self) -> bool {
         self.fsrs
@@ -477,6 +492,13 @@ impl Collection {
         let mut queues = QueueBuilder::new(self, deck_id)?;
         self.storage
             .update_active_decks(&queues.context.root_deck)?;
+        let current_card = current_card.filter(|card| {
+            queues
+                .context
+                .deck_map
+                .get(&card.deck_id)
+                .is_some_and(|deck| deck_is_within_scope(deck, &queues.context.root_deck))
+        });
 
         if let Some(card) = current_card {
             queues.pin_current_card(card)?;
@@ -723,6 +745,36 @@ mod test {
             col.state.card_queues.as_ref().unwrap().build_time,
             build_time
         );
+        Ok(())
+    }
+
+    #[test]
+    fn preserved_current_card_outside_selected_deck_is_ignored() -> Result<()> {
+        let mut col = Collection::new();
+        let selected_deck = col.get_or_create_normal_deck("Selected")?;
+        let other_deck = col.get_or_create_normal_deck("Other")?;
+        col.set_current_deck(selected_deck.id)?;
+        let selected_card = CardAdder::new().deck(selected_deck.id).add(&mut col)[0].id;
+        let other_card = CardAdder::new().deck(other_deck.id).add(&mut col)[0].id;
+
+        let counts = col.rebuild_queued_cards_preserving_current_card(other_card)?;
+
+        assert_eq!(counts.new_count, 1);
+        assert_eq!(col.queued_card_ids(10)?, vec![selected_card]);
+        Ok(())
+    }
+
+    #[test]
+    fn queue_tolerates_missing_intermediate_parent_deck() -> Result<()> {
+        let mut col = Collection::new();
+        let root = col.get_or_create_normal_deck("Root")?;
+        let missing_parent = col.get_or_create_normal_deck("Root::Missing")?;
+        let leaf = col.get_or_create_normal_deck("Root::Missing::Leaf")?;
+        col.storage.remove_deck(missing_parent.id)?;
+        col.set_current_deck(root.id)?;
+        let card_id = CardAdder::new().deck(leaf.id).add(&mut col)[0].id;
+
+        assert_eq!(col.queued_card_ids(10)?, vec![card_id]);
         Ok(())
     }
 
@@ -1219,20 +1271,43 @@ mod test {
     }
 
     #[test]
-    fn rwkv_retrievability_gather_uses_current_day_scores_when_deck_id_differs() -> Result<()> {
+    fn rwkv_retrievability_gather_reuses_parent_scope_scores() -> Result<()> {
         let mut col = Collection::new();
-        let mut deck = col.get_or_create_normal_deck("Default")?;
-        let prepared_deck = DeckAdder::new("Prepared").add(&mut col);
-        col.set_deck_gather_order(&mut deck, NewCardGatherPriority::DescendingRetrievability);
+        let parent = DeckAdder::new("Parent").add(&mut col);
+        let mut child = DeckAdder::new("Parent::Child").add(&mut col);
+        col.set_deck_gather_order(&mut child, NewCardGatherPriority::DescendingRetrievability);
 
-        let first = CardAdder::new().add(&mut col)[0].id;
-        let second = CardAdder::new().add(&mut col)[0].id;
+        let first = CardAdder::new().deck(child.id).add(&mut col)[0].id;
+        let second = CardAdder::new().deck(child.id).add(&mut col)[0].id;
         col.set_rwkv_review_queue_scores(
-            prepared_deck.id,
+            parent.id,
             HashMap::from([(first, 0.10), (second, 0.80)]),
         )?;
 
-        assert_eq!(col.queue_as_ids(deck.id), vec![second, first]);
+        assert_eq!(col.queue_as_ids(child.id), vec![second, first]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_queue_rejects_scores_from_an_unrelated_scope() -> Result<()> {
+        let mut col = Collection::new();
+        let mut study_deck = DeckAdder::new("Study").add(&mut col);
+        let prepared_deck = DeckAdder::new("Prepared").add(&mut col);
+        col.set_deck_rwkv_instant_order(&mut study_deck, ReviewCardOrder::RetrievabilityAscending);
+
+        let timing = col.timing_today()?;
+        let future_review = add_memory_state_card(
+            &mut col,
+            study_deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_scores(prepared_deck.id, HashMap::from([(future_review, 0.10)]))?;
+
+        assert!(col.queue_as_ids(study_deck.id).is_empty());
         Ok(())
     }
 

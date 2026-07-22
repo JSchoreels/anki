@@ -684,4 +684,89 @@ mod test {
         assert_eq!(second.review_count, 2);
         Ok(())
     }
+
+    #[test]
+    fn rwkv_deck_tree_counts_ignore_scores_outside_the_declared_scope() -> Result<()> {
+        let mut col = Collection::new();
+        let mut first_deck = col.get_or_create_normal_deck("First")?;
+        let mut second_deck = col.get_or_create_normal_deck("Second")?;
+        enable_rwkv_review_counts(&mut col, &mut first_deck, false)?;
+        enable_rwkv_review_counts(&mut col, &mut second_deck, false)?;
+        let timing = col.timing_today()?;
+
+        let second_due = add_review_card(
+            &mut col,
+            second_deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            None,
+        )?;
+        let second_future = add_review_card(
+            &mut col,
+            second_deck.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+
+        col.set_rwkv_review_queue_scores(first_deck.id, HashMap::from([(second_future, 0.20)]))?;
+        let tree = col.deck_tree(Some(timing.now))?;
+        let second = get_deck_in_tree(tree, second_deck.id).unwrap();
+        assert_eq!(second.review_count, 1);
+
+        col.set_rwkv_review_queue_scores(first_deck.id, HashMap::from([(second_due, 0.80)]))?;
+        let tree = col.deck_tree(Some(timing.now))?;
+        let second = get_deck_in_tree(tree, second_deck.id).unwrap();
+        assert_eq!(second.review_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_ignore_stale_scores_after_filtered_deck_rebuild() -> Result<()> {
+        let mut col = Collection::new();
+        let mut home_deck = col.get_or_create_normal_deck("Home")?;
+        enable_rwkv_review_counts(&mut col, &mut home_deck, false)?;
+        let timing = col.timing_today()?;
+        let card_id = add_review_card(
+            &mut col,
+            home_deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            None,
+        )?;
+        col.set_rwkv_review_queue_scores(home_deck.id, HashMap::from([(card_id, 0.80)]))?;
+
+        let mut filtered = col.get_or_create_filtered_deck(DeckId(0))?;
+        filtered.allow_empty = false;
+        filtered.config.search_terms[0].search = "deck:Home is:review".into();
+        filtered.config.search_terms[0].limit = 1;
+        filtered.config.search_terms[1].limit = 0;
+        let filtered_deck_id = col.add_or_update_filtered_deck(filtered)?.output;
+
+        col.set_current_deck(filtered_deck_id)?;
+        assert!(col.current_deck_tree()?.is_some());
+        col.rebuild_filtered_deck(filtered_deck_id)?;
+        assert!(col.current_deck_tree()?.is_some());
+
+        col.set_current_deck(home_deck.id)?;
+        let home = col.current_deck_tree()?.unwrap();
+        assert_eq!(home.review_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_tolerate_missing_intermediate_parent() -> Result<()> {
+        let mut col = Collection::new();
+        let mut root = col.get_or_create_normal_deck("Root")?;
+        let missing_parent = col.get_or_create_normal_deck("Root::Missing")?;
+        let leaf = col.get_or_create_normal_deck("Root::Missing::Leaf")?;
+        enable_rwkv_review_counts(&mut col, &mut root, false)?;
+        let timing = col.timing_today()?;
+        let card_id = add_review_card(&mut col, leaf.id, timing.days_elapsed as i32, 0.75, None)?;
+        col.set_rwkv_review_queue_scores(root.id, HashMap::from([(card_id, 0.80)]))?;
+        col.storage.remove_deck(missing_parent.id)?;
+
+        let _ = col.deck_tree(Some(timing.now))?;
+        Ok(())
+    }
 }

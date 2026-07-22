@@ -213,6 +213,7 @@ class Reviewer:
         self._answer_rendered = False
         self._review_actions_blocked = False
         self._review_actions_block_id = 0
+        self._qa_transition_active = False
         self._review_answer_actions_blocked = False
         self._review_answer_actions_block_id = 0
         self._review_card_generation = 0
@@ -267,6 +268,7 @@ class Reviewer:
             and aqt.rwkv_scheduler.reviewer_queue_order_exit_refresh_needed(self)
         ):
             self._prepare_rwkv_queue_order_on_exit()
+        self._cancel_qa_transition()
         self.card = None
         self.auto_advance_enabled = False
         self._question_update_id = None
@@ -368,15 +370,48 @@ class Reviewer:
             self._showQuestion()
 
     def _next_qa_update_context(self, kind: str) -> str:
+        assert self.card is not None
         self._qa_update_id += 1
-        return f"{kind}:{self._qa_update_id}"
+        return f"{kind}:{self._qa_update_id}:{self.card.id}"
+
+    def _begin_qa_transition(self) -> None:
+        if getattr(self, "_qa_transition_active", False):
+            return
+        self._qa_transition_active = True
+        self._set_qa_interaction_enabled(False)
+        self._set_bottom_transition_active(True)
+
+    def _set_qa_interaction_enabled(self, enabled: bool) -> None:
+        web = getattr(self, "web", None)
+        if callable(eval_js := getattr(web, "eval", None)):
+            eval_js(f"_setQAInteractionEnabled({json.dumps(enabled)});")
+
+    def _set_bottom_transition_active(self, active: bool) -> None:
+        bottom = getattr(self, "bottom", None)
+        bottom_web = getattr(bottom, "web", None)
+        if callable(eval_js := getattr(bottom_web, "eval", None)):
+            eval_js(f"setReviewerTransitionActive({json.dumps(active)});")
+
+    def _finish_qa_transition(self) -> None:
+        self.web.update()
+        if callable(repaint := getattr(self.web, "repaint", None)):
+            repaint()
+        self._set_bottom_transition_active(False)
+        self._qa_transition_active = False
+
+    def _cancel_qa_transition(self) -> None:
+        self._set_qa_interaction_enabled(True)
+        self._set_bottom_transition_active(False)
+        self._qa_transition_active = False
 
     def set_review_actions_blocked(self, blocked: bool) -> None:
         self._review_actions_block_id = getattr(self, "_review_actions_block_id", 0) + 1
         self._review_actions_blocked = blocked
 
     def _review_actions_are_blocked(self) -> bool:
-        return getattr(self, "_review_actions_blocked", False)
+        return getattr(self, "_review_actions_blocked", False) or getattr(
+            self, "_qa_transition_active", False
+        )
 
     def _set_review_answer_actions_blocked(self, blocked: bool) -> None:
         self._review_answer_actions_block_id = (
@@ -431,6 +466,7 @@ class Reviewer:
         self._card_info.set_card(self.card)
 
         if not self.card:
+            self._cancel_qa_transition()
             self.set_review_actions_blocked(False)
             self._set_review_answer_actions_blocked(False)
             self.mw.moveToState("overview")
@@ -768,6 +804,7 @@ class Reviewer:
 
     def _showQuestion(self) -> None:
         start = time.monotonic()
+        self._begin_qa_transition()
         self._reps += 1
         self.state = "question"
         self.typedAnswer: str | None = None
@@ -810,12 +847,6 @@ class Reviewer:
         )
         self._update_flag_icon()
         self._update_mark_icon()
-        self._showAnswerButton()
-        self.mw.web.setFocus()
-        # user hook
-        gui_hooks.reviewer_did_show_question(c)
-        self._auto_advance_to_answer_if_enabled()
-        self._run_after_question_shown_callbacks()
 
     def _current_question_is_rendered(self, update_id: int | None = None) -> bool:
         if self.state != "question" or self.card is None:
@@ -828,8 +859,8 @@ class Reviewer:
             return False
         return True
 
-    def _on_question_rendered(self, update_id: int) -> None:
-        if self.state != "question" or self.card is None:
+    def _on_question_rendered(self, update_id: int, card_id: CardId) -> None:
+        if self.state != "question" or self.card is None or self.card.id != card_id:
             return
         if self._question_update_id != update_id:
             self._question_rendered = False
@@ -842,7 +873,12 @@ class Reviewer:
             return
 
         self._question_rendered = True
-        self.web.update()
+        self._finish_qa_transition()
+        self._showAnswerButton()
+        self.mw.web.setFocus()
+        gui_hooks.reviewer_did_show_question(self.card)
+        self._auto_advance_to_answer_if_enabled()
+        self._run_after_question_shown_callbacks()
 
     def _auto_advance_to_answer_if_enabled(self) -> None:
         self._clear_auto_advance_timers()
@@ -912,6 +948,7 @@ class Reviewer:
                 self._question_update_id,
             )
             return
+        self._begin_qa_transition()
         self.state = "answer"
         c = self.card
         a = c.answer()
@@ -933,15 +970,16 @@ class Reviewer:
             f"_showAnswer({json.dumps(a)}, null, {json.dumps(update_context)});"
         )
 
-    def _on_answer_rendered(self, update_id: int) -> None:
+    def _on_answer_rendered(self, update_id: int, card_id: CardId) -> None:
         if (
             self.state != "answer"
             or self.card is None
+            or self.card.id != card_id
             or self._answer_update_id != update_id
         ):
             return
         self._answer_rendered = True
-        self.web.update()
+        self._finish_qa_transition()
         self._showEaseButtons()
         self.mw.web.setFocus()
         gui_hooks.reviewer_did_show_answer(self.card)
@@ -1063,6 +1101,7 @@ class Reviewer:
                 self.onLeech(suspended)
 
         self.state = "transition"
+        self._begin_qa_transition()
         answer_card(parent=self.mw, answer=answer).success(
             after_answer
         ).run_in_background(initiator=self)
@@ -1604,6 +1643,69 @@ class Reviewer:
         else:
             self._answerCard(self._defaultEase())
 
+    def _qa_bridge_context(
+        self, url: str, command: str
+    ) -> tuple[Literal["question", "answer"], int, CardId] | None:
+        try:
+            kind, update_id, card_id = url.removeprefix(f"{command}:").split(":")
+            if kind not in ("question", "answer"):
+                return None
+            return cast(
+                tuple[Literal["question", "answer"], int, CardId],
+                (kind, int(update_id), CardId(int(card_id))),
+            )
+        except ValueError:
+            return None
+
+    def _qa_context_is_current(
+        self,
+        kind: Literal["question", "answer"],
+        update_id: int,
+        card_id: CardId,
+    ) -> bool:
+        if self.state != kind or self.card is None or self.card.id != card_id:
+            return False
+        current_update_id = (
+            self._question_update_id if kind == "question" else self._answer_update_id
+        )
+        return current_update_id == update_id
+
+    def _on_qa_paint_pending(
+        self,
+        kind: Literal["question", "answer"],
+        update_id: int,
+        card_id: CardId,
+    ) -> None:
+        if not self._qa_context_is_current(kind, update_id, card_id):
+            return
+        logger.warning(
+            "reviewer paint is pending: card_id=%s side=%s update_id=%s",
+            card_id,
+            kind,
+            update_id,
+        )
+        self.web.update()
+        if callable(repaint := getattr(self.web, "repaint", None)):
+            repaint()
+
+    def _on_qa_paint_retry(
+        self,
+        kind: Literal["question", "answer"],
+        update_id: int,
+        card_id: CardId,
+    ) -> None:
+        if not self._qa_context_is_current(kind, update_id, card_id):
+            return
+        logger.debug(
+            "retrying reviewer paint: card_id=%s side=%s update_id=%s",
+            card_id,
+            kind,
+            update_id,
+        )
+        self.web.update()
+        if callable(repaint := getattr(self.web, "repaint", None)):
+            repaint()
+
     def _linkHandler(self, url: str) -> None:
         if url == "ans":
             self._getTypedAnswer()
@@ -1623,18 +1725,19 @@ class Reviewer:
             self.web.update()
         elif url == "statesMutated":
             self._states_mutated = True
-        elif url.startswith("qaUpdated:question:"):
-            try:
-                self._on_question_rendered(int(url.split(":")[-1]))
-            except ValueError:
-                pass
-        elif url.startswith("qaUpdated:answer:"):
-            try:
-                self._on_answer_rendered(int(url.split(":")[-1]))
-            except ValueError:
-                pass
-        elif url.startswith("qaUpdated:"):
-            self.web.update()
+        elif url.startswith("qaPaintPending:"):
+            if context := self._qa_bridge_context(url, "qaPaintPending"):
+                self._on_qa_paint_pending(*context)
+        elif url.startswith("qaPaintRetry:"):
+            if context := self._qa_bridge_context(url, "qaPaintRetry"):
+                self._on_qa_paint_retry(*context)
+        elif url.startswith("qaPresented:"):
+            if context := self._qa_bridge_context(url, "qaPresented"):
+                kind, update_id, card_id = context
+                if kind == "question":
+                    self._on_question_rendered(update_id, card_id)
+                else:
+                    self._on_answer_rendered(update_id, card_id)
         else:
             print("unrecognized anki link:", url)
 

@@ -195,7 +195,10 @@ class DeckBrowser:
                     output.rwkv_count_scope_ids,
                     should_continue=lambda: self._rwkv_count_refresh_active(generation),
                     on_update=self._update_rwkv_deck_counts,
-                    on_done=lambda: self._finish_rwkv_count_refresh(generation),
+                    on_done=lambda clear_pending: self._finish_rwkv_count_refresh(
+                        generation,
+                        clear_pending=clear_pending,
+                    ),
                 )
 
             QueryOp(
@@ -267,10 +270,16 @@ class DeckBrowser:
             self._render_data.tree = tree
         self._render_rwkv_deck_counts()
 
-    def _finish_rwkv_count_refresh(self, generation: int) -> None:
+    def _finish_rwkv_count_refresh(
+        self,
+        generation: int,
+        *,
+        clear_pending: bool,
+    ) -> None:
         if not self._rwkv_count_refresh_active(generation):
             return
-        self._rwkv_pending_deck_ids.clear()
+        if clear_pending:
+            self._rwkv_pending_deck_ids.clear()
         self._render_rwkv_deck_counts()
 
     def _render_rwkv_deck_counts(self) -> None:

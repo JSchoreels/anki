@@ -105,6 +105,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_dynamic_dr_generation = (
         rwkv_scheduler._dynamic_desired_retention_generation
     )
+    previous_study_queue_generation = rwkv_scheduler._rwkv_study_queue_generation
     previous_input_batch_cache = (
         rwkv_scheduler._rwkv_review_input_batch_module_cache.copy()
     )
@@ -122,6 +123,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
     rwkv_scheduler._rwkv_review_queue_collection_key = None
     rwkv_scheduler._dynamic_desired_retention_generation = 0
+    rwkv_scheduler._rwkv_study_queue_generation = 0
     rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
     rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
@@ -160,6 +162,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._dynamic_desired_retention_generation = (
             previous_dynamic_dr_generation
         )
+        rwkv_scheduler._rwkv_study_queue_generation = previous_study_queue_generation
         rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
         rwkv_scheduler._rwkv_review_input_batch_module_cache.update(
             previous_input_batch_cache
@@ -363,6 +366,116 @@ def test_dynamic_desired_retention_change_invalidates_rwkv_and_resets_ui() -> No
     assert rpc.deck_count_clears == 1
     assert resets == [True]
     assert rwkv_scheduler._rwkv_review_queue_context(reviewer, 100) != context_before
+
+
+def test_study_queue_change_invalidates_cached_and_async_rwkv_work() -> None:
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deck_count_clears = 0
+
+        def clear_rwkv_deck_count_scores(self) -> None:
+            self.deck_count_clears += 1
+
+    rpc = Rpc()
+    reviewer = _rwkv_reviewer(
+        rpc=rpc,
+        rwkv_review_instant_order_enabled=True,
+    )
+    reviewer.mw.reviewer = SimpleNamespace()
+    reviewer.mw.col.decks.get_current_id = lambda: 100
+    reviewer.mw.col.decks.deck_and_child_ids = lambda deck_id: [deck_id]
+    context = rwkv_scheduler._rwkv_review_queue_context(reviewer, 100)
+    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    assert context is not None
+    assert cache_key is not None
+
+    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={},
+        loaded_rows=0,
+        parsed_cards=0,
+        cards_with_state=0,
+        disabled_config_cards=0,
+        eligible_cards=0,
+        deck_configs=0,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+    result = rwkv_scheduler.RwkvReviewQueueOrderAsyncResult(
+        context=context,
+        deck_id=100,
+        reason="review queue",
+        state_generation=0,
+        scores=((1, 0.25),),
+        input_build=input_build,
+        cache_hits=0,
+        runtime_requests=1,
+        warmup_elapsed_ms=0.0,
+        build_elapsed_ms=0.0,
+        score_elapsed_ms=0.0,
+    )
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.25}
+    rwkv_scheduler._rwkv_review_queue_target_maps[100] = {1: 0.90}
+    rwkv_scheduler._rwkv_review_input_batch_module_cache[cache_key] = input_build
+    rwkv_scheduler._rwkv_score_prewarm_in_flight.add((1, 2, 3, 4, (100,)))
+
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, initiator=object())
+
+    assert rwkv_scheduler._rwkv_study_queue_generation == 1
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+    assert rwkv_scheduler._rwkv_review_queue_target_maps == {}
+    assert rwkv_scheduler._rwkv_review_input_batch_module_cache == {}
+    assert rwkv_scheduler._rwkv_score_prewarm_in_flight == set()
+    assert rpc.calls[-1] == {"deck_id": 100, "scores": []}
+    assert rpc.deck_count_clears == 1
+    assert not rwkv_scheduler.install_reviewer_queue_order_async_result(
+        reviewer,
+        result,
+    )
+
+
+def test_study_queue_change_invalidates_resolved_preset_ids() -> None:
+    class Rpc(_RwkvQueueScoreRpc):
+        preset_id = "1000"
+
+        def get_fsrs_preset_ids_for_cards(self, cids: list[int]) -> SimpleNamespace:
+            self.preset_id_calls.append(list(cids))
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(card_id=card_id, preset_id=self.preset_id)
+                    for card_id in cids
+                ]
+            )
+
+    rpc = Rpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    reviewer.mw.reviewer = SimpleNamespace()
+
+    assert rwkv_scheduler._resolved_fsrs_preset_ids(reviewer, [1]) == {1: "1000"}
+    rpc.preset_id = "2000"
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, initiator=object())
+
+    assert rwkv_scheduler._resolved_fsrs_preset_ids(reviewer, [1]) == {1: "2000"}
+    assert rpc.preset_id_calls == [[1], [1]]
+
+
+def test_reviewer_answer_does_not_invalidate_rwkv_queue_caches() -> None:
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer.mw.reviewer = reviewer
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.25}
+
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, initiator=reviewer)
+
+    assert rwkv_scheduler._rwkv_study_queue_generation == 0
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {100: {1: 0.25}}
+    assert rpc.calls == []
 
 
 def test_async_reviewer_queue_result_rejects_changed_queue_context() -> None:
@@ -4442,9 +4555,84 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
             "include_parent_scope": False,
         }
     ]
+    assert rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw) is False
     assert any(
         update["label"] == "Loading new RWKV reviews..." for update in progress_updates
     )
+
+
+def test_deck_browser_counts_wait_for_startup_cache_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates: list[tuple[int, object | None]] = []
+    completed: list[bool] = []
+    refreshes: list[str] = []
+
+    class Taskman:
+        progress_task: Callable[[], bool] | None = None
+        progress_done: Callable[[Future[bool]], None] | None = None
+
+        def run_on_main(self, callback: Callable[[], None]) -> None:
+            callback()
+
+        def with_progress(
+            self,
+            task: Callable[[], bool],
+            on_done: Callable[[Future[bool]], None],
+            **_kwargs: object,
+        ) -> None:
+            self.progress_task = task
+            self.progress_done = on_done
+
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            *,
+            uses_collection: bool,
+        ) -> None:
+            future: Future[object] = Future()
+            future.set_result(task())
+            on_done(future)
+
+    taskman = Taskman()
+    mw = SimpleNamespace(
+        taskman=taskman,
+        state="deckBrowser",
+        onRefreshTimer=lambda: refreshes.append("refresh"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache",
+        lambda _mw, *, progress=None: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_score_prewarm_work_for_deck",
+        lambda _reviewer, *, deck_id, reason: None,
+    )
+
+    rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
+
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw) is True
+    rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
+        mw,
+        [10],
+        should_continue=lambda: True,
+        on_update=lambda deck_id, tree: updates.append((deck_id, tree)),
+        on_done=completed.append,
+    )
+    assert updates == []
+    assert completed == [False]
+
+    assert taskman.progress_task is not None
+    assert taskman.progress_done is not None
+    future: Future[bool] = Future()
+    future.set_result(taskman.progress_task())
+    taskman.progress_done(future)
+
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
+    assert refreshes == ["refresh"]
 
 
 def test_startup_cache_check_reuses_deck_config_scan(monkeypatch) -> None:
@@ -5643,6 +5831,67 @@ def test_cached_queue_input_refresh_retries_after_backend_failure(
     } == {1, 2}
 
 
+def test_cached_queue_input_refresh_excludes_cards_from_other_decks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer._answeredIds = [2]
+    reviewer.mw.col.db = SimpleNamespace(
+        list=lambda sql: [] if "from cards" in sql else pytest.fail(sql)
+    )
+    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    assert cache_key is not None
+    cached = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={512: [(1, _rwkv_review_input(card_id=1, note_id=10))]},
+        loaded_rows=1,
+        parsed_cards=1,
+        cards_with_state=1,
+        disabled_config_cards=0,
+        eligible_cards=1,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+    rwkv_scheduler._rwkv_review_input_batch_cache(reviewer)[cache_key] = cached
+    outside_input = replace(
+        _rwkv_review_input(card_id=2, note_id=20),
+        identity=RwkvReviewIdentity(
+            card_id=2,
+            note_id=20,
+            deck_id=200,
+            preset_id=2000,
+        ),
+    )
+    refreshed = replace(
+        cached,
+        inputs_by_batch_size={512: [(2, outside_input)]},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_batches_from_backend_for_ids",
+        lambda **kwargs: refreshed,
+    )
+
+    result = rwkv_scheduler._cached_rwkv_review_input_batch_build(
+        reviewer,
+        cache_key,
+    )
+
+    assert result is not None
+    assert {
+        card_id
+        for inputs in result.inputs_by_batch_size.values()
+        for card_id, _ in inputs
+    } == {1}
+    assert result.session_answered_ids == (2,)
+
+
 def test_current_deck_count_scoring_uses_active_reviewer_answered_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6238,6 +6487,7 @@ def test_install_async_reviewer_queue_order_discards_stale_generation() -> None:
             next_day_at=43 * 86_400,
             config_key="",
             dynamic_desired_retention_generation=0,
+            study_queue_generation=0,
         ),
         deck_id=100,
         reason="review queue",
@@ -6305,6 +6555,7 @@ def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
             next_day_at=43 * 86_400,
             config_key="",
             dynamic_desired_retention_generation=0,
+            study_queue_generation=0,
         ),
         deck_id=100,
         reason="review queue",
@@ -6763,6 +7014,56 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
 
     assert browser._rwkv_pending_deck_ids == {10, 11}
     assert "[[10, 1, 2, null], [11, 3, 4, null], [20, 6, 7, 8]]" in scripts[0]
+
+
+def test_deck_browser_keeps_pending_counts_when_cache_load_is_deferred() -> None:
+    from aqt.deckbrowser import DeckBrowser
+
+    renders: list[set[int]] = []
+    browser = DeckBrowser.__new__(DeckBrowser)
+    browser.mw = SimpleNamespace(state="deckBrowser")
+    browser._rwkv_count_generation = 2
+    browser._rwkv_pending_deck_ids = {10, 11}
+    browser._render_rwkv_deck_counts = lambda: renders.append(
+        set(browser._rwkv_pending_deck_ids)
+    )
+
+    browser._finish_rwkv_count_refresh(2, clear_pending=False)
+    browser._finish_rwkv_count_refresh(2, clear_pending=True)
+
+    assert renders == [{10, 11}, set()]
+
+
+def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt.overview import Overview
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
+    scheduler = SimpleNamespace(
+        counts=lambda: (1, 2, 4_000),
+        deck_due_tree=lambda _deck_id: SimpleNamespace(
+            new_count=1,
+            learn_count=2,
+            review_count=4_000,
+        ),
+    )
+    overview = Overview.__new__(Overview)
+    overview.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            sched=scheduler,
+            decks=SimpleNamespace(get_current_id=lambda: 10),
+            v3_scheduler=lambda: True,
+        ),
+        button=lambda *args, **kwargs: "",
+    )
+    overview._rwkv_counts_pending = True
+
+    table = overview._table()
+
+    assert "<span class=review-count>…</span>" in table
+    assert "4000" not in table
 
 
 def test_backend_row_failure_logs_exception_details(

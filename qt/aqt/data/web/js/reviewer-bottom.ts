@@ -7,6 +7,7 @@
 
 let time: number; // set in python code
 let timerStopped = false;
+let reviewerTransitionActive = false;
 let timeboxElapsed = 0;
 let timeboxLimit = 0;
 let timeboxReps = 0;
@@ -87,7 +88,7 @@ function showQuestion(txt: string, maxTime_: number): void {
             timeboxElapsed += 1;
             updateTimeboxProgress();
         }
-        if (!timerStopped) {
+        if (!timerStopped && !reviewerTransitionActive) {
             time += 1;
             updateTime();
         }
@@ -118,6 +119,20 @@ function setRemainingCounts(
 function showAnswer(txt: string, stopTimer = false): void {
     document.getElementById("middle").innerHTML = txt;
     timerStopped = stopTimer;
+}
+
+function setReviewerTransitionActive(active: boolean): void {
+    reviewerTransitionActive = active;
+    const middle = document.getElementById("middle");
+    if (!middle) {
+        return;
+    }
+    middle.toggleAttribute("inert", active);
+    if (active) {
+        middle.setAttribute("aria-busy", "true");
+    } else {
+        middle.removeAttribute("aria-busy");
+    }
 }
 
 function selectedAnswerButton(): string {
