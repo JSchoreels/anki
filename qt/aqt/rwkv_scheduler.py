@@ -41,7 +41,7 @@ from anki.consts import (
     QUEUE_TYPE_REV,
     QUEUE_TYPE_SUSPENDED,
 )
-from anki.decks import DeckTreeNode
+from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
 from aqt.qt import QMessageBox, QWidget
@@ -113,6 +113,16 @@ _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievabili
 _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
+_FILTERED_DECK_RWKV_R_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])prop:(?:rwkv:)?r(?=[<>=!])",
+    re.IGNORECASE,
+)
+_FILTERED_DECK_RETRIEVABILITY_ORDERS = frozenset(
+    (
+        FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
+        FilteredDeckConfig.SearchTerm.RETRIEVABILITY_DESCENDING,
+    )
+)
 _RWKV_WORKLOAD_MIN_DR = 30
 _RWKV_WORKLOAD_MAX_DR = 99
 _RWKV_SIMULATOR_BUCKET_COUNT = 20
@@ -2954,6 +2964,8 @@ def reviewer_queue_order_exit_refresh_needed(reviewer: object) -> bool:
 def prepare_stats_retrievability_scores(
     reviewer: object,
     search: str,
+    *,
+    warm_up_if_needed: bool = False,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
 
@@ -2977,14 +2989,21 @@ def prepare_stats_retrievability_scores(
     try:
         logger.debug("RWKV stats preparation started: search=%r", search)
         warmup_start = time.monotonic()
-        warmed_up = _prepare_reviewer_backend_for_stats(reviewer)
+        prepare_backend = (
+            _prepare_reviewer_backend_for_filtered_deck
+            if warm_up_if_needed
+            else _prepare_reviewer_backend_for_stats
+        )
+        warmed_up = prepare_backend(reviewer)
         if not warmed_up and _reviewer_backend_warmup_pending(reviewer):
             warmed_up = _wait_for_reviewer_backend_warmup(
                 reviewer,
-                timeout_secs=_RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
+                timeout_secs=(
+                    None if warm_up_if_needed else _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS
+                ),
             )
             if warmed_up:
-                warmed_up = _prepare_reviewer_backend_for_stats(reviewer)
+                warmed_up = prepare_backend(reviewer)
         warmup_elapsed_ms = (time.monotonic() - warmup_start) * 1000
         logger.debug(
             "RWKV stats warm-up finished: search=%r warmed_up=%s elapsed_ms=%.1f",
@@ -2998,6 +3017,8 @@ def prepare_stats_retrievability_scores(
                 "RWKV stats retrievability scoring skipped: warm-up pending search=%r",
                 search,
             )
+            if warm_up_if_needed and _reviewer_backend is not None:
+                return RwkvStatsPreparationStatus.FAILED
             return (
                 RwkvStatsPreparationStatus.PENDING
                 if _reviewer_backend_warmup_pending(reviewer)
@@ -3086,6 +3107,44 @@ def prepare_stats_retrievability_scores(
             _finish_rwkv_stats_prepare(prepare_key, prepare_event)
 
 
+def prepare_filtered_deck_retrievability_scores(
+    reviewer: object,
+    config: FilteredDeckConfig,
+) -> RwkvStatsPreparationStatus | None:
+    """Prepare RWKV scores needed by a filtered deck's filters and ordering."""
+
+    terms = [term for term in config.search_terms[:2] if term.limit > 0]
+    needs_scores = any(
+        term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS
+        or _FILTERED_DECK_RWKV_R_PATTERN.search(term.search)
+        for term in terms
+    )
+    if not needs_scores:
+        return None
+
+    col = _collection(reviewer)
+    build_search_string = getattr(col, "build_search_string", None)
+    if not callable(build_search_string):
+        return RwkvStatsPreparationStatus.UNAVAILABLE
+
+    try:
+        search = build_search_string(
+            *(term.search for term in terms),
+            joiner="OR",
+        )
+    except Exception:
+        logger.debug(
+            "failed to build RWKV filtered-deck candidate search", exc_info=True
+        )
+        return RwkvStatsPreparationStatus.FAILED
+
+    return prepare_stats_retrievability_scores(
+        reviewer,
+        search,
+        warm_up_if_needed=True,
+    )
+
+
 def _prepare_reviewer_backend_for_stats(reviewer: object) -> bool:
     """Use cached RWKV state for stats without building it inside /graphs."""
 
@@ -3095,6 +3154,16 @@ def _prepare_reviewer_backend_for_stats(reviewer: object) -> bool:
         return _warm_up_reviewer_backend(reviewer)
 
     return _prepare_reviewer_backend_from_cache(reviewer)
+
+
+def _prepare_reviewer_backend_for_filtered_deck(reviewer: object) -> bool:
+    """Ensure a filtered-deck rebuild does not race a cold RWKV backend."""
+
+    if _reviewer_backend is None or _reviewer_backend_warmed_up(reviewer):
+        return True
+    if _reviewer_backend_warmup_pending(reviewer):
+        return False
+    return _warm_up_reviewer_backend(reviewer)
 
 
 def _prepare_reviewer_backend_for_card_info(reviewer: object) -> bool:
@@ -3164,23 +3233,26 @@ def _reviewer_backend_warmup_pending(reviewer: object) -> bool:
 def _wait_for_reviewer_backend_warmup(
     reviewer: object,
     *,
-    timeout_secs: float,
+    timeout_secs: float | None,
 ) -> bool:
     key = _reviewer_backend_warmup_key(reviewer)
     if key is None:
         return True
 
     start = time.monotonic()
-    deadline = start + timeout_secs
+    deadline = start + timeout_secs if timeout_secs is not None else None
     while key in _reviewer_backend_warmup_pending_keys:
-        remaining_secs = deadline - time.monotonic()
-        if remaining_secs <= 0:
-            logger.debug(
-                "timed out waiting for RWKV warm-up before stats: elapsed_ms=%.1f",
-                (time.monotonic() - start) * 1000,
-            )
-            return False
-        time.sleep(min(_RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS, remaining_secs))
+        if deadline is None:
+            time.sleep(_RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS)
+        else:
+            remaining_secs = deadline - time.monotonic()
+            if remaining_secs <= 0:
+                logger.debug(
+                    "timed out waiting for RWKV warm-up before stats: elapsed_ms=%.1f",
+                    (time.monotonic() - start) * 1000,
+                )
+                return False
+            time.sleep(min(_RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS, remaining_secs))
 
     logger.debug(
         "waited for RWKV warm-up before stats: warmed_up=%s elapsed_ms=%.1f",

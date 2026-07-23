@@ -339,6 +339,10 @@ fn exact_retrievability_key_for_card(
     card: &Card,
     timing: SchedTimingToday,
 ) -> Result<f32> {
+    if let Some(r) = col.rwkv_retrievability_score_for_day(card.id, timing.days_elapsed) {
+        return Ok(r);
+    }
+
     if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
         col.fsrs_current_retrievability_for_card(card.id, state.stability_internal, elapsed_days)
@@ -484,6 +488,30 @@ mod test {
         });
         let expected_ids: Vec<_> = expected_order.into_iter().map(|(id, _, _)| id).collect();
         assert_eq!(ordered_ids, expected_ids);
+        Ok(())
+    }
+
+    #[test]
+    fn filtered_deck_retrievability_order_prefers_rwkv_score() -> Result<()> {
+        let mut col = Collection::new();
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 30;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 30.0,
+            stability_internal: 30.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        col.add_card(&mut card)?;
+        col.set_rwkv_deck_count_scores(DeckId(1), HashMap::from([(card.id, 0.42)]))?;
+
+        assert_eq!(
+            exact_retrievability_key_for_card(&mut col, &card, timing)?,
+            0.42
+        );
         Ok(())
     }
 }

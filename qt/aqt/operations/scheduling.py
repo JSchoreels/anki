@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import aqt
 import aqt.forms
@@ -16,7 +17,7 @@ from anki.collection import (
     OpChangesWithCount,
     OpChangesWithId,
 )
-from anki.decks import DeckId
+from anki.decks import DeckId, FilteredDeckConfig
 from anki.notes import NoteId
 from anki.scheduler import CustomStudyRequest, FilteredDeckForUpdate, UnburyDeck
 from anki.scheduler.base import ScheduleCardsAsNew
@@ -257,7 +258,7 @@ def unbury_cards(
 def rebuild_filtered_deck(
     *, parent: QWidget, deck_id: DeckId
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.sched.rebuild_filtered_deck(deck_id))
+    return CollectionOp(parent, lambda col: _rebuild_filtered_deck(col, deck_id))
 
 
 def empty_filtered_deck(*, parent: QWidget, deck_id: DeckId) -> CollectionOp[OpChanges]:
@@ -269,7 +270,46 @@ def add_or_update_filtered_deck(
     parent: QWidget,
     deck: FilteredDeckForUpdate,
 ) -> CollectionOp[OpChangesWithId]:
-    return CollectionOp(parent, lambda col: col.sched.add_or_update_filtered_deck(deck))
+    return CollectionOp(parent, lambda col: _add_or_update_filtered_deck(col, deck))
+
+
+def _rebuild_filtered_deck(
+    col: Collection,
+    deck_id: DeckId,
+) -> OpChangesWithCount:
+    deck = col.sched.get_or_create_filtered_deck(deck_id=deck_id)
+    _prepare_filtered_deck_retrievability_scores(col, deck.config)
+    return col.sched.rebuild_filtered_deck(deck_id)
+
+
+def _add_or_update_filtered_deck(
+    col: Collection,
+    deck: FilteredDeckForUpdate,
+) -> OpChangesWithId:
+    _prepare_filtered_deck_retrievability_scores(col, deck.config)
+    return col.sched.add_or_update_filtered_deck(deck)
+
+
+def _prepare_filtered_deck_retrievability_scores(
+    col: Collection,
+    config: FilteredDeckConfig,
+) -> None:
+    from aqt import rwkv_scheduler
+
+    mw = aqt.mw
+    if mw is not None and mw.col is col:
+        reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+    else:
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    status = rwkv_scheduler.prepare_filtered_deck_retrievability_scores(
+        reviewer,
+        config,
+    )
+    if status in {
+        rwkv_scheduler.RwkvStatsPreparationStatus.PENDING,
+        rwkv_scheduler.RwkvStatsPreparationStatus.FAILED,
+    }:
+        raise RuntimeError(tr.qt_misc_rwkv_filtered_deck_preparation_failed())
 
 
 def unbury_deck(

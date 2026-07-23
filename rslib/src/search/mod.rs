@@ -196,7 +196,8 @@ impl Collection {
         let start = Instant::now();
         self.storage.db.execute_batch(&format!(
             "drop table if exists {EXACT_RETRIEVABILITY_TABLE};\
-             create temporary table {EXACT_RETRIEVABILITY_TABLE}(cid integer primary key, r real, s90 real)"
+             create temporary table {EXACT_RETRIEVABILITY_TABLE}(\
+                cid integer primary key, r real, fsrs_r real, rwkv_r real, s90 real)"
         ))?;
         let ids_start = Instant::now();
         let ids: Vec<i64> = {
@@ -247,25 +248,32 @@ impl Collection {
             let preset = presets_by_card
                 .get(&card.id)
                 .or_invalid("missing FSRS preset for card")?;
-            if let Some((r, s90)) =
+            if let Some((fsrs_r, s90)) =
                 self.exact_fsrs_metrics_for_card_with_params(&card, timing, &preset.params)?
             {
                 if rwkv_r.is_some() {
                     rwkv_rows += 1;
                 }
-                rows_to_insert.push((card.id.0, rwkv_r.unwrap_or(r), Some(s90)));
-            } else if let Some(r) = rwkv_r {
+                rows_to_insert.push((
+                    card.id.0,
+                    rwkv_r.unwrap_or(fsrs_r),
+                    Some(fsrs_r),
+                    rwkv_r,
+                    Some(s90),
+                ));
+            } else if let Some(rwkv_r) = rwkv_r {
                 rwkv_rows += 1;
-                rows_to_insert.push((card.id.0, r, None));
+                rows_to_insert.push((card.id.0, rwkv_r, None, Some(rwkv_r), None));
             }
         }
         let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
         let insert_start = Instant::now();
         let mut insert = self.storage.db.prepare_cached(&format!(
-            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, r, s90) values (?, ?, ?)"
+            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, r, fsrs_r, rwkv_r, s90) \
+             values (?, ?, ?, ?, ?)"
         ))?;
-        for (cid, r, s90) in rows_to_insert {
-            insert.execute(rusqlite::params![cid, r, s90])?;
+        for (cid, r, fsrs_r, rwkv_r, s90) in rows_to_insert {
+            insert.execute(rusqlite::params![cid, r, fsrs_r, rwkv_r, s90])?;
         }
         tracing::debug!(
             cards = card_count,
@@ -680,7 +688,11 @@ fn has_exact_fsrs_metrics_property(node: &Node) -> bool {
         Node::Not(inner) => has_exact_fsrs_metrics_property(inner),
         Node::Group(nodes) => nodes.iter().any(has_exact_fsrs_metrics_property),
         Node::Search(SearchNode::Property {
-            kind: PropertyKind::Retrievability(_) | PropertyKind::Stability(_),
+            kind:
+                PropertyKind::Retrievability(_)
+                | PropertyKind::FsrsRetrievability(_)
+                | PropertyKind::RwkvRetrievability(_)
+                | PropertyKind::Stability(_),
             ..
         }) => true,
         _ => false,
@@ -1296,6 +1308,19 @@ mod test {
         let fallback_filtered = col.search_cards("prop:r<0.9", SortMode::NoOrder)?;
         assert_eq!(fallback_filtered, vec![card2.id]);
 
+        assert_eq!(
+            col.search_cards("prop:fsrs:r<0.9", SortMode::NoOrder)?,
+            vec![card1.id, card2.id]
+        );
+        assert_eq!(
+            col.search_cards("prop:rwkv:r>0.9", SortMode::NoOrder)?,
+            vec![card1.id]
+        );
+        assert_eq!(
+            col.search_cards("prop:rwkv:r<0.9", SortMode::NoOrder)?,
+            Vec::<CardId>::new()
+        );
+
         let filtered_cards = col.all_cards_for_search("prop:r>0.9")?;
         assert_eq!(
             filtered_cards
@@ -1303,6 +1328,12 @@ mod test {
                 .map(|card| card.id)
                 .collect::<Vec<_>>(),
             vec![card1.id]
+        );
+
+        col.set_rwkv_stats_graph_scores("deck:other".into(), HashMap::new())?;
+        assert_eq!(
+            col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            Vec::<CardId>::new()
         );
         Ok(())
     }
@@ -1354,6 +1385,53 @@ mod test {
         col.set_rwkv_card_info_score(card1.id, None)?;
         assert_eq!(
             col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            Vec::<CardId>::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_property_filter_uses_deck_count_rwkv_r() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let card_id = col.search_cards("", SortMode::NoOrder)?[0];
+
+        let timing = col.timing_today()?;
+        let mut card = col.storage.get_card(card_id)?.unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 30;
+        card.due = 0;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 30.0,
+            stability_internal: 30.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(timing.now.adding_secs(-86_400));
+        col.storage.update_card(&card)?;
+
+        let fsrs_r = col.fsrs_current_retrievability_for_card(card.id, 30.0, 1.0)?;
+        assert!(
+            fsrs_r > 0.9,
+            "test requires FSRS retrievability above threshold, got {fsrs_r}"
+        );
+        col.set_rwkv_deck_count_scores(DeckId(1), HashMap::from([(card.id, 0.88)]))?;
+
+        assert_eq!(
+            col.search_cards("prop:r<0.9", SortMode::NoOrder)?,
+            vec![card.id]
+        );
+        assert_eq!(
+            col.search_cards("prop:rwkv:r<0.9", SortMode::NoOrder)?,
+            vec![card.id]
+        );
+        assert_eq!(
+            col.search_cards("prop:fsrs:r<0.9", SortMode::NoOrder)?,
             Vec::<CardId>::new()
         );
         Ok(())

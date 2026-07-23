@@ -19,6 +19,7 @@ from typing import Any, cast
 import pytest
 
 from anki import cards_pb2, scheduler_pb2
+from anki.decks import FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from aqt import rwkv_scheduler
 from aqt.rwkv_scheduler import (
@@ -41,6 +42,7 @@ from aqt.rwkv_scheduler import (
     current_reviewer_diagnostics,
     current_reviewer_retrievability,
     interval_from_recall_curve,
+    prepare_filtered_deck_retrievability_scores,
     prepare_reviewer_queue_order,
     prepare_stats_retrievability_scores,
     prewarm_reviewer_queue_score_cache,
@@ -7217,6 +7219,103 @@ def test_prepare_stats_retrievability_scores_ignores_review_order() -> None:
         (4, pytest.approx(0.55)),
         (5, pytest.approx(0.71)),
     ]
+
+
+@pytest.mark.parametrize(
+    ("search", "order"),
+    [
+        ('"deck:Japan::1. Vocabulary" prop:r<0.9', FilteredDeckConfig.SearchTerm.DUE),
+        (
+            '"deck:Japan::1. Vocabulary" prop:rwkv:r<0.9',
+            FilteredDeckConfig.SearchTerm.DUE,
+        ),
+        (
+            '"deck:Japan::1. Vocabulary"',
+            FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
+        ),
+    ],
+)
+def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    search: str,
+    order: int,
+) -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.build_calls: list[tuple[tuple[str, ...], str]] = []
+
+        def build_search_string(self, *searches: str, joiner: str) -> str:
+            self.build_calls.append((searches, joiner))
+            return "combined search"
+
+    col = Collection()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    config = FilteredDeckConfig(
+        search_terms=[
+            FilteredDeckConfig.SearchTerm(
+                search=search,
+                limit=9999,
+                order=order,
+            )
+        ]
+    )
+    prepared: list[tuple[object, str]] = []
+
+    def prepare(
+        reviewer: object,
+        search: str,
+        *,
+        warm_up_if_needed: bool = False,
+    ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
+        assert warm_up_if_needed
+        prepared.append((reviewer, search))
+        return rwkv_scheduler.RwkvStatsPreparationStatus.READY
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prepare_stats_retrievability_scores",
+        prepare,
+    )
+
+    status = prepare_filtered_deck_retrievability_scores(reviewer, config)
+
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert col.build_calls == [((search,), "OR")]
+    assert prepared == [(reviewer, "combined search")]
+
+
+def test_filtered_deck_fsrs_retrievability_does_not_prepare_rwkv_scores() -> None:
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=object()))
+    config = FilteredDeckConfig(
+        search_terms=[
+            FilteredDeckConfig.SearchTerm(
+                search='"deck:Japan::1. Vocabulary" prop:fsrs:r<0.9',
+                limit=9999,
+                order=FilteredDeckConfig.SearchTerm.DUE,
+            )
+        ]
+    )
+
+    assert prepare_filtered_deck_retrievability_scores(reviewer, config) is None
+
+
+def test_filtered_deck_retrievability_warms_cold_rwkv_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(col=SimpleNamespace(db=object())),
+    )
+    set_reviewer_backend(object())  # type: ignore[arg-type]
+    warmups: list[object] = []
+
+    def warm_up(candidate: object) -> bool:
+        warmups.append(candidate)
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "_warm_up_reviewer_backend", warm_up)
+
+    assert rwkv_scheduler._prepare_reviewer_backend_for_filtered_deck(reviewer)
+    assert warmups == [reviewer]
 
 
 def test_stats_graph_scores_build_direct_review_inputs(

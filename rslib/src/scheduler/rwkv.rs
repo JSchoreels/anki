@@ -24,6 +24,7 @@ use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
 use crate::search::Node;
+use crate::search::PropertyKind;
 use crate::search::SearchNode;
 use crate::search::SortMode;
 use crate::search::StateKind;
@@ -130,10 +131,13 @@ impl Collection {
         let configs_by_id = self.storage.get_deck_config_map()?;
         let enabled_deck_ids = (!input.include_disabled_decks)
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
-        let guard = self.search_cards_into_table(&input.search, SortMode::NoOrder)?;
+        let parsed_search = parse_search(&input.search)?;
+        let candidate_search =
+            broaden_retrievability_properties(Node::Group(parsed_search.clone()), false);
+        let guard = self.search_cards_into_table(candidate_search, SortMode::NoOrder)?;
         let searched_cards = guard.cards as u32;
-        let include_new_cards = input.include_new_cards
-            || search_explicitly_includes_new_cards(&parse_search(&input.search)?);
+        let include_new_cards =
+            input.include_new_cards || search_explicitly_includes_new_cards(&parsed_search);
         let cards = guard
             .col
             .storage
@@ -396,6 +400,39 @@ impl Collection {
         }
 
         Ok(())
+    }
+}
+
+/// Broaden retrievability conditions so RWKV can score every potential match.
+///
+/// The final search runs after the resulting scores have been cached. Treating
+/// each retrievability predicate as independently satisfiable may load extra
+/// candidates, but cannot omit a card that the final search could match.
+fn broaden_retrievability_properties(node: Node, negated: bool) -> Node {
+    match node {
+        Node::Not(inner) => Node::Not(Box::new(broaden_retrievability_properties(
+            *inner, !negated,
+        ))),
+        Node::Group(nodes) => Node::Group(
+            nodes
+                .into_iter()
+                .map(|node| broaden_retrievability_properties(node, negated))
+                .collect(),
+        ),
+        Node::Search(SearchNode::Property {
+            kind: PropertyKind::Retrievability(_) | PropertyKind::RwkvRetrievability(_),
+            ..
+        }) => boolean_search_node(!negated),
+        other => other,
+    }
+}
+
+fn boolean_search_node(value: bool) -> Node {
+    let all_cards = Node::Search(SearchNode::WholeCollection);
+    if value {
+        all_cards
+    } else {
+        Node::Not(Box::new(all_cards))
     }
 }
 
@@ -970,6 +1007,41 @@ mod test {
         assert_eq!(row.current_normal_state_kind, "new");
         assert_eq!(row.current_elapsed_days, Some(0));
         assert_eq!(row.current_elapsed_seconds, Some(0));
+
+        let response =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{} prop:r<0", review_card.id.0),
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+
+        assert_eq!(response.searched_cards, 1);
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].card_id, review_card.id.0);
+
+        let response =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{} prop:rwkv:r<0", review_card.id.0),
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+
+        assert_eq!(response.searched_cards, 1);
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].card_id, review_card.id.0);
+
+        let response =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{} prop:fsrs:r<0", review_card.id.0),
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+
+        assert_eq!(response.searched_cards, 0);
+        assert!(response.rows.is_empty());
 
         Ok(())
     }

@@ -221,10 +221,26 @@ impl RwkvRetrievabilityScores {
                     .map(|entry| entry.retrievability)
             })
             .or_else(|| self.stats_graph_score_for_card(card_id, stats_search))
+            .or_else(|| {
+                self.deck_count_scores
+                    .values()
+                    .find_map(|scores| scores.get(&card_id).map(|entry| entry.retrievability))
+            })
     }
 
     fn active_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
-        let mut scores = self.stats_graph_scores(stats_search).unwrap_or_default();
+        // Deck browser score scopes are disjoint, and provide the broadest
+        // current-day cache. More targeted score sources below take precedence.
+        let mut scores: HashMap<_, _> = self
+            .deck_count_scores
+            .values()
+            .flat_map(|scores| {
+                scores
+                    .iter()
+                    .map(|(&card_id, entry)| (card_id, entry.retrievability))
+            })
+            .collect();
+        scores.extend(self.stats_graph_scores(stats_search).unwrap_or_default());
         if let Some(queue) = self.review_queue_scores.as_ref() {
             scores.extend(
                 queue
@@ -302,12 +318,10 @@ impl RwkvRetrievabilityScores {
     fn set_stats_graph_scores(&mut self, search: String, scores: HashMap<CardId, f32>) {
         self.stats_graph_scores
             .retain(|entry| entry.search != search);
-        if !scores.is_empty() {
-            self.stats_graph_scores
-                .push_back(RwkvStatsGraphScores { search, scores });
-            while self.stats_graph_scores.len() > MAX_RWKV_STATS_GRAPH_SEARCHES {
-                self.stats_graph_scores.pop_front();
-            }
+        self.stats_graph_scores
+            .push_back(RwkvStatsGraphScores { search, scores });
+        while self.stats_graph_scores.len() > MAX_RWKV_STATS_GRAPH_SEARCHES {
+            self.stats_graph_scores.pop_front();
         }
     }
 
