@@ -465,73 +465,6 @@ impl RwkvRetrievabilityScore {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn rwkv_score_resolver_shares_source_priority_between_lookup_forms() {
-        let card_info_card = CardId(1);
-        let review_queue_card = CardId(2);
-        let stats_card = CardId(3);
-        let deck_count_card = CardId(4);
-        let missing_card = CardId(5);
-        let all_cards = [
-            card_info_card,
-            review_queue_card,
-            stats_card,
-            deck_count_card,
-        ];
-
-        let deck_count_scores = all_cards
-            .into_iter()
-            .map(|card_id| (card_id, RwkvReviewQueueScoreEntry::new(0.1)))
-            .collect();
-        let stats_scores = [card_info_card, review_queue_card, stats_card]
-            .into_iter()
-            .map(|card_id| (card_id, 0.2))
-            .collect();
-        let review_queue_scores = [card_info_card, review_queue_card]
-            .into_iter()
-            .map(|card_id| (card_id, RwkvReviewQueueScoreEntry::new(0.3)))
-            .collect();
-        let card_info_scores = HashMap::from([(
-            card_info_card,
-            RwkvRetrievabilityScore {
-                card_info: Some(0.4),
-            },
-        )]);
-        let scores = RwkvRetrievabilityScores {
-            days_elapsed: 0,
-            scores: card_info_scores,
-            review_queue_scores: Some(RwkvReviewQueueScores {
-                deck_id: DeckId(1),
-                scores: Arc::new(review_queue_scores),
-            }),
-            stats_graph_scores: VecDeque::from([RwkvStatsGraphScores {
-                search: "deck:current".into(),
-                scores: stats_scores,
-            }]),
-            deck_count_scores: HashMap::from([(DeckId(1), deck_count_scores)]),
-        };
-        let expected = HashMap::from([
-            (card_info_card, 0.4),
-            (review_queue_card, 0.3),
-            (stats_card, 0.2),
-            (deck_count_card, 0.1),
-        ]);
-
-        assert_eq!(scores.active_scores(None), Some(expected.clone()));
-        for (card_id, expected_score) in expected {
-            assert_eq!(
-                scores.active_score_for_card(card_id, None),
-                Some(expected_score)
-            );
-        }
-        assert_eq!(scores.active_score_for_card(missing_card, None), None);
-    }
-}
-
 impl Debug for Collection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Collection")
@@ -928,5 +861,72 @@ impl Collection {
             .as_ref()
             .filter(|scores| scores.days_elapsed == days_elapsed)
             .and_then(|scores| scores.active_score_for_card(card_id, None))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn rwkv_score_resolver_shares_source_priority_between_lookup_forms() {
+        let card_info_card = CardId(1);
+        let review_queue_card = CardId(2);
+        let stats_card = CardId(3);
+        let deck_count_card = CardId(4);
+        let missing_card = CardId(5);
+        let all_cards = [
+            card_info_card,
+            review_queue_card,
+            stats_card,
+            deck_count_card,
+        ];
+
+        let deck_count_scores = all_cards
+            .into_iter()
+            .map(|card_id| (card_id, RwkvReviewQueueScoreEntry::new(0.1)))
+            .collect();
+        let stats_scores = [card_info_card, review_queue_card, stats_card]
+            .into_iter()
+            .map(|card_id| (card_id, 0.2))
+            .collect();
+        let review_queue_scores = [card_info_card, review_queue_card]
+            .into_iter()
+            .map(|card_id| (card_id, RwkvReviewQueueScoreEntry::new(0.3)))
+            .collect();
+        let card_info_scores = HashMap::from([(
+            card_info_card,
+            RwkvRetrievabilityScore {
+                card_info: Some(0.4),
+            },
+        )]);
+        let scores = RwkvRetrievabilityScores {
+            days_elapsed: 0,
+            scores: card_info_scores,
+            review_queue_scores: Some(RwkvReviewQueueScores {
+                deck_id: DeckId(1),
+                scores: Arc::new(review_queue_scores),
+            }),
+            stats_graph_scores: VecDeque::from([RwkvStatsGraphScores {
+                search: "deck:current".into(),
+                scores: stats_scores,
+            }]),
+            deck_count_scores: HashMap::from([(DeckId(1), deck_count_scores)]),
+        };
+        let expected = HashMap::from([
+            (card_info_card, 0.4),
+            (review_queue_card, 0.3),
+            (stats_card, 0.2),
+            (deck_count_card, 0.1),
+        ]);
+
+        assert_eq!(scores.active_scores(None), Some(expected.clone()));
+        for (card_id, expected_score) in expected {
+            assert_eq!(
+                scores.active_score_for_card(card_id, None),
+                Some(expected_score)
+            );
+        }
+        assert_eq!(scores.active_score_for_card(missing_card, None), None);
     }
 }
