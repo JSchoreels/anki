@@ -191,6 +191,14 @@ struct RwkvReviewQueueScores {
     scores: Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>,
 }
 
+#[derive(Clone, Copy)]
+enum RwkvRetrievabilityScoreSource<'a> {
+    DeckCounts(&'a HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>>),
+    Stats(&'a HashMap<CardId, f32>),
+    ReviewQueue(&'a HashMap<CardId, RwkvReviewQueueScoreEntry>),
+    CardInfo(&'a HashMap<CardId, RwkvRetrievabilityScore>),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RwkvReviewQueueScoreEntry {
     pub(crate) retrievability: f32,
@@ -211,51 +219,37 @@ impl RwkvReviewQueueScoreEntry {
 
 impl RwkvRetrievabilityScores {
     fn active_score_for_card(&self, card_id: CardId, stats_search: Option<&str>) -> Option<f32> {
-        self.scores
-            .get(&card_id)
-            .and_then(RwkvRetrievabilityScore::active_score)
-            .or_else(|| {
-                self.review_queue_scores
-                    .as_ref()
-                    .and_then(|queue| queue.scores.get(&card_id))
-                    .map(|entry| entry.retrievability)
-            })
-            .or_else(|| self.stats_graph_score_for_card(card_id, stats_search))
-            .or_else(|| {
-                self.deck_count_scores
-                    .values()
-                    .find_map(|scores| scores.get(&card_id).map(|entry| entry.retrievability))
-            })
+        self.active_score_sources(stats_search)
+            .rev()
+            .find_map(|source| source.score_for_card(card_id))
     }
 
     fn active_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
-        // Deck browser score scopes are disjoint, and provide the broadest
-        // current-day cache. More targeted score sources below take precedence.
-        let mut scores: HashMap<_, _> = self
-            .deck_count_scores
-            .values()
-            .flat_map(|scores| {
-                scores
-                    .iter()
-                    .map(|(&card_id, entry)| (card_id, entry.retrievability))
-            })
-            .collect();
-        scores.extend(self.stats_graph_scores(stats_search).unwrap_or_default());
-        if let Some(queue) = self.review_queue_scores.as_ref() {
-            scores.extend(
-                queue
-                    .scores
-                    .iter()
-                    .map(|(&card_id, entry)| (card_id, entry.retrievability)),
-            );
+        let mut scores = HashMap::new();
+        for source in self.active_score_sources(stats_search) {
+            source.extend_scores(&mut scores);
         }
-        for (&card_id, score) in &self.scores {
-            if let Some(retrievability) = score.active_score() {
-                scores.insert(card_id, retrievability);
-            }
-        }
-
         (!scores.is_empty()).then_some(scores)
+    }
+
+    /// Score sources in ascending priority. Later sources replace earlier ones.
+    fn active_score_sources(
+        &self,
+        stats_search: Option<&str>,
+    ) -> impl DoubleEndedIterator<Item = RwkvRetrievabilityScoreSource<'_>> {
+        [
+            Some(RwkvRetrievabilityScoreSource::DeckCounts(
+                &self.deck_count_scores,
+            )),
+            self.stats_graph_score_map(stats_search)
+                .map(RwkvRetrievabilityScoreSource::Stats),
+            self.review_queue_scores
+                .as_ref()
+                .map(|queue| RwkvRetrievabilityScoreSource::ReviewQueue(&queue.scores)),
+            Some(RwkvRetrievabilityScoreSource::CardInfo(&self.scores)),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     fn stats_graph_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
@@ -272,15 +266,6 @@ impl RwkvRetrievabilityScores {
             None => self.stats_graph_scores.back(),
         }
         .map(|entry| &entry.scores)
-    }
-
-    fn stats_graph_score_for_card(
-        &self,
-        card_id: CardId,
-        stats_search: Option<&str>,
-    ) -> Option<f32> {
-        self.stats_graph_score_map(stats_search)
-            .and_then(|scores| scores.get(&card_id).copied())
     }
 
     fn review_queue_scores(
@@ -426,6 +411,50 @@ impl RwkvRetrievabilityScores {
     }
 }
 
+impl RwkvRetrievabilityScoreSource<'_> {
+    fn score_for_card(self, card_id: CardId) -> Option<f32> {
+        match self {
+            Self::DeckCounts(scopes) => scopes
+                .values()
+                .find_map(|scores| scores.get(&card_id).map(|entry| entry.retrievability)),
+            Self::Stats(scores) => scores.get(&card_id).copied(),
+            Self::ReviewQueue(scores) => scores.get(&card_id).map(|entry| entry.retrievability),
+            Self::CardInfo(scores) => scores
+                .get(&card_id)
+                .and_then(RwkvRetrievabilityScore::active_score),
+        }
+    }
+
+    fn extend_scores(self, active_scores: &mut HashMap<CardId, f32>) {
+        match self {
+            Self::DeckCounts(scopes) => {
+                active_scores.extend(scopes.values().flat_map(|scores| {
+                    scores
+                        .iter()
+                        .map(|(&card_id, entry)| (card_id, entry.retrievability))
+                }));
+            }
+            Self::Stats(scores) => {
+                active_scores.extend(scores.iter().map(|(&card_id, &score)| (card_id, score)));
+            }
+            Self::ReviewQueue(scores) => {
+                active_scores.extend(
+                    scores
+                        .iter()
+                        .map(|(&card_id, entry)| (card_id, entry.retrievability)),
+                );
+            }
+            Self::CardInfo(scores) => {
+                active_scores.extend(scores.iter().filter_map(|(&card_id, score)| {
+                    score
+                        .active_score()
+                        .map(|retrievability| (card_id, retrievability))
+                }));
+            }
+        }
+    }
+}
+
 impl RwkvRetrievabilityScore {
     fn active_score(&self) -> Option<f32> {
         self.card_info
@@ -433,6 +462,73 @@ impl RwkvRetrievabilityScore {
 
     fn is_empty(&self) -> bool {
         self.card_info.is_none()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn rwkv_score_resolver_shares_source_priority_between_lookup_forms() {
+        let card_info_card = CardId(1);
+        let review_queue_card = CardId(2);
+        let stats_card = CardId(3);
+        let deck_count_card = CardId(4);
+        let missing_card = CardId(5);
+        let all_cards = [
+            card_info_card,
+            review_queue_card,
+            stats_card,
+            deck_count_card,
+        ];
+
+        let deck_count_scores = all_cards
+            .into_iter()
+            .map(|card_id| (card_id, RwkvReviewQueueScoreEntry::new(0.1)))
+            .collect();
+        let stats_scores = [card_info_card, review_queue_card, stats_card]
+            .into_iter()
+            .map(|card_id| (card_id, 0.2))
+            .collect();
+        let review_queue_scores = [card_info_card, review_queue_card]
+            .into_iter()
+            .map(|card_id| (card_id, RwkvReviewQueueScoreEntry::new(0.3)))
+            .collect();
+        let card_info_scores = HashMap::from([(
+            card_info_card,
+            RwkvRetrievabilityScore {
+                card_info: Some(0.4),
+            },
+        )]);
+        let scores = RwkvRetrievabilityScores {
+            days_elapsed: 0,
+            scores: card_info_scores,
+            review_queue_scores: Some(RwkvReviewQueueScores {
+                deck_id: DeckId(1),
+                scores: Arc::new(review_queue_scores),
+            }),
+            stats_graph_scores: VecDeque::from([RwkvStatsGraphScores {
+                search: "deck:current".into(),
+                scores: stats_scores,
+            }]),
+            deck_count_scores: HashMap::from([(DeckId(1), deck_count_scores)]),
+        };
+        let expected = HashMap::from([
+            (card_info_card, 0.4),
+            (review_queue_card, 0.3),
+            (stats_card, 0.2),
+            (deck_count_card, 0.1),
+        ]);
+
+        assert_eq!(scores.active_scores(None), Some(expected.clone()));
+        for (card_id, expected_score) in expected {
+            assert_eq!(
+                scores.active_score_for_card(card_id, None),
+                Some(expected_score)
+            );
+        }
+        assert_eq!(scores.active_score_for_card(missing_card, None), None);
     }
 }
 

@@ -360,6 +360,8 @@ fn exact_retrievability_key_for_card(
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
     use anki_proto::deck_config::UpdateDeckConfigsMode;
 
