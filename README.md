@@ -7,6 +7,9 @@ It is not maintained by Ankitects and should not be confused with the official
 Anki desktop app. The original upstream README is preserved in
 [OFFICIAL_README.md](./OFFICIAL_README.md).
 
+See [Fork Release Notes](./RELEASE.md) for the current fork version and
+user-visible changes.
+
 ## What This Fork Is For
 
 This fork is for users who want to test newer FSRS behavior and compare how it

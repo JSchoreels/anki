@@ -52,38 +52,43 @@ candidates, and the stable release all come from the same branch.
 
 ### Standard release
 
-1. Create a release branch from `main`:
+1. Finalize the **Unreleased** section in `RELEASE.md` for the intended release.
+   Use user-visible outcomes rather than raw commit titles. The release workflow
+   updates `.version`, but does not edit `RELEASE.md`.
+
+2. Create a release branch from `main`:
    ```
    git checkout -b release/26.05 main
    git push origin release/26.05
    ```
 
-2. CI runs automatically on push to `release/**` branches.
+3. CI runs automatically on push to `release/**` branches.
 
-3. Prepare the release (updates `.version` on the branch):
+4. Prepare the release (updates `.version` on the branch):
    ```
    just release::prepare --version 26.05b1 --ref release/26.05
    ```
 
-4. Pull the version bump commit:
+5. Pull the version bump commit:
    ```
    git pull origin release/26.05
    ```
 
-5. Verify on TestPyPI:
+6. Verify on TestPyPI:
    ```
    just release::testpypi --ref release/26.05
    ```
 
-6. Publish the full release:
+7. Publish the full release:
    ```
    just release::public --ref release/26.05
    ```
 
-7. For subsequent pre-releases or the stable release from the same cycle,
-   repeat steps 3-6 with the new version (e.g. `26.05b2`, `26.05rc1`, `26.05`).
+8. For subsequent pre-releases or the stable release from the same cycle,
+   finalize the new release notes and repeat steps 4-7 with the new version
+   (e.g. `26.05b2`, `26.05rc1`, `26.05`).
 
-8. After the stable release, merge the release branch back to `main` to pick up
+9. After the stable release, merge the release branch back to `main` to pick up
    the `.version` bump and any cherry-picked fixes:
    ```
    git checkout main
@@ -91,7 +96,7 @@ candidates, and the stable release all come from the same branch.
    git push origin main
    ```
 
-9. Delete the release branch after the stable release is published.
+10. Delete the release branch after the stable release is published.
 
 ### Security and hotfix releases
 
