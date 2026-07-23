@@ -126,6 +126,12 @@ impl Collection {
             if !scope_deck_ids.contains(&metadata.current_deck_id) {
                 continue;
             }
+            if decks
+                .get(&metadata.current_deck_id)
+                .is_some_and(Deck::is_filtered)
+            {
+                continue;
+            }
 
             let eligibility = rwkv_review_score_eligibility(
                 score.retrievability,

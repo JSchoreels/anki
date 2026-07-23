@@ -538,6 +538,34 @@ mod test {
     }
 
     #[test]
+    fn rwkv_deck_tree_counts_keep_filtered_deck_reviews_due() -> Result<()> {
+        let mut col = Collection::new();
+        let mut parent = col.get_or_create_normal_deck("Parent")?;
+        enable_rwkv_review_counts(&mut col, &mut parent, false)?;
+        let timing = col.timing_today()?;
+
+        let card_id = add_review_card(&mut col, parent.id, timing.days_elapsed as i32, 0.75, None)?;
+        let mut filtered = Deck::new_filtered();
+        filtered.name = NativeDeckName::from_native_str("Parent::Filtered");
+        col.add_or_update_deck(&mut filtered)?;
+
+        let mut card = col.storage.get_card(card_id)?.unwrap();
+        card.original_deck_id = card.deck_id;
+        card.original_due = card.due;
+        card.deck_id = filtered.id;
+        card.due = -100_000;
+        col.storage.update_card(&card)?;
+
+        col.set_rwkv_deck_count_scores(parent.id, HashMap::from([(card_id, 0.80)]))?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        let filtered = get_deck_in_tree(tree, filtered.id).unwrap();
+        assert_eq!(filtered.review_count, 1);
+        assert_eq!(filtered.review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_deck_tree_counts_include_daily_minimum_reviews() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
