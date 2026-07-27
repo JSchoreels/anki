@@ -43,6 +43,15 @@ Changes since
 - Refresh resident RWKV state after sync. Reviews inserted into past history
   now restore an exponentially spaced checkpoint and replay only the affected
   suffix when possible.
+- Improve RWKV performance and reliability across startup, review, sync,
+  undo/redo, statistics, rescheduling, study queues, Card Info, and diagnostics.
+  Anki now avoids repeated cache and history work and duplicate startup
+  rebuilds, prevents temporary or concurrent calculations from publishing stale
+  or partial scores after state changes, and evaluates head fine-tuning probes
+  against the correct deck and preset history with lower peak work. Undo redraws
+  keep the restored resident state, reuse the restored card's full curve
+  prediction, and retain the queue score map as an incremental refresh base
+  instead of repeating a full history restore, prediction, or deck rescore.
 
 ### Compatibility
 

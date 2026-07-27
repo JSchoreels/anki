@@ -5,16 +5,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
 import sqlite3
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, cast
 
 import torch  # type: ignore[import-not-found]
 
@@ -25,6 +28,8 @@ except ModuleNotFoundError:
 
 ProbeError = temporal.ProbeError
 
+_PRESET_ID_RESOLUTION_BATCH_SIZE = 10_000
+
 
 @dataclass(frozen=True)
 class ReviewRow:
@@ -32,6 +37,7 @@ class ReviewRow:
     card_id: int
     note_id: int
     deck_id: int
+    preset_id: int
     ease: int
     duration_millis: int
     review_kind: int
@@ -40,6 +46,16 @@ class ReviewRow:
     elapsed_seconds: int
     day_offset: int
     recall_bin: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class HistoricalPresetRule:
+    preset_id: str
+    card_ids: frozenset[int] | None
+    min_reps: int | None
+    max_reps: int | None
+    min_interval_days: float | None
+    max_interval_days: float | None
 
 
 @dataclass(frozen=True)
@@ -267,19 +283,80 @@ def _load_review_rows(
     deck_match: str | None,
     limit: int,
 ) -> list[ReviewRow]:
-    connection = sqlite3.connect(
-        temporal._sqlite_readonly_uri(collection_path), uri=True
-    )
-    try:
-        deck_ids = temporal._matched_deck_ids(connection, deck_match)
-        raw_rows = _historical_rows(connection, deck_ids=deck_ids, limit=limit)
-    finally:
-        connection.close()
+    with _open_analysis_collection_copy(collection_path) as collection:
+        return _load_review_rows_from_collection(
+            collection,
+            deck_match=deck_match,
+            limit=limit,
+        )
 
-    now_seconds = int(time.time())
-    days_elapsed = now_seconds // temporal.DAY_SECONDS
-    next_day_at = (days_elapsed + 1) * temporal.DAY_SECONDS
+
+@contextmanager
+def _open_analysis_collection_copy(collection_path: Path) -> Iterator[Any]:
+    """Open only a disposable second-generation copy with the Anki backend."""
+    source = collection_path.expanduser().resolve()
+    with tempfile.TemporaryDirectory(prefix="rwkv-head-finetune-probe-") as temp:
+        temporary_dir = Path(temp)
+        working_copy = temporary_dir / source.name
+        try:
+            temporal._copy_sqlite_db_with_sidecars(source, temporary_dir)
+        except OSError as err:
+            raise ProbeError(f"failed to copy collection copy: {source}") from err
+        if not working_copy.exists():
+            raise ProbeError(f"failed to copy collection copy: {source}")
+
+        Collection = _anki_collection_type()
+        try:
+            collection = Collection(str(working_copy))
+        except Exception as err:
+            raise ProbeError(
+                f"Anki backend could not open the temporary collection copy: {err}"
+            ) from err
+        try:
+            yield collection
+        finally:
+            collection.close()
+
+
+def _anki_collection_type() -> type[Any]:
+    try:
+        from anki.collection import Collection
+    except ImportError as err:
+        raise ProbeError(
+            "Anki backend is unavailable; build pylib and run this probe from "
+            "Anki's Python environment"
+        ) from err
+    return Collection
+
+
+def _load_review_rows_from_collection(
+    collection: Any,
+    *,
+    deck_match: str | None,
+    limit: int,
+) -> list[ReviewRow]:
+    connection = getattr(collection, "db", None)
+    if connection is None:
+        raise ProbeError("Anki backend collection is not open")
+    deck_ids = temporal._matched_deck_ids(
+        cast(sqlite3.Connection, connection), deck_match
+    )
+    raw_rows = _historical_rows(connection, deck_ids=deck_ids, limit=limit)
+
+    timing = _scheduler_timing(collection)
+    days_elapsed = timing[0]
+    next_day_at = timing[1]
+    card_ids = list(dict.fromkeys(row[1] for row in raw_rows))
+    preset_id_by_card = _resolved_preset_ids_for_cards(collection, card_ids)
+    deck_configs = _deck_configs_for_rows(collection, raw_rows)
+    dynamic_preset_replay = _dynamic_preset_replay_enabled(collection)
+    historical_preset_rules = (
+        _historical_preset_rules(collection, card_ids) if dynamic_preset_replay else []
+    )
+
     previous_review_id_by_card: dict[int, int] = {}
+    previous_interval_days_by_card: dict[int, int] = {}
+    review_count_by_card: dict[int, int] = {}
     prior_long_term_reviews_by_card: dict[int, int] = {}
     prior_lapses_by_card: dict[int, int] = {}
     rows: list[ReviewRow] = []
@@ -291,13 +368,18 @@ def _load_review_rows(
         ease,
         duration_millis,
         review_kind,
+        interval_days,
         is_learning_start,
     ) in raw_rows:
         previous_review_id = previous_review_id_by_card.get(card_id)
         elapsed_seconds = (
             max(0, (review_id - previous_review_id) // 1000)
             if previous_review_id is not None
-            else -1
+            else _first_review_elapsed_seconds(
+                review_id,
+                card_id,
+                deck_configs[deck_id],
+            )
         )
         day_offset = _historical_day_offset(
             review_id,
@@ -315,8 +397,24 @@ def _load_review_rows(
                 ),
             )
             if previous_review_id is not None
+            else elapsed_seconds // 86_400
+            if elapsed_seconds >= 0
             else -1
         )
+
+        review_count = review_count_by_card.get(card_id, 0)
+        historical_preset_id = _historical_preset_id_for_review(
+            historical_preset_rules,
+            card_id=card_id,
+            interval_days=previous_interval_days_by_card.get(card_id, 0),
+            review_count=review_count,
+        )
+        resolved_preset_id = (
+            historical_preset_id
+            if historical_preset_id is not None
+            else preset_id_by_card[card_id]
+        )
+        preset_id = _stable_preset_id(resolved_preset_id)
         is_long_term_review = elapsed_days >= 1
         prior_long_term_reviews = prior_long_term_reviews_by_card.get(card_id, 0)
         prior_lapses = prior_lapses_by_card.get(card_id, 0)
@@ -327,6 +425,7 @@ def _load_review_rows(
                 card_id=card_id,
                 note_id=note_id,
                 deck_id=deck_id,
+                preset_id=preset_id,
                 ease=ease,
                 duration_millis=duration_millis,
                 review_kind=review_kind,
@@ -344,6 +443,8 @@ def _load_review_rows(
             )
         )
         previous_review_id_by_card[card_id] = review_id
+        previous_interval_days_by_card[card_id] = interval_days
+        review_count_by_card[card_id] = review_count + 1
         prior_long_term_reviews_by_card[card_id] = long_term_reviews
         if ease == 1:
             prior_lapses_by_card[card_id] = prior_lapses + 1
@@ -351,17 +452,20 @@ def _load_review_rows(
 
 
 def _historical_rows(
-    connection: sqlite3.Connection,
+    connection: object,
     *,
     deck_ids: Sequence[int] | None,
     limit: int,
-) -> list[tuple[int, int, int, int, int, int, int, bool]]:
+) -> list[tuple[int, int, int, int, int, int, int, int, bool]]:
     deck_clause = ""
     params: list[int] = []
+    effective_deck_sql = "(CASE WHEN c.odid != 0 THEN c.odid ELSE c.did END)"
     if deck_ids is not None:
         if not deck_ids:
             return []
-        deck_clause = f"AND c.did IN ({temporal._placeholders(deck_ids)})"
+        deck_clause = (
+            f"AND {effective_deck_sql} IN ({temporal._placeholders(deck_ids)})"
+        )
         params.extend(deck_ids)
 
     sql = f"""
@@ -370,10 +474,11 @@ def _historical_rows(
         r.id,
         r.cid,
         c.nid,
-        c.did,
+        {effective_deck_sql} AS did,
         r.ease,
         r.time,
         r.type,
+        CAST(r.ivl AS INTEGER) AS ivl,
         lag(r.type) OVER (PARTITION BY r.cid ORDER BY r.id) AS previous_type
       FROM revlog r
       JOIN cards c ON c.id = r.cid
@@ -387,7 +492,8 @@ def _historical_rows(
       WHERE type = 0 AND (previous_type IS NULL OR previous_type != 0)
       GROUP BY cid
     )
-    SELECT e.id, e.cid, e.nid, e.did, e.ease, e.time, e.type, e.id = s.start_id
+    SELECT e.id, e.cid, e.nid, e.did, e.ease, e.time, e.type, e.ivl,
+           e.id = s.start_id
     FROM eligible e
     JOIN retained_starts s ON s.cid = e.cid
     WHERE e.id >= s.start_id
@@ -396,6 +502,14 @@ def _historical_rows(
     if limit > 0:
         sql += "\nLIMIT ?"
         params.append(limit)
+
+    if isinstance(connection, sqlite3.Connection):
+        query_rows = connection.execute(sql, params)
+    else:
+        execute = getattr(connection, "execute", None)
+        if not callable(execute):
+            raise ProbeError("Anki backend database query API is unavailable")
+        query_rows = execute(sql, *params)
 
     return [
         (
@@ -406,6 +520,7 @@ def _historical_rows(
             int(ease),
             int(duration_millis),
             int(review_kind),
+            int(interval_days),
             bool(is_learning_start),
         )
         for (
@@ -416,9 +531,335 @@ def _historical_rows(
             ease,
             duration_millis,
             review_kind,
+            interval_days,
             is_learning_start,
-        ) in connection.execute(sql, params)
+        ) in query_rows
     ]
+
+
+def _scheduler_timing(collection: Any) -> tuple[int, int]:
+    scheduler = getattr(collection, "sched", None)
+    timing_today = getattr(scheduler, "_timing_today", None)
+    if not callable(timing_today):
+        raise ProbeError("Anki scheduler timing API is unavailable")
+    try:
+        timing = timing_today()
+    except Exception as err:
+        raise ProbeError("failed to read Anki scheduler timing") from err
+    days_elapsed = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not _is_int(days_elapsed) or not _is_int(next_day_at):
+        raise ProbeError("Anki scheduler returned invalid timing")
+    return int(days_elapsed), int(next_day_at)
+
+
+def _resolved_preset_ids_for_cards(
+    collection: Any,
+    card_ids: Sequence[int],
+) -> dict[int, str]:
+    if not card_ids:
+        return {}
+    backend = getattr(collection, "_backend", None)
+    resolve = getattr(backend, "get_fsrs_preset_ids_for_cards", None)
+    if not callable(resolve):
+        raise ProbeError("Anki backend preset batch resolver is unavailable")
+
+    resolved: dict[int, str] = {}
+    for start in range(0, len(card_ids), _PRESET_ID_RESOLUTION_BATCH_SIZE):
+        batch = list(card_ids[start : start + _PRESET_ID_RESOLUTION_BATCH_SIZE])
+        try:
+            response = resolve(batch)
+        except Exception as err:
+            raise ProbeError("Anki backend failed to resolve FSRS presets") from err
+
+        items = getattr(response, "items", response)
+        if callable(items):
+            raise ProbeError("Anki backend returned an invalid FSRS preset response")
+        try:
+            for item in items:
+                card_id = getattr(item, "card_id", None)
+                preset_id = getattr(item, "preset_id", None)
+                if _is_int(card_id) and isinstance(preset_id, str) and preset_id:
+                    resolved[int(card_id)] = preset_id
+        except TypeError as err:
+            raise ProbeError(
+                "Anki backend returned an invalid FSRS preset response"
+            ) from err
+
+    missing = [card_id for card_id in card_ids if card_id not in resolved]
+    if missing:
+        preview = ", ".join(str(card_id) for card_id in missing[:5])
+        suffix = "..." if len(missing) > 5 else ""
+        raise ProbeError(
+            f"Anki backend did not resolve FSRS presets for card ids: {preview}{suffix}"
+        )
+    return resolved
+
+
+def _deck_configs_for_rows(
+    collection: Any,
+    rows: Sequence[Sequence[object]],
+) -> dict[int, dict[str, object]]:
+    decks = getattr(collection, "decks", None)
+    config_for_deck = getattr(decks, "config_dict_for_deck_id", None)
+    if not callable(config_for_deck):
+        raise ProbeError("Anki deck-config resolver is unavailable")
+
+    configs: dict[int, dict[str, object]] = {}
+    for deck_id in sorted({cast(int, row[3]) for row in rows}):
+        try:
+            config = config_for_deck(deck_id)
+        except Exception as err:
+            raise ProbeError(
+                f"failed to resolve deck config for deck id {deck_id}"
+            ) from err
+        if not isinstance(config, dict):
+            raise ProbeError(f"invalid deck config for deck id {deck_id}")
+        configs[deck_id] = config
+    return configs
+
+
+def _dynamic_preset_replay_enabled(collection: Any) -> bool:
+    decks = getattr(collection, "decks", None)
+    all_config = getattr(decks, "all_config", None)
+    if not callable(all_config):
+        raise ProbeError("Anki deck-config listing API is unavailable")
+    try:
+        configs = all_config()
+    except Exception as err:
+        raise ProbeError("failed to read Anki deck configs") from err
+    return any(
+        isinstance(config, dict)
+        and _rwkv_review_config_active(config)
+        and _rwkv_review_dynamic_preset_replay(config)
+        for config in configs
+    )
+
+
+def _historical_preset_rules(
+    collection: Any,
+    candidate_card_ids: Sequence[int],
+) -> list[HistoricalPresetRule]:
+    if not candidate_card_ids:
+        return []
+
+    get_config = getattr(collection, "get_config", None)
+    if not callable(get_config):
+        raise ProbeError("Anki collection config API is unavailable")
+    try:
+        overlay = get_config("fsrsPresetOverlay")
+    except Exception as err:
+        raise ProbeError("failed to read FSRS preset overlay") from err
+    if not isinstance(overlay, dict):
+        return []
+    raw_rules = overlay.get("simulator_rules")
+    if not isinstance(raw_rules, list):
+        return []
+
+    find_cards = getattr(collection, "find_cards", None)
+    candidates = frozenset(candidate_card_ids)
+    search_matches: dict[str, frozenset[int]] = {}
+    rules: list[HistoricalPresetRule] = []
+    for raw_rule in raw_rules:
+        if not isinstance(raw_rule, dict):
+            continue
+        preset_id = raw_rule.get("preset_id")
+        if not isinstance(preset_id, str) or not preset_id:
+            continue
+        search = raw_rule.get("search")
+        search_text = (
+            search.strip() if isinstance(search, str) and search.strip() else None
+        )
+        card_ids: frozenset[int] | None = None
+        if search_text is not None:
+            if not callable(find_cards):
+                raise ProbeError("Anki card-search API is unavailable")
+            card_ids = search_matches.get(search_text)
+            if card_ids is None:
+                try:
+                    matched = find_cards(search_text, order=False)
+                except Exception as err:
+                    raise ProbeError(
+                        f"failed to evaluate simulator rule search: {search_text!r}"
+                    ) from err
+                card_ids = frozenset(
+                    int(card_id)
+                    for card_id in matched
+                    if _is_int(card_id) and card_id in candidates
+                )
+                search_matches[search_text] = card_ids
+
+        min_reps = _optional_int(raw_rule.get("min_reps"))
+        max_reps = _optional_int(raw_rule.get("max_reps"))
+        min_interval_days = _optional_float(raw_rule.get("min_interval_days"))
+        max_interval_days = _optional_float(raw_rule.get("max_interval_days"))
+        if (
+            min_reps is None
+            and max_reps is None
+            and min_interval_days is None
+            and max_interval_days is None
+        ):
+            continue
+        rules.append(
+            HistoricalPresetRule(
+                preset_id=preset_id,
+                card_ids=card_ids,
+                min_reps=min_reps,
+                max_reps=max_reps,
+                min_interval_days=min_interval_days,
+                max_interval_days=max_interval_days,
+            )
+        )
+    return rules
+
+
+def _historical_preset_id_for_review(
+    rules: Sequence[HistoricalPresetRule],
+    *,
+    card_id: int,
+    interval_days: int,
+    review_count: int,
+) -> str | None:
+    for rule in rules:
+        if rule.card_ids is not None and card_id not in rule.card_ids:
+            continue
+        if rule.min_reps is not None and review_count < rule.min_reps:
+            continue
+        if rule.max_reps is not None and review_count > rule.max_reps:
+            continue
+        if (
+            rule.min_interval_days is not None
+            and interval_days < rule.min_interval_days
+        ):
+            continue
+        if (
+            rule.max_interval_days is not None
+            and interval_days > rule.max_interval_days
+        ):
+            continue
+        return rule.preset_id
+    return None
+
+
+def _stable_preset_id(preset_id: str) -> int:
+    if preset_id.isdecimal():
+        return int(preset_id)
+    digest = hashlib.blake2b(preset_id.encode("utf8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") & ((1 << 63) - 1)
+
+
+def _first_review_elapsed_seconds(
+    review_id: int,
+    card_id: int,
+    deck_config: dict[str, object],
+) -> int:
+    if not _rwkv_review_first_review_elapsed_from_card_creation(deck_config):
+        return -1
+    return max(0, (review_id - card_id) // 1000)
+
+
+def _rwkv_review_config_active(deck_config: dict[str, object]) -> bool:
+    return _rwkv_review_config_enabled(
+        deck_config
+    ) or _rwkv_review_instant_order_enabled(deck_config)
+
+
+def _rwkv_review_config_enabled(deck_config: dict[str, object]) -> bool:
+    return _rwkv_config_bool(
+        deck_config,
+        nested_key="rwkv_review_enabled",
+        camel_key="rwkvReviewEnabled",
+        default=False,
+    )
+
+
+def _rwkv_review_instant_order_enabled(deck_config: dict[str, object]) -> bool:
+    return _rwkv_config_bool(
+        deck_config,
+        nested_key="rwkv_review_instant_order_enabled",
+        camel_key="rwkvReviewInstantOrderEnabled",
+        default=False,
+    )
+
+
+def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
+    return _rwkv_config_bool(
+        deck_config,
+        nested_key="rwkv_review_dynamic_preset_replay",
+        camel_key="rwkvReviewDynamicPresetReplay",
+        default=False,
+    )
+
+
+def _rwkv_review_first_review_elapsed_from_card_creation(
+    deck_config: dict[str, object],
+) -> bool:
+    return _rwkv_config_bool(
+        deck_config,
+        nested_key="rwkv_review_first_review_elapsed_from_card_creation",
+        camel_key="rwkvReviewFirstReviewElapsedFromCardCreation",
+        default=True,
+    )
+
+
+def _rwkv_config_bool(
+    deck_config: dict[str, object],
+    *,
+    nested_key: str,
+    camel_key: str,
+    default: bool,
+) -> bool:
+    nested = _rwkv_other_config(deck_config)
+    if nested is not None:
+        value = nested.get(nested_key)
+        if isinstance(value, bool):
+            return value
+    value = deck_config.get(camel_key, deck_config.get(nested_key))
+    return value if isinstance(value, bool) else default
+
+
+def _rwkv_other_config(
+    deck_config: dict[str, object],
+) -> dict[str, object] | None:
+    direct = deck_config.get("jschoreels.rwkv", deck_config.get("jschoreels.fsrs"))
+    if isinstance(direct, dict):
+        return direct
+    other = deck_config.get("other")
+    if isinstance(other, dict):
+        root = other
+    elif isinstance(other, bytes | bytearray):
+        root = _json_object(other.decode("utf8", errors="ignore"))
+    elif isinstance(other, str):
+        root = _json_object(other)
+    else:
+        return None
+    if root is None:
+        return None
+    value = root.get("jschoreels.rwkv", root.get("jschoreels.fsrs"))
+    return value if isinstance(value, dict) else None
+
+
+def _json_object(text: str) -> dict[str, object] | None:
+    try:
+        value = json.loads(text)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _optional_int(value: object) -> int | None:
+    return cast(int, value) if _is_int(value) else None
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _extract_samples(
@@ -554,7 +995,7 @@ def _model_row(row: ReviewRow) -> dict[str, object]:
         "card_id": row.card_id,
         "note_id": row.note_id,
         "deck_id": row.deck_id,
-        "preset_id": row.deck_id,
+        "preset_id": row.preset_id,
         "elapsed_days": row.elapsed_days,
         "elapsed_seconds": row.elapsed_seconds,
         "day_offset": row.day_offset,

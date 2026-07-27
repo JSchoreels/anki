@@ -57,6 +57,32 @@ collections.
 The cache also stores RWKV ID-feature encodings and the deterministic generator
 state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.
+While the runtime is resident, Anki also keeps its canonical history and replay
+identity in memory. A completed local answer clears that identity after updating
+the recurrent state, while collection mutations that can change replay inputs
+invalidate the resident state entirely. Each restore or rebuild is tied to the
+collection generation at which it started, so a result that finishes after a
+review, undo, redo, deck move, preset change, or similar mutation cannot be
+published as ready. Memorised history reuses the resident identity while it is
+known; otherwise it derives the identity once for the current mutation generation
+and reuses that canonical result. A failed disk-cache write therefore cannot make
+stale on-disk metadata authoritative for the in-memory runtime.
+
+State-cache work is serialized across profile changes. Workload simulations and
+calibration replays also hide the resident state while they temporarily use the
+backend, then restore and republish it only if the collection generation is still
+current. A real answer or undo never waits for a long replay: it invalidates that
+work, leaves the runtime unready, and lets the next canonical restore include the
+collection change.
+
+Prediction readers use the same non-blocking execution lease. Stats,
+rescheduling, review-queue, deck-count, and Card Info work is bound to the exact
+backend assignment, collection backend, resident-state generation, and
+study-queue generations it started with. Multi-batch work is discarded as a
+whole if any of those identities changes or if a later batch cannot acquire the
+lease; partial scores are never installed. Losing resident state also clears
+transient queue and Card Info scores so Anki cannot reuse a value produced from
+an older recurrent state.
 
 Answered-event state uses the same numeric encoding as the RWKV training
 dataset, not Anki's raw revlog kind: learning `1`, review `2`, relearning `3`,
@@ -149,6 +175,11 @@ SHA-256 identity of the canonical replay inputs plus a replay-semantics identity
 covering first-review elapsed-time settings, deck-to-preset routing, and the
 dynamic preset overlay. Filtered cards use their original deck as the effective
 historical deck, matching normal review after they leave the filtered deck.
+At profile startup, Anki attempts the operational cache restore and canonical
+validation once, then offers to rebuild only if that attempt fails. Checkpoint
+construction and recovery validation derive all requested history prefixes in
+one chronological pass, and repeated model-identity checks reuse the content
+hash until the model file changes.
 
 After collection sync, Anki reconciles resident RWKV state before refreshing
 study queues. If synchronized reviews only extend the cached history, they are
@@ -159,9 +190,8 @@ merged collection, and replays the suffix in chronological order. The refreshed
 final snapshot is then compacted, and a newly selected bounded set of valid
 exponential checkpoints is retained. If no checkpoint predates the changed
 history, the state is rebuilt from the complete retained history. A failed
-post-sync rebuild may restore the prior in-memory snapshot for internal
-consistency, but that snapshot is left unready so it must be validated again
-before use.
+post-sync rebuild leaves resident state unready; it does not restore a
+pre-sync snapshot that could overwrite a newer refresh.
 Rebuilding the RWKV state cache from deck options always writes a fresh full
 snapshot and checkpoint set. Cache format version 11 introduces these
 checkpoints, so older local state caches rebuild once after upgrading.
@@ -571,7 +601,12 @@ Add-ons that need these rows can call
 `aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
 The synchronous API returns immediately when current role-aware data is
 complete; otherwise it performs the same calibration-only replay while
-snapshotting and restoring active reviewer state.
+snapshotting and restoring active reviewer state. Calibration replays,
+first-review comparisons, and workload simulations claim an exclusive
+generation-scoped backend operation. A real answer that arrives during one of
+these temporary operations invalidates it and leaves state unready for replay
+from canonical history instead of letting the temporary snapshot erase the
+answer.
 
 ## Inference Runtime
 
@@ -1053,15 +1088,21 @@ The desktop stateful backend keeps a bounded rollback queue aligned with
 Anki's undo counters. Each answered review records a rollback frame containing
 the state immediately before and after the review. Undo restores the pre-review
 snapshot and moves the frame to the redo side. Redo restores the post-review
-snapshot and moves the frame back to the undo side. The embedded Rust runtime
-also snapshots its small per-card runtime state, including feature counters and
-the cached recall curve, so hidden runtime bookkeeping rolls back with the five
-serialized RWKV state blobs.
+snapshot and moves the frame back to the undo side. The frame also retains the
+full curve prediction shown for the answered card, so an undo redraw can reuse
+the exact result without another model call even when wall-clock elapsed seconds
+have advanced. The embedded Rust runtime also snapshots its small per-card
+runtime state, including feature counters and the cached recall curve, so hidden
+runtime bookkeeping rolls back with the five serialized RWKV state blobs.
 
 Rollback state is transient desktop memory. It is not stored in the collection
 and is not synced. If the desktop backend is restarted, Anki reconstructs RWKV
 state from the local cache plus any newer revlog rows when possible, and only
 reviews answered after that warm-up are available in the live rollback queue.
+If undo or redo arrives while backend execution or warm-up is already in
+progress, Anki does not block the UI or mutate the competing runtime state. It
+marks resident state unready so canonical history is replayed before further
+RWKV use.
 
 The current serialized state size is about `278,810` bytes for all five scopes.
 Because redo support stores both pre-review and post-review snapshots, a
