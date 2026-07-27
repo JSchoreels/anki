@@ -797,13 +797,6 @@ impl Collection {
         Ok(())
     }
 
-    pub(crate) fn rwkv_stats_graph_scores_for_day(
-        &self,
-        days_elapsed: u32,
-    ) -> Option<HashMap<CardId, f32>> {
-        self.rwkv_stats_graph_scores_for_search(days_elapsed, None)
-    }
-
     pub(crate) fn rwkv_stats_graph_scores_for_search(
         &self,
         days_elapsed: u32,

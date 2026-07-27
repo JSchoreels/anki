@@ -957,6 +957,7 @@ message RwkvReviewInputRowsForCardsResponse {
     optional uint32 current_elapsed_seconds = 16;
     float target_retention = 17;
     uint32 batch_size = 18;
+    optional bool enforce_grade_order = 19;
   }
 
   repeated Row rows = 1;

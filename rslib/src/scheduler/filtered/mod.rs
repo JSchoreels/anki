@@ -321,12 +321,12 @@ fn fnvhash_card_and_mod(card: &Card) -> i64 {
 
 fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
     if let Some(last_review_time) = card.last_review_time {
-        timing.now.elapsed_secs_since(last_review_time) as u32
+        timing.now.elapsed_secs_since_clamped(last_review_time)
     } else {
         let due = card.original_or_current_due() as i64;
         if due > 365_000 {
-            let last_review_time = due.saturating_sub(card.interval as i64);
-            timing.now.0.saturating_sub(last_review_time) as u32
+            let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
+            timing.now.elapsed_secs_since_clamped(last_review_time)
         } else {
             let review_day = due.saturating_sub(card.interval as i64);
             timing.days_elapsed.saturating_sub(review_day as u32) * 86_400

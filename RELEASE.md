@@ -40,11 +40,33 @@ Changes since
 
 - Use one consistent priority across RWKV score sources: Card Info, review
   queue, statistics, then background deck counts.
+- Refresh resident RWKV state after sync. Reviews inserted into past history
+  now restore an exponentially spaced checkpoint and replay only the affected
+  suffix when possible.
+
+### Compatibility
+
+- Existing desktop-local RWKV state caches rebuild once to add historical
+  recovery checkpoints.
 
 ### Fixed
 
 - Keep every card in a filtered deck counted as due on the deck list instead of
   reapplying RWKV eligibility and showing only the daily minimum.
+- Validate RWKV state-cache prefixes from canonical review content and replay
+  configuration, including the original deck of filtered cards.
+- Bind resumable RWKV Memorised results to the same canonical history and
+  replay-semantics identities, rejecting changed prefixes with unchanged IDs.
+- Keep failed post-sync refreshes unready, propagate the real result to
+  concurrent Stats waiters, and discard results from stale RWKV generations.
+- Keep Stats graph filtering bound to its exact score snapshot instead of
+  allowing Card Info or review-queue scores to select different cards.
+- Carry grade-order configuration through the Rust/Python boundary and recover
+  missing last-review timestamps from eligible revlogs.
+- Clamp future and out-of-range review timestamps instead of wrapping elapsed
+  time, and preserve long-horizon/BF16 inputs in both RWKV runners.
+- Put the optional legacy `srs-benchmark` runner in evaluation mode and bound
+  its residual interpolation without truncating the forgetting-curve horizon.
 
 ## [26.05+fsrs7.build.72](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.72) — 2026-07-22
 

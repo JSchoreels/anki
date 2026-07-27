@@ -806,3 +806,71 @@ def test_rwkv_inference_process_uses_eval_mode(monkeypatch: pytest.MonkeyPatch) 
 
     assert process.rnn is created[0]
     assert created[0].eval_called
+
+
+def test_rwkv_inference_process_encodes_day_offsets_before_bfloat16_cast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch = pytest.importorskip("torch")
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "aqt"))
+    process_module = importlib.import_module("rwkv_inference.process")
+    process = object.__new__(process_module.RwkvInferenceProcess)
+    process.device = torch.device("cpu")
+    process.dtype = torch.bfloat16
+    features = torch.zeros(1, dtype=torch.bfloat16)
+    row = {
+        "day_offset": 7_301,
+        "day_offset_first": 7_299,
+    }
+
+    encoded = process._add_day_offset_encoding(features, row)
+
+    expected_parts = [features]
+    for period in process_module.DAY_OFFSET_ENCODE_PERIODS:
+        frequency = 2 * math.pi / period
+        for day_offset in (7_301, 7_299):
+            day = torch.tensor([day_offset], dtype=torch.float32)
+            expected_parts.append(
+                torch.cat(
+                    (
+                        torch.sin(frequency * (day % period)),
+                        torch.cos(frequency * (day % period)),
+                    )
+                ).to(torch.bfloat16)
+            )
+    assert torch.equal(encoded, torch.cat(expected_parts))
+
+
+def test_rwkv_inference_process_preserves_large_elapsed_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch = pytest.importorskip("torch")
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "aqt"))
+    process_module = importlib.import_module("rwkv_inference.process")
+    elapsed_tensors = []
+
+    class FakeRnn:
+        def forgetting_curve(self, weights: object, elapsed_seconds: object) -> object:
+            elapsed_tensors.append(elapsed_seconds)
+            return torch.tensor([0.8])
+
+        def interp(self, ahead_logits: object, elapsed_seconds: object) -> object:
+            return torch.zeros(1)
+
+    process = object.__new__(process_module.RwkvInferenceProcess)
+    process.device = torch.device("cpu")
+    process.dtype = torch.bfloat16
+    process.rnn = FakeRnn()
+    elapsed_seconds = 15_000 * 86_400
+    curve = (
+        torch.zeros((1, 128), dtype=torch.bfloat16),
+        torch.zeros((1, 128), dtype=torch.bfloat16),
+    )
+
+    prediction = process.predict_func(curve, elapsed_seconds)
+
+    assert torch.isfinite(prediction).all()
+    assert elapsed_tensors[0].dtype == torch.int64
+    assert elapsed_tensors[0].item() == elapsed_seconds

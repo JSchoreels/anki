@@ -131,15 +131,16 @@ impl Card {
     /// 'set due date' or an add-on has changed the due date.
     pub(crate) fn seconds_since_last_review(&self, timing: &SchedTimingToday) -> Option<u32> {
         if let Some(last_review_time) = self.last_review_time {
-            Some(timing.now.elapsed_secs_since(last_review_time) as u32)
+            Some(timing.now.elapsed_secs_since_clamped(last_review_time))
         } else if self.is_due_in_days() {
             self.due_time(timing).map(|due| {
-                (due.adding_secs(-86_400 * self.interval as i64)
-                    .elapsed_secs()) as u32
+                let last_review_time =
+                    due.adding_secs(-86_400_i64.saturating_mul(self.interval as i64));
+                timing.now.elapsed_secs_since_clamped(last_review_time)
             })
         } else {
             let last_review_time = TimestampSecs(self.original_or_current_due() as i64);
-            Some(timing.now.elapsed_secs_since(last_review_time) as u32)
+            Some(timing.now.elapsed_secs_since_clamped(last_review_time))
         }
     }
 }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import bisect
 import enum
 import gzip
 import hashlib
@@ -27,7 +28,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NamedTuple, Protocol, TypeVar, cast
+from typing import Any, NamedTuple, Protocol, TypedDict, TypeVar, cast
 
 from anki import collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.consts import (
@@ -78,6 +79,18 @@ class RwkvReviewState(enum.IntEnum):
 class _RwkvCollectionConfigState(NamedTuple):
     review_enabled: bool
     dynamic_preset_replay_enabled: bool
+
+
+class _RwkvStateCacheCheckpointEntry(TypedDict):
+    lastReviewId: int
+    reviewCount: int
+    historyHash: str
+
+
+class _RwkvHistoryPrefixIdentity(NamedTuple):
+    last_review_id: int
+    review_count: int
+    history_hash: str
 
 
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
@@ -136,7 +149,7 @@ _RWKV_CALIBRATION_METRIC_EPSILON = 1e-6
 _RWKV_CALIBRATION_TRAIN_FRACTION = 0.70
 _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 10
+_RWKV_STATE_CACHE_VERSION = 11
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 2
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
@@ -144,9 +157,16 @@ _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
-_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT10\0"
-_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS10\0"
+_RWKV_STATE_CACHE_CHECKPOINT_PREFIX = "checkpoint-v1-"
+_RWKV_STATE_CACHE_CHECKPOINT_SUFFIX = ".bin"
+_RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT11\0"
+_RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS11\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
+_RWKV_STATE_CACHE_CHECKPOINT_BASE_MILLIS = 86_400_000
+_RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN = b"anki-rwkv-state-cache-history-v1\0"
+_RWKV_STATE_CACHE_EMPTY_HISTORY_HASH = hashlib.sha256(
+    _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN
+).hexdigest()
 _FSRS_PRESET_OVERLAY_CONFIG_KEY = "fsrsPresetOverlay"
 _RWKV_DEFAULT_TARGET_RETENTION = 0.9
 _RWKV_RATING_FIELDS = ("again", "hard", "good", "easy")
@@ -179,7 +199,10 @@ _dynamic_desired_retention_generation = 0
 _rwkv_study_queue_generation = 0
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _rwkv_stats_prepare_lock = threading.Lock()
-_rwkv_stats_prepare_in_flight: dict[RwkvStatsPrepareKey, threading.Event] = {}
+_rwkv_stats_prepare_in_flight: dict[
+    RwkvStatsPrepareKey,
+    Future[RwkvStatsPreparationStatus],
+] = {}
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
 _rwkv_startup_prompt_shown = False
@@ -473,6 +496,8 @@ class RwkvHistoricalReviewInputs:
     last_review_id: int
     review_count: int
     deck_id: int | None = None
+    history_hash: str = _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    replay_key: str = ""
 
 
 class _RwkvPendingAnswerState(NamedTuple):
@@ -493,6 +518,15 @@ class _RwkvSyntheticAnswerState(NamedTuple):
 @dataclass(frozen=True)
 class RwkvStoredStateCache:
     metadata: dict[str, object]
+    snapshot: RwkvBackendCacheSnapshot
+    history: RwkvHistoricalReviewInputs
+    reusable_checkpoints: tuple[RwkvStoredStateCheckpoint, ...] = ()
+    recovered_from_checkpoint: bool = False
+    desired_checkpoint_review_counts: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class RwkvStoredStateCheckpoint:
     snapshot: RwkvBackendCacheSnapshot
     history: RwkvHistoricalReviewInputs
 
@@ -656,6 +690,7 @@ class _RwkvSimulatorReviewTimeFields(NamedTuple):
 
 RwkvWarmUpProgressCallback = Callable[[RwkvWarmUpProgress], None]
 RwkvStateCacheProgressCallback = Callable[[str, int | None, int | None], None]
+RwkvStateCacheSnapshotCallback = Callable[[int, RwkvBackendCacheSnapshot], None]
 RwkvWorkloadProgressCallback = Callable[[int, int], None]
 RwkvReviewPredictionRequestByIndex = tuple[int, RwkvReviewPredictionRequest]
 RwkvCachedReviewPredictions = tuple[
@@ -809,19 +844,42 @@ class RwkvStatefulReviewerBackend:
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
+        snapshot_after_reviews: Sequence[int] = (),
+        snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
     ) -> None:
         total = len(reviews)
+        snapshot_endpoints = {
+            endpoint for endpoint in snapshot_after_reviews if 0 < endpoint < total
+        }
         report_every = _rwkv_warmup_progress_interval(total)
         _report_rwkv_warmup_progress(progress, processed=0, total=total)
         bulk_warm_up = getattr(self._runtime, "warm_up_reviews", None)
-        if callable(bulk_warm_up) and self._can_use_runtime_bulk_warm_up():
-            self.reset_cache_snapshot()
-            snapshot = bulk_warm_up(
-                reviews,
-                review_ids=review_ids,
-                prediction_recorder=prediction_recorder,
-                progress=progress,
+        bulk_parameters = (
+            _callable_parameters(bulk_warm_up) if callable(bulk_warm_up) else {}
+        )
+        bulk_supports_snapshots = (
+            snapshot_recorder is not None
+            and _callable_accepts_keyword(
+                bulk_parameters,
+                "snapshot_after_reviews",
             )
+            and _callable_accepts_keyword(bulk_parameters, "snapshot_recorder")
+        )
+        if (
+            callable(bulk_warm_up)
+            and self._can_use_runtime_bulk_warm_up()
+            and (not snapshot_endpoints or bulk_supports_snapshots)
+        ):
+            self.reset_cache_snapshot()
+            kwargs: dict[str, object] = {
+                "review_ids": review_ids,
+                "prediction_recorder": prediction_recorder,
+                "progress": progress,
+            }
+            if bulk_supports_snapshots:
+                kwargs["snapshot_after_reviews"] = sorted(snapshot_endpoints)
+                kwargs["snapshot_recorder"] = snapshot_recorder
+            snapshot = bulk_warm_up(reviews, **kwargs)
             self._install_cache_snapshot(snapshot)
             return
 
@@ -875,6 +933,18 @@ class RwkvStatefulReviewerBackend:
                     global_state=self._global_state,
                 )
                 self._store_transition(identity, transition)
+
+            if processed in snapshot_endpoints and snapshot_recorder is not None:
+                try:
+                    snapshot = self.cache_snapshot()
+                except TypeError:
+                    logger.debug(
+                        "RWKV historical checkpoints skipped: "
+                        "runtime state is not cacheable",
+                    )
+                    snapshot_endpoints.clear()
+                else:
+                    snapshot_recorder(processed, snapshot)
 
             if processed == total or processed % report_every == 0:
                 _report_rwkv_warmup_progress(
@@ -2984,8 +3054,10 @@ def prepare_stats_retrievability_scores(
 
     start = time.monotonic()
     prepare_key: RwkvStatsPrepareKey | None = None
-    prepare_event: threading.Event | None = None
+    prepare_future: Future[RwkvStatsPreparationStatus] | None = None
+    prepare_generation: int | None = None
     owns_prepare = False
+    prepare_status = RwkvStatsPreparationStatus.FAILED
     try:
         logger.debug("RWKV stats preparation started: search=%r", search)
         warmup_start = time.monotonic()
@@ -3025,22 +3097,28 @@ def prepare_stats_retrievability_scores(
                 else RwkvStatsPreparationStatus.UNAVAILABLE
             )
         prepare_key = _rwkv_stats_prepare_key(reviewer, search)
+        prepare_generation = (
+            prepare_key[3]
+            if prepare_key is not None
+            else _reviewer_backend_state_generation()
+        )
         if prepare_key is not None:
-            prepare_event, owns_prepare = _begin_rwkv_stats_prepare(prepare_key)
+            prepare_future, owns_prepare = _begin_rwkv_stats_prepare(prepare_key)
             if not owns_prepare:
                 wait_start = time.monotonic()
                 logger.debug(
                     "RWKV stats preparation waiting for in-flight result: search=%r",
                     search,
                 )
-                prepare_event.wait()
+                prepare_status = prepare_future.result()
                 logger.debug(
                     "RWKV stats preparation reused in-flight result: search=%r "
-                    "elapsed_ms=%.1f",
+                    "status=%s elapsed_ms=%.1f",
                     search,
+                    prepare_status.value,
                     (time.monotonic() - wait_start) * 1000,
                 )
-                return RwkvStatsPreparationStatus.READY
+                return prepare_status
         search_score_start = time.monotonic()
         search_score_result = _rwkv_stats_graph_scores_for_search(
             reviewer=reviewer,
@@ -3049,6 +3127,12 @@ def prepare_stats_retrievability_scores(
         search_score_elapsed_ms = (time.monotonic() - search_score_start) * 1000
         if search_score_result is not None:
             scores, input_build = search_score_result
+            if not _rwkv_stats_prepare_generation_is_current(prepare_generation):
+                logger.debug(
+                    "discarded RWKV stats scores after state advance: search=%r",
+                    search,
+                )
+                return RwkvStatsPreparationStatus.FAILED
             set_start = time.monotonic()
             _set_rwkv_stats_graph_scores(reviewer, search, scores)
             set_elapsed_ms = (time.monotonic() - set_start) * 1000
@@ -3064,7 +3148,8 @@ def prepare_stats_retrievability_scores(
                 set_elapsed_ms,
                 (time.monotonic() - start) * 1000,
             )
-            return RwkvStatsPreparationStatus.READY
+            prepare_status = RwkvStatsPreparationStatus.READY
+            return prepare_status
         card_ids_start = time.monotonic()
         card_ids = _stats_graph_card_ids(reviewer, search)
         card_ids_elapsed_ms = (time.monotonic() - card_ids_start) * 1000
@@ -3081,6 +3166,12 @@ def prepare_stats_retrievability_scores(
             include_new_cards=_search_text_explicitly_includes_new_cards(search),
         )
         score_elapsed_ms = (time.monotonic() - score_start) * 1000
+        if not _rwkv_stats_prepare_generation_is_current(prepare_generation):
+            logger.debug(
+                "discarded RWKV stats scores after state advance: search=%r",
+                search,
+            )
+            return RwkvStatsPreparationStatus.FAILED
         set_start = time.monotonic()
         _set_rwkv_stats_graph_scores(reviewer, search, scores)
         set_elapsed_ms = (time.monotonic() - set_start) * 1000
@@ -3097,14 +3188,20 @@ def prepare_stats_retrievability_scores(
             set_elapsed_ms,
             (time.monotonic() - start) * 1000,
         )
-        return RwkvStatsPreparationStatus.READY
+        prepare_status = RwkvStatsPreparationStatus.READY
+        return prepare_status
     except Exception:
         logger.exception("RWKV stats retrievability scoring failed")
-        _set_rwkv_stats_graph_scores(reviewer, search, [])
+        if _rwkv_stats_prepare_generation_is_current(prepare_generation):
+            _set_rwkv_stats_graph_scores(reviewer, search, [])
         return RwkvStatsPreparationStatus.FAILED
     finally:
-        if owns_prepare and prepare_key is not None and prepare_event is not None:
-            _finish_rwkv_stats_prepare(prepare_key, prepare_event)
+        if owns_prepare and prepare_key is not None and prepare_future is not None:
+            _finish_rwkv_stats_prepare(
+                prepare_key,
+                prepare_future,
+                prepare_status,
+            )
 
 
 def prepare_filtered_deck_retrievability_scores(
@@ -3299,25 +3396,36 @@ def _reviewer_backend_state_generation() -> int:
 
 def _begin_rwkv_stats_prepare(
     key: RwkvStatsPrepareKey,
-) -> tuple[threading.Event, bool]:
+) -> tuple[Future[RwkvStatsPreparationStatus], bool]:
     with _rwkv_stats_prepare_lock:
-        event = _rwkv_stats_prepare_in_flight.get(key)
-        if event is not None:
-            return event, False
+        future = _rwkv_stats_prepare_in_flight.get(key)
+        if future is not None:
+            return future, False
 
-        event = threading.Event()
-        _rwkv_stats_prepare_in_flight[key] = event
-        return event, True
+        future = Future()
+        _rwkv_stats_prepare_in_flight[key] = future
+        return future, True
 
 
 def _finish_rwkv_stats_prepare(
     key: RwkvStatsPrepareKey,
-    event: threading.Event,
+    future: Future[RwkvStatsPreparationStatus],
+    status: RwkvStatsPreparationStatus,
 ) -> None:
+    if not future.done():
+        future.set_result(status)
     with _rwkv_stats_prepare_lock:
-        if _rwkv_stats_prepare_in_flight.get(key) is event:
+        if _rwkv_stats_prepare_in_flight.get(key) is future:
             del _rwkv_stats_prepare_in_flight[key]
-        event.set()
+
+
+def _rwkv_stats_prepare_generation_is_current(
+    expected_generation: int | None,
+) -> bool:
+    return (
+        expected_generation is None
+        or expected_generation == _reviewer_backend_state_generation()
+    )
 
 
 def prewarm_reviewer_queue_score_cache(
@@ -5663,6 +5771,12 @@ def _warm_up_reviewer_backend(
             history.last_review_id,
             history_elapsed_ms,
         )
+        checkpoint_review_counts = (
+            _rwkv_exponential_checkpoint_review_counts(history.review_ids)
+            if _rwkv_state_cache_dir(reviewer) is not None
+            else []
+        )
+        checkpoint_snapshots: dict[int, RwkvBackendCacheSnapshot] = {}
         warm_up_start = time.monotonic()
         _warm_up_rwkv_reviews(
             reviewer,
@@ -5673,6 +5787,12 @@ def _warm_up_reviewer_backend(
             progress=progress,
             label="Building RWKV state cache",
             record_retrievability_cache=record_retrievability_cache,
+            snapshot_after_reviews=checkpoint_review_counts,
+            snapshot_recorder=lambda review_count,
+            snapshot: checkpoint_snapshots.__setitem__(
+                review_count,
+                snapshot,
+            ),
         )
         warm_up_elapsed_ms = (time.monotonic() - warm_up_start) * 1000
         _report_rwkv_state_cache_progress(
@@ -5680,7 +5800,18 @@ def _warm_up_reviewer_backend(
             "Saving RWKV state cache...",
         )
         save_start = time.monotonic()
-        _save_reviewer_backend_cache(reviewer, history)
+        _save_reviewer_backend_cache(
+            reviewer,
+            history,
+            checkpoints=[
+                RwkvStoredStateCheckpoint(
+                    snapshot=checkpoint_snapshots[review_count],
+                    history=_rwkv_history_prefix(history, review_count),
+                )
+                for review_count in checkpoint_review_counts
+                if review_count in checkpoint_snapshots
+            ],
+        )
         save_elapsed_ms = (time.monotonic() - save_start) * 1000
         _reviewer_backend_warmup_keys.add(key)
         logger.debug(
@@ -5711,6 +5842,104 @@ def _reviewer_backend_warmup_key(reviewer: object) -> tuple[int, int] | None:
     return (id(backend), id(col))
 
 
+def _rwkv_exponential_checkpoint_review_counts(
+    review_ids: Sequence[int],
+) -> list[int]:
+    if len(review_ids) < 2:
+        return []
+
+    first_review_id = review_ids[0]
+    last_review_id = review_ids[-1]
+    age_millis = _RWKV_STATE_CACHE_CHECKPOINT_BASE_MILLIS
+    checkpoint_counts: set[int] = set()
+    while (cutoff := last_review_id - age_millis) >= first_review_id:
+        review_count = bisect.bisect_right(review_ids, cutoff)
+        if 0 < review_count < len(review_ids):
+            checkpoint_counts.add(review_count)
+        age_millis *= 2
+
+    return sorted(checkpoint_counts)
+
+
+def _rwkv_history_prefix(
+    history: RwkvHistoricalReviewInputs,
+    review_count: int,
+) -> RwkvHistoricalReviewInputs:
+    if not 0 < review_count <= len(history.reviews):
+        raise ValueError("invalid RWKV history checkpoint review count")
+
+    previous_ids: dict[int, int] = {}
+    previous_intervals: dict[int, int] = {}
+    review_counts: dict[int, int] = {}
+    reviews = history.reviews[:review_count]
+    review_ids = history.review_ids[:review_count]
+    history_hash = _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    for review_id, review in zip(review_ids, reviews, strict=True):
+        card_id = review.identity.card_id
+        previous_ids[card_id] = review_id
+        if review.interval_days is not None:
+            previous_intervals[card_id] = review.interval_days
+        review_counts[card_id] = review_counts.get(card_id, 0) + 1
+        history_hash = _rwkv_history_hash_after_review(
+            history_hash,
+            review_id,
+            review,
+        )
+
+    return RwkvHistoricalReviewInputs(
+        reviews=[],
+        review_ids=[],
+        previous_review_id_by_card=previous_ids,
+        previous_interval_days_by_card=previous_intervals,
+        review_count_by_card=review_counts,
+        last_review_id=review_ids[-1],
+        review_count=review_count,
+        history_hash=history_hash,
+        replay_key=history.replay_key,
+    )
+
+
+def _rwkv_history_with_suffix_prefix(
+    base: RwkvHistoricalReviewInputs,
+    suffix: RwkvHistoricalReviewInputs,
+    suffix_review_count: int,
+) -> RwkvHistoricalReviewInputs:
+    if not 0 < suffix_review_count <= len(suffix.reviews):
+        raise ValueError("invalid RWKV checkpoint suffix review count")
+
+    previous_ids = dict(base.previous_review_id_by_card)
+    previous_intervals = dict(base.previous_interval_days_by_card)
+    review_counts = dict(base.review_count_by_card)
+    reviews = suffix.reviews[:suffix_review_count]
+    review_ids = suffix.review_ids[:suffix_review_count]
+    if base.replay_key != suffix.replay_key:
+        raise ValueError("RWKV checkpoint histories use different replay semantics")
+    history_hash = base.history_hash
+    for review_id, review in zip(review_ids, reviews, strict=True):
+        card_id = review.identity.card_id
+        previous_ids[card_id] = review_id
+        if review.interval_days is not None:
+            previous_intervals[card_id] = review.interval_days
+        review_counts[card_id] = review_counts.get(card_id, 0) + 1
+        history_hash = _rwkv_history_hash_after_review(
+            history_hash,
+            review_id,
+            review,
+        )
+
+    return RwkvHistoricalReviewInputs(
+        reviews=[],
+        review_ids=[],
+        previous_review_id_by_card=previous_ids,
+        previous_interval_days_by_card=previous_intervals,
+        review_count_by_card=review_counts,
+        last_review_id=review_ids[-1],
+        review_count=base.review_count + suffix_review_count,
+        history_hash=history_hash,
+        replay_key=base.replay_key,
+    )
+
+
 def _warm_up_rwkv_reviews(
     reviewer: object,
     backend: object,
@@ -5721,6 +5950,8 @@ def _warm_up_rwkv_reviews(
     progress: RwkvStateCacheProgressCallback | None,
     label: str,
     record_retrievability_cache: bool = True,
+    snapshot_after_reviews: Sequence[int] = (),
+    snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
 ) -> None:
     started_at = time.monotonic()
 
@@ -5738,6 +5969,8 @@ def _warm_up_rwkv_reviews(
                 reviews,
                 review_ids=review_ids,
                 progress=progress_reporter,
+                snapshot_after_reviews=snapshot_after_reviews,
+                snapshot_recorder=snapshot_recorder,
             )
         else:
             writer = _RwkvReviewRetrievabilityCacheWriter(reviewer)
@@ -5747,6 +5980,8 @@ def _warm_up_rwkv_reviews(
                     review_ids=review_ids,
                     prediction_recorder=writer,
                     progress=progress_reporter,
+                    snapshot_after_reviews=snapshot_after_reviews,
+                    snapshot_recorder=snapshot_recorder,
                 )
             finally:
                 writer.flush()
@@ -6498,19 +6733,21 @@ def rwkv_state_cache_usable(
 
     context = SimpleNamespace(mw=mw)
     metadata = _read_rwkv_state_cache_metadata(context)
-    if metadata is None or not _rwkv_state_cache_metadata_usable(
+    if metadata is None:
+        return False
+
+    if metadata.get("version") == _RWKV_STATE_CACHE_VERSION:
+        return (
+            _read_rwkv_state_cache_binary(
+                context,
+                dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+            )
+            is not None
+        )
+    return _rwkv_state_cache_metadata_usable(
         context,
         metadata,
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
-    ):
-        return False
-
-    if metadata.get("version") != _RWKV_STATE_CACHE_VERSION:
-        return True
-
-    cache_dir = _rwkv_state_cache_dir(context)
-    return (
-        cache_dir is not None and (cache_dir / _RWKV_STATE_CACHE_SNAPSHOT_FILE).exists()
     )
 
 
@@ -6729,6 +6966,119 @@ def load_rwkv_state_cache_with_progress(mw: object) -> None:
     _run_on_main(mw, start_load)
 
 
+def refresh_rwkv_state_after_sync(
+    mw: object,
+    on_done: Callable[[], None],
+) -> None:
+    """Reconcile resident RWKV state with the merged review history."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    if not _rwkv_collection_config_state(reviewer).review_enabled:
+        on_done()
+        return
+    if not configure_reviewer_backend_from_environment():
+        on_done()
+        return
+
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        on_done()
+        return
+
+    cache_snapshot = getattr(_reviewer_backend, "cache_snapshot", None)
+    restore_cache_snapshot = getattr(_reviewer_backend, "restore_cache_snapshot", None)
+    try:
+        previous_snapshot = cache_snapshot() if callable(cache_snapshot) else None
+    except Exception:
+        logger.warning(
+            "failed to snapshot RWKV state before post-sync refresh",
+            exc_info=True,
+        )
+        previous_snapshot = None
+    _reviewer_backend_warmup_keys.discard(key)
+    _set_rwkv_state_cache_loading(mw, True)
+
+    start = time.monotonic()
+
+    def progress(
+        label: str,
+        value: int | None,
+        maximum: int | None,
+    ) -> None:
+        def update() -> None:
+            progress_manager = getattr(mw, "progress", None)
+            update_progress = getattr(progress_manager, "update", None)
+            if callable(update_progress):
+                update_progress(label=label, value=value, max=maximum)
+
+        _run_on_main(mw, update)
+
+    def restore_previous_state() -> None:
+        if previous_snapshot is not None and callable(restore_cache_snapshot):
+            try:
+                restore_cache_snapshot(previous_snapshot)
+            except Exception:
+                logger.exception("failed to restore pre-sync RWKV state")
+
+    def refresh() -> bool:
+        return _warm_up_reviewer_backend(
+            reviewer,
+            progress=progress,
+        )
+
+    completion_lock = threading.Lock()
+    completed = False
+
+    def done(future: Future[bool]) -> None:
+        nonlocal completed
+        with completion_lock:
+            if completed:
+                return
+            completed = True
+        try:
+            ready = future.result()
+        except Exception:
+            logger.exception("RWKV post-sync state refresh failed")
+            ready = False
+
+        if not ready:
+            restore_previous_state()
+        _set_rwkv_state_cache_loading(mw, False)
+
+        logger.info(
+            "RWKV post-sync state refresh finished: ready=%s elapsed_ms=%.1f",
+            ready,
+            (time.monotonic() - start) * 1000,
+        )
+        on_done()
+
+    taskman = getattr(mw, "taskman", None)
+    with_progress = getattr(taskman, "with_progress", None)
+    if callable(with_progress):
+        try:
+            with_progress(
+                refresh,
+                done,
+                parent=cast(QWidget | None, mw),
+                label="Updating RWKV state after sync...",
+                immediate=True,
+                uses_collection=True,
+                title="RWKV State Cache",
+            )
+        except Exception as exc:
+            launch_future: Future[bool] = Future()
+            launch_future.set_exception(exc)
+            done(launch_future)
+        return
+
+    direct_future: Future[bool] = Future()
+    try:
+        direct_future.set_result(refresh())
+    except Exception as exc:
+        direct_future.set_exception(exc)
+    done(direct_future)
+
+
 def build_rwkv_state_cache_with_progress(
     mw: object,
     *,
@@ -6888,11 +7238,59 @@ from retained
         else []
     )
     last_review_id, review_count = rows[0] if rows else (0, 0)
-    return _rwkv_memorised_history_identity(
+    ready_identity = _rwkv_ready_state_cache_history_identity(
         reviewer,
         last_review_id=int(last_review_id),
         review_count=int(review_count),
     )
+    if ready_identity is None:
+        history = _historical_rwkv_review_inputs(reviewer)
+        last_review_id = history.last_review_id
+        review_count = history.review_count
+        history_hash = history.history_hash
+        replay_key = history.replay_key
+    else:
+        history_hash, replay_key = ready_identity
+    return _rwkv_memorised_history_identity(
+        reviewer,
+        last_review_id=int(last_review_id),
+        review_count=int(review_count),
+        history_hash=history_hash,
+        replay_key=replay_key,
+    )
+
+
+def _rwkv_ready_state_cache_history_identity(
+    reviewer: object,
+    *,
+    last_review_id: int,
+    review_count: int,
+) -> tuple[str, str] | None:
+    warmup_key = _reviewer_backend_warmup_key(reviewer)
+    if warmup_key is None or warmup_key not in _reviewer_backend_warmup_keys:
+        return None
+
+    metadata = _read_rwkv_state_cache_metadata(reviewer)
+    if (
+        metadata is None
+        or _int_value(metadata.get("lastReviewId")) != last_review_id
+        or _int_value(metadata.get("reviewCount")) != review_count
+    ):
+        return None
+    replay_key = _rwkv_replay_semantics_key(
+        reviewer,
+        first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+    )
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer,
+        metadata,
+        replay_key=replay_key,
+    ):
+        return None
+    history_hash = metadata.get("historyHash")
+    if not _rwkv_history_hash_is_valid(history_hash):
+        return None
+    return cast(str, history_hash), replay_key
 
 
 def _rwkv_memorised_history_identity(
@@ -6900,9 +7298,13 @@ def _rwkv_memorised_history_identity(
     *,
     last_review_id: int,
     review_count: int,
+    history_hash: str,
+    replay_key: str,
 ) -> str:
+    if not _rwkv_history_hash_is_valid(history_hash) or not replay_key:
+        raise ValueError("invalid RWKV Memorised history identity")
     value = {
-        "version": 2,
+        "version": 3,
         "collection": _rwkv_collection_cache_key(reviewer),
         "model": _rwkv_model_cache_key(),
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
@@ -6911,6 +7313,8 @@ def _rwkv_memorised_history_identity(
         "firstReviewElapsed": _rwkv_first_review_elapsed_config_key(reviewer),
         "lastReviewId": last_review_id,
         "reviewCount": review_count,
+        "historyHash": history_hash,
+        "replayKey": replay_key,
         "dayOffset": _day_offset(reviewer),
     }
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -7052,6 +7456,8 @@ def _compute_rwkv_memorised_history(
         reviewer,
         last_review_id=history.last_review_id,
         review_count=history.review_count,
+        history_hash=history.history_hash,
+        replay_key=history.replay_key,
     )
     if not reviews:
         with job.lock:
@@ -7368,17 +7774,21 @@ def _rwkv_memorised_completed_prefix_checkpoint(
 
     cached_last_review_id = cached_identity.pop("lastReviewId", None)
     cached_review_count = cached_identity.pop("reviewCount", None)
+    cached_history_hash = cached_identity.pop("historyHash", None)
     cached_day = cached_identity.pop("dayOffset", None)
     current_last_review_id = current_identity.pop("lastReviewId", None)
     current_review_count = current_identity.pop("reviewCount", None)
+    current_history_hash = current_identity.pop("historyHash", None)
     current_day = current_identity.pop("dayOffset", None)
     if (
         cached_identity != current_identity
         or not isinstance(cached_last_review_id, int)
         or not isinstance(cached_review_count, int)
+        or not _rwkv_history_hash_is_valid(cached_history_hash)
         or not isinstance(cached_day, int)
         or not isinstance(current_last_review_id, int)
         or not isinstance(current_review_count, int)
+        or not _rwkv_history_hash_is_valid(current_history_hash)
         or not isinstance(current_day, int)
         or cached_day != completed.last_day
         or current_day != last_day
@@ -7388,10 +7798,23 @@ def _rwkv_memorised_completed_prefix_checkpoint(
     ):
         return None
 
-    unchanged_prefix_count = sum(
-        review_id <= cached_last_review_id for review_id in review_ids
-    )
-    if unchanged_prefix_count != cached_review_count:
+    unchanged_prefix_count = 0
+    prefix_hash = _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    full_hash = _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    for review_id, review in zip(review_ids, reviews, strict=True):
+        full_hash = _rwkv_history_hash_after_review(full_hash, review_id, review)
+        if review_id <= cached_last_review_id:
+            unchanged_prefix_count += 1
+            prefix_hash = _rwkv_history_hash_after_review(
+                prefix_hash,
+                review_id,
+                review,
+            )
+    if (
+        unchanged_prefix_count != cached_review_count
+        or prefix_hash != cached_history_hash
+        or full_hash != current_history_hash
+    ):
         return None
 
     new_review_days = [
@@ -9051,8 +9474,23 @@ def _restore_reviewer_backend_cache(
             previous_review_id_by_card=stored.history.previous_review_id_by_card,
             previous_interval_days_by_card=stored.history.previous_interval_days_by_card,
             review_count_by_card=stored.history.review_count_by_card,
+            previous_history_hash=stored.history.history_hash,
+            previous_replay_key=stored.history.replay_key,
         )
         if history.reviews:
+            checkpoint_review_counts = []
+            if stored.recovered_from_checkpoint:
+                checkpoint_review_counts = [
+                    suffix_review_count
+                    for target_review_count in stored.desired_checkpoint_review_counts
+                    if 0
+                    < (
+                        suffix_review_count := target_review_count
+                        - stored.history.review_count
+                    )
+                    <= len(history.reviews)
+                ]
+            checkpoint_snapshots: dict[int, RwkvBackendCacheSnapshot] = {}
             _warm_up_rwkv_reviews(
                 reviewer,
                 backend,
@@ -9062,12 +9500,46 @@ def _restore_reviewer_backend_cache(
                 progress=progress,
                 label="Updating RWKV state cache",
                 record_retrievability_cache=record_retrievability_cache,
+                snapshot_after_reviews=checkpoint_review_counts,
+                snapshot_recorder=lambda review_count,
+                snapshot: checkpoint_snapshots.__setitem__(
+                    review_count,
+                    snapshot,
+                ),
             )
             _report_rwkv_state_cache_progress(
                 progress,
                 "Saving RWKV state cache...",
             )
-            if _rwkv_state_cache_uses_current_model_key(stored.metadata):
+            if stored.recovered_from_checkpoint:
+                desired_checkpoint_review_counts = set(
+                    stored.desired_checkpoint_review_counts
+                )
+                _save_reviewer_backend_cache(
+                    reviewer,
+                    history,
+                    checkpoints=[
+                        *[
+                            checkpoint
+                            for checkpoint in stored.reusable_checkpoints
+                            if checkpoint.history.review_count
+                            in desired_checkpoint_review_counts
+                        ],
+                        *[
+                            RwkvStoredStateCheckpoint(
+                                snapshot=checkpoint_snapshots[review_count],
+                                history=_rwkv_history_with_suffix_prefix(
+                                    stored.history,
+                                    history,
+                                    review_count,
+                                ),
+                            )
+                            for review_count in checkpoint_review_counts
+                            if review_count in checkpoint_snapshots
+                        ],
+                    ],
+                )
+            elif _rwkv_state_cache_uses_current_model_key(stored.metadata):
                 _append_rwkv_state_cache_deltas(
                     reviewer,
                     history,
@@ -9078,6 +9550,21 @@ def _restore_reviewer_backend_cache(
                 )
             else:
                 _save_reviewer_backend_cache(reviewer, history)
+        elif stored.recovered_from_checkpoint:
+            _report_rwkv_state_cache_progress(
+                progress,
+                "Saving RWKV state cache...",
+            )
+            _save_reviewer_backend_cache(
+                reviewer,
+                stored.history,
+                checkpoints=[
+                    checkpoint
+                    for checkpoint in stored.reusable_checkpoints
+                    if checkpoint.history.review_count
+                    in set(stored.desired_checkpoint_review_counts)
+                ],
+            )
         elif not _rwkv_state_cache_uses_current_model_key(stored.metadata):
             _report_rwkv_state_cache_progress(
                 progress,
@@ -9152,6 +9639,8 @@ where {_rwkv_historical_answer_sql_condition("r")}
 def _save_reviewer_backend_cache(
     reviewer: object,
     history: RwkvHistoricalReviewInputs,
+    *,
+    checkpoints: Sequence[RwkvStoredStateCheckpoint] = (),
 ) -> None:
     if history.deck_id is not None:
         _log_scoped_rwkv_state_cache_write_skip("save", history)
@@ -9167,10 +9656,20 @@ def _save_reviewer_backend_cache(
         return
 
     try:
+        checkpoints_by_review_id = {
+            checkpoint.history.last_review_id: checkpoint
+            for checkpoint in checkpoints
+            if 0 < checkpoint.history.last_review_id < history.last_review_id
+        }
+        retained_checkpoints = [
+            checkpoints_by_review_id[review_id]
+            for review_id in sorted(checkpoints_by_review_id)
+        ]
         metadata = _rwkv_state_cache_metadata(
             reviewer,
             history,
             snapshot_review_id=history.last_review_id,
+            checkpoints=retained_checkpoints,
         )
         snapshot = cache_snapshot()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -9180,6 +9679,32 @@ def _save_reviewer_backend_cache(
             history=history,
         )
         _atomic_write(cache_dir / _RWKV_STATE_CACHE_SNAPSHOT_FILE, data)
+        retained_checkpoint_paths: set[Path] = set()
+        for checkpoint in retained_checkpoints:
+            checkpoint_path = _rwkv_state_cache_checkpoint_path(
+                cache_dir,
+                checkpoint.history.last_review_id,
+            )
+            checkpoint_metadata = _rwkv_state_cache_metadata(
+                reviewer,
+                checkpoint.history,
+                snapshot_review_id=checkpoint.history.last_review_id,
+            )
+            _atomic_write(
+                checkpoint_path,
+                _encode_rwkv_state_cache_snapshot_file(
+                    metadata=checkpoint_metadata,
+                    snapshot=checkpoint.snapshot,
+                    history=checkpoint.history,
+                ),
+            )
+            retained_checkpoint_paths.add(checkpoint_path)
+        for checkpoint_path in cache_dir.glob(
+            f"{_RWKV_STATE_CACHE_CHECKPOINT_PREFIX}*"
+            f"{_RWKV_STATE_CACHE_CHECKPOINT_SUFFIX}"
+        ):
+            if checkpoint_path not in retained_checkpoint_paths:
+                checkpoint_path.unlink()
         _atomic_write(
             cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE, _rwkv_empty_deltas_log()
         )
@@ -9188,9 +9713,11 @@ def _save_reviewer_backend_cache(
             json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
         )
         logger.debug(
-            "saved RWKV state cache snapshot: reviews=%s last_review_id=%s bytes=%s",
-            len(history.reviews),
+            "saved RWKV state cache snapshot: reviews=%s last_review_id=%s "
+            "checkpoints=%s bytes=%s",
+            history.review_count,
             history.last_review_id,
+            len(retained_checkpoints),
             len(data),
         )
     except Exception:
@@ -9213,12 +9740,24 @@ def _append_rwkv_state_cache_deltas(
 
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
+        existing_metadata = _read_rwkv_state_cache_metadata(reviewer)
+        snapshot_history_hash = (
+            existing_metadata.get("snapshotHistoryHash")
+            if isinstance(existing_metadata, dict)
+            else None
+        )
+        if not _rwkv_history_hash_is_valid(snapshot_history_hash):
+            raise ValueError("missing RWKV snapshot history identity")
         delta_path = cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE
         _append_rwkv_delta_records(delta_path, history.review_ids, history.reviews)
         metadata = _rwkv_state_cache_metadata(
             reviewer,
             history,
             snapshot_review_id=snapshot_review_id,
+            snapshot_history_hash=cast(str, snapshot_history_hash),
+            checkpoint_entries=_rwkv_state_cache_checkpoint_entries(
+                existing_metadata,
+            ),
         )
         _atomic_write(
             cache_dir / _RWKV_STATE_CACHE_META_FILE,
@@ -9256,18 +9795,35 @@ def _read_rwkv_state_cache(reviewer: object) -> RwkvStoredStateCache | None:
     return _read_rwkv_state_cache_legacy_json(reviewer)
 
 
-def _read_rwkv_state_cache_binary(reviewer: object) -> RwkvStoredStateCache | None:
-    cache_dir = _rwkv_state_cache_dir(reviewer)
-    if cache_dir is None:
+def _read_rwkv_state_cache_binary(
+    reviewer: object,
+    *,
+    dynamic_preset_replay_enabled: bool | None = None,
+) -> RwkvStoredStateCache | None:
+    location = _rwkv_state_cache_binary_location(reviewer)
+    if location is None:
         return None
-
-    metadata = _read_rwkv_state_cache_metadata(reviewer)
-    if (
-        not isinstance(metadata, dict)
-        or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+    cache_dir, metadata = location
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     ):
         return None
-    if not _rwkv_state_cache_metadata_usable(reviewer, metadata):
+    try:
+        current_history = _historical_rwkv_review_inputs(reviewer)
+    except Exception:
+        logger.exception("failed to validate current RWKV replay history")
+        return None
+    desired_checkpoint_review_counts = tuple(
+        _rwkv_exponential_checkpoint_review_counts(current_history.review_ids)
+    )
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        replay_key=current_history.replay_key,
+    ):
         return None
 
     snapshot_path = cache_dir / _RWKV_STATE_CACHE_SNAPSHOT_FILE
@@ -9278,31 +9834,133 @@ def _read_rwkv_state_cache_binary(reviewer: object) -> RwkvStoredStateCache | No
         snapshot_metadata, snapshot, snapshot_history = (
             _decode_rwkv_state_cache_snapshot_file(snapshot_path.read_bytes())
         )
-        if not _rwkv_state_cache_metadata_matches_manifest(
-            snapshot_metadata,
-            metadata,
-        ):
-            return None
-
-        delta_reviews = _read_rwkv_delta_records(
-            cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
-            after_review_id=snapshot_history.last_review_id,
-            until_review_id=_int_value(metadata.get("lastReviewId")) or 0,
-        )
-        history = _rwkv_history_after_delta_reviews(snapshot_history, delta_reviews)
-        if history.last_review_id != (_int_value(metadata.get("lastReviewId")) or 0):
-            return None
-        if history.review_count != (_int_value(metadata.get("reviewCount")) or 0):
-            return None
-
-        return RwkvStoredStateCache(
-            metadata=metadata,
-            snapshot=snapshot,
-            history=history,
-        )
     except Exception:
         logger.exception("failed to read binary RWKV state cache")
         return None
+    if not _rwkv_state_cache_metadata_matches_manifest(
+        snapshot_metadata,
+        metadata,
+    ):
+        return None
+
+    if _rwkv_state_cache_metadata_usable(
+        reviewer,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        current_history=current_history,
+    ):
+        try:
+            delta_reviews = _read_rwkv_delta_records(
+                cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
+                after_review_id=snapshot_history.last_review_id,
+                until_review_id=_int_value(metadata.get("lastReviewId")) or 0,
+            )
+            history = _rwkv_history_after_delta_reviews(
+                snapshot_history,
+                delta_reviews,
+            )
+            if (
+                history.last_review_id
+                == (_int_value(metadata.get("lastReviewId")) or 0)
+                and history.review_count
+                == (_int_value(metadata.get("reviewCount")) or 0)
+                and history.history_hash == metadata.get("historyHash")
+            ):
+                return RwkvStoredStateCache(
+                    metadata=metadata,
+                    snapshot=snapshot,
+                    history=history,
+                    desired_checkpoint_review_counts=(desired_checkpoint_review_counts),
+                )
+        except Exception:
+            logger.warning(
+                "failed to restore effective RWKV delta state; "
+                "trying an earlier checkpoint",
+                exc_info=True,
+            )
+
+    reusable_checkpoints: list[RwkvStoredStateCheckpoint] = []
+    base_checkpoint = RwkvStoredStateCheckpoint(
+        snapshot=snapshot,
+        history=snapshot_history,
+    )
+    if _rwkv_state_cache_history_prefix_matches(
+        reviewer,
+        snapshot_history,
+        current_history=current_history,
+    ):
+        reusable_checkpoints.append(base_checkpoint)
+
+    for entry in reversed(_rwkv_state_cache_checkpoint_entries(metadata)):
+        checkpoint_path = _rwkv_state_cache_checkpoint_path(
+            cache_dir,
+            entry["lastReviewId"],
+        )
+        try:
+            checkpoint_metadata, checkpoint_snapshot, checkpoint_history = (
+                _decode_rwkv_state_cache_snapshot_file(checkpoint_path.read_bytes())
+            )
+        except FileNotFoundError:
+            continue
+        except Exception:
+            logger.warning(
+                "failed to read RWKV state checkpoint: path=%s",
+                checkpoint_path,
+                exc_info=True,
+            )
+            continue
+        if not _rwkv_state_cache_checkpoint_metadata_matches_manifest(
+            checkpoint_metadata,
+            metadata,
+            entry,
+        ):
+            continue
+        if not _rwkv_state_cache_history_prefix_matches(
+            reviewer,
+            checkpoint_history,
+            current_history=current_history,
+        ):
+            continue
+        reusable_checkpoints.append(
+            RwkvStoredStateCheckpoint(
+                snapshot=checkpoint_snapshot,
+                history=checkpoint_history,
+            )
+        )
+
+    if not reusable_checkpoints:
+        return None
+
+    reusable_checkpoints.sort(key=lambda checkpoint: checkpoint.history.last_review_id)
+    selected = reusable_checkpoints[-1]
+    logger.info(
+        "recovering RWKV state from historical checkpoint: last_review_id=%s "
+        "review_count=%s available_checkpoints=%s",
+        selected.history.last_review_id,
+        selected.history.review_count,
+        len(reusable_checkpoints),
+    )
+    return RwkvStoredStateCache(
+        metadata=metadata,
+        snapshot=selected.snapshot,
+        history=selected.history,
+        reusable_checkpoints=tuple(reusable_checkpoints),
+        recovered_from_checkpoint=True,
+        desired_checkpoint_review_counts=desired_checkpoint_review_counts,
+    )
+
+
+def _rwkv_state_cache_binary_location(
+    reviewer: object,
+) -> tuple[Path, dict[str, object]] | None:
+    cache_dir = _rwkv_state_cache_dir(reviewer)
+    if cache_dir is None:
+        return None
+
+    metadata = _read_rwkv_state_cache_metadata(reviewer)
+    if metadata is None or metadata.get("version") != _RWKV_STATE_CACHE_VERSION:
+        return None
+    return cache_dir, metadata
 
 
 def _read_rwkv_state_cache_legacy_json(
@@ -9382,8 +10040,35 @@ def _rwkv_state_cache_metadata(
     history: RwkvHistoricalReviewInputs,
     *,
     snapshot_review_id: int,
+    snapshot_history_hash: str | None = None,
+    checkpoints: Sequence[RwkvStoredStateCheckpoint] = (),
+    checkpoint_entries: Sequence[_RwkvStateCacheCheckpointEntry] = (),
 ) -> dict[str, object]:
-    return {
+    if checkpoints and checkpoint_entries:
+        raise ValueError("RWKV checkpoint snapshots and entries are mutually exclusive")
+    if not _rwkv_history_hash_is_valid(history.history_hash):
+        raise ValueError("missing RWKV history identity")
+    if not history.replay_key:
+        raise ValueError("missing RWKV replay semantics identity")
+    if snapshot_history_hash is None:
+        if snapshot_review_id != history.last_review_id:
+            raise ValueError("missing RWKV snapshot prefix identity")
+        snapshot_history_hash = history.history_hash
+    if not _rwkv_history_hash_is_valid(snapshot_history_hash):
+        raise ValueError("invalid RWKV snapshot prefix identity")
+    entries: list[_RwkvStateCacheCheckpointEntry]
+    if checkpoints:
+        entries = [
+            _RwkvStateCacheCheckpointEntry(
+                lastReviewId=checkpoint.history.last_review_id,
+                reviewCount=checkpoint.history.review_count,
+                historyHash=checkpoint.history.history_hash,
+            )
+            for checkpoint in checkpoints
+        ]
+    else:
+        entries = list(checkpoint_entries)
+    metadata: dict[str, object] = {
         "version": _RWKV_STATE_CACHE_VERSION,
         "presetReplaySemantics": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "collection": _rwkv_collection_cache_key(reviewer),
@@ -9392,16 +10077,65 @@ def _rwkv_state_cache_metadata(
             reviewer
         ),
         "snapshotReviewId": snapshot_review_id,
+        "snapshotHistoryHash": snapshot_history_hash,
         "lastReviewId": history.last_review_id,
         "reviewCount": history.review_count,
+        "historyHash": history.history_hash,
+        "replayKey": history.replay_key,
     }
+    if entries:
+        metadata["checkpoints"] = entries
+    return metadata
 
 
-def _rwkv_state_cache_metadata_usable(
+def _rwkv_state_cache_checkpoint_entries(
+    metadata: dict[str, object] | None,
+) -> list[_RwkvStateCacheCheckpointEntry]:
+    if not isinstance(metadata, dict):
+        return []
+    raw_entries = metadata.get("checkpoints")
+    if not isinstance(raw_entries, list):
+        return []
+
+    entries: dict[int, _RwkvStateCacheCheckpointEntry] = {}
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        last_review_id = _int_value(raw_entry.get("lastReviewId"))
+        review_count = _int_value(raw_entry.get("reviewCount"))
+        history_hash = raw_entry.get("historyHash")
+        if (
+            last_review_id is None
+            or last_review_id <= 0
+            or review_count is None
+            or review_count <= 0
+            or not _rwkv_history_hash_is_valid(history_hash)
+        ):
+            continue
+        entries[last_review_id] = {
+            "lastReviewId": last_review_id,
+            "reviewCount": review_count,
+            "historyHash": history_hash,
+        }
+    return [entries[review_id] for review_id in sorted(entries)]
+
+
+def _rwkv_state_cache_checkpoint_path(
+    cache_dir: Path,
+    last_review_id: int,
+) -> Path:
+    return cache_dir / (
+        f"{_RWKV_STATE_CACHE_CHECKPOINT_PREFIX}{last_review_id}"
+        f"{_RWKV_STATE_CACHE_CHECKPOINT_SUFFIX}"
+    )
+
+
+def _rwkv_state_cache_metadata_compatible(
     reviewer: object,
     metadata: dict[str, object],
     *,
     dynamic_preset_replay_enabled: bool | None = None,
+    replay_key: str | None = None,
 ) -> bool:
     if metadata.get("version") not in (
         _RWKV_STATE_CACHE_VERSION,
@@ -9423,13 +10157,119 @@ def _rwkv_state_cache_metadata_usable(
         and metadata.get("dynamicPresetReplay") != dynamic_preset_replay_enabled
     ):
         return False
+    if metadata.get("version") == _RWKV_STATE_CACHE_VERSION:
+        if (
+            not _rwkv_history_hash_is_valid(metadata.get("historyHash"))
+            or not _rwkv_history_hash_is_valid(metadata.get("snapshotHistoryHash"))
+            or not isinstance(metadata.get("replayKey"), str)
+            or not metadata.get("replayKey")
+        ):
+            return False
+        if replay_key is not None and metadata.get("replayKey") != replay_key:
+            return False
+    return True
+
+
+def _rwkv_state_cache_metadata_usable(
+    reviewer: object,
+    metadata: dict[str, object],
+    *,
+    dynamic_preset_replay_enabled: bool | None = None,
+    current_history: RwkvHistoricalReviewInputs | None = None,
+) -> bool:
+    if current_history is None:
+        try:
+            current_history = _historical_rwkv_review_inputs(reviewer)
+        except Exception:
+            logger.debug(
+                "failed to build current history for RWKV cache validation",
+                exc_info=True,
+            )
+            return False
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        replay_key=current_history.replay_key,
+    ):
+        return False
     last_review_id = _int_value(metadata.get("lastReviewId"))
     review_count = _int_value(metadata.get("reviewCount"))
-    if last_review_id is None or review_count is None:
+    history_hash = metadata.get("historyHash")
+    if (
+        last_review_id is None
+        or review_count is None
+        or not _rwkv_history_hash_is_valid(history_hash)
+    ):
         return False
 
-    return (
-        _historical_rwkv_review_count_through(reviewer, last_review_id) == review_count
+    identity = _rwkv_history_prefix_identity(current_history, last_review_id)
+    return identity == _RwkvHistoryPrefixIdentity(
+        last_review_id=last_review_id,
+        review_count=review_count,
+        history_hash=cast(str, history_hash),
+    )
+
+
+def _rwkv_state_cache_history_prefix_matches(
+    reviewer: object,
+    history: RwkvHistoricalReviewInputs,
+    *,
+    current_history: RwkvHistoricalReviewInputs | None = None,
+) -> bool:
+    if not _rwkv_history_hash_is_valid(history.history_hash) or not history.replay_key:
+        return False
+    if current_history is None:
+        try:
+            current_history = _historical_rwkv_review_inputs(reviewer)
+        except Exception:
+            logger.debug(
+                "failed to build current history for RWKV prefix validation",
+                exc_info=True,
+            )
+            return False
+    if history.replay_key != current_history.replay_key:
+        return False
+
+    return _rwkv_history_prefix_identity(
+        current_history,
+        history.last_review_id,
+    ) == _RwkvHistoryPrefixIdentity(
+        last_review_id=history.last_review_id,
+        review_count=history.review_count,
+        history_hash=history.history_hash,
+    )
+
+
+def _rwkv_history_prefix_identity(
+    history: RwkvHistoricalReviewInputs,
+    last_review_id: int,
+) -> _RwkvHistoryPrefixIdentity:
+    if last_review_id == history.last_review_id:
+        return _RwkvHistoryPrefixIdentity(
+            last_review_id=history.last_review_id,
+            review_count=history.review_count,
+            history_hash=history.history_hash,
+        )
+
+    history_hash = _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    review_count = 0
+    actual_last_review_id = 0
+    for review_id, review in zip(history.review_ids, history.reviews, strict=True):
+        if review_id > last_review_id:
+            break
+        history_hash = _rwkv_history_hash_after_review(
+            history_hash,
+            review_id,
+            review,
+        )
+        review_count += 1
+        actual_last_review_id = review_id
+
+    return _RwkvHistoryPrefixIdentity(
+        last_review_id=actual_last_review_id,
+        review_count=review_count,
+        history_hash=history_hash,
     )
 
 
@@ -9825,6 +10665,10 @@ def _decode_rwkv_state_cache_snapshot_file(
         review_count_by_card=review_counts,
         last_review_id=_int_value(metadata.get("lastReviewId")) or 0,
         review_count=_int_value(metadata.get("reviewCount")) or 0,
+        history_hash=str(
+            metadata.get("historyHash", _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH)
+        ),
+        replay_key=str(metadata.get("replayKey", "")),
     )
     return metadata, snapshot, history
 
@@ -9887,6 +10731,29 @@ def _encode_rwkv_delta_record(review_id: int, review_input: RwkvReviewInput) -> 
     _write_i64(out, review_id)
     _write_review_input(out, review_input)
     return bytes(out)
+
+
+def _rwkv_history_hash_is_valid(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    )
+
+
+def _rwkv_history_hash_after_review(
+    previous_hash: str,
+    review_id: int,
+    review_input: RwkvReviewInput,
+) -> str:
+    if not _rwkv_history_hash_is_valid(previous_hash):
+        raise ValueError("invalid RWKV history hash")
+
+    digest = hashlib.sha256()
+    digest.update(_RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN)
+    digest.update(bytes.fromhex(previous_hash))
+    digest.update(_encode_rwkv_delta_record(review_id, review_input))
+    return digest.hexdigest()
 
 
 def _write_rwkv_delta_record_frame(
@@ -9978,6 +10845,7 @@ def _rwkv_history_after_delta_reviews(
     review_ids: list[int] = []
     last_review_id = base.last_review_id
     review_count = base.review_count
+    history_hash = base.history_hash
 
     for review_id, review in delta_reviews:
         if review_id <= last_review_id:
@@ -9991,6 +10859,11 @@ def _rwkv_history_after_delta_reviews(
         review_counts[card_id] = review_counts.get(card_id, 0) + 1
         last_review_id = max(last_review_id, review_id)
         review_count += 1
+        history_hash = _rwkv_history_hash_after_review(
+            history_hash,
+            review_id,
+            review,
+        )
 
     return RwkvHistoricalReviewInputs(
         reviews=reviews,
@@ -10001,6 +10874,8 @@ def _rwkv_history_after_delta_reviews(
         last_review_id=last_review_id,
         review_count=review_count,
         deck_id=base.deck_id,
+        history_hash=history_hash,
+        replay_key=base.replay_key,
     )
 
 
@@ -10010,6 +10885,39 @@ def _rwkv_state_cache_metadata_matches_manifest(
 ) -> bool:
     snapshot_review_id = _int_value(manifest_metadata.get("snapshotReviewId"))
     return (
+        _rwkv_state_cache_snapshot_metadata_matches_manifest(
+            snapshot_metadata,
+            manifest_metadata,
+        )
+        and _int_value(snapshot_metadata.get("lastReviewId")) == snapshot_review_id
+        and snapshot_metadata.get("historyHash")
+        == manifest_metadata.get("snapshotHistoryHash")
+    )
+
+
+def _rwkv_state_cache_checkpoint_metadata_matches_manifest(
+    checkpoint_metadata: dict[str, object],
+    manifest_metadata: dict[str, object],
+    checkpoint_entry: _RwkvStateCacheCheckpointEntry,
+) -> bool:
+    return (
+        _rwkv_state_cache_snapshot_metadata_matches_manifest(
+            checkpoint_metadata,
+            manifest_metadata,
+        )
+        and _int_value(checkpoint_metadata.get("lastReviewId"))
+        == checkpoint_entry["lastReviewId"]
+        and _int_value(checkpoint_metadata.get("reviewCount"))
+        == checkpoint_entry["reviewCount"]
+        and checkpoint_metadata.get("historyHash") == checkpoint_entry["historyHash"]
+    )
+
+
+def _rwkv_state_cache_snapshot_metadata_matches_manifest(
+    snapshot_metadata: dict[str, object],
+    manifest_metadata: dict[str, object],
+) -> bool:
+    return (
         snapshot_metadata.get("version") == _RWKV_STATE_CACHE_VERSION
         and snapshot_metadata.get("presetReplaySemantics")
         == manifest_metadata.get("presetReplaySemantics")
@@ -10017,7 +10925,7 @@ def _rwkv_state_cache_metadata_matches_manifest(
         and snapshot_metadata.get("model") == manifest_metadata.get("model")
         and snapshot_metadata.get("dynamicPresetReplay")
         == manifest_metadata.get("dynamicPresetReplay")
-        and _int_value(snapshot_metadata.get("lastReviewId")) == snapshot_review_id
+        and snapshot_metadata.get("replayKey") == manifest_metadata.get("replayKey")
     )
 
 
@@ -10055,6 +10963,8 @@ def _historical_rwkv_review_inputs(
     previous_review_id_by_card: dict[int, int] | None = None,
     previous_interval_days_by_card: dict[int, int] | None = None,
     review_count_by_card: dict[int, int] | None = None,
+    previous_history_hash: str | None = None,
+    previous_replay_key: str | None = None,
     first_review_elapsed_source: RwkvFirstReviewElapsedSource = RwkvFirstReviewElapsedSource.DECK_CONFIG,
 ) -> RwkvHistoricalReviewInputs:
     start = time.monotonic()
@@ -10062,6 +10972,21 @@ def _historical_rwkv_review_inputs(
     previous_ids = dict(previous_review_id_by_card or {})
     previous_intervals = dict(previous_interval_days_by_card or {})
     review_counts = dict(review_count_by_card or {})
+    replay_key = _rwkv_replay_semantics_key(
+        reviewer,
+        first_review_elapsed_source=first_review_elapsed_source,
+    )
+    if previous_replay_key and previous_replay_key != replay_key:
+        raise ValueError("RWKV replay semantics changed during incremental replay")
+    if previous_history_hash is not None and not _rwkv_history_hash_is_valid(
+        previous_history_hash
+    ):
+        raise ValueError("invalid previous RWKV history identity")
+    history_hash = (
+        previous_history_hash
+        if previous_history_hash is not None
+        else _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    )
 
     have_previous_state = all(
         value is not None
@@ -10097,6 +11022,8 @@ def _historical_rwkv_review_inputs(
                 last_review_id=after_review_id,
                 review_count=review_count,
                 deck_id=requested_deck_id,
+                history_hash=history_hash,
+                replay_key=replay_key,
             )
 
     timing = _timing_today(reviewer)
@@ -10110,8 +11037,10 @@ def _historical_rwkv_review_inputs(
             previous_interval_days_by_card=previous_intervals,
             review_count_by_card=review_counts,
             last_review_id=after_review_id or 0,
-            review_count=0,
+            review_count=sum(review_counts.values()),
             deck_id=requested_deck_id,
+            history_hash=history_hash,
+            replay_key=replay_key,
         )
 
     rows_start = time.monotonic()
@@ -10251,31 +11180,35 @@ def _historical_rwkv_review_inputs(
         last_review_id = max(last_review_id, review_id)
 
         state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
+        review_input = RwkvReviewInput(
+            identity=RwkvReviewIdentity(
+                card_id=card_id,
+                note_id=note_id,
+                deck_id=row_deck_id,
+                preset_id=preset_id,
+            ),
+            is_query=False,
+            ease=ease,
+            duration_millis=duration_millis,
+            card_type=historical_state,
+            card_queue=_historical_review_queue(review_kind),
+            card_due=None,
+            interval_days=interval_days,
+            ease_factor=ease_factor,
+            reps=None,
+            lapses=None,
+            day_offset=day_offset,
+            current_state_kind=state_kind,
+            current_normal_state_kind=normal_state_kind,
+            current_elapsed_days=elapsed_days,
+            current_elapsed_seconds=elapsed_seconds,
+        )
         review_ids.append(review_id)
-        reviews.append(
-            RwkvReviewInput(
-                identity=RwkvReviewIdentity(
-                    card_id=card_id,
-                    note_id=note_id,
-                    deck_id=row_deck_id,
-                    preset_id=preset_id,
-                ),
-                is_query=False,
-                ease=ease,
-                duration_millis=duration_millis,
-                card_type=historical_state,
-                card_queue=_historical_review_queue(review_kind),
-                card_due=None,
-                interval_days=interval_days,
-                ease_factor=ease_factor,
-                reps=None,
-                lapses=None,
-                day_offset=day_offset,
-                current_state_kind=state_kind,
-                current_normal_state_kind=normal_state_kind,
-                current_elapsed_days=elapsed_days,
-                current_elapsed_seconds=elapsed_seconds,
-            )
+        reviews.append(review_input)
+        history_hash = _rwkv_history_hash_after_review(
+            history_hash,
+            review_id,
+            review_input,
         )
         if row_index == len(rows) or row_index % prepare_report_every == 0:
             _report_rwkv_review_input_prepare_progress(
@@ -10321,6 +11254,8 @@ def _historical_rwkv_review_inputs(
         last_review_id=last_review_id,
         review_count=review_count,
         deck_id=requested_deck_id,
+        history_hash=history_hash,
+        replay_key=replay_key,
     )
 
 
@@ -10545,14 +11480,15 @@ def _historical_rwkv_review_rows(
 
     after_clause = "and r.id > ?" if after_review_id is not None else ""
     deck_ids = _deck_tree_ids(reviewer, deck_id)
-    deck_clause = f"and c.did in {ids2str(deck_ids)}" if deck_ids else ""
+    effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
+    deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
     sql = f"""
 select
   r.id,
   r.cid,
   c.nid,
-  c.did,
+  {effective_deck_sql},
   r.ease,
   r.time,
   r.type,
@@ -10598,7 +11534,8 @@ def _historical_rwkv_review_count_through(
         return 0
 
     deck_ids = _deck_tree_ids(reviewer, deck_id)
-    deck_clause = f"and c.did in {ids2str(deck_ids)}" if deck_ids else ""
+    effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
+    deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
     value = scalar(
         f"""
 with eligible as (
@@ -10801,6 +11738,71 @@ def _rwkv_first_review_elapsed_config_key(
         )
 
     return sorted(key, key=lambda item: str(item[0]))
+
+
+def _rwkv_preset_routing_config_key(
+    reviewer: object,
+) -> list[list[object]]:
+    col = _collection(reviewer)
+    decks = getattr(col, "decks", None)
+    all_names_and_ids = getattr(decks, "all_names_and_ids", None)
+    if not callable(all_names_and_ids):
+        return []
+
+    try:
+        raw_decks = all_names_and_ids()
+    except Exception:
+        logger.debug("failed to read deck routing for RWKV replay identity")
+        return []
+
+    routing: list[list[object]] = []
+    for raw_deck in raw_decks:
+        raw_deck_id = (
+            raw_deck.get("id")
+            if isinstance(raw_deck, dict)
+            else getattr(raw_deck, "id", None)
+        )
+        if not isinstance(raw_deck_id, int) or isinstance(raw_deck_id, bool):
+            continue
+        config = _deck_config_for_deck_id(reviewer, raw_deck_id)
+        config_id = config.get("id") if isinstance(config, dict) else None
+        routing.append(
+            [
+                raw_deck_id,
+                config_id if isinstance(config_id, int) else None,
+            ]
+        )
+
+    return sorted(routing, key=lambda item: cast(int, item[0]))
+
+
+def _rwkv_replay_semantics_key(
+    reviewer: object,
+    *,
+    first_review_elapsed_source: RwkvFirstReviewElapsedSource,
+) -> str:
+    dynamic_preset_replay = _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
+    payload: dict[str, object] = {
+        "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
+        "firstReviewElapsedSource": first_review_elapsed_source.value,
+        "firstReviewElapsedConfig": (
+            _rwkv_first_review_elapsed_config_key(reviewer)
+            if first_review_elapsed_source == RwkvFirstReviewElapsedSource.DECK_CONFIG
+            else []
+        ),
+        "dynamicPresetReplay": dynamic_preset_replay,
+        "presetRouting": _rwkv_preset_routing_config_key(reviewer),
+        "presetOverlay": (
+            _fsrs_preset_overlay_config(reviewer) if dynamic_preset_replay else None
+        ),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
@@ -14268,6 +15270,11 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
             target_retention,
             target_retention,
         ),
+        enforce_grade_order=_rwkv_backend_bool(
+            row,
+            "enforce_grade_order",
+            True,
+        ),
     )
 
 
@@ -14321,6 +15328,11 @@ def _rwkv_review_input_from_backend_proto_row(
             target_retention,
             target_retention,
         ),
+        enforce_grade_order=_rwkv_backend_bool(
+            row,
+            "enforce_grade_order",
+            True,
+        ),
     )
 
 
@@ -14341,6 +15353,18 @@ def _rwkv_backend_row_batch_size(row: object) -> int:
 def _rwkv_backend_probability(row: object, name: str, default: float) -> float:
     value = getattr(row, name, None)
     return cast(float, value) if _valid_probability(value) else default
+
+
+def _rwkv_backend_bool(row: object, name: str, default: bool) -> bool:
+    has_field = getattr(row, "HasField", None)
+    if callable(has_field):
+        try:
+            if not has_field(name):
+                return default
+        except ValueError:
+            pass
+    value = getattr(row, name, None)
+    return value if isinstance(value, bool) else default
 
 
 def _rwkv_backend_uint(row: object, name: str) -> int:
@@ -15399,7 +16423,8 @@ def _revlog_intervening_reviews_by_card_id(
         return {}
 
     deck_ids = _deck_tree_ids(reviewer, deck_id)
-    deck_clause = f"and c.did in {ids2str(deck_ids)}" if deck_ids else ""
+    effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
+    deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
     try:
         rows = all_rows(
             f"""

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import math
 import struct
 import sys
 import threading
@@ -28,6 +29,7 @@ from aqt.rwkv_scheduler import (
     RwkvReviewPrediction,
     RwkvReviewPredictionRequest,
     RwkvReviewTransition,
+    RwkvStateCacheSnapshotCallback,
     RwkvStatefulReviewerBackend,
     RwkvWarmUpProgress,
     RwkvWarmUpProgressCallback,
@@ -419,8 +421,13 @@ class _RustRwkvRuntime:
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
+        snapshot_after_reviews: Sequence[int] = (),
+        snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
     ) -> RwkvBackendCacheSnapshot:
         total = len(reviews)
+        snapshot_endpoints = sorted(
+            {endpoint for endpoint in snapshot_after_reviews if 0 < endpoint < total}
+        )
         record_predictions = prediction_recorder is not None and review_ids is not None
         backend_chunk_size = _rust_warmup_chunk_size(
             total,
@@ -428,11 +435,15 @@ class _RustRwkvRuntime:
         )
         _report_warmup_progress(progress, processed=0, total=total)
         processed = 0
+        endpoint_index = 0
         warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
 
         with self._locked_process():
             while processed < total:
-                chunk = reviews[processed : processed + backend_chunk_size]
+                chunk_end = min(processed + backend_chunk_size, total)
+                if endpoint_index < len(snapshot_endpoints):
+                    chunk_end = min(chunk_end, snapshot_endpoints[endpoint_index])
+                chunk = reviews[processed:chunk_end]
                 if callable(warm_up_packed):
                     predictions = warm_up_packed(
                         _packed_warm_up_reviews(chunk),
@@ -457,15 +468,29 @@ class _RustRwkvRuntime:
 
                 processed += len(chunk)
                 _report_warmup_progress(progress, processed=processed, total=total)
+                if (
+                    endpoint_index < len(snapshot_endpoints)
+                    and processed == snapshot_endpoints[endpoint_index]
+                ):
+                    if snapshot_recorder is not None:
+                        snapshot_recorder(
+                            processed,
+                            self._warm_up_snapshot_locked(),
+                        )
+                    endpoint_index += 1
 
-            (
-                card_states,
-                note_states,
-                deck_states,
-                preset_states,
-                global_state,
-                runtime_state,
-            ) = self._process.warm_up_snapshot()
+            snapshot = self._warm_up_snapshot_locked()
+        return snapshot
+
+    def _warm_up_snapshot_locked(self) -> RwkvBackendCacheSnapshot:
+        (
+            card_states,
+            note_states,
+            deck_states,
+            preset_states,
+            global_state,
+            runtime_state,
+        ) = self._process.warm_up_snapshot()
         return RwkvBackendCacheSnapshot(
             card_states=dict(card_states),
             note_states=dict(note_states),
@@ -1321,14 +1346,79 @@ def _load_srs_benchmark_process(
     from rwkv.run_as_rnn import RNNProcess  # type: ignore[import-not-found]
 
     torch_dtype = _torch_dtype(torch, dtype)
+    process = RNNProcess(
+        path=model_path,
+        device=torch.device(device),
+        dtype=torch_dtype,
+    )
+    process.rnn.eval()
     return (
-        RNNProcess(
-            path=model_path,
-            device=torch.device(device),
-            dtype=torch_dtype,
-        ),
+        _SrsBenchmarkProcessAdapter(process, torch),
         lambda row: pd.Series(row, dtype="float64"),
     )
+
+
+class _SrsBenchmarkProcessAdapter:
+    """Keep the optional upstream runner within Anki's inference contract."""
+
+    def __init__(self, process: object, torch: Any) -> None:
+        self._process: Any = process
+        self._torch = torch
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._process, name)
+
+    def predict_func(self, curve: tuple[Any, Any], elapsed_seconds: int) -> Any:
+        elapsed_seconds_tensor = self._torch.tensor(
+            elapsed_seconds,
+            device=self._process.device,
+        ).view(1, 1)
+        out_ahead_logits, out_w = curve
+        curve_probs_raw = self._process.rnn.forgetting_curve(
+            out_w, elapsed_seconds_tensor
+        )
+        curve_logits_raw = self._torch.log(curve_probs_raw / (1 - curve_probs_raw))
+        ahead_logit_residual = _safe_srs_benchmark_interp(
+            self._torch,
+            self._process.rnn,
+            out_ahead_logits,
+            elapsed_seconds_tensor,
+        )
+        return self._torch.sigmoid(curve_logits_raw + ahead_logit_residual)
+
+
+def _safe_srs_benchmark_interp(
+    torch: Any,
+    rnn: Any,
+    out_ahead_logits: Any,
+    elapsed_seconds: Any,
+) -> Any:
+    elapsed_seconds = torch.clamp(elapsed_seconds.contiguous(), min=1)
+    point_space_raw = torch.exp(
+        torch.linspace(
+            0,
+            rnn.point_spread,
+            rnn.num_points,
+            device=out_ahead_logits.device,
+        )
+    )
+    point_space = 0.5 + (point_space_raw - 1) * (
+        math.e ** (rnn.max_e - rnn.point_spread)
+    )
+    # The upstream interpolation indexes past this grid for Anki's 36,500-day
+    # maximum. Clamp only the ahead residual; the forgetting curve still uses
+    # the actual elapsed time.
+    interpolation_elapsed_seconds = torch.minimum(elapsed_seconds, point_space[-1])
+    right_idx = torch.searchsorted(point_space, interpolation_elapsed_seconds)
+    right_idx = torch.clamp(right_idx, min=1, max=rnn.num_points - 1)
+    left_idx = right_idx - 1
+    xl, xr = point_space[left_idx], point_space[right_idx]
+    yl = torch.gather(out_ahead_logits, dim=-1, index=left_idx)
+    yr = torch.gather(out_ahead_logits, dim=-1, index=right_idx)
+    result = 1e-5 + (1 - 2 * 1e-5) * (
+        yl + (yr - yl) * (interpolation_elapsed_seconds - xl) / (xr - xl)
+    )
+    return result.squeeze(-1)
 
 
 def _torch_dtype(torch: Any, dtype: str) -> Any:

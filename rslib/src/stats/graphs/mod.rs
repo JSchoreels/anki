@@ -41,7 +41,11 @@ impl Collection {
         search: &str,
         days: u32,
     ) -> Result<anki_proto::stats::GraphsResponse> {
-        let guard = self.search_cards_into_table(search, SortMode::NoOrder)?;
+        let guard = self.search_cards_into_table_with_stats_search(
+            search,
+            SortMode::NoOrder,
+            Some(search),
+        )?;
         let all = search.trim().is_empty();
         guard.col.graph_data(search, all, days)
     }

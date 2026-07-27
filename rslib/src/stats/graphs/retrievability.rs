@@ -287,4 +287,49 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn retrievability_graph_filters_with_matching_rwkv_search_scores() -> Result<()> {
+        let mut col = Collection::new();
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+        let mut card_ids = col.search_cards("", SortMode::NoOrder)?;
+        card_ids.sort();
+
+        let timing = col.timing_today()?;
+        for card_id in &card_ids {
+            let mut card = col.storage.get_card(*card_id)?.unwrap();
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 42.0,
+                stability_internal: 42.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now);
+            col.storage.update_card(&card)?;
+        }
+
+        let search = "prop:rwkv:r<0.5";
+        col.set_rwkv_stats_graph_scores(
+            search.into(),
+            HashMap::from([(card_ids[0], 0.25), (card_ids[1], 0.75)]),
+        )?;
+        col.set_rwkv_stats_graph_scores(
+            "deck:other".into(),
+            HashMap::from([(card_ids[0], 0.75), (card_ids[1], 0.25)]),
+        )?;
+        col.set_rwkv_card_info_score(card_ids[0], Some(0.75))?;
+        col.set_rwkv_card_info_score(card_ids[1], Some(0.25))?;
+
+        let graphs = col.graph_data_for_search(search, 365)?;
+        let rwkv = graphs.retrievability.unwrap().rwkv.unwrap();
+        assert_eq!(format!("{:.1}", rwkv.average), "25.0");
+        assert_eq!(rwkv.retrievability.get(&25), Some(&1));
+        assert_eq!(rwkv.retrievability.get(&75), None);
+        Ok(())
+    }
 }

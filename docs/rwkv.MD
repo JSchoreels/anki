@@ -137,13 +137,34 @@ live profile database. Before using a repaired copy, remove that profile's
 desktop-local `rwkv-state-cache` directory so the recurrent state is rebuilt.
 
 The local state cache is stored as a binary base snapshot plus an append-only
-delta log. A full cache build writes `snapshot-v1.bin` and resets
-`deltas-v1.log`. Later startup loads restore the snapshot, replay any delta-log
+delta log. A full cache build writes `snapshot-v1.bin`, resets `deltas-v1.log`,
+and retains historical checkpoint snapshots at exponentially increasing ages
+from the latest retained review: approximately 1 day, 2 days, 4 days, 8 days,
+and so on. Later startup loads restore the snapshot, replay any delta-log
 reviews, then replay newer revlogs from the collection. Newer revlogs are
 appended to the delta log instead of rewriting the full snapshot. The manifest
-in `state-v1.meta.json` records both the base snapshot revlog id and the latest
-effective revlog id. Rebuilding the RWKV state cache from deck options writes a
-fresh full snapshot and compacts the delta log.
+in `state-v1.meta.json` records the base snapshot revlog id, the latest
+effective revlog id, and the historical checkpoints. It also records a chained
+SHA-256 identity of the canonical replay inputs plus a replay-semantics identity
+covering first-review elapsed-time settings, deck-to-preset routing, and the
+dynamic preset overlay. Filtered cards use their original deck as the effective
+historical deck, matching normal review after they leave the filtered deck.
+
+After collection sync, Anki reconciles resident RWKV state before refreshing
+study queues. If synchronized reviews only extend the cached history, they are
+replayed incrementally. If a synchronized review belongs in the middle of
+history, Anki validates snapshots from newest to oldest, restores the newest
+checkpoint whose canonical review prefix and replay semantics still match the
+merged collection, and replays the suffix in chronological order. The refreshed
+final snapshot is then compacted, and a newly selected bounded set of valid
+exponential checkpoints is retained. If no checkpoint predates the changed
+history, the state is rebuilt from the complete retained history. A failed
+post-sync rebuild may restore the prior in-memory snapshot for internal
+consistency, but that snapshot is left unready so it must be validated again
+before use.
+Rebuilding the RWKV state cache from deck options always writes a fresh full
+snapshot and checkpoint set. Cache format version 11 introduces these
+checkpoints, so older local state caches rebuild once after upgrading.
 
 ## Queue Scoring
 
@@ -269,13 +290,20 @@ current screen's study queues and due counts.
 ## Stats And Search
 
 When the desktop stats page requests graph data, Anki may install transient
-per-card RWKV retrievability scores for cards in the stats search. Current-day
-RWKV scores are stored in one collection cache. Stats retrievability graphs and
-Browser searches that use `prop:r` read the same active score from that cache.
-If more than one consumer scope has refreshed the same card, the card-specific
-Card Info score takes precedence, then the active review-queue score, then the
-broader stats graph score. Cards without a current RWKV score continue to use
-exact FSRS retrievability.
+per-card RWKV retrievability scores for cards in the stats search. Recent
+current-day Stats snapshots are keyed by their exact search text so concurrent
+graphs cannot replace one another before rendering. A Stats graph and its
+`prop:r` or `prop:rwkv:r` filter use only the matching Stats snapshot; Card Info
+and review-queue scores cannot change which cards that graph selects. Cards
+without a matching Stats RWKV score continue to use exact FSRS retrievability
+where the hybrid metric permits it.
+
+Browser-initiated searches outside the Stats graph use the shared active cache.
+If more than one consumer has refreshed the same card, the card-specific Card
+Info score takes precedence, then the active review-queue score, then the latest
+Stats graph score, and finally a background deck-count score. Cards without a
+current active RWKV score continue to use exact FSRS retrievability for the
+hybrid metric.
 
 Card Info refreshes its score through the RWKV review-candidate prediction path
 each time it renders instead of reusing a score installed by Card Info, review
@@ -319,7 +347,10 @@ daily aggregates while running, so the add-on can extend its RWKV graph from
 oldest to newest without mutating the active reviewer runtime. The add-on owns
 the compact per-card UInt16 cache in the profile-local retrievability sidecar;
 Anki returns the completed packed series and a producer identity covering the
-model, history checkpoint, scheduler day, and relevant RWKV feature settings.
+model, scheduler day, relevant RWKV feature settings, replay semantics, and the
+chained canonical-history digest. When a ready state cache matches the live
+retained-history sentinel, the identity reuses its already validated digest;
+otherwise Anki rebuilds the canonical history before accepting a cached result.
 When that producer configuration is unchanged and review history has only been
 appended, Anki can reuse the completed cache through the day before the first
 new answer. It reconstructs recurrent state by replaying answers through the

@@ -1271,11 +1271,15 @@ title="{}" {}>{}</button>""".format(
         "Caller should ensure auth available."
 
         def on_collection_sync_finished() -> None:
-            self.col.models._clear_cache()
-            gui_hooks.sync_did_finish()
-            self.reset()
+            from aqt import rwkv_scheduler
 
-            after_sync()
+            def finish_sync() -> None:
+                self.col.models._clear_cache()
+                gui_hooks.sync_did_finish()
+                self.reset()
+                after_sync()
+
+            rwkv_scheduler.refresh_rwkv_state_after_sync(self, finish_sync)
 
         gui_hooks.sync_will_start()
         sync_collection(self, on_done=on_collection_sync_finished)

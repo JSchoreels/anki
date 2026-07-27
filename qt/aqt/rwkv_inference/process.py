@@ -151,7 +151,8 @@ class RwkvInferenceProcess:
         self, curve: tuple[torch.Tensor, torch.Tensor], elapsed_seconds: int
     ) -> torch.Tensor:
         elapsed_seconds_tensor = torch.tensor(
-            elapsed_seconds, device=self.device, dtype=self.dtype
+            elapsed_seconds,
+            device=self.device,
         ).view(1, 1)
         out_ahead_logits, out_w = curve
         curve_probs_raw = self.rnn.forgetting_curve(out_w, elapsed_seconds_tensor)
@@ -204,13 +205,13 @@ class RwkvInferenceProcess:
         day_offset = torch.full(
             (1,),
             _float_value(row, "day_offset"),
-            dtype=self.dtype,
+            dtype=torch.float32,
             device=self.device,
         )
         day_offset_first = torch.full(
             (1,),
             _float_value(row, "day_offset_first"),
-            dtype=self.dtype,
+            dtype=torch.float32,
             device=self.device,
         )
         gather = [features]
@@ -222,7 +223,7 @@ class RwkvInferenceProcess:
                     torch.cos(f * (day_offset % period)),
                 ),
                 dim=-1,
-            )
+            ).to(self.dtype)
             gather.append(encodings)
             encodings_first = torch.cat(
                 (
@@ -230,7 +231,7 @@ class RwkvInferenceProcess:
                     torch.cos(f * (day_offset_first % period)),
                 ),
                 dim=-1,
-            )
+            ).to(self.dtype)
             gather.append(encodings_first)
 
         return torch.cat(gather, dim=-1)

@@ -44,7 +44,7 @@ impl Collection {
             last_review_time
         };
 
-        let seconds_elapsed = timing.now.elapsed_secs_since(last_review_time) as u32;
+        let seconds_elapsed = timing.now.elapsed_secs_since_clamped(last_review_time);
 
         let original_deck = if card.original_deck_id == DeckId(0) {
             deck.clone()
