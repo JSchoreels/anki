@@ -178,7 +178,7 @@ struct RwkvRetrievabilityScore {
 #[derive(Debug, Clone)]
 struct RwkvStatsGraphScores {
     search: String,
-    scores: HashMap<CardId, f32>,
+    scores: HashMap<CardId, RwkvStatsGraphScoreEntry>,
 }
 
 // Different stats filters can be prepared concurrently. Keep a small set of
@@ -194,7 +194,7 @@ struct RwkvReviewQueueScores {
 #[derive(Clone, Copy)]
 enum RwkvRetrievabilityScoreSource<'a> {
     DeckCounts(&'a HashMap<DeckId, HashMap<CardId, RwkvReviewQueueScoreEntry>>),
-    Stats(&'a HashMap<CardId, f32>),
+    Stats(&'a HashMap<CardId, RwkvStatsGraphScoreEntry>),
     ReviewQueue(&'a HashMap<CardId, RwkvReviewQueueScoreEntry>),
     CardInfo(&'a HashMap<CardId, RwkvRetrievabilityScore>),
 }
@@ -204,6 +204,14 @@ pub(crate) struct RwkvReviewQueueScoreEntry {
     pub(crate) retrievability: f32,
     pub(crate) intervening_reviews: Option<u32>,
     pub(crate) target_retention: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RwkvStatsGraphScoreEntry {
+    pub(crate) retrievability: f32,
+    pub(crate) intervening_reviews: Option<u32>,
+    pub(crate) target_retention: Option<f32>,
+    pub(crate) curve_due: bool,
 }
 
 impl RwkvReviewQueueScoreEntry {
@@ -253,10 +261,25 @@ impl RwkvRetrievabilityScores {
     }
 
     fn stats_graph_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
+        self.stats_graph_score_map(stats_search).map(|scores| {
+            scores
+                .iter()
+                .map(|(&card_id, score)| (card_id, score.retrievability))
+                .collect()
+        })
+    }
+
+    fn stats_graph_score_entries(
+        &self,
+        stats_search: Option<&str>,
+    ) -> Option<HashMap<CardId, RwkvStatsGraphScoreEntry>> {
         self.stats_graph_score_map(stats_search).cloned()
     }
 
-    fn stats_graph_score_map(&self, stats_search: Option<&str>) -> Option<&HashMap<CardId, f32>> {
+    fn stats_graph_score_map(
+        &self,
+        stats_search: Option<&str>,
+    ) -> Option<&HashMap<CardId, RwkvStatsGraphScoreEntry>> {
         match stats_search {
             Some(search) => self
                 .stats_graph_scores
@@ -300,7 +323,11 @@ impl RwkvRetrievabilityScores {
         (!scores.is_empty()).then_some(scores)
     }
 
-    fn set_stats_graph_scores(&mut self, search: String, scores: HashMap<CardId, f32>) {
+    fn set_stats_graph_scores(
+        &mut self,
+        search: String,
+        scores: HashMap<CardId, RwkvStatsGraphScoreEntry>,
+    ) {
         self.stats_graph_scores
             .retain(|entry| entry.search != search);
         self.stats_graph_scores
@@ -417,7 +444,7 @@ impl RwkvRetrievabilityScoreSource<'_> {
             Self::DeckCounts(scopes) => scopes
                 .values()
                 .find_map(|scores| scores.get(&card_id).map(|entry| entry.retrievability)),
-            Self::Stats(scores) => scores.get(&card_id).copied(),
+            Self::Stats(scores) => scores.get(&card_id).map(|entry| entry.retrievability),
             Self::ReviewQueue(scores) => scores.get(&card_id).map(|entry| entry.retrievability),
             Self::CardInfo(scores) => scores
                 .get(&card_id)
@@ -435,7 +462,11 @@ impl RwkvRetrievabilityScoreSource<'_> {
                 }));
             }
             Self::Stats(scores) => {
-                active_scores.extend(scores.iter().map(|(&card_id, &score)| (card_id, score)));
+                active_scores.extend(
+                    scores
+                        .iter()
+                        .map(|(&card_id, score)| (card_id, score.retrievability)),
+                );
             }
             Self::ReviewQueue(scores) => {
                 active_scores.extend(
@@ -785,10 +816,33 @@ impl Collection {
             .deck_count_scores = deck_count_scores;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_rwkv_stats_graph_scores(
         &mut self,
         search: String,
         scores: HashMap<CardId, f32>,
+    ) -> Result<()> {
+        let scores = scores
+            .into_iter()
+            .map(|(card_id, retrievability)| {
+                (
+                    card_id,
+                    RwkvStatsGraphScoreEntry {
+                        retrievability,
+                        intervening_reviews: None,
+                        target_retention: None,
+                        curve_due: false,
+                    },
+                )
+            })
+            .collect();
+        self.set_rwkv_stats_graph_score_entries(search, scores)
+    }
+
+    pub(crate) fn set_rwkv_stats_graph_score_entries(
+        &mut self,
+        search: String,
+        scores: HashMap<CardId, RwkvStatsGraphScoreEntry>,
     ) -> Result<()> {
         let days_elapsed = self.timing_today()?.days_elapsed;
         self.rwkv_retrievability_scores_mut(days_elapsed)
@@ -807,6 +861,18 @@ impl Collection {
             .as_ref()
             .filter(|scores| scores.days_elapsed == days_elapsed)
             .and_then(|scores| scores.stats_graph_scores(search))
+    }
+
+    pub(crate) fn rwkv_stats_graph_score_entries_for_search(
+        &self,
+        days_elapsed: u32,
+        search: Option<&str>,
+    ) -> Option<HashMap<CardId, RwkvStatsGraphScoreEntry>> {
+        self.state
+            .rwkv_retrievability_scores
+            .as_ref()
+            .filter(|scores| scores.days_elapsed == days_elapsed)
+            .and_then(|scores| scores.stats_graph_score_entries(search))
     }
 
     pub(crate) fn set_rwkv_card_info_score(
@@ -881,7 +947,17 @@ mod test {
             .collect();
         let stats_scores = [card_info_card, review_queue_card, stats_card]
             .into_iter()
-            .map(|card_id| (card_id, 0.2))
+            .map(|card_id| {
+                (
+                    card_id,
+                    RwkvStatsGraphScoreEntry {
+                        retrievability: 0.2,
+                        intervening_reviews: None,
+                        target_retention: None,
+                        curve_due: false,
+                    },
+                )
+            })
             .collect();
         let review_queue_scores = [card_info_card, review_queue_card]
             .into_iter()

@@ -783,13 +783,14 @@ def test_after_answering_refreshes_rwkv_queue_order_after_next_card(
 
     reviewer._after_answering(3)
 
-    assert calls == ["record", "next"]
+    assert calls == ["record", "intervening:123", "next"]
     assert reviewer._answeredIds == [123]
 
     reviewer._run_after_question_shown_callbacks()
 
     assert calls == [
         "record",
+        "intervening:123",
         "next",
         "collection",
         "build",
@@ -1190,7 +1191,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
 
     reviewer._after_answering(3)
 
-    assert calls == ["record:222:3", "next:333"]
+    assert calls == ["record:222:3", "intervening:222", "next:333"]
     assert reviewer._answeredIds == [111, 222]
     assert "<u>…</u>" in reviewer._remaining()
 
@@ -1198,6 +1199,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
 
     assert calls == [
         "record:222:3",
+        "intervening:222",
         "next:333",
         "collection",
         "build",

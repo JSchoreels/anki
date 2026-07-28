@@ -15,6 +15,7 @@ use super::parser::SearchNode;
 use super::parser::StateKind;
 use super::parser::TemplateKind;
 use super::ReturnItemType;
+use super::RWKV_DUE_TABLE;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::collection::Collection;
@@ -576,6 +577,16 @@ impl SqlWriter<'_> {
                 lrn = CardQueue::Learn as i8,
                 previewrepeat = CardQueue::PreviewRepeat as i8,
                 learncutoff = TimestampSecs::now().0 + (self.col.learn_ahead_secs() as i64),
+            ),
+            StateKind::RwkvDue => write!(
+                self.sql,
+                "exists (select 1 from {RWKV_DUE_TABLE} rd \
+                 where rd.cid = c.id and rd.kind = 0)"
+            ),
+            StateKind::RwkvCurveDue => write!(
+                self.sql,
+                "exists (select 1 from {RWKV_DUE_TABLE} rd \
+                 where rd.cid = c.id and rd.kind = 1)"
             ),
             StateKind::UserBuried => write!(self.sql, "c.queue = {}", CardQueue::UserBuried as i8),
             StateKind::SchedBuried => {

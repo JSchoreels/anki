@@ -155,6 +155,8 @@ pub enum StateKind {
     Review,
     Learning,
     Due,
+    RwkvDue,
+    RwkvCurveDue,
     Buried,
     UserBuried,
     SchedBuried,
@@ -729,6 +731,8 @@ fn parse_state(s: &str) -> ParseResult<'_, SearchNode> {
         "review" => Review,
         "learn" => Learning,
         "due" => Due,
+        "rwkv:due" => RwkvDue,
+        "rwkv-curve:due" => RwkvCurveDue,
         "buried" => Buried,
         "buried-manually" => UserBuried,
         "buried-sibling" => SchedBuried,
@@ -1116,6 +1120,14 @@ mod test {
             vec![Search(NoteIds("1237123712,2,3".into()))]
         );
         assert_eq!(parse("is:due")?, vec![Search(State(StateKind::Due))]);
+        assert_eq!(
+            parse("is:rwkv:due")?,
+            vec![Search(State(StateKind::RwkvDue))]
+        );
+        assert_eq!(
+            parse("is:rwkv-curve:due")?,
+            vec![Search(State(StateKind::RwkvCurveDue))]
+        );
         assert_eq!(parse("flag:3")?, vec![Search(Flag(3))]);
 
         assert_eq!(

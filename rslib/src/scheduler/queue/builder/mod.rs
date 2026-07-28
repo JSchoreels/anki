@@ -152,12 +152,15 @@ impl QueueBuilder {
                 decks.insert(0, parent);
             }
         }
-        let limits = LimitTreeMap::build(
+        let mut limits = LimitTreeMap::build(
             &decks,
             &config_map,
             timing.days_elapsed,
             new_cards_ignore_review_limit,
         );
+        for (original_deck_id, count) in col.storage.filtered_review_counts_by_original_deck()? {
+            limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+        }
         let sort_options = sort_options(&root_deck, &config_map);
         let rwkv_review_queue_scores = if sort_options.uses_rwkv_retrievability_scores() {
             if let Some(scores) = col.rwkv_review_queue_scores(root_deck.id, timing.days_elapsed) {
@@ -283,7 +286,8 @@ impl QueueBuilder {
                 } else {
                     require!(self.add_due_card(card), "current review card was buried");
                 }
-                self.limits.reserve_review(current_deck_id)?;
+                self.limits
+                    .reserve_review(current_deck_id, original_deck_id)?;
             }
             CardQueue::Suspended | CardQueue::SchedBuried | CardQueue::UserBuried => {
                 invalid_input!("current card is not eligible for the review queue")
@@ -1941,6 +1945,67 @@ mod test {
         )?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![cards[0].0, cards[1].0]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_minimum_counts_reviews_moved_to_filtered_decks() -> Result<()> {
+        let mut col = Collection::new();
+        let mut source = DeckAdder::new("Source").add(&mut col);
+        col.set_deck_rwkv_review_order_with_desired_retention(
+            &mut source,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.75,
+        );
+        col.set_deck_rwkv_minimum_reviews(source.id, 1);
+
+        let mut filtered = Deck::new_filtered();
+        filtered.name = NativeDeckName::from_native_str("Filtered");
+        col.add_or_update_deck(&mut filtered)?;
+
+        let timing = col.timing_today()?;
+        let moved = add_memory_state_card(
+            &mut col,
+            source.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        let mut moved_card = col.storage.get_card(moved)?.unwrap();
+        moved_card.original_deck_id = moved_card.deck_id;
+        moved_card.original_due = moved_card.due;
+        moved_card.deck_id = filtered.id;
+        moved_card.due = -100_000;
+        col.storage.update_card(&moved_card)?;
+
+        let pull_candidate = add_memory_state_card(
+            &mut col,
+            source.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_score_entries(
+            source.id,
+            HashMap::from([(
+                pull_candidate,
+                RwkvReviewQueueScoreEntry {
+                    retrievability: 0.90,
+                    intervening_reviews: None,
+                    target_retention: Some(0.75),
+                },
+            )]),
+        )?;
+
+        assert_eq!(
+            col.storage.filtered_review_counts_by_original_deck()?,
+            vec![(source.id, 1)]
+        );
+        assert!(col.queue_as_ids(source.id).is_empty());
         Ok(())
     }
 

@@ -153,7 +153,8 @@ impl QueueBuilder {
                     .limit_reached(card.current_deck_id, LimitKind::Review)?
                     && self.add_due_card(card)
                 {
-                    self.limits.reserve_review(card.current_deck_id)?;
+                    self.limits
+                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
                 }
             }
 
@@ -241,7 +242,8 @@ impl QueueBuilder {
                     .limit_reached(card.current_deck_id, LimitKind::Review)?
                 && self.add_due_card(card)
             {
-                self.limits.reserve_review(card.current_deck_id)?;
+                self.limits
+                    .reserve_review(card.current_deck_id, card.original_deck_id)?;
             }
         }
 
@@ -314,7 +316,8 @@ impl QueueBuilder {
                     .limit_reached(card.current_deck_id, LimitKind::Review)?
                     && self.add_due_card(card)
                 {
-                    self.limits.reserve_review(card.current_deck_id)?;
+                    self.limits
+                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
                 }
             }
         }
@@ -420,7 +423,8 @@ impl QueueBuilder {
                     .limit_reached(card.current_deck_id, LimitKind::Review)?
                     && self.add_due_card(card)
                 {
-                    self.limits.reserve_review(card.current_deck_id)?;
+                    self.limits
+                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
                 }
             }
         }
@@ -483,7 +487,8 @@ impl QueueBuilder {
                     .limit_reached(card.current_deck_id, LimitKind::Review)?
                     && self.add_due_card(card)
                 {
-                    self.limits.reserve_review(card.current_deck_id)?;
+                    self.limits
+                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
                 }
                 Ok(true)
             },
@@ -528,7 +533,10 @@ impl QueueBuilder {
                 self.r_sorted_non_new.push(candidate.card);
 
                 if candidate.counts_towards_review_limit {
-                    self.limits.reserve_review(candidate.card.current_deck_id)?;
+                    self.limits.reserve_review(
+                        candidate.card.current_deck_id,
+                        candidate.card.original_deck_id,
+                    )?;
                 }
             }
         }
@@ -628,7 +636,8 @@ impl QueueBuilder {
                     .limit_reached(card.current_deck_id, LimitKind::Review)?
                     && self.add_due_card(card)
                 {
-                    self.limits.reserve_review(card.current_deck_id)?;
+                    self.limits
+                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
                 }
                 Ok(true)
             },
@@ -678,7 +687,8 @@ impl QueueBuilder {
                 .limit_reached(card.current_deck_id, LimitKind::Review)?
                 && self.add_due_card(card)
             {
-                self.limits.reserve_review(card.current_deck_id)?;
+                self.limits
+                    .reserve_review(card.current_deck_id, card.original_deck_id)?;
             }
         }
         Ok(())

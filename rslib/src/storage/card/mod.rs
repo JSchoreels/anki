@@ -884,6 +884,22 @@ impl super::SqliteStorage {
             .collect()
     }
 
+    pub(crate) fn filtered_review_counts_by_original_deck(&self) -> Result<Vec<(DeckId, u32)>> {
+        self.db
+            .prepare_cached(
+                "select odid, count()
+                 from cards
+                 where odid > 0
+                   and queue in (?1, ?2)
+                 group by odid",
+            )?
+            .query_and_then(
+                params![CardQueue::Review as i8, CardQueue::DayLearn as i8],
+                |row| -> Result<_> { Ok((DeckId(row.get(0)?), row.get(1)?)) },
+            )?
+            .collect()
+    }
+
     pub(crate) fn congrats_info(&self, current: &Deck, today: u32) -> Result<CongratsInfo> {
         // NOTE: this line is obsolete in v3 as it's run on queue build, but kept to
         // prevent errors for v1/v2 users before they upgrade

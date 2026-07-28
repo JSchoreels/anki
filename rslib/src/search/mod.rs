@@ -33,6 +33,9 @@ use crate::card::Card;
 use crate::card::CardType;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
+use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
+use crate::scheduler::rwkv::rwkv_review_score_eligibility;
+use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -49,6 +52,7 @@ pub enum SortMode {
 }
 
 const EXACT_RETRIEVABILITY_TABLE: &str = "search_exact_retrievability";
+pub(super) const RWKV_DUE_TABLE: &str = "search_rwkv_due";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactFsrsSortMetric {
@@ -144,6 +148,7 @@ pub struct CardTableGuard<'a> {
     pub col: &'a mut Collection,
     pub cards: usize,
     cleanup_exact_retrievability: bool,
+    cleanup_rwkv_due: bool,
 }
 
 impl Drop for CardTableGuard<'_> {
@@ -156,12 +161,18 @@ impl Drop for CardTableGuard<'_> {
                 println!("{err:?}");
             }
         }
+        if self.cleanup_rwkv_due {
+            if let Err(err) = self.col.clear_rwkv_due_table() {
+                println!("{err:?}");
+            }
+        }
     }
 }
 
 pub struct NoteTableGuard<'a> {
     pub col: &'a mut Collection,
     pub notes: usize,
+    cleanup_rwkv_due: bool,
 }
 
 impl Drop for NoteTableGuard<'_> {
@@ -169,27 +180,48 @@ impl Drop for NoteTableGuard<'_> {
         if let Err(err) = self.col.storage.clear_searched_notes_table() {
             println!("{err:?}");
         }
+        if self.cleanup_rwkv_due {
+            if let Err(err) = self.col.clear_rwkv_due_table() {
+                println!("{err:?}");
+            }
+        }
     }
 }
 
 impl Collection {
-    fn with_exact_retrievability_table<R>(
+    fn with_search_auxiliary_tables<R>(
         &mut self,
-        enabled: bool,
+        exact_retrievability: bool,
+        rwkv_due: bool,
         stats_search: Option<&str>,
         op: impl FnOnce(&mut Self) -> Result<R>,
     ) -> Result<R> {
-        if !enabled {
-            return op(self);
+        if exact_retrievability {
+            self.setup_exact_retrievability_table(stats_search)?;
         }
-        self.setup_exact_retrievability_table(stats_search)?;
+        if rwkv_due {
+            if let Err(err) = self.setup_rwkv_due_table(stats_search) {
+                if exact_retrievability {
+                    let _ = self.clear_exact_retrievability_table();
+                }
+                return Err(err);
+            }
+        }
+
         let result = op(self);
-        let cleanup = self.clear_exact_retrievability_table();
-        match (result, cleanup) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(_), Err(err)) => Err(err),
-            (Err(err), Err(_cleanup_err)) => Err(err),
+        let rwkv_due_cleanup = rwkv_due.then(|| self.clear_rwkv_due_table());
+        let exact_cleanup = exact_retrievability.then(|| self.clear_exact_retrievability_table());
+        match result {
+            Err(err) => Err(err),
+            Ok(value) => {
+                if let Some(cleanup) = rwkv_due_cleanup {
+                    cleanup?;
+                }
+                if let Some(cleanup) = exact_cleanup {
+                    cleanup?;
+                }
+                Ok(value)
+            }
         }
     }
 
@@ -308,6 +340,81 @@ impl Collection {
         Ok(())
     }
 
+    fn setup_rwkv_due_table(&mut self, stats_search: Option<&str>) -> Result<()> {
+        let start = Instant::now();
+        self.storage.db.execute_batch(&format!(
+            "drop table if exists {RWKV_DUE_TABLE};\
+             create temporary table {RWKV_DUE_TABLE}(\
+                cid integer not null, kind integer not null, primary key(cid, kind)) without rowid"
+        ))?;
+
+        let timing = self.timing_today()?;
+        let Some(scores) =
+            self.rwkv_stats_graph_score_entries_for_search(timing.days_elapsed, stats_search)
+        else {
+            return Ok(());
+        };
+        let card_ids: Vec<_> = scores.keys().copied().collect();
+        let metadata = rwkv_review_candidate_metadata(self, &card_ids, timing)?;
+        let decks = self.storage.get_decks_map()?;
+        let configs = self.storage.get_deck_config_map()?;
+        let mut rows = Vec::new();
+
+        for (card_id, score) in scores {
+            let Some(metadata) = metadata.get(&card_id) else {
+                continue;
+            };
+            let Some(config) = decks
+                .get(&metadata.source_deck_id)
+                .and_then(|deck| deck.config_id())
+                .and_then(|config_id| configs.get(&config_id))
+            else {
+                continue;
+            };
+
+            if config.inner.rwkv_review_instant_order_enabled
+                && matches!(
+                    rwkv_review_score_eligibility(
+                        score.retrievability,
+                        metadata,
+                        config.inner.rwkv_review_allow_same_day_review,
+                        config.inner.rwkv_review_min_intervening_reviews,
+                        config.inner.rwkv_review_min_elapsed_secs,
+                        score.intervening_reviews,
+                        score.target_retention,
+                    ),
+                    RwkvReviewScoreEligibility::Eligible
+                )
+            {
+                rows.push((card_id, 0));
+            }
+            if config.inner.rwkv_review_enabled && score.curve_due {
+                rows.push((card_id, 1));
+            }
+        }
+
+        let mut insert = self.storage.db.prepare_cached(&format!(
+            "insert into {RWKV_DUE_TABLE}(cid, kind) values (?, ?)"
+        ))?;
+        for (card_id, kind) in &rows {
+            insert.execute(rusqlite::params![card_id.0, kind])?;
+        }
+        tracing::debug!(
+            scores = card_ids.len(),
+            due_rows = rows.len(),
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "built RWKV due search table"
+        );
+        Ok(())
+    }
+
+    fn clear_rwkv_due_table(&self) -> Result<()> {
+        self.storage
+            .db
+            .execute(&format!("drop table if exists {RWKV_DUE_TABLE}"), [])?;
+        Ok(())
+    }
+
     pub fn search_cards<N>(&mut self, search: N, mode: SortMode) -> Result<Vec<CardId>>
     where
         N: TryIntoSearch,
@@ -344,15 +451,21 @@ impl Collection {
         stats_search: Option<&str>,
     ) -> Result<Vec<CardId>> {
         let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(top_node);
-        self.with_exact_retrievability_table(use_exact_fsrs_metrics, stats_search, |col| {
-            let writer = SqlWriter::new(col, ReturnItemType::Cards);
-            let (sql, args) = writer.build_query(top_node, required_table)?;
-            let mut stmt = col.storage.db.prepare(&sql)?;
-            let ids: Vec<_> = stmt
-                .query_map(params_from_iter(args.iter()), |row| row.get(0))?
-                .collect::<std::result::Result<_, _>>()?;
-            Ok(ids)
-        })
+        let use_rwkv_due = has_rwkv_due_state(top_node);
+        self.with_search_auxiliary_tables(
+            use_exact_fsrs_metrics,
+            use_rwkv_due,
+            stats_search,
+            |col| {
+                let writer = SqlWriter::new(col, ReturnItemType::Cards);
+                let (sql, args) = writer.build_query(top_node, required_table)?;
+                let mut stmt = col.storage.db.prepare(&sql)?;
+                let ids: Vec<_> = stmt
+                    .query_map(params_from_iter(args.iter()), |row| row.get(0))?
+                    .collect::<std::result::Result<_, _>>()?;
+                Ok(ids)
+            },
+        )
     }
 
     fn elapsed_seconds_since_last_review_for_card(
@@ -468,7 +581,8 @@ impl Collection {
         let item_type = T::as_return_item_type();
         let top_node = search.try_into_search()?;
         let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
-        self.with_exact_retrievability_table(use_exact_fsrs_metrics, None, |col| {
+        let use_rwkv_due = has_rwkv_due_state(&top_node);
+        self.with_search_auxiliary_tables(use_exact_fsrs_metrics, use_rwkv_due, None, |col| {
             let writer = SqlWriter::new(col, item_type);
             let (mut sql, args) = writer.build_query(&top_node, mode.required_table())?;
             col.add_order(&mut sql, item_type, mode)?;
@@ -533,13 +647,23 @@ impl Collection {
                 cards: ids.len(),
                 col: self,
                 cleanup_exact_retrievability: false,
+                cleanup_rwkv_due: false,
             });
         }
         let top_node = search.try_into_search()?;
         let want_order = mode != SortMode::NoOrder;
         let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
+        let use_rwkv_due = has_rwkv_due_state(&top_node);
         if use_exact_fsrs_metrics {
             self.setup_exact_retrievability_table(stats_search)?;
+        }
+        if use_rwkv_due {
+            if let Err(err) = self.setup_rwkv_due_table(stats_search) {
+                if use_exact_fsrs_metrics {
+                    let _ = self.clear_exact_retrievability_table();
+                }
+                return Err(err);
+            }
         }
 
         let result = (|| {
@@ -569,10 +693,14 @@ impl Collection {
                 cards,
                 col: self,
                 cleanup_exact_retrievability: use_exact_fsrs_metrics,
+                cleanup_rwkv_due: use_rwkv_due,
             }),
             Err(err) => {
                 if use_exact_fsrs_metrics {
                     let _ = self.clear_exact_retrievability_table();
+                }
+                if use_rwkv_due {
+                    let _ = self.clear_rwkv_due_table();
                 }
                 Err(err)
             }
@@ -585,18 +713,21 @@ impl Collection {
         use_first_grade_table: bool,
     ) -> Result<Vec<CardId>> {
         let top_node = search.try_into_search()?;
-        let mut writer = SqlWriter::new(self, ReturnItemType::Cards)
-            .with_card_id_filter_table("fsrs_preset_search_cids");
-        if use_first_grade_table {
-            writer = writer.with_first_grade_table("fsrs_preset_first_grades");
-        }
-        let (sql, args) = writer.build_query(&top_node, RequiredTable::Cards)?;
-        let mut stmt = self.storage.db.prepare(&sql)?;
-        let ids = stmt
-            .query_map(params_from_iter(args.iter()), |row| row.get(0))?
-            .collect::<std::result::Result<_, _>>()
-            .map_err(AnkiError::from)?;
-        Ok(ids)
+        let use_rwkv_due = has_rwkv_due_state(&top_node);
+        self.with_search_auxiliary_tables(false, use_rwkv_due, None, |col| {
+            let mut writer = SqlWriter::new(col, ReturnItemType::Cards)
+                .with_card_id_filter_table("fsrs_preset_search_cids");
+            if use_first_grade_table {
+                writer = writer.with_first_grade_table("fsrs_preset_first_grades");
+            }
+            let (sql, args) = writer.build_query(&top_node, RequiredTable::Cards)?;
+            let mut stmt = col.storage.db.prepare(&sql)?;
+            let ids = stmt
+                .query_map(params_from_iter(args.iter()), |row| row.get(0))?
+                .collect::<std::result::Result<_, _>>()
+                .map_err(AnkiError::from)?;
+            Ok(ids)
+        })
     }
 
     pub(crate) fn all_cards_for_search(&mut self, search: impl TryIntoSearch) -> Result<Vec<Card>> {
@@ -649,21 +780,51 @@ impl Collection {
         search: impl TryIntoSearch,
     ) -> Result<NoteTableGuard<'_>> {
         let top_node = search.try_into_search()?;
+        let use_rwkv_due = has_rwkv_due_state(&top_node);
+        if use_rwkv_due {
+            self.setup_rwkv_due_table(None)?;
+        }
         let writer = SqlWriter::new(self, ReturnItemType::Notes);
         let mode = SortMode::NoOrder;
 
-        let (sql, args) = writer.build_query(&top_node, mode.required_table())?;
+        let (sql, args) = match writer.build_query(&top_node, mode.required_table()) {
+            Ok(query) => query,
+            Err(err) => {
+                if use_rwkv_due {
+                    let _ = self.clear_rwkv_due_table();
+                }
+                return Err(err);
+            }
+        };
 
-        self.storage.setup_searched_notes_table()?;
+        if let Err(err) = self.storage.setup_searched_notes_table() {
+            if use_rwkv_due {
+                let _ = self.clear_rwkv_due_table();
+            }
+            return Err(err);
+        }
         let sql = format!("insert into search_nids {sql}");
 
-        let notes = self
-            .storage
-            .db
-            .prepare(&sql)?
-            .execute(params_from_iter(args))?;
+        let notes_result: Result<usize> = (|| {
+            let mut stmt = self.storage.db.prepare(&sql)?;
+            stmt.execute(params_from_iter(args)).map_err(Into::into)
+        })();
+        let notes = match notes_result {
+            Ok(notes) => notes,
+            Err(err) => {
+                let _ = self.storage.clear_searched_notes_table();
+                if use_rwkv_due {
+                    let _ = self.clear_rwkv_due_table();
+                }
+                return Err(err);
+            }
+        };
 
-        Ok(NoteTableGuard { notes, col: self })
+        Ok(NoteTableGuard {
+            notes,
+            col: self,
+            cleanup_rwkv_due: use_rwkv_due,
+        })
     }
 
     /// Place the ids of cards with notes in 'search_nids' into 'search_cids'.
@@ -675,6 +836,7 @@ impl Collection {
             cards,
             col: self,
             cleanup_exact_retrievability: false,
+            cleanup_rwkv_due: false,
         })
     }
 }
@@ -714,6 +876,15 @@ fn has_exact_fsrs_metrics_property(node: &Node) -> bool {
                 | PropertyKind::Stability(_),
             ..
         }) => true,
+        _ => false,
+    }
+}
+
+fn has_rwkv_due_state(node: &Node) -> bool {
+    match node {
+        Node::Not(inner) => has_rwkv_due_state(inner),
+        Node::Group(nodes) => nodes.iter().any(has_rwkv_due_state),
+        Node::Search(SearchNode::State(StateKind::RwkvDue | StateKind::RwkvCurveDue)) => true,
         _ => false,
     }
 }
@@ -849,6 +1020,7 @@ mod test {
     use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
+    use crate::collection::RwkvStatsGraphScoreEntry;
     use crate::config::BoolKey;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
@@ -1538,6 +1710,98 @@ mod test {
             col.search_cards("prop:r>0.8", SortMode::NoOrder)?,
             vec![card1.id]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_due_states_use_explicit_model_definitions() -> Result<()> {
+        let mut col = Collection::new();
+        let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        config.inner.rwkv_review_instant_order_enabled = true;
+        config.inner.rwkv_review_enabled = true;
+        col.add_or_update_deck_config(&mut config)?;
+
+        let timing = col.timing_today()?;
+        let mut instant_due = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32 + 10);
+        instant_due.ctype = CardType::Review;
+        instant_due.queue = CardQueue::Review;
+        instant_due.interval = 30;
+        instant_due.desired_retention = Some(0.8);
+        instant_due.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        col.add_card(&mut instant_due)?;
+
+        let mut dynamic_dr_not_due =
+            Card::new(NoteId(12), 0, DeckId(1), timing.days_elapsed as i32 + 10);
+        dynamic_dr_not_due.ctype = CardType::Review;
+        dynamic_dr_not_due.queue = CardQueue::Review;
+        dynamic_dr_not_due.interval = 30;
+        dynamic_dr_not_due.desired_retention = Some(0.9);
+        dynamic_dr_not_due.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        col.add_card(&mut dynamic_dr_not_due)?;
+
+        let mut curve_due = Card::new(NoteId(11), 0, DeckId(1), timing.days_elapsed as i32);
+        curve_due.ctype = CardType::Review;
+        curve_due.queue = CardQueue::Review;
+        curve_due.interval = 30;
+        curve_due.desired_retention = Some(0.8);
+        curve_due.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        col.add_card(&mut curve_due)?;
+
+        col.set_rwkv_stats_graph_score_entries(
+            "filtered deck".into(),
+            HashMap::from([
+                (
+                    instant_due.id,
+                    RwkvStatsGraphScoreEntry {
+                        retrievability: 0.7,
+                        intervening_reviews: None,
+                        target_retention: Some(0.8),
+                        curve_due: false,
+                    },
+                ),
+                (
+                    dynamic_dr_not_due.id,
+                    RwkvStatsGraphScoreEntry {
+                        retrievability: 0.6,
+                        intervening_reviews: None,
+                        target_retention: Some(0.4),
+                        curve_due: false,
+                    },
+                ),
+                (
+                    curve_due.id,
+                    RwkvStatsGraphScoreEntry {
+                        retrievability: 0.9,
+                        intervening_reviews: None,
+                        target_retention: Some(0.8),
+                        curve_due: true,
+                    },
+                ),
+            ]),
+        )?;
+
+        assert_eq!(
+            col.search_cards("is:rwkv:due", SortMode::NoOrder)?,
+            vec![instant_due.id]
+        );
+        assert_eq!(
+            col.search_cards("is:rwkv-curve:due", SortMode::NoOrder)?,
+            vec![curve_due.id]
+        );
+        assert_eq!(
+            col.search_cards("is:due", SortMode::NoOrder)?,
+            vec![curve_due.id]
+        );
+
+        config.inner.rwkv_review_instant_order_enabled = false;
+        config.inner.rwkv_review_enabled = false;
+        col.add_or_update_deck_config(&mut config)?;
+        assert!(col
+            .search_cards("is:rwkv:due", SortMode::NoOrder)?
+            .is_empty());
+        assert!(col
+            .search_cards("is:rwkv-curve:due", SortMode::NoOrder)?
+            .is_empty());
         Ok(())
     }
 

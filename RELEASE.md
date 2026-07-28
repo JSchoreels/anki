@@ -33,6 +33,8 @@ Changes since
 - Added `prop:fsrs:r` for FSRS-only retrievability searches and `prop:rwkv:r`
   for RWKV-only searches. Existing `prop:r` retains its hybrid RWKV-first,
   FSRS-fallback behavior.
+- Added `is:rwkv:due` and `is:rwkv-curve:due` filtered-deck searches for
+  explicit RWKV-Instant eligibility and current RWKV-Curve due timing.
 - Pre-score RWKV-dependent searches and retrievability ordering before
   rebuilding filtered decks, avoiding an unintended FSRS fallback.
 
@@ -62,6 +64,8 @@ Changes since
 
 - Keep every card in a filtered deck counted as due on the deck list instead of
   reapplying RWKV eligibility and showing only the daily minimum.
+- Count outstanding filtered-deck reviews toward their original deck's RWKV
+  daily minimum instead of pulling additional normal-queue cards.
 - Validate RWKV state-cache prefixes from canonical review content and replay
   configuration, including the original deck of filtered cards.
 - Bind resumable RWKV Memorised results to the same canonical history and

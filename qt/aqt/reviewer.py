@@ -1137,6 +1137,12 @@ class Reviewer:
                     show_next_card=True,
                 )
             else:
+                if aqt.rwkv_scheduler.reviewer_queue_order_needs_intervening_review_refresh(
+                    self
+                ):
+                    aqt.rwkv_scheduler.update_reviewer_queue_intervening_reviews(
+                        self, self.card
+                    )
                 self._rwkv_remaining_count_override = (
                     getattr(self, "_review_card_generation", 0) + 1,
                     None,

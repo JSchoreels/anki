@@ -881,6 +881,9 @@ message RwkvStatsGraphScoresRequest {
   message Score {
     int64 card_id = 1;
     float retrievability = 2;
+    optional uint32 intervening_reviews = 3;
+    optional float target_retention = 4;
+    optional bool curve_due = 5;
   }
   string search = 1;
   repeated Score scores = 2;

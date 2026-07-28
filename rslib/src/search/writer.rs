@@ -189,6 +189,8 @@ fn write_state(kind: &StateKind) -> String {
             Review => "review",
             Learning => "learn",
             Due => "due",
+            RwkvDue => "rwkv:due",
+            RwkvCurveDue => "rwkv-curve:due",
             Buried => "buried",
             UserBuried => "buried-manually",
             SchedBuried => "buried-sibling",

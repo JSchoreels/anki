@@ -403,10 +403,10 @@ impl Collection {
     }
 }
 
-/// Broaden retrievability conditions so RWKV can score every potential match.
+/// Broaden RWKV-dependent conditions so RWKV can score every potential match.
 ///
 /// The final search runs after the resulting scores have been cached. Treating
-/// each retrievability predicate as independently satisfiable may load extra
+/// each model-dependent predicate as independently satisfiable may load extra
 /// candidates, but cannot omit a card that the final search could match.
 fn broaden_retrievability_properties(node: Node, negated: bool) -> Node {
     match node {
@@ -422,7 +422,10 @@ fn broaden_retrievability_properties(node: Node, negated: bool) -> Node {
         Node::Search(SearchNode::Property {
             kind: PropertyKind::Retrievability(_) | PropertyKind::RwkvRetrievability(_),
             ..
-        }) => boolean_search_node(!negated),
+        })
+        | Node::Search(SearchNode::State(StateKind::RwkvDue | StateKind::RwkvCurveDue)) => {
+            boolean_search_node(!negated)
+        }
         other => other,
     }
 }
@@ -459,6 +462,7 @@ pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) reviewed_today: bool,
     pub(crate) elapsed_secs_since_last_review: Option<u32>,
     pub(crate) current_deck_id: DeckId,
+    pub(crate) source_deck_id: DeckId,
     pub(crate) fsrs_due_today: bool,
 }
 
@@ -484,6 +488,7 @@ pub(crate) fn rwkv_review_candidate_metadata(
                 .last_review_time
                 .map(|last_review_time| timing.now.elapsed_secs_since_clamped(last_review_time)),
             current_deck_id: card.deck_id,
+            source_deck_id: card.original_deck_id.or(card.deck_id),
             fsrs_due_today: card.due <= timing.days_elapsed as i32,
         };
         if let Some(desired_retention) = card_desired_retention(&card) {
@@ -618,6 +623,7 @@ struct RwkvReviewCandidatePartial {
     reviewed_today: bool,
     elapsed_secs_since_last_review: Option<u32>,
     current_deck_id: DeckId,
+    source_deck_id: DeckId,
     fsrs_due_today: bool,
 }
 
@@ -628,6 +634,7 @@ impl RwkvReviewCandidatePartial {
             reviewed_today: self.reviewed_today,
             elapsed_secs_since_last_review: self.elapsed_secs_since_last_review,
             current_deck_id: self.current_deck_id,
+            source_deck_id: self.source_deck_id,
             fsrs_due_today: self.fsrs_due_today,
         }
     }

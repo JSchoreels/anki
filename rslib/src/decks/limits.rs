@@ -348,10 +348,16 @@ impl LimitTreeMap {
         Ok(())
     }
 
-    pub(crate) fn reserve_review(&mut self, deck_id: DeckId) -> Result<()> {
+    pub(crate) fn reserve_review(
+        &mut self,
+        deck_id: DeckId,
+        original_deck_id: DeckId,
+    ) -> Result<()> {
         let node_id = self.get_node_id(deck_id)?.clone();
         self.decrement_node_and_parent_limits(&node_id, LimitKind::Review);
-        self.decrement_rwkv_review_minimum(&node_id, 1);
+        if original_deck_id.0 == 0 {
+            self.decrement_rwkv_review_minimum(&node_id, 1);
+        }
         Ok(())
     }
 
@@ -359,6 +365,12 @@ impl LimitTreeMap {
         let node_id = self.get_node_id(deck_id)?.clone();
         self.decrement_rwkv_review_minimum(&node_id, count);
         Ok(())
+    }
+
+    pub(crate) fn reserve_rwkv_reviews_if_present(&mut self, deck_id: DeckId, count: u32) {
+        if let Some(node_id) = self.map.get(&deck_id).cloned() {
+            self.decrement_rwkv_review_minimum(&node_id, count);
+        }
     }
 
     pub(crate) fn rwkv_review_minimum_remaining(&self, deck_id: DeckId) -> Result<bool> {

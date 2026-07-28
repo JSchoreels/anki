@@ -229,7 +229,10 @@ their target-retention threshold, starting with the lowest retrievability.
 Ordinary maximum review limits, sibling burying, and same-day/repeat-spacing
 guards still take precedence. A deck's completed and queued reviews also count
 toward every ancestor deck's floor; when a parent deck is studied, unmet
-subdeck floors are enforced within their respective subtrees.
+subdeck floors are enforced within their respective subtrees. Cards currently
+in a filtered deck's review or interday-learning queue count toward the floor
+of their original deck and its ancestors. This accounting is transient and
+does not mark those cards as reviewed today.
 
 Due review cards without an RWKV score remain eligible through the normal
 due-card path. When the new-card gather order is `Ascending
@@ -334,6 +337,27 @@ Info score takes precedence, then the active review-queue score, then the latest
 Stats graph score, and finally a background deck-count score. Cards without a
 current active RWKV score continue to use exact FSRS retrievability for the
 hybrid metric.
+
+Filtered decks support two explicit RWKV due predicates without changing the
+meaning of `is:due`:
+
+- `is:rwkv:due` matches review cards whose source deck has
+  `rwkv_review_instant_order_enabled` and whose fresh RWKV-Instant score passes
+  the same target-retention, same-day, and repeat-spacing eligibility rules as
+  the review queue. The deck-wide `rwkv_review_minimum_reviews_per_day` floor is
+  not applied because it is not an intrinsic per-card due property. Once
+  matching cards are moved into a filtered deck, however, their outstanding
+  filtered reviews count toward the source deck's floor as described above.
+- `is:rwkv-curve:due` matches review cards whose source deck has
+  `rwkv_review_enabled` when the scheduler-day elapsed time since the last
+  review has reached the current/query RWKV-Curve interval at the resolved
+  target retention.
+
+Desktop filtered-deck creation and rebuilding detect these predicates, warm the
+RWKV backend, and prepare fresh scores before the final search. Cards without a
+fresh applicable prediction do not match either predicate. Candidate discovery
+temporarily broadens the RWKV-dependent predicates so future cards that the
+model considers due are not omitted before scoring.
 
 Card Info refreshes its score through the RWKV review-candidate prediction path
 each time it renders instead of reusing a score installed by Card Info, review

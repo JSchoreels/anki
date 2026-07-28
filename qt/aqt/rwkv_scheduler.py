@@ -24,6 +24,7 @@ import zlib
 from array import array
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -129,6 +130,14 @@ _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
 _FILTERED_DECK_RWKV_R_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])prop:(?:rwkv:)?r(?=[<>=!])",
+    re.IGNORECASE,
+)
+_RWKV_INSTANT_DUE_SEARCH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_:-])-?is:rwkv:due(?![A-Za-z0-9_:-])",
+    re.IGNORECASE,
+)
+_RWKV_CURVE_DUE_SEARCH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_:-])-?is:rwkv-curve:due(?![A-Za-z0-9_:-])",
     re.IGNORECASE,
 )
 _FILTERED_DECK_RETRIEVABILITY_ORDERS = frozenset(
@@ -372,6 +381,15 @@ class RwkvReviewInputBatchBuild:
 class RwkvReviewQueueScoreResult:
     scores: list[tuple[int, float]]
     target_retentions_by_card_id: dict[int, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RwkvStatsSearchScoreResult:
+    scores: list[tuple[int, float]]
+    input_build: RwkvReviewInputBatchBuild
+    target_retentions_by_card_id: dict[int, float] = field(default_factory=dict)
+    intervening_reviews_by_card_id: dict[int, int] = field(default_factory=dict)
+    curve_due_card_ids: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -807,6 +825,8 @@ RwkvStatsPrepareKey = tuple[
     int,
     int,
     str,
+    bool,
+    bool,
 ]
 RwkvScorePrewarmKey = tuple[int, int, int, int, tuple[int, ...]]
 RwkvFirstReviewElapsedStateCacheKey = tuple[tuple[object, bool], ...]
@@ -4056,13 +4076,26 @@ def reviewer_queue_order_exit_refresh_needed(reviewer: object) -> bool:
     )
 
 
+def _search_uses_rwkv_instant_due(search: str) -> bool:
+    return _RWKV_INSTANT_DUE_SEARCH_PATTERN.search(search) is not None
+
+
+def _search_uses_rwkv_curve_due(search: str) -> bool:
+    return _RWKV_CURVE_DUE_SEARCH_PATTERN.search(search) is not None
+
+
 def prepare_stats_retrievability_scores(  # noqa: PLR0911
     reviewer: object,
     search: str,
     *,
     warm_up_if_needed: bool = False,
+    prepare_instant_due: bool = False,
+    prepare_curve_due: bool = False,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
+
+    prepare_instant_due = prepare_instant_due or _search_uses_rwkv_instant_due(search)
+    prepare_curve_due = prepare_curve_due or _search_uses_rwkv_curve_due(search)
 
     if _reviewer_backend is None:
         configure_start = time.monotonic()
@@ -4134,6 +4167,8 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             reviewer,
             search,
             state_token=state_token,
+            prepare_instant_due=prepare_instant_due,
+            prepare_curve_due=prepare_curve_due,
         )
         prepare_generation = state_token.state_generation
         if prepare_key is not None:
@@ -4162,16 +4197,26 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             reviewer=reviewer,
             search=search,
             state_token=state_token,
+            prepare_instant_due=prepare_instant_due,
+            prepare_curve_due=prepare_curve_due,
         )
         search_score_elapsed_ms = (time.monotonic() - search_score_start) * 1000
         if search_score_result is not None:
-            scores, input_build = search_score_result
+            scores = search_score_result.scores
+            input_build = search_score_result.input_build
             set_start = time.monotonic()
             if not _set_rwkv_stats_graph_scores_if_current(
                 reviewer,
                 search,
                 scores,
                 state_token=state_token,
+                target_retentions_by_card_id=(
+                    search_score_result.target_retentions_by_card_id
+                ),
+                intervening_reviews_by_card_id=(
+                    search_score_result.intervening_reviews_by_card_id
+                ),
+                curve_due_card_ids=search_score_result.curve_due_card_ids,
             ):
                 logger.debug(
                     "discarded RWKV stats scores after state change: search=%r",
@@ -4276,10 +4321,18 @@ def prepare_filtered_deck_retrievability_scores(
     """Prepare RWKV scores needed by a filtered deck's filters and ordering."""
 
     terms = [term for term in config.search_terms[:2] if term.limit > 0]
-    needs_scores = any(
-        term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS
-        or _FILTERED_DECK_RWKV_R_PATTERN.search(term.search)
-        for term in terms
+    prepare_instant_due = any(
+        _search_uses_rwkv_instant_due(term.search) for term in terms
+    )
+    prepare_curve_due = any(_search_uses_rwkv_curve_due(term.search) for term in terms)
+    needs_scores = (
+        any(
+            term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS
+            or _FILTERED_DECK_RWKV_R_PATTERN.search(term.search)
+            for term in terms
+        )
+        or prepare_instant_due
+        or prepare_curve_due
     )
     if not needs_scores:
         return None
@@ -4304,6 +4357,8 @@ def prepare_filtered_deck_retrievability_scores(
         reviewer,
         search,
         warm_up_if_needed=True,
+        prepare_instant_due=prepare_instant_due,
+        prepare_curve_due=prepare_curve_due,
     )
 
 
@@ -4478,6 +4533,8 @@ def _rwkv_stats_prepare_key(
     search: str,
     *,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
+    prepare_instant_due: bool = False,
+    prepare_curve_due: bool = False,
 ) -> RwkvStatsPrepareKey | None:
     warmup_key = _reviewer_backend_warmup_key(reviewer)
     timing = _timing_today(reviewer)
@@ -4533,6 +4590,8 @@ def _rwkv_stats_prepare_key(
             else _rwkv_study_queue_generation
         ),
         search,
+        prepare_instant_due,
+        prepare_curve_due,
     )
 
 
@@ -15525,7 +15584,9 @@ def _rwkv_stats_graph_scores_for_search(
     reviewer: object,
     search: str,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
-) -> tuple[list[tuple[int, float]], RwkvReviewInputBatchBuild] | None:
+    prepare_instant_due: bool = False,
+    prepare_curve_due: bool = False,
+) -> RwkvStatsSearchScoreResult | None:
     start = time.monotonic()
     if not _reviewer_backend_accepts_review_inputs(
         state_token.backend if state_token is not None else None
@@ -15539,12 +15600,62 @@ def _rwkv_stats_graph_scores_for_search(
     )
     if input_build is None:
         return None
+    if prepare_instant_due or prepare_curve_due:
+        input_build = _resolve_dynamic_desired_retentions_for_input_build(
+            reviewer,
+            input_build,
+        )
 
     scores: list[tuple[int, float]] = []
+    fully_predicted_card_ids: set[int] = set()
+    curve_due_card_ids: set[int] = set()
     queue_score_cache = _fresh_rwkv_review_queue_score_map(reviewer)
     queue_score_hits = 0
     score_start = time.monotonic()
+
+    if prepare_curve_due:
+        curve_input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
+        for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
+            for batch in _chunks(
+                inputs_by_card_id,
+                _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
+            ):
+                predictions = _rwkv_review_predictions_for_inputs(
+                    batch,
+                    batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
+                    state_token=state_token,
+                )
+                if predictions is None:
+                    return None
+                for (card_id, review_input), prediction in zip(
+                    batch,
+                    predictions,
+                    strict=True,
+                ):
+                    retrievability = (
+                        prediction.retrievability if prediction is not None else None
+                    )
+                    if not _valid_probability(retrievability):
+                        continue
+                    scores.append((card_id, retrievability))
+                    fully_predicted_card_ids.add(card_id)
+                    elapsed_days = review_input.current_elapsed_days
+                    current_interval = prediction.current_interval
+                    if (
+                        review_input.card_type == CARD_TYPE_REV
+                        and review_input.card_queue == QUEUE_TYPE_REV
+                        and isinstance(elapsed_days, int)
+                        and isinstance(current_interval, int)
+                        and elapsed_days >= current_interval
+                    ):
+                        curve_due_card_ids.add(card_id)
+
     for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
+        inputs_by_card_id = [
+            item
+            for item in inputs_by_card_id
+            if item[0] not in fully_predicted_card_ids
+        ]
         cached_scores, inputs_by_card_id = _split_rwkv_queue_score_hits(
             inputs_by_card_id,
             queue_score_cache,
@@ -15588,7 +15699,48 @@ def _rwkv_stats_graph_scores_for_search(
         score_elapsed_ms,
         (time.monotonic() - start) * 1000,
     )
-    return scores, input_build
+    prepare_due = prepare_instant_due or prepare_curve_due
+    return RwkvStatsSearchScoreResult(
+        scores=scores,
+        input_build=input_build,
+        target_retentions_by_card_id=(
+            _rwkv_review_input_build_target_retentions_by_card_id(input_build)
+            if prepare_due
+            else {}
+        ),
+        intervening_reviews_by_card_id=(
+            _rwkv_filtered_deck_intervening_reviews_by_card_id(
+                reviewer,
+                _rwkv_review_input_build_inputs(input_build),
+            )
+            if prepare_instant_due
+            else {}
+        ),
+        curve_due_card_ids=frozenset(curve_due_card_ids),
+    )
+
+
+def _rwkv_filtered_deck_intervening_reviews_by_card_id(
+    reviewer: object,
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+) -> dict[int, int]:
+    card_ids_by_deck_id: dict[int, set[int]] = {}
+    for card_id, review_input in inputs_by_card_id:
+        deck_id = review_input.identity.deck_id
+        if isinstance(deck_id, int):
+            card_ids_by_deck_id.setdefault(deck_id, set()).add(card_id)
+
+    intervening_reviews_by_card_id: dict[int, int] = {}
+    for deck_id, card_ids in card_ids_by_deck_id.items():
+        intervening_reviews_by_card_id.update(
+            (card_id, intervening_reviews)
+            for card_id, intervening_reviews in _queue_intervening_reviews_by_card_id(
+                reviewer,
+                deck_id,
+            ).items()
+            if card_id in card_ids
+        )
+    return intervening_reviews_by_card_id
 
 
 def _split_rwkv_queue_score_hits(
@@ -19021,6 +19173,9 @@ def _set_rwkv_stats_graph_scores(
     search: str,
     scores: Sequence[tuple[int, float]],
     *,
+    target_retentions_by_card_id: Mapping[int, float] | None = None,
+    intervening_reviews_by_card_id: Mapping[int, int] | None = None,
+    curve_due_card_ids: AbstractSet[int] = frozenset(),
     collection_backend: object | None = None,
 ) -> None:
     if collection_backend is None:
@@ -19035,15 +19190,27 @@ def _set_rwkv_stats_graph_scores(
     if not callable(set_scores):
         return
 
+    target_retentions_by_card_id = target_retentions_by_card_id or {}
+    intervening_reviews_by_card_id = intervening_reviews_by_card_id or {}
+    score_messages: list[scheduler_pb2.RwkvStatsGraphScoresRequest.Score] = []
+    for card_id, retrievability in scores:
+        score = scheduler_pb2.RwkvStatsGraphScoresRequest.Score(
+            card_id=card_id,
+            retrievability=retrievability,
+        )
+        target_retention = target_retentions_by_card_id.get(card_id)
+        if _valid_probability(target_retention):
+            score.target_retention = target_retention
+        intervening_reviews = intervening_reviews_by_card_id.get(card_id)
+        if isinstance(intervening_reviews, int) and intervening_reviews >= 0:
+            score.intervening_reviews = intervening_reviews
+        if card_id in curve_due_card_ids:
+            score.curve_due = True
+        score_messages.append(score)
+
     set_scores(
         search=search,
-        scores=[
-            scheduler_pb2.RwkvStatsGraphScoresRequest.Score(
-                card_id=card_id,
-                retrievability=retrievability,
-            )
-            for card_id, retrievability in scores
-        ],
+        scores=score_messages,
     )
 
 
@@ -19053,6 +19220,9 @@ def _set_rwkv_stats_graph_scores_if_current(
     scores: Sequence[tuple[int, float]],
     *,
     state_token: _ReviewerBackendPredictionStateToken,
+    target_retentions_by_card_id: Mapping[int, float] | None = None,
+    intervening_reviews_by_card_id: Mapping[int, int] | None = None,
+    curve_due_card_ids: AbstractSet[int] = frozenset(),
 ) -> bool:
     """Publish stats only while the complete prediction state is unchanged."""
 
@@ -19076,6 +19246,9 @@ def _set_rwkv_stats_graph_scores_if_current(
                 reviewer,
                 search,
                 scores,
+                target_retentions_by_card_id=target_retentions_by_card_id,
+                intervening_reviews_by_card_id=intervening_reviews_by_card_id,
+                curve_due_card_ids=curve_due_card_ids,
                 collection_backend=state_token.collection_backend,
             )
         return True

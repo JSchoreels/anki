@@ -609,6 +609,65 @@ mod test {
     }
 
     #[test]
+    fn rwkv_deck_tree_minimum_counts_filtered_reviews_once_at_source() -> Result<()> {
+        let mut col = Collection::new();
+        let mut parent = col.get_or_create_normal_deck("Parent")?;
+        let source = col.get_or_create_normal_deck("Parent::Source")?;
+        enable_rwkv_review_counts(&mut col, &mut parent, false)?;
+        let config_id = parent.config_id().unwrap();
+        let mut config = col.get_deck_config(config_id, false)?.unwrap();
+        config.inner.rwkv_review_minimum_reviews_per_day = 2;
+        col.add_or_update_deck_config(&mut config)?;
+
+        let mut filtered = Deck::new_filtered();
+        filtered.name = NativeDeckName::from_native_str("Parent::Filtered");
+        col.add_or_update_deck(&mut filtered)?;
+
+        let timing = col.timing_today()?;
+        let moved = add_review_card(
+            &mut col,
+            source.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let mut moved_card = col.storage.get_card(moved)?.unwrap();
+        moved_card.original_deck_id = moved_card.deck_id;
+        moved_card.original_due = moved_card.due;
+        moved_card.deck_id = filtered.id;
+        moved_card.due = -100_000;
+        col.storage.update_card(&moved_card)?;
+
+        let first_pull = add_review_card(
+            &mut col,
+            source.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let second_pull = add_review_card(
+            &mut col,
+            source.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        col.set_rwkv_review_queue_scores(
+            parent.id,
+            HashMap::from([(first_pull, 0.80), (second_pull, 0.90)]),
+        )?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        let parent_node = get_deck_in_tree(tree.clone(), parent.id).unwrap();
+        let source_node = get_deck_in_tree(tree.clone(), source.id).unwrap();
+        let filtered_node = get_deck_in_tree(tree, filtered.id).unwrap();
+        assert_eq!(parent_node.review_count, 2);
+        assert_eq!(source_node.review_count, 1);
+        assert_eq!(filtered_node.review_count, 1);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_deck_tree_counts_include_future_eligible_scored_reviews() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
