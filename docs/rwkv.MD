@@ -43,10 +43,12 @@ the profile folder. The cache is not part of deck config, is not stored in the
 collection database, and is not synced to mobile or other desktop clients. Cache
 metadata includes the collection identity, RWKV model content identity, last
 processed revlog id, and a count of benchmark-retained historical answers
-through that checkpoint. Historical replay drops cards without a Learning
-start and retains only the sequence beginning at each card's latest Learning
-start, matching the dataset builder. A later card reset therefore invalidates
-any cache checkpoint that still contains the older retained sequence.
+through that checkpoint. Historical replay retains cards without a Learning
+start from their first eligible answer without rewriting its state. For cards
+with Learning starts, it retains only the sequence beginning at the latest
+Learning start, matching the dataset builder. A later card reset therefore
+invalidates any cache checkpoint that still contains the older retained
+sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Reinstalling or moving the app does not invalidate the cache when the bundled
@@ -117,6 +119,9 @@ mutation, instead of copying the persistent card type. When RWKV synthesizes a
 same-day state outside Anki's learning queues, Qt places the corresponding raw
 kind on `CardAnswer`; the Rust answer transaction validates and writes that kind
 to the revlog, so undo and redo keep the card update and review type atomic.
+Histories without a Learning answer, such as cards introduced through Grade
+Now, begin with their actual recorded Review, Relearning, Filtered, Manual, or
+Rescheduled state; replay does not synthesize state `0`.
 
 Synthetic scheduling that does not use Anki's learning queues must still track
 the equivalent state transition explicitly:

@@ -2993,7 +2993,7 @@ def test_historical_review_kind_maps_to_training_dataset_state(
     assert rwkv_scheduler._historical_review_state(review_kind) == expected_state
 
 
-def test_historical_learning_start_maps_to_zero_and_resets_retained_sequence() -> None:
+def test_historical_learning_start_resets_and_review_only_history_is_retained() -> None:
     rows = [
         (1_000, 1, 10, 100, 3, 100, 0, 1, 2500),
         (2_000, 1, 10, 100, 3, 100, 1, 2, 2500),
@@ -3009,6 +3009,7 @@ def test_historical_learning_start_maps_to_zero_and_resets_retained_sequence() -
         (3_000, 0),
         (4_000, 1),
         (5_000, 2),
+        (6_000, 2),
     ]
 
 

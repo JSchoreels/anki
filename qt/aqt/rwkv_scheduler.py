@@ -13701,7 +13701,7 @@ def _historical_review_day_offset(
 def _benchmark_retained_historical_review_rows(
     rows: Sequence[Sequence[object]],
 ) -> list[tuple[Sequence[object], int]]:
-    latest_start_index_by_card: dict[int, int] = {}
+    retained_start_by_card: dict[int, tuple[int, bool]] = {}
     previous_kind_by_card: dict[int, int] = {}
 
     for index, row in enumerate(rows):
@@ -13711,9 +13711,10 @@ def _benchmark_retained_historical_review_rows(
         review_kind = row[6]
         if not isinstance(card_id, int) or not isinstance(review_kind, int):
             continue
+        retained_start_by_card.setdefault(card_id, (index, False))
         previous_kind = previous_kind_by_card.get(card_id)
         if review_kind == 0 and previous_kind != 0:
-            latest_start_index_by_card[card_id] = index
+            retained_start_by_card[card_id] = (index, True)
         previous_kind_by_card[card_id] = review_kind
 
     retained: list[tuple[Sequence[object], int]] = []
@@ -13724,15 +13725,15 @@ def _benchmark_retained_historical_review_rows(
         review_kind = row[6]
         if not isinstance(card_id, int) or not isinstance(review_kind, int):
             continue
-        start_index = latest_start_index_by_card.get(card_id)
-        if start_index is None or index < start_index:
+        start_index, starts_with_learning = retained_start_by_card[card_id]
+        if index < start_index:
             continue
         retained.append(
             (
                 row,
                 _historical_review_state(
                     review_kind,
-                    is_learning_start=index == start_index,
+                    is_learning_start=starts_with_learning and index == start_index,
                 ),
             )
         )

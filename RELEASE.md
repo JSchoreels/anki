@@ -62,6 +62,8 @@ Changes since
 
 ### Fixed
 
+- Retain RWKV history for reviewed cards without a recorded Learning start,
+  such as cards introduced through Grade Now.
 - Keep every card in a filtered deck counted as due on the deck list instead of
   reapplying RWKV eligibility and showing only the daily minimum.
 - Count outstanding filtered-deck reviews toward their original deck's RWKV
