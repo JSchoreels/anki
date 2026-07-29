@@ -24,6 +24,8 @@ repeated here unless they materially affect a fork feature.
 
 Current application version: `26.05+fsrs7`
 
+## [26.05+fsrs7.build.73](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.73) — 2026-07-29
+
 Changes since
 [`26.05+fsrs7.build.72`](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.72)
 (2026-07-22):
