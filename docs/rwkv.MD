@@ -180,11 +180,15 @@ SHA-256 identity of the canonical replay inputs plus a replay-semantics identity
 covering first-review elapsed-time settings, deck-to-preset routing, and the
 dynamic preset overlay. Filtered cards use their original deck as the effective
 historical deck, matching normal review after they leave the filtered deck.
-At profile startup, Anki attempts the operational cache restore and canonical
-validation once, then offers to rebuild only if that attempt fails. Checkpoint
-construction and recovery validation derive all requested history prefixes in
-one chronological pass, and repeated model-identity checks reuse the content
-hash until the model file changes.
+At profile startup, Anki invalidates any previous resident state immediately,
+then waits for automatic startup sync to finish before attempting the
+operational cache restore and canonical validation once. It offers to rebuild
+only if that attempt fails. This ordering avoids restoring the pre-sync state
+and immediately reconciling it in a second progress operation. Deck-count
+preparation remains pending during this startup window instead of starting its
+own cache restore. Checkpoint construction and recovery validation derive all
+requested history prefixes in one chronological pass, and repeated
+model-identity checks reuse the content hash until the model file changes.
 
 After collection sync, Anki reconciles resident RWKV state before refreshing
 study queues. If synchronized reviews only extend the cached history, they are
@@ -331,17 +335,18 @@ When the desktop stats page requests graph data, Anki may install transient
 per-card RWKV retrievability scores for cards in the stats search. Recent
 current-day Stats snapshots are keyed by their exact search text so concurrent
 graphs cannot replace one another before rendering. A Stats graph and its
-`prop:r` or `prop:rwkv:r` filter use only the matching Stats snapshot; Card Info
-and review-queue scores cannot change which cards that graph selects. Cards
-without a matching Stats RWKV score continue to use exact FSRS retrievability
-where the hybrid metric permits it.
+`prop:rwkv:r` or `prop:rwkv-curve:r` filter use only the matching Stats
+snapshot; Card Info and review-queue scores cannot change which cards that graph
+selects. Cards without a matching score do not match an explicit RWKV
+property. `prop:r` is always the exact FSRS retrievability.
 
 Browser-initiated searches outside the Stats graph use the shared active cache.
-If more than one consumer has refreshed the same card, the card-specific Card
-Info score takes precedence, then the active review-queue score, then the latest
-Stats graph score, and finally a background deck-count score. Cards without a
-current active RWKV score continue to use exact FSRS retrievability for the
-hybrid metric.
+If more than one consumer has refreshed the same card, the RWKV-Instant
+property prefers the card-specific Card Info score, then the active review-queue
+score, then the latest Stats graph score, and finally a background deck-count
+score. The RWKV-Curve property uses a full Stats prediction or the
+card-specific Card Info prediction, with Card Info taking priority. Cards
+without the applicable current score do not match the explicit RWKV property.
 
 Filtered decks support two explicit RWKV due predicates without changing the
 meaning of `is:due`:
@@ -367,12 +372,12 @@ model considers due are not omitted before scoring.
 Card Info refreshes its score through the RWKV review-candidate prediction path
 each time it renders instead of reusing a score installed by Card Info, review
 queue ordering, or stats graphs. It then installs the refreshed card-specific
-score in the shared active cache, so Browser `prop:r` and other consumers use
-the latest Card Info value. Queue and stats requests batch many cards; Card Info
-sends a one-card batch. When current scheduling states are available, Card Info
-uses them directly so Filtered cards report the same Curve and S90 values as
-their rendered answer buttons; bulk card-state reconstruction is only a
-fallback. The stateful prediction memo may reuse that query only
+RWKV-Instant and RWKV-Curve scores in the shared active cache, so their explicit
+Browser properties use the latest Card Info values. Queue and stats requests
+batch many cards; Card Info sends a one-card batch. When current scheduling
+states are available, Card Info uses them directly so Filtered cards report the
+same Curve and S90 values as their rendered answer buttons; bulk card-state
+reconstruction is only a fallback. The stateful prediction memo may reuse that query only
 while the RWKV state and the card's complete query input remain unchanged; an
 answered review clears the memo before the next Card Info refresh.
 
@@ -589,15 +594,16 @@ not start a synchronous full historical replay. If no warmed or restorable cache
 is available, review-time RWKV retrievability and Card Info RWKV diagnostics
 stay unavailable until the background warm-up has completed.
 
-When RWKV review is enabled and a usable local cache exists, desktop Anki starts
-loading it after profile open with a progress dialog. This restores the saved
-state, replays any cache deltas, and replays only newer revlogs, so stats and
-Card Info can use RWKV without waiting for their first on-demand query. When a
-local cache load finishes successfully, Anki prewarms only the current deck
-scope to keep automatic startup work bounded. An explicit cache build also
-prewarms the closest parent deck scope. When no usable local cache exists,
-desktop Anki prompts once per session after profile open to build the RWKV state
-cache. This startup build, and the same manual
+When RWKV review is enabled and a usable local cache exists, desktop Anki loads
+it with a progress dialog after profile open and any automatic startup sync.
+This restores the saved state, replays any cache deltas, and replays only newer
+revlogs, so stats and Card Info can use RWKV without waiting for their first
+on-demand query. When a local cache load finishes successfully, Anki prewarms
+only the current deck scope to keep automatic startup work bounded. An explicit
+cache build also prewarms the closest parent deck scope. When no usable local
+cache exists, desktop Anki prompts once per session after profile open and any
+automatic startup sync to build the RWKV state cache. This startup build, and
+the same manual
 build from the RWKV section of deck options, run as a modal progress operation.
 When the startup prompt appears, users can choose a faster state-only build or
 the slower state build that also records historical retrievability rows for

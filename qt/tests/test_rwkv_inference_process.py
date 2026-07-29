@@ -694,7 +694,13 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
             assert math.isclose(
                 query_output[0], _RWKV_GOLDEN_ROW34_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
             )
-        button_probabilities = query_output[5]
+        curve_retrievability = query_output[1]
+        if review["elapsed_seconds"] >= 0 or review["elapsed_days"] >= 0:
+            assert curve_retrievability is not None
+            assert 0.0 <= curve_retrievability <= 1.0
+        else:
+            assert curve_retrievability is None
+        button_probabilities = query_output[6]
         assert math.isclose(sum(button_probabilities), 1.0, abs_tol=_RWKV_ABS_TOL)
         assert math.isclose(
             button_probabilities[0],
@@ -713,11 +719,11 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
                 global_state=global_state,
             )
         )
-        card_states[review["card_id"]] = update_output[6]
-        note_states[review["note_id"]] = update_output[7]
-        deck_states[review["deck_id"]] = update_output[8]
-        preset_states[review["preset_id"]] = update_output[9]
-        global_state = update_output[10]
+        card_states[review["card_id"]] = update_output[7]
+        note_states[review["note_id"]] = update_output[8]
+        deck_states[review["deck_id"]] = update_output[9]
+        preset_states[review["preset_id"]] = update_output[10]
+        global_state = update_output[11]
         curves = _rwkv_curves_from_cache(runtime.cache_state())
 
     snapshot = runtime.warm_up_snapshot()

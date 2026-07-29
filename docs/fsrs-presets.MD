@@ -98,10 +98,11 @@ During review, an explicit desired retention override supplied by the reviewer
 scheduling hook takes precedence over the matched preset's desired retention.
 The overlay value is used only when no review-time override is provided.
 
-Rule searches must not use FSRS metric properties (`prop:r`, `prop:s`, or
-`prop:d`). Those properties already depend on FSRS state or need an FSRS preset
-to compute, so allowing them in source-selection rules would couple source
-resolution to derived FSRS data.
+Rule searches must not use derived metric properties (`prop:r`, `prop:rwkv:r`,
+`prop:rwkv-curve:r`, `prop:s`, or `prop:d`). Those properties already depend on
+FSRS or RWKV state, or need an FSRS preset to compute, so allowing them in
+source-selection rules would couple source resolution to derived scheduling
+data.
 
 `simulator_rules` are optional, ordered, simulator-only routes that allow the
 FSRS simulator to switch add-on presets without calling back into Python or

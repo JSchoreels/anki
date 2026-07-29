@@ -38,6 +38,12 @@ Please do this as a final step before marking a task as completed.
 
 Run `just` (or `just --list`) to see all available commands.
 
+## Release notes
+
+When developing a user-visible feature, update `RELEASE.md` in the same
+change, even if the feature has not been released yet. Add it to the existing
+unreleased section so the release notes remain current throughout development.
+
 ## Quick iteration
 
 During development, you can build/check subsections of our code:

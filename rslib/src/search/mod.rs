@@ -230,7 +230,7 @@ impl Collection {
         self.storage.db.execute_batch(&format!(
             "drop table if exists {EXACT_RETRIEVABILITY_TABLE};\
              create temporary table {EXACT_RETRIEVABILITY_TABLE}(\
-                cid integer primary key, r real, fsrs_r real, rwkv_r real, s90 real)"
+                cid integer primary key, fsrs_r real, rwkv_r real, rwkv_curve_r real, s90 real)"
         ))?;
         let ids_start = Instant::now();
         let ids: Vec<i64> = {
@@ -253,6 +253,8 @@ impl Collection {
         } else {
             rwkv_active_scores.as_ref()
         };
+        let rwkv_curve_scores =
+            self.rwkv_curve_retrievability_scores_for_day(timing.days_elapsed, stats_search);
         let rwkv_stats_scores_count = rwkv_stats_scores
             .as_ref()
             .map(|scores| scores.len())
@@ -264,6 +266,10 @@ impl Collection {
         let rwkv_review_queue_scores_count = rwkv_review_queue_scores
             .as_ref()
             .map(|(_, scores)| scores.len())
+            .unwrap_or(0);
+        let rwkv_curve_scores_count = rwkv_curve_scores
+            .as_ref()
+            .map(|scores| scores.len())
             .unwrap_or(0);
         let load_start = Instant::now();
         let cards = ids
@@ -281,8 +287,13 @@ impl Collection {
         let metric_start = Instant::now();
         let mut rows_to_insert = Vec::new();
         let mut rwkv_rows = 0;
+        let mut rwkv_curve_rows = 0;
         for card in cards {
             let rwkv_r = rwkv_retrievability_scores
+                .and_then(|scores| scores.get(&card.id))
+                .copied();
+            let rwkv_curve_r = rwkv_curve_scores
+                .as_ref()
                 .and_then(|scores| scores.get(&card.id))
                 .copied();
             let preset = presets_by_card
@@ -294,26 +305,24 @@ impl Collection {
                 if rwkv_r.is_some() {
                     rwkv_rows += 1;
                 }
-                rows_to_insert.push((
-                    card.id.0,
-                    rwkv_r.unwrap_or(fsrs_r),
-                    Some(fsrs_r),
-                    rwkv_r,
-                    Some(s90),
-                ));
-            } else if let Some(rwkv_r) = rwkv_r {
-                rwkv_rows += 1;
-                rows_to_insert.push((card.id.0, rwkv_r, None, Some(rwkv_r), None));
+                if rwkv_curve_r.is_some() {
+                    rwkv_curve_rows += 1;
+                }
+                rows_to_insert.push((card.id.0, Some(fsrs_r), rwkv_r, rwkv_curve_r, Some(s90)));
+            } else if rwkv_r.is_some() || rwkv_curve_r.is_some() {
+                rwkv_rows += usize::from(rwkv_r.is_some());
+                rwkv_curve_rows += usize::from(rwkv_curve_r.is_some());
+                rows_to_insert.push((card.id.0, None, rwkv_r, rwkv_curve_r, None));
             }
         }
         let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
         let insert_start = Instant::now();
         let mut insert = self.storage.db.prepare_cached(&format!(
-            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, r, fsrs_r, rwkv_r, s90) \
+            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) \
              values (?, ?, ?, ?, ?)"
         ))?;
-        for (cid, r, fsrs_r, rwkv_r, s90) in rows_to_insert {
-            insert.execute(rusqlite::params![cid, r, fsrs_r, rwkv_r, s90])?;
+        for (cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) in rows_to_insert {
+            insert.execute(rusqlite::params![cid, fsrs_r, rwkv_r, rwkv_curve_r, s90])?;
         }
         tracing::debug!(
             cards = card_count,
@@ -325,6 +334,8 @@ impl Collection {
             rwkv_card_info_scores = rwkv_card_info_scores_count,
             rwkv_review_queue_scores = rwkv_review_queue_scores_count,
             rwkv_rows,
+            rwkv_curve_scores = rwkv_curve_scores_count,
+            rwkv_curve_rows,
             insert_elapsed_ms = insert_start.elapsed().as_secs_f64() * 1000.0,
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
             "built exact retrievability search table"
@@ -871,8 +882,8 @@ fn has_exact_fsrs_metrics_property(node: &Node) -> bool {
         Node::Search(SearchNode::Property {
             kind:
                 PropertyKind::Retrievability(_)
-                | PropertyKind::FsrsRetrievability(_)
                 | PropertyKind::RwkvRetrievability(_)
+                | PropertyKind::RwkvCurveRetrievability(_)
                 | PropertyKind::Stability(_),
             ..
         }) => true,
@@ -1484,7 +1495,7 @@ mod test {
     }
 
     #[test]
-    fn retrievability_property_filter_prefers_available_rwkv_r() -> Result<()> {
+    fn retrievability_properties_select_explicit_models() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
 
@@ -1523,15 +1534,10 @@ mod test {
         col.set_rwkv_stats_graph_scores("deck:current".into(), HashMap::from([(card1.id, 0.95)]))?;
 
         let filtered = col.search_cards("prop:r>0.9", SortMode::NoOrder)?;
-        assert_eq!(filtered, vec![card1.id]);
+        assert!(filtered.is_empty());
 
         let fallback_filtered = col.search_cards("prop:r<0.9", SortMode::NoOrder)?;
-        assert_eq!(fallback_filtered, vec![card2.id]);
-
-        assert_eq!(
-            col.search_cards("prop:fsrs:r<0.9", SortMode::NoOrder)?,
-            vec![card1.id, card2.id]
-        );
+        assert_eq!(fallback_filtered, vec![card1.id, card2.id]);
         assert_eq!(
             col.search_cards("prop:rwkv:r>0.9", SortMode::NoOrder)?,
             vec![card1.id]
@@ -1542,17 +1548,11 @@ mod test {
         );
 
         let filtered_cards = col.all_cards_for_search("prop:r>0.9")?;
-        assert_eq!(
-            filtered_cards
-                .into_iter()
-                .map(|card| card.id)
-                .collect::<Vec<_>>(),
-            vec![card1.id]
-        );
+        assert!(filtered_cards.is_empty());
 
         col.set_rwkv_stats_graph_scores("deck:other".into(), HashMap::new())?;
         assert_eq!(
-            col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            col.search_cards("prop:rwkv:r>0.9", SortMode::NoOrder)?,
             Vec::<CardId>::new()
         );
         Ok(())
@@ -1598,14 +1598,65 @@ mod test {
 
         col.set_rwkv_card_info_score(card1.id, Some(0.95))?;
         assert_eq!(
-            col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            col.search_cards("prop:rwkv:r>0.9", SortMode::NoOrder)?,
             vec![card1.id]
         );
+        assert!(col
+            .search_cards("prop:r>0.9", SortMode::NoOrder)?
+            .is_empty());
 
         col.set_rwkv_card_info_score(card1.id, None)?;
         assert_eq!(
-            col.search_cards("prop:r>0.9", SortMode::NoOrder)?,
+            col.search_cards("prop:rwkv:r>0.9", SortMode::NoOrder)?,
             Vec::<CardId>::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_curve_retrievability_property_uses_curve_scores() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note1 = nt.new_note();
+        let mut note2 = nt.new_note();
+        col.add_note(&mut note1, DeckId(1))?;
+        col.add_note(&mut note2, DeckId(1))?;
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+
+        col.set_rwkv_stats_graph_score_entries(
+            "curve search".into(),
+            HashMap::from([
+                (
+                    ids[0],
+                    RwkvStatsGraphScoreEntry {
+                        retrievability: 0.2,
+                        curve_retrievability: Some(0.95),
+                        intervening_reviews: None,
+                        target_retention: None,
+                        curve_due: false,
+                    },
+                ),
+                (
+                    ids[1],
+                    RwkvStatsGraphScoreEntry {
+                        retrievability: 0.95,
+                        curve_retrievability: Some(0.2),
+                        intervening_reviews: None,
+                        target_retention: None,
+                        curve_due: false,
+                    },
+                ),
+            ]),
+        )?;
+
+        assert_eq!(
+            col.search_cards("prop:rwkv:r>0.9", SortMode::NoOrder)?,
+            vec![ids[1]]
+        );
+        assert_eq!(
+            col.search_cards("prop:rwkv-curve:r>0.9", SortMode::NoOrder)?,
+            vec![ids[0]]
         );
         Ok(())
     }
@@ -1644,15 +1695,11 @@ mod test {
 
         assert_eq!(
             col.search_cards("prop:r<0.9", SortMode::NoOrder)?,
-            vec![card.id]
+            Vec::<CardId>::new()
         );
         assert_eq!(
             col.search_cards("prop:rwkv:r<0.9", SortMode::NoOrder)?,
             vec![card.id]
-        );
-        assert_eq!(
-            col.search_cards("prop:fsrs:r<0.9", SortMode::NoOrder)?,
-            Vec::<CardId>::new()
         );
         Ok(())
     }
@@ -1703,11 +1750,11 @@ mod test {
         col.set_rwkv_card_info_score(card1.id, Some(0.83))?;
 
         assert_eq!(
-            col.search_cards("prop:r>=0.55 prop:r<0.6", SortMode::NoOrder)?,
+            col.search_cards("prop:rwkv:r>=0.55 prop:rwkv:r<0.6", SortMode::NoOrder)?,
             vec![card2.id]
         );
         assert_eq!(
-            col.search_cards("prop:r>0.8", SortMode::NoOrder)?,
+            col.search_cards("prop:rwkv:r>0.8", SortMode::NoOrder)?,
             vec![card1.id]
         );
         Ok(())
@@ -1754,6 +1801,7 @@ mod test {
                     instant_due.id,
                     RwkvStatsGraphScoreEntry {
                         retrievability: 0.7,
+                        curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: Some(0.8),
                         curve_due: false,
@@ -1763,6 +1811,7 @@ mod test {
                     dynamic_dr_not_due.id,
                     RwkvStatsGraphScoreEntry {
                         retrievability: 0.6,
+                        curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: Some(0.4),
                         curve_due: false,
@@ -1772,6 +1821,7 @@ mod test {
                     curve_due.id,
                     RwkvStatsGraphScoreEntry {
                         retrievability: 0.9,
+                        curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: Some(0.8),
                         curve_due: true,

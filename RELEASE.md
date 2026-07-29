@@ -30,16 +30,21 @@ Changes since
 
 ### Added
 
-- Added `prop:fsrs:r` for FSRS-only retrievability searches and `prop:rwkv:r`
-  for RWKV-only searches. Existing `prop:r` retains its hybrid RWKV-first,
-  FSRS-fallback behavior.
+- Split retrievability searches by model: `prop:r` uses FSRS,
+  `prop:rwkv:r` uses RWKV-Instant, and `prop:rwkv-curve:r` uses the current
+  RWKV-Curve.
 - Added `is:rwkv:due` and `is:rwkv-curve:due` filtered-deck searches for
   explicit RWKV-Instant eligibility and current RWKV-Curve due timing.
 - Pre-score RWKV-dependent searches and retrievability ordering before
-  rebuilding filtered decks, avoiding an unintended FSRS fallback.
+  rebuilding filtered decks.
+- Added **RWKV → Reschedule All Decks** to deck cogwheel menus, allowing
+  eligible review cards across every RWKV-enabled deck to be rescheduled in
+  one operation.
 
 ### Improved
 
+- Open RWKV retrievability searches when clicking Stats graph bars for
+  RWKV-enabled cards; hold Shift while clicking to search FSRS retrievability.
 - Use one consistent priority across RWKV score sources: Card Info, review
   queue, statistics, then background deck counts.
 - Refresh resident RWKV state after sync. Reviews inserted into past history
@@ -62,6 +67,9 @@ Changes since
 
 ### Fixed
 
+- Avoid back-to-back RWKV state-cache operations at profile startup by keeping
+  deck-count preparation pending while automatic sync finishes, then restoring
+  or rebuilding resident state once.
 - Retain RWKV history for reviewed cards without a recorded Learning start,
   such as cards introduced through Grade Now.
 - Keep every card in a filtered deck counted as due on the deck list instead of
@@ -74,6 +82,8 @@ Changes since
   replay-semantics identities, rejecting changed prefixes with unchanged IDs.
 - Keep failed post-sync refreshes unready, propagate the real result to
   concurrent Stats waiters, and discard results from stale RWKV generations.
+- Retry RWKV Card Retrievability data when concurrent Stats requests temporarily
+  contend for prediction access.
 - Keep Stats graph filtering bound to its exact score snapshot instead of
   allowing Card Info or review-queue scores to select different cards.
 - Carry grade-order configuration through the Rust/Python boundary and recover

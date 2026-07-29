@@ -378,6 +378,7 @@ pub struct ReviewState<'a> {
 
 pub struct ReviewOutput {
     pub retrievability: f32,
+    pub curve_retrievability: Option<f32>,
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
     pub current_s90: Option<u32>,
@@ -405,6 +406,7 @@ pub struct ReviewStateOwned {
 
 pub struct ReviewPredictionOutput {
     pub retrievability: f32,
+    pub curve_retrievability: Option<f32>,
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
     pub current_s90: Option<u32>,
@@ -595,6 +597,7 @@ impl RwkvInference {
             .map(|heads| self.answer_intervals(&input, heads))
             .unwrap_or(([None; 4], [None; 4]));
         let (current_interval, current_s90) = self.current_intervals(&input, &heads);
+        let curve_retrievability = current_curve_retrievability(&input, &heads.curve);
 
         let card_state = serialize_module_state(&heads.next_state.card);
         let deck_state = serialize_module_state(&heads.next_state.deck);
@@ -608,6 +611,7 @@ impl RwkvInference {
 
         Ok(ReviewOutput {
             retrievability: heads.retrievability,
+            curve_retrievability,
             button_probabilities: heads.button_probabilities,
             current_interval,
             current_s90,
@@ -656,6 +660,10 @@ impl RwkvInference {
                     self.current_intervals(&request.input, query_heads);
                 ReviewPredictionOutput {
                     retrievability: query_heads.retrievability,
+                    curve_retrievability: current_curve_retrievability(
+                        &request.input,
+                        &query_heads.curve,
+                    ),
                     button_probabilities: query_heads.button_probabilities,
                     current_interval,
                     current_s90,
@@ -3611,6 +3619,19 @@ fn interval_search_days(max_interval_days: u32) -> Vec<u32> {
 
 fn clamped_interval_days(elapsed_days: f32, max_interval_days: u32) -> u32 {
     elapsed_days.ceil().clamp(1.0, max_interval_days as f32) as u32
+}
+
+fn current_curve_retrievability(input: &ReviewInput, curve: &ReviewCurve) -> Option<f32> {
+    let elapsed_seconds = input
+        .current_elapsed_seconds
+        .filter(|seconds| *seconds >= 0)
+        .or_else(|| {
+            input
+                .current_elapsed_days
+                .filter(|days| *days >= 0)
+                .map(|days| days.saturating_mul(SECONDS_PER_DAY))
+        })?;
+    Some(predict_curve(curve, elapsed_seconds as f32))
 }
 
 fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
@@ -7742,6 +7763,41 @@ order by e.id, e.cid
         assert_eq!(good.current_elapsed_days, input.current_elapsed_days);
         assert_eq!(good.target_retentions, input.target_retentions);
         assert!(good.enforce_grade_order);
+    }
+
+    #[test]
+    fn current_curve_retrievability_uses_elapsed_seconds_then_days() {
+        let mut input = ReviewInput {
+            card_id: 123,
+            note_id: None,
+            deck_id: None,
+            preset_id: None,
+            is_query: true,
+            ease: None,
+            duration_millis: None,
+            card_type: Some(2),
+            day_offset: Some(42),
+            current_elapsed_days: Some(3),
+            current_elapsed_seconds: Some(123_456),
+            target_retentions: [Some(0.9); 4],
+            enforce_grade_order: true,
+        };
+        let curve = ReviewCurve {
+            ahead_logits: vec![],
+            weights: vec![0.2, 0.3, 0.5],
+        };
+
+        assert_eq!(
+            current_curve_retrievability(&input, &curve),
+            Some(predict_curve(&curve, 123_456.0))
+        );
+        input.current_elapsed_seconds = None;
+        assert_eq!(
+            current_curve_retrievability(&input, &curve),
+            Some(predict_curve(&curve, 3.0 * SECONDS_PER_DAY as f32))
+        );
+        input.current_elapsed_days = Some(-1);
+        assert_eq!(current_curve_retrievability(&input, &curve), None);
     }
 
     #[test]

@@ -170,6 +170,7 @@ impl RwkvInference {
         enforce_grade_order: bool,
     ) -> PyResult<(
         f32,
+        Option<f32>,
         Option<u32>,
         Option<u32>,
         RwkvIntervalTuple,
@@ -216,6 +217,7 @@ impl RwkvInference {
 
         Ok((
             output.retrievability,
+            output.curve_retrievability,
             output.current_interval,
             output.current_s90,
             interval_tuple(output.intervals),
@@ -235,6 +237,7 @@ impl RwkvInference {
     ) -> PyResult<
         Vec<(
             f32,
+            Option<f32>,
             Option<u32>,
             Option<u32>,
             RwkvIntervalTuple,
@@ -255,6 +258,7 @@ impl RwkvInference {
                     .map(|output| {
                         (
                             output.retrievability,
+                            output.curve_retrievability,
                             output.current_interval,
                             output.current_s90,
                             interval_tuple(output.intervals),

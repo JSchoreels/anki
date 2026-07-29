@@ -143,8 +143,8 @@ pub enum PropertyKind {
     Stability(f32),
     Difficulty(f32),
     Retrievability(f32),
-    FsrsRetrievability(f32),
     RwkvRetrievability(f32),
+    RwkvCurveRetrievability(f32),
     CustomDataNumber { key: String, value: f32 },
     CustomDataString { key: String, value: String },
 }
@@ -530,7 +530,7 @@ fn parse_prop(prop_clause: &str) -> ParseResult<'_, SearchNode> {
         tag("pos"),
         tag("rated"),
         tag("resched"),
-        tag("fsrs:r"),
+        tag("rwkv-curve:r"),
         tag("rwkv:r"),
         tag("s"),
         tag("d"),
@@ -581,8 +581,8 @@ fn parse_prop(prop_clause: &str) -> ParseResult<'_, SearchNode> {
         "s" => PropertyKind::Stability(parse_f32(num, prop_clause)?),
         "d" => PropertyKind::Difficulty(parse_f32(num, prop_clause)?),
         "r" => PropertyKind::Retrievability(parse_f32(num, prop_clause)?),
-        "fsrs:r" => PropertyKind::FsrsRetrievability(parse_f32(num, prop_clause)?),
         "rwkv:r" => PropertyKind::RwkvRetrievability(parse_f32(num, prop_clause)?),
+        "rwkv-curve:r" => PropertyKind::RwkvCurveRetrievability(parse_f32(num, prop_clause)?),
         prop if prop.starts_with("cdn:") => PropertyKind::CustomDataNumber {
             key: prop.strip_prefix("cdn:").unwrap().into(),
             value: parse_f32(num, prop_clause)?,
@@ -1145,10 +1145,10 @@ mod test {
             })]
         );
         assert_eq!(
-            parse("prop:fsrs:r<0.9")?,
+            parse("prop:r<0.9")?,
             vec![Search(Property {
                 operator: "<".into(),
-                kind: PropertyKind::FsrsRetrievability(0.9)
+                kind: PropertyKind::Retrievability(0.9)
             })]
         );
         assert_eq!(
@@ -1156,6 +1156,13 @@ mod test {
             vec![Search(Property {
                 operator: ">=".into(),
                 kind: PropertyKind::RwkvRetrievability(0.8)
+            })]
+        );
+        assert_eq!(
+            parse("prop:rwkv-curve:r=0.7")?,
+            vec![Search(Property {
+                operator: "=".into(),
+                kind: PropertyKind::RwkvCurveRetrievability(0.7)
             })]
         );
         assert_eq!(parse("firstgrade:1")?, vec![Search(FirstGrade(1))]);

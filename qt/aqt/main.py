@@ -600,7 +600,11 @@ class AnkiQt(QMainWindow):
         self.taskman.run_in_background(downgrade, on_done)
 
     def loadProfile(self, onsuccess: Callable | None = None) -> None:
+        from aqt import rwkv_scheduler
+
+        rwkv_scheduler.begin_rwkv_state_cache_startup(self)
         if not self.loadCollection():
+            rwkv_scheduler.finish_rwkv_state_cache_startup(self)
             return
 
         self.setup_sound()
@@ -624,6 +628,9 @@ class AnkiQt(QMainWindow):
             self.pendingImport = None
 
         def _onsuccess(synced: bool) -> None:
+            from aqt import rwkv_scheduler
+
+            rwkv_scheduler.finish_rwkv_state_cache_startup(self)
             if synced:
                 self._refresh_after_sync()
             if onsuccess:
@@ -663,10 +670,11 @@ class AnkiQt(QMainWindow):
 
         refresh_reviewer_on_day_rollover_change()
         gui_hooks.profile_did_open()
-        from aqt import rwkv_scheduler
 
-        rwkv_scheduler.prepare_rwkv_state_cache_on_startup(self)
-        self.maybe_auto_sync_on_open_close(_onsuccess)
+        self.maybe_auto_sync_on_open_close(
+            _onsuccess,
+            refresh_rwkv_state=False,
+        )
 
     def unloadProfile(self, onsuccess: Callable) -> None:
         def callback() -> None:
@@ -1267,7 +1275,12 @@ title="{}" {}>{}</button>""".format(
         self.toolbar.redraw()
         self.flags.require_refresh()
 
-    def _sync_collection_and_media(self, after_sync: Callable[[], None]) -> None:
+    def _sync_collection_and_media(
+        self,
+        after_sync: Callable[[], None],
+        *,
+        refresh_rwkv_state: bool = True,
+    ) -> None:
         "Caller should ensure auth available."
 
         def on_collection_sync_finished() -> None:
@@ -1279,15 +1292,26 @@ title="{}" {}>{}</button>""".format(
                 self.reset()
                 after_sync()
 
-            rwkv_scheduler.refresh_rwkv_state_after_sync(self, finish_sync)
+            if refresh_rwkv_state:
+                rwkv_scheduler.refresh_rwkv_state_after_sync(self, finish_sync)
+            else:
+                finish_sync()
 
         gui_hooks.sync_will_start()
         sync_collection(self, on_done=on_collection_sync_finished)
 
-    def maybe_auto_sync_on_open_close(self, after_sync: Callable[[bool], None]) -> None:
+    def maybe_auto_sync_on_open_close(
+        self,
+        after_sync: Callable[[bool], None],
+        *,
+        refresh_rwkv_state: bool = True,
+    ) -> None:
         "If disabled, after_sync() is called immediately."
         if self.can_auto_sync():
-            self._sync_collection_and_media(lambda: after_sync(True))
+            self._sync_collection_and_media(
+                lambda: after_sync(True),
+                refresh_rwkv_state=refresh_rwkv_state,
+            )
         else:
             after_sync(False)
 

@@ -211,7 +211,8 @@ continues to come from the card's home deck config.
 Add-on FSRS presets and ordered card-matching rules can be provided through the
 synced collection config key `fsrsPresetOverlay`. Add-on preset ids must use the
 `addon:` namespace. Rule searches are evaluated in order, but must not use
-retrievability properties (`prop:r`, `prop:fsrs:r`, or `prop:rwkv:r`),
+retrievability properties (`prop:r`, `prop:rwkv:r`, or
+`prop:rwkv-curve:r`),
 `prop:s`, or `prop:d`, because those metrics depend on derived state or the
 selected FSRS preset.
 
@@ -423,25 +424,25 @@ Current exact-vs-scalar status:
   - RWKV-only new-card gather order (`ascending/descending retrievability (RWKV)`)
   - Filtered deck retrievability order (`ascending` / `descending`), preferring
     a current-day RWKV score and falling back to FSRS
-- `prop:r` filtering is exact-model-based. Search builds a temporary
-  `search_exact_retrievability` table (`cid`, `r`, `fsrs_r`, `rwkv_r`, `s90`)
-  from `FSRS::current_retrievability`, the stored `S90`, and available desktop
-  RWKV scores. `prop:r` keeps the hybrid behavior: `r` is taken from RWKV for
-  cards with a current-day score and from FSRS for the remaining cards.
-  `prop:fsrs:r` reads the FSRS-only value, while `prop:rwkv:r` reads the
-  RWKV-only value and does not match cards without an available RWKV score. For
-  cards with multiple current-day RWKV scores, search prefers the Card Info
-  score, then the active review-queue score, then the stats graph score, then a
-  background deck-count score. The deck-count cache also makes already-warmed
-  scores available to direct scheduler/backend callers such as add-ons. Before
-  creating or rebuilding a desktop filtered deck whose search uses `prop:r` or
-  `prop:rwkv:r`, or whose ordering uses retrievability, the RWKV layer pre-scores
-  the union of its active search terms. The standard desktop build blocks until
-  an in-progress RWKV warm-up completes, or performs the normal warm-up when
-  starting from a cold backend; a failed preparation aborts the rebuild instead
-  of silently using FSRS. Hybrid and RWKV-only predicates are broadened only for
-  this candidate pre-scoring pass; the final filtered-deck search then applies
-  the original predicates against the populated score map.
+- Retrievability property filtering is exact-model-based. Search builds a
+  temporary `search_exact_retrievability` table (`cid`, `fsrs_r`, `rwkv_r`,
+  `rwkv_curve_r`, `s90`) from `FSRS::current_retrievability`, the stored `S90`,
+  and available desktop RWKV scores. `prop:r` reads the FSRS value,
+  `prop:rwkv:r` reads RWKV-Instant, and `prop:rwkv-curve:r` reads the current
+  RWKV-Curve probability. The explicit RWKV properties do not match cards
+  without a score from their selected model. For cards with multiple
+  current-day RWKV-Instant scores, search prefers the Card Info score, then the
+  active review-queue score, then the stats graph score, then a background
+  deck-count score. RWKV-Curve scores come from full Stats/filtered-deck
+  predictions or Card Info, with Card Info taking priority outside a
+  Stats-scoped search. Before creating or rebuilding a desktop filtered deck
+  whose search uses either explicit RWKV property, or whose ordering uses
+  retrievability, the RWKV layer pre-scores the union of its active search
+  terms. The standard desktop build blocks until an in-progress RWKV warm-up
+  completes, or performs the normal warm-up when starting from a cold backend;
+  a failed preparation aborts the rebuild. RWKV predicates are broadened only
+  for this candidate pre-scoring pass; the final filtered-deck search then
+  applies the original predicates against the populated score map.
 - `card.data.s` stores `S90` (the interval at 90% retrievability), so
   `prop:s`, the browser stability column, and Card Info all use the same
   stability value across FSRS-6 and FSRS-7. When a positive FSRS stability value

@@ -107,6 +107,105 @@ def test_non_queue_preset_mutation_invalidates_rwkv_before_screen_refresh(
     assert calls == ["rwkv preset", "screen"]
 
 
+def test_startup_sync_can_defer_rwkv_refresh(
+    monkeypatch,
+) -> None:
+    calls: list[object] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.can_auto_sync = lambda: True  # type: ignore[method-assign]
+
+    def sync(
+        after_sync: Callable[[], None],
+        *,
+        refresh_rwkv_state: bool = True,
+    ) -> None:
+        calls.append(("sync", refresh_rwkv_state))
+        after_sync()
+
+    mw._sync_collection_and_media = sync  # type: ignore[method-assign]
+
+    mw.maybe_auto_sync_on_open_close(
+        lambda synced: calls.append(("done", synced)),
+        refresh_rwkv_state=False,
+    )
+
+    assert calls == [
+        ("sync", False),
+        ("done", True),
+    ]
+
+
+def test_sync_can_finish_without_separate_rwkv_refresh(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(
+        models=SimpleNamespace(_clear_cache=lambda: calls.append("clear models"))
+    )
+    mw.reset = lambda: calls.append("reset")  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "sync_will_start",
+        lambda: calls.append("sync start"),
+    )
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "sync_did_finish",
+        lambda: calls.append("sync finish"),
+    )
+    monkeypatch.setattr(
+        aqt.main,
+        "sync_collection",
+        lambda _mw, on_done: on_done(),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, _on_done: calls.append("rwkv refresh"),
+    )
+
+    mw._sync_collection_and_media(
+        lambda: calls.append("done"),
+        refresh_rwkv_state=False,
+    )
+
+    assert calls == [
+        "sync start",
+        "clear models",
+        "sync finish",
+        "reset",
+        "done",
+    ]
+
+
+def test_profile_load_marks_rwkv_startup_before_loading_collection(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.loadCollection = lambda: calls.append("load collection") or False  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "begin_rwkv_state_cache_startup",
+        lambda _mw: calls.append("begin rwkv"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "finish_rwkv_state_cache_startup",
+        lambda _mw: calls.append("finish rwkv"),
+    )
+
+    mw.loadProfile()
+
+    assert calls == [
+        "begin rwkv",
+        "load collection",
+        "finish rwkv",
+    ]
+
+
 def test_close_event_unloads_profile_when_no_background_op() -> None:
     mw, calls, progress = setup_mw()
     event = CloseEvent()

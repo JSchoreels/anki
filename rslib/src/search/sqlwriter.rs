@@ -517,17 +517,17 @@ impl SqlWriter<'_> {
             }
             PropertyKind::Retrievability(r) => write!(
                 self.sql,
-                "(select r from search_exact_retrievability where cid = c.id) {op} {r}"
-            )
-            .unwrap(),
-            PropertyKind::FsrsRetrievability(r) => write!(
-                self.sql,
                 "(select fsrs_r from search_exact_retrievability where cid = c.id) {op} {r}"
             )
             .unwrap(),
             PropertyKind::RwkvRetrievability(r) => write!(
                 self.sql,
                 "(select rwkv_r from search_exact_retrievability where cid = c.id) {op} {r}"
+            )
+            .unwrap(),
+            PropertyKind::RwkvCurveRetrievability(r) => write!(
+                self.sql,
+                "(select rwkv_curve_r from search_exact_retrievability where cid = c.id) {op} {r}"
             )
             .unwrap(),
         }
@@ -1499,12 +1499,15 @@ c.odue != 0 then c.odue else c.due end) != {days}) or (c.queue in (1,4) and
             )
         );
         assert_eq!(s(ctx, "prop:rated>-5:3").0, s(ctx, "rated:5:3").0);
-        assert!(s(ctx, "prop:fsrs:r<0.9")
+        assert!(s(ctx, "prop:r<0.9")
             .0
             .contains("select fsrs_r from search_exact_retrievability"));
         assert!(s(ctx, "prop:rwkv:r>=0.8")
             .0
             .contains("select rwkv_r from search_exact_retrievability"));
+        assert!(s(ctx, "prop:rwkv-curve:r=0.7")
+            .0
+            .contains("select rwkv_curve_r from search_exact_retrievability"));
         assert_eq!(
             s(ctx, "prop:cdn:r=1"),
             (

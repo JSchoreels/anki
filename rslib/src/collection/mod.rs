@@ -173,6 +173,7 @@ pub(crate) struct RwkvRetrievabilityScores {
 #[derive(Debug, Clone, Default)]
 struct RwkvRetrievabilityScore {
     card_info: Option<f32>,
+    card_info_curve: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +210,7 @@ pub(crate) struct RwkvReviewQueueScoreEntry {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RwkvStatsGraphScoreEntry {
     pub(crate) retrievability: f32,
+    pub(crate) curve_retrievability: Option<f32>,
     pub(crate) intervening_reviews: Option<u32>,
     pub(crate) target_retention: Option<f32>,
     pub(crate) curve_due: bool,
@@ -269,6 +271,19 @@ impl RwkvRetrievabilityScores {
         })
     }
 
+    fn stats_graph_curve_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
+        let scores: HashMap<_, _> = self
+            .stats_graph_score_map(stats_search)?
+            .iter()
+            .filter_map(|(&card_id, score)| {
+                score
+                    .curve_retrievability
+                    .map(|retrievability| (card_id, retrievability))
+            })
+            .collect();
+        (!scores.is_empty()).then_some(scores)
+    }
+
     fn stats_graph_score_entries(
         &self,
         stats_search: Option<&str>,
@@ -320,6 +335,32 @@ impl RwkvRetrievabilityScores {
             })
             .collect();
 
+        (!scores.is_empty()).then_some(scores)
+    }
+
+    fn card_info_curve_scores(&self) -> Option<HashMap<CardId, f32>> {
+        let scores: HashMap<_, _> = self
+            .scores
+            .iter()
+            .filter_map(|(&card_id, score)| {
+                score
+                    .card_info_curve
+                    .map(|retrievability| (card_id, retrievability))
+            })
+            .collect();
+
+        (!scores.is_empty()).then_some(scores)
+    }
+
+    fn active_curve_scores(&self, stats_search: Option<&str>) -> Option<HashMap<CardId, f32>> {
+        let mut scores = self
+            .stats_graph_curve_scores(stats_search)
+            .unwrap_or_default();
+        if stats_search.is_none() {
+            if let Some(card_info_scores) = self.card_info_curve_scores() {
+                scores.extend(card_info_scores);
+            }
+        }
         (!scores.is_empty()).then_some(scores)
     }
 
@@ -412,16 +453,19 @@ impl RwkvRetrievabilityScores {
         }
     }
 
-    fn set_card_info_score(&mut self, card_id: CardId, retrievability: Option<f32>) {
-        match retrievability {
-            Some(retrievability) => {
-                self.scores.entry(card_id).or_default().card_info = Some(retrievability);
-            }
-            None => {
-                if let Some(score) = self.scores.get_mut(&card_id) {
-                    score.card_info = None;
-                }
-            }
+    fn set_card_info_scores(
+        &mut self,
+        card_id: CardId,
+        retrievability: Option<f32>,
+        curve_retrievability: Option<f32>,
+    ) {
+        if retrievability.is_some() || curve_retrievability.is_some() {
+            let score = self.scores.entry(card_id).or_default();
+            score.card_info = retrievability;
+            score.card_info_curve = curve_retrievability;
+        } else if let Some(score) = self.scores.get_mut(&card_id) {
+            score.card_info = None;
+            score.card_info_curve = None;
         }
         self.prune_empty_scores();
     }
@@ -492,7 +536,7 @@ impl RwkvRetrievabilityScore {
     }
 
     fn is_empty(&self) -> bool {
-        self.card_info.is_none()
+        self.card_info.is_none() && self.card_info_curve.is_none()
     }
 }
 
@@ -829,6 +873,7 @@ impl Collection {
                     card_id,
                     RwkvStatsGraphScoreEntry {
                         retrievability,
+                        curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: None,
                         curve_due: false,
@@ -875,14 +920,24 @@ impl Collection {
             .and_then(|scores| scores.stats_graph_score_entries(search))
     }
 
+    #[cfg(test)]
     pub(crate) fn set_rwkv_card_info_score(
         &mut self,
         card_id: CardId,
         retrievability: Option<f32>,
     ) -> Result<()> {
+        self.set_rwkv_card_info_scores(card_id, retrievability, None)
+    }
+
+    pub(crate) fn set_rwkv_card_info_scores(
+        &mut self,
+        card_id: CardId,
+        retrievability: Option<f32>,
+        curve_retrievability: Option<f32>,
+    ) -> Result<()> {
         let days_elapsed = self.timing_today()?.days_elapsed;
         self.rwkv_retrievability_scores_mut(days_elapsed)
-            .set_card_info_score(card_id, retrievability);
+            .set_card_info_scores(card_id, retrievability, curve_retrievability);
         self.clear_empty_rwkv_retrievability_scores();
         Ok(())
     }
@@ -896,6 +951,18 @@ impl Collection {
             .as_ref()
             .filter(|scores| scores.days_elapsed == days_elapsed)
             .and_then(RwkvRetrievabilityScores::card_info_scores)
+    }
+
+    pub(crate) fn rwkv_curve_retrievability_scores_for_day(
+        &self,
+        days_elapsed: u32,
+        stats_search: Option<&str>,
+    ) -> Option<HashMap<CardId, f32>> {
+        self.state
+            .rwkv_retrievability_scores
+            .as_ref()
+            .filter(|scores| scores.days_elapsed == days_elapsed)
+            .and_then(|scores| scores.active_curve_scores(stats_search))
     }
 
     pub(crate) fn rwkv_retrievability_scores_for_day(
@@ -952,6 +1019,7 @@ mod test {
                     card_id,
                     RwkvStatsGraphScoreEntry {
                         retrievability: 0.2,
+                        curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: None,
                         curve_due: false,
@@ -967,6 +1035,7 @@ mod test {
             card_info_card,
             RwkvRetrievabilityScore {
                 card_info: Some(0.4),
+                card_info_curve: None,
             },
         )]);
         let scores = RwkvRetrievabilityScores {

@@ -937,10 +937,17 @@ impl crate::services::SchedulerService for Collection {
                     "invalid RWKV target retention"
                 );
             }
+            if let Some(curve_retrievability) = score.curve_retrievability {
+                require!(
+                    curve_retrievability.is_finite() && (0.0..=1.0).contains(&curve_retrievability),
+                    "invalid RWKV-Curve retrievability"
+                );
+            }
             scores.insert(
                 score.card_id.into(),
                 RwkvStatsGraphScoreEntry {
                     retrievability: score.retrievability,
+                    curve_retrievability: score.curve_retrievability,
                     intervening_reviews: score.intervening_reviews,
                     target_retention: score.target_retention,
                     curve_due: score.curve_due.unwrap_or(false),
@@ -957,7 +964,17 @@ impl crate::services::SchedulerService for Collection {
                 "invalid RWKV retrievability"
             );
         }
-        self.set_rwkv_card_info_score(input.card_id.into(), input.retrievability)
+        if let Some(curve_retrievability) = input.curve_retrievability {
+            require!(
+                curve_retrievability.is_finite() && (0.0..=1.0).contains(&curve_retrievability),
+                "invalid RWKV-Curve retrievability"
+            );
+        }
+        self.set_rwkv_card_info_scores(
+            input.card_id.into(),
+            input.retrievability,
+            input.curve_retrievability,
+        )
     }
 
     fn get_rwkv_retrievability_score(

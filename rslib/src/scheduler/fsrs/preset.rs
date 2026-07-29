@@ -247,8 +247,8 @@ fn node_uses_exact_fsrs_metric(node: &Node) -> bool {
         Node::Search(SearchNode::Property {
             kind:
                 PropertyKind::Retrievability(_)
-                | PropertyKind::FsrsRetrievability(_)
                 | PropertyKind::RwkvRetrievability(_)
+                | PropertyKind::RwkvCurveRetrievability(_)
                 | PropertyKind::Stability(_)
                 | PropertyKind::Difficulty(_),
             ..
@@ -974,8 +974,8 @@ mod test {
     fn fsrs_preset_overlay_rejects_fsrs_property_rules() -> Result<()> {
         for search in [
             "prop:r<0.9",
-            "prop:fsrs:r<0.9",
             "prop:rwkv:r<0.9",
+            "prop:rwkv-curve:r<0.9",
             "prop:s>1",
             "prop:d>0.5",
         ] {

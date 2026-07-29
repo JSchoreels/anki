@@ -149,6 +149,7 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         s90s = self._s90_overrides(review_input)
         return RwkvReviewPrediction(
             retrievability=_probability_as_float(probability),
+            curve_retrievability=self._curve_retrievability(review_input),
             current_interval=intervals.good,
             current_s90=s90s.good,
             interval_overrides=intervals,
@@ -213,6 +214,7 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             s90s = self._s90_overrides(review_input)
             predictions[index] = RwkvReviewPrediction(
                 retrievability=_probability_as_float(probability),
+                curve_retrievability=self._curve_retrievability(review_input),
                 current_interval=intervals.good,
                 current_s90=s90s.good,
                 interval_overrides=intervals,
@@ -255,6 +257,20 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             review_input,
             (0.9, 0.9, 0.9, 0.9),
         )
+
+    def _curve_retrievability(self, review_input: RwkvReviewInput) -> float | None:
+        curve = self._curves.get(review_input.identity.card_id)
+        if curve is None:
+            return None
+
+        elapsed_seconds = review_input.current_elapsed_seconds
+        if elapsed_seconds is None or elapsed_seconds < 0:
+            elapsed_days = review_input.current_elapsed_days
+            if elapsed_days is None or elapsed_days < 0:
+                return None
+            elapsed_seconds = elapsed_days * 86_400
+
+        return _probability_as_float(self._process.predict_func(curve, elapsed_seconds))
 
     def _curve_interval_overrides(
         self,
@@ -365,6 +381,7 @@ class _RustRwkvRuntime:
         with self._locked_process():
             (
                 retrievability,
+                curve_retrievability,
                 current_interval,
                 current_s90,
                 intervals,
@@ -399,6 +416,11 @@ class _RustRwkvRuntime:
         return RwkvReviewTransition(
             prediction=RwkvReviewPrediction(
                 retrievability=float(retrievability),
+                curve_retrievability=(
+                    float(curve_retrievability)
+                    if curve_retrievability is not None
+                    else None
+                ),
                 current_interval=_optional_interval(current_interval),
                 current_s90=_optional_interval(current_s90),
                 interval_overrides=_interval_override_from_tuple(intervals),
@@ -600,6 +622,11 @@ class _RustRwkvRuntime:
         return [
             RwkvReviewPrediction(
                 retrievability=float(retrievability),
+                curve_retrievability=(
+                    float(curve_retrievability)
+                    if curve_retrievability is not None
+                    else None
+                ),
                 current_interval=_optional_interval(current_interval),
                 current_s90=_optional_interval(current_s90),
                 interval_overrides=_interval_override_from_tuple(intervals),
@@ -610,6 +637,7 @@ class _RustRwkvRuntime:
             )
             for (
                 retrievability,
+                curve_retrievability,
                 current_interval,
                 current_s90,
                 intervals,

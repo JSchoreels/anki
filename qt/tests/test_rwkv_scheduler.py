@@ -6592,6 +6592,7 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
     updates: list[tuple[int, object | None]] = []
     completed: list[bool] = []
     refreshes: list[str] = []
+    prewarm_calls: list[int] = []
 
     class Taskman:
         progress_task: Callable[[], bool] | None = None
@@ -6634,7 +6635,7 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_rwkv_score_prewarm_work_for_deck",
-        lambda _reviewer, *, deck_id, reason: None,
+        lambda _reviewer, *, deck_id, reason: prewarm_calls.append(deck_id),
     )
 
     rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
@@ -6649,6 +6650,7 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
     )
     assert updates == []
     assert completed == [False]
+    assert prewarm_calls == []
 
     assert taskman.progress_task is not None
     assert taskman.progress_done is not None
@@ -6701,6 +6703,57 @@ def test_startup_load_skips_full_cache_preflight(monkeypatch) -> None:
 
     assert config_reads == 1
     assert load_calls == [(mw, True)]
+
+
+def test_startup_cache_load_can_wait_until_after_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    mw = SimpleNamespace()
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_invalidate_reviewer_backend_runtime_state_for_profile_open",
+        lambda: events.append("invalidate"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: rwkv_scheduler._RwkvCollectionConfigState(True, False),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache_with_progress",
+        lambda _mw, *, prompt_if_unavailable=False: events.append(
+            f"load:{prompt_if_unavailable}"
+        ),
+    )
+
+    rwkv_scheduler.begin_rwkv_state_cache_startup(mw)
+    assert events == ["invalidate"]
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw) is True
+
+    events.append("sync")
+    rwkv_scheduler.finish_rwkv_state_cache_startup(mw)
+
+    assert events == ["invalidate", "sync", "load:True"]
+
+
+def test_disabled_rwkv_clears_deferred_startup_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mw = SimpleNamespace()
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: rwkv_scheduler._RwkvCollectionConfigState(False, False),
+    )
+
+    rwkv_scheduler.begin_rwkv_state_cache_startup(mw)
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw) is True
+
+    rwkv_scheduler.finish_rwkv_state_cache_startup(mw)
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
 def test_startup_load_launch_failure_prompts_for_rebuild(
@@ -10133,23 +10186,32 @@ def test_prepare_stats_due_search_transports_dynamic_desired_retention(
 
 
 @pytest.mark.parametrize(
-    ("search", "order", "prepare_instant_due", "prepare_curve_due"),
+    (
+        "search",
+        "order",
+        "prepare_instant_due",
+        "prepare_curve_due",
+        "prepare_curve_retrievability",
+    ),
     [
-        (
-            '"deck:Japan::1. Vocabulary" prop:r<0.9',
-            FilteredDeckConfig.SearchTerm.DUE,
-            False,
-            False,
-        ),
         (
             '"deck:Japan::1. Vocabulary" prop:rwkv:r<0.9',
             FilteredDeckConfig.SearchTerm.DUE,
             False,
             False,
+            False,
+        ),
+        (
+            '"deck:Japan::1. Vocabulary" prop:rwkv-curve:r<0.9',
+            FilteredDeckConfig.SearchTerm.DUE,
+            False,
+            False,
+            True,
         ),
         (
             '"deck:Japan::1. Vocabulary"',
             FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
+            False,
             False,
             False,
         ),
@@ -10158,12 +10220,14 @@ def test_prepare_stats_due_search_transports_dynamic_desired_retention(
             FilteredDeckConfig.SearchTerm.DUE,
             True,
             False,
+            False,
         ),
         (
             '"deck:Japan::1. Vocabulary" is:rwkv-curve:due',
             FilteredDeckConfig.SearchTerm.DUE,
             False,
             True,
+            False,
         ),
     ],
 )
@@ -10173,6 +10237,7 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
     order: int,
     prepare_instant_due: bool,
     prepare_curve_due: bool,
+    prepare_curve_retrievability: bool,
 ) -> None:
     class Collection:
         def __init__(self) -> None:
@@ -10193,7 +10258,7 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
             )
         ]
     )
-    prepared: list[tuple[object, str, bool, bool]] = []
+    prepared: list[tuple[object, str, bool, bool, bool]] = []
 
     def prepare(
         reviewer: object,
@@ -10202,9 +10267,18 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         warm_up_if_needed: bool = False,
         prepare_instant_due: bool = False,
         prepare_curve_due: bool = False,
+        prepare_curve_retrievability: bool = False,
     ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
         assert warm_up_if_needed
-        prepared.append((reviewer, search, prepare_instant_due, prepare_curve_due))
+        prepared.append(
+            (
+                reviewer,
+                search,
+                prepare_instant_due,
+                prepare_curve_due,
+                prepare_curve_retrievability,
+            )
+        )
         return rwkv_scheduler.RwkvStatsPreparationStatus.READY
 
     monkeypatch.setattr(
@@ -10223,6 +10297,7 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
             "combined search",
             prepare_instant_due,
             prepare_curve_due,
+            prepare_curve_retrievability,
         )
     ]
 
@@ -10232,7 +10307,7 @@ def test_filtered_deck_fsrs_retrievability_does_not_prepare_rwkv_scores() -> Non
     config = FilteredDeckConfig(
         search_terms=[
             FilteredDeckConfig.SearchTerm(
-                search='"deck:Japan::1. Vocabulary" prop:fsrs:r<0.9',
+                search='"deck:Japan::1. Vocabulary" prop:r<0.9',
                 limit=9999,
                 order=FilteredDeckConfig.SearchTerm.DUE,
             )
@@ -10305,8 +10380,16 @@ def test_filtered_deck_curve_due_uses_current_curve_interval(
         rwkv_scheduler,
         "_rwkv_review_predictions_for_inputs",
         lambda *_args, **_kwargs: [
-            RwkvReviewPrediction(retrievability=0.7, current_interval=5),
-            RwkvReviewPrediction(retrievability=0.9, current_interval=5),
+            RwkvReviewPrediction(
+                retrievability=0.7,
+                curve_retrievability=0.6,
+                current_interval=5,
+            ),
+            RwkvReviewPrediction(
+                retrievability=0.9,
+                curve_retrievability=0.8,
+                current_interval=5,
+            ),
         ],
     )
     monkeypatch.setattr(
@@ -10328,12 +10411,14 @@ def test_filtered_deck_curve_due_uses_current_curve_interval(
             search="is:rwkv-curve:due",
             prepare_instant_due=True,
             prepare_curve_due=True,
+            prepare_curve_retrievability=True,
         )
     finally:
         set_reviewer_backend(previous_backend)
 
     assert result is not None
     assert result.scores == [(1, 0.7), (2, 0.9)]
+    assert result.curve_scores == [(1, 0.6), (2, 0.8)]
     assert result.target_retentions_by_card_id == {1: 0.8, 2: 0.9}
     assert result.intervening_reviews_by_card_id == {1: 3}
     assert result.curve_due_card_ids == frozenset({1})
@@ -10364,11 +10449,13 @@ def test_stats_score_transport_includes_due_metadata() -> None:
         target_retentions_by_card_id={1: 0.8},
         intervening_reviews_by_card_id={1: 3},
         curve_due_card_ids={2},
+        curve_retrievabilities_by_card_id={1: 0.6},
     )
 
     first, second = backend.scores
     assert getattr(first, "target_retention") == pytest.approx(0.8)
     assert getattr(first, "intervening_reviews") == 3
+    assert getattr(first, "curve_retrievability") == pytest.approx(0.6)
     assert not first.HasField("curve_due")
     assert second.HasField("curve_due")
     assert getattr(second, "curve_due") is True
@@ -11691,6 +11778,125 @@ def test_prepare_stats_retrievability_scores_shares_in_flight_status(
         ] == ([(1, pytest.approx(0.64))] if outcome == "ready" else [])
 
 
+def test_concurrent_stats_search_retries_after_backend_contention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Backend:
+        def __init__(self) -> None:
+            self.predict_calls = 0
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def predict_reviews(
+            self,
+            candidates: list[RwkvReviewCandidate],
+        ) -> list[RwkvReviewPrediction]:
+            self.predict_calls += 1
+            if self.predict_calls == 1:
+                self.started.set()
+                assert self.release.wait(timeout=2)
+            return [RwkvReviewPrediction(retrievability=0.64) for _ in candidates]
+
+        def state_generation(self) -> int:
+            return 7
+
+    class Decks:
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {"id": 1000, "rwkvReviewEnabled": True}
+
+    class Scheduler:
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            assert "from cards" in sql
+            assert "id in (1)" in sql
+            data = json.dumps({"lrt": 4 * 86_400})
+            return [(1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, data)]
+
+    class Collection:
+        def __init__(self, rpc: _RwkvQueueScoreRpc) -> None:
+            self._backend = rpc
+            self.db = DB()
+            self.decks = Decks()
+            self.sched = Scheduler()
+
+        def find_cards(self, search: str, order: bool = False) -> list[int]:
+            assert search in {"deck:current", "(deck:current) (-is:suspended)"}
+            assert order is False
+            return [1]
+
+    backend = Backend()
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_stats",
+        lambda reviewer: True,
+    )
+    previous_backend = set_reviewer_backend(backend)
+    first_statuses: list[rwkv_scheduler.RwkvStatsPreparationStatus] = []
+
+    def prepare_first_search() -> None:
+        first_statuses.append(
+            prepare_stats_retrievability_scores(reviewer, "deck:current")
+        )
+
+    first = threading.Thread(target=prepare_first_search)
+    try:
+        first.start()
+        assert backend.started.wait(timeout=2)
+
+        scoring_contended_status = prepare_stats_retrievability_scores(
+            reviewer,
+            "(deck:current) (-is:suspended)",
+        )
+        backend.release.set()
+        first.join(timeout=2)
+
+        original_publish = rwkv_scheduler._set_rwkv_stats_graph_scores_if_current
+        publish_attempts = 0
+
+        def publish(*args: Any, **kwargs: Any) -> bool:
+            nonlocal publish_attempts
+            publish_attempts += 1
+            if publish_attempts == 1:
+                return False
+            return original_publish(*args, **kwargs)
+
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_set_rwkv_stats_graph_scores_if_current",
+            publish,
+        )
+        publish_contended_status = prepare_stats_retrievability_scores(
+            reviewer,
+            "(deck:current) (-is:suspended)",
+        )
+        retry_status = prepare_stats_retrievability_scores(
+            reviewer,
+            "(deck:current) (-is:suspended)",
+        )
+    finally:
+        backend.release.set()
+        first.join(timeout=2)
+        set_reviewer_backend(previous_backend)
+
+    assert not first.is_alive()
+    assert first_statuses == [rwkv_scheduler.RwkvStatsPreparationStatus.READY]
+    assert scoring_contended_status == rwkv_scheduler.RwkvStatsPreparationStatus.PENDING
+    assert publish_contended_status == rwkv_scheduler.RwkvStatsPreparationStatus.PENDING
+    assert retry_status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert backend.predict_calls == 3
+    assert [call["search"] for call in rpc.stats_calls] == [
+        "deck:current",
+        "(deck:current) (-is:suspended)",
+    ]
+
+
 def test_prepare_reviewer_queue_order_batches_with_deck_option() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -12723,6 +12929,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
         ) -> list[
             tuple[
                 float,
+                float | None,
                 int | None,
                 int | None,
                 tuple[int | None, ...],
@@ -12732,9 +12939,18 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
         ]:
             self.requests.append(requests)
             return [
-                (0.25, 9, 19, (1, 3, 7, 14), (2, 4, 17, 28), (0.75, 0.05, 0.15, 0.05)),
+                (
+                    0.25,
+                    0.65,
+                    9,
+                    19,
+                    (1, 3, 7, 14),
+                    (2, 4, 17, 28),
+                    (0.75, 0.05, 0.15, 0.05),
+                ),
                 (
                     0.75,
+                    None,
                     None,
                     None,
                     (None, None, None, None),
@@ -12773,6 +12989,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
     ]
     first, second = predictions
     assert first is not None
+    assert first.curve_retrievability == pytest.approx(0.65)
     assert first.current_interval == 9
     assert first.current_s90 == 19
     assert first.interval_overrides == RwkvIntervalOverride(
@@ -12789,6 +13006,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
     )
     assert first.button_probabilities == pytest.approx((0.75, 0.05, 0.15, 0.05))
     assert second is not None
+    assert second.curve_retrievability is None
     assert second.current_interval is None
     assert second.current_s90 is None
     assert second.interval_overrides == RwkvIntervalOverride()
@@ -14429,7 +14647,12 @@ def test_stats_multi_batch_discards_scores_after_prediction_state_change(
             assert not lock_thread.is_alive()
         set_reviewer_backend(previous_backend)
 
-    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.FAILED
+    expected_status = (
+        rwkv_scheduler.RwkvStatsPreparationStatus.PENDING
+        if mutation == "contention"
+        else rwkv_scheduler.RwkvStatsPreparationStatus.FAILED
+    )
+    assert status == expected_status
     assert rpc.stats_calls == []
     assert replacement_rpc.stats_calls == []
     assert backend_a.prediction_calls == [[1]]

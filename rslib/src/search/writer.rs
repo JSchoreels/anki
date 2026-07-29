@@ -211,8 +211,8 @@ fn write_property(operator: &str, kind: &PropertyKind) -> String {
         Stability(u) => format!("prop:s{operator}{u}"),
         Difficulty(u) => format!("prop:d{operator}{u}"),
         Retrievability(u) => format!("prop:r{operator}{u}"),
-        FsrsRetrievability(u) => format!("prop:fsrs:r{operator}{u}"),
         RwkvRetrievability(u) => format!("prop:rwkv:r{operator}{u}"),
+        RwkvCurveRetrievability(u) => format!("prop:rwkv-curve:r{operator}{u}"),
         Rated(u, ease) => match ease {
             RatingKind::AnswerButton(val) => format!("prop:rated{operator}{u}:{val}"),
             RatingKind::AnyAnswerButton => format!("prop:rated{operator}{u}"),
@@ -264,13 +264,14 @@ mod test {
         assert_eq!(r#""aNd" "oR""#, normalize_search(r#""aNd" "oR""#).unwrap());
         // normalize numbers
         assert_eq!("prop:ease>1", normalize_search("prop:ease>1.0").unwrap());
-        assert_eq!(
-            "prop:fsrs:r>0.9",
-            normalize_search("prop:fsrs:r>0.90").unwrap()
-        );
+        assert_eq!("prop:r>0.9", normalize_search("prop:r>0.90").unwrap());
         assert_eq!(
             "prop:rwkv:r<0.8",
             normalize_search("prop:rwkv:r<0.80").unwrap()
+        );
+        assert_eq!(
+            "prop:rwkv-curve:r=0.7",
+            normalize_search("prop:rwkv-curve:r=0.70").unwrap()
         );
         assert_eq!(
             "Frequency>500",

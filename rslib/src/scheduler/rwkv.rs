@@ -420,7 +420,7 @@ fn broaden_retrievability_properties(node: Node, negated: bool) -> Node {
                 .collect(),
         ),
         Node::Search(SearchNode::Property {
-            kind: PropertyKind::Retrievability(_) | PropertyKind::RwkvRetrievability(_),
+            kind: PropertyKind::RwkvRetrievability(_) | PropertyKind::RwkvCurveRetrievability(_),
             ..
         })
         | Node::Search(SearchNode::State(StateKind::RwkvDue | StateKind::RwkvCurveDue)) => {
@@ -1107,9 +1107,8 @@ mod test {
                 include_new_cards: false,
             })?;
 
-        assert_eq!(response.searched_cards, 1);
-        assert_eq!(response.rows.len(), 1);
-        assert_eq!(response.rows[0].card_id, review_card.id.0);
+        assert_eq!(response.searched_cards, 0);
+        assert!(response.rows.is_empty());
 
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
@@ -1125,14 +1124,15 @@ mod test {
 
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
-                search: format!("cid:{} prop:fsrs:r<0", review_card.id.0),
+                search: format!("cid:{} prop:rwkv-curve:r<0", review_card.id.0),
                 include_suspended_review: false,
                 include_disabled_decks: false,
                 include_new_cards: false,
             })?;
 
-        assert_eq!(response.searched_cards, 0);
-        assert!(response.rows.is_empty());
+        assert_eq!(response.searched_cards, 1);
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].card_id, review_card.id.0);
 
         Ok(())
     }

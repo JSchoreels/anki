@@ -54,7 +54,7 @@ export interface RetrievabilityHistogramData {
     scale: ScaleLinear<number, number>;
     series: RetrievabilityHistogramSeries[];
     hoverText: (index: number) => string;
-    onClick: ((data: CountBin) => void) | null;
+    onClick: ((data: CountBin, shiftKey: boolean) => void) | null;
     xTickFormat: (d: number) => string;
 }
 
@@ -93,9 +93,9 @@ export function gatherData(data: GraphsResponse): GraphData {
     };
 }
 
-function makeQuery(start: number, end: number): string {
-    const fromQuery = `"prop:r>=${start / 100}"`;
-    let tillQuery = `"prop:r<${(end + 1) / 100}"`;
+function makeQuery(start: number, end: number, property: "r" | "rwkv:r"): string {
+    const fromQuery = `"prop:${property}>=${start / 100}"`;
+    let tillQuery = `"prop:${property}<${(end + 1) / 100}"`;
     if (end === 99) {
         tillQuery = tillQuery.replace("<", "<=");
     }
@@ -195,10 +195,11 @@ export function prepareData(
             .join("<br>");
     }
 
-    function onClick(bin: CountBin): void {
+    function onClick(bin: CountBin, shiftKey: boolean): void {
         const start = bin.x0!;
         const end = bin.x1! - 1;
-        const query = makeQuery(start, end);
+        const property = data.rwkv && !shiftKey ? "rwkv:r" : "r";
+        const query = makeQuery(start, end, property);
         dispatch("search", { query });
     }
 
@@ -337,6 +338,6 @@ export function retrievabilityHistogramGraph(
         hoverzone
             .filter(({ index }) => data.series.some((series) => binValue(series.bins[index]) > 0))
             .attr("class", clickableClass)
-            .on("click", (_event, { bin }) => data.onClick!(bin));
+            .on("click", (event: MouseEvent, { bin }) => data.onClick!(bin, event.shiftKey));
     }
 }
