@@ -9748,6 +9748,30 @@ def test_deck_browser_keeps_pending_counts_when_cache_load_is_deferred() -> None
     assert renders == [{10, 11}, set()]
 
 
+def test_deck_browser_reschedule_all_decks_uses_global_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt.deckbrowser import DeckBrowser
+
+    calls: list[tuple[object, int | None]] = []
+
+    def reschedule(mw: object, *, deck_id: int | None = None) -> None:
+        calls.append((mw, deck_id))
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "reschedule_rwkv_review_cards_with_progress",
+        reschedule,
+    )
+    mw = object()
+    browser = DeckBrowser.__new__(DeckBrowser)
+    browser.mw = mw
+
+    browser._reschedule_all_decks_with_rwkv_curve()
+
+    assert calls == [(mw, None)]
+
+
 def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

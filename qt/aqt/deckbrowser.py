@@ -466,6 +466,9 @@ class DeckBrowser:
             a.triggered,
             lambda b, did=did: self._reschedule_with_rwkv_curve(DeckId(int(did))),
         )
+        a = rwkv_menu.addAction(tr.decks_rwkv_reschedule_all_decks())
+        assert a is not None
+        qconnect(a.triggered, lambda: self._reschedule_all_decks_with_rwkv_curve())
         a = m.addAction(tr.actions_export())
         assert a is not None
         qconnect(a.triggered, lambda b, did=did: self._export(DeckId(int(did))))
@@ -502,6 +505,9 @@ class DeckBrowser:
             self.mw,
             deck_id=did,
         )
+
+    def _reschedule_all_decks_with_rwkv_curve(self) -> None:
+        aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(self.mw)
 
     def _collapse(self, did: DeckId) -> None:
         node = self.mw.col.decks.find_deck_in_tree(self._render_data.tree, did)

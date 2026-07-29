@@ -448,10 +448,11 @@ S90 field consumed by stats and Browser stability views. Existing FSRS
 `memory_state.stability_internal` values are not overwritten by the RWKV S90
 write.
 
-The desktop backend also supports a maintenance operation that reschedules RWKV
-review cards and updates their stored RWKV memory state. The operation first
-warms or restores the local RWKV state cache, then queries RWKV for normal
-review cards in the requested deck tree, filtered to RWKV-enabled deck configs.
+The deck cogwheel's **RWKV** submenu supports rescheduling either the selected
+deck tree or all decks. Both operations update the stored RWKV memory state,
+first warming or restoring the local RWKV state cache and then querying RWKV
+for normal review cards in the requested scope, filtered to RWKV-enabled deck
+configs.
 Full interval/S90 predictions use a fixed batch size of `128`, independent of
 the deck option `rwkv_review_batch_size`, to bound the transient recurrent-state
 memory used by this operation. It uses the current/query RWKV-Curve, not a

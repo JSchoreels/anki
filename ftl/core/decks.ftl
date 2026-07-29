@@ -18,6 +18,7 @@ decks-learn-header = Learn
 decks-review-header = Due
 decks-rwkv = RWKV
 decks-reschedule-with-rwkv-curve = Reschedule With RWKV-Curve
+decks-rwkv-reschedule-all-decks = Reschedule All Decks
 
 ##
 decks-unmovable-cards = Show any excluded cards
