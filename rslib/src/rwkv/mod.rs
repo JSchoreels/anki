@@ -833,7 +833,7 @@ impl RwkvInference {
                 "RWKV future prediction requires a runtime state snapshot",
             ));
         };
-        let base_features = read_runtime_feature_state(runtime_state)?;
+        let mut base_features = read_runtime_feature_state(runtime_state)?;
         let base_state_maps = ReviewStateMaps::from_serialized(
             &snapshot.card_states,
             &snapshot.note_states,
@@ -852,40 +852,13 @@ impl RwkvInference {
                 .chain(&query_inputs)
                 .all(|input| same_feature_identity(first, input))
         }) {
-            let mut features = base_features;
-            let answer_work_items = answers
-                .iter()
-                .map(|answer| ReviewPredictionWorkItem {
-                    features: features.features_for(answer),
-                    state: base_state_maps.state_owned(answer),
-                })
-                .collect::<Vec<_>>();
-            let answer_heads = self.model.review_many(&answer_work_items);
-
-            let query_count = query_inputs.len();
-            let mut query_work_items = Vec::with_capacity(answers.len() * query_count);
-            for (answer, heads) in answers.into_iter().zip(answer_heads) {
-                let feature_state = features.state_for_card(answer.card_id);
-                features.store_review(&answer);
-                for query_input in &query_inputs {
-                    query_work_items.push(ReviewPredictionWorkItem {
-                        features: features.features_for(query_input),
-                        state: base_state_maps.state_owned_after_review(
-                            &answer,
-                            query_input,
-                            &heads.next_state,
-                        ),
-                    });
-                }
-                features.restore_state(&feature_state);
-            }
-
-            return Ok(self
-                .model
-                .review_many(&query_work_items)
-                .chunks_exact(query_count)
-                .map(|heads| heads.iter().map(|heads| heads.retrievability).collect())
-                .collect());
+            return Ok(predict_retrievability_many_after_reviews_for_identity(
+                self.model.as_ref(),
+                &mut base_features,
+                &base_state_maps,
+                answers,
+                &query_inputs,
+            ));
         }
 
         let answer_work_items = answers
@@ -928,6 +901,53 @@ impl RwkvInference {
                     .collect::<Vec<_>>()
             })
             .collect())
+    }
+
+    pub fn predict_retrievability_many_after_reviews_from_warm_up(
+        &mut self,
+        answers: Vec<ReviewInput>,
+        query_inputs: Vec<ReviewInput>,
+    ) -> io::Result<Vec<Vec<f32>>> {
+        for answer in &answers {
+            if answer.is_query || answer.ease.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV resident future prediction requires answered review inputs",
+                ));
+            }
+        }
+        if query_inputs.iter().any(|input| !input.is_query) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "RWKV resident future prediction only supports query inputs",
+            ));
+        }
+        if answers.is_empty() {
+            return Ok(Vec::new());
+        }
+        if query_inputs.is_empty() {
+            return Ok(answers.iter().map(|_| Vec::new()).collect());
+        }
+
+        let first = &answers[0];
+        if !answers
+            .iter()
+            .chain(&query_inputs)
+            .all(|input| same_feature_identity(first, input))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "RWKV resident future prediction requires one feature identity",
+            ));
+        }
+
+        Ok(predict_retrievability_many_after_reviews_for_identity(
+            self.model.as_ref(),
+            &mut self.features,
+            &self.warm_up_states,
+            answers,
+            &query_inputs,
+        ))
     }
 
     pub fn warm_up_reviews(
@@ -1825,6 +1845,43 @@ fn same_feature_identity(left: &ReviewInput, right: &ReviewInput) -> bool {
         && left.note_id == right.note_id
         && left.deck_id == right.deck_id
         && left.preset_id == right.preset_id
+}
+
+fn predict_retrievability_many_after_reviews_for_identity(
+    model: &SrsModel,
+    features: &mut FeatureState,
+    state_maps: &ReviewStateMaps,
+    answers: Vec<ReviewInput>,
+    query_inputs: &[ReviewInput],
+) -> Vec<Vec<f32>> {
+    let answer_work_items = answers
+        .iter()
+        .map(|answer| ReviewPredictionWorkItem {
+            features: features.features_for(answer),
+            state: state_maps.state_owned(answer),
+        })
+        .collect::<Vec<_>>();
+    let answer_heads = model.review_many(&answer_work_items);
+
+    let query_count = query_inputs.len();
+    let mut query_work_items = Vec::with_capacity(answers.len() * query_count);
+    for (answer, heads) in answers.into_iter().zip(answer_heads) {
+        let feature_state = features.state_for_card(answer.card_id);
+        features.store_review(&answer);
+        for query_input in query_inputs {
+            query_work_items.push(ReviewPredictionWorkItem {
+                features: features.features_for(query_input),
+                state: state_maps.state_owned_after_review(&answer, query_input, &heads.next_state),
+            });
+        }
+        features.restore_state(&feature_state);
+    }
+
+    model
+        .review_many(&query_work_items)
+        .chunks_exact(query_count)
+        .map(|heads| heads.iter().map(|heads| heads.retrievability).collect())
+        .collect()
 }
 
 fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
@@ -8892,14 +8949,27 @@ order by e.id, e.cid
                     .unwrap()[0]
             })
             .collect::<Vec<_>>();
-        let actual = inference
-            .predict_retrievability_many_after_reviews(answers, vec![query], snapshot())
+        let snapshot_actual = inference
+            .predict_retrievability_many_after_reviews(
+                answers.clone(),
+                vec![query.clone()],
+                snapshot(),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|scores| scores[0])
+            .collect::<Vec<_>>();
+        let resident_state_before = inference.cache_state();
+        let resident_actual = inference
+            .predict_retrievability_many_after_reviews_from_warm_up(answers, vec![query])
             .unwrap()
             .into_iter()
             .map(|scores| scores[0])
             .collect::<Vec<_>>();
 
-        assert_close(&actual, &expected, 1e-6);
+        assert_close(&snapshot_actual, &expected, 1e-6);
+        assert_close(&resident_actual, &expected, 1e-6);
+        assert_eq!(inference.cache_state(), resident_state_before);
     }
 
     #[test]

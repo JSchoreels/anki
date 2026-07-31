@@ -941,6 +941,57 @@ class _RustRwkvRuntime:
             for answer_outputs in outputs
         ]
 
+    def predict_retrievability_many_after_reviews_from_warm_up(
+        self,
+        *,
+        answers: Sequence[RwkvReviewInput],
+        query_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[Sequence[float]]:
+        predict_many = getattr(
+            self._process,
+            "predict_retrievability_many_after_reviews_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError(
+                "RWKV resident future retrievability prediction is unavailable"
+            )
+
+        build_start = time.monotonic()
+        answer_rows = [_review_input_row(answer) for answer in answers]
+        query_rows = [_review_input_row(review_input) for review_input in query_inputs]
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        logger.debug(
+            "RWKV embedded Rust resident future retrievability multi-answer batch "
+            "started: answers=%s requests=%s build_elapsed_ms=%.1f",
+            len(answer_rows),
+            len(query_rows),
+            build_elapsed_ms,
+        )
+        with self._locked_process():
+            outputs = predict_many(answer_rows, query_rows)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(answers):
+            raise ValueError("RWKV resident future prediction answer count mismatch")
+        if any(len(answer_outputs) != len(query_inputs) for answer_outputs in outputs):
+            raise ValueError("RWKV resident future prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust resident future retrievability multi-answer batch "
+            "predicted: answers=%s requests=%s build_elapsed_ms=%.1f "
+            "bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
+            len(answer_rows),
+            len(query_rows),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return [
+            [float(retrievability) for retrievability in answer_outputs]
+            for answer_outputs in outputs
+        ]
+
     def simulate_workload(
         self,
         *,

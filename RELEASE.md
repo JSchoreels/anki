@@ -26,6 +26,11 @@ Current application version: `26.05+fsrs7`
 
 ### Fixed
 
+- Avoid redundant scheduling-state calculations and collection-wide RWKV
+  snapshots when opening Card Info.
+- Keep the resident RWKV history and cancel stale deck-count work when switching
+  decks, avoiding repeated history restoration, duplicate overview refreshes,
+  collection-lock UI stalls, and unnecessary cache validation on the next launch.
 - Make RWKV Relative Overdueness consistently rank cards by retrievability
   relative to each card's current Dynamic Desired Retention target.
 - Keep the resident RWKV state when editing a note leaves its resolved FSRS

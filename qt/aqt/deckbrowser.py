@@ -142,8 +142,9 @@ class DeckBrowser:
         return False
 
     def set_current_deck(self, deck_id: DeckId) -> None:
+        self._rwkv_count_generation += 1
         set_current_deck(parent=self.mw, deck_id=deck_id).success(
-            lambda _: self.mw.onOverview()
+            lambda _: self.mw.progress.single_shot(0, self.mw.onOverview)
         ).run_in_background(initiator=self)
 
     # HTML generation

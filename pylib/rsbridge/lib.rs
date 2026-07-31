@@ -359,6 +359,31 @@ impl RwkvInference {
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn predict_retrievability_many_after_reviews_from_warm_up(
+        &mut self,
+        py: Python<'_>,
+        answers: &Bound<'_, PyAny>,
+        query_inputs: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Vec<f32>>> {
+        let mut parsed_answers = Vec::new();
+        for answer in answers.try_iter()? {
+            parsed_answers.push(parse_rwkv_review_input(&answer?)?);
+        }
+        let mut parsed_query_inputs = Vec::new();
+        for query_input in query_inputs.try_iter()? {
+            parsed_query_inputs.push(parse_rwkv_review_input(&query_input?)?);
+        }
+
+        py.detach(|| {
+            self.inner
+                .predict_retrievability_many_after_reviews_from_warm_up(
+                    parsed_answers,
+                    parsed_query_inputs,
+                )
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn warm_up_reviews(
         &mut self,
         py: Python<'_>,

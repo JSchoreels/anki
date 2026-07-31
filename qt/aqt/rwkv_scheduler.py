@@ -1992,7 +1992,70 @@ class RwkvStatefulReviewerBackend:
             query_inputs=[review_input for _, review_input in inputs_by_card_id],
             snapshot=snapshot,
         )
-        if len(retrievability_batches) != len(answers):
+        score_batches = self._future_retrievability_score_batches(
+            retrievability_batches,
+            answer_count=len(answers),
+            inputs_by_card_id=inputs_by_card_id,
+        )
+
+        logger.debug(
+            "RWKV stateful future retrievability multi-answer predicted: "
+            "answers=%s inputs=%s scored=%s runtime=%s elapsed_ms=%.1f",
+            len(answers),
+            len(inputs_by_card_id),
+            sum(len(scores) for scores in score_batches),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return score_batches
+
+    def predict_retrievability_after_reviews_from_warm_up(
+        self,
+        *,
+        answers: Sequence[RwkvReviewInput],
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    ) -> list[list[tuple[int, float]]] | None:
+        predict_future = getattr(
+            self._runtime,
+            "predict_retrievability_many_after_reviews_from_warm_up",
+            None,
+        )
+        if not callable(predict_future):
+            return None
+        if not answers:
+            return []
+        if not inputs_by_card_id:
+            return [[] for _ in answers]
+
+        start = time.monotonic()
+        retrievability_batches = predict_future(
+            answers=answers,
+            query_inputs=[review_input for _, review_input in inputs_by_card_id],
+        )
+        score_batches = self._future_retrievability_score_batches(
+            retrievability_batches,
+            answer_count=len(answers),
+            inputs_by_card_id=inputs_by_card_id,
+        )
+        logger.debug(
+            "RWKV stateful resident future retrievability multi-answer predicted: "
+            "answers=%s inputs=%s scored=%s runtime=%s elapsed_ms=%.1f",
+            len(answers),
+            len(inputs_by_card_id),
+            sum(len(scores) for scores in score_batches),
+            type(self._runtime).__name__,
+            (time.monotonic() - start) * 1000,
+        )
+        return score_batches
+
+    @staticmethod
+    def _future_retrievability_score_batches(
+        retrievability_batches: Sequence[Sequence[float]],
+        *,
+        answer_count: int,
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    ) -> list[list[tuple[int, float]]]:
+        if len(retrievability_batches) != answer_count:
             raise ValueError("RWKV future retrievability answer count mismatch")
         if any(
             len(retrievabilities) != len(inputs_by_card_id)
@@ -2009,20 +2072,9 @@ class RwkvStatefulReviewerBackend:
                 strict=True,
             ):
                 value = float(retrievability)
-                if not math.isfinite(value) or not 0 <= value <= 1:
-                    continue
-                scores.append((card_id, value))
+                if math.isfinite(value) and 0 <= value <= 1:
+                    scores.append((card_id, value))
             score_batches.append(scores)
-
-        logger.debug(
-            "RWKV stateful future retrievability multi-answer predicted: "
-            "answers=%s inputs=%s scored=%s runtime=%s elapsed_ms=%.1f",
-            len(answers),
-            len(inputs_by_card_id),
-            sum(len(scores) for scores in score_batches),
-            type(self._runtime).__name__,
-            (time.monotonic() - start) * 1000,
-        )
         return score_batches
 
     def simulate_workload(
@@ -5104,6 +5156,8 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             return
 
         def prepare() -> tuple[RwkvReviewQueueOrderAsyncWork | None, bool]:
+            if not should_continue():
+                return None, False
             if rwkv_state_cache_loading(mw):
                 return None, True
             work = _rwkv_score_prewarm_work_for_deck(
@@ -5900,10 +5954,12 @@ def rwkv_card_info_rows(
 
     if _reviewer_backend is None:
         configure_reviewer_backend_from_environment()
+    candidate = _card_info_review_candidate(reviewer, card)
     queried_diagnostics = _queried_card_info_diagnostics(
         reviewer,
         card,
         fallback_source=fallback_source,
+        _candidate=candidate,
     )
     if queried_diagnostics is None:
         diagnostics = RwkvReviewerDiagnostics(
@@ -5921,13 +5977,18 @@ def rwkv_card_info_rows(
     if rwkv_review_enabled(reviewer, card):
         rows.extend(
             _rwkv_card_info_next_s90_rows(
-                reviewer,
-                card,
+                states=_scheduling_states(candidate.reviewer),
                 rwkv_s90_overrides=diagnostics.s90_overrides,
             )
         )
     if include_after_review and rwkv_review_active(reviewer, card):
-        rows.extend(rwkv_card_info_after_review_rows(reviewer, card))
+        rows.extend(
+            rwkv_card_info_after_review_rows(
+                reviewer,
+                card,
+                _candidate=candidate,
+            )
+        )
     return rows
 
 
@@ -5967,15 +6028,13 @@ def _with_card_info_prediction_details(
 
 
 def _rwkv_card_info_next_s90_rows(
-    reviewer: object,
-    card: object,
     *,
+    states: SchedulingStates | None,
     rwkv_s90_overrides: RwkvIntervalOverride,
 ) -> list[tuple[str, str]]:
     rwkv_values = tuple(
         getattr(rwkv_s90_overrides, rating) for rating in _RWKV_RATING_FIELDS
     )
-    states = _scheduling_states_for_card(reviewer, card)
     fsrs_values = (
         tuple(
             _s90_for_scheduling_state(getattr(states, rating))
@@ -6056,13 +6115,15 @@ def rwkv_card_info_after_review_row(
 def rwkv_card_info_after_review_rows(
     reviewer: object,
     card: object,
+    *,
+    _candidate: RwkvReviewCandidate | None = None,
 ) -> list[tuple[str, str]]:
     try:
         backend = _reviewer_backend
         if backend is None:
             return _unavailable_rwkv_card_info_after_review_rows()
 
-        candidate = _card_info_review_candidate(reviewer, card)
+        candidate = _candidate or _card_info_review_candidate(reviewer, card)
         if not rwkv_review_active(candidate.reviewer, candidate.card):
             return _unavailable_rwkv_card_info_after_review_rows()
         if not _prepare_reviewer_backend_for_card_info(reviewer):
@@ -6169,6 +6230,28 @@ def _rwkv_card_info_after_review_score_batches(
                 "or state changed"
             )
             return None
+        predict_from_warm_up = getattr(
+            current_backend,
+            "predict_retrievability_after_reviews_from_warm_up",
+            None,
+        )
+        state_generation = _reviewer_backend_state_generation(current_backend)
+        if callable(predict_from_warm_up):
+            score_batches = cast(
+                Sequence[Sequence[tuple[int, float]]] | None,
+                predict_from_warm_up(
+                    answers=answer_inputs,
+                    inputs_by_card_id=horizon_inputs,
+                ),
+            )
+            if score_batches is not None:
+                if not _reviewer_backend_prediction_access_is_current(
+                    current_backend,
+                    expected_state_generation=state_generation,
+                ) or not _reviewer_backend_warmed_up(reviewer):
+                    return None
+                return score_batches
+
         cache_snapshot = getattr(current_backend, "cache_snapshot", None)
         predict_after_reviews = getattr(
             current_backend,
@@ -6178,7 +6261,6 @@ def _rwkv_card_info_after_review_score_batches(
         if not callable(cache_snapshot) or not callable(predict_after_reviews):
             return None
 
-        state_generation = _reviewer_backend_state_generation(current_backend)
         snapshot = cache_snapshot()
         score_batches = cast(
             Sequence[Sequence[tuple[int, float]]] | None,
@@ -6999,6 +7081,7 @@ def _queried_card_info_diagnostics(
     card: object,
     *,
     fallback_source: str,
+    _candidate: RwkvReviewCandidate | None = None,
 ) -> RwkvReviewerDiagnostics | None:
     backend = _reviewer_backend
     if backend is None:
@@ -7024,7 +7107,7 @@ def _queried_card_info_diagnostics(
         ) as current_backend:
             if current_backend is None:
                 return None
-            candidate = _card_info_review_candidate(reviewer, card)
+            candidate = _candidate or _card_info_review_candidate(reviewer, card)
             review_enabled = rwkv_review_active(candidate.reviewer, candidate.card)
             predictions = _predict_review_batch_with_backend(
                 [candidate],
@@ -13722,9 +13805,9 @@ def _rwkv_state_cache_metadata_base(
 
 def _refresh_rwkv_state_cache_collection_mod(
     reviewer: object,
-    history: RwkvHistoricalReviewInputs,
+    history: RwkvHistoricalReviewInputs | RwkvResidentStateIdentity,
 ) -> None:
-    """Record the collection marker after a successful canonical validation."""
+    """Record the collection marker after confirming the cache history identity."""
 
     try:
         collection_mod = _rwkv_collection_modified(reviewer)
@@ -16581,7 +16664,11 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
     _invalidate_resolved_preset_id_cache(reviewer)
 
 
-def study_queues_did_change(mw: object, initiator: object | None) -> None:
+def study_queues_did_change(
+    mw: object,
+    initiator: object | None,
+    changes: collection_pb2.OpChanges | None = None,
+) -> None:
     """Discard RWKV queue work after a non-answer study-queue mutation."""
 
     global _rwkv_study_queue_generation
@@ -16593,10 +16680,41 @@ def study_queues_did_change(mw: object, initiator: object | None) -> None:
         return
 
     transient_reviewer = SimpleNamespace(mw=mw)
-    _invalidate_reviewer_backend_state(
-        transient_reviewer,
-        reason="study queue mutation",
+    deck_browser = getattr(mw, "deckBrowser", None)
+    resident_state_preserved = (
+        changes is not None
+        and changes.config
+        and deck_browser is not None
+        and initiator is deck_browser
+        and not any(
+            (
+                changes.card,
+                changes.note,
+                changes.deck,
+                changes.tag,
+                changes.notetype,
+                changes.deck_config,
+            )
+        )
     )
+    if resident_state_preserved:
+        try:
+            _clear_rwkv_review_queue_scores(transient_reviewer)
+        except Exception:
+            logger.exception(
+                "failed to clear RWKV queue scores after queue-only mutation"
+            )
+        resident_identity = _rwkv_ready_state_cache_history_identity(transient_reviewer)
+        if resident_identity is not None:
+            _refresh_rwkv_state_cache_collection_mod(
+                transient_reviewer,
+                resident_identity,
+            )
+    else:
+        _invalidate_reviewer_backend_state(
+            transient_reviewer,
+            reason="study queue mutation",
+        )
     with _reviewer_backend_state_lock:
         _rwkv_study_queue_generation += 1
         generation = _rwkv_study_queue_generation
@@ -16608,9 +16726,11 @@ def study_queues_did_change(mw: object, initiator: object | None) -> None:
     _invalidate_resolved_preset_id_cache(transient_reviewer)
     clear_deck_browser_rwkv_count_scores(mw)
     logger.debug(
-        "RWKV study queue caches invalidated: generation=%s initiator=%s",
+        "RWKV study queue caches invalidated: generation=%s initiator=%s "
+        "resident_state_preserved=%s",
         generation,
         type(initiator).__name__ if initiator is not None else None,
+        resident_state_preserved,
     )
 
 

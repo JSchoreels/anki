@@ -727,6 +727,32 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         curves = _rwkv_curves_from_cache(runtime.cache_state())
 
     snapshot = runtime.warm_up_snapshot()
+    answer_inputs = []
+    for ease in (1, 2, 3, 4):
+        answer_input = list(query_input)
+        answer_input[4] = False
+        answer_input[5] = ease
+        answer_input[6] = None
+        answer_inputs.append(tuple(answer_input))
+    snapshot_future = runtime.predict_retrievability_many_after_reviews(
+        answer_inputs,
+        [query_input],
+        snapshot,
+    )
+    resident_state_before = runtime.cache_state()
+    resident_future = runtime.predict_retrievability_many_after_reviews_from_warm_up(
+        answer_inputs,
+        [query_input],
+    )
+    assert len(resident_future) == len(snapshot_future)
+    for resident_batch, snapshot_batch in zip(
+        resident_future,
+        snapshot_future,
+        strict=True,
+    ):
+        assert resident_batch == pytest.approx(snapshot_batch, abs=_RWKV_ABS_TOL)
+    assert runtime.cache_state() == resident_state_before
+
     batch_inputs: list[tuple[object, ...]] = []
     batch_expected: list[float] = []
     for review in _RWKV_GOLDEN_REVIEWS[-9:]:

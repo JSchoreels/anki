@@ -1009,7 +1009,7 @@ class AnkiQt(QMainWindow):
         if changes.study_queues:
             from aqt import rwkv_scheduler
 
-            rwkv_scheduler.study_queues_did_change(self, handler)
+            rwkv_scheduler.study_queues_did_change(self, handler, changes)
         elif changes.deck or changes.deck_config or changes.notetype or changes.config:
             from aqt import rwkv_scheduler
 

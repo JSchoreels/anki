@@ -75,7 +75,9 @@ def test_study_queue_mutation_invalidates_rwkv_before_screen_refresh(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "study_queues_did_change",
-        lambda _owner, _initiator: calls.append("rwkv"),
+        lambda _owner, _initiator, op_changes: calls.append(
+            "rwkv" if op_changes is changes else "wrong changes"
+        ),
     )
     changes = OpChanges()
     changes.study_queues = True

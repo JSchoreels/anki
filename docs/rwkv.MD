@@ -87,6 +87,11 @@ published as ready. Memorised history reuses the resident identity while it is
 known; otherwise it derives the identity once for the current mutation generation
 and reuses that canonical result. A failed disk-cache write therefore cannot make
 stale on-disk metadata authoritative for the in-memory runtime.
+Selecting the current deck through the deck browser still clears transient queue
+scores and in-flight queue work, but retains the collection-wide resident history
+because it does not alter replay inputs. When the resident and persisted history
+identities match, Anki also advances the persisted collection marker so this
+queue-only change does not force a full cache validation on the next launch.
 
 State-cache work is serialized across profile changes. Workload simulations and
 calibration replays also hide the resident state while they temporarily use the
@@ -376,10 +381,10 @@ review due counts of its descendants display an ellipsis instead of the stored
 FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
 falls back to its stored count. A scope deferred during state-cache restoration
 remains pending until the completion refresh starts a fresh count pass. Leaving
-or refreshing the deck browser cancels later UI updates, and preparing a
-reviewer queue clears the count-only cache. This keeps startup responsive while
-allowing every displayed RWKV scope to converge to its RWKV eligibility counts
-before the reviewer is opened.
+or refreshing the deck browser cancels queued preparation and later UI updates,
+and preparing a reviewer queue clears the count-only cache. This keeps startup
+responsive while allowing every displayed RWKV scope to converge to its RWKV
+eligibility counts before the reviewer is opened.
 
 When the desktop Dynamic Desired Retention provider is available, RWKV review
 input batches are resolved through its bulk API before queue scoring or RWKV
@@ -454,11 +459,14 @@ not used as the last review. If neither source exists, the query leaves current
 elapsed unknown instead of inferring it from `due - ivl`.
 
 Card Info also simulates Again, Hard, Good, and Easy independently from one
-shared RWKV state snapshot. **R After Review** queries the simulated state with
-zero elapsed days and seconds. **R After 10min** queries the same simulated
-state with zero elapsed days and 600 elapsed seconds. These rows report
-RWKV-Instant predictions after each hypothetical answer; they are separate from
-the RWKV-Curve predictions used for answer-button intervals.
+shared RWKV baseline state. The embedded runtime branches directly from the
+locked resident state and restores the card's feature state after each answer,
+so this one-card operation does not serialize the collection-wide cache.
+**R After Review** queries the simulated state with zero elapsed days and
+seconds. **R After 10min** queries the same simulated state with zero elapsed
+days and 600 elapsed seconds. These rows report RWKV-Instant predictions after
+each hypothetical answer; they are separate from the RWKV-Curve predictions
+used for answer-button intervals.
 
 For RWKV-Curve-enabled cards, **RWKV Curve Next S90** reports the Curve S90
 predicted for each hypothetical answer, while **FSRS Next S90** reports Anki's
