@@ -42,6 +42,7 @@ use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
 use crate::scheduler::fsrs::review_time_model::HelpMeDecideReviewTimeModel;
 use crate::scheduler::fsrs::review_time_model::R_BUCKET_COUNT;
 use crate::scheduler::fsrs::review_time_model::S_BUCKET_COUNT_FOR_UI;
+use crate::scheduler::rwkv::relative_overdueness;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::parse_easy_days_percentages;
 use crate::search::SortMode;
@@ -79,7 +80,7 @@ fn create_review_priority_fn(
         })),
         ReviewCardOrder::RelativeOverdueness => Some(fsrs::ReviewPriorityFn::new(|card| {
             scaled_i32(
-                card.retrievability() / card.desired_retention.max(0.0001),
+                relative_overdueness(card.retrievability(), card.desired_retention),
                 1000.0,
             )
         })),

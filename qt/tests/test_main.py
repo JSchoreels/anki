@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import aqt.errors
 import aqt.main
 import aqt.rwkv_scheduler
+import aqt.sync
 from anki.collection import OpChanges
 from aqt.main import (
     OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS,
@@ -155,11 +156,21 @@ def test_sync_can_finish_without_separate_rwkv_refresh(
         "sync_did_finish",
         lambda: calls.append("sync finish"),
     )
-    monkeypatch.setattr(
-        aqt.main,
-        "sync_collection",
-        lambda _mw, on_done: on_done(),
-    )
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(
+            aqt.sync.RemoteCollectionChanges(collection_changed=True)
+        )
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "refresh_rwkv_state_after_sync",
@@ -176,6 +187,122 @@ def test_sync_can_finish_without_separate_rwkv_refresh(
         "clear models",
         "sync finish",
         "reset",
+        "done",
+    ]
+
+
+def test_sync_skips_rwkv_refresh_without_remote_collection_changes(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(
+        models=SimpleNamespace(_clear_cache=lambda: calls.append("clear models"))
+    )
+    mw.reset = lambda: calls.append("reset")  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "sync_will_start",
+        lambda: calls.append("sync start"),
+    )
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "sync_did_finish",
+        lambda: calls.append("sync finish"),
+    )
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(aqt.sync.RemoteCollectionChanges())
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, _on_done: calls.append("rwkv refresh"),
+    )
+
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+
+    assert calls == [
+        "sync start",
+        "clear models",
+        "sync finish",
+        "reset",
+        "done",
+    ]
+
+
+def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(
+        models=SimpleNamespace(_clear_cache=lambda: calls.append("clear models"))
+    )
+    mw.reset = lambda: calls.append("reset")  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "sync_will_start",
+        lambda: calls.append("sync start"),
+    )
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "sync_did_finish",
+        lambda: calls.append("sync finish"),
+    )
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(
+            aqt.sync.RemoteCollectionChanges(
+                collection_changed=True,
+                review_ids=(123,),
+            )
+        )
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+
+    def refresh(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        remote_review_ids: tuple[int, ...],
+    ) -> None:
+        calls.append(f"rwkv refresh {remote_review_ids}")
+        on_done()
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        refresh,
+    )
+
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+
+    assert calls == [
+        "sync start",
+        "clear models",
+        "sync finish",
+        "reset",
+        "rwkv refresh (123,)",
         "done",
     ]
 

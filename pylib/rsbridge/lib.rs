@@ -34,6 +34,13 @@ struct RwkvInferenceState {
 type RwkvIntervalTuple = (Option<u32>, Option<u32>, Option<u32>, Option<u32>);
 type RwkvProbabilityTuple = (f32, f32, f32, f32);
 type RwkvSerializedStateMap = Vec<(i64, Py<PyBytes>)>;
+type RwkvSerializedState = (
+    Option<Py<PyBytes>>,
+    Option<Py<PyBytes>>,
+    Option<Py<PyBytes>>,
+    Option<Py<PyBytes>>,
+    Option<Py<PyBytes>>,
+);
 type RwkvWarmUpSnapshot = (
     RwkvSerializedStateMap,
     RwkvSerializedStateMap,
@@ -397,6 +404,77 @@ impl RwkvInference {
                 .map(|state| PyBytes::new(py, &state).unbind()),
             PyBytes::new(py, &cache_state).unbind(),
         )
+    }
+
+    fn warm_up_state(
+        &self,
+        py: Python<'_>,
+        review: &Bound<'_, PyAny>,
+    ) -> PyResult<RwkvSerializedState> {
+        let input = parse_rwkv_review_input(review)?;
+        let state = py.detach(|| self.inner.warm_up_state(&input));
+        Ok((
+            state.card.map(|state| PyBytes::new(py, &state).unbind()),
+            state.note.map(|state| PyBytes::new(py, &state).unbind()),
+            state.deck.map(|state| PyBytes::new(py, &state).unbind()),
+            state.preset.map(|state| PyBytes::new(py, &state).unbind()),
+            state.global.map(|state| PyBytes::new(py, &state).unbind()),
+        ))
+    }
+
+    fn append_warm_up_snapshot_binary(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        py.detach(|| self.inner.append_warm_up_snapshot_binary(path.into()))
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_warm_up_state_checkpoint(
+        &mut self,
+        py: Python<'_>,
+        path: String,
+        store_generation: String,
+        parent_segment_id: Option<i64>,
+        last_review_id: i64,
+        review_count: i64,
+        history_hash: String,
+        replay_key: String,
+        previous_review_ids: Vec<u8>,
+        previous_intervals: Vec<u8>,
+        review_counts: Vec<u8>,
+        full: bool,
+        durable: bool,
+    ) -> PyResult<i64> {
+        py.detach(|| {
+            self.inner.write_warm_up_state_checkpoint(
+                path.into(),
+                &store_generation,
+                parent_segment_id,
+                last_review_id,
+                review_count,
+                &history_hash,
+                &replay_key,
+                &previous_review_ids,
+                &previous_intervals,
+                &review_counts,
+                full,
+                durable,
+            )
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    fn restore_warm_up_state_checkpoint(
+        &mut self,
+        py: Python<'_>,
+        path: String,
+        store_generation: String,
+        segment_id: i64,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            self.inner
+                .restore_warm_up_state_checkpoint(path.into(), &store_generation, segment_id)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
     }
 
     fn restore_warm_up_snapshot(&mut self, snapshot: &Bound<'_, PyAny>) -> PyResult<()> {

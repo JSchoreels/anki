@@ -69,6 +69,9 @@ impl From<SyncOutput> for anki_proto::sync::SyncCollectionResponse {
                 }
             },
             server_media_usn: o.server_media_usn.0,
+            remote_collection_changed: o.remote_collection_changed,
+            remote_review_ids: o.remote_review_ids.into_iter().map(|id| id.0).collect(),
+            remote_non_review_collection_changed: (o.remote_non_review_collection_changed),
         }
     }
 }

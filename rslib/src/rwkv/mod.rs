@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -9,8 +10,16 @@ use std::sync::Arc;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
 use rayon::prelude::*;
+use rusqlite::blob::Blob;
+use rusqlite::params;
+use rusqlite::Connection;
+use rusqlite::OpenFlags;
+use rusqlite::OptionalExtension;
+use rusqlite::Transaction;
+use rusqlite::MAIN_DB;
 
 use crate::card::CardType;
+use crate::scheduler::rwkv::relative_overdueness;
 
 mod bulk;
 #[cfg(target_os = "macos")]
@@ -24,6 +33,13 @@ const HEAD_DIM: usize = 4 * D_MODEL;
 const NUM_CURVES: usize = 128;
 const ANSWER_EASES: [u8; 4] = [1, 2, 3, 4];
 const S90_TARGET_RETENTION: f32 = 0.9;
+const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 4;
+const STATE_CACHE_STORE_PAGE_SIZE: i64 = 64 * 1024;
+const STATE_CACHE_DELTA_MAGIC: &[u8] = b"ARWKVSTATEDELTA1\0";
+#[cfg(not(test))]
+const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024;
 
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
@@ -1011,6 +1027,143 @@ impl RwkvInference {
         }
     }
 
+    pub fn warm_up_state(&self, input: &ReviewInput) -> ReviewStateOwned {
+        self.warm_up_states.serialized_state(input)
+    }
+
+    pub fn append_warm_up_snapshot_binary(&self, path: PathBuf) -> io::Result<()> {
+        let mut out = fs::OpenOptions::new().append(true).open(path)?;
+        write_snapshot_state_map(&mut out, &self.warm_up_states.card)?;
+        write_snapshot_state_map(&mut out, &self.warm_up_states.note)?;
+        write_snapshot_state_map(&mut out, &self.warm_up_states.deck)?;
+        write_snapshot_state_map(&mut out, &self.warm_up_states.preset)?;
+        write_snapshot_optional_bytes(
+            &mut out,
+            self.warm_up_states
+                .global
+                .as_ref()
+                .map(serialize_module_state)
+                .as_deref(),
+        )?;
+        let cache_state = self.cache_state();
+        write_snapshot_optional_bytes(&mut out, Some(&cache_state))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_warm_up_state_checkpoint(
+        &mut self,
+        path: PathBuf,
+        store_generation: &str,
+        parent_segment_id: Option<i64>,
+        last_review_id: i64,
+        review_count: i64,
+        history_hash: &str,
+        replay_key: &str,
+        previous_review_ids: &[u8],
+        previous_intervals: &[u8],
+        review_counts: &[u8],
+        full: bool,
+        durable: bool,
+    ) -> io::Result<i64> {
+        let runtime_state_len = self.runtime_cache_state_len();
+        let state_delta_len = self.warm_up_states.checkpoint_delta_len(full)?;
+        let mut connection = open_state_cache_store(&path, store_generation, durable)?;
+        let transaction = connection.transaction().map_err(state_cache_store_error)?;
+        validate_state_cache_parent(&transaction, parent_segment_id)?;
+        transaction
+            .execute(
+                r#"
+insert into segments (
+  parent_id,
+  last_review_id,
+  review_count,
+  history_hash,
+  replay_key,
+  previous_review_ids,
+  previous_intervals,
+  review_counts,
+  runtime_state
+) values (?, ?, ?, ?, ?, ?, ?, ?, zeroblob(?))
+"#,
+                params![
+                    parent_segment_id,
+                    last_review_id,
+                    review_count,
+                    history_hash,
+                    replay_key,
+                    previous_review_ids,
+                    previous_intervals,
+                    review_counts,
+                    i64::try_from(runtime_state_len).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "RWKV runtime state is too large",
+                        )
+                    })?,
+                ],
+            )
+            .map_err(state_cache_store_error)?;
+        let segment_id = transaction.last_insert_rowid();
+        let state_delta_chunk_ids =
+            insert_state_cache_delta_chunks(&transaction, segment_id, state_delta_len)?;
+        {
+            let mut runtime_state = transaction
+                .blob_open(MAIN_DB, "segments", "runtime_state", segment_id, false)
+                .map_err(state_cache_store_error)?;
+            self.write_runtime_cache_state(&mut runtime_state)?;
+            runtime_state.close().map_err(state_cache_store_error)?;
+        }
+        {
+            let mut state_delta = StateCacheDeltaChunkWriter::new(
+                &transaction,
+                state_delta_chunk_ids,
+                state_delta_len,
+            )?;
+            self.warm_up_states
+                .write_checkpoint_delta(&mut state_delta, full)?;
+            state_delta.finish()?;
+        }
+        transaction.commit().map_err(state_cache_store_error)?;
+        self.warm_up_states.mark_checkpoint_saved();
+        Ok(segment_id)
+    }
+
+    pub fn restore_warm_up_state_checkpoint(
+        &mut self,
+        path: PathBuf,
+        store_generation: &str,
+        segment_id: i64,
+    ) -> io::Result<()> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(state_cache_store_error)?;
+        validate_state_cache_store(&connection, store_generation)?;
+        let runtime_state = connection
+            .query_row(
+                "select runtime_state from segments where id = ?",
+                [segment_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(state_cache_store_error)?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing RWKV state-cache segment",
+                )
+            })?;
+        let segment_chain = state_cache_segment_chain(&connection, segment_id)?;
+        let warm_up_states = read_state_cache_maps(&connection, &segment_chain)?;
+        let (features, curves) = read_runtime_cache_state(&runtime_state)?;
+
+        self.warm_up_states = warm_up_states;
+        self.features = features;
+        self.curves = curves;
+        Ok(())
+    }
+
     pub fn restore_warm_up_snapshot(&mut self, snapshot: RwkvWarmUpSnapshot) -> io::Result<()> {
         self.warm_up_states = ReviewStateMaps::from_serialized(
             &snapshot.card_states,
@@ -1152,17 +1305,34 @@ impl RwkvInference {
     }
 
     pub fn cache_state(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"ARWKVPROCSTATE2");
-        self.features.write_cache_state(&mut out);
-        write_u32(&mut out, self.curves.len() as u32);
+        let mut out = Vec::with_capacity(self.runtime_cache_state_len());
+        self.write_runtime_cache_state(&mut out)
+            .expect("writing to a Vec should not fail");
+        out
+    }
+
+    fn runtime_cache_state_len(&self) -> usize {
+        b"ARWKVPROCSTATE2".len()
+            + self.features.cache_state_len()
+            + 4
+            + self
+                .curves
+                .values()
+                .map(|curve| 8 + curve.cache_state_len())
+                .sum::<usize>()
+    }
+
+    fn write_runtime_cache_state(&self, out: &mut impl io::Write) -> io::Result<()> {
+        out.write_all(b"ARWKVPROCSTATE2")?;
+        self.features.write_cache_state_to(out)?;
+        write_state_cache_u32(out, self.curves.len())?;
         let mut curves: Vec<_> = self.curves.iter().collect();
         curves.sort_by_key(|(card_id, _)| *card_id);
         for (card_id, curve) in curves {
-            write_i64(&mut out, *card_id);
-            curve.write_cache_state(&mut out);
+            out.write_all(&card_id.to_le_bytes())?;
+            curve.write_cache_state_to(out)?;
         }
-        out
+        Ok(())
     }
 
     pub fn restore_cache_state(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -1702,7 +1872,7 @@ fn simulation_review_priority(
         ReviewCardOrder::RetrievabilityAscending => scaled_retrievability,
         ReviewCardOrder::RetrievabilityDescending => -scaled_retrievability,
         ReviewCardOrder::RelativeOverdueness => {
-            (retrievability / target_retention.max(0.0001) * 1_000_000.0).round() as i64
+            (relative_overdueness(retrievability, target_retention) * 1_000_000.0).round() as i64
         }
         ReviewCardOrder::Random => (simulation_unit_hash(card_id, 0, 0) * i64::MAX as f64) as i64,
         ReviewCardOrder::Added => card_id,
@@ -2190,21 +2360,42 @@ impl FeatureState {
         features.extend(encoding.iter().copied());
     }
 
+    #[cfg(test)]
     fn write_cache_state(&self, out: &mut Vec<u8>) {
-        write_option_i64(out, self.first_day_offset);
-        write_option_i64(out, self.previous_day_offset);
-        write_i64_set(out, self.card_set.keys().copied());
-        write_i64_map(out, &self.last_new_cards);
-        write_i64_map(out, &self.last_i);
-        write_i64(out, self.today);
-        write_i64(out, self.today_reviews);
-        write_i64(out, self.today_new_cards);
-        write_i64_map(out, &self.card_first_day_offset);
-        write_i64_map(out, &self.card_elapsed_days_cumulative);
-        write_i64_map(out, &self.card_elapsed_seconds_cumulative);
-        write_i64(out, self.review_index);
-        write_id_encodings(out, &self.id_encodings);
-        self.id_rng.write_cache_state(out);
+        self.write_cache_state_to(out)
+            .expect("writing to a Vec should not fail");
+    }
+
+    fn cache_state_len(&self) -> usize {
+        state_cache_optional_i64_len(self.first_day_offset)
+            + state_cache_optional_i64_len(self.previous_day_offset)
+            + state_cache_i64_set_len(self.card_set.len())
+            + state_cache_i64_map_len(self.last_new_cards.len())
+            + state_cache_i64_map_len(self.last_i.len())
+            + 3 * 8
+            + state_cache_i64_map_len(self.card_first_day_offset.len())
+            + state_cache_i64_map_len(self.card_elapsed_days_cumulative.len())
+            + state_cache_i64_map_len(self.card_elapsed_seconds_cumulative.len())
+            + 8
+            + state_cache_id_encodings_len(&self.id_encodings)
+            + self.id_rng.cache_state_len()
+    }
+
+    fn write_cache_state_to(&self, out: &mut impl io::Write) -> io::Result<()> {
+        write_state_cache_optional_i64(out, self.first_day_offset)?;
+        write_state_cache_optional_i64(out, self.previous_day_offset)?;
+        write_state_cache_i64_set(out, self.card_set.keys().copied())?;
+        write_state_cache_i64_map(out, &self.last_new_cards)?;
+        write_state_cache_i64_map(out, &self.last_i)?;
+        out.write_all(&self.today.to_le_bytes())?;
+        out.write_all(&self.today_reviews.to_le_bytes())?;
+        out.write_all(&self.today_new_cards.to_le_bytes())?;
+        write_state_cache_i64_map(out, &self.card_first_day_offset)?;
+        write_state_cache_i64_map(out, &self.card_elapsed_days_cumulative)?;
+        write_state_cache_i64_map(out, &self.card_elapsed_seconds_cumulative)?;
+        out.write_all(&self.review_index.to_le_bytes())?;
+        write_state_cache_id_encodings(out, &self.id_encodings)?;
+        self.id_rng.write_cache_state_to(out)
     }
 
     fn read_cache_state(cursor: &mut Cursor<'_>) -> io::Result<Self> {
@@ -2247,17 +2438,6 @@ fn id_encoding_dim(kind: IdKind) -> usize {
     match kind {
         IdKind::Card | IdKind::Note => 12,
         IdKind::Deck | IdKind::Preset => 8,
-    }
-}
-
-fn write_id_encodings(out: &mut Vec<u8>, values: &HashMap<(IdKind, i64), Vec<f32>>) {
-    let mut values: Vec<_> = values.iter().collect();
-    values.sort_by_key(|((kind, value), _)| (kind.cache_code(), *value));
-    write_u32(out, values.len() as u32);
-    for ((kind, value), encoding) in values {
-        out.push(kind.cache_code());
-        write_i64(out, *value);
-        write_f32_slice(out, encoding);
     }
 }
 
@@ -2348,11 +2528,16 @@ impl TorchIdRng {
         self.index = 0;
     }
 
-    fn write_cache_state(&self, out: &mut Vec<u8>) {
-        write_u32(out, self.index as u32);
+    fn cache_state_len(&self) -> usize {
+        4 + 4 * self.state.len()
+    }
+
+    fn write_cache_state_to(&self, out: &mut impl io::Write) -> io::Result<()> {
+        write_state_cache_u32(out, self.index)?;
         for value in self.state {
-            write_u32(out, value);
+            out.write_all(&value.to_le_bytes())?;
         }
+        Ok(())
     }
 
     fn read_cache_state(cursor: &mut Cursor<'_>) -> io::Result<Self> {
@@ -3075,9 +3260,19 @@ struct ReviewCurve {
 }
 
 impl ReviewCurve {
+    #[cfg(test)]
     fn write_cache_state(&self, out: &mut Vec<u8>) {
-        write_f32_slice(out, &self.ahead_logits);
-        write_f32_slice(out, &self.weights);
+        self.write_cache_state_to(out)
+            .expect("writing to a Vec should not fail");
+    }
+
+    fn cache_state_len(&self) -> usize {
+        8 + 4 * (self.ahead_logits.len() + self.weights.len())
+    }
+
+    fn write_cache_state_to(&self, out: &mut impl io::Write) -> io::Result<()> {
+        write_state_cache_f32_slice(out, &self.ahead_logits)?;
+        write_state_cache_f32_slice(out, &self.weights)
     }
 
     fn read_cache_state(cursor: &mut Cursor<'_>) -> io::Result<Self> {
@@ -3146,6 +3341,11 @@ struct ReviewStateMaps {
     deck: HashMap<i64, ModuleState>,
     preset: HashMap<i64, ModuleState>,
     global: Option<ModuleState>,
+    dirty_card: HashSet<i64>,
+    dirty_note: HashSet<i64>,
+    dirty_deck: HashSet<i64>,
+    dirty_preset: HashSet<i64>,
+    global_dirty: bool,
 }
 
 impl ReviewStateMaps {
@@ -3162,6 +3362,11 @@ impl ReviewStateMaps {
             deck: deserialize_state_map(deck_states)?,
             preset: deserialize_state_map(preset_states)?,
             global: deserialize_module_state(global_state)?,
+            dirty_card: HashSet::new(),
+            dirty_note: HashSet::new(),
+            dirty_deck: HashSet::new(),
+            dirty_preset: HashSet::new(),
+            global_dirty: false,
         })
     }
 
@@ -3182,6 +3387,25 @@ impl ReviewStateMaps {
             deck: input.deck_id.and_then(|id| self.deck.get(&id).cloned()),
             preset: input.preset_id.and_then(|id| self.preset.get(&id).cloned()),
             global: self.global.clone(),
+        }
+    }
+
+    fn serialized_state(&self, input: &ReviewInput) -> ReviewStateOwned {
+        ReviewStateOwned {
+            card: self.card.get(&input.card_id).map(serialize_module_state),
+            note: input
+                .note_id
+                .and_then(|id| self.note.get(&id))
+                .map(serialize_module_state),
+            deck: input
+                .deck_id
+                .and_then(|id| self.deck.get(&id))
+                .map(serialize_module_state),
+            preset: input
+                .preset_id
+                .and_then(|id| self.preset.get(&id))
+                .map(serialize_module_state),
+            global: self.global.as_ref().map(serialize_module_state),
         }
     }
 
@@ -3221,6 +3445,7 @@ impl ReviewStateMaps {
 
     fn store(&mut self, input: &ReviewInput, state: SrsState) {
         self.card.insert(input.card_id, state.card);
+        self.mark_dirty(input);
         if let Some(note_id) = input.note_id {
             self.note.insert(note_id, state.note);
         }
@@ -3233,6 +3458,20 @@ impl ReviewStateMaps {
         self.global = Some(state.global);
     }
 
+    fn mark_dirty(&mut self, input: &ReviewInput) {
+        self.dirty_card.insert(input.card_id);
+        if let Some(note_id) = input.note_id {
+            self.dirty_note.insert(note_id);
+        }
+        if let Some(deck_id) = input.deck_id {
+            self.dirty_deck.insert(deck_id);
+        }
+        if let Some(preset_id) = input.preset_id {
+            self.dirty_preset.insert(preset_id);
+        }
+        self.global_dirty = true;
+    }
+
     fn restore_serialized(
         &mut self,
         card_id: i64,
@@ -3242,12 +3481,127 @@ impl ReviewStateMaps {
         state: &ReviewStateOwned,
     ) -> io::Result<()> {
         restore_serialized_state(&mut self.card, card_id, state.card.as_deref())?;
+        self.dirty_card.insert(card_id);
         restore_optional_serialized_state(&mut self.note, note_id, state.note.as_deref())?;
+        self.dirty_note.extend(note_id);
         restore_optional_serialized_state(&mut self.deck, deck_id, state.deck.as_deref())?;
+        self.dirty_deck.extend(deck_id);
         restore_optional_serialized_state(&mut self.preset, preset_id, state.preset.as_deref())?;
+        self.dirty_preset.extend(preset_id);
         self.global = deserialize_module_state(state.global.as_deref())?;
+        self.global_dirty = true;
         Ok(())
     }
+
+    fn mark_checkpoint_saved(&mut self) {
+        self.dirty_card.clear();
+        self.dirty_note.clear();
+        self.dirty_deck.clear();
+        self.dirty_preset.clear();
+        self.global_dirty = false;
+    }
+
+    fn checkpoint_delta_len(&self, full: bool) -> io::Result<usize> {
+        let mut len = STATE_CACHE_DELTA_MAGIC.len();
+        for (states, dirty) in [
+            (&self.card, &self.dirty_card),
+            (&self.note, &self.dirty_note),
+            (&self.deck, &self.dirty_deck),
+            (&self.preset, &self.dirty_preset),
+        ] {
+            len = len
+                .checked_add(state_cache_map_delta_len(states, dirty, full)?)
+                .ok_or_else(state_cache_delta_too_large)?;
+        }
+        len = len.checked_add(1).ok_or_else(state_cache_delta_too_large)?;
+        if (full || self.global_dirty) && self.global.is_some() {
+            len = len
+                .checked_add(
+                    4 + serialized_module_state_len(
+                        self.global.as_ref().expect("checked global state"),
+                    ),
+                )
+                .ok_or_else(state_cache_delta_too_large)?;
+        }
+        Ok(len)
+    }
+
+    fn write_checkpoint_delta(&self, out: &mut impl io::Write, full: bool) -> io::Result<()> {
+        out.write_all(STATE_CACHE_DELTA_MAGIC)?;
+        for (states, dirty) in [
+            (&self.card, &self.dirty_card),
+            (&self.note, &self.dirty_note),
+            (&self.deck, &self.dirty_deck),
+            (&self.preset, &self.dirty_preset),
+        ] {
+            write_state_cache_map_delta(out, states, dirty, full)?;
+        }
+        if !full && !self.global_dirty {
+            out.write_all(&[0])?;
+        } else if let Some(global) = &self.global {
+            out.write_all(&[2])?;
+            write_snapshot_bytes(out, &serialize_module_state(global))?;
+        } else {
+            out.write_all(&[1])?;
+        }
+        Ok(())
+    }
+}
+
+fn state_cache_delta_identities(
+    states: &HashMap<i64, ModuleState>,
+    dirty: &HashSet<i64>,
+    full: bool,
+) -> Vec<i64> {
+    let mut identities = if full {
+        states.keys().copied().collect::<Vec<_>>()
+    } else {
+        dirty.iter().copied().collect::<Vec<_>>()
+    };
+    identities.sort_unstable();
+    identities
+}
+
+fn state_cache_map_delta_len(
+    states: &HashMap<i64, ModuleState>,
+    dirty: &HashSet<i64>,
+    full: bool,
+) -> io::Result<usize> {
+    let identities = state_cache_delta_identities(states, dirty, full);
+    let mut len = 4_usize;
+    for identity in identities {
+        len = len.checked_add(9).ok_or_else(state_cache_delta_too_large)?;
+        if let Some(state) = states.get(&identity) {
+            len = len
+                .checked_add(4 + serialized_module_state_len(state))
+                .ok_or_else(state_cache_delta_too_large)?;
+        }
+    }
+    Ok(len)
+}
+
+fn write_state_cache_map_delta(
+    out: &mut impl io::Write,
+    states: &HashMap<i64, ModuleState>,
+    dirty: &HashSet<i64>,
+    full: bool,
+) -> io::Result<()> {
+    let identities = state_cache_delta_identities(states, dirty, full);
+    write_snapshot_u32(out, identities.len())?;
+    for identity in identities {
+        out.write_all(&identity.to_le_bytes())?;
+        if let Some(state) = states.get(&identity) {
+            out.write_all(&[1])?;
+            write_snapshot_bytes(out, &serialize_module_state(state))?;
+        } else {
+            out.write_all(&[0])?;
+        }
+    }
+    Ok(())
+}
+
+fn state_cache_delta_too_large() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "RWKV state delta is too large")
 }
 
 fn restore_serialized_state(
@@ -3337,6 +3691,531 @@ fn serialize_module_state(state: &ModuleState) -> Vec<u8> {
     out
 }
 
+fn serialized_module_state_len(state: &ModuleState) -> usize {
+    b"ARWKVMODSTATE1".len()
+        + 4
+        + state
+            .layers
+            .iter()
+            .map(|layer| {
+                12 + 4
+                    * (layer.time.as_ref().map_or(0, |time| time.x_shift.len())
+                        + layer.time.as_ref().map_or(0, |time| time.matrix.len())
+                        + layer.channel_shift.as_ref().map_or(0, |shift| shift.len()))
+            })
+            .sum::<usize>()
+}
+
+fn write_snapshot_state_map(
+    out: &mut impl io::Write,
+    states: &HashMap<i64, ModuleState>,
+) -> io::Result<()> {
+    write_snapshot_u32(out, states.len())?;
+    let mut states = states.iter().collect::<Vec<_>>();
+    states.sort_unstable_by_key(|(identity, _)| **identity);
+    for (identity, state) in states {
+        out.write_all(&identity.to_le_bytes())?;
+        write_snapshot_bytes(out, &serialize_module_state(state))?;
+    }
+    Ok(())
+}
+
+fn write_snapshot_optional_bytes(out: &mut impl io::Write, value: Option<&[u8]>) -> io::Result<()> {
+    match value {
+        Some(value) => {
+            out.write_all(&[1])?;
+            write_snapshot_bytes(out, value)
+        }
+        None => out.write_all(&[0]),
+    }
+}
+
+fn write_snapshot_bytes(out: &mut impl io::Write, value: &[u8]) -> io::Result<()> {
+    write_snapshot_u32(out, value.len())?;
+    out.write_all(value)
+}
+
+fn write_snapshot_u32(out: &mut impl io::Write, value: usize) -> io::Result<()> {
+    let value = u32::try_from(value)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "RWKV state is too large"))?;
+    out.write_all(&value.to_le_bytes())
+}
+
+fn open_state_cache_store(
+    path: &PathBuf,
+    store_generation: &str,
+    durable: bool,
+) -> io::Result<Connection> {
+    let connection = Connection::open(path).map_err(state_cache_store_error)?;
+    if !durable {
+        connection
+            .execute_batch(
+                "pragma journal_mode = off;
+                 pragma synchronous = off;
+                 pragma locking_mode = exclusive;",
+            )
+            .map_err(state_cache_store_error)?;
+    } else {
+        connection
+            .execute_batch(
+                "pragma journal_mode = delete;
+                 pragma synchronous = full;",
+            )
+            .map_err(state_cache_store_error)?;
+    }
+    let schema_version = connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(state_cache_store_error)?;
+    if schema_version == 0 {
+        connection
+            .pragma_update(None, "page_size", STATE_CACHE_STORE_PAGE_SIZE)
+            .map_err(state_cache_store_error)?;
+        connection
+            .execute_batch(
+                r#"
+create table store_metadata (
+  key text primary key,
+  value text not null
+) without rowid;
+create table segments (
+  id integer primary key,
+  parent_id integer references segments(id),
+  last_review_id integer not null,
+  review_count integer not null,
+  history_hash text not null,
+  replay_key text not null,
+  previous_review_ids blob not null,
+  previous_intervals blob not null,
+  review_counts blob not null,
+  runtime_state blob not null
+);
+create table segment_state_chunks (
+  id integer primary key,
+  segment_id integer not null references segments(id) on delete cascade,
+  chunk_index integer not null,
+  state_delta blob not null,
+  unique (segment_id, chunk_index)
+);
+"#,
+            )
+            .map_err(state_cache_store_error)?;
+        connection
+            .execute(
+                "insert into store_metadata (key, value) values ('generation', ?)",
+                [store_generation],
+            )
+            .map_err(state_cache_store_error)?;
+        connection
+            .pragma_update(None, "user_version", STATE_CACHE_STORE_SCHEMA_VERSION)
+            .map_err(state_cache_store_error)?;
+    }
+    validate_state_cache_store(&connection, store_generation)?;
+    Ok(connection)
+}
+
+fn validate_state_cache_store(connection: &Connection, store_generation: &str) -> io::Result<()> {
+    let schema_version = connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(state_cache_store_error)?;
+    if schema_version != STATE_CACHE_STORE_SCHEMA_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported RWKV state-cache store schema {schema_version}"),
+        ));
+    }
+    let actual_generation = connection
+        .query_row(
+            "select value from store_metadata where key = 'generation'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(state_cache_store_error)?;
+    if actual_generation.as_deref() != Some(store_generation) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RWKV state-cache store generation mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_state_cache_parent(
+    transaction: &Transaction<'_>,
+    parent_segment_id: Option<i64>,
+) -> io::Result<()> {
+    let Some(parent_segment_id) = parent_segment_id else {
+        return Ok(());
+    };
+    let parent_exists = transaction
+        .query_row(
+            "select 1 from segments where id = ?",
+            [parent_segment_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(state_cache_store_error)?
+        .is_some();
+    if !parent_exists {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing RWKV state-cache parent segment",
+        ));
+    }
+    Ok(())
+}
+
+fn insert_state_cache_delta_chunks(
+    transaction: &Transaction<'_>,
+    segment_id: i64,
+    state_delta_len: usize,
+) -> io::Result<Vec<i64>> {
+    let mut chunk_ids = Vec::with_capacity(state_delta_len.div_ceil(STATE_CACHE_DELTA_CHUNK_BYTES));
+    let mut remaining = state_delta_len;
+    let mut chunk_index = 0_i64;
+    while remaining > 0 {
+        let chunk_len = remaining.min(STATE_CACHE_DELTA_CHUNK_BYTES);
+        transaction
+            .execute(
+                r#"
+insert into segment_state_chunks (segment_id, chunk_index, state_delta)
+values (?, ?, zeroblob(?))
+"#,
+                params![
+                    segment_id,
+                    chunk_index,
+                    i64::try_from(chunk_len).map_err(|_| state_cache_delta_too_large())?,
+                ],
+            )
+            .map_err(state_cache_store_error)?;
+        chunk_ids.push(transaction.last_insert_rowid());
+        remaining -= chunk_len;
+        chunk_index += 1;
+    }
+    if chunk_ids.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "empty RWKV state delta",
+        ));
+    }
+    Ok(chunk_ids)
+}
+
+struct StateCacheDeltaChunkWriter<'conn> {
+    blob: Blob<'conn>,
+    remaining_chunk_ids: std::vec::IntoIter<i64>,
+    expected_len: usize,
+    written: usize,
+}
+
+impl<'conn> StateCacheDeltaChunkWriter<'conn> {
+    fn new(
+        connection: &'conn Connection,
+        chunk_ids: Vec<i64>,
+        expected_len: usize,
+    ) -> io::Result<Self> {
+        let mut remaining_chunk_ids = chunk_ids.into_iter();
+        let first_chunk_id = remaining_chunk_ids.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing RWKV state delta chunk")
+        })?;
+        let blob = connection
+            .blob_open(
+                MAIN_DB,
+                "segment_state_chunks",
+                "state_delta",
+                first_chunk_id,
+                false,
+            )
+            .map_err(state_cache_store_error)?;
+        Ok(Self {
+            blob,
+            remaining_chunk_ids,
+            expected_len,
+            written: 0,
+        })
+    }
+
+    fn finish(mut self) -> io::Result<()> {
+        if self.written != self.expected_len || self.remaining_chunk_ids.next().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "incomplete RWKV state delta",
+            ));
+        }
+        self.blob.close().map_err(state_cache_store_error)
+    }
+}
+
+impl io::Write for StateCacheDeltaChunkWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut written = 0;
+        while written < buf.len() {
+            let chunk_written = io::Write::write(&mut self.blob, &buf[written..])?;
+            if chunk_written == 0 {
+                let next_chunk_id = self.remaining_chunk_ids.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "RWKV state delta exceeds allocated chunks",
+                    )
+                })?;
+                self.blob
+                    .reopen(next_chunk_id)
+                    .map_err(state_cache_store_error)?;
+            } else {
+                written += chunk_written;
+                self.written += chunk_written;
+            }
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn state_cache_delta_chunk_ids(connection: &Connection, segment_id: i64) -> io::Result<Vec<i64>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+select id, chunk_index
+from segment_state_chunks
+where segment_id = ?
+order by chunk_index
+"#,
+        )
+        .map_err(state_cache_store_error)?;
+    let rows = statement
+        .query_map([segment_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(state_cache_store_error)?;
+    let mut chunk_ids = Vec::new();
+    for (expected_index, row) in rows.enumerate() {
+        let (chunk_id, chunk_index) = row.map_err(state_cache_store_error)?;
+        if chunk_index != expected_index as i64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid RWKV state delta chunk sequence",
+            ));
+        }
+        chunk_ids.push(chunk_id);
+    }
+    if chunk_ids.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing RWKV state delta chunks",
+        ));
+    }
+    Ok(chunk_ids)
+}
+
+struct StateCacheDeltaChunkReader<'conn> {
+    blob: Blob<'conn>,
+    remaining_chunk_ids: std::vec::IntoIter<i64>,
+}
+
+impl<'conn> StateCacheDeltaChunkReader<'conn> {
+    fn new(connection: &'conn Connection, chunk_ids: Vec<i64>) -> io::Result<Self> {
+        let mut remaining_chunk_ids = chunk_ids.into_iter();
+        let first_chunk_id = remaining_chunk_ids.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing RWKV state delta chunk")
+        })?;
+        let blob = connection
+            .blob_open(
+                MAIN_DB,
+                "segment_state_chunks",
+                "state_delta",
+                first_chunk_id,
+                true,
+            )
+            .map_err(state_cache_store_error)?;
+        Ok(Self {
+            blob,
+            remaining_chunk_ids,
+        })
+    }
+}
+
+impl io::Read for StateCacheDeltaChunkReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut read = 0;
+        while read < buf.len() {
+            let chunk_read = io::Read::read(&mut self.blob, &mut buf[read..])?;
+            if chunk_read == 0 {
+                let Some(next_chunk_id) = self.remaining_chunk_ids.next() else {
+                    break;
+                };
+                self.blob
+                    .reopen(next_chunk_id)
+                    .map_err(state_cache_store_error)?;
+            } else {
+                read += chunk_read;
+            }
+        }
+        Ok(read)
+    }
+}
+
+fn state_cache_segment_chain(
+    connection: &Connection,
+    target_segment_id: i64,
+) -> io::Result<Vec<i64>> {
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = Some(target_segment_id);
+    while let Some(segment_id) = current {
+        if !seen.insert(segment_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "cyclic RWKV state-cache segment chain",
+            ));
+        }
+        let parent = connection
+            .query_row(
+                "select parent_id from segments where id = ?",
+                [segment_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(state_cache_store_error)?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing RWKV state-cache segment",
+                )
+            })?;
+        chain.push(segment_id);
+        current = parent;
+    }
+    Ok(chain)
+}
+
+fn read_state_cache_maps(
+    connection: &Connection,
+    segment_chain: &[i64],
+) -> io::Result<ReviewStateMaps> {
+    let mut result = ReviewStateMaps::default();
+    let mut seen_card = HashSet::new();
+    let mut seen_note = HashSet::new();
+    let mut seen_deck = HashSet::new();
+    let mut seen_preset = HashSet::new();
+    let mut seen_global = false;
+    for segment_id in segment_chain {
+        let chunk_ids = state_cache_delta_chunk_ids(connection, *segment_id)?;
+        let mut state_delta = StateCacheDeltaChunkReader::new(connection, chunk_ids)?;
+        let mut magic = vec![0; STATE_CACHE_DELTA_MAGIC.len()];
+        io::Read::read_exact(&mut state_delta, &mut magic)?;
+        if magic != STATE_CACHE_DELTA_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid RWKV state-cache delta header",
+            ));
+        }
+        read_state_cache_map_delta(&mut state_delta, &mut result.card, &mut seen_card)?;
+        read_state_cache_map_delta(&mut state_delta, &mut result.note, &mut seen_note)?;
+        read_state_cache_map_delta(&mut state_delta, &mut result.deck, &mut seen_deck)?;
+        read_state_cache_map_delta(&mut state_delta, &mut result.preset, &mut seen_preset)?;
+        match read_state_cache_u8(&mut state_delta)? {
+            0 => {}
+            1 => {
+                if !seen_global {
+                    seen_global = true;
+                    result.global = None;
+                }
+            }
+            2 => {
+                let size = read_state_cache_u32(&mut state_delta)? as usize;
+                if seen_global {
+                    skip_state_cache_bytes(&mut state_delta, size)?;
+                } else {
+                    seen_global = true;
+                    let mut state = vec![0; size];
+                    io::Read::read_exact(&mut state_delta, &mut state)?;
+                    result.global = deserialize_module_state(Some(&state))?;
+                }
+            }
+            _ => return Err(invalid_state_cache_delta_marker()),
+        }
+        let mut trailing = [0];
+        if io::Read::read(&mut state_delta, &mut trailing)? != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing RWKV state-cache delta data",
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn read_state_cache_map_delta(
+    input: &mut impl io::Read,
+    states: &mut HashMap<i64, ModuleState>,
+    seen: &mut HashSet<i64>,
+) -> io::Result<()> {
+    for _ in 0..read_state_cache_u32(input)? {
+        let identity = read_state_cache_i64(input)?;
+        match read_state_cache_u8(input)? {
+            0 => {
+                seen.insert(identity);
+            }
+            1 => {
+                let size = read_state_cache_u32(input)? as usize;
+                if seen.insert(identity) {
+                    let mut state = vec![0; size];
+                    io::Read::read_exact(input, &mut state)?;
+                    if let Some(state) = deserialize_module_state(Some(&state))? {
+                        states.insert(identity, state);
+                    }
+                } else {
+                    skip_state_cache_bytes(input, size)?;
+                }
+            }
+            _ => return Err(invalid_state_cache_delta_marker()),
+        }
+    }
+    Ok(())
+}
+
+fn read_state_cache_u8(input: &mut impl io::Read) -> io::Result<u8> {
+    let mut value = [0];
+    io::Read::read_exact(input, &mut value)?;
+    Ok(value[0])
+}
+
+fn read_state_cache_u32(input: &mut impl io::Read) -> io::Result<u32> {
+    let mut value = [0; 4];
+    io::Read::read_exact(input, &mut value)?;
+    Ok(u32::from_le_bytes(value))
+}
+
+fn read_state_cache_i64(input: &mut impl io::Read) -> io::Result<i64> {
+    let mut value = [0; 8];
+    io::Read::read_exact(input, &mut value)?;
+    Ok(i64::from_le_bytes(value))
+}
+
+fn skip_state_cache_bytes(input: &mut impl io::Read, mut size: usize) -> io::Result<()> {
+    let mut buffer = [0; 8192];
+    while size > 0 {
+        let read_size = size.min(buffer.len());
+        io::Read::read_exact(input, &mut buffer[..read_size])?;
+        size -= read_size;
+    }
+    Ok(())
+}
+
+fn invalid_state_cache_delta_marker() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid RWKV state-cache delta marker",
+    )
+}
+
+fn state_cache_store_error(error: rusqlite::Error) -> io::Error {
+    io::Error::other(error)
+}
+
 fn deserialize_module_state(bytes: Option<&[u8]>) -> io::Result<Option<ModuleState>> {
     let Some(bytes) = bytes else {
         return Ok(None);
@@ -3362,27 +4241,56 @@ fn write_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn write_i64(out: &mut Vec<u8>, value: i64) {
-    out.extend_from_slice(&value.to_le_bytes());
+fn state_cache_optional_i64_len(value: Option<i64>) -> usize {
+    if value.is_some() {
+        9
+    } else {
+        1
+    }
 }
 
-fn write_option_i64(out: &mut Vec<u8>, value: Option<i64>) {
+fn state_cache_i64_set_len(count: usize) -> usize {
+    4 + 8 * count
+}
+
+fn state_cache_i64_map_len(count: usize) -> usize {
+    4 + 16 * count
+}
+
+fn state_cache_id_encodings_len(values: &HashMap<(IdKind, i64), Vec<f32>>) -> usize {
+    4 + values
+        .values()
+        .map(|encoding| 13 + 4 * encoding.len())
+        .sum::<usize>()
+}
+
+fn write_state_cache_u32(out: &mut impl io::Write, value: usize) -> io::Result<()> {
+    let value = u32::try_from(value)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "RWKV state is too large"))?;
+    out.write_all(&value.to_le_bytes())
+}
+
+fn write_state_cache_optional_i64(out: &mut impl io::Write, value: Option<i64>) -> io::Result<()> {
     match value {
         Some(value) => {
-            out.push(1);
-            write_i64(out, value);
+            out.write_all(&[1])?;
+            out.write_all(&value.to_le_bytes())
         }
-        None => out.push(0),
+        None => out.write_all(&[0]),
     }
 }
 
-fn write_i64_set(out: &mut Vec<u8>, values: impl Iterator<Item = i64>) {
+fn write_state_cache_i64_set(
+    out: &mut impl io::Write,
+    values: impl Iterator<Item = i64>,
+) -> io::Result<()> {
     let mut values: Vec<_> = values.collect();
     values.sort_unstable();
-    write_u32(out, values.len() as u32);
+    write_state_cache_u32(out, values.len())?;
     for value in values {
-        write_i64(out, value);
+        out.write_all(&value.to_le_bytes())?;
     }
+    Ok(())
 }
 
 fn read_i64_set(cursor: &mut Cursor<'_>) -> io::Result<HashMap<i64, ()>> {
@@ -3394,14 +4302,18 @@ fn read_i64_set(cursor: &mut Cursor<'_>) -> io::Result<HashMap<i64, ()>> {
     Ok(values)
 }
 
-fn write_i64_map(out: &mut Vec<u8>, values: &HashMap<i64, i64>) {
+fn write_state_cache_i64_map(
+    out: &mut impl io::Write,
+    values: &HashMap<i64, i64>,
+) -> io::Result<()> {
     let mut values: Vec<_> = values.iter().collect();
     values.sort_by_key(|(key, _)| *key);
-    write_u32(out, values.len() as u32);
+    write_state_cache_u32(out, values.len())?;
     for (key, value) in values {
-        write_i64(out, *key);
-        write_i64(out, *value);
+        out.write_all(&key.to_le_bytes())?;
+        out.write_all(&value.to_le_bytes())?;
     }
+    Ok(())
 }
 
 fn read_i64_map(cursor: &mut Cursor<'_>) -> io::Result<HashMap<i64, i64>> {
@@ -3418,6 +4330,33 @@ fn write_f32_slice(out: &mut Vec<u8>, values: &[f32]) {
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
     }
+}
+
+fn write_state_cache_f32_slice(out: &mut impl io::Write, values: &[f32]) -> io::Result<()> {
+    write_state_cache_u32(out, values.len())?;
+    let mut buffer = [0_u8; 8192];
+    for values in values.chunks(buffer.len() / 4) {
+        for (destination, value) in buffer.chunks_exact_mut(4).zip(values) {
+            destination.copy_from_slice(&value.to_le_bytes());
+        }
+        out.write_all(&buffer[..values.len() * 4])?;
+    }
+    Ok(())
+}
+
+fn write_state_cache_id_encodings(
+    out: &mut impl io::Write,
+    values: &HashMap<(IdKind, i64), Vec<f32>>,
+) -> io::Result<()> {
+    let mut values: Vec<_> = values.iter().collect();
+    values.sort_by_key(|((kind, value), _)| (kind.cache_code(), *value));
+    write_state_cache_u32(out, values.len())?;
+    for ((kind, value), encoding) in values {
+        out.write_all(&[kind.cache_code()])?;
+        out.write_all(&value.to_le_bytes())?;
+        write_state_cache_f32_slice(out, encoding)?;
+    }
+    Ok(())
 }
 
 fn interval_for_curve(
@@ -7488,6 +8427,112 @@ order by e.id, e.cid
                 "runtime cache size diverged (record={record_predictions})"
             );
         }
+    }
+
+    #[test]
+    fn delta_state_store_restores_checkpoint_chain() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(40);
+        let prefix = reviews[..32].to_vec();
+        let suffix = reviews[..8].to_vec();
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "test-generation";
+
+        let mut expected_prefix = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        expected_prefix
+            .warm_up_reviews(prefix.clone(), false)
+            .unwrap();
+
+        let mut expected_final = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        expected_final.warm_up_reviews(prefix, false).unwrap();
+        let first_segment = expected_final
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                32,
+                32,
+                "prefix-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                false,
+                false,
+            )
+            .unwrap();
+        expected_final
+            .warm_up_reviews(suffix.clone(), false)
+            .unwrap();
+        let second_segment = expected_final
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                Some(first_segment),
+                40,
+                40,
+                "final-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                false,
+                false,
+            )
+            .unwrap();
+
+        let connection = Connection::open(&store_path).unwrap();
+        let page_size: i64 = connection
+            .pragma_query_value(None, "page_size", |row| row.get(0))
+            .unwrap();
+        assert_eq!(page_size, STATE_CACHE_STORE_PAGE_SIZE);
+        let first_state_bytes: i64 = connection
+            .query_row(
+                "select coalesce(sum(length(state_delta)), 0) \
+                 from segment_state_chunks where segment_id = ?",
+                [first_segment],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let second_state_bytes: i64 = connection
+            .query_row(
+                "select coalesce(sum(length(state_delta)), 0) \
+                 from segment_state_chunks where segment_id = ?",
+                [second_segment],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let first_chunk_count: i64 = connection
+            .query_row(
+                "select count(*) from segment_state_chunks where segment_id = ?",
+                [first_segment],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            first_chunk_count > 1,
+            "test checkpoint should exercise multi-chunk state"
+        );
+        assert!(
+            second_state_bytes < first_state_bytes,
+            "suffix checkpoint should contain only dirty states: {second_state_bytes} >= {first_state_bytes}"
+        );
+
+        let mut restored_prefix = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        restored_prefix
+            .restore_warm_up_state_checkpoint(store_path.clone(), generation, first_segment)
+            .unwrap();
+        assert_warm_up_parity(&expected_prefix, &restored_prefix);
+
+        let mut restored_final = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        restored_final
+            .restore_warm_up_state_checkpoint(store_path, generation, second_segment)
+            .unwrap();
+        assert_warm_up_parity(&expected_final, &restored_final);
     }
 
     #[test]

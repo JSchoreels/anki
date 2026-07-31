@@ -101,6 +101,15 @@ impl NormalSyncer<'_> {
                 revlog = chunk.revlog.len(),
                 "received"
             );
+            self.mark_remote_collection_changed(
+                !chunk.cards.is_empty() || !chunk.notes.is_empty() || !chunk.revlog.is_empty(),
+            );
+            self.mark_remote_non_review_collection_changed(
+                !chunk.cards.is_empty() || !chunk.notes.is_empty(),
+            );
+            for entry in &chunk.revlog {
+                self.record_remote_review(entry.id);
+            }
 
             self.progress.update(false, |p| {
                 p.remote_update += chunk.cards.len() + chunk.notes.len() + chunk.revlog.len()

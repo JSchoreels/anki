@@ -768,10 +768,16 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
 
     let out = ctx.normal_sync(&mut col1).await;
     assert_eq!(out.required, SyncActionRequired::NoChanges);
+    assert!(!out.remote_collection_changed);
+    assert!(out.remote_review_ids.is_empty());
+    assert!(!out.remote_non_review_collection_changed);
 
     // sync the other collection
     let out = ctx.normal_sync(&mut col2).await;
     assert_eq!(out.required, SyncActionRequired::NoChanges);
+    assert!(out.remote_collection_changed);
+    assert_eq!(out.remote_review_ids, vec![RevlogId(123)]);
+    assert!(out.remote_non_review_collection_changed);
 
     let ntid = nt.id;
     let deckid = deck.id;
@@ -834,6 +840,23 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
 
     // make sure everything has been transferred across
     compare_sides(&mut col1, &mut col2)?;
+
+    // A review-only download is reported separately from other collection changes.
+    col1.storage.add_revlog_entry(
+        &RevlogEntry {
+            id: RevlogId(124),
+            cid: CardId(456),
+            usn: Usn(-1),
+            interval: 11,
+            ..Default::default()
+        },
+        true,
+    )?;
+    ctx.normal_sync(&mut col1).await;
+    let out = ctx.normal_sync(&mut col2).await;
+    assert!(out.remote_collection_changed);
+    assert_eq!(out.remote_review_ids, vec![RevlogId(124)]);
+    assert!(!out.remote_non_review_collection_changed);
 
     // make some modifications
     let mut note = col2.storage.get_note(note.id)?.unwrap();

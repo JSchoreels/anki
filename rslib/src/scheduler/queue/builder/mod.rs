@@ -1460,6 +1460,62 @@ mod test {
     }
 
     #[test]
+    fn rwkv_relative_overdueness_uses_score_target_before_review_limit() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_desired_retention(
+            &mut deck,
+            ReviewCardOrder::RelativeOverdueness,
+            0.90,
+        );
+        col.set_deck_review_limit(deck.id, 1);
+
+        let timing = col.timing_today()?;
+        let higher_target = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let lower_target = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_score_entries(
+            deck.id,
+            HashMap::from([
+                (
+                    higher_target,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.90,
+                        intervening_reviews: None,
+                        target_retention: Some(0.95),
+                    },
+                ),
+                (
+                    lower_target,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.79,
+                        intervening_reviews: None,
+                        target_retention: Some(0.80),
+                    },
+                ),
+            ]),
+        )?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![higher_target]);
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_instant_preserves_due_day_review_order() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;

@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -4681,8 +4682,8 @@ def test_rust_rwkv_warmup_chunk_size_fills_state_only_wavefront() -> None:
     assert _rust_warmup_chunk_size(0) == 1
     assert _rust_warmup_chunk_size(2) == 2
     assert _rust_warmup_chunk_size(4000) == 4000
-    assert _rust_warmup_chunk_size(50000) == 50_000
-    assert _rust_warmup_chunk_size(200000) == 131_072
+    assert _rust_warmup_chunk_size(50000) == 16_384
+    assert _rust_warmup_chunk_size(200000) == 16_384
 
 
 def test_rust_rwkv_calibration_chunk_size_preserves_progress_chunks() -> None:
@@ -4717,16 +4718,53 @@ def test_reviewer_rwkv_warmup_progress_label_formats_long_times() -> None:
     )
 
 
-def test_rwkv_state_cache_checkpoint_endpoints_grow_exponentially() -> None:
+def test_rwkv_state_cache_keeps_only_eight_day_recovery_checkpoint() -> None:
     review_ids = [(day * 86_400 + 100) * 1000 for day in (0, 8, 12, 14, 15, 16)]
 
-    assert rwkv_scheduler._rwkv_exponential_checkpoint_review_counts(review_ids) == [
-        1,
-        2,
-        3,
-        4,
-        5,
-    ]
+    assert rwkv_scheduler._rwkv_recovery_checkpoint_review_counts(review_ids) == [2]
+
+
+def test_historical_rwkv_inputs_prepare_checkpoint_without_rehashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_ids = [(day * 86_400 + 100) * 1000 for day in (0, 8, 16)]
+    reviewer = _rwkv_reviewer(
+        historical_review_rows=[
+            (review_id, 1, 10, 100, 3, 1234, 1, 3, 2500) for review_id in review_ids
+        ],
+    )
+    hash_review = rwkv_scheduler._rwkv_history_hash_after_review
+    hashed_review_ids: list[int] = []
+
+    def count_hashes(
+        previous_hash: str,
+        review_id: int,
+        review: RwkvReviewInput,
+    ) -> str:
+        hashed_review_ids.append(review_id)
+        return hash_review(previous_hash, review_id, review)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_history_hash_after_review",
+        count_hashes,
+    )
+
+    history = rwkv_scheduler._historical_rwkv_review_inputs(
+        reviewer,
+        prepare_recovery_checkpoint=True,
+    )
+    checkpoint = history.prepared_checkpoint_histories[2]
+    cursor = rwkv_scheduler._RwkvCheckpointHistoryCursor(history)
+
+    assert cursor.advance(2) == checkpoint
+    final = cursor.advance(3)
+    assert hashed_review_ids == review_ids
+    assert checkpoint.last_review_id == review_ids[1]
+    assert checkpoint.review_count == 2
+    assert final.last_review_id == history.last_review_id
+    assert final.review_count == history.review_count
+    assert final.history_hash == history.history_hash
 
 
 def test_rwkv_checkpoint_prefixes_are_built_in_one_pass(
@@ -4799,6 +4837,158 @@ def test_rwkv_checkpoint_suffix_prefixes_are_built_in_one_pass(
         _rwkv_checkpoint_test_history(3),
     )
     _assert_rwkv_checkpoint_history_matches(prefixes[3], history)
+
+
+def test_rwkv_checkpoint_writer_builds_histories_on_demand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = _rwkv_checkpoint_test_history(5)
+    hash_review = rwkv_scheduler._rwkv_history_hash_after_review
+    hashed_review_ids: list[int] = []
+    written_histories: list[RwkvHistoricalReviewInputs] = []
+    history_map_ids: list[tuple[int, int, int]] = []
+
+    def count_hashes(
+        previous_hash: str,
+        review_id: int,
+        review: RwkvReviewInput,
+    ) -> str:
+        hashed_review_ids.append(review_id)
+        return hash_review(previous_hash, review_id, review)
+
+    def write_checkpoint(
+        reviewer: object,
+        context: object,
+        checkpoint_history: RwkvHistoricalReviewInputs,
+        snapshot: RwkvBackendCacheSnapshot,
+    ) -> rwkv_scheduler._RwkvStateCacheCheckpointEntry:
+        history_map_ids.append(
+            (
+                id(checkpoint_history.previous_review_id_by_card),
+                id(checkpoint_history.previous_interval_days_by_card),
+                id(checkpoint_history.review_count_by_card),
+            )
+        )
+        written_histories.append(
+            replace(
+                checkpoint_history,
+                previous_review_id_by_card=dict(
+                    checkpoint_history.previous_review_id_by_card
+                ),
+                previous_interval_days_by_card=dict(
+                    checkpoint_history.previous_interval_days_by_card
+                ),
+                review_count_by_card=dict(checkpoint_history.review_count_by_card),
+            )
+        )
+        return rwkv_scheduler._rwkv_state_cache_checkpoint_entry(checkpoint_history)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_history_hash_after_review",
+        count_hashes,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_write_context",
+        lambda reviewer: object(),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_write_rwkv_state_cache_checkpoint",
+        write_checkpoint,
+    )
+    writer = rwkv_scheduler._RwkvStateCacheCheckpointWriter(
+        SimpleNamespace(),
+        history,
+        [2, 4],
+    )
+    snapshot = RwkvBackendCacheSnapshot({}, {}, {}, {}, None, None)
+
+    assert hashed_review_ids == []
+    writer(2, snapshot)
+    assert hashed_review_ids == history.review_ids[:2]
+    writer(4, snapshot)
+
+    assert hashed_review_ids == history.review_ids[:4]
+    assert history_map_ids[0] == history_map_ids[1]
+    _assert_rwkv_checkpoint_history_matches(
+        written_histories[0],
+        _rwkv_checkpoint_test_history(2),
+    )
+    _assert_rwkv_checkpoint_history_matches(
+        written_histories[1],
+        _rwkv_checkpoint_test_history(4),
+    )
+
+
+def test_rwkv_checkpoint_writer_extends_base_history_on_demand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = _rwkv_checkpoint_test_history(5)
+    base = rwkv_scheduler._rwkv_history_prefix(history, 2)
+    suffix = rwkv_scheduler._rwkv_validated_history_suffix(history, base)
+    written_histories: list[RwkvHistoricalReviewInputs] = []
+
+    def write_checkpoint(
+        reviewer: object,
+        context: object,
+        checkpoint_history: RwkvHistoricalReviewInputs,
+        snapshot: RwkvBackendCacheSnapshot,
+    ) -> rwkv_scheduler._RwkvStateCacheCheckpointEntry:
+        written_histories.append(
+            replace(
+                checkpoint_history,
+                previous_review_id_by_card=dict(
+                    checkpoint_history.previous_review_id_by_card
+                ),
+                previous_interval_days_by_card=dict(
+                    checkpoint_history.previous_interval_days_by_card
+                ),
+                review_count_by_card=dict(checkpoint_history.review_count_by_card),
+            )
+        )
+        return rwkv_scheduler._rwkv_state_cache_checkpoint_entry(checkpoint_history)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_write_context",
+        lambda reviewer: object(),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_write_rwkv_state_cache_checkpoint",
+        write_checkpoint,
+    )
+    writer = rwkv_scheduler._RwkvStateCacheCheckpointWriter(
+        SimpleNamespace(),
+        suffix,
+        [1, 3],
+        base_history=base,
+    )
+    snapshot = RwkvBackendCacheSnapshot({}, {}, {}, {}, None, None)
+
+    writer(1, snapshot)
+    writer(3, snapshot)
+
+    _assert_rwkv_checkpoint_history_matches(
+        written_histories[0],
+        _rwkv_checkpoint_test_history(3),
+    )
+    _assert_rwkv_checkpoint_history_matches(written_histories[1], history)
+
+
+def test_rwkv_checkpoint_writer_without_endpoints_does_not_copy_base_history() -> None:
+    history = _rwkv_checkpoint_test_history(3)
+    writer = rwkv_scheduler._RwkvStateCacheCheckpointWriter(
+        SimpleNamespace(),
+        history,
+        [],
+        base_history=replace(history, replay_key="different"),
+    )
+
+    assert writer.context is None
+    assert writer.entries == []
 
 
 def test_rwkv_history_prefix_identities_are_hashed_in_one_pass(
@@ -4886,23 +5076,401 @@ def test_rwkv_state_cache_save_computes_shared_metadata_once(
         dynamic_replay,
     )
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    checkpoint_writer = rwkv_scheduler._RwkvStateCacheCheckpointWriter(
+        reviewer,
+        history,
+        [1, 2],
+    )
+    for review_count in (1, 2):
+        checkpoint_writer(
+            review_count,
+            snapshot,
+        )
+    cache_dir = tmp_path / "rwkv-state-cache"
+    assert all(
+        (
+            cache_dir
+            / f"checkpoint-v1-{checkpoint_histories[review_count].last_review_id}.bin"
+        ).exists()
+        for review_count in (1, 2)
+    )
+    for filename in rwkv_scheduler._RWKV_STATE_CACHE_LEGACY_DATA_FILES:
+        (cache_dir / filename).write_bytes(b"legacy")
 
     rwkv_scheduler._save_reviewer_backend_cache(
         reviewer,
         history,
-        checkpoints=[
-            rwkv_scheduler.RwkvStoredStateCheckpoint(
-                snapshot=snapshot,
-                history=checkpoint_histories[review_count],
-            )
-            for review_count in (1, 2)
-        ],
+        checkpoint_entries=checkpoint_writer.entries,
+        write_context=checkpoint_writer.context,
     )
 
     assert calls == {"collection": 1, "model": 1, "dynamic": 1}
-    assert (
-        tmp_path / "rwkv-state-cache" / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE
-    ).exists()
+    assert (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE).exists()
+    assert all(
+        not (cache_dir / filename).exists()
+        for filename in rwkv_scheduler._RWKV_STATE_CACHE_LEGACY_DATA_FILES
+    )
+
+
+def test_rwkv_delta_store_full_checkpoint_starts_new_parent_chain(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    store_path = cache_dir / "state.sqlite3"
+    store_path.write_bytes(b"existing-store")
+    history = _rwkv_checkpoint_test_history(3)
+    checkpoint_histories = rwkv_scheduler._rwkv_history_prefixes(history, [1, 3])
+    calls: list[tuple[Path, str, int | None, int, bool]] = []
+
+    def write_checkpoint(
+        path: Path,
+        generation: str,
+        parent_segment_id: int | None,
+        last_review_id: int,
+        _review_count: int,
+        _history_hash: str,
+        _replay_key: str,
+        _previous_review_ids: bytes,
+        _previous_intervals: bytes,
+        _review_counts: bytes,
+        full: bool,
+        durable: bool,
+    ) -> int:
+        assert durable is True
+        calls.append((path, generation, parent_segment_id, last_review_id, full))
+        with path.open("ab") as file:
+            file.write(b"segment")
+        return len(calls)
+
+    checkpoint_writer = rwkv_scheduler._RwkvStateCacheCheckpointWriter(
+        _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[]),
+        history,
+        [1, 3],
+        full_review_counts=[1],
+        state_store_path=store_path,
+        state_store_generation="generation",
+        parent_segment_id=99,
+    )
+    checkpoint_writer.write_runtime_checkpoint(
+        1,
+        write_checkpoint,
+    )
+    checkpoint_writer.write_runtime_checkpoint(
+        3,
+        write_checkpoint,
+    )
+
+    assert calls[0][2:] == (
+        None,
+        checkpoint_histories[1].last_review_id,
+        True,
+    )
+    assert calls[1][2:] == (
+        1,
+        checkpoint_histories[3].last_review_id,
+        False,
+    )
+    assert calls[0][0] == calls[1][0]
+    assert calls[0][1] == calls[1][1]
+    assert [entry["segmentId"] for entry in checkpoint_writer.entries] == [1, 2]
+    assert checkpoint_writer.context is not None
+    assert checkpoint_writer.context.state_store_head_segment_id == 2
+
+
+def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    temporary_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_TEMP_FILE
+    temporary_store.write_bytes(b"delta-store")
+    history = _rwkv_checkpoint_test_history(3)
+    checkpoint_history = rwkv_scheduler._rwkv_history_prefix(history, 1)
+    context = rwkv_scheduler._RwkvStateCacheWriteContext(
+        cache_dir=cache_dir,
+        metadata_base={
+            "version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION,
+            "presetReplaySemantics": (
+                rwkv_scheduler._RWKV_PRESET_REPLAY_SEMANTICS_VERSION
+            ),
+            "collection": {"test": True},
+            "model": {"test": True},
+            "dynamicPresetReplay": False,
+        },
+        state_store_path=temporary_store,
+        state_store_generation="generation",
+        state_store_temporary=True,
+        state_store_head_segment_id=2,
+    )
+
+    class Backend:
+        def write_state_cache_checkpoint(
+            self, *_args: object, **_kwargs: object
+        ) -> int:
+            raise AssertionError("the final checkpoint must be reused")
+
+    checkpoint_entry = rwkv_scheduler._rwkv_state_cache_checkpoint_entry(
+        checkpoint_history,
+        segment_id=1,
+    )
+    final_entry = rwkv_scheduler._rwkv_state_cache_checkpoint_entry(
+        history,
+        segment_id=2,
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+
+    rwkv_scheduler._save_reviewer_backend_state_store(
+        reviewer,
+        history,
+        backend=cast(Any, Backend()),
+        checkpoint_entries=[checkpoint_entry, final_entry],
+        context=context,
+    )
+
+    live_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+    assert live_store.read_bytes() == b"delta-store"
+    assert not (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_SNAPSHOT_FILE).exists()
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert metadata["storage"] == rwkv_scheduler._RWKV_STATE_CACHE_STORE_KIND
+    assert metadata["snapshotSegmentId"] == 2
+    assert metadata["checkpoints"] == [checkpoint_entry]
+
+
+def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "state.sqlite3"
+    with sqlite3.connect(store_path) as connection:
+        connection.executescript(
+            f"""
+            pragma user_version = {rwkv_scheduler._RWKV_STATE_CACHE_STORE_SCHEMA_VERSION};
+            create table store_metadata (
+              key text primary key,
+              value text not null
+            );
+            create table segments (
+              id integer primary key,
+              parent_id integer
+            );
+            create table segment_state_chunks (
+              id integer primary key,
+              segment_id integer not null,
+              chunk_index integer not null,
+              state_delta blob not null
+            );
+            insert into store_metadata values ('generation', 'generation');
+            insert into segments values (1, null), (2, 1), (3, null);
+            insert into segment_state_chunks values
+              (1, 1, 0, X'01'),
+              (2, 2, 0, X'02'),
+              (3, 3, 0, X'03');
+            """
+        )
+
+    rwkv_scheduler._prune_rwkv_state_cache_store(
+        store_path,
+        "generation",
+        2,
+    )
+
+    with sqlite3.connect(store_path) as connection:
+        assert connection.execute("select id from segments order by id").fetchall() == [
+            (1,),
+            (2,),
+        ]
+        assert connection.execute(
+            "select segment_id from segment_state_chunks order by segment_id"
+        ).fetchall() == [(1,), (2,)]
+
+
+def test_rwkv_delta_store_recovers_when_manifest_is_ahead_of_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    current_history = _rwkv_checkpoint_test_history(3)
+    snapshot_history = rwkv_scheduler._rwkv_history_prefix(current_history, 2)
+    metadata: dict[str, object] = {
+        "storeGeneration": "generation",
+        "snapshotSegmentId": 2,
+        "snapshotReviewId": current_history.last_review_id,
+        "snapshotHistoryHash": current_history.history_hash,
+        "lastReviewId": current_history.last_review_id,
+        "reviewCount": current_history.review_count,
+        "historyHash": current_history.history_hash,
+        "checkpoints": [],
+    }
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_store_segment_history",
+        lambda _path, _generation, segment_id: (
+            snapshot_history
+            if segment_id == 2
+            else pytest.fail(f"unexpected segment: {segment_id}")
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_store_segment_chain",
+        lambda _path, _generation, _segment_id: [2],
+    )
+
+    stored = rwkv_scheduler._read_rwkv_state_cache_store(
+        _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[]),
+        backend=cast(
+            Any,
+            SimpleNamespace(restore_state_cache_checkpoint=lambda *_args: None),
+        ),
+        cache_dir=tmp_path / "rwkv-state-cache",
+        metadata=metadata,
+        current_history=current_history,
+        desired_checkpoint_review_counts=(),
+        dynamic_preset_replay_enabled=False,
+    )
+
+    assert stored is not None
+    assert stored.recovered_from_checkpoint is True
+    assert stored.state_store_segment_id == 2
+    _assert_rwkv_checkpoint_history_matches(stored.history, snapshot_history)
+    assert stored.pending_history is not None
+    assert stored.pending_history.review_ids == current_history.review_ids[2:]
+
+
+def test_rwkv_state_cache_stream_write_matches_binary_encoder(tmp_path: Path) -> None:
+    history = _rwkv_checkpoint_test_history(2)
+    snapshot = RwkvBackendCacheSnapshot(
+        card_states={1: b"card"},
+        note_states={10: b"note"},
+        deck_states={100: b"deck"},
+        preset_states={1000: b"preset"},
+        global_state=b"global",
+        runtime_state=b"runtime",
+    )
+    metadata = {
+        "lastReviewId": history.last_review_id,
+        "reviewCount": history.review_count,
+        "historyHash": history.history_hash,
+        "replayKey": history.replay_key,
+    }
+    path = tmp_path / "snapshot.bin"
+
+    rwkv_scheduler._atomic_write_rwkv_state_cache_snapshot(
+        path,
+        metadata=metadata,
+        snapshot=snapshot,
+        history=history,
+    )
+
+    assert path.read_bytes() == rwkv_scheduler._encode_rwkv_state_cache_snapshot_file(
+        metadata=metadata,
+        snapshot=snapshot,
+        history=history,
+    )
+    assert rwkv_scheduler._validate_rwkv_state_cache_snapshot_file(path) == metadata
+    decoded_metadata, decoded_snapshot, decoded_history = (
+        rwkv_scheduler._read_rwkv_state_cache_snapshot_file(path)
+    )
+    assert decoded_metadata == metadata
+    assert decoded_snapshot == snapshot
+    _assert_rwkv_checkpoint_history_matches(decoded_history, history)
+
+
+def test_rwkv_state_cache_runtime_stream_matches_snapshot_writer(
+    tmp_path: Path,
+) -> None:
+    history = _rwkv_checkpoint_test_history(2)
+    snapshot = RwkvBackendCacheSnapshot(
+        card_states={1: b"card"},
+        note_states={10: b"note"},
+        deck_states={100: b"deck"},
+        preset_states={1000: b"preset"},
+        global_state=b"global",
+        runtime_state=b"runtime",
+    )
+    metadata = {
+        "lastReviewId": history.last_review_id,
+        "reviewCount": history.review_count,
+        "historyHash": history.history_hash,
+        "replayKey": history.replay_key,
+    }
+    expected_path = tmp_path / "expected.bin"
+    streamed_path = tmp_path / "streamed.bin"
+
+    def append_snapshot(path: Path) -> None:
+        with path.open("ab") as file:
+            rwkv_scheduler._write_cache_snapshot_binary(file, snapshot)
+
+    rwkv_scheduler._atomic_write_rwkv_state_cache_snapshot(
+        expected_path,
+        metadata=metadata,
+        snapshot=snapshot,
+        history=history,
+    )
+    rwkv_scheduler._atomic_write_rwkv_state_cache_snapshot_from_runtime(
+        streamed_path,
+        metadata=metadata,
+        append_snapshot=append_snapshot,
+        history=history,
+    )
+
+    assert streamed_path.read_bytes() == expected_path.read_bytes()
+
+
+def test_rwkv_state_cache_save_prefers_resident_runtime_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history = _rwkv_checkpoint_test_history(2)
+    snapshot = RwkvBackendCacheSnapshot(
+        card_states={1: b"card"},
+        note_states={10: b"note"},
+        deck_states={100: b"deck"},
+        preset_states={1000: b"preset"},
+        global_state=b"global",
+        runtime_state=b"runtime",
+    )
+
+    class Backend:
+        def __init__(self) -> None:
+            self.stream_calls = 0
+
+        def supports_streaming_cache_snapshot(self) -> bool:
+            return True
+
+        def append_cache_snapshot_binary(self, path: Path) -> None:
+            self.stream_calls += 1
+            with path.open("ab") as file:
+                rwkv_scheduler._write_cache_snapshot_binary(file, snapshot)
+
+        def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
+            raise AssertionError("streaming save must not build a Python snapshot")
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    backend = Backend()
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+
+    rwkv_scheduler._save_reviewer_backend_cache(
+        reviewer,
+        history,
+        backend=cast(Any, backend),
+    )
+
+    assert backend.stream_calls == 1
+    _, decoded_snapshot, decoded_history = (
+        rwkv_scheduler._read_rwkv_state_cache_snapshot_file(
+            tmp_path
+            / "rwkv-state-cache"
+            / rwkv_scheduler._RWKV_STATE_CACHE_SNAPSHOT_FILE
+        )
+    )
+    assert decoded_snapshot == snapshot
+    _assert_rwkv_checkpoint_history_matches(decoded_history, history)
 
 
 def test_reviewer_rwkv_warmup_saves_and_reuses_local_state_cache(
@@ -4932,22 +5500,10 @@ def test_reviewer_rwkv_warmup_saves_and_reuses_local_state_cache(
     assert (tmp_path / "rwkv-state-cache" / "deltas-v1.log").exists()
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
     assert metadata is not None
-    checkpoints = metadata["checkpoints"]
-    assert isinstance(checkpoints, list)
-    assert [
-        {
-            "lastReviewId": checkpoint["lastReviewId"],
-            "reviewCount": checkpoint["reviewCount"],
-        }
-        for checkpoint in checkpoints
-    ] == [{"lastReviewId": first_review, "reviewCount": 1}]
-    assert all(
-        rwkv_scheduler._rwkv_history_hash_is_valid(checkpoint["historyHash"])
-        for checkpoint in checkpoints
-    )
+    assert metadata.get("checkpoints", []) == []
     assert (
         tmp_path / "rwkv-state-cache" / f"checkpoint-v1-{first_review}.bin"
-    ).exists()
+    ).exists() is False
 
     restored_runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
@@ -5629,9 +6185,11 @@ def test_reviewer_rwkv_warmup_cache_replays_only_new_revlogs(
     assert delta_runtime.answered_inputs[0].current_elapsed_seconds == 90_000
 
 
+@pytest.mark.parametrize("failed_checkpoint_day", [None, 8])
 def test_reviewer_rwkv_warmup_recovers_from_checkpoint_after_past_sync(
     monkeypatch,
     tmp_path,
+    failed_checkpoint_day: int | None,
 ) -> None:
     review_ids = {
         day: (day * 86_400 + 100) * 1000 for day in (0, 8, 12, 13, 14, 15, 16)
@@ -5656,17 +6214,54 @@ def test_reviewer_rwkv_warmup_recovers_from_checkpoint_after_past_sync(
 
     rows.append((review_ids[13], 1, 10, 100, 1, 1234, 1, 14, 2400))
     rows.sort()
+    fully_decoded_paths: list[str] = []
+    read_snapshot = rwkv_scheduler._read_rwkv_state_cache_snapshot_file
+
+    def track_full_snapshot_decode(
+        path: Path,
+    ) -> tuple[
+        dict[str, object],
+        RwkvBackendCacheSnapshot,
+        rwkv_scheduler.RwkvHistoricalReviewInputs,
+    ]:
+        fully_decoded_paths.append(path.name)
+        if (
+            failed_checkpoint_day is not None
+            and path.name == f"checkpoint-v1-{review_ids[failed_checkpoint_day]}.bin"
+        ):
+            raise ValueError("simulated unreadable RWKV checkpoint")
+        return read_snapshot(path)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_snapshot_file",
+        track_full_snapshot_decode,
+    )
     restored_runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
 
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
-    assert restored_runtime.reviewed == [
-        (1, 1),
-        (1, 2),
-        (1, 3),
-        (1, 4),
-    ]
+    if failed_checkpoint_day is None:
+        assert fully_decoded_paths == [f"checkpoint-v1-{review_ids[8]}.bin"]
+        assert restored_runtime.reviewed == [
+            (1, 4),
+            (1, 1),
+            (1, 2),
+            (1, 3),
+            (1, 4),
+        ]
+    else:
+        assert fully_decoded_paths == [f"checkpoint-v1-{review_ids[8]}.bin"]
+        assert restored_runtime.reviewed == [
+            (1, 2),
+            (1, 3),
+            (1, 4),
+            (1, 1),
+            (1, 2),
+            (1, 3),
+            (1, 4),
+        ]
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
     assert metadata is not None
     assert metadata["lastReviewId"] == review_ids[16]
@@ -5680,11 +6275,7 @@ def test_reviewer_rwkv_warmup_recovers_from_checkpoint_after_past_sync(
         }
         for checkpoint in checkpoints
     ] == [
-        {"lastReviewId": review_ids[0], "reviewCount": 1},
         {"lastReviewId": review_ids[8], "reviewCount": 2},
-        {"lastReviewId": review_ids[12], "reviewCount": 3},
-        {"lastReviewId": review_ids[14], "reviewCount": 5},
-        {"lastReviewId": review_ids[15], "reviewCount": 6},
     ]
     assert all(
         rwkv_scheduler._rwkv_history_hash_is_valid(checkpoint["historyHash"])
@@ -5740,7 +6331,6 @@ def test_reviewer_rwkv_successive_recoveries_reselect_exponential_checkpoints(
         (checkpoint["lastReviewId"], checkpoint["reviewCount"])
         for checkpoint in checkpoints
     ] == [
-        (review_ids[0], 1),
         (review_ids[16], 8),
     ]
 
@@ -5784,6 +6374,7 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
 
     assert completed == [True]
     assert runtime.reviewed == [
+        (1, 4),
         (1, 1),
         (1, 2),
         (1, 3),
@@ -5792,6 +6383,72 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
     assert taskman.with_progress_kwargs is not None
     assert taskman.with_progress_kwargs["label"] == "Updating RWKV state after sync..."
     assert taskman.with_progress_kwargs["uses_collection"] is True
+
+
+def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    review_ids = {day: (day * 86_400 + 100) * 1000 for day in (0, 7, 8, 12, 14, 15, 16)}
+    rows = [
+        (review_ids[day], 1, 10, 100, ease, 1234, 1, day + 1, 2500)
+        for day, ease in zip(
+            (0, 8, 12, 14, 15, 16),
+            (2, 3, 4, 2, 3, 4),
+            strict=True,
+        )
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "aqt.utils.show_warning",
+        lambda message, **_kwargs: warnings.append(message),
+    )
+
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    runtime.reviewed.clear()
+
+    rows.append((review_ids[7], 1, 10, 100, 1, 1234, 1, 8, 2400))
+    rows.sort()
+    _taskman, _progress_updates = _attach_progress_taskman(reviewer.mw)
+    completed: list[bool] = []
+
+    rwkv_scheduler.refresh_rwkv_state_after_sync(
+        reviewer.mw,
+        lambda: completed.append(True),
+        remote_review_ids=(review_ids[7],),
+    )
+
+    assert completed == [True]
+    assert runtime.reviewed == []
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert metadata["ignoredReviewIds"] == [review_ids[7]]
+    assert len(warnings) == 1
+    assert "1 synchronized review older than 8 days" in warnings[0]
+    assert (
+        rwkv_scheduler._read_rwkv_state_cache_binary(
+            reviewer,
+            backend=backend,
+        )
+        is not None
+    )
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(
+        reviewer,
+        force_rebuild=True,
+    )
+    rebuilt_metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert rebuilt_metadata is not None
+    assert "ignoredReviewIds" not in rebuilt_metadata
 
 
 def test_stale_post_sync_failure_does_not_clobber_newer_ready_state(
@@ -5839,7 +6496,7 @@ def test_stale_post_sync_failure_does_not_clobber_newer_ready_state(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_warm_up_reviewer_backend",
-        lambda reviewer, *, progress=None: False,
+        lambda reviewer, *, progress=None, additional_ignored_review_ids=(): False,
     )
     taskman = DeferredTaskman()
     reviewer.mw.taskman = taskman
@@ -6418,6 +7075,89 @@ def test_stateful_backend_uses_runtime_bulk_warmup_for_empty_state() -> None:
         processed_reviews=2,
         total_reviews=2,
     )
+
+
+def test_stateful_backend_keeps_resident_runtime_state_out_of_python() -> None:
+    runtime = _ResidentCacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviews = [
+        _warm_up_review_input(card_id=1, note_id=10, ease=2),
+        _warm_up_review_input(card_id=2, note_id=20, ease=3),
+    ]
+
+    backend.warm_up(reviews)
+
+    assert runtime.return_snapshot_flags == [False]
+    assert backend._card_states == {}
+    assert backend._note_states == {}
+    assert backend._deck_states == {}
+    assert backend._preset_states == {}
+    assert backend._global_state is None
+    snapshot = backend.cache_snapshot()
+    assert snapshot.card_states == {1: b"card-1-2", 2: b"card-2-3"}
+    assert snapshot.note_states == {10: b"note-10-2", 20: b"note-20-3"}
+    assert snapshot.global_state == b"global-2"
+
+
+def test_stateful_backend_records_final_warmup_checkpoint() -> None:
+    runtime = _ResidentCacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviews = [
+        _warm_up_review_input(card_id=1, note_id=10, ease=2),
+        _warm_up_review_input(card_id=2, note_id=20, ease=3),
+    ]
+    recorded: list[int] = []
+
+    backend.warm_up(
+        reviews,
+        snapshot_after_reviews=[1, len(reviews)],
+        snapshot_recorder=lambda review_count, _snapshot: recorded.append(review_count),
+    )
+
+    assert recorded == [1, 2]
+
+
+def test_stateful_backend_continues_resident_state_after_cache_restore() -> None:
+    runtime = _ResidentCacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    restored = RwkvBackendCacheSnapshot(
+        card_states={1: b"card-1-2"},
+        note_states={10: b"note-10-2"},
+        deck_states={100: b"deck-100-2"},
+        preset_states={1000: b"preset-1000-2"},
+        global_state=b"global-1",
+        runtime_state=b"runtime",
+    )
+
+    backend.restore_cache_snapshot(restored)
+    backend.warm_up([_warm_up_review_input(card_id=2, note_id=20, ease=3)])
+
+    assert runtime.reset_count == 0
+    snapshot = backend.cache_snapshot()
+    assert snapshot.card_states == {1: b"card-1-2", 2: b"card-2-3"}
+    assert snapshot.global_state == b"global-2"
+    assert backend._card_states == {}
+
+
+def test_stateful_backend_answer_and_undo_restore_resident_runtime_state() -> None:
+    runtime = _ResidentCacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviewer = _rwkv_reviewer()
+    counter = _UndoCounter(reviewer)
+    backend.warm_up([_warm_up_review_input(card_id=1, note_id=10, ease=2)])
+    before = backend.cache_snapshot()
+
+    counter.set(1)
+    backend.review_answered(
+        reviewer=reviewer,
+        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        ease=3,
+    )
+    assert backend.cache_snapshot().card_states[1] == b"card-1-3"
+
+    assert backend.answer_undone(1, 2) == 1
+    assert backend.cache_snapshot() == before
+    assert backend._card_states == {}
 
 
 def test_warmup_capable_backend_records_review_retrievability_cache(tmp_path) -> None:
@@ -8357,6 +9097,15 @@ def test_prepare_reviewer_queue_order_candidate_refresh_scores_stale_window() ->
     assert score_pairs[0] == (1, pytest.approx(0.99))
     assert score_pairs[1] == (2, pytest.approx(0.002))
     assert score_pairs[-1] == (65, pytest.approx(0.065))
+
+
+def test_rwkv_candidate_refresh_relative_overdueness_uses_dynamic_dr() -> None:
+    assert rwkv_scheduler._rwkv_review_candidate_refresh_card_ids(
+        {"reviewOrder": 12},
+        {1: 0.90, 2: 0.79},
+        {1: 0.95, 2: 0.80},
+        limit=1,
+    ) == [1]
 
 
 def test_prepare_reviewer_queue_order_skips_when_instant_order_disabled() -> None:
@@ -13721,6 +14470,178 @@ class _CacheRuntime:
 
     def restore_cache_state(self, state: bytes) -> None:
         self.restored_cache_states.append(state)
+
+
+class _ResidentCacheRuntime:
+    resident_warm_up_state = True
+
+    def __init__(self) -> None:
+        self.card_states: dict[int, bytes] = {}
+        self.note_states: dict[int, bytes] = {}
+        self.deck_states: dict[int, bytes] = {}
+        self.preset_states: dict[int, bytes] = {}
+        self.global_state: bytes | None = None
+        self.return_snapshot_flags: list[bool] = []
+        self.reset_count = 0
+
+    def review(
+        self,
+        *,
+        review_input: RwkvReviewInput,
+        card_state: object | None,
+        note_state: object | None,
+        deck_state: object | None,
+        preset_state: object | None,
+        global_state: object | None,
+    ) -> RwkvReviewTransition:
+        del card_state, note_state, deck_state, preset_state, global_state
+        identity = review_input.identity
+        ease = review_input.ease
+        if ease is None:
+            return RwkvReviewTransition(
+                prediction=RwkvReviewPrediction(retrievability=0.45)
+            )
+
+        card = f"card-{identity.card_id}-{ease}".encode()
+        note = f"note-{identity.note_id}-{ease}".encode()
+        deck = f"deck-{identity.deck_id}-{ease}".encode()
+        preset = f"preset-{identity.preset_id}-{ease}".encode()
+        global_value = f"global-{len(self.card_states) + 1}".encode()
+        self.card_states[identity.card_id] = card
+        if identity.note_id is not None:
+            self.note_states[identity.note_id] = note
+        if identity.deck_id is not None:
+            self.deck_states[identity.deck_id] = deck
+        if identity.preset_id is not None:
+            self.preset_states[identity.preset_id] = preset
+        self.global_state = global_value
+        return RwkvReviewTransition(
+            card_state=card,
+            note_state=note,
+            deck_state=deck,
+            preset_state=preset,
+            global_state=global_value,
+        )
+
+    def warm_up_reviews(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        *,
+        review_ids: Sequence[int] | None = None,
+        prediction_recorder: object | None = None,
+        progress: object | None = None,
+        snapshot_after_reviews: Sequence[int] = (),
+        snapshot_recorder: object | None = None,
+        return_snapshot: bool = True,
+    ) -> RwkvBackendCacheSnapshot | None:
+        del review_ids, prediction_recorder, progress
+        endpoints = set(snapshot_after_reviews)
+        for processed, review_input in enumerate(reviews, start=1):
+            state = self.warm_up_state(review_input)
+            self.review(
+                review_input=review_input,
+                card_state=state.card_state,
+                note_state=state.note_state,
+                deck_state=state.deck_state,
+                preset_state=state.preset_state,
+                global_state=state.global_state,
+            )
+            if processed in endpoints and callable(snapshot_recorder):
+                snapshot_recorder(processed, self.warm_up_snapshot())
+        self.return_snapshot_flags.append(return_snapshot)
+        return self.warm_up_snapshot() if return_snapshot else None
+
+    def warm_up_state(
+        self,
+        review_input: RwkvReviewInput,
+    ) -> RwkvReviewerStateSnapshot:
+        identity = review_input.identity
+        return RwkvReviewerStateSnapshot(
+            card_state=self.card_states.get(identity.card_id),
+            note_state=(
+                self.note_states.get(identity.note_id)
+                if identity.note_id is not None
+                else None
+            ),
+            deck_state=(
+                self.deck_states.get(identity.deck_id)
+                if identity.deck_id is not None
+                else None
+            ),
+            preset_state=(
+                self.preset_states.get(identity.preset_id)
+                if identity.preset_id is not None
+                else None
+            ),
+            global_state=self.global_state,
+        )
+
+    def warm_up_snapshot(self) -> RwkvBackendCacheSnapshot:
+        return RwkvBackendCacheSnapshot(
+            card_states=dict(self.card_states),
+            note_states=dict(self.note_states),
+            deck_states=dict(self.deck_states),
+            preset_states=dict(self.preset_states),
+            global_state=self.global_state,
+            runtime_state=b"runtime",
+        )
+
+    def restore_warm_up_snapshot(self, snapshot: RwkvBackendCacheSnapshot) -> None:
+        self.card_states = dict(snapshot.card_states)
+        self.note_states = dict(snapshot.note_states)
+        self.deck_states = dict(snapshot.deck_states)
+        self.preset_states = dict(snapshot.preset_states)
+        self.global_state = snapshot.global_state
+
+    def restore_warm_up_state(
+        self,
+        identity: RwkvReviewIdentity,
+        snapshot: RwkvReviewerStateSnapshot,
+    ) -> None:
+        _set_or_remove_test_state(
+            self.card_states,
+            identity.card_id,
+            snapshot.card_state,
+        )
+        _set_or_remove_test_state(
+            self.note_states, identity.note_id, snapshot.note_state
+        )
+        _set_or_remove_test_state(
+            self.deck_states, identity.deck_id, snapshot.deck_state
+        )
+        _set_or_remove_test_state(
+            self.preset_states,
+            identity.preset_id,
+            snapshot.preset_state,
+        )
+        self.global_state = cast(bytes | None, snapshot.global_state)
+
+    def reset_warm_up_state(self) -> None:
+        self.reset_count += 1
+        self.card_states.clear()
+        self.note_states.clear()
+        self.deck_states.clear()
+        self.preset_states.clear()
+        self.global_state = None
+
+    def cache_state(self) -> bytes:
+        return b"runtime"
+
+    def restore_cache_state(self, state: bytes) -> None:
+        assert state == b"runtime"
+
+
+def _set_or_remove_test_state(
+    states: dict[int, bytes],
+    identity: int | None,
+    state: object | None,
+) -> None:
+    if identity is None:
+        return
+    if isinstance(state, bytes):
+        states[identity] = state
+    else:
+        states.pop(identity, None)
 
 
 class _UndoCounter:

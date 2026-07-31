@@ -46,7 +46,7 @@ _PACKED_WARM_UP_REVIEW_MAGIC = b"ARWKVWU2"
 _PACKED_PREDICTION_REQUEST_HEADER = struct.Struct("<8sI")
 _PACKED_PREDICTION_REQUEST_ROW = struct.Struct("<IqqqqBBqqqqqffffB")
 _RUST_WARMUP_CHUNK_SIZE = 16_384
-_RUST_STATE_ONLY_WARMUP_CHUNK_SIZE = 131_072
+_RUST_STATE_ONLY_WARMUP_CHUNK_SIZE = 16_384
 
 
 class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
@@ -343,6 +343,8 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
 
 
 class _RustRwkvRuntime:
+    resident_warm_up_state = True
+
     def __init__(
         self,
         *,
@@ -445,10 +447,11 @@ class _RustRwkvRuntime:
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
-    ) -> RwkvBackendCacheSnapshot:
+        return_snapshot: bool = True,
+    ) -> RwkvBackendCacheSnapshot | None:
         total = len(reviews)
         snapshot_endpoints = sorted(
-            {endpoint for endpoint in snapshot_after_reviews if 0 < endpoint < total}
+            {endpoint for endpoint in snapshot_after_reviews if 0 < endpoint <= total}
         )
         record_predictions = prediction_recorder is not None and review_ids is not None
         backend_chunk_size = _rust_warmup_chunk_size(
@@ -489,20 +492,40 @@ class _RustRwkvRuntime:
                     )
 
                 processed += len(chunk)
-                _report_warmup_progress(progress, processed=processed, total=total)
                 if (
                     endpoint_index < len(snapshot_endpoints)
                     and processed == snapshot_endpoints[endpoint_index]
                 ):
                     if snapshot_recorder is not None:
-                        snapshot_recorder(
-                            processed,
-                            self._warm_up_snapshot_locked(),
+                        write_runtime_checkpoint = getattr(
+                            snapshot_recorder,
+                            "write_runtime_checkpoint",
+                            None,
                         )
+                        write_runtime_snapshot = getattr(
+                            snapshot_recorder,
+                            "write_runtime_snapshot",
+                            None,
+                        )
+                        if callable(write_runtime_checkpoint):
+                            write_runtime_checkpoint(
+                                processed,
+                                self.write_warm_up_state_checkpoint,
+                            )
+                        elif callable(write_runtime_snapshot):
+                            write_runtime_snapshot(
+                                processed,
+                                self.append_warm_up_snapshot_binary,
+                            )
+                        else:
+                            snapshot_recorder(
+                                processed,
+                                self._warm_up_snapshot_locked(),
+                            )
                     endpoint_index += 1
+                _report_warmup_progress(progress, processed=processed, total=total)
 
-            snapshot = self._warm_up_snapshot_locked()
-        return snapshot
+            return self._warm_up_snapshot_locked() if return_snapshot else None
 
     def _warm_up_snapshot_locked(self) -> RwkvBackendCacheSnapshot:
         (
@@ -520,6 +543,77 @@ class _RustRwkvRuntime:
             preset_states=dict(preset_states),
             global_state=global_state,
             runtime_state=runtime_state,
+        )
+
+    def warm_up_snapshot(self) -> RwkvBackendCacheSnapshot:
+        with self._locked_process():
+            return self._warm_up_snapshot_locked()
+
+    def append_warm_up_snapshot_binary(self, path: Path) -> None:
+        with self._locked_process():
+            self._process.append_warm_up_snapshot_binary(str(path))
+
+    def write_warm_up_state_checkpoint(
+        self,
+        path: Path,
+        store_generation: str,
+        parent_segment_id: int | None,
+        last_review_id: int,
+        review_count: int,
+        history_hash: str,
+        replay_key: str,
+        previous_review_ids: bytes,
+        previous_intervals: bytes,
+        review_counts: bytes,
+        full: bool,
+        durable: bool,
+    ) -> int:
+        with self._locked_process():
+            return cast(
+                int,
+                self._process.write_warm_up_state_checkpoint(
+                    str(path),
+                    store_generation,
+                    parent_segment_id,
+                    last_review_id,
+                    review_count,
+                    history_hash,
+                    replay_key,
+                    previous_review_ids,
+                    previous_intervals,
+                    review_counts,
+                    full,
+                    durable,
+                ),
+            )
+
+    def restore_warm_up_state_checkpoint(
+        self,
+        path: Path,
+        store_generation: str,
+        segment_id: int,
+    ) -> None:
+        with self._locked_process():
+            self._process.restore_warm_up_state_checkpoint(
+                str(path),
+                store_generation,
+                segment_id,
+            )
+
+    def warm_up_state(
+        self,
+        review_input: RwkvReviewInput,
+    ) -> RwkvReviewerStateSnapshot:
+        with self._locked_process():
+            card, note, deck, preset, global_state = self._process.warm_up_state(
+                _review_input_row(review_input)
+            )
+        return RwkvReviewerStateSnapshot(
+            card_state=card,
+            note_state=note,
+            deck_state=deck,
+            preset_state=preset,
+            global_state=global_state,
         )
 
     def warm_up_reviews_in_place(

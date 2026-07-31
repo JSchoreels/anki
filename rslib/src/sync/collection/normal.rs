@@ -11,6 +11,7 @@ use crate::error::SyncError;
 use crate::error::SyncErrorKind;
 use crate::prelude::Usn;
 use crate::progress::ThrottlingProgressHandler;
+use crate::revlog::RevlogId;
 use crate::sync::collection::progress::SyncStage;
 use crate::sync::collection::protocol::EmptyInput;
 use crate::sync::collection::protocol::SyncProtocol;
@@ -23,6 +24,9 @@ pub struct NormalSyncer<'a> {
     pub(in crate::sync) col: &'a mut Collection,
     pub(in crate::sync) server: HttpSyncClient,
     pub(in crate::sync) progress: ThrottlingProgressHandler<NormalSyncProgress>,
+    remote_collection_changed: bool,
+    remote_review_ids: Vec<RevlogId>,
+    remote_non_review_collection_changed: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -63,6 +67,9 @@ impl NormalSyncer<'_> {
             progress: col.new_progress_handler(),
             col,
             server,
+            remote_collection_changed: false,
+            remote_review_ids: vec![],
+            remote_non_review_collection_changed: false,
         }
     }
 
@@ -139,7 +146,23 @@ impl NormalSyncer<'_> {
         debug!("finalize");
         self.finalize(&state).await?;
         state.required = SyncActionRequired::NoChanges;
-        Ok(state.into())
+        let mut output: SyncOutput = state.into();
+        output.remote_collection_changed = self.remote_collection_changed;
+        output.remote_review_ids = std::mem::take(&mut self.remote_review_ids);
+        output.remote_non_review_collection_changed = self.remote_non_review_collection_changed;
+        Ok(output)
+    }
+
+    pub(in crate::sync) fn mark_remote_non_review_collection_changed(&mut self, changed: bool) {
+        self.remote_non_review_collection_changed |= changed;
+    }
+
+    pub(in crate::sync) fn mark_remote_collection_changed(&mut self, changed: bool) {
+        self.remote_collection_changed |= changed;
+    }
+
+    pub(in crate::sync) fn record_remote_review(&mut self, review_id: RevlogId) {
+        self.remote_review_ids.push(review_id);
     }
 }
 
@@ -151,6 +174,9 @@ pub struct SyncOutput {
     pub new_endpoint: Option<String>,
     #[allow(unused)]
     pub(crate) server_media_usn: Usn,
+    pub remote_collection_changed: bool,
+    pub remote_review_ids: Vec<RevlogId>,
+    pub remote_non_review_collection_changed: bool,
 }
 
 impl From<ClientSyncState> for SyncOutput {
@@ -161,6 +187,9 @@ impl From<ClientSyncState> for SyncOutput {
             host_number: s.host_number,
             new_endpoint: s.new_endpoint,
             server_media_usn: s.server_media_usn,
+            remote_collection_changed: false,
+            remote_review_ids: vec![],
+            remote_non_review_collection_changed: false,
         }
     }
 }

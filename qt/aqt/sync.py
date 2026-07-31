@@ -7,6 +7,7 @@ import functools
 import os
 from collections.abc import Callable
 from concurrent.futures import Future
+from dataclasses import dataclass
 
 import aqt
 import aqt.main
@@ -36,6 +37,13 @@ from aqt.utils import (
     tooltip,
     tr,
 )
+
+
+@dataclass(frozen=True)
+class RemoteCollectionChanges:
+    collection_changed: bool = False
+    review_ids: tuple[int, ...] = ()
+    non_review_collection_changed: bool = False
 
 
 def get_sync_status(
@@ -91,10 +99,25 @@ def on_normal_sync_timer(mw: aqt.main.AnkiQt) -> None:
         mw.col.abort_sync()
 
 
-def sync_collection(mw: aqt.main.AnkiQt, on_done: Callable[[], None]) -> None:
+def sync_collection(
+    mw: aqt.main.AnkiQt,
+    on_done: Callable[[], None],
+    *,
+    on_remote_collection_changed: Callable[[bool], None] | None = None,
+    on_remote_collection_changes: (
+        Callable[[RemoteCollectionChanges], None] | None
+    ) = None,
+) -> None:
     auth = mw.pm.sync_auth()
     if not auth:
         raise Exception("expected auth")
+
+    def finish(changes: RemoteCollectionChanges) -> None:
+        if on_remote_collection_changed is not None:
+            on_remote_collection_changed(changes.collection_changed)
+        if on_remote_collection_changes is not None:
+            on_remote_collection_changes(changes)
+        on_done()
 
     def on_timer() -> None:
         on_normal_sync_timer(mw)
@@ -111,7 +134,7 @@ def sync_collection(mw: aqt.main.AnkiQt, on_done: Callable[[], None]) -> None:
             out = fut.result()
         except Exception as err:
             handle_sync_error(mw, err)
-            return on_done()
+            return finish(RemoteCollectionChanges())
 
         mw.pm.set_host_number(out.host_number)
         if out.new_endpoint:
@@ -122,9 +145,26 @@ def sync_collection(mw: aqt.main.AnkiQt, on_done: Callable[[], None]) -> None:
             tooltip(parent=mw, msg=tr.sync_collection_complete())
             # all done; track media progress
             mw.media_syncer.start_monitoring()
-            return on_done()
+            return finish(
+                RemoteCollectionChanges(
+                    collection_changed=out.remote_collection_changed,
+                    review_ids=tuple(out.remote_review_ids),
+                    non_review_collection_changed=(
+                        out.remote_non_review_collection_changed
+                    ),
+                )
+            )
         else:
-            full_sync(mw, out, on_done)
+            full_sync(
+                mw,
+                out,
+                lambda changed: finish(
+                    RemoteCollectionChanges(
+                        collection_changed=changed,
+                        non_review_collection_changed=changed,
+                    )
+                ),
+            )
 
     mw.taskman.with_progress(
         lambda: mw.col.sync_collection(auth, mw.pm.media_syncing_enabled()),
@@ -136,7 +176,7 @@ def sync_collection(mw: aqt.main.AnkiQt, on_done: Callable[[], None]) -> None:
 
 
 def full_sync(
-    mw: aqt.main.AnkiQt, out: SyncOutput, on_done: Callable[[], None]
+    mw: aqt.main.AnkiQt, out: SyncOutput, on_done: Callable[[bool], None]
 ) -> None:
     server_usn = out.server_media_usn if mw.pm.media_syncing_enabled() else None
     if out.required == out.FULL_DOWNLOAD:
@@ -156,7 +196,7 @@ def full_sync(
             elif choice == 1:
                 full_download(mw, server_usn, on_done)
             else:
-                on_done()
+                on_done(False)
 
         ask_user_dialog(
             tr.sync_conflict_explanation2(),
@@ -170,13 +210,13 @@ def full_sync(
 
 
 def confirm_full_download(
-    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[], None]
+    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[bool], None]
 ) -> None:
     # confirmation step required, as some users customize their notetypes
     # in an empty collection, then want to upload them
     def callback(choice: int) -> None:
         if choice:
-            on_done()
+            on_done(False)
         else:
             mw.closeAllWindows(lambda: full_download(mw, server_usn, on_done))
 
@@ -186,14 +226,14 @@ def confirm_full_download(
 
 
 def confirm_full_upload(
-    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[], None]
+    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[bool], None]
 ) -> None:
     # confirmation step required, as some users have reported an upload
     # happening despite having their AnkiWeb collection not being empty
     # (not reproducible - maybe a compiler bug?)
     def callback(choice: int) -> None:
         if choice:
-            on_done()
+            on_done(False)
         else:
             mw.closeAllWindows(lambda: full_upload(mw, server_usn, on_done))
 
@@ -231,7 +271,7 @@ def on_full_sync_timer(mw: aqt.main.AnkiQt, label: str) -> None:
 
 
 def full_download(
-    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[], None]
+    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[bool], None]
 ) -> None:
     label = tr.sync_downloading_from_ankiweb()
 
@@ -261,7 +301,7 @@ def full_download(
         except Exception as err:
             handle_sync_error(mw, err)
         mw.media_syncer.start_monitoring()
-        return on_done()
+        return on_done(True)
 
     mw.taskman.with_progress(
         download,
@@ -270,7 +310,7 @@ def full_download(
 
 
 def full_upload(
-    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[], None]
+    mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[bool], None]
 ) -> None:
     gui_hooks.collection_will_temporarily_close(mw.col)
     mw.col.close_for_full_sync()
@@ -292,9 +332,9 @@ def full_upload(
             fut.result()
         except Exception as err:
             handle_sync_error(mw, err)
-            return on_done()
+            return on_done(True)
         mw.media_syncer.start_monitoring()
-        return on_done()
+        return on_done(True)
 
     mw.taskman.with_progress(
         lambda: mw.col.full_upload_or_download(

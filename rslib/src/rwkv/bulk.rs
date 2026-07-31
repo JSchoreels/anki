@@ -182,6 +182,9 @@ fn warm_up_reviews_bulk_impl(
     for (card_id, curve) in curves {
         inference.curves.insert(card_id, curve);
     }
+    for input in &inputs {
+        inference.warm_up_states.mark_dirty(input);
+    }
 
     let Some(x_query) = x_query else {
         #[cfg(test)]

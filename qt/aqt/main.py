@@ -60,7 +60,7 @@ from aqt.operations.deck import set_current_deck
 from aqt.profiles import ProfileManager as ProfileManagerType
 from aqt.qt import *
 from aqt.qt import sip
-from aqt.sync import sync_collection, sync_login
+from aqt.sync import RemoteCollectionChanges, sync_collection, sync_login
 from aqt.taskman import TaskManager
 from aqt.theme import Theme, theme_manager
 from aqt.toolbar import BottomWebView, Toolbar, TopWebView
@@ -1283,22 +1283,42 @@ title="{}" {}>{}</button>""".format(
     ) -> None:
         "Caller should ensure auth available."
 
+        remote_collection_changes = RemoteCollectionChanges()
+
+        def note_remote_collection_changes(changes: RemoteCollectionChanges) -> None:
+            nonlocal remote_collection_changes
+            remote_collection_changes = changes
+
         def on_collection_sync_finished() -> None:
             from aqt import rwkv_scheduler
 
+            self.col.models._clear_cache()
+            gui_hooks.sync_did_finish()
+            self.reset()
+
             def finish_sync() -> None:
-                self.col.models._clear_cache()
-                gui_hooks.sync_did_finish()
-                self.reset()
                 after_sync()
 
-            if refresh_rwkv_state:
-                rwkv_scheduler.refresh_rwkv_state_after_sync(self, finish_sync)
+            if refresh_rwkv_state and remote_collection_changes.collection_changed:
+                ignored_review_candidates = (
+                    ()
+                    if remote_collection_changes.non_review_collection_changed
+                    else remote_collection_changes.review_ids
+                )
+                rwkv_scheduler.refresh_rwkv_state_after_sync(
+                    self,
+                    finish_sync,
+                    remote_review_ids=ignored_review_candidates,
+                )
             else:
                 finish_sync()
 
         gui_hooks.sync_will_start()
-        sync_collection(self, on_done=on_collection_sync_finished)
+        sync_collection(
+            self,
+            on_done=on_collection_sync_finished,
+            on_remote_collection_changes=note_remote_collection_changes,
+        )
 
     def maybe_auto_sync_on_open_close(
         self,

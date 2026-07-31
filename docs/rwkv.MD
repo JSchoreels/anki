@@ -53,6 +53,22 @@ The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.
+Rebuilds write each historical recovery checkpoint as soon as it is captured.
+The embedded runtime tracks which recurrent-state identities changed since the
+previous checkpoint and writes only those entries as a transactional,
+parent-linked segment in the local state store. The final segment is also the
+effective cache state, so finalization does not serialize a separate full
+snapshot. Checkpoint history metadata is generated from one advancing cursor
+only when a checkpoint is written, and raw historical database rows are
+released as their review inputs are built, so checkpoint count and replay
+preparation do not multiply peak memory. After a successful state-store save,
+obsolete snapshot and legacy JSON cache files are removed.
+The embedded runtime remains the sole long-lived owner of recurrent card, note,
+deck, preset, and global state. Python requests only the states needed for an
+individual prediction or undo frame, while checkpoint deltas are serialized
+directly from Rust into the local state store. State-only replay uses bounded
+16,384-review outer chunks so its feature and activation scratch space does not
+scale to the complete rebuild history.
 Cache size scales with the number of reviewed cards and notes that have RWKV
 state, so it can be much larger than the embedded model file on large
 collections.
@@ -167,19 +183,32 @@ JSON audit containing every changed row and rule. It never locates or opens a
 live profile database. Before using a repaired copy, remove that profile's
 desktop-local `rwkv-state-cache` directory so the recurrent state is rebuilt.
 
-The local state cache is stored as a binary base snapshot plus an append-only
-delta log. A full cache build writes `snapshot-v1.bin`, resets `deltas-v1.log`,
-and retains historical checkpoint snapshots at exponentially increasing ages
-from the latest retained review: approximately 1 day, 2 days, 4 days, 8 days,
-and so on. Later startup loads restore the snapshot, replay any delta-log
-reviews, then replay newer revlogs from the collection. Newer revlogs are
-appended to the delta log instead of rewriting the full snapshot. The manifest
-in `state-v1.meta.json` records the base snapshot revlog id, the latest
-effective revlog id, and the historical checkpoints. It also records a chained
-SHA-256 identity of the canonical replay inputs plus a replay-semantics identity
-covering first-review elapsed-time settings, deck-to-preset routing, and the
-dynamic preset overlay. Filtered cards use their original deck as the effective
-historical deck, matching normal review after they leave the filtered deck.
+The local recurrent state cache is stored in `state-v12.sqlite3` as
+transactional, append-only segments. Each segment records its parent, canonical
+history identity, compact per-card history maps, complete runtime feature state,
+and only the card, note, deck, preset, and global recurrent states changed since
+its parent. Large state deltas are streamed through ordered 64 MiB rows, avoiding
+SQLite's single-BLOB limit without assembling another full snapshot in memory.
+New stores use 64 KiB SQLite pages to reduce the page-management cost of
+streaming gigabyte-scale state blobs. A full build starts a temporary store and
+atomically promotes it after the final segment commits. The store keeps one
+full recovery base approximately eight days before the latest retained review
+and the current state as its delta child. The recovery-base history identity
+and per-card maps are captured during the original chronological history pass
+instead of hashing the history again while writing the checkpoint. If recovery
+advances the eight-day boundary, it writes a new full root before the current
+delta so the old chain becomes unreachable and can be pruned.
+
+Ordinary newer reviews remain in `deltas-v1.log`, avoiding a state-store write
+after every answer. Later startup loads restore the effective state-store
+segment, replay any delta-log reviews, then replay newer revlogs from the
+collection. The manifest in `state-v1.meta.json` records the base segment, its
+store generation, the latest effective revlog id, and the historical recovery
+base. It also records a chained SHA-256 identity of the canonical replay
+inputs plus a replay-semantics identity covering first-review elapsed-time
+settings, deck-to-preset routing, and the dynamic preset overlay. Filtered cards
+use their original deck as the effective historical deck, matching normal
+review after they leave the filtered deck.
 At profile startup, Anki invalidates any previous resident state immediately,
 then waits for automatic startup sync to finish before attempting the
 operational cache restore and canonical validation once. It offers to rebuild
@@ -190,20 +219,31 @@ own cache restore. Checkpoint construction and recovery validation derive all
 requested history prefixes in one chronological pass, and repeated
 model-identity checks reuse the content hash until the model file changes.
 
-After collection sync, Anki reconciles resident RWKV state before refreshing
-study queues. If synchronized reviews only extend the cached history, they are
-replayed incrementally. If a synchronized review belongs in the middle of
-history, Anki validates snapshots from newest to oldest, restores the newest
+After collection sync, Anki reconciles resident RWKV state only when sync
+downloaded collection changes. A no-change sync, or a sync that only uploads
+desktop changes, preserves the resident state and skips the post-sync
+operation. The normal UI reset runs before reconciliation so it cannot
+invalidate the newly refreshed state. If synchronized reviews only extend the
+cached history, they are replayed incrementally. If a synchronized review
+belongs in the middle of history, Anki validates checkpoint structure and
+identity without loading the stored state payloads, restores only the newest
 checkpoint whose canonical review prefix and replay semantics still match the
-merged collection, and replays the suffix in chronological order. The refreshed
-final snapshot is then compacted, and a newly selected bounded set of valid
-exponential checkpoints is retained. If no checkpoint predates the changed
-history, the state is rebuilt from the complete retained history. A failed
-post-sync rebuild leaves resident state unready; it does not restore a
-pre-sync snapshot that could overwrite a newer refresh.
-Rebuilding the RWKV state cache from deck options always writes a fresh full
-snapshot and checkpoint set. Cache format version 11 introduces these
-checkpoints, so older local state caches rebuild once after upgrading.
+merged collection, and replays at most the suffix after the eight-day recovery
+base in chronological order. The refreshed suffix is committed as the current
+delta child. Review-only sync changes older than that window are deliberately
+excluded from the existing recurrent state instead of triggering an unbounded
+replay. Their revlog ids are recorded in local cache metadata so future
+validation and incremental updates keep using the same effective history. Anki
+warns with the number currently excluded.
+Rebuilding the state manually includes the complete retained history again and
+clears the exclusion list. If an old review cannot be excluded safely, or sync
+also changed cards, decks, configuration, or replay semantics, Anki falls back
+to exact checkpoint recovery or a complete rebuild. A failed post-sync rebuild
+leaves resident state unready; it does not restore a pre-sync state that could
+overwrite a newer refresh.
+Rebuilding the RWKV state cache from deck options always writes a fresh,
+compacted state store. Cache format version 12 introduces delta state segments,
+so older local state caches rebuild once after upgrading.
 
 ## Queue Scoring
 
@@ -281,12 +321,24 @@ until RWKV-Instant ordering is explicitly enabled. This does not affect
 answer-button scheduling: RWKV-Curve intervals are still used. If both options
 are disabled, FSRS interval and queue behavior is unchanged.
 
+When RWKV-Instant ordering and the `Relative overdueness` review order are
+enabled, scored review cards are ordered by
+`RWKV retrievability / resolved target retention`, ascending. The resolved
+target is the per-card target carried with the transient score, including the
+current Dynamic Desired Retention provider result, with the card or preset
+target as a fallback. A score of `1` is at the card's target; lower scores are
+further below it. This same priority is applied before review limits, when
+selecting a daily-minimum card, during partial candidate refresh, and in RWKV
+workload simulation.
+
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
 After the first full score map has been installed, later refreshes score only
 the best stale RWKV candidates and merge those fresh scores back into the map.
-Descending retrievability prioritizes the highest scores; all other review
-orders prioritize the lowest scores. The candidate window is the RWKV batch size.
+Descending retrievability prioritizes the highest scores; Relative
+Overdueness prioritizes the lowest `retrievability / target retention` values;
+all other review orders prioritize the lowest raw retrievability scores. The
+candidate window is the RWKV batch size.
 This accelerates frequent review-time refreshes while preserving the full
 installed score map for cards outside the refreshed window. It is approximate:
 cards outside the refreshed window keep their previous RWKV score until a later

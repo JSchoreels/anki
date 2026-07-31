@@ -95,6 +95,10 @@ impl NormalSyncer<'_> {
             tags = remote.tags.len(),
             "received"
         );
+        self.mark_remote_collection_changed(remote.contains_collection_changes());
+        self.mark_remote_non_review_collection_changed(
+            !remote.decks_and_config.decks.is_empty() || !remote.decks_and_config.config.is_empty(),
+        );
 
         self.progress.update(false, |p| {
             p.remote_update += remote.notetypes.len()
@@ -106,6 +110,17 @@ impl NormalSyncer<'_> {
         self.col.apply_changes(remote, state.server_usn)?;
         self.progress.check_cancelled()?;
         Ok(())
+    }
+}
+
+impl UnchunkedChanges {
+    fn contains_collection_changes(&self) -> bool {
+        !self.notetypes.is_empty()
+            || !self.decks_and_config.decks.is_empty()
+            || !self.decks_and_config.config.is_empty()
+            || !self.tags.is_empty()
+            || self.config.is_some()
+            || self.creation_stamp.is_some()
     }
 }
 

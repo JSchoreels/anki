@@ -24,6 +24,28 @@ repeated here unless they materially affect a fork feature.
 
 Current application version: `26.05+fsrs7`
 
+### Fixed
+
+- Make RWKV Relative Overdueness consistently rank cards by retrievability
+  relative to each card's current Dynamic Desired Retention target.
+- Reduce RWKV state-cache rebuild and post-sync recovery peak memory by
+  storing historical checkpoints as transactional deltas instead of repeated
+  full snapshots, loading only the newest usable recovery checkpoint, releasing
+  historical database rows as they are converted, and generating checkpoint
+  metadata only when each checkpoint is written. Keep recurrent state owned by
+  the embedded Rust runtime instead of retaining a second Python copy, reuse the
+  final checkpoint as the effective cache state, and bound state-only replay to
+  16,384-review chunks. Skip post-sync reconciliation when sync downloaded no
+  collection changes, and preserve the reconciled state across the following UI
+  reset. Keep one full recovery base eight days behind the current delta head;
+  review-only sync changes older than that retain the prior state and display
+  the number excluded until a manual rebuild includes them. Existing local
+  caches rebuild once into the new compact format. Stream large checkpoint
+  deltas across SQLite rows so large collections do not exceed the single-BLOB
+  limit. Reuse checkpoint history metadata prepared during the original
+  chronological pass, and use larger SQLite pages to reduce full-rebuild
+  hashing and storage overhead.
+
 ## [26.05+fsrs7.build.73](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.73) — 2026-07-29
 
 Changes since

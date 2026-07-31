@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -56,7 +57,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mix_warmup_windows(warmup_reviews, args.warmup_mix_window);
     let mut warmup_reviews = Some(warmup_reviews);
     let warmup_start = Instant::now();
-    let recall_metrics = if args.metrics {
+    let mut checkpoint_metrics = None;
+    let recall_metrics = if let Some(checkpoint_mode) = args.checkpoint_mode {
+        if args.metrics {
+            return Err("--metrics cannot be combined with --checkpoint-mode".into());
+        }
+        checkpoint_metrics = Some(warm_up_with_checkpoints(
+            &mut inference,
+            warmup_reviews.take().unwrap(),
+            checkpoint_mode,
+            args.checkpoint_policy,
+            args.checkpoint_max_age_days,
+            args.checkpoint_restore,
+            args.checkpoint_recovery_age_days,
+        )?);
+        None
+    } else if args.metrics {
         let metric_reviews = original_metric_reviews.expect("metric reviews");
         let recall_labels = recall_labels(&metric_reviews);
         let recall_bins = recall_bins(&metric_reviews);
@@ -79,7 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let warmup_ms = elapsed_ms(warmup_start);
 
     let snapshot_start = Instant::now();
-    let snapshot = StateSnapshot::from_inference(&inference);
+    let snapshot = if args.resident_state {
+        StateSnapshot::default()
+    } else {
+        StateSnapshot::from_inference(&inference)
+    };
     let snapshot_ms = elapsed_ms(snapshot_start);
 
     for (index, batch_size) in args.batch_sizes.iter().copied().enumerate() {
@@ -124,6 +144,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("load_ms={load_ms:.3}");
         println!("workload_ms={workload_ms:.3}");
         println!("warmup_ms={warmup_ms:.3}");
+        if let Some(metrics) = &checkpoint_metrics {
+            println!("checkpoint_mode={}", metrics.mode.name());
+            println!("checkpoint_policy={}", metrics.policy.name());
+            println!("checkpoint_count={}", metrics.checkpoint_count);
+            println!("checkpoint_write_ms={:.3}", metrics.write_ms);
+            println!("checkpoint_bytes={}", metrics.bytes);
+            if let Some(state_bytes) = metrics.state_bytes {
+                println!("checkpoint_state_bytes={state_bytes}");
+            }
+            if let Some(runtime_bytes) = metrics.runtime_bytes {
+                println!("checkpoint_runtime_bytes={runtime_bytes}");
+            }
+            if let Some(restore_ms) = metrics.restore_ms {
+                println!("checkpoint_restore_ms={restore_ms:.3}");
+            }
+            if let Some(recovery) = &metrics.recovery {
+                println!("checkpoint_recovery_age_days={}", recovery.age_days);
+                println!("checkpoint_recovery_base_reviews={}", recovery.base_reviews);
+                println!(
+                    "checkpoint_recovery_replay_reviews={}",
+                    recovery.replay_reviews
+                );
+                println!("checkpoint_recovery_restore_ms={:.3}", recovery.restore_ms);
+                println!("checkpoint_recovery_replay_ms={:.3}", recovery.replay_ms);
+                println!(
+                    "checkpoint_recovery_total_ms={:.3}",
+                    recovery.restore_ms + recovery.replay_ms
+                );
+            }
+        }
         println!("snapshot_ms={snapshot_ms:.3}");
         if let Some(metrics) = &recall_metrics {
             println!("eval_predictions={}", metrics.predictions);
@@ -235,6 +285,57 @@ struct Args {
     deck_id: Option<i64>,
     warmup_mix_window: Option<usize>,
     resident_state: bool,
+    checkpoint_mode: Option<CheckpointMode>,
+    checkpoint_policy: CheckpointPolicy,
+    checkpoint_max_age_days: Option<i64>,
+    checkpoint_restore: bool,
+    checkpoint_recovery_age_days: Option<i64>,
+}
+
+#[derive(Clone, Copy)]
+enum CheckpointMode {
+    Legacy,
+    Delta,
+}
+
+impl CheckpointMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "legacy" => Ok(Self::Legacy),
+            "delta" => Ok(Self::Delta),
+            _ => Err("--checkpoint-mode must be legacy or delta".into()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Delta => "delta",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CheckpointPolicy {
+    Exponential,
+    RecoveryBase,
+}
+
+impl CheckpointPolicy {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "exponential" => Ok(Self::Exponential),
+            "base" => Ok(Self::RecoveryBase),
+            _ => Err("--checkpoint-policy must be exponential or base".into()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Exponential => "exponential",
+            Self::RecoveryBase => "base",
+        }
+    }
 }
 
 impl Args {
@@ -252,6 +353,11 @@ impl Args {
         let mut deck_id = None;
         let mut warmup_mix_window = None;
         let mut resident_state = false;
+        let mut checkpoint_mode = None;
+        let mut checkpoint_policy = CheckpointPolicy::Exponential;
+        let mut checkpoint_max_age_days = None;
+        let mut checkpoint_restore = false;
+        let mut checkpoint_recovery_age_days = None;
         let mut args = env::args().skip(1);
 
         while let Some(arg) = args.next() {
@@ -304,6 +410,27 @@ impl Args {
                     retrievability_only = true;
                     resident_state = true;
                 }
+                "--checkpoint-mode" => {
+                    checkpoint_mode = Some(CheckpointMode::parse(
+                        &args.next().ok_or("--checkpoint-mode requires a value")?,
+                    )?);
+                }
+                "--checkpoint-policy" => {
+                    checkpoint_policy = CheckpointPolicy::parse(
+                        &args.next().ok_or("--checkpoint-policy requires a value")?,
+                    )?;
+                }
+                "--checkpoint-max-age-days" => {
+                    checkpoint_max_age_days =
+                        Some(parse_next(&mut args, "--checkpoint-max-age-days")?);
+                }
+                "--checkpoint-restore" => {
+                    checkpoint_restore = true;
+                }
+                "--checkpoint-recovery-age-days" => {
+                    checkpoint_recovery_age_days =
+                        Some(parse_next(&mut args, "--checkpoint-recovery-age-days")?);
+                }
                 "--help" | "-h" => return Err(usage()),
                 _ => return Err(format!("unknown argument: {arg}\n{}", usage())),
             }
@@ -321,6 +448,23 @@ impl Args {
         if warmup_mix_window == Some(0) {
             return Err("--warmup-mix-window must be greater than zero".into());
         }
+        if checkpoint_max_age_days.is_some_and(|days| days <= 0) {
+            return Err("--checkpoint-max-age-days must be greater than zero".into());
+        }
+        if checkpoint_recovery_age_days.is_some_and(|days| days <= 0) {
+            return Err("--checkpoint-recovery-age-days must be greater than zero".into());
+        }
+        if checkpoint_restore && !matches!(checkpoint_mode, Some(CheckpointMode::Delta)) {
+            return Err("--checkpoint-restore requires --checkpoint-mode delta".into());
+        }
+        if checkpoint_recovery_age_days.is_some()
+            && !matches!(checkpoint_mode, Some(CheckpointMode::Delta))
+        {
+            return Err("--checkpoint-recovery-age-days requires --checkpoint-mode delta".into());
+        }
+        if checkpoint_restore && checkpoint_recovery_age_days.is_some() {
+            return Err("--checkpoint-restore cannot be combined with checkpoint recovery".into());
+        }
 
         Ok(Self {
             weights: weights.ok_or("--weights is required")?,
@@ -336,8 +480,243 @@ impl Args {
             deck_id,
             warmup_mix_window,
             resident_state,
+            checkpoint_mode,
+            checkpoint_policy,
+            checkpoint_max_age_days,
+            checkpoint_restore,
+            checkpoint_recovery_age_days,
         })
     }
+}
+
+struct CheckpointMetrics {
+    mode: CheckpointMode,
+    policy: CheckpointPolicy,
+    checkpoint_count: usize,
+    write_ms: f64,
+    bytes: u64,
+    state_bytes: Option<u64>,
+    runtime_bytes: Option<u64>,
+    restore_ms: Option<f64>,
+    recovery: Option<CheckpointRecoveryMetrics>,
+}
+
+struct CheckpointRecoveryMetrics {
+    age_days: i64,
+    base_reviews: usize,
+    replay_reviews: usize,
+    restore_ms: f64,
+    replay_ms: f64,
+}
+
+fn warm_up_with_checkpoints(
+    inference: &mut RwkvInference,
+    reviews: Vec<ReviewInput>,
+    mode: CheckpointMode,
+    policy: CheckpointPolicy,
+    checkpoint_max_age_days: Option<i64>,
+    restore_checkpoint: bool,
+    recovery_age_days: Option<i64>,
+) -> Result<CheckpointMetrics, Box<dyn std::error::Error>> {
+    let endpoints = state_cache_checkpoint_endpoints(&reviews, policy, checkpoint_max_age_days);
+    let temporary_dir = tempfile::tempdir()?;
+    let mut processed = 0;
+    let mut endpoint_index = 0;
+    let mut write_ms = 0.0;
+    let mut bytes = 0;
+    let mut parent_segment_id = None;
+    let mut checkpoint_segments = Vec::new();
+    while processed < reviews.len() {
+        let mut chunk_end = (processed + 16_384).min(reviews.len());
+        if let Some(endpoint) = endpoints.get(endpoint_index) {
+            chunk_end = chunk_end.min(*endpoint);
+        }
+        inference.warm_up_reviews(reviews[processed..chunk_end].to_vec(), false)?;
+        processed = chunk_end;
+        if endpoints.get(endpoint_index) == Some(&processed) {
+            let write_started = Instant::now();
+            match mode {
+                CheckpointMode::Legacy => {
+                    let path = temporary_dir
+                        .path()
+                        .join(format!("checkpoint-{endpoint_index}.bin"));
+                    fs::File::create(&path)?;
+                    inference.append_warm_up_snapshot_binary(path.clone())?;
+                    bytes += path.metadata()?.len();
+                }
+                CheckpointMode::Delta => {
+                    let segment_id = inference.write_warm_up_state_checkpoint(
+                        temporary_dir.path().join("state.sqlite3"),
+                        "benchmark",
+                        parent_segment_id,
+                        processed as i64,
+                        processed as i64,
+                        "benchmark-history",
+                        "benchmark-replay",
+                        b"",
+                        b"",
+                        b"",
+                        false,
+                        false,
+                    )?;
+                    parent_segment_id = Some(segment_id);
+                    checkpoint_segments.push((processed, segment_id));
+                }
+            }
+            write_ms += elapsed_ms(write_started);
+            endpoint_index += 1;
+        }
+    }
+    let (state_bytes, runtime_bytes, restore_ms, recovery) =
+        if matches!(mode, CheckpointMode::Delta) {
+            let store_path = temporary_dir.path().join("state.sqlite3");
+            bytes = store_path.metadata()?.len();
+            let connection = Connection::open(store_path)?;
+            let state_bytes = connection.query_row(
+                "select coalesce(sum(length(state_delta)), 0) from segment_state_chunks",
+                [],
+                |row| row.get::<_, u64>(0),
+            )?;
+            let runtime_bytes = connection.query_row(
+                "select coalesce(sum(length(runtime_state)), 0) from segments",
+                [],
+                |row| row.get::<_, u64>(0),
+            )?;
+            drop(connection);
+            let restore_ms = if restore_checkpoint {
+                let restore_started = Instant::now();
+                inference.restore_warm_up_state_checkpoint(
+                    temporary_dir.path().join("state.sqlite3"),
+                    "benchmark",
+                    parent_segment_id.ok_or("missing final checkpoint segment")?,
+                )?;
+                Some(elapsed_ms(restore_started))
+            } else {
+                None
+            };
+            let recovery = if let Some(age_days) = recovery_age_days {
+                Some(benchmark_checkpoint_recovery(
+                    inference,
+                    &reviews,
+                    temporary_dir.path().join("state.sqlite3"),
+                    &checkpoint_segments,
+                    age_days,
+                )?)
+            } else {
+                None
+            };
+            (Some(state_bytes), Some(runtime_bytes), restore_ms, recovery)
+        } else {
+            (None, None, None, None)
+        };
+    Ok(CheckpointMetrics {
+        mode,
+        policy,
+        checkpoint_count: endpoints.len(),
+        write_ms,
+        bytes,
+        state_bytes,
+        runtime_bytes,
+        restore_ms,
+        recovery,
+    })
+}
+
+fn benchmark_checkpoint_recovery(
+    inference: &mut RwkvInference,
+    reviews: &[ReviewInput],
+    store_path: PathBuf,
+    checkpoint_segments: &[(usize, i64)],
+    age_days: i64,
+) -> Result<CheckpointRecoveryMetrics, Box<dyn std::error::Error>> {
+    let last_day = reviews
+        .iter()
+        .filter_map(|review| review.day_offset)
+        .max()
+        .ok_or("checkpoint recovery requires review day offsets")?;
+    let change_day = last_day - age_days;
+    let unchanged_prefix_reviews = reviews.partition_point(|review| {
+        review
+            .day_offset
+            .is_some_and(|day_offset| day_offset < change_day)
+    });
+    let (base_reviews, segment_id) = checkpoint_segments
+        .iter()
+        .copied()
+        .filter(|(review_count, _segment_id)| {
+            *review_count <= unchanged_prefix_reviews && *review_count < reviews.len()
+        })
+        .max_by_key(|(review_count, _segment_id)| *review_count)
+        .ok_or("no checkpoint precedes the simulated changed review")?;
+
+    let restore_started = Instant::now();
+    inference.restore_warm_up_state_checkpoint(store_path, "benchmark", segment_id)?;
+    let restore_ms = elapsed_ms(restore_started);
+    let replay_started = Instant::now();
+    inference.warm_up_reviews(reviews[base_reviews..].to_vec(), false)?;
+    let replay_ms = elapsed_ms(replay_started);
+
+    Ok(CheckpointRecoveryMetrics {
+        age_days,
+        base_reviews,
+        replay_reviews: reviews.len() - base_reviews,
+        restore_ms,
+        replay_ms,
+    })
+}
+
+fn state_cache_checkpoint_endpoints(
+    reviews: &[ReviewInput],
+    policy: CheckpointPolicy,
+    max_age_days: Option<i64>,
+) -> Vec<usize> {
+    let Some(first_day) = reviews.iter().filter_map(|review| review.day_offset).min() else {
+        return (!reviews.is_empty())
+            .then_some(reviews.len())
+            .into_iter()
+            .collect();
+    };
+    let Some(last_day) = reviews.iter().filter_map(|review| review.day_offset).max() else {
+        return (!reviews.is_empty())
+            .then_some(reviews.len())
+            .into_iter()
+            .collect();
+    };
+    let mut endpoints = Vec::new();
+    let mut add_endpoint = |age_days: i64| {
+        if last_day - age_days < first_day {
+            return;
+        }
+        let cutoff = last_day - age_days;
+        let endpoint = reviews.partition_point(|review| {
+            review
+                .day_offset
+                .is_some_and(|day_offset| day_offset <= cutoff)
+        });
+        if endpoint > 0 && endpoint < reviews.len() {
+            endpoints.push(endpoint);
+        }
+    };
+    match policy {
+        CheckpointPolicy::Exponential => {
+            let mut age_days = 1_i64;
+            while last_day - age_days >= first_day
+                && max_age_days.map_or(true, |max_age_days| age_days <= max_age_days)
+            {
+                add_endpoint(age_days);
+                age_days *= 2;
+            }
+        }
+        CheckpointPolicy::RecoveryBase => {
+            add_endpoint(max_age_days.unwrap_or(8));
+        }
+    }
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    if !reviews.is_empty() {
+        endpoints.push(reviews.len());
+    }
+    endpoints
 }
 
 fn parse_batch_sizes(value: &str) -> Result<Vec<usize>, String> {
@@ -371,7 +750,9 @@ fn usage() -> String {
      [--queries N] [--batch-size N|--batch-sizes N,N] [--warmup-reviews N] [--repeat N] \
      [--target-retention R] [--max-interval-days N] [--retrievability-only] \
      [--metrics] [--deck-id ID] [--warmup-mix-window N] \
-     [--resident-state]\n\
+     [--resident-state] [--checkpoint-mode legacy|delta] \
+     [--checkpoint-policy exponential|base] [--checkpoint-max-age-days N] \
+     [--checkpoint-restore|--checkpoint-recovery-age-days N]\n\
      With --collection, --warmup-reviews 0 replays all eligible review history."
         .into()
 }
@@ -592,6 +973,7 @@ fn rmse_bins(r_matrix: &HashMap<RecallBin, RecallBinValue>) -> (usize, f64) {
     (r_matrix.len(), (squared_error_sum / weight_sum).sqrt())
 }
 
+#[derive(Default)]
 struct StateSnapshot {
     card: HashMap<i64, Vec<u8>>,
     note: HashMap<i64, Vec<u8>>,

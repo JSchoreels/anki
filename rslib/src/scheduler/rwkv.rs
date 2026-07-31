@@ -566,6 +566,30 @@ enum RwkvReviewTarget {
     Ignore,
 }
 
+pub(crate) fn relative_overdueness(retrievability: f32, target_retention: f32) -> f32 {
+    retrievability / target_retention.max(0.0001)
+}
+
+pub(crate) fn rwkv_review_relative_overdueness(
+    retrievability: f32,
+    metadata: &RwkvReviewCandidateMetadata,
+    target_retention: Option<f32>,
+) -> f32 {
+    relative_overdueness(
+        retrievability,
+        rwkv_review_target_retention(metadata, target_retention),
+    )
+}
+
+fn rwkv_review_target_retention(
+    metadata: &RwkvReviewCandidateMetadata,
+    target_retention: Option<f32>,
+) -> f32 {
+    target_retention
+        .filter(|target| target.is_finite() && (0.0..=1.0).contains(target))
+        .unwrap_or(metadata.target_retention)
+}
+
 fn rwkv_review_score_eligibility_inner(
     score: f32,
     metadata: &RwkvReviewCandidateMetadata,
@@ -577,10 +601,7 @@ fn rwkv_review_score_eligibility_inner(
 ) -> RwkvReviewScoreEligibility {
     let score_above_target = match target {
         RwkvReviewTarget::Enforce(target_retention) => {
-            let target_retention = target_retention
-                .filter(|target| target.is_finite() && (0.0..=1.0).contains(target))
-                .unwrap_or(metadata.target_retention);
-            score > target_retention
+            score > rwkv_review_target_retention(metadata, target_retention)
         }
         RwkvReviewTarget::Ignore => false,
     };

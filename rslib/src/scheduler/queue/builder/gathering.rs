@@ -16,6 +16,7 @@ use crate::prelude::*;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
+use crate::scheduler::rwkv::rwkv_review_relative_overdueness;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
@@ -62,36 +63,62 @@ impl QueueBuilder {
     fn gather_review_cards_with_rwkv_scores(&mut self, col: &mut Collection) -> Result<()> {
         if matches!(
             self.context.sort_options.review_order,
-            ReviewCardOrder::RetrievabilityAscending | ReviewCardOrder::RetrievabilityDescending
+            ReviewCardOrder::RetrievabilityAscending
+                | ReviewCardOrder::RetrievabilityDescending
+                | ReviewCardOrder::RelativeOverdueness
         ) {
-            self.gather_review_cards_by_rwkv_retrievability(col)
+            self.gather_review_cards_by_rwkv_priority(col)
         } else {
             self.gather_review_cards_by_configured_order(col)
         }
     }
 
-    fn gather_review_cards_by_rwkv_retrievability(&mut self, col: &mut Collection) -> Result<()> {
+    fn gather_review_cards_by_rwkv_priority(&mut self, col: &mut Collection) -> Result<()> {
         if self.limits.root_limit_reached(LimitKind::Review) {
             return Ok(());
         }
 
         let scores = self.context.rwkv_review_queue_scores.clone().unwrap();
-        let descending = matches!(
-            self.context.sort_options.review_order,
-            ReviewCardOrder::RetrievabilityDescending
-        );
+        let review_order = self.context.sort_options.review_order;
+        let relative_overdueness = matches!(review_order, ReviewCardOrder::RelativeOverdueness);
+        let candidate_metadata = if relative_overdueness {
+            let card_ids = scores.keys().copied().collect::<Vec<_>>();
+            rwkv_review_candidate_metadata(col, &card_ids, self.context.timing)?
+        } else {
+            HashMap::new()
+        };
+        let priorities = scores
+            .iter()
+            .filter_map(|(&card_id, &score)| {
+                if !score.retrievability.is_finite() {
+                    return None;
+                }
+                let priority = match review_order {
+                    ReviewCardOrder::RetrievabilityDescending => -score.retrievability,
+                    ReviewCardOrder::RelativeOverdueness => rwkv_review_relative_overdueness(
+                        score.retrievability,
+                        candidate_metadata.get(&card_id)?,
+                        score.target_retention,
+                    ),
+                    _ => score.retrievability,
+                };
+                priority.is_finite().then_some((card_id, priority))
+            })
+            .collect::<HashMap<_, _>>();
         let mut ranked_scores: Vec<_> = scores
             .iter()
             .filter_map(|(&card_id, &score)| {
-                score.retrievability.is_finite().then_some((card_id, score))
+                priorities
+                    .contains_key(&card_id)
+                    .then_some((card_id, score))
             })
             .collect();
         let compare_scores =
-            |(card_id_a, score_a): &(CardId, RwkvReviewQueueScoreEntry),
-             (card_id_b, score_b): &(CardId, RwkvReviewQueueScoreEntry)| {
-                let ord = score_a.retrievability.total_cmp(&score_b.retrievability);
-                let ord = if descending { ord.reverse() } else { ord };
-                ord.then_with(|| card_id_a.cmp(card_id_b))
+            |(card_id_a, _): &(CardId, RwkvReviewQueueScoreEntry),
+             (card_id_b, _): &(CardId, RwkvReviewQueueScoreEntry)| {
+                priorities[card_id_a]
+                    .total_cmp(&priorities[card_id_b])
+                    .then_with(|| card_id_a.cmp(card_id_b))
             };
         let mut remaining_scores = ranked_scores.as_mut_slice();
         let mut chunk_size = (self.limits.remaining_root_limit(LimitKind::Review) as usize)
@@ -111,8 +138,14 @@ impl QueueBuilder {
                     Ok(true)
                 })?;
             let active_card_ids: Vec<_> = cards_by_id.keys().copied().collect();
-            let candidate_metadata =
-                rwkv_review_candidate_metadata(col, &active_card_ids, self.context.timing)?;
+            let fetched_metadata;
+            let chunk_metadata = if relative_overdueness {
+                &candidate_metadata
+            } else {
+                fetched_metadata =
+                    rwkv_review_candidate_metadata(col, &active_card_ids, self.context.timing)?;
+                &fetched_metadata
+            };
 
             for &(card_id, score) in score_chunk.iter() {
                 if self.limits.root_limit_reached(LimitKind::Review) {
@@ -121,7 +154,7 @@ impl QueueBuilder {
                 let Some(card) = cards_by_id.get(&card_id).copied() else {
                     continue;
                 };
-                let metadata = candidate_metadata.get(&card_id).or_not_found(card_id)?;
+                let metadata = chunk_metadata.get(&card_id).or_not_found(card_id)?;
                 let eligibility = rwkv_review_score_eligibility(
                     score.retrievability,
                     metadata,
@@ -167,9 +200,13 @@ impl QueueBuilder {
         if !self.limits.root_limit_reached(LimitKind::Review)
             && self.limits.any_rwkv_review_minimum_remaining()
         {
-            self.gather_rwkv_review_minimum_cards(col, &ranked_scores)?;
+            self.gather_rwkv_review_minimum_cards(
+                col,
+                &ranked_scores,
+                relative_overdueness.then_some(&priorities),
+            )?;
         }
-        self.sort_review_cards_by_rwkv_score();
+        self.sort_review_cards_by_rwkv_priority(&priorities);
         Ok(())
     }
 
@@ -340,12 +377,20 @@ impl QueueBuilder {
         &mut self,
         col: &mut Collection,
         ranked_scores: &[(CardId, RwkvReviewQueueScoreEntry)],
+        relative_overdueness_priorities: Option<&HashMap<CardId, f32>>,
     ) -> Result<()> {
         let mut pull_scores = ranked_scores.to_vec();
         pull_scores.sort_unstable_by(|(card_id_a, score_a), (card_id_b, score_b)| {
-            score_a
-                .retrievability
-                .total_cmp(&score_b.retrievability)
+            let priority_a = relative_overdueness_priorities
+                .and_then(|priorities| priorities.get(card_id_a))
+                .copied()
+                .unwrap_or(score_a.retrievability);
+            let priority_b = relative_overdueness_priorities
+                .and_then(|priorities| priorities.get(card_id_b))
+                .copied()
+                .unwrap_or(score_b.retrievability);
+            priority_a
+                .total_cmp(&priority_b)
                 .then_with(|| card_id_a.cmp(card_id_b))
         });
         for score_chunk in pull_scores.chunks(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE) {
@@ -431,27 +476,12 @@ impl QueueBuilder {
         Ok(())
     }
 
-    fn sort_review_cards_by_rwkv_score(&mut self) {
-        let scores = self.context.rwkv_review_queue_scores.as_ref().unwrap();
-        let descending = matches!(
-            self.context.sort_options.review_order,
-            ReviewCardOrder::RetrievabilityDescending
-        );
+    fn sort_review_cards_by_rwkv_priority(&mut self, priorities: &HashMap<CardId, f32>) {
         self.review.sort_by(|card_a, card_b| {
-            let score_a = scores
-                .get(&card_a.id)
-                .map(|score| score.retrievability)
-                .filter(|score| score.is_finite());
-            let score_b = scores
-                .get(&card_b.id)
-                .map(|score| score.retrievability)
-                .filter(|score| score.is_finite());
-            match (score_a, score_b) {
-                (Some(score_a), Some(score_b)) => {
-                    let order = score_a.total_cmp(&score_b);
-                    let order = if descending { order.reverse() } else { order };
-                    order.then_with(|| card_a.id.cmp(&card_b.id))
-                }
+            match (priorities.get(&card_a.id), priorities.get(&card_b.id)) {
+                (Some(priority_a), Some(priority_b)) => priority_a
+                    .total_cmp(priority_b)
+                    .then_with(|| card_a.id.cmp(&card_b.id)),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
