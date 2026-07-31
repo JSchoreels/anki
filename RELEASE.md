@@ -30,6 +30,8 @@ Current application version: `26.05+fsrs7`
   relative to each card's current Dynamic Desired Retention target.
 - Keep the resident RWKV state when editing a note leaves its resolved FSRS
   preset unchanged, avoiding a full history validation when returning to review.
+- Remove the RWKV prediction batch-size and estimated-memory controls from Deck
+  Options; Anki manages scoring batches internally.
 - Reduce RWKV state-cache rebuild and post-sync recovery peak memory by
   storing historical checkpoints as transactional deltas instead of repeated
   full snapshots, loading only the newest usable recovery checkpoint, releasing

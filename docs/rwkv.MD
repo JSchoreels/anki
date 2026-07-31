@@ -14,8 +14,6 @@ RWKV backend and continue to schedule with FSRS/SM2.
 
 Desktop-only RWKV review settings are stored in deck config `other` under the
 `jschoreels.rwkv` key. This includes `rwkv_review_enabled` and
-`rwkv_review_batch_size`, which defaults to `512` for queue and statistics
-scoring, and
 `rwkv_review_refresh_interval`, which defaults to `1`,
 `rwkv_review_refresh_on_exit`, which defaults to `false`, and
 `rwkv_review_allow_same_day_review`, which defaults to `true`, and
@@ -27,6 +25,8 @@ scoring, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
 `rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
 `true`, and `rwkv_review_enforce_grade_order`, which defaults to `true`.
+Legacy configs may also contain `rwkv_review_batch_size`. It is retained for
+compatibility but is no longer exposed in Deck Options.
 
 Development code that reads deck configs through the legacy Python
 `DeckConfigDict` API should tolerate both shapes:
@@ -342,8 +342,8 @@ After the first full score map has been installed, later refreshes score only
 the best stale RWKV candidates and merge those fresh scores back into the map.
 Descending retrievability prioritizes the highest scores; Relative
 Overdueness prioritizes the lowest `retrievability / target retention` values;
-all other review orders prioritize the lowest raw retrievability scores. The
-candidate window is the RWKV batch size.
+all other review orders prioritize the lowest raw retrievability scores. Anki
+automatically bounds the candidate window.
 This accelerates frequent review-time refreshes while preserving the full
 installed score map for cards outside the refreshed window. It is approximate:
 cards outside the refreshed window keep their previous RWKV score until a later
@@ -520,9 +520,9 @@ deck tree or all decks. Both operations update the stored RWKV memory state,
 first warming or restoring the local RWKV state cache and then querying RWKV
 for normal review cards in the requested scope, filtered to RWKV-enabled deck
 configs.
-Full interval/S90 predictions use a fixed batch size of `128`, independent of
-the deck option `rwkv_review_batch_size`, to bound the transient recurrent-state
-memory used by this operation. It uses the current/query RWKV-Curve, not a
+Full interval/S90 predictions use a fixed batch size of `128` to bound the
+transient recurrent-state memory used by this operation. It uses the
+current/query RWKV-Curve, not a
 hypothetical answer-button curve, to compute the target-retention interval and
 the current S90 value. The backend applies those values to the card without
 writing a review-log entry: `memory_state.stability` is updated to the RWKV S90,
@@ -712,12 +712,11 @@ The embedded runner uses NEON helpers on `aarch64`, runtime-detected AVX2/FMA
 helpers on `x86_64`, and scalar helpers as the fallback path.
 
 Queue and stats scoring send retrievability-only query predictions to the
-embedded runner in batches using the deck option `rwkv_review_batch_size`. The
-R-only path may raise the effective batch size from the default `512` to `2048`
-because it evaluates one query state per card instead of the full per-grade
-answer set; explicit non-default batch-size settings are still respected. The
-RWKV-Curve maintenance reschedule does not use this option; its full
-interval/S90 predictions use the fixed batch size documented above. The
+embedded runner in internally managed batches. The R-only path may raise the
+effective batch size from `512` to `2048` because it evaluates one query state
+per card instead of the full per-grade answer set. Legacy non-default stored
+values remain respected for compatibility. RWKV-Curve maintenance rescheduling
+uses the fixed batch size documented above. The
 embedded Rust runner evaluates those independent query predictions on Rayon
 worker lanes without evaluating the four hypothetical answer states. Reviewer
 current-card prediction additionally evaluates the four hypothetical answer

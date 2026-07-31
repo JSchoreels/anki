@@ -20,7 +20,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { HelpItem } from "$lib/components/types";
 
     import { commitEditing, type DeckOptionsState, fsrsParams } from "./lib";
-    import RwkvBatchSizeRow from "./RwkvBatchSizeRow.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
@@ -65,10 +64,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvCandidateRefresh: {
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
             help: tr.deckConfigRwkvReviewCandidateRefreshTooltip(),
-        },
-        rwkvBatchSize: {
-            title: tr.deckConfigRwkvReviewBatchSize(),
-            help: tr.deckConfigRwkvReviewBatchSizeTooltip(),
         },
         rwkvRefreshInterval: {
             title: tr.deckConfigRwkvReviewRefreshInterval(),
@@ -326,17 +321,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
 
         {#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
-            <h2 class="rwkv-subheading">Prediction Performance</h2>
-
-            <RwkvBatchSizeRow
-                bind:value={$config.rwkvReviewBatchSize}
-                defaultValue={defaults.rwkvReviewBatchSize}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvBatchSize")}>
-                    {tr.deckConfigRwkvReviewBatchSize()}
-                </SettingTitle>
-            </RwkvBatchSizeRow>
-
             <h2 class="rwkv-subheading">Card History</h2>
 
             <SwitchRow
