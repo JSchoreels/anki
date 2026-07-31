@@ -6001,7 +6001,15 @@ def test_rwkv_model_cache_key_changes_when_model_content_changes(
 
     model_path.write_bytes(b"model one")
     first_key = rwkv_scheduler._rwkv_model_cache_key()
+    first_stat = model_path.stat()
     model_path.write_bytes(b"model two")
+    # Windows may preserve timestamps across rapid same-size overwrites. Move
+    # mtime forward explicitly so this tests cache invalidation instead of the
+    # host filesystem's timestamp update behavior.
+    os.utime(
+        model_path,
+        ns=(first_stat.st_atime_ns, first_stat.st_mtime_ns + 1_000_000_000),
+    )
     second_key = rwkv_scheduler._rwkv_model_cache_key()
 
     assert first_key is not None

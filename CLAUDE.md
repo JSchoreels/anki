@@ -44,6 +44,16 @@ When developing a user-visible feature, update `RELEASE.md` in the same
 change, even if the feature has not been released yet. Add it to the existing
 unreleased section so the release notes remain current throughout development.
 
+## Releases
+
+Push the exact release commit and wait for its complete remote CI matrix before
+dispatching a draft or public release. Use the `just release::draft` recipe for
+drafts; its local preflight waits for CI and only dispatches the GitHub release
+workflow after CI succeeds. If CI fails, fix the failure, push the new commit,
+and run the recipe again. Do not invoke `release.yml` directly or pass
+`--skip-ci-check=true` unless the user explicitly requests bypassing the CI
+gate.
+
 ## Quick iteration
 
 During development, you can build/check subsections of our code:
@@ -66,6 +76,21 @@ alone if the behavior remains uncertain. Add or run a targeted runtime/UI
 smoke test using the existing harness where possible, such as Playwright e2e,
 an offscreen temporary Anki reviewer session, or another small mock UI flow
 that exercises the user interaction end to end.
+
+## Testing with the user's collection
+
+By default, when a test needs data from the user's Anki collection, use an
+existing backup from
+`/Users/jschoreels/Library/Application Support/Anki2/Main Profile/backups/`.
+Choose a suitable backup (normally the most recent), copy it to a dedicated
+temporary directory under `/private/tmp` or the workspace, and extract or use
+the copy there as needed. Never extract, open, or modify the backup in place,
+and never point test or analysis tools at the live profile database.
+
+An existing backup may be used without asking the user to quit Anki. If the
+test requires collection state newer than the available backups, or requires
+modifying or restoring the active profile, ask the user first and follow the
+Anki SQLite safety workflow.
 
 Be mindful that some changes (such as modifications to .proto files) may
 need a full build with `just check` first.

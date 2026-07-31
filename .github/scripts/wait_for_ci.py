@@ -7,13 +7,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import quote
 
 RELEVANT_EVENTS = {"push", "workflow_dispatch"}
+FULL_COMMIT_SHA = re.compile(r"[0-9a-fA-F]{40}")
+
+
+def resolve_commit(repo: str | None, commit: str) -> str:
+    if FULL_COMMIT_SHA.fullmatch(commit):
+        return commit.lower()
+    if not repo:
+        raise ValueError("--repo is required when --commit is a branch, tag, or short SHA")
+
+    encoded_commit = quote(commit, safe="")
+    result = subprocess.run(
+        ["gh", "api", f"repos/{repo}/commits/{encoded_commit}", "--jq", ".sha"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    resolved = result.stdout.strip()
+    if not FULL_COMMIT_SHA.fullmatch(resolved):
+        raise RuntimeError(f"GitHub returned an invalid commit SHA for {commit!r}")
+    return resolved.lower()
 
 
 def select_ci_run(runs: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
@@ -115,11 +137,12 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=int, default=5400)
     parser.add_argument("--poll-seconds", type=int, default=30)
     args = parser.parse_args()
+    commit = resolve_commit(args.repo, args.commit)
 
     if not wait_for_ci(
         repo=args.repo,
         workflow=args.workflow,
-        commit=args.commit,
+        commit=commit,
         timeout_seconds=args.timeout_seconds,
         poll_seconds=args.poll_seconds,
     ):

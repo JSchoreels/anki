@@ -1,6 +1,11 @@
 set windows-shell := ["pwsh", "-NoLogo", "-NoProfileLoadTime", "-Command"]
 
 version := `cat .version`
+python := if os() == "windows" { "python" } else { "python3" }
+
+[private]
+check-ci ref skip-ci-check:
+    {{ if skip-ci-check == "true" { "echo Skipping local CI preflight" } else { python + " .github/scripts/wait_for_ci.py --repo JSchoreels/anki --commit \"" + ref + "\"" } }}
 
 # Prepare a release: validate version, check CI, update .version
 [arg("version", long)]
@@ -24,7 +29,7 @@ build ref:
 # Build all platforms and create an unsigned draft GitHub release
 [arg("ref", long)]
 [arg("skip-ci-check", long)]
-draft ref="main" skip-ci-check="false":
+draft ref="main" skip-ci-check="false": (check-ci ref skip-ci-check)
     gh workflow run release.yml --repo JSchoreels/anki --ref {{ ref }} \
         -f version="{{ version }}" \
         -f skip-ci-check={{ skip-ci-check }} \
