@@ -587,6 +587,12 @@ class _RustRwkvRuntime:
                 ),
             )
 
+    def finish_warm_up_state_checkpoints(self) -> None:
+        finish = getattr(self._process, "finish_warm_up_state_checkpoints", None)
+        if callable(finish):
+            with self._locked_process():
+                finish()
+
     def restore_warm_up_state_checkpoint(
         self,
         path: Path,

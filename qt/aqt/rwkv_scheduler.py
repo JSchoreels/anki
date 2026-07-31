@@ -1052,6 +1052,11 @@ class RwkvStatefulReviewerBackend:
             ),
         )
 
+    def finish_state_cache_checkpoints(self) -> None:
+        finish = getattr(self._runtime, "finish_warm_up_state_checkpoints", None)
+        if callable(finish):
+            finish()
+
     def restore_state_cache_checkpoint(
         self,
         path: Path,
@@ -4760,9 +4765,12 @@ def _prepare_reviewer_backend_from_cache(
         return False
     finally:
         try:
-            _reviewer_backend_execution_lock.release()
+            _finish_rwkv_state_cache_checkpoint_writes_safely(backend)
         finally:
-            _finish_reviewer_backend_warmup(key, warmup_generation)
+            try:
+                _reviewer_backend_execution_lock.release()
+            finally:
+                _finish_reviewer_backend_warmup(key, warmup_generation)
 
 
 def _reviewer_backend_warmup_pending(reviewer: object) -> bool:
@@ -7856,9 +7864,12 @@ def _warm_up_reviewer_backend(
         return False
     finally:
         try:
-            _reviewer_backend_execution_lock.release()
+            _finish_rwkv_state_cache_checkpoint_writes_safely(backend)
         finally:
-            _finish_reviewer_backend_warmup(key, warmup_generation)
+            try:
+                _reviewer_backend_execution_lock.release()
+            finally:
+                _finish_reviewer_backend_warmup(key, warmup_generation)
 
 
 def _reviewer_backend_warmup_context(
@@ -12544,6 +12555,7 @@ def _save_reviewer_backend_state_store(
             durable=not context.state_store_temporary,
         )
 
+    _finish_rwkv_state_cache_checkpoint_writes(backend)
     snapshot_segment_id = context.state_store_head_segment_id
     if snapshot_segment_id is None or context.state_store_generation is None:
         raise ValueError("missing RWKV state-cache head segment")
@@ -12606,6 +12618,22 @@ def _save_reviewer_backend_state_store(
         snapshot_segment_id,
         live_store_path.stat().st_size,
     )
+
+
+def _finish_rwkv_state_cache_checkpoint_writes(backend: object) -> None:
+    finish = getattr(backend, "finish_state_cache_checkpoints", None)
+    if callable(finish):
+        finish()
+
+
+def _finish_rwkv_state_cache_checkpoint_writes_safely(backend: object) -> None:
+    try:
+        _finish_rwkv_state_cache_checkpoint_writes(backend)
+    except Exception:
+        logger.warning(
+            "failed to close RWKV state-cache checkpoint writer",
+            exc_info=True,
+        )
 
 
 def _prune_rwkv_state_cache_store(
@@ -16133,9 +16161,7 @@ def _resolve_dynamic_desired_retentions_for_input_build(
     )
 
 
-def dynamic_desired_retention_did_change(mw: object) -> None:
-    """Invalidate RWKV targets and refresh study queues after provider changes."""
-
+def _invalidate_rwkv_review_input_caches(mw: object) -> int:
     global _dynamic_desired_retention_generation
 
     with _reviewer_backend_state_lock:
@@ -16149,6 +16175,13 @@ def dynamic_desired_retention_did_change(mw: object) -> None:
     reviewer = SimpleNamespace(mw=mw)
     _clear_rwkv_review_queue_scores(reviewer)
     clear_deck_browser_rwkv_count_scores(mw)
+    return generation
+
+
+def dynamic_desired_retention_did_change(mw: object) -> None:
+    """Invalidate RWKV targets and refresh study queues after provider changes."""
+
+    generation = _invalidate_rwkv_review_input_caches(mw)
 
     reset = getattr(mw, "reset", None)
     if callable(reset):
@@ -16158,6 +16191,145 @@ def dynamic_desired_retention_did_change(mw: object) -> None:
         "RWKV Dynamic DR caches invalidated: generation=%s",
         generation,
     )
+
+
+def collection_content_did_change(mw: object, initiator: object | None) -> None:
+    """Refresh content-dependent inputs without discarding unchanged RWKV state."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    changed_card_ids = _collection_content_change_card_ids(reviewer, initiator)
+    if _fsrs_preset_overlay_has_routing_rules(reviewer) and not (
+        changed_card_ids
+        and _changed_cards_keep_rwkv_preset_routing(reviewer, changed_card_ids)
+    ):
+        fsrs_preset_resolution_did_change(mw)
+        _invalidate_rwkv_review_input_caches(mw)
+        return
+
+    generation = _invalidate_rwkv_review_input_caches(mw)
+    logger.debug(
+        "RWKV resident state retained after collection content mutation: "
+        "cards=%s generation=%s",
+        len(changed_card_ids),
+        generation,
+    )
+
+
+def _fsrs_preset_overlay_has_routing_rules(reviewer: object) -> bool:
+    col = _collection(reviewer)
+    get_config = getattr(col, "get_config", None)
+    if not callable(get_config):
+        return True
+
+    try:
+        overlay = get_config(_FSRS_PRESET_OVERLAY_CONFIG_KEY)
+    except Exception:
+        logger.debug(
+            "failed to inspect FSRS preset overlay after collection content mutation",
+            exc_info=True,
+        )
+        return True
+
+    if not isinstance(overlay, dict):
+        return False
+    return any(
+        isinstance(rules, list) and bool(rules)
+        for rules in (
+            overlay.get("rules"),
+            overlay.get("simulator_rules"),
+        )
+    )
+
+
+def _collection_content_change_card_ids(
+    reviewer: object,
+    initiator: object | None,
+) -> tuple[int, ...]:
+    card = getattr(initiator, "card", None)
+    card_id = _valid_card_id(getattr(card, "id", None))
+    note_id = _valid_card_id(getattr(initiator, "nid", None))
+    if note_id is None:
+        note = getattr(initiator, "note", None)
+        note_id = _valid_card_id(getattr(note, "id", None))
+
+    if note_id is None:
+        return (card_id,) if card_id is not None else ()
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    list_rows = getattr(db, "list", None)
+    if not callable(list_rows):
+        return ()
+
+    try:
+        card_ids = [
+            valid_card_id
+            for value in list_rows("select id from cards where nid = ?", note_id)
+            if (valid_card_id := _valid_card_id(value)) is not None
+        ]
+    except Exception:
+        logger.debug(
+            "failed to resolve changed note cards for RWKV preset comparison",
+            exc_info=True,
+        )
+        return ()
+
+    return tuple(dict.fromkeys(card_ids))
+
+
+def _changed_cards_keep_rwkv_preset_routing(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> bool:
+    historical_card_ids = _historical_rwkv_card_ids(reviewer, card_ids)
+    if historical_card_ids is None:
+        return False
+
+    cache = _resolved_preset_id_cache.get(_preset_id_cache_key(reviewer), {})
+    if any(card_id not in cache for card_id in historical_card_ids):
+        return False
+    previous_preset_ids = {card_id: cache[card_id] for card_id in historical_card_ids}
+
+    _invalidate_resolved_preset_id_cache(reviewer, card_ids=card_ids)
+    current_preset_ids = _resolved_fsrs_preset_ids(reviewer, card_ids)
+    return all(
+        current_preset_ids.get(card_id) == previous_preset_id
+        for card_id, previous_preset_id in previous_preset_ids.items()
+    )
+
+
+def _historical_rwkv_card_ids(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> set[int] | None:
+    if not card_ids:
+        return set()
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    list_rows = getattr(db, "list", None)
+    if not callable(list_rows):
+        return None
+
+    try:
+        values = list_rows(
+            f"""
+select distinct cid
+from revlog
+where cid in {ids2str(card_ids)}
+  and {_rwkv_historical_answer_sql_condition()}
+"""
+        )
+    except Exception:
+        logger.debug(
+            "failed to resolve changed cards with RWKV history",
+            exc_info=True,
+        )
+        return None
+
+    return {
+        card_id for value in values if (card_id := _valid_card_id(value)) is not None
+    }
 
 
 def fsrs_preset_resolution_did_change(mw: object) -> None:

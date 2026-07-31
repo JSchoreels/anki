@@ -530,6 +530,84 @@ def test_preset_resolution_change_invalidates_resident_rwkv_state() -> None:
     assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
 
 
+def test_collection_content_change_keeps_resident_state_when_preset_is_unchanged() -> (
+    None
+):
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.get_config = lambda _key: {
+        "rules": [{"search": "Front:foo", "preset_id": "1000"}]
+    }
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            if "from cards" in sql:
+                assert args == (10,)
+                return [1]
+            assert "from revlog" in sql
+            assert args == ()
+            return [1]
+
+    reviewer.mw.col.db = DB()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = {1: "1000"}
+
+    rwkv_scheduler.collection_content_did_change(
+        reviewer.mw,
+        SimpleNamespace(nid=10, card=SimpleNamespace(id=1)),
+    )
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == (
+        resident_identity
+    )
+    assert rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0) == 0
+    assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {1: "1000"}
+    assert rwkv_scheduler._dynamic_desired_retention_generation == 1
+
+
+def test_collection_content_change_invalidates_state_when_preset_changes() -> None:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer(resolved_preset_id="2000")
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.get_config = lambda _key: {
+        "rules": [{"search": "Front:foo", "preset_id": "2000"}]
+    }
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            if "from cards" in sql:
+                assert args == (10,)
+                return [1]
+            assert "from revlog" in sql
+            assert args == ()
+            return [1]
+
+    reviewer.mw.col.db = DB()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = {1: "1000"}
+
+    rwkv_scheduler.collection_content_did_change(
+        reviewer.mw,
+        SimpleNamespace(nid=10, card=SimpleNamespace(id=1)),
+    )
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
+    assert rwkv_scheduler._dynamic_desired_retention_generation == 1
+
+
 def test_reviewer_answer_does_not_invalidate_rwkv_queue_caches() -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = _rwkv_reviewer(rpc=rpc)
@@ -5204,11 +5282,17 @@ def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
         state_store_head_segment_id=2,
     )
 
+    finished_checkpoint_writes = False
+
     class Backend:
         def write_state_cache_checkpoint(
             self, *_args: object, **_kwargs: object
         ) -> int:
             raise AssertionError("the final checkpoint must be reused")
+
+        def finish_state_cache_checkpoints(self) -> None:
+            nonlocal finished_checkpoint_writes
+            finished_checkpoint_writes = True
 
     checkpoint_entry = rwkv_scheduler._rwkv_state_cache_checkpoint_entry(
         checkpoint_history,
@@ -5229,6 +5313,7 @@ def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
     )
 
     live_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+    assert finished_checkpoint_writes
     assert live_store.read_bytes() == b"delta-store"
     assert not (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_SNAPSHOT_FILE).exists()
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)

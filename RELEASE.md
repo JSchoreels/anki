@@ -28,6 +28,8 @@ Current application version: `26.05+fsrs7`
 
 - Make RWKV Relative Overdueness consistently rank cards by retrievability
   relative to each card's current Dynamic Desired Retention target.
+- Keep the resident RWKV state when editing a note leaves its resolved FSRS
+  preset unchanged, avoiding a full history validation when returning to review.
 - Reduce RWKV state-cache rebuild and post-sync recovery peak memory by
   storing historical checkpoints as transactional deltas instead of repeated
   full snapshots, loading only the newest usable recovery checkpoint, releasing
@@ -44,7 +46,10 @@ Current application version: `26.05+fsrs7`
   deltas across SQLite rows so large collections do not exceed the single-BLOB
   limit. Reuse checkpoint history metadata prepared during the original
   chronological pass, and use larger SQLite pages to reduce full-rebuild
-  hashing and storage overhead.
+  hashing and storage overhead. Stream recurrent states into those rows without
+  allocating whole-state byte buffers, and reuse one SQLite connection across
+  the base and final checkpoint. Process four review rows per projection with
+  an exact NEON kernel on Apple Silicon.
 
 ## [26.05+fsrs7.build.73](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.73) — 2026-07-29
 

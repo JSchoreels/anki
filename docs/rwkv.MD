@@ -209,6 +209,11 @@ inputs plus a replay-semantics identity covering first-review elapsed-time
 settings, deck-to-preset routing, and the dynamic preset overlay. Filtered cards
 use their original deck as the effective historical deck, matching normal
 review after they leave the filtered deck.
+Note and tag edits re-resolve only the affected note's cards when an add-on
+preset overlay is active. If those cards remain in the same presets, Anki keeps
+the resident recurrent state and refreshes only content-dependent queue inputs.
+It falls back to full state invalidation when an affected historical card moves
+to a different preset or when the affected cards cannot be identified safely.
 At profile startup, Anki invalidates any previous resident state immediately,
 then waits for automatic startup sync to finish before attempting the
 operational cache restore and canonical validation once. It offers to rebuild

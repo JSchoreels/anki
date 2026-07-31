@@ -567,6 +567,11 @@ fn warm_up_with_checkpoints(
             endpoint_index += 1;
         }
     }
+    if matches!(mode, CheckpointMode::Delta) {
+        let close_started = Instant::now();
+        inference.finish_warm_up_state_checkpoints()?;
+        write_ms += elapsed_ms(close_started);
+    }
     let (state_bytes, runtime_bytes, restore_ms, recovery) =
         if matches!(mode, CheckpointMode::Delta) {
             let store_path = temporary_dir.path().join("state.sqlite3");

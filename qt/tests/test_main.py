@@ -101,11 +101,38 @@ def test_non_queue_preset_mutation_invalidates_rwkv_before_screen_refresh(
         lambda _owner: calls.append("rwkv preset"),
     )
     changes = OpChanges()
-    changes.tag = True
+    changes.deck_config = True
 
     mw.on_operation_did_execute(changes, handler=object())
 
     assert calls == ["rwkv preset", "screen"]
+
+
+def test_note_content_mutation_preserves_unchanged_rwkv_state_before_refresh(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.state = "deckBrowser"
+    mw.deckBrowser = SimpleNamespace(
+        op_executed=lambda _changes, _handler, _focused: calls.append("screen") or False
+    )
+    initiator = object()
+    monkeypatch.setattr(aqt.main, "current_window", lambda: mw)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "collection_content_did_change",
+        lambda _owner, handler: calls.append(
+            "rwkv content" if handler is initiator else "wrong initiator"
+        ),
+    )
+    changes = OpChanges()
+    changes.note = True
+    changes.note_text = True
+
+    mw.on_operation_did_execute(changes, handler=initiator)
+
+    assert calls == ["rwkv content", "screen"]
 
 
 def test_startup_sync_can_defer_rwkv_refresh(

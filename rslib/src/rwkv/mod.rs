@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
 use rayon::prelude::*;
@@ -435,8 +436,32 @@ pub struct RwkvInference {
     features: FeatureState,
     curves: HashMap<i64, ReviewCurve>,
     warm_up_states: ReviewStateMaps,
+    state_cache_store: Option<StateCacheStoreWriter>,
     target_retention: f32,
     max_interval_days: u32,
+}
+
+struct StateCacheStoreWriter {
+    path: PathBuf,
+    generation: String,
+    durable: bool,
+    connection: Mutex<Connection>,
+}
+
+impl StateCacheStoreWriter {
+    fn open(path: PathBuf, generation: &str, durable: bool) -> io::Result<Self> {
+        let connection = open_state_cache_store(&path, generation, durable)?;
+        Ok(Self {
+            path,
+            generation: generation.to_owned(),
+            durable,
+            connection: Mutex::new(connection),
+        })
+    }
+
+    fn matches(&self, path: &PathBuf, generation: &str, durable: bool) -> bool {
+        self.path == *path && self.generation == generation && self.durable == durable
+    }
 }
 
 #[derive(Clone)]
@@ -586,6 +611,7 @@ impl RwkvInference {
             features: FeatureState::default(),
             curves: HashMap::new(),
             warm_up_states: ReviewStateMaps::default(),
+            state_cache_store: None,
             target_retention,
             max_interval_days,
         })
@@ -1067,12 +1093,20 @@ impl RwkvInference {
     ) -> io::Result<i64> {
         let runtime_state_len = self.runtime_cache_state_len();
         let state_delta_len = self.warm_up_states.checkpoint_delta_len(full)?;
-        let mut connection = open_state_cache_store(&path, store_generation, durable)?;
-        let transaction = connection.transaction().map_err(state_cache_store_error)?;
-        validate_state_cache_parent(&transaction, parent_segment_id)?;
-        transaction
-            .execute(
-                r#"
+        let store = match self.state_cache_store.take() {
+            Some(store) if store.matches(&path, store_generation, durable) => store,
+            _ => StateCacheStoreWriter::open(path, store_generation, durable)?,
+        };
+        let result = (|| {
+            let mut connection = store
+                .connection
+                .lock()
+                .map_err(|_| io::Error::other("RWKV state-cache connection lock poisoned"))?;
+            let transaction = connection.transaction().map_err(state_cache_store_error)?;
+            validate_state_cache_parent(&transaction, parent_segment_id)?;
+            transaction
+                .execute(
+                    r#"
 insert into segments (
   parent_id,
   last_review_id,
@@ -1085,47 +1119,65 @@ insert into segments (
   runtime_state
 ) values (?, ?, ?, ?, ?, ?, ?, ?, zeroblob(?))
 "#,
-                params![
-                    parent_segment_id,
-                    last_review_id,
-                    review_count,
-                    history_hash,
-                    replay_key,
-                    previous_review_ids,
-                    previous_intervals,
-                    review_counts,
-                    i64::try_from(runtime_state_len).map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "RWKV runtime state is too large",
-                        )
-                    })?,
-                ],
-            )
-            .map_err(state_cache_store_error)?;
-        let segment_id = transaction.last_insert_rowid();
-        let state_delta_chunk_ids =
-            insert_state_cache_delta_chunks(&transaction, segment_id, state_delta_len)?;
-        {
-            let mut runtime_state = transaction
-                .blob_open(MAIN_DB, "segments", "runtime_state", segment_id, false)
+                    params![
+                        parent_segment_id,
+                        last_review_id,
+                        review_count,
+                        history_hash,
+                        replay_key,
+                        previous_review_ids,
+                        previous_intervals,
+                        review_counts,
+                        i64::try_from(runtime_state_len).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "RWKV runtime state is too large",
+                            )
+                        })?,
+                    ],
+                )
                 .map_err(state_cache_store_error)?;
-            self.write_runtime_cache_state(&mut runtime_state)?;
-            runtime_state.close().map_err(state_cache_store_error)?;
+            let segment_id = transaction.last_insert_rowid();
+            let state_delta_chunk_ids =
+                insert_state_cache_delta_chunks(&transaction, segment_id, state_delta_len)?;
+            {
+                let mut runtime_state = transaction
+                    .blob_open(MAIN_DB, "segments", "runtime_state", segment_id, false)
+                    .map_err(state_cache_store_error)?;
+                self.write_runtime_cache_state(&mut runtime_state)?;
+                runtime_state.close().map_err(state_cache_store_error)?;
+            }
+            {
+                let mut state_delta = StateCacheDeltaChunkWriter::new(
+                    &transaction,
+                    state_delta_chunk_ids,
+                    state_delta_len,
+                )?;
+                self.warm_up_states
+                    .write_checkpoint_delta(&mut state_delta, full)?;
+                state_delta.finish()?;
+            }
+            transaction.commit().map_err(state_cache_store_error)?;
+            self.warm_up_states.mark_checkpoint_saved();
+            Ok(segment_id)
+        })();
+        if result.is_ok() {
+            self.state_cache_store = Some(store);
         }
-        {
-            let mut state_delta = StateCacheDeltaChunkWriter::new(
-                &transaction,
-                state_delta_chunk_ids,
-                state_delta_len,
-            )?;
-            self.warm_up_states
-                .write_checkpoint_delta(&mut state_delta, full)?;
-            state_delta.finish()?;
-        }
-        transaction.commit().map_err(state_cache_store_error)?;
-        self.warm_up_states.mark_checkpoint_saved();
-        Ok(segment_id)
+        result
+    }
+
+    pub fn finish_warm_up_state_checkpoints(&mut self) -> io::Result<()> {
+        let Some(store) = self.state_cache_store.take() else {
+            return Ok(());
+        };
+        let connection = store
+            .connection
+            .into_inner()
+            .map_err(|_| io::Error::other("RWKV state-cache connection lock poisoned"))?;
+        connection
+            .close()
+            .map_err(|(_, error)| state_cache_store_error(error))
     }
 
     pub fn restore_warm_up_state_checkpoint(
@@ -1134,6 +1186,7 @@ insert into segments (
         store_generation: &str,
         segment_id: i64,
     ) -> io::Result<()> {
+        self.finish_warm_up_state_checkpoints()?;
         let connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1188,6 +1241,7 @@ insert into segments (
     }
 
     pub fn reset_warm_up_state(&mut self) {
+        self.state_cache_store = None;
         self.warm_up_states = ReviewStateMaps::default();
     }
 
@@ -1497,6 +1551,7 @@ insert into segments (
             features,
             curves,
             warm_up_states: ReviewStateMaps::default(),
+            state_cache_store: None,
             target_retention: self.target_retention,
             max_interval_days: self.max_interval_days,
         }
@@ -3540,7 +3595,7 @@ impl ReviewStateMaps {
             out.write_all(&[0])?;
         } else if let Some(global) = &self.global {
             out.write_all(&[2])?;
-            write_snapshot_bytes(out, &serialize_module_state(global))?;
+            write_snapshot_module_state(out, global)?;
         } else {
             out.write_all(&[1])?;
         }
@@ -3592,7 +3647,7 @@ fn write_state_cache_map_delta(
         out.write_all(&identity.to_le_bytes())?;
         if let Some(state) = states.get(&identity) {
             out.write_all(&[1])?;
-            write_snapshot_bytes(out, &serialize_module_state(state))?;
+            write_snapshot_module_state(out, state)?;
         } else {
             out.write_all(&[0])?;
         }
@@ -3706,6 +3761,40 @@ fn serialized_module_state_len(state: &ModuleState) -> usize {
             .sum::<usize>()
 }
 
+fn write_serialized_module_state(out: &mut impl io::Write, state: &ModuleState) -> io::Result<()> {
+    out.write_all(b"ARWKVMODSTATE1")?;
+    write_snapshot_u32(out, state.layers.len())?;
+    for layer in &state.layers {
+        write_state_cache_f32_slice(
+            out,
+            layer
+                .time
+                .as_ref()
+                .map_or(&[][..], |time| time.x_shift.as_slice()),
+        )?;
+        write_state_cache_f32_slice(
+            out,
+            layer
+                .time
+                .as_ref()
+                .map_or(&[][..], |time| time.matrix.as_slice()),
+        )?;
+        write_state_cache_f32_slice(
+            out,
+            layer
+                .channel_shift
+                .as_ref()
+                .map_or(&[][..], |shift| shift.as_slice()),
+        )?;
+    }
+    Ok(())
+}
+
+fn write_snapshot_module_state(out: &mut impl io::Write, state: &ModuleState) -> io::Result<()> {
+    write_snapshot_u32(out, serialized_module_state_len(state))?;
+    write_serialized_module_state(out, state)
+}
+
 fn write_snapshot_state_map(
     out: &mut impl io::Write,
     states: &HashMap<i64, ModuleState>,
@@ -3715,7 +3804,7 @@ fn write_snapshot_state_map(
     states.sort_unstable_by_key(|(identity, _)| **identity);
     for (identity, state) in states {
         out.write_all(&identity.to_le_bytes())?;
-        write_snapshot_bytes(out, &serialize_module_state(state))?;
+        write_snapshot_module_state(out, state)?;
     }
     Ok(())
 }
@@ -5805,6 +5894,26 @@ impl Linear {
             }
         }
 
+        #[cfg(target_arch = "aarch64")]
+        if rows >= 4 {
+            // SAFETY: aarch64 guarantees NEON support. The helper receives
+            // slices whose dimensions were checked above and only accesses
+            // complete rows and output vectors within those dimensions.
+            unsafe {
+                linear_apply_block_neon(
+                    inputs,
+                    &self.weight_by_input,
+                    outs,
+                    rows,
+                    self.input,
+                    self.output,
+                );
+            }
+            #[cfg(test)]
+            rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+            return;
+        }
+
         #[cfg(target_arch = "x86_64")]
         if rows >= 4 && x86_avx2_fma_available() {
             // SAFETY: availability was checked above. The helper receives
@@ -5963,6 +6072,179 @@ unsafe fn add_scaled_in_place_neon(out: &mut [f32], weights: &[f32], scale: f32)
         out[offset] += weights[offset] * vgetq_lane_f32(scale, 0);
         offset += 1;
     }
+}
+
+/// Exact four-row linear projection microkernel for AArch64 NEON machines.
+///
+/// Each output accumulator still visits input columns in ascending order and
+/// skips zero scales, matching `Linear::apply_into()`. Four rows share each
+/// weight load while retaining the column-major loop order, so input scales
+/// are loaded only once per projection column.
+#[cfg(target_arch = "aarch64")]
+unsafe fn linear_apply_block_neon(
+    inputs: &[f32],
+    weights: &[f32],
+    outs: &mut [f32],
+    rows: usize,
+    input: usize,
+    output: usize,
+) {
+    use std::arch::aarch64::*;
+
+    let tiled_rows = rows / 4 * 4;
+    for row_base in (0..tiled_rows).step_by(4) {
+        for column in 0..input {
+            let scale0 = *inputs.get_unchecked(row_base * input + column);
+            let scale1 = *inputs.get_unchecked((row_base + 1) * input + column);
+            let scale2 = *inputs.get_unchecked((row_base + 2) * input + column);
+            let scale3 = *inputs.get_unchecked((row_base + 3) * input + column);
+            if scale0 == 0.0 && scale1 == 0.0 && scale2 == 0.0 && scale3 == 0.0 {
+                continue;
+            }
+
+            let weight_column = weights.as_ptr().add(column * output);
+            let mut output_offset = 0;
+            while output_offset + 16 <= output {
+                let weights = [
+                    vld1q_f32(weight_column.add(output_offset)),
+                    vld1q_f32(weight_column.add(output_offset + 4)),
+                    vld1q_f32(weight_column.add(output_offset + 8)),
+                    vld1q_f32(weight_column.add(output_offset + 12)),
+                ];
+                if scale0 != 0.0 {
+                    add_scaled_16_neon(
+                        outs.as_mut_ptr().add(row_base * output + output_offset),
+                        weights,
+                        scale0,
+                    );
+                }
+                if scale1 != 0.0 {
+                    add_scaled_16_neon(
+                        outs.as_mut_ptr()
+                            .add((row_base + 1) * output + output_offset),
+                        weights,
+                        scale1,
+                    );
+                }
+                if scale2 != 0.0 {
+                    add_scaled_16_neon(
+                        outs.as_mut_ptr()
+                            .add((row_base + 2) * output + output_offset),
+                        weights,
+                        scale2,
+                    );
+                }
+                if scale3 != 0.0 {
+                    add_scaled_16_neon(
+                        outs.as_mut_ptr()
+                            .add((row_base + 3) * output + output_offset),
+                        weights,
+                        scale3,
+                    );
+                }
+                output_offset += 16;
+            }
+            while output_offset + 4 <= output {
+                let weight = vld1q_f32(weight_column.add(output_offset));
+                if scale0 != 0.0 {
+                    add_scaled_4_neon(
+                        outs.as_mut_ptr().add(row_base * output + output_offset),
+                        weight,
+                        scale0,
+                    );
+                }
+                if scale1 != 0.0 {
+                    add_scaled_4_neon(
+                        outs.as_mut_ptr()
+                            .add((row_base + 1) * output + output_offset),
+                        weight,
+                        scale1,
+                    );
+                }
+                if scale2 != 0.0 {
+                    add_scaled_4_neon(
+                        outs.as_mut_ptr()
+                            .add((row_base + 2) * output + output_offset),
+                        weight,
+                        scale2,
+                    );
+                }
+                if scale3 != 0.0 {
+                    add_scaled_4_neon(
+                        outs.as_mut_ptr()
+                            .add((row_base + 3) * output + output_offset),
+                        weight,
+                        scale3,
+                    );
+                }
+                output_offset += 4;
+            }
+            while output_offset < output {
+                let weight = *weight_column.add(output_offset);
+                if scale0 != 0.0 {
+                    *outs.get_unchecked_mut(row_base * output + output_offset) += weight * scale0;
+                }
+                if scale1 != 0.0 {
+                    *outs.get_unchecked_mut((row_base + 1) * output + output_offset) +=
+                        weight * scale1;
+                }
+                if scale2 != 0.0 {
+                    *outs.get_unchecked_mut((row_base + 2) * output + output_offset) +=
+                        weight * scale2;
+                }
+                if scale3 != 0.0 {
+                    *outs.get_unchecked_mut((row_base + 3) * output + output_offset) +=
+                        weight * scale3;
+                }
+                output_offset += 1;
+            }
+        }
+    }
+
+    for row in tiled_rows..rows {
+        let out = &mut outs[row * output..(row + 1) * output];
+        for column in 0..input {
+            let scale = *inputs.get_unchecked(row * input + column);
+            if scale == 0.0 {
+                continue;
+            }
+            let weight_column = &weights[column * output..(column + 1) * output];
+            add_scaled_in_place_neon(out, weight_column, scale);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn add_scaled_16_neon(
+    out: *mut f32,
+    weights: [std::arch::aarch64::float32x4_t; 4],
+    scale: f32,
+) {
+    use std::arch::aarch64::*;
+
+    let scale = vdupq_n_f32(scale);
+    vst1q_f32(out, vfmaq_f32(vld1q_f32(out), weights[0], scale));
+    vst1q_f32(
+        out.add(4),
+        vfmaq_f32(vld1q_f32(out.add(4)), weights[1], scale),
+    );
+    vst1q_f32(
+        out.add(8),
+        vfmaq_f32(vld1q_f32(out.add(8)), weights[2], scale),
+    );
+    vst1q_f32(
+        out.add(12),
+        vfmaq_f32(vld1q_f32(out.add(12)), weights[3], scale),
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn add_scaled_4_neon(out: *mut f32, weights: std::arch::aarch64::float32x4_t, scale: f32) {
+    use std::arch::aarch64::*;
+
+    vst1q_f32(out, vfmaq_f32(vld1q_f32(out), weights, vdupq_n_f32(scale)));
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -7308,7 +7590,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     fn deterministic_simd_values(len: usize, period: usize, scale: f32) -> Vec<f32> {
         (0..len)
             .map(|index| {
@@ -7405,9 +7687,10 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
-    fn linear_apply_block_avx2_fma_matches_per_row_path_bit_exactly() {
+    fn linear_apply_block_arch_matches_per_row_path_bit_exactly() {
+        #[cfg(target_arch = "x86_64")]
         if !x86_avx2_fma_available() {
             eprintln!("skipping: AVX2/FMA not available");
             return;
@@ -8484,6 +8767,9 @@ order by e.id, e.cid
                 false,
             )
             .unwrap();
+        assert!(expected_final.state_cache_store.is_some());
+        expected_final.finish_warm_up_state_checkpoints().unwrap();
+        assert!(expected_final.state_cache_store.is_none());
 
         let connection = Connection::open(&store_path).unwrap();
         let page_size: i64 = connection
@@ -8533,6 +8819,35 @@ order by e.id, e.cid
             .restore_warm_up_state_checkpoint(store_path, generation, second_segment)
             .unwrap();
         assert_warm_up_parity(&expected_final, &restored_final);
+    }
+
+    #[test]
+    fn streamed_module_state_matches_existing_serialization() {
+        let state = ModuleState {
+            layers: vec![
+                LayerState {
+                    time: Some(TimeState {
+                        x_shift: vec![1.0, -2.5, f32::INFINITY],
+                        matrix: vec![0.0, f32::NAN, 42.25, -0.0],
+                    }),
+                    channel_shift: Some(vec![3.5, -7.75]),
+                },
+                LayerState {
+                    time: None,
+                    channel_shift: None,
+                },
+            ],
+        };
+        let serialized = serialize_module_state(&state);
+        let mut streamed = Vec::new();
+        write_serialized_module_state(&mut streamed, &state).unwrap();
+        assert_eq!(streamed, serialized);
+
+        let mut expected_snapshot = Vec::new();
+        write_snapshot_bytes(&mut expected_snapshot, &serialized).unwrap();
+        let mut streamed_snapshot = Vec::new();
+        write_snapshot_module_state(&mut streamed_snapshot, &state).unwrap();
+        assert_eq!(streamed_snapshot, expected_snapshot);
     }
 
     #[test]

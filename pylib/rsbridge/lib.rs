@@ -463,6 +463,11 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn finish_warm_up_state_checkpoints(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.inner.finish_warm_up_state_checkpoints())
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn restore_warm_up_state_checkpoint(
         &mut self,
         py: Python<'_>,
