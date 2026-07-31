@@ -32,6 +32,8 @@ Current application version: `26.05+fsrs7`
   preset unchanged, avoiding a full history validation when returning to review.
 - Remove the RWKV prediction batch-size and estimated-memory controls from Deck
   Options; Anki manages scoring batches internally.
+- Speed up unchanged RWKV state-cache startup loads by reusing the previously
+  validated collection history instead of rebuilding every historical input.
 - Reduce RWKV state-cache rebuild and post-sync recovery peak memory by
   storing historical checkpoints as transactional deltas instead of repeated
   full snapshots, loading only the newest usable recovery checkpoint, releasing

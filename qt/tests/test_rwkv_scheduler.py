@@ -5370,6 +5370,60 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
         ).fetchall() == [(1,), (2,)]
 
 
+def test_unchanged_rwkv_delta_store_reads_effective_segment_without_history_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history = _rwkv_checkpoint_test_history(3)
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_DELTAS_FILE).write_bytes(
+        rwkv_scheduler._rwkv_empty_deltas_log()
+    )
+    metadata: dict[str, object] = {
+        "storage": rwkv_scheduler._RWKV_STATE_CACHE_STORE_KIND,
+        "storeGeneration": "generation",
+        "snapshotSegmentId": 2,
+        "snapshotReviewId": history.last_review_id,
+        "snapshotHistoryHash": history.history_hash,
+        "lastReviewId": history.last_review_id,
+        "reviewCount": history.review_count,
+        "historyHash": history.history_hash,
+        "replayKey": history.replay_key,
+    }
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_store_segment_history",
+        lambda _path, _generation, _segment_id: replace(
+            history,
+            reviews=[],
+            review_ids=[],
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_store_segment_chain",
+        lambda _path, _generation, _segment_id: [2],
+    )
+
+    stored = rwkv_scheduler._read_unchanged_rwkv_state_cache_store(
+        backend=cast(
+            Any,
+            SimpleNamespace(restore_state_cache_checkpoint=lambda *_args: None),
+        ),
+        cache_dir=cache_dir,
+        metadata=metadata,
+    )
+
+    assert stored is not None
+    assert stored.history.last_review_id == history.last_review_id
+    assert stored.history.history_hash == history.history_hash
+    assert stored.pending_history is not None
+    assert stored.pending_history.reviews == []
+    assert stored.pending_history.review_ids == []
+    assert stored.state_store_segment_id == 2
+
+
 def test_rwkv_delta_store_recovers_when_manifest_is_ahead_of_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5602,6 +5656,77 @@ def test_reviewer_rwkv_warmup_saves_and_reuses_local_state_cache(
     assert snapshot.global_state == b"global-2"
 
 
+def test_reviewer_rwkv_cache_skips_history_scan_when_collection_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = [
+        ((40 * 86_400 + 100) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        ((41 * 86_400 + 3_700) * 1000, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_modified",
+        lambda _reviewer: 12345,
+    )
+
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    restored_runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unchanged collection should not rebuild canonical history"
+        ),
+    )
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert restored_runtime.reviewed == []
+    assert restored_runtime.restored_cache_states == [b"runtime-cache"]
+
+
+def test_reviewer_rwkv_cache_adds_collection_marker_after_full_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = [((40 * 86_400 + 100) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500)]
+    collection_mod: list[int | None] = [None]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_modified",
+        lambda _reviewer: collection_mod[0],
+    )
+
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert "collectionMod" not in metadata
+
+    collection_mod[0] = 12345
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert metadata["collectionMod"] == 12345
+
+
 def test_reviewer_rwkv_cache_rebuilds_when_cached_prefix_contents_change(
     monkeypatch,
     tmp_path,
@@ -5617,12 +5742,19 @@ def test_reviewer_rwkv_cache_rebuilds_when_cached_prefix_contents_change(
         "_rwkv_model_cache_key",
         lambda: {"model": "test"},
     )
+    collection_mod = [12345]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_modified",
+        lambda _reviewer: collection_mod[0],
+    )
 
     set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
     rows[0] = (first_review, 1, 10, 100, 1, 1234, 0, 3, 2500)
+    collection_mod[0] += 1
     rebuilt_runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(rebuilt_runtime))
 

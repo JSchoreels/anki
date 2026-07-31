@@ -194,6 +194,7 @@ _RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS12\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS = 8 * 86_400_000
 _RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY = "ignoredReviewIds"
+_RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
 _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN = b"anki-rwkv-state-cache-history-v1\0"
 _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH = hashlib.sha256(
     _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN
@@ -11963,6 +11964,7 @@ def _restore_reviewer_backend_cache(
                 backend=backend,
             )
         _require_reviewer_backend_warmup_current(is_current)
+        _refresh_rwkv_state_cache_collection_mod(reviewer, history)
         logger.debug(
             "loaded RWKV state cache: cached_delta_reviews=%s "
             "incremental_reviews=%s last_review_id=%s",
@@ -12766,6 +12768,19 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     ):
         return None
+    if not additional_ignored_review_ids and _rwkv_state_cache_collection_unchanged(
+        reviewer,
+        metadata,
+    ):
+        stored = _read_unchanged_rwkv_state_cache_binary(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+        )
+        if stored is not None:
+            logger.debug("validated RWKV state cache from unchanged collection marker")
+            return stored
     existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
     metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
     newest_known_review_id = max(
@@ -13250,6 +13265,155 @@ def _read_rwkv_state_cache_store(
     )
 
 
+def _read_unchanged_rwkv_state_cache_binary(
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+) -> RwkvStoredStateCache | None:
+    """Read the effective cache state after a collection marker match.
+
+    The marker proves the collection inputs have not changed since this
+    manifest was written. The persisted files are still checked against the
+    manifest before their state is accepted.
+    """
+
+    try:
+        if metadata.get("storage") == _RWKV_STATE_CACHE_STORE_KIND:
+            return _read_unchanged_rwkv_state_cache_store(
+                backend=backend,
+                cache_dir=cache_dir,
+                metadata=metadata,
+            )
+
+        snapshot_path = cache_dir / _RWKV_STATE_CACHE_SNAPSHOT_FILE
+        snapshot_metadata = _validate_rwkv_state_cache_snapshot_file(snapshot_path)
+        if not _rwkv_state_cache_metadata_matches_manifest(
+            snapshot_metadata,
+            metadata,
+        ):
+            return None
+        decoded_metadata, snapshot, snapshot_history = (
+            _read_rwkv_state_cache_snapshot_file(snapshot_path)
+        )
+        if not _rwkv_state_cache_metadata_matches_manifest(
+            decoded_metadata,
+            metadata,
+        ):
+            return None
+        snapshot_history = replace(
+            snapshot_history,
+            ignored_review_ids=_rwkv_state_cache_ignored_review_ids(metadata),
+        )
+        history = _rwkv_effective_cached_history(
+            cache_dir,
+            metadata,
+            snapshot_history,
+        )
+        if history is None:
+            return None
+        return RwkvStoredStateCache(
+            metadata=metadata,
+            snapshot=snapshot,
+            history=history,
+            pending_history=_rwkv_empty_history_suffix(history),
+        )
+    except Exception:
+        logger.warning(
+            "failed to read RWKV cache through unchanged-collection fast path; "
+            "falling back to canonical validation",
+            exc_info=True,
+        )
+        return None
+
+
+def _read_unchanged_rwkv_state_cache_store(
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+) -> RwkvStoredStateCache | None:
+    if not callable(getattr(backend, "restore_state_cache_checkpoint", None)):
+        return None
+    store_generation = metadata.get("storeGeneration")
+    snapshot_segment_id = _int_value(metadata.get("snapshotSegmentId"))
+    if (
+        not isinstance(store_generation, str)
+        or not store_generation
+        or snapshot_segment_id is None
+        or snapshot_segment_id <= 0
+    ):
+        return None
+
+    store_path = cache_dir / _RWKV_STATE_CACHE_STORE_FILE
+    snapshot_history = _read_rwkv_state_cache_store_segment_history(
+        store_path,
+        store_generation,
+        snapshot_segment_id,
+    )
+    _rwkv_state_cache_store_segment_chain(
+        store_path,
+        store_generation,
+        snapshot_segment_id,
+    )
+    snapshot_history = replace(
+        snapshot_history,
+        ignored_review_ids=_rwkv_state_cache_ignored_review_ids(metadata),
+    )
+    history = _rwkv_effective_cached_history(
+        cache_dir,
+        metadata,
+        snapshot_history,
+    )
+    if history is None:
+        return None
+    return RwkvStoredStateCache(
+        metadata=metadata,
+        snapshot=None,
+        history=history,
+        pending_history=_rwkv_empty_history_suffix(history),
+        state_store_path=store_path,
+        state_store_generation=store_generation,
+        state_store_segment_id=snapshot_segment_id,
+    )
+
+
+def _rwkv_effective_cached_history(
+    cache_dir: Path,
+    metadata: Mapping[str, object],
+    snapshot_history: RwkvHistoricalReviewInputs,
+) -> RwkvHistoricalReviewInputs | None:
+    if (
+        snapshot_history.last_review_id
+        != (_int_value(metadata.get("snapshotReviewId")) or 0)
+        or snapshot_history.history_hash != metadata.get("snapshotHistoryHash")
+        or snapshot_history.replay_key != metadata.get("replayKey")
+    ):
+        return None
+    history = _rwkv_history_after_delta_reviews(
+        snapshot_history,
+        _read_rwkv_delta_records(
+            cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
+            after_review_id=snapshot_history.last_review_id,
+            until_review_id=_int_value(metadata.get("lastReviewId")) or 0,
+        ),
+    )
+    if (
+        history.last_review_id != (_int_value(metadata.get("lastReviewId")) or 0)
+        or history.review_count != (_int_value(metadata.get("reviewCount")) or 0)
+        or history.history_hash != metadata.get("historyHash")
+    ):
+        return None
+    return history
+
+
+def _rwkv_empty_history_suffix(
+    history: RwkvHistoricalReviewInputs,
+) -> RwkvHistoricalReviewInputs:
+    return replace(history, reviews=[], review_ids=[])
+
+
 def _read_rwkv_state_cache_store_segment_history(
     path: Path,
     store_generation: str,
@@ -13542,7 +13706,7 @@ def _rwkv_state_cache_metadata(
 def _rwkv_state_cache_metadata_base(
     reviewer: object,
 ) -> dict[str, object]:
-    return {
+    metadata: dict[str, object] = {
         "version": _RWKV_STATE_CACHE_VERSION,
         "presetReplaySemantics": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "collection": _rwkv_collection_cache_key(reviewer),
@@ -13551,6 +13715,49 @@ def _rwkv_state_cache_metadata_base(
             reviewer
         ),
     }
+    if (collection_mod := _rwkv_collection_modified(reviewer)) is not None:
+        metadata[_RWKV_STATE_CACHE_COLLECTION_MOD_KEY] = collection_mod
+    return metadata
+
+
+def _refresh_rwkv_state_cache_collection_mod(
+    reviewer: object,
+    history: RwkvHistoricalReviewInputs,
+) -> None:
+    """Record the collection marker after a successful canonical validation."""
+
+    try:
+        collection_mod = _rwkv_collection_modified(reviewer)
+        if collection_mod is None:
+            return
+        metadata = _read_rwkv_state_cache_metadata(reviewer)
+        if (
+            metadata is None
+            or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+            or (_int_value(metadata.get("lastReviewId")) or 0) != history.last_review_id
+            or (_int_value(metadata.get("reviewCount")) or 0) != history.review_count
+            or metadata.get("historyHash") != history.history_hash
+            or metadata.get("replayKey") != history.replay_key
+            or metadata.get(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY) == collection_mod
+        ):
+            return
+        cache_dir = _rwkv_state_cache_dir(reviewer)
+        if cache_dir is None:
+            return
+        updated = {
+            **metadata,
+            _RWKV_STATE_CACHE_COLLECTION_MOD_KEY: collection_mod,
+        }
+        _atomic_write(
+            cache_dir / _RWKV_STATE_CACHE_META_FILE,
+            json.dumps(updated, separators=(",", ":"), sort_keys=True).encode("utf8"),
+        )
+        logger.debug("updated RWKV state cache collection marker")
+    except Exception:
+        logger.warning(
+            "failed to update RWKV state cache collection marker",
+            exc_info=True,
+        )
 
 
 def _rwkv_state_cache_checkpoint_entries(
@@ -13837,6 +14044,37 @@ def _rwkv_collection_cache_key(reviewer: object) -> dict[str, object]:
         "created": collection_created if isinstance(collection_created, int) else None,
         "path": hashlib.sha256(str(collection_path).encode("utf8")).hexdigest(),
     }
+
+
+def _rwkv_collection_modified(reviewer: object) -> int | None:
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    scalar = getattr(db, "scalar", None)
+    try:
+        value = scalar("select mod from col") if callable(scalar) else None
+    except Exception:
+        logger.debug("failed to read RWKV collection modification marker")
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _rwkv_state_cache_collection_unchanged(
+    reviewer: object,
+    metadata: Mapping[str, object],
+) -> bool:
+    cached_mod = _int_value(metadata.get(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY))
+    if cached_mod is None or cached_mod != _rwkv_collection_modified(reviewer):
+        return False
+    replay_key = metadata.get("replayKey")
+    try:
+        current_replay_key = _rwkv_replay_semantics_key(
+            reviewer,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+        )
+    except Exception:
+        logger.debug("failed to build RWKV replay key for collection marker")
+        return False
+    return isinstance(replay_key, str) and replay_key == current_replay_key
 
 
 def _rwkv_model_cache_key() -> dict[str, object] | None:

@@ -43,7 +43,9 @@ the profile folder. The cache is not part of deck config, is not stored in the
 collection database, and is not synced to mobile or other desktop clients. Cache
 metadata includes the collection identity, RWKV model content identity, last
 processed revlog id, and a count of benchmark-retained historical answers
-through that checkpoint. Historical replay retains cards without a Learning
+through that checkpoint. It also records the collection modification marker
+from the canonical validation that produced the cache. Historical replay
+retains cards without a Learning
 start from their first eligible answer without rewriting its state. For cards
 with Learning starts, it retains only the sequence beginning at the latest
 Learning start, matching the dataset builder. A later card reset therefore
@@ -216,13 +218,17 @@ It falls back to full state invalidation when an affected historical card moves
 to a different preset or when the affected cards cannot be identified safely.
 At profile startup, Anki invalidates any previous resident state immediately,
 then waits for automatic startup sync to finish before attempting the
-operational cache restore and canonical validation once. It offers to rebuild
-only if that attempt fails. This ordering avoids restoring the pre-sync state
-and immediately reconciling it in a second progress operation. Deck-count
-preparation remains pending during this startup window instead of starting its
-own cache restore. Checkpoint construction and recovery validation derive all
-requested history prefixes in one chronological pass, and repeated
-model-identity checks reuse the content hash until the model file changes.
+operational cache restore. When the saved collection modification marker and
+replay semantics still match, Anki verifies the persisted cache files directly
+and skips rebuilding the complete canonical history in Python. A missing or
+changed marker falls back to the full canonical validation and refreshes the
+marker after success. Anki offers to rebuild only if restoration and validation
+fail. This ordering avoids restoring the pre-sync state and immediately
+reconciling it in a second progress operation. Deck-count preparation remains
+pending during this startup window instead of starting its own cache restore.
+Checkpoint construction and recovery validation derive all requested history
+prefixes in one chronological pass, and repeated model-identity checks reuse
+the content hash until the model file changes.
 
 After collection sync, Anki reconciles resident RWKV state only when sync
 downloaded collection changes. A no-change sync, or a sync that only uploads
