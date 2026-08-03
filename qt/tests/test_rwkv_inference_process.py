@@ -687,6 +687,29 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         )
         assert resident_output == pytest.approx([query_output[0]], abs=_RWKV_ABS_TOL)
         if index == 0:
+            packed_query = struct.pack("<8sI", b"ARWKVWU2", 1) + struct.pack(
+                "<IqqqqBBqqqqqffffB",
+                0b1_1110_0111,
+                *query_input[:5],
+                0,
+                0,
+                query_input[7],
+                query_input[8],
+                query_input[9],
+                query_input[10],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                query_input[15],
+            )
+            packed_resident_output = (
+                runtime.predict_retrievability_many_from_warm_up_packed(packed_query)
+            )
+            assert struct.unpack("<f", packed_resident_output) == pytest.approx(
+                [query_output[0]], abs=_RWKV_ABS_TOL
+            )
+        if index == 0:
             assert math.isclose(
                 query_output[0], _RWKV_GOLDEN_ROW0_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
             )
@@ -838,6 +861,32 @@ def test_rwkv_inference_process_uses_eval_mode(monkeypatch: pytest.MonkeyPatch) 
 
     assert process.rnn is created[0]
     assert created[0].eval_called
+
+
+def test_rwkv_inference_process_keeps_creation_elapsed_out_of_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("torch")
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "aqt"))
+    process_module = importlib.import_module("rwkv_inference.process")
+    initial_learning = {
+        "state": 0,
+        "elapsed_days": 3,
+        "elapsed_seconds": 259_200,
+    }
+    later_learning = {
+        "state": 1,
+        "elapsed_days": 3,
+        "elapsed_seconds": 259_200,
+    }
+
+    assert process_module._state_update_row(initial_learning) == {
+        "state": 0,
+        "elapsed_days": -1,
+        "elapsed_seconds": -1,
+    }
+    assert process_module._state_update_row(later_learning) == later_learning
 
 
 def test_rwkv_inference_process_encodes_day_offsets_before_bfloat16_cast(

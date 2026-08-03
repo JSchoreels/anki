@@ -904,6 +904,66 @@ def test_after_answering_refreshes_rwkv_queue_before_closing_last_card(
     assert reviewer._answeredIds == [123]
 
 
+@pytest.mark.parametrize(
+    ("new_count", "learning_count"),
+    [(10, 0), (0, 10)],
+    ids=["new-cards-after-reviews", "relearning-after-reviews"],
+)
+def test_after_answering_refreshes_rwkv_queue_before_leaving_reviews(
+    monkeypatch,
+    new_count: int,
+    learning_count: int,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "record_reviewer_answer",
+        lambda reviewer, card, ease: calls.append("record"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_due",
+        lambda reviewer: False,
+    )
+
+    def prepare_then_next(
+        queued_at: float | None = None,
+        *,
+        answered_card_id: int | None = None,
+        fade_after: bool = False,
+        show_next_card: bool = False,
+    ) -> None:
+        assert queued_at is not None
+        assert fade_after is False
+        calls.append(f"prepare:{answered_card_id}:{show_next_card}")
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer._v3 = SimpleNamespace(
+        queued_cards=SimpleNamespace(
+            new_count=new_count,
+            learning_count=learning_count,
+            review_count=1,
+        ),
+        top_card=lambda: SimpleNamespace(queue=reviewer_module.QueuedCards.REVIEW),
+    )
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: calls.append("next")
+    reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
+
+    reviewer._after_answering(1)
+
+    assert calls == ["record", "prepare:123:True"]
+    assert reviewer._answeredIds == [123]
+
+
 def test_last_queued_card_uses_async_snapshot_and_advances_when_unavailable(
     monkeypatch,
 ) -> None:
@@ -1684,7 +1744,7 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     )
 
     reviewer = Reviewer.__new__(Reviewer)
-    reviewer.card = SimpleNamespace(id=123)
+    reviewer.card = SimpleNamespace(id=123, load=lambda: None)
     reviewer.state = "question"
     reviewer._refresh_needed = None
     reviewer.mw = SimpleNamespace(
@@ -1858,7 +1918,16 @@ def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
     reviewer.card = DeletedCard()
     reviewer.state = "question"
     reviewer._refresh_needed = None
+    reviewer._qa_transition_active = False
+    reviewer._qa_update_id = 0
+    reviewer._review_card_generation = 1
     reviewer._rwkv_undo_restored_card_requires_queue_invalidation = True
+    reviewer._show_answer_timer = None
+    reviewer._show_question_timer = None
+    reviewer.web = SimpleNamespace(eval=lambda script: calls.append(f"main:{script}"))
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: calls.append(f"bottom:{script}"))
+    )
     reviewer.nextCard = lambda: calls.append("next")
     reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
     reviewer.mw = SimpleNamespace(fade_in_webview=lambda: calls.append("fade"))
@@ -1867,9 +1936,108 @@ def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
     changes.study_queues = True
     dirty = reviewer.op_executed(changes, handler=None, focused=False)
 
-    assert calls == ["prepare", "next", "fade"]
+    assert calls == [
+        "main:_setQAInteractionEnabled(false);",
+        "bottom:setReviewerTransitionActive(true);",
+        'main:_clearQAForTransition("transition:1:456");',
+        "prepare",
+        "next",
+        "fade",
+    ]
+    assert reviewer.state == "transition"
     assert reviewer._refresh_needed is None
     assert dirty is False
+
+
+def test_deleted_card_is_cleared_and_blocked_while_rwkv_queue_refreshes(
+    monkeypatch,
+) -> None:
+    jobs: list[tuple[Callable[[], object], Callable[[Future[object]], None], bool]] = []
+    main_scripts: list[str] = []
+    bottom_scripts: list[str] = []
+    calls: list[str] = []
+
+    class DeletedCard:
+        id = 456
+
+        def load(self) -> None:
+            raise reviewer_module.NotFoundError("No such card", None, None, None)
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            uses_collection: bool = True,
+        ) -> None:
+            jobs.append((task, on_done, uses_collection))
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        lambda reviewer: None,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = DeletedCard()
+    reviewer.state = "question"
+    reviewer._v3 = object()
+    reviewer._refresh_needed = None
+    reviewer._qa_transition_active = False
+    reviewer._qa_update_id = 4
+    reviewer._review_card_generation = 7
+    reviewer._rwkv_undo_restored_card_requires_queue_invalidation = False
+    reviewer._show_answer_timer = None
+    reviewer._show_question_timer = None
+    reviewer.web = SimpleNamespace(eval=main_scripts.append)
+    reviewer.bottom = SimpleNamespace(web=SimpleNamespace(eval=bottom_scripts.append))
+
+    def next_card() -> None:
+        calls.append("next")
+        reviewer._review_card_generation += 1
+        reviewer.card = SimpleNamespace(id=789)
+        reviewer.state = "question"
+
+    reviewer.nextCard = next_card
+    reviewer.mw = SimpleNamespace(
+        state="review",
+        taskman=Taskman(),
+        fade_in_webview=lambda: calls.append("fade"),
+        update_undo_actions=lambda: calls.append("undo"),
+    )
+
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=True)
+
+    assert dirty is False
+    assert reviewer.state == "transition"
+    assert reviewer._review_actions_are_blocked()
+    assert main_scripts == [
+        "_setQAInteractionEnabled(false);",
+        '_clearQAForTransition("transition:5:456");',
+    ]
+    assert bottom_scripts == ["setReviewerTransitionActive(true);"]
+    assert calls == []
+    assert len(jobs) == 1
+
+    reviewer._showAnswer()
+
+    assert calls == []
+
+    task, on_done, uses_collection = jobs.pop()
+    assert uses_collection is True
+    future: Future[object] = Future()
+    future.set_result(task())
+    on_done(future)
+
+    assert calls == ["next", "fade", "undo"]
+    assert reviewer.card.id == 789
 
 
 def test_enter_on_rwkv_undo_restored_card_with_pending_refresh_shows_answer() -> None:

@@ -107,7 +107,7 @@ class RwkvInferenceProcess:
     def process_row(
         self, row: Mapping[str, object]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        prepared = self._add_same(dict(row))
+        prepared = self._add_same(_state_update_row(row))
         prepared["is_query"] = 0.0
         prepared["skip"] = False
         prepared["scaled_duration"] = scale_duration(_float_value(prepared, "duration"))
@@ -424,6 +424,14 @@ class RwkvInferenceProcess:
 
 def _int_value(row: Mapping[str, object], key: str) -> int:
     return int(cast(Any, row[key]))
+
+
+def _state_update_row(row: Mapping[str, object]) -> dict[str, object]:
+    answer = dict(row)
+    if _int_value(answer, "state") == 0:
+        answer["elapsed_days"] = -1
+        answer["elapsed_seconds"] = -1
+    return answer
 
 
 def _float_value(row: Mapping[str, object], key: str) -> float:

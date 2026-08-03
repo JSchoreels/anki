@@ -2681,6 +2681,9 @@ fn append_day_offset_encoding(features: &mut Vec<f32>, day_offset: i64, first_da
 }
 
 fn elapsed_seconds(input: &ReviewInput) -> i64 {
+    if creation_elapsed_is_query_only(input) {
+        return -1;
+    }
     input
         .current_elapsed_seconds
         .or_else(|| {
@@ -2692,6 +2695,9 @@ fn elapsed_seconds(input: &ReviewInput) -> i64 {
 }
 
 fn elapsed_days(input: &ReviewInput, elapsed_seconds: i64) -> i64 {
+    if creation_elapsed_is_query_only(input) {
+        return -1;
+    }
     input.current_elapsed_days.unwrap_or({
         if elapsed_seconds >= 0 {
             elapsed_seconds / SECONDS_PER_DAY
@@ -2699,6 +2705,10 @@ fn elapsed_days(input: &ReviewInput, elapsed_seconds: i64) -> i64 {
             -1
         }
     })
+}
+
+fn creation_elapsed_is_query_only(input: &ReviewInput) -> bool {
+    !input.is_query && input.ease.is_some() && input.card_type == Some(0)
 }
 
 fn scaled_duration(input: &ReviewInput) -> f32 {
@@ -9193,6 +9203,33 @@ order by e.id, e.cid
         assert_eq!(good.current_elapsed_days, input.current_elapsed_days);
         assert_eq!(good.target_retentions, input.target_retentions);
         assert!(good.enforce_grade_order);
+    }
+
+    #[test]
+    fn new_card_creation_elapsed_is_query_only() {
+        let query = ReviewInput {
+            card_id: 123,
+            note_id: Some(456),
+            deck_id: Some(789),
+            preset_id: Some(10),
+            is_query: true,
+            ease: None,
+            duration_millis: None,
+            card_type: Some(0),
+            day_offset: Some(42),
+            current_elapsed_days: Some(3),
+            current_elapsed_seconds: Some(259_200),
+            target_retentions: [Some(0.81), Some(0.82), Some(0.83), Some(0.84)],
+            enforce_grade_order: true,
+        };
+
+        assert_eq!(elapsed_seconds(&query), 259_200);
+        assert_eq!(elapsed_days(&query, elapsed_seconds(&query)), 3);
+
+        let answer = simulated_answer_input(&query, 3);
+
+        assert_eq!(elapsed_seconds(&answer), -1);
+        assert_eq!(elapsed_days(&answer, elapsed_seconds(&answer)), -1);
     }
 
     #[test]

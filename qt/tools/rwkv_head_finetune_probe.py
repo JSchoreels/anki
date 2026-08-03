@@ -379,6 +379,7 @@ def _load_review_rows_from_collection(
                 review_id,
                 card_id,
                 deck_configs[deck_id],
+                is_learning_start=is_learning_start,
             )
         )
         day_offset = _historical_day_offset(
@@ -752,8 +753,13 @@ def _first_review_elapsed_seconds(
     review_id: int,
     card_id: int,
     deck_config: dict[str, object],
+    *,
+    is_learning_start: bool,
 ) -> int:
-    if not _rwkv_review_first_review_elapsed_from_card_creation(deck_config):
+    if (
+        not is_learning_start
+        or not _rwkv_review_first_review_elapsed_from_card_creation(deck_config)
+    ):
         return -1
     return max(0, (review_id - card_id) // 1000)
 

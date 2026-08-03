@@ -74,6 +74,16 @@ export function _setQAInteractionEnabled(enabled: boolean): void {
     }
 }
 
+export function _clearQAForTransition(updateContext: string): void {
+    setLatestUpdateContext(updateContext);
+    const qa = document.getElementById("qa");
+    if (!qa) {
+        return;
+    }
+    qa.replaceChildren();
+    _setQAInteractionEnabled(false);
+}
+
 export function _queueAction(action: Callback): void {
     _updatingQueue = _updatingQueue.then(action);
 }

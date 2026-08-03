@@ -1450,6 +1450,85 @@ def test_rwkv_memorised_history_builds_progressive_daily_series(
     ] == [65_535, round(0.9 * 65_535)]
 
 
+def test_rwkv_memorised_day_prefers_packed_runtime() -> None:
+    import struct
+
+    previous = replace(
+        _rwkv_review_input(card_id=1, note_id=101),
+        is_query=False,
+        ease=3,
+        duration_millis=1_000,
+        day_offset=10,
+    )
+
+    class Runtime:
+        def predict_memorised_retrievability_from_warm_up(
+            self,
+            inputs: Sequence[RwkvReviewInput],
+            *,
+            day: int,
+        ) -> bytes:
+            assert list(inputs) == [previous]
+            assert day == 12
+            return struct.pack("<f", 0.75)
+
+        def predict_retrievability_many_from_warm_up(
+            self,
+            _inputs: object,
+        ) -> list[float]:
+            raise AssertionError("tuple resident path should not be used")
+
+    predictions = rwkv_scheduler._predict_rwkv_memorised_day(
+        Runtime(),
+        [previous],
+        day=12,
+    )
+
+    assert list(predictions) == pytest.approx([0.75])
+
+
+def test_rwkv_memorised_start_reuses_identical_active_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = "identity-one"
+    started_threads: list[object] = []
+
+    class Thread:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            started_threads.append(self)
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_memorised_history_job", None)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "rwkv_memorised_history_identity",
+        lambda _mw: identity,
+    )
+    monkeypatch.setattr(rwkv_scheduler.threading, "Thread", Thread)
+
+    mw = SimpleNamespace()
+    rwkv_scheduler.start_rwkv_memorised_history(mw, [2, 1])
+    first_job = rwkv_scheduler._rwkv_memorised_history_job
+    assert first_job is not None
+    assert len(started_threads) == 1
+
+    rwkv_scheduler.start_rwkv_memorised_history(mw, [1, 2])
+    assert rwkv_scheduler._rwkv_memorised_history_job is first_job
+    assert len(started_threads) == 1
+    assert not first_job.cancel_event.is_set()
+
+    identity = "identity-two"
+    rwkv_scheduler.start_rwkv_memorised_history(mw, [1, 2])
+    second_job = rwkv_scheduler._rwkv_memorised_history_job
+    assert second_job is not None
+    assert second_job is not first_job
+    assert len(started_threads) == 2
+    assert first_job.cancel_event.is_set()
+    assert second_job.request_identity == "identity-two"
+
+
 def test_rwkv_memorised_identity_uses_resident_history_without_db_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3423,6 +3502,40 @@ def test_rwkv_review_input_uses_card_creation_elapsed_for_new_cards() -> None:
     assert review_input.current_elapsed_seconds == 90_000
 
 
+def test_rwkv_first_learning_answer_does_not_store_card_creation_elapsed() -> None:
+    query = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=True,
+        ease=None,
+        duration_millis=None,
+        card_type=int(RwkvReviewState.LEARN_START),
+        current_elapsed_days=3,
+        current_elapsed_seconds=3 * 86_400,
+    )
+    answer = replace(query, is_query=False, ease=3, duration_millis=1234)
+
+    state_update = rwkv_scheduler._rwkv_state_update_input(answer)
+
+    assert query.current_elapsed_days == 3
+    assert query.current_elapsed_seconds == 3 * 86_400
+    assert state_update.current_elapsed_days == -1
+    assert state_update.current_elapsed_seconds == -1
+
+
+def test_rwkv_later_learning_answer_preserves_elapsed_time() -> None:
+    answer = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=False,
+        ease=3,
+        duration_millis=1234,
+        card_type=int(RwkvReviewState.LEARNING),
+        current_elapsed_days=0,
+        current_elapsed_seconds=600,
+    )
+
+    assert rwkv_scheduler._rwkv_state_update_input(answer) is answer
+
+
 def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
     reviewer = _rwkv_reviewer()
     reviewer._v3.states.current.normal.new.SetInParent()
@@ -4435,7 +4548,7 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
     second_review = (41 * 86_400 + 3_700) * 1000
     reviewer = _rwkv_reviewer(
         historical_review_rows=[
-            (first_review, card_id, 10, 100, 2, 1234, 1, 3, 2500),
+            (first_review, card_id, 10, 100, 2, 1234, 0, 3, 2500),
             (second_review, card_id, 10, 100, 3, 2345, 2, 5, 2400),
         ],
     )
@@ -4449,7 +4562,7 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
         _rwkv_reviewer(
             rwkv_review_first_review_elapsed_from_card_creation=True,
             historical_review_rows=[
-                (first_review, card_id, 10, 100, 2, 1234, 1, 3, 2500),
+                (first_review, card_id, 10, 100, 2, 1234, 0, 3, 2500),
                 (second_review, card_id, 10, 100, 3, 2345, 2, 5, 2400),
             ],
         )
@@ -4463,6 +4576,22 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
     assert card_creation.reviews[1].current_elapsed_days == 1
     assert deck_config.reviews[0].current_elapsed_seconds == 3 * 86_400
     assert deck_config.reviews[0].current_elapsed_days == 3
+
+
+def test_historical_rwkv_inputs_do_not_use_creation_for_non_learning_start() -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    card_id = first_review - 3 * 86_400 * 1000
+    reviewer = _rwkv_reviewer(
+        rwkv_review_first_review_elapsed_from_card_creation=True,
+    )
+    rows = [(first_review, card_id, 10, 100, 3, 1234, 1, 3, 2500)]
+    reviewer.mw.col.db = SimpleNamespace(all=lambda _sql, *_args: rows)
+
+    history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+
+    assert history.reviews[0].card_type == int(RwkvReviewState.REVIEW)
+    assert history.reviews[0].current_elapsed_days == -1
+    assert history.reviews[0].current_elapsed_seconds == -1
 
 
 def test_historical_rwkv_inputs_use_scheduler_days_for_elapsed_days() -> None:
@@ -4510,7 +4639,7 @@ def test_compare_rwkv_first_review_elapsed_metrics_reports_logloss_change() -> N
     set_reviewer_backend(RwkvStatefulReviewerBackend(ElapsedRuntime()))
     reviewer = _rwkv_reviewer(
         historical_review_rows=[
-            (first_review, card_id, 10, 100, 1, 1234, 1, 3, 2500),
+            (first_review, card_id, 10, 100, 1, 1234, 0, 3, 2500),
         ],
     )
 
@@ -4526,6 +4655,53 @@ def test_compare_rwkv_first_review_elapsed_metrics_reports_logloss_change() -> N
     assert missing["count"] == 1
     assert card_creation["count"] == 1
     assert missing["logLoss"] > card_creation["logLoss"]
+
+
+def test_stateful_warmup_uses_creation_elapsed_only_for_initial_query() -> None:
+    calls: list[RwkvReviewInput] = []
+
+    class Runtime:
+        def review(
+            self,
+            *,
+            review_input: RwkvReviewInput,
+            card_state: object | None,
+            note_state: object | None,
+            deck_state: object | None,
+            preset_state: object | None,
+            global_state: object | None,
+        ) -> RwkvReviewTransition:
+            del card_state, note_state, deck_state, preset_state, global_state
+            calls.append(review_input)
+            return RwkvReviewTransition(
+                prediction=RwkvReviewPrediction(retrievability=0.5)
+            )
+
+    first_learning = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=False,
+        ease=3,
+        duration_millis=1234,
+        card_type=int(RwkvReviewState.LEARN_START),
+        current_elapsed_days=3,
+        current_elapsed_seconds=3 * 86_400,
+    )
+    backend = RwkvStatefulReviewerBackend(Runtime())
+
+    backend.warm_up(
+        [first_learning],
+        review_ids=[123],
+        prediction_recorder=lambda _review_id, _retrievability: None,
+    )
+
+    assert len(calls) == 2
+    query, answer = calls
+    assert query.is_query is True
+    assert query.current_elapsed_days == 3
+    assert query.current_elapsed_seconds == 3 * 86_400
+    assert answer.is_query is False
+    assert answer.current_elapsed_days == -1
+    assert answer.current_elapsed_seconds == -1
 
 
 def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
@@ -5891,7 +6067,7 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
 
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
     assert rebuilt_runtime.reviewed == [(card_id, 2)]
-    assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == 3 * 86_400
+    assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
 
 
 def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
@@ -7252,6 +7428,9 @@ def test_srs_benchmark_state_cache_build_satisfies_sse_explicit_revlog_contract(
 
     assert [row["rating"] for row in process.query_rows] == [1, 1]
     assert [row["rating"] for row in process.answer_rows] == [2, 3]
+    assert process.query_rows[0]["elapsed_seconds"] > 0
+    assert process.answer_rows[0]["elapsed_days"] == -1
+    assert process.answer_rows[0]["elapsed_seconds"] == -1
     assert _rwkv_sse_harness_review_retrievability(
         reviewer.mw.col,
         [first_review, second_review],
@@ -14570,6 +14749,100 @@ def test_embedded_rust_runtime_prefers_packed_warm_up_reviews() -> None:
     ]
     header_size = struct.calcsize("<8sI")
     assert len(process.payloads[0]) == header_size + _PACKED_PREDICTION_REQUEST_ROW.size
+
+
+def test_embedded_rust_runtime_packs_memorised_day_queries() -> None:
+    import struct
+
+    from aqt.rwkv_srs_benchmark import (
+        _PACKED_PREDICTION_REQUEST_HEADER,
+        _PACKED_PREDICTION_REQUEST_ROW,
+        _PACKED_WARM_UP_REVIEW_MAGIC,
+        _RustRwkvRuntime,
+    )
+
+    class Process:
+        def __init__(self) -> None:
+            self.payloads: list[bytes] = []
+
+        def predict_retrievability_many_from_warm_up_packed(
+            self,
+            inputs: bytes,
+        ) -> bytes:
+            self.payloads.append(inputs)
+            return struct.pack("<2f", 0.25, 0.75)
+
+        def predict_retrievability_many_from_warm_up(
+            self,
+            _inputs: object,
+        ) -> list[float]:
+            raise AssertionError("tuple resident path should not be used")
+
+    process = Process()
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = process
+    reviews = [
+        replace(
+            _warm_up_review_input(card_id=1, note_id=10, ease=2),
+            day_offset=40,
+        ),
+        replace(
+            _warm_up_review_input(card_id=2, note_id=20, ease=3),
+            day_offset=41,
+        ),
+    ]
+
+    raw = runtime.predict_memorised_retrievability_from_warm_up(reviews, day=42)
+
+    assert struct.unpack("<2f", raw) == pytest.approx((0.25, 0.75))
+    # Query rows keep identity and state-shaping fields, while answer-only
+    # ease/duration are absent. Bits: note/deck/preset/card_type/day/elapsed.
+    presence = 0b1_1110_0111
+    header = _PACKED_PREDICTION_REQUEST_HEADER.pack(
+        _PACKED_WARM_UP_REVIEW_MAGIC,
+        2,
+    )
+    assert process.payloads == [
+        header
+        + _PACKED_PREDICTION_REQUEST_ROW.pack(
+            presence,
+            1,
+            10,
+            100,
+            1000,
+            1,
+            0,
+            0,
+            2,
+            42,
+            2,
+            172_800,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1,
+        )
+        + _PACKED_PREDICTION_REQUEST_ROW.pack(
+            presence,
+            2,
+            20,
+            100,
+            1000,
+            1,
+            0,
+            0,
+            2,
+            42,
+            1,
+            86_400,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1,
+        )
+    ]
 
 
 def test_embedded_rust_runtime_warm_up_falls_back_to_tuple_rows() -> None:

@@ -284,26 +284,35 @@ class Reviewer:
                 self.nextCard()
                 self.mw.fade_in_webview()
                 self._refresh_needed = None
-            elif (
-                self._current_card_is_rwkv_undo_restored()
-                and not self._current_card_was_deleted()
-            ):
-                logger.debug(
-                    "ignored study queue refresh while RWKV undo-restored card is active: card_id=%s",
-                    self.card.id if self.card else None,
-                )
-                self._refresh_needed = None
-            elif aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
-                self._refresh_needed = None
-                self._prepare_rwkv_queue_order_then_next_card(
-                    fade_after=True,
-                    show_next_card=True,
-                )
             else:
-                aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
-                self.nextCard()
-                self.mw.fade_in_webview()
-                self._refresh_needed = None
+                undo_restored_card = self._current_card_is_rwkv_undo_restored()
+                current_card_was_deleted = bool(
+                    self.card is not None
+                    and undo_restored_card
+                    and self._current_card_was_deleted()
+                )
+
+                if undo_restored_card and not current_card_was_deleted:
+                    logger.debug(
+                        "ignored study queue refresh while RWKV undo-restored card is active: card_id=%s",
+                        self.card.id if self.card else None,
+                    )
+                    self._refresh_needed = None
+                elif aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
+                    if self.card is not None and not current_card_was_deleted:
+                        current_card_was_deleted = self._current_card_was_deleted()
+                    if current_card_was_deleted:
+                        self._begin_deleted_card_transition()
+                    self._refresh_needed = None
+                    self._prepare_rwkv_queue_order_then_next_card(
+                        fade_after=True,
+                        show_next_card=True,
+                    )
+                else:
+                    aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
+                    self.nextCard()
+                    self.mw.fade_in_webview()
+                    self._refresh_needed = None
         elif self._refresh_needed is RefreshNeeded.NOTE_TEXT:
             self._redraw_current_card()
             self.mw.fade_in_webview()
@@ -356,11 +365,19 @@ class Reviewer:
             self.card.load()
         except NotFoundError:
             logger.debug(
-                "advancing past deleted RWKV undo-restored card: card_id=%s",
+                "advancing past deleted reviewer card: card_id=%s",
                 self.card.id,
             )
             return True
         return False
+
+    def _begin_deleted_card_transition(self) -> None:
+        assert self.card is not None
+        self.state = "transition"
+        self._clear_auto_advance_timers()
+        self._begin_qa_transition()
+        update_context = self._next_qa_update_context("transition")
+        self.web.eval(f"_clearQAForTransition({json.dumps(update_context)});")
 
     def _redraw_current_card(self) -> None:
         self.card.load()
@@ -1121,7 +1138,16 @@ class Reviewer:
         rwkv_last_queued_card = (
             rwkv_queue_order_enabled and self._answered_card_was_last_queued_card()
         )
-        if rwkv_queue_order_refresh_due or rwkv_last_queued_card:
+        rwkv_last_queued_review = (
+            rwkv_queue_order_enabled
+            and not rwkv_last_queued_card
+            and self._answered_card_was_last_queued_review()
+        )
+        if (
+            rwkv_queue_order_refresh_due
+            or rwkv_last_queued_card
+            or rwkv_last_queued_review
+        ):
             queued_at = time.monotonic()
             answered_card_id = self.card.id
             refresh_before_next_card = (
@@ -1130,7 +1156,11 @@ class Reviewer:
                     self
                 )
             )
-            if rwkv_last_queued_card or refresh_before_next_card:
+            if (
+                rwkv_last_queued_card
+                or rwkv_last_queued_review
+                or refresh_before_next_card
+            ):
                 self._prepare_rwkv_queue_order_then_next_card(
                     queued_at,
                     answered_card_id=answered_card_id,
@@ -1180,6 +1210,13 @@ class Reviewer:
             + queued_cards.review_count
         )
         return queued_count <= 1
+
+    def _answered_card_was_last_queued_review(self) -> bool:
+        v3 = getattr(self, "_v3", None)
+        if v3 is None or v3.queued_cards.review_count != 1:
+            return False
+
+        return v3.top_card().queue == QueuedCards.REVIEW
 
     def _prepare_rwkv_queue_order_then_next_card(
         self,

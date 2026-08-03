@@ -33,6 +33,7 @@ from aqt.rwkv_scheduler import (
     RwkvStatefulReviewerBackend,
     RwkvWarmUpProgress,
     RwkvWarmUpProgressCallback,
+    _rwkv_state_update_input,
     _RwkvWorkloadScheduling,
     interval_from_recall_curve,
     rwkv_review_identity,
@@ -121,7 +122,9 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
                     )
                     prediction_recorder(review_id, _probability_as_float(probability))
 
-            curve = self._process.process_row(self._row_builder.row_for(review_input))
+            curve = self._process.process_row(
+                self._row_builder.row_for(_rwkv_state_update_input(review_input))
+            )
             if curve is not None:
                 self._curves[review_input.identity.card_id] = curve
 
@@ -240,7 +243,9 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             identity=identity,
             ease=ease,
         )
-        curve = self._process.process_row(self._row_builder.row_for(review_input))
+        curve = self._process.process_row(
+            self._row_builder.row_for(_rwkv_state_update_input(review_input))
+        )
         if curve is not None:
             self._curves[identity.card_id] = curve
 
@@ -841,6 +846,29 @@ class _RustRwkvRuntime:
         )
         return [float(retrievability) for retrievability in outputs]
 
+    def predict_memorised_retrievability_from_warm_up(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+        *,
+        day: int,
+    ) -> bytes:
+        """Predict one Memorised day with packed inputs and packed f32 output."""
+
+        predict_many = getattr(
+            self._process,
+            "predict_retrievability_many_from_warm_up_packed",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError("RWKV packed resident-state prediction is unavailable")
+
+        payload = _packed_memorised_query_inputs(review_inputs, day=day)
+        with self._locked_process():
+            outputs = bytes(predict_many(payload))
+        if len(outputs) != len(review_inputs) * 4:
+            raise ValueError("RWKV packed resident prediction count mismatch")
+        return outputs
+
     def predict_retrievability_many_after_review(
         self,
         *,
@@ -1356,7 +1384,11 @@ def _packed_prediction_requests(
     )
 
 
-def _packed_review_input_row(review_input: RwkvReviewInput) -> bytes:
+def _packed_review_input_row(
+    review_input: RwkvReviewInput,
+    *,
+    query_day: int | None = None,
+) -> bytes:
     identity = review_input.identity
     presence = 0
 
@@ -1377,12 +1409,30 @@ def _packed_review_input_row(review_input: RwkvReviewInput) -> bytes:
     note_id = optional_i64(identity.note_id, 0)
     deck_id = optional_i64(identity.deck_id, 1)
     preset_id = optional_i64(identity.preset_id, 2)
-    ease = optional_i64(review_input.ease, 3)
-    duration_millis = optional_i64(review_input.duration_millis, 4)
+    if query_day is None:
+        is_query = review_input.is_query
+        ease_value = review_input.ease
+        duration_millis_value = review_input.duration_millis
+        day_offset_value = review_input.day_offset
+        current_elapsed_days_value = review_input.current_elapsed_days
+        current_elapsed_seconds_value = review_input.current_elapsed_seconds
+    else:
+        if review_input.day_offset is None:
+            raise ValueError("RWKV Memorised query input has no review day")
+        elapsed_days = max(0, query_day - review_input.day_offset)
+        is_query = True
+        ease_value = None
+        duration_millis_value = None
+        day_offset_value = query_day
+        current_elapsed_days_value = elapsed_days
+        current_elapsed_seconds_value = elapsed_days * 86_400
+
+    ease = optional_i64(ease_value, 3)
+    duration_millis = optional_i64(duration_millis_value, 4)
     card_type = optional_i64(review_input.card_type, 5)
-    day_offset = optional_i64(review_input.day_offset, 6)
-    current_elapsed_days = optional_i64(review_input.current_elapsed_days, 7)
-    current_elapsed_seconds = optional_i64(review_input.current_elapsed_seconds, 8)
+    day_offset = optional_i64(day_offset_value, 6)
+    current_elapsed_days = optional_i64(current_elapsed_days_value, 7)
+    current_elapsed_seconds = optional_i64(current_elapsed_seconds_value, 8)
     target_retention_again = optional_f32(review_input.target_retentions[0], 9)
     target_retention_hard = optional_f32(review_input.target_retentions[1], 10)
     target_retention_good = optional_f32(review_input.target_retentions[2], 11)
@@ -1394,7 +1444,7 @@ def _packed_review_input_row(review_input: RwkvReviewInput) -> bytes:
         note_id,
         deck_id,
         preset_id,
-        1 if review_input.is_query else 0,
+        1 if is_query else 0,
         ease,
         duration_millis,
         card_type,
@@ -1418,6 +1468,22 @@ def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
     )
     for review_input in reviews:
         payload.extend(_packed_review_input_row(review_input))
+    return bytes(payload)
+
+
+def _packed_memorised_query_inputs(
+    review_inputs: Sequence[RwkvReviewInput],
+    *,
+    day: int,
+) -> bytes:
+    payload = bytearray(
+        _PACKED_PREDICTION_REQUEST_HEADER.pack(
+            _PACKED_WARM_UP_REVIEW_MAGIC,
+            len(review_inputs),
+        )
+    )
+    for review_input in review_inputs:
+        payload.extend(_packed_review_input_row(review_input, query_day=day))
     return bytes(payload)
 
 

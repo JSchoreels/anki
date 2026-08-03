@@ -24,8 +24,21 @@ repeated here unless they materially affect a fork feature.
 
 Current application version: `26.05+fsrs7`
 
+## [26.05+fsrs7.build.78](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.78) — 2026-08-03
+
+Changes since
+[`26.05+fsrs7.build.73`](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.73)
+(2026-07-29):
+
 ### Fixed
 
+- Use card creation time only to predict RWKV retrievability before a new card's
+  first learning review, without carrying it into later predictions, and clarify
+  the corresponding Deck Options setting.
+- Remove a deleted card from the review screen immediately while its RWKV
+  review queue is refreshed, preventing stale answer attempts and error dialogs.
+- Refresh RWKV review ordering before moving from the final queued review to new
+  or relearning cards, so newly eligible reviews retain their configured priority.
 - Avoid redundant scheduling-state calculations and collection-wide RWKV
   snapshots when opening Card Info.
 - Keep the resident RWKV history and cancel stale deck-count work when switching

@@ -381,11 +381,12 @@ deck-config-rwkv-review-min-elapsed-secs = Minimum seconds before a repeat
 deck-config-rwkv-review-min-elapsed-secs-tooltip =
     How long RWKV must wait before repeating the same card. 0 means no minimum.
     If you also set a minimum number of other reviews, both limits must be met.
-deck-config-rwkv-review-first-review-elapsed-from-card-creation = Use time since card creation for first review
+deck-config-rwkv-review-first-review-elapsed-from-card-creation = Predict R for new cards based on creation time
 deck-config-rwkv-review-first-review-elapsed-from-card-creation-tooltip =
-    For a card with no previous review, use the time since it was created as the
-    elapsed time. When this is off, RWKV treats the time before the card's first
-    review as unknown.
+    Use the time since a new card was created when predicting R before its first
+    learning review. The first answer is recorded with elapsed time unknown, so
+    creation time does not affect later predictions. When this is off, RWKV also
+    treats elapsed time as unknown for the initial prediction.
 deck-config-rwkv-review-dynamic-preset-replay = Dynamic Preset Addon Support
 deck-config-rwkv-review-dynamic-preset-replay-tooltip =
     RWKV always resolves each card's current add-on preset once when rebuilding

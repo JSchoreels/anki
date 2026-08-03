@@ -173,7 +173,7 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 2
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 3
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
@@ -207,6 +207,7 @@ _RWKV_AFTER_REVIEW_HORIZONS = (
     ("RWKV : R After 10min", 600),
 )
 _RWKV_MEMORISED_CHECKPOINT_INTERVAL_SECONDS = 30.0
+_RWKV_MEMORISED_TIMING_LOG_INTERVAL_SECONDS = 5.0
 
 
 def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
@@ -336,6 +337,23 @@ class RwkvReviewInput:
         float | None,
     ] = (None, None, None, None)
     enforce_grade_order: bool = True
+
+
+def _rwkv_state_update_input(review_input: RwkvReviewInput) -> RwkvReviewInput:
+    """Keep new-card creation age on the query, not in recurrent state."""
+
+    if (
+        review_input.is_query
+        or review_input.ease is None
+        or review_input.card_type != int(RwkvReviewState.LEARN_START)
+    ):
+        return review_input
+
+    return replace(
+        review_input,
+        current_elapsed_days=-1,
+        current_elapsed_seconds=-1,
+    )
 
 
 @dataclass(frozen=True)
@@ -749,6 +767,7 @@ class RwkvMemorisedHistoryResult:
 class RwkvMemorisedHistoryJob:
     cancel_event: threading.Event
     display_card_ids: frozenset[int]
+    request_identity: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     phase: str = "loading"
     current: int = 0
@@ -762,6 +781,53 @@ class RwkvMemorisedHistoryJob:
     checkpoint: RwkvMemorisedHistoryResult | None = None
     done: bool = False
     error: str | None = None
+
+
+@dataclass
+class _RwkvMemorisedTimings:
+    started_at: float = field(default_factory=time.monotonic)
+    last_log_at: float = field(init=False)
+    warm_up_elapsed_seconds: float = 0.0
+    prediction_elapsed_seconds: float = 0.0
+    aggregate_elapsed_seconds: float = 0.0
+    checkpoint_elapsed_seconds: float = 0.0
+    processed_days: int = 0
+    prediction_count: int = 0
+
+    def __post_init__(self) -> None:
+        self.last_log_at = self.started_at
+
+    def log(
+        self,
+        *,
+        phase: str,
+        current: int,
+        total: int,
+        force: bool = False,
+    ) -> None:
+        now = time.monotonic()
+        if (
+            not force
+            and now - self.last_log_at < _RWKV_MEMORISED_TIMING_LOG_INTERVAL_SECONDS
+        ):
+            return
+        logger.debug(
+            "RWKV Memorised history timing: phase=%s days=%s requests=%s "
+            "current=%s total=%s warm_up_elapsed_ms=%.1f "
+            "prediction_elapsed_ms=%.1f aggregate_elapsed_ms=%.1f "
+            "checkpoint_elapsed_ms=%.1f elapsed_ms=%.1f",
+            phase,
+            self.processed_days,
+            self.prediction_count,
+            current,
+            total,
+            self.warm_up_elapsed_seconds * 1000,
+            self.prediction_elapsed_seconds * 1000,
+            self.aggregate_elapsed_seconds * 1000,
+            self.checkpoint_elapsed_seconds * 1000,
+            (now - self.started_at) * 1000,
+        )
+        self.last_log_at = now
 
 
 _rwkv_workload_progress_lock = threading.Lock()
@@ -1215,7 +1281,7 @@ class RwkvStatefulReviewerBackend:
                             prediction_recorder(review_id, retrievability)
 
                 transition = self._runtime.review(
-                    review_input=review_input,
+                    review_input=_rwkv_state_update_input(review_input),
                     card_state=state.card_state,
                     note_state=state.note_state,
                     deck_state=state.deck_state,
@@ -1939,7 +2005,7 @@ class RwkvStatefulReviewerBackend:
 
         start = time.monotonic()
         retrievabilities = predict_future(
-            answer=answer,
+            answer=_rwkv_state_update_input(answer),
             query_inputs=[review_input for _, review_input in inputs_by_card_id],
             snapshot=snapshot,
         )
@@ -1988,7 +2054,7 @@ class RwkvStatefulReviewerBackend:
 
         start = time.monotonic()
         retrievability_batches = predict_future(
-            answers=answers,
+            answers=[_rwkv_state_update_input(answer) for answer in answers],
             query_inputs=[review_input for _, review_input in inputs_by_card_id],
             snapshot=snapshot,
         )
@@ -2029,7 +2095,7 @@ class RwkvStatefulReviewerBackend:
 
         start = time.monotonic()
         retrievability_batches = predict_future(
-            answers=answers,
+            answers=[_rwkv_state_update_input(answer) for answer in answers],
             query_inputs=[review_input for _, review_input in inputs_by_card_id],
         )
         score_batches = self._future_retrievability_score_batches(
@@ -2118,11 +2184,13 @@ class RwkvStatefulReviewerBackend:
         if identity is None:
             return
 
-        review_input = rwkv_review_input(
-            reviewer=reviewer,
-            card=card,
-            identity=identity,
-            ease=ease,
+        review_input = _rwkv_state_update_input(
+            rwkv_review_input(
+                reviewer=reviewer,
+                card=card,
+                identity=identity,
+                ease=ease,
+            )
         )
         before = self._snapshot(identity, review_input)
         before_curve_prediction = self._curve_prediction_for_card(identity.card_id)
@@ -2150,6 +2218,7 @@ class RwkvStatefulReviewerBackend:
         if review_input.ease is None:
             return
 
+        review_input = _rwkv_state_update_input(review_input)
         identity = review_input.identity
         before = self._snapshot(identity, review_input)
         transition = self._runtime.review(
@@ -6854,7 +6923,6 @@ def _rwkv_pending_answer_review_input(
     reviewer: object,
     card: object,
     ease: int,
-    deck_config: dict[str, object],
     review_state: int,
     answered_at_millis: int,
 ) -> RwkvReviewInput | None:
@@ -6872,7 +6940,6 @@ def _rwkv_pending_answer_review_input(
     day_offset, elapsed_days, elapsed_seconds = _rwkv_answer_elapsed(
         reviewer=reviewer,
         card=card,
-        deck_config=deck_config,
         review_state=review_state,
         answered_at_millis=answered_at_millis,
     )
@@ -6897,7 +6964,6 @@ def _rwkv_answer_elapsed(
     *,
     reviewer: object,
     card: object,
-    deck_config: dict[str, object],
     review_state: int,
     answered_at_millis: int,
 ) -> tuple[int | None, int | None, int | None]:
@@ -6941,12 +7007,6 @@ def _rwkv_answer_elapsed(
             else None
         )
         return day_offset, elapsed_days, elapsed_seconds
-
-    if card_id is not None and _rwkv_review_first_review_elapsed_from_card_creation(
-        deck_config
-    ):
-        elapsed_seconds = max(0, (answered_at_millis - card_id) // 1000)
-        return day_offset, elapsed_seconds // 86_400, elapsed_seconds
 
     return day_offset, -1, -1
 
@@ -7022,7 +7082,6 @@ def set_answer_rwkv_metadata(
                 reviewer=reviewer,
                 card=card,
                 ease=ease,
-                deck_config=deck_config,
                 review_state=review_state,
                 answered_at_millis=answered_at_millis,
             )
@@ -9632,15 +9691,16 @@ def start_rwkv_memorised_history(
 
     global _rwkv_memorised_history_job
 
-    cancel_rwkv_memorised_history()
     selected = frozenset(
         card_id
         for card_id in display_card_ids
         if isinstance(card_id, int) and not isinstance(card_id, bool) and card_id > 0
     )
+    request_identity = rwkv_memorised_history_identity(mw)
     job = RwkvMemorisedHistoryJob(
         cancel_event=threading.Event(),
         display_card_ids=selected,
+        request_identity=request_identity,
     )
     if resume is not None:
         job.phase = "resuming"
@@ -9656,6 +9716,22 @@ def start_rwkv_memorised_history(
             job.first_day = resume.first_day
             job.completed_through_day = resume.completed_through_day
     with _rwkv_memorised_history_job_lock:
+        current_job = _rwkv_memorised_history_job
+        if current_job is not None:
+            with current_job.lock:
+                current_is_active = not current_job.done
+            if (
+                current_is_active
+                and current_job.display_card_ids == selected
+                and current_job.request_identity == request_identity
+            ):
+                logger.debug(
+                    "reusing active RWKV Memorised history build: cards=%s",
+                    len(selected),
+                )
+                return
+            if current_is_active:
+                current_job.cancel_event.set()
         _rwkv_memorised_history_job = job
 
     threading.Thread(
@@ -9735,6 +9811,43 @@ def _run_rwkv_memorised_history_job(
             job.done = True
 
 
+def _predict_rwkv_memorised_day(
+    runtime: object,
+    previous_inputs: Sequence[RwkvReviewInput],
+    *,
+    day: int,
+) -> Sequence[float]:
+    packed_predict = getattr(
+        runtime,
+        "predict_memorised_retrievability_from_warm_up",
+        None,
+    )
+    if callable(packed_predict):
+        return _f32_array_from_little_endian_bytes(
+            packed_predict(previous_inputs, day=day)
+        )
+
+    query_inputs = []
+    for previous in previous_inputs:
+        assert previous.day_offset is not None
+        elapsed_days = max(0, day - previous.day_offset)
+        query_inputs.append(
+            replace(
+                previous,
+                is_query=True,
+                ease=None,
+                duration_millis=None,
+                day_offset=day,
+                current_elapsed_days=elapsed_days,
+                current_elapsed_seconds=elapsed_days * 86_400,
+            )
+        )
+    predict = getattr(runtime, "predict_retrievability_many_from_warm_up", None)
+    if not callable(predict):
+        raise ValueError("RWKV resident-state prediction is unavailable")
+    return cast(Sequence[float], predict(query_inputs))
+
+
 def _compute_rwkv_memorised_history(
     mw: object,
     job: RwkvMemorisedHistoryJob,
@@ -9805,8 +9918,6 @@ def _compute_rwkv_memorised_history(
     (
         review_index,
         active_inputs,
-        reps_by_card,
-        lapses_by_card,
         start_day_by_card,
         values_by_card,
         display_retrievability,
@@ -9825,7 +9936,9 @@ def _compute_rwkv_memorised_history(
         review_ids=review_ids,
         runtime=runtime,
     )
-    last_checkpoint_at = time.monotonic()
+    timings = _RwkvMemorisedTimings()
+    last_checkpoint_at = timings.started_at
+    card_ids = sorted(active_inputs)
 
     with job.lock:
         job.phase = "computing"
@@ -9839,6 +9952,12 @@ def _compute_rwkv_memorised_history(
 
     for day in range(loop_first_day, last_day + 1):
         if job.cancel_event.is_set():
+            timings.log(
+                phase="cancelled",
+                current=current,
+                total=total,
+                force=True,
+            )
             _finish_cancelled_rwkv_memorised_job(
                 job,
                 identity=identity,
@@ -9855,46 +9974,38 @@ def _compute_rwkv_memorised_history(
         while review_index < len(reviews) and reviews[review_index].day_offset == day:
             review_index += 1
         day_reviews = reviews[day_start:review_index]
+        warm_up_started_at = time.monotonic()
         runtime.warm_up_reviews_in_place(day_reviews)
+        timings.warm_up_elapsed_seconds += time.monotonic() - warm_up_started_at
 
+        active_card_added = False
         for review in day_reviews:
             card_id = review.identity.card_id
+            if card_id not in active_inputs:
+                active_card_added = True
             active_inputs[card_id] = review
-            reps_by_card[card_id] = reps_by_card.get(card_id, 0) + 1
-            if review.ease == 1 and review.current_normal_state_kind in (
-                "review",
-                "relearning",
-            ):
-                lapses_by_card[card_id] = lapses_by_card.get(card_id, 0) + 1
             start_day_by_card.setdefault(card_id, day)
             values_by_card.setdefault(card_id, array("H"))
 
-        card_ids = sorted(active_inputs)
-        query_inputs = []
-        for card_id in card_ids:
-            previous = active_inputs[card_id]
-            elapsed_days = max(0, day - previous.day_offset)
-            query_inputs.append(
-                replace(
-                    previous,
-                    is_query=True,
-                    ease=None,
-                    duration_millis=None,
-                    day_offset=day,
-                    current_elapsed_days=elapsed_days,
-                    current_elapsed_seconds=elapsed_days * 86_400,
-                    reps=reps_by_card.get(card_id, 0),
-                    lapses=lapses_by_card.get(card_id, 0),
-                )
-            )
+        if active_card_added:
+            card_ids = sorted(active_inputs)
 
-        predictions = runtime.predict_retrievability_many_from_warm_up(query_inputs)
+        prediction_started_at = time.monotonic()
+        previous_inputs = [active_inputs[card_id] for card_id in card_ids]
+        predictions = _predict_rwkv_memorised_day(
+            runtime,
+            previous_inputs,
+            day=day,
+        )
+        timings.prediction_elapsed_seconds += time.monotonic() - prediction_started_at
+        timings.prediction_count += len(card_ids)
+
+        aggregate_started_at = time.monotonic()
         selected_sum = 0.0
         selected_note_sum = 0.0
         selected_count = 0
-        for card_id, query_input, raw_prediction in zip(
+        for card_id, raw_prediction in zip(
             card_ids,
-            query_inputs,
             predictions,
             strict=True,
         ):
@@ -9922,9 +10033,12 @@ def _compute_rwkv_memorised_history(
             job.retrievability_by_day = list(display_retrievability)
             job.note_retrievability_by_day = list(display_note_retrievability)
             job.card_count_by_day = list(display_card_count)
+        timings.aggregate_elapsed_seconds += time.monotonic() - aggregate_started_at
+        timings.processed_days += 1
 
         now = time.monotonic()
         if now - last_checkpoint_at >= _RWKV_MEMORISED_CHECKPOINT_INTERVAL_SECONDS:
+            checkpoint_started_at = time.monotonic()
             checkpoint = _rwkv_memorised_result_from_values(
                 identity=identity,
                 first_day=first_day,
@@ -9938,7 +10052,12 @@ def _compute_rwkv_memorised_history(
             )
             with job.lock:
                 job.checkpoint = checkpoint
-            last_checkpoint_at = now
+            checkpoint_finished_at = time.monotonic()
+            timings.checkpoint_elapsed_seconds += (
+                checkpoint_finished_at - checkpoint_started_at
+            )
+            last_checkpoint_at = checkpoint_finished_at
+        timings.log(phase="computing", current=current, total=total)
 
     result = _rwkv_memorised_result_from_values(
         identity=identity,
@@ -9957,6 +10076,7 @@ def _compute_rwkv_memorised_history(
         job.completed_through_day = last_day
         job.result = result
         job.checkpoint = None
+    timings.log(phase="complete", current=total, total=total, force=True)
 
 
 def _initial_rwkv_memorised_computation_state(
@@ -9972,8 +10092,6 @@ def _initial_rwkv_memorised_computation_state(
 ) -> tuple[
     int,
     dict[int, RwkvReviewInput],
-    dict[int, int],
-    dict[int, int],
     dict[int, int],
     dict[int, array[int]],
     list[float],
@@ -10007,13 +10125,11 @@ def _initial_rwkv_memorised_computation_state(
             logger.warning("ignored stale or invalid RWKV Memorised checkpoint")
             with job.lock:
                 job.checkpoint = None
-        return 0, {}, {}, {}, {}, {}, [], [], [], 0, first_day, False
+        return 0, {}, {}, {}, [], [], [], 0, first_day, False
 
     (
         review_index,
         active_inputs,
-        reps_by_card,
-        lapses_by_card,
         start_day_by_card,
         values_by_card,
     ) = resumed
@@ -10033,8 +10149,6 @@ def _initial_rwkv_memorised_computation_state(
     return (
         review_index,
         active_inputs,
-        reps_by_card,
-        lapses_by_card,
         start_day_by_card,
         values_by_card,
         retrievability,
@@ -10177,8 +10291,6 @@ def _restore_rwkv_memorised_checkpoint(
         int,
         dict[int, RwkvReviewInput],
         dict[int, int],
-        dict[int, int],
-        dict[int, int],
         dict[int, array[int]],
     ]
     | None
@@ -10197,8 +10309,6 @@ def _restore_rwkv_memorised_checkpoint(
     completed_day = checkpoint.completed_through_day
     review_index = 0
     active_inputs: dict[int, RwkvReviewInput] = {}
-    reps_by_card: dict[int, int] = {}
-    lapses_by_card: dict[int, int] = {}
     start_day_by_card: dict[int, int] = {}
     while (
         review_index < len(reviews)
@@ -10208,12 +10318,6 @@ def _restore_rwkv_memorised_checkpoint(
         review = reviews[review_index]
         card_id = review.identity.card_id
         active_inputs[card_id] = review
-        reps_by_card[card_id] = reps_by_card.get(card_id, 0) + 1
-        if review.ease == 1 and review.current_normal_state_kind in (
-            "review",
-            "relearning",
-        ):
-            lapses_by_card[card_id] = lapses_by_card.get(card_id, 0) + 1
         assert review.day_offset is not None
         start_day_by_card.setdefault(card_id, review.day_offset)
         review_index += 1
@@ -10241,8 +10345,6 @@ def _restore_rwkv_memorised_checkpoint(
     return (
         review_index,
         active_inputs,
-        reps_by_card,
-        lapses_by_card,
         start_day_by_card,
         values_by_card,
     )
@@ -10350,6 +10452,18 @@ def _u16_array_from_little_endian_bytes(raw: bytes) -> array[int]:
         raise ValueError("invalid RWKV Memorised UInt16 series")
     values = array("H")
     values.frombytes(raw)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values
+
+
+def _f32_array_from_little_endian_bytes(raw: bytes) -> array[float]:
+    if len(raw) % 4:
+        raise ValueError("invalid packed RWKV f32 predictions")
+    values = array("f")
+    values.frombytes(raw)
+    if values.itemsize != 4:
+        raise ValueError("unsupported native float size")
     if sys.byteorder != "little":
         values.byteswap()
     return values
@@ -15362,6 +15476,7 @@ def _historical_rwkv_review_inputs(
             elapsed_seconds = (
                 max(0, (review_id - card_id) // 1000)
                 if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
+                and historical_state == int(RwkvReviewState.LEARN_START)
                 else -1
             )
             elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1

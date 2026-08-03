@@ -321,7 +321,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
 
         {#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
-            <h2 class="rwkv-subheading">Card History</h2>
+            <h2 class="rwkv-subheading">New Cards</h2>
 
             <SwitchRow
                 bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
@@ -333,6 +333,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation()}
                 </SettingTitle>
             </SwitchRow>
+
+            <h2 class="rwkv-subheading">Card History</h2>
 
             <SwitchRow
                 bind:value={$config.rwkvReviewDynamicPresetReplay}

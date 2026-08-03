@@ -291,6 +291,7 @@ impl RwkvInference {
 
     fn predict_retrievability_many_from_warm_up(
         &mut self,
+        py: Python<'_>,
         inputs: &Bound<'_, PyAny>,
     ) -> PyResult<Vec<f32>> {
         let mut parsed_inputs = Vec::new();
@@ -298,9 +299,30 @@ impl RwkvInference {
             parsed_inputs.push(parse_rwkv_review_input(&input?)?);
         }
 
-        self.inner
-            .predict_retrievability_many_from_warm_up(parsed_inputs)
-            .map_err(|err| PyException::new_err(err.to_string()))
+        py.detach(|| {
+            self.inner
+                .predict_retrievability_many_from_warm_up(parsed_inputs)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    fn predict_retrievability_many_from_warm_up_packed(
+        &mut self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyBytes>,
+    ) -> PyResult<Py<PyBytes>> {
+        let parsed_inputs = parse_packed_rwkv_review_inputs(inputs.as_bytes())?;
+        let outputs = py
+            .detach(|| {
+                self.inner
+                    .predict_retrievability_many_from_warm_up(parsed_inputs)
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        let mut packed = Vec::with_capacity(outputs.len() * std::mem::size_of::<f32>());
+        for output in outputs {
+            packed.extend_from_slice(&output.to_le_bytes());
+        }
+        Ok(PyBytes::new(py, &packed).unbind())
     }
 
     fn predict_retrievability_many_packed(

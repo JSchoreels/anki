@@ -325,10 +325,14 @@ suspending, or restoring cards, discard transient scores and cached inputs and
 advance a queue generation. Model work prepared before that mutation is
 rejected when it tries to install.
 
-By default, RWKV uses the time since a card was created for new-card inputs and
-for the first historical review during state replay. Disable
-`rwkv_review_first_review_elapsed_from_card_creation` to treat elapsed time
-before a card's first review as unknown instead.
+By default, RWKV uses the time since a new card was created only when predicting
+retrievability before its first Learning review. The corresponding answer is
+processed with elapsed time unknown, so creation time does not enter recurrent
+state or affect later predictions. Historical calibration replay uses the same
+split: its query sees creation time, while its answer-state update does not.
+Cards whose retained history does not start with Learning do not use creation
+time. Disable `rwkv_review_first_review_elapsed_from_card_creation` to treat
+elapsed time as unknown for the initial prediction as well.
 
 If RWKV-Curve is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a

@@ -23,7 +23,7 @@ vi.mock("./images", () => ({
 }));
 vi.mock("./preload", () => ({ preloadResources: mocks.preloadResources }));
 
-import { _showQuestion } from "./index";
+import { _clearQAForTransition, _showQuestion } from "./index";
 import { waitForNextPaint } from "./paint";
 
 interface Deferred {
@@ -174,6 +174,31 @@ test("keeps the old card while preloading and only commits the latest update", a
     );
     expect(mocks.bridgeCommand).not.toHaveBeenCalledWith(
         "qaPresented:question:1:101",
+    );
+});
+
+test("clears a deleted card immediately and invalidates its pending render", async () => {
+    const preload = deferred();
+    mocks.preloadResources.mockReturnValue(preload.promise);
+
+    _showQuestion("deleted question", "deleted answer", "", "question:5:505");
+    await flushPromises();
+
+    const qa = document.getElementById("qa")!;
+    expect(qa.innerHTML).toBe("old answer");
+
+    _clearQAForTransition("transition:6:505");
+
+    expect(qa.innerHTML).toBe("");
+    expect(qa.hasAttribute("inert")).toBe(true);
+    expect(qa.getAttribute("aria-busy")).toBe("true");
+
+    preload.resolve();
+    await flushPromises();
+
+    expect(qa.innerHTML).toBe("");
+    expect(mocks.bridgeCommand).not.toHaveBeenCalledWith(
+        "qaPresented:question:5:505",
     );
 });
 
