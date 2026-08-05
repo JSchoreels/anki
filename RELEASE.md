@@ -24,6 +24,17 @@ repeated here unless they materially affect a fork feature.
 
 Current application version: `26.05+fsrs7`
 
+### Fixed
+
+- Avoid editor and incremental RWKV refresh stalls by resolving small FSRS
+  preset overlay requests directly while retaining batch resolution for larger
+  card sets.
+- Avoid forcing a full RWKV queue refresh after answering an undo-restored card
+  when the configured queue-update interval is not due, and refresh only the
+  affected cached inputs once it becomes due.
+- Avoid an exit-time UI stall by updating undo actions before reviewer completion
+  callbacks can start RWKV deck-browser prewarming.
+
 ## [26.05+fsrs7.build.78](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.78) — 2026-08-03
 
 Changes since

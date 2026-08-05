@@ -607,7 +607,11 @@ the first queue was built before RWKV scores were ready, or when refreshed
 scores make a card outside the previous review-limit slice more urgent. It does
 not synchronously refresh the full deck tree after every answer when the refresh
 interval is greater than `1`, as that can be too expensive for large deck
-trees. Between interval refreshes, Anki refreshes only the answered card's
+trees. Answering a card restored by undo follows the same refresh interval; its
+temporary one-card display queue does not force an otherwise-early full refresh.
+Undo marks only the restored cards dirty in cached queue inputs, so the next due
+refresh reloads those cards instead of rebuilding the full deck input set.
+Between interval refreshes, Anki refreshes only the answered card's
 installed queue score from the updated RWKV state, so a stale pre-answer low
 score cannot immediately re-admit the same card. When a due post-answer refresh
 is deferred until after the next question is shown, Anki patches only the

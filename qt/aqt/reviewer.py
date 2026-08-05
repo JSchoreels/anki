@@ -1078,11 +1078,14 @@ class Reviewer:
             desired_retention_override=self._desired_retention_override,
         )
         aqt.rwkv_scheduler.set_answer_rwkv_metadata(answer, self, self.card, ease)
-        if getattr(
-            self,
-            "_rwkv_undo_restored_card_requires_queue_invalidation",
-            False,
-        ):
+        rwkv_undo_restored_card = bool(
+            getattr(
+                self,
+                "_rwkv_undo_restored_card_requires_queue_invalidation",
+                False,
+            )
+        )
+        if rwkv_undo_restored_card:
             aqt.rwkv_scheduler.invalidate_reviewer_queue_for_card_answer(
                 self, self.card
             )
@@ -1105,7 +1108,10 @@ class Reviewer:
                 self.card.load()
             # v3 scheduler doesn't report this
             suspended = self.card is not None and self.card.queue < 0
-            self._after_answering(ease)
+            if rwkv_undo_restored_card:
+                self._after_answering(ease, rwkv_undo_restored_card=True)
+            else:
+                self._after_answering(ease)
             logger.debug(
                 "reviewer answer operation finished: card_id=%s ease=%s operation_elapsed_ms=%.1f "
                 "after_answer_elapsed_ms=%.1f",
@@ -1123,7 +1129,12 @@ class Reviewer:
             after_answer
         ).run_in_background(initiator=self)
 
-    def _after_answering(self, ease: Literal[1, 2, 3, 4]) -> None:
+    def _after_answering(
+        self,
+        ease: Literal[1, 2, 3, 4],
+        *,
+        rwkv_undo_restored_card: bool = False,
+    ) -> None:
         gui_hooks.reviewer_did_answer_card(self, self.card, ease)
         aqt.rwkv_scheduler.record_reviewer_answer(self, self.card, ease)
         self._answeredIds.append(self.card.id)
@@ -1135,11 +1146,15 @@ class Reviewer:
             rwkv_queue_order_enabled
             and aqt.rwkv_scheduler.reviewer_queue_order_refresh_due(self)
         )
+        check_queue_exhaustion = not rwkv_undo_restored_card
         rwkv_last_queued_card = (
-            rwkv_queue_order_enabled and self._answered_card_was_last_queued_card()
+            rwkv_queue_order_enabled
+            and check_queue_exhaustion
+            and self._answered_card_was_last_queued_card()
         )
         rwkv_last_queued_review = (
             rwkv_queue_order_enabled
+            and check_queue_exhaustion
             and not rwkv_last_queued_card
             and self._answered_card_was_last_queued_review()
         )
@@ -1375,15 +1390,16 @@ class Reviewer:
                 len(request.finishers),
                 (time.monotonic() - start) * 1000,
             )
+
+            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
+            if callable(update_undo_actions):
+                update_undo_actions()
+
             for finisher in request.finishers:
                 try:
                     finisher(installed, counts)
                 except Exception:
                     logger.exception("RWKV queue refresh completion callback failed")
-
-            update_undo_actions = getattr(self.mw, "update_undo_actions", None)
-            if callable(update_undo_actions):
-                update_undo_actions()
 
             pending = getattr(self, "_rwkv_queue_refresh_pending", None)
             if hasattr(self, "_rwkv_queue_refresh_pending"):

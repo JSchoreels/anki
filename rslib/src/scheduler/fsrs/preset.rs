@@ -28,6 +28,7 @@ use crate::search::TryIntoSearch;
 
 pub(crate) const FSRS_PRESET_OVERLAY_CONFIG_KEY: &str = "fsrsPresetOverlay";
 const OUTDATED_FSRS7_PREVIEW_PARAM_COUNT: usize = 35;
+const FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FsrsPresetId {
@@ -287,6 +288,36 @@ fn node_uses_regex(node: &Node) -> bool {
 
 impl Collection {
     pub(crate) fn fsrs_presets_for_cards(
+        &mut self,
+        cards: &[Card],
+    ) -> Result<HashMap<CardId, FsrsPreset>> {
+        if cards.len() <= FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS {
+            self.fsrs_presets_for_cards_directly(cards)
+        } else {
+            self.fsrs_presets_for_cards_in_batch(cards)
+        }
+    }
+
+    fn fsrs_presets_for_cards_directly(
+        &mut self,
+        cards: &[Card],
+    ) -> Result<HashMap<CardId, FsrsPreset>> {
+        let start = Instant::now();
+        let presets_by_card = cards
+            .iter()
+            .map(|card| Ok((card.id, self.fsrs_preset_for_card(card)?)))
+            .collect::<Result<_>>()?;
+
+        tracing::debug!(
+            cards = cards.len(),
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "resolved FSRS presets directly for small card set"
+        );
+
+        Ok(presets_by_card)
+    }
+
+    fn fsrs_presets_for_cards_in_batch(
         &mut self,
         cards: &[Card],
     ) -> Result<HashMap<CardId, FsrsPreset>> {
@@ -1180,7 +1211,7 @@ mod test {
     }
 
     #[test]
-    fn fsrs_preset_overlay_batch_matches_selected_cards() -> Result<()> {
+    fn fsrs_preset_overlay_direct_matches_selected_cards() -> Result<()> {
         let mut col = Collection::new();
         let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
         NoteAdder::basic(&mut col)
@@ -1231,6 +1262,9 @@ mod test {
     fn fsrs_preset_overlay_batch_preserves_first_match_for_duplicate_searches() -> Result<()> {
         let mut col = Collection::new();
         let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
+        for _ in 0..FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS {
+            NoteAdder::basic(&mut col).add(&mut col);
+        }
         col.add_tags_to_notes(&[tagged_note.id], "medical")?;
         col.set_config(
             FSRS_PRESET_OVERLAY_CONFIG_KEY,

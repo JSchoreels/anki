@@ -8446,7 +8446,9 @@ def test_reviewer_rwkv_undo_marks_queue_scores_stale_without_dropping_patch_base
     assert rwkv_scheduler._rwkv_review_queue_score_config_keys == {
         100: ((), ()),
     }
-    assert rwkv_scheduler._rwkv_review_input_batch_cache(reviewer) == {}
+    cached = rwkv_scheduler._rwkv_review_input_batch_cache(reviewer)[cache_key]
+    assert cached.dirty_card_ids == (1,)
+    assert cached.session_answered_ids == ()
     rows = rwkv_card_info_rows(
         reviewer=reviewer,
         card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
@@ -8455,6 +8457,81 @@ def test_reviewer_rwkv_undo_marks_queue_scores_stale_without_dropping_patch_base
     assert dict(rows)["RWKV computed R"] == "45%"
     assert runtime.queries == [(1, None, None)]
     assert rpc.active_score_calls == []
+
+
+def test_reviewer_rwkv_undo_refreshes_only_dirty_cached_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer._answeredIds = [1, 2, 3]
+    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
+        reviewer=reviewer,
+        deck_id=100,
+        batch_size_override=512,
+        include_new_cards=False,
+    )
+    assert cache_key is not None
+    cached = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={
+            512: [
+                (card_id, _rwkv_review_input(card_id=card_id, note_id=card_id * 10))
+                for card_id in (1, 2, 3)
+            ]
+        },
+        loaded_rows=3,
+        parsed_cards=3,
+        cards_with_state=3,
+        disabled_config_cards=0,
+        eligible_cards=3,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+        session_answered_ids=(1, 2, 3),
+    )
+    rwkv_scheduler._rwkv_review_input_batch_cache(reviewer)[cache_key] = cached
+    refreshed_card_ids: list[list[int]] = []
+
+    def refresh(**kwargs: object) -> rwkv_scheduler.RwkvReviewInputBatchBuild:
+        card_ids = list(cast(Sequence[int], kwargs["card_ids"]))
+        refreshed_card_ids.append(card_ids)
+        return replace(
+            cached,
+            inputs_by_batch_size={
+                512: [
+                    (
+                        3,
+                        replace(
+                            _rwkv_review_input(card_id=3, note_id=30),
+                            current_elapsed_days=7,
+                        ),
+                    )
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_batches_from_backend_for_ids",
+        refresh,
+    )
+
+    rwkv_scheduler.queue_reviewer_undo_card_ids(reviewer, [3])
+    result = rwkv_scheduler._cached_rwkv_review_input_batch_build(
+        reviewer,
+        cache_key,
+    )
+
+    assert reviewer._answeredIds == [1, 2]
+    assert refreshed_card_ids == [[3]]
+    assert result is not None
+    assert result.session_answered_ids == (1, 2)
+    assert result.dirty_card_ids == ()
+    assert {
+        card_id
+        for inputs in result.inputs_by_batch_size.values()
+        for card_id, _ in inputs
+    } == {1, 2, 3}
 
 
 def test_reviewer_rwkv_record_undo_does_not_clear_scores_without_reviewer() -> None:

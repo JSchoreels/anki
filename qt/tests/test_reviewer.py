@@ -904,6 +904,102 @@ def test_after_answering_refreshes_rwkv_queue_before_closing_last_card(
     assert reviewer._answeredIds == [123]
 
 
+def test_after_answering_undo_restored_card_respects_queue_refresh_interval(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "record_reviewer_answer",
+        lambda reviewer, card, ease: calls.append("record"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_due",
+        lambda reviewer: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_needs_intervening_review_refresh",
+        lambda reviewer: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_answered_card_queue_score",
+        lambda reviewer, card: calls.append("score"),
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer._v3 = SimpleNamespace(
+        queued_cards=SimpleNamespace(
+            new_count=0,
+            learning_count=0,
+            review_count=1,
+        )
+    )
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: calls.append("next")
+    reviewer._prepare_rwkv_queue_order_then_next_card = lambda *args, **kwargs: (
+        pytest.fail("synthetic undo queue must not force an early refresh")
+    )
+
+    reviewer._after_answering(3, rwkv_undo_restored_card=True)
+
+    assert calls == ["record", "score", "next"]
+    assert reviewer._answeredIds == [123]
+
+
+def test_after_answering_undo_restored_card_refreshes_when_interval_is_due(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "record_reviewer_answer",
+        lambda reviewer, card, ease: calls.append("record"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_due",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_before_next_card",
+        lambda reviewer: True,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: pytest.fail("due refresh must prepare first")
+    reviewer._prepare_rwkv_queue_order_then_next_card = (
+        lambda queued_at, *, answered_card_id, show_next_card: calls.append(
+            f"prepare:{answered_card_id}:{show_next_card}"
+        )
+    )
+
+    reviewer._after_answering(3, rwkv_undo_restored_card=True)
+
+    assert calls == ["record", "prepare:123:True"]
+    assert reviewer._answeredIds == [123]
+
+
 @pytest.mark.parametrize(
     ("new_count", "learning_count"),
     [(10, 0), (0, 10)],
@@ -1018,7 +1114,7 @@ def test_last_queued_card_uses_async_snapshot_and_advances_when_unavailable(
         show_next_card=True,
     )
 
-    assert calls == ["collection", "build", "next", "undo"]
+    assert calls == ["collection", "build", "undo", "next"]
 
 
 def test_rwkv_queue_refresh_coalesces_overlapping_requests(monkeypatch) -> None:
@@ -2036,7 +2132,7 @@ def test_deleted_card_is_cleared_and_blocked_while_rwkv_queue_refreshes(
     future.set_result(task())
     on_done(future)
 
-    assert calls == ["next", "fade", "undo"]
+    assert calls == ["undo", "next", "fade"]
     assert reviewer.card.id == 789
 
 
@@ -2255,11 +2351,16 @@ def test_answer_rwkv_undo_restored_card_invalidates_queue_before_answer(
             return False
 
     class Operation:
+        callback: Callable[[object], None] | None = None
+
         def success(self, callback: Callable[[object], None]) -> object:
+            self.callback = callback
             return self
 
         def run_in_background(self, *, initiator: object) -> None:
             calls.append("run")
+            assert self.callback is not None
+            self.callback(SimpleNamespace())
 
     def fake_answer_card(*, parent: object, answer: object) -> Operation:
         calls.append("answer")
@@ -2269,7 +2370,7 @@ def test_answer_rwkv_undo_restored_card_invalidates_queue_before_answer(
         calls.append(f"invalidate:{card.id}")
 
     reviewer = Reviewer.__new__(Reviewer)
-    reviewer.card = SimpleNamespace(id=123, custom_data="")
+    reviewer.card = SimpleNamespace(id=123, custom_data="", queue=0)
     reviewer.mw = SimpleNamespace(
         state="review", col=SimpleNamespace(sched=Scheduler())
     )
@@ -2282,6 +2383,11 @@ def test_answer_rwkv_undo_restored_card_invalidates_queue_before_answer(
         states=states,
         rating_from_ease=lambda ease: ease,
     )
+    reviewer._after_answering = (
+        lambda ease, *, rwkv_undo_restored_card=False: calls.append(
+            f"after:{ease}:{rwkv_undo_restored_card}"
+        )
+    )
 
     monkeypatch.setattr("aqt.reviewer.answer_card", fake_answer_card)
     monkeypatch.setattr(
@@ -2292,7 +2398,13 @@ def test_answer_rwkv_undo_restored_card_invalidates_queue_before_answer(
 
     reviewer._answerCard(3)
 
-    assert calls == ["build", "invalidate:123", "answer", "run"]
+    assert calls == [
+        "build",
+        "invalidate:123",
+        "answer",
+        "run",
+        "after:3:True",
+    ]
     assert reviewer._rwkv_undo_restored_card_requires_queue_invalidation is False
 
 

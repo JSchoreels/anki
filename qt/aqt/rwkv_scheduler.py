@@ -416,6 +416,7 @@ class RwkvReviewInputBatchBuild:
     searched_rows: int = 0
     dynamic_desired_retentions_resolved: bool = False
     session_answered_ids: tuple[int, ...] = ()
+    dirty_card_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2588,10 +2589,37 @@ def _invalidate_reviewer_transient_scores_after_undo(
     card_ids: Sequence[int],
 ) -> None:
     _rwkv_review_queue_score_generations.clear()
-    _clear_rwkv_review_input_batch_cache(reviewer)
+    _mark_rwkv_review_input_cards_dirty_after_undo(reviewer, card_ids)
     _invalidate_resolved_preset_id_cache(reviewer, card_ids=card_ids)
     for card_id in card_ids:
         _set_rwkv_card_info_score(reviewer, card_id, None)
+
+
+def _mark_rwkv_review_input_cards_dirty_after_undo(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> None:
+    cache = _rwkv_review_input_batch_cache(reviewer)
+    collection_key = _rwkv_review_collection_key(reviewer)
+    if collection_key is None:
+        return
+
+    for cache_key, cached in list(cache.items()):
+        if cache_key[5] != collection_key:
+            continue
+
+        processed_answered_ids = list(cached.session_answered_ids)
+        for card_id in card_ids:
+            for index in range(len(processed_answered_ids) - 1, -1, -1):
+                if processed_answered_ids[index] == card_id:
+                    del processed_answered_ids[index]
+                    break
+
+        cache[cache_key] = replace(
+            cached,
+            session_answered_ids=tuple(processed_answered_ids),
+            dirty_card_ids=tuple(dict.fromkeys((*cached.dirty_card_ids, *card_ids))),
+        )
 
 
 def pop_reviewer_undo_card_id(reviewer: object) -> int | None:
@@ -7457,7 +7485,7 @@ def _resolved_fsrs_preset_ids(
     if callable(get_preset_ids):
         try:
             logger.debug(
-                "RWKV FSRS preset batch resolve started: cards=%s cached=%s missing=%s",
+                "RWKV FSRS preset resolve started: cards=%s cached=%s missing=%s",
                 len(card_ids),
                 len(resolved),
                 len(missing_card_ids),
@@ -7467,7 +7495,7 @@ def _resolved_fsrs_preset_ids(
             cache.update(batch_resolved)
             resolved.update(batch_resolved)
             logger.debug(
-                "RWKV FSRS preset batch resolve finished: cards=%s cached=%s "
+                "RWKV FSRS preset resolve finished: cards=%s cached=%s "
                 "missing=%s resolved=%s elapsed_ms=%.1f",
                 len(card_ids),
                 len(card_ids) - len(missing_card_ids),
@@ -19802,7 +19830,8 @@ def _cached_rwkv_review_input_batch_build(
     else:
         newly_answered_ids = session_answered_ids
 
-    refresh_ids = list(dict.fromkeys(newly_answered_ids))
+    dirty_card_ids = cached.dirty_card_ids
+    refresh_ids = list(dict.fromkeys((*newly_answered_ids, *dirty_card_ids)))
     if not refresh_ids:
         if session_answered_ids != processed_answered_ids:
             cached = replace(
@@ -19918,17 +19947,21 @@ def _cached_rwkv_review_input_batch_build(
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
         session_answered_ids=session_answered_ids,
+        dirty_card_ids=tuple(
+            card_id for card_id in dirty_card_ids if card_id not in refresh_id_set
+        ),
     )
     cache[cache_key] = updated
     cache.move_to_end(cache_key)
     logger.debug(
         "RWKV review input backend rows reused from cache: deck_id=%s rows=%s "
-        "eligible=%s inputs=%s refreshed=%s excluded=%s",
+        "eligible=%s inputs=%s refreshed=%s dirty=%s excluded=%s",
         cache_key[0],
         cached.loaded_rows,
         input_count,
         input_count,
         refreshed_input_count,
+        len(dirty_card_ids),
         len(refresh_ids) - refreshed_input_count,
     )
     return updated
@@ -19947,11 +19980,6 @@ def _cache_rwkv_review_input_batch_build(
     cache.move_to_end(cache_key)
     while len(cache) > _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT:
         cache.popitem(last=False)
-
-
-def _clear_rwkv_review_input_batch_cache(reviewer: object) -> None:
-    if _rwkv_review_input_batch_module_cache:
-        _rwkv_review_input_batch_module_cache.clear()
 
 
 def _rwkv_review_input_batch_build_from_backend_response(

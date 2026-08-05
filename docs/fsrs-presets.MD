@@ -135,15 +135,19 @@ non-matches. Card, note, deck, tag, notetype, and deck-config changes clear only
 these per-card matches, so stateful searches such as `firstgrade:` stay correct
 without rebuilding every rule for every card after each review.
 
-Stats graph generation resolves presets for searched cards with FSRS memory
-state in batches. Each add-on overlay rule is searched once and intersected with
-those cards through a temporary card-id table, preserving first-match rule
-order. Later rules with an identical search string are skipped, because any card
-they could match would already have been consumed by the earlier identical rule.
-When a rule uses `firstgrade:`, the first grades for the card-id table are
-materialized once and reused across rules. Cards not matched by the overlay are
-cached as non-matches and resolved from in-memory deck and deck-config maps for
-that graph request, instead of reading each card's deck config separately.
+The shared multi-card resolver selects its strategy automatically. Small card
+sets use the card-scoped resolver, avoiding the fixed setup cost of a temporary
+search table. Larger sets use batch resolution: each add-on overlay rule is
+searched once and intersected with the requested cards through a temporary
+card-id table, preserving first-match rule order. Later rules with an identical
+search string are skipped, because any card they could match would already have
+been consumed by the earlier identical rule. When a rule uses `firstgrade:`, the
+first grades for the card-id table are materialized once and reused across
+rules. Cards not matched by the overlay are cached as non-matches and resolved
+from in-memory deck and deck-config maps for that request, instead of reading
+each card's deck config separately. This shared selection applies to stats,
+search, reviewer refreshes, and other callers without requiring them to choose a
+resolution strategy.
 
 ## Batch Optimization
 
