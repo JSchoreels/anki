@@ -707,6 +707,14 @@ the UI thread, but Anki blocks review/deck interaction until the cache build
 finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
 to the cache, elapsed time, and estimated time remaining.
+On Windows, publishing the rebuilt cache retries transient file-sharing failures
+caused by another process briefly holding an existing cache file. If persistence
+still fails, the rebuilt state remains available for the current session and Anki
+shows a warning with the cache folder and operating-system error instead of
+reporting that the cache is ready. The user may be prompted to rebuild after the
+next restart; closing Anki and renaming the profile-local `rwkv-state-cache`
+folder before rebuilding clears stale derived cache files without changing the
+collection.
 
 RWKV review state and historical calibration data are built separately. The
 manual **Rebuild RWKV State** action replays answers and persists recurrent

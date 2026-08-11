@@ -6157,6 +6157,37 @@ def test_rwkv_delta_store_recovers_when_manifest_is_ahead_of_snapshot(
     assert stored.pending_history.review_ids == current_history.review_ids[2:]
 
 
+def test_rwkv_state_cache_file_replace_retries_windows_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "building.sqlite3"
+    destination = tmp_path / "state.sqlite3"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    original_replace = os.replace
+    attempts = 0
+    delays: list[float] = []
+
+    def replace_after_transient_locks(source: Path, destination: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("simulated Windows sharing violation")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(rwkv_scheduler.sys, "platform", "win32")
+    monkeypatch.setattr(rwkv_scheduler.os, "replace", replace_after_transient_locks)
+    monkeypatch.setattr(rwkv_scheduler.time, "sleep", delays.append)
+
+    rwkv_scheduler._replace_rwkv_state_cache_file(source, destination)
+
+    assert attempts == 3
+    assert delays == list(rwkv_scheduler._RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS[:2])
+    assert destination.read_bytes() == b"new"
+    assert not source.exists()
+
+
 def test_rwkv_state_cache_stream_write_matches_binary_encoder(tmp_path: Path) -> None:
     history = _rwkv_checkpoint_test_history(2)
     snapshot = RwkvBackendCacheSnapshot(
@@ -7606,6 +7637,46 @@ def test_rwkv_state_cache_build_skips_review_retrievability_cache_by_default(
     assert reviewer.mw.col.rwkv_retrievability_rows == []
 
 
+def test_rwkv_state_cache_build_warns_when_only_session_state_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warnings: list[str] = []
+    tooltips: list[str] = []
+
+    def warm_up(_mw: object, **kwargs: object) -> bool:
+        on_error = kwargs.get("on_cache_persistence_error")
+        assert callable(on_error)
+        on_error(PermissionError("simulated locked cache file"))
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", warm_up)
+    monkeypatch.setattr(
+        "aqt.utils.show_warning",
+        lambda text, **_kwargs: warnings.append(text),
+    )
+    monkeypatch.setattr(
+        "aqt.utils.tooltip",
+        lambda text, **_kwargs: tooltips.append(text),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda *_args, **_kwargs: None,
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    _attach_progress_taskman(reviewer.mw)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(reviewer.mw)
+
+    assert tooltips == []
+    assert len(warnings) == 1
+    assert "ready for this session" in warnings[0]
+    assert "simulated locked cache file" in warnings[0]
+    assert str(tmp_path / "rwkv-state-cache") in warnings[0]
+    assert rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw) is False
+
+
 def test_warmup_keeps_resident_identity_when_cache_write_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7627,8 +7698,17 @@ def test_warmup_keeps_resident_identity_when_cache_write_fails(
         raise OSError("simulated state-cache write failure")
 
     monkeypatch.setattr(rwkv_scheduler, "_atomic_write", fail_write)
+    persistence_errors: list[Exception] = []
 
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert (
+        rwkv_scheduler._warm_up_reviewer_backend(
+            reviewer,
+            on_cache_persistence_error=persistence_errors.append,
+        )
+        is True
+    )
+    assert len(persistence_errors) == 1
+    assert str(persistence_errors[0]) == "simulated state-cache write failure"
 
     warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert warmup_key is not None

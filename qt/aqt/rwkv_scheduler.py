@@ -185,6 +185,7 @@ _RWKV_STATE_CACHE_STORE_FILE = "state-v12.sqlite3"
 _RWKV_STATE_CACHE_STORE_TEMP_FILE = ".state-v12-building.sqlite3"
 _RWKV_STATE_CACHE_STORE_KIND = "delta-sqlite-v1"
 _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
+_RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
 _RWKV_STATE_CACHE_CHECKPOINT_PREFIX = "checkpoint-v1-"
@@ -724,6 +725,12 @@ class _RwkvStateCacheWriteContext:
     state_store_generation: str | None = None
     state_store_temporary: bool = False
     state_store_head_segment_id: int | None = None
+
+
+@dataclass(frozen=True)
+class _RwkvStateCacheBuildResult:
+    ready: bool
+    persistence_error: Exception | None = None
 
 
 @dataclass(frozen=True)
@@ -8174,6 +8181,7 @@ def _warm_up_reviewer_backend(
     record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
     additional_ignored_review_ids: Sequence[int] = (),
+    on_cache_persistence_error: Callable[[Exception], None] | None = None,
 ) -> bool:
     context = _reviewer_backend_warmup_context(reviewer)
     if context is None:
@@ -8320,13 +8328,15 @@ def _warm_up_reviewer_backend(
         )
         save_start = time.monotonic()
         _require_reviewer_backend_warmup_current(is_current)
-        _save_reviewer_backend_cache(
+        persistence_error = _save_reviewer_backend_cache(
             reviewer,
             history,
             backend=backend,
             checkpoint_entries=checkpoint_writer.entries,
             write_context=checkpoint_writer.context,
         )
+        if persistence_error is not None and on_cache_persistence_error is not None:
+            on_cache_persistence_error(persistence_error)
         save_elapsed_ms = (time.monotonic() - save_start) * 1000
         _require_reviewer_backend_warmup_current(is_current)
         if not _publish_reviewer_backend_state(
@@ -8744,6 +8754,7 @@ def warm_up_rwkv_state(
     require_retrievability_cache: bool = False,
     record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
+    on_cache_persistence_error: Callable[[Exception], None] | None = None,
 ) -> bool:
     """Warm and persist RWKV state for the current desktop collection."""
 
@@ -8760,6 +8771,7 @@ def warm_up_rwkv_state(
         require_retrievability_cache=require_retrievability_cache,
         record_retrievability_cache=record_retrievability_cache,
         progress=progress,
+        on_cache_persistence_error=on_cache_persistence_error,
     )
 
 
@@ -9823,19 +9835,80 @@ def build_rwkv_state_cache_with_progress(
 ) -> None:
     """Build the local RWKV state cache with a modal progress dialog."""
 
-    from aqt.utils import tooltip
+    from aqt.utils import show_warning, tooltip
+
+    def build(
+        progress: RwkvStateCacheProgressCallback | None = None,
+    ) -> _RwkvStateCacheBuildResult:
+        persistence_error: Exception | None = None
+
+        def remember_persistence_error(error: Exception) -> None:
+            nonlocal persistence_error
+            persistence_error = error
+
+        ready = warm_up_rwkv_state(
+            mw,
+            force_rebuild=force_rebuild,
+            require_retrievability_cache=record_retrievability_cache,
+            record_retrievability_cache=record_retrievability_cache,
+            progress=progress,
+            on_cache_persistence_error=remember_persistence_error,
+        )
+        return _RwkvStateCacheBuildResult(
+            ready=ready,
+            persistence_error=persistence_error,
+        )
+
+    def finish(
+        result: _RwkvStateCacheBuildResult,
+        *,
+        parent: QWidget | None,
+        elapsed_ms: float,
+    ) -> None:
+        if result.ready and result.persistence_error is not None:
+            cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+            error_text = (
+                str(result.persistence_error) or type(result.persistence_error).__name__
+            )
+            show_warning(
+                "RWKV state is ready for this session, but Anki could not save "
+                "the local state cache. You may be asked to rebuild it again "
+                "after restarting.\n\n"
+                "Close Anki, check available disk space, and make sure antivirus "
+                "or sync software is not locking the cache folder. If the problem "
+                "continues, rename the cache folder before rebuilding.\n\n"
+                f"Cache folder: {cache_dir or 'Unavailable'}\n"
+                f"Error: {error_text}",
+                parent=parent,
+            )
+            logger.warning(
+                "RWKV state cache build only ready for current session: "
+                "cache_dir=%s error=%s elapsed_ms=%.1f",
+                cache_dir,
+                result.persistence_error,
+                elapsed_ms,
+            )
+        elif result.ready:
+            tooltip("RWKV state cache ready.", parent=parent)
+            logger.debug(
+                "RWKV state cache build finished: elapsed_ms=%.1f",
+                elapsed_ms,
+            )
+        else:
+            tooltip("RWKV state cache could not be built.", parent=parent)
+        _finish_rwkv_state_cache_operation(
+            mw,
+            ready=result.ready,
+            prewarm_reason="state cache build",
+        )
 
     _set_rwkv_state_cache_loading(mw, True)
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
+        start = time.monotonic()
         try:
-            built = warm_up_rwkv_state(
-                mw,
-                force_rebuild=force_rebuild,
-                require_retrievability_cache=record_retrievability_cache,
-                record_retrievability_cache=record_retrievability_cache,
-            )
+            result = build()
         except Exception:
             _finish_rwkv_state_cache_operation(
                 mw,
@@ -9843,10 +9916,10 @@ def build_rwkv_state_cache_with_progress(
                 prewarm_reason="state cache build",
             )
             raise
-        _finish_rwkv_state_cache_operation(
-            mw,
-            ready=built,
-            prewarm_reason="state cache build",
+        finish(
+            result,
+            parent=cast(QWidget | None, mw),
+            elapsed_ms=(time.monotonic() - start) * 1000,
         )
         return
 
@@ -9867,18 +9940,12 @@ def build_rwkv_state_cache_with_progress(
 
             _run_on_main(mw, update)
 
-        def build() -> bool:
-            return warm_up_rwkv_state(
-                mw,
-                force_rebuild=force_rebuild,
-                require_retrievability_cache=record_retrievability_cache,
-                record_retrievability_cache=record_retrievability_cache,
-                progress=progress,
-            )
+        def build_with_progress() -> _RwkvStateCacheBuildResult:
+            return build(progress)
 
-        def done(future: Future[bool]) -> None:
+        def done(future: Future[_RwkvStateCacheBuildResult]) -> None:
             try:
-                built = future.result()
+                result = future.result()
             except Exception:
                 _finish_rwkv_state_cache_operation(
                     mw,
@@ -9889,24 +9956,15 @@ def build_rwkv_state_cache_with_progress(
                 tooltip("RWKV state cache build failed.", parent=parent)
                 return
 
-            elapsed_ms = (time.monotonic() - start) * 1000
-            if built:
-                tooltip("RWKV state cache ready.", parent=parent)
-                logger.debug(
-                    "RWKV state cache build finished: elapsed_ms=%.1f",
-                    elapsed_ms,
-                )
-            else:
-                tooltip("RWKV state cache could not be built.", parent=parent)
-            _finish_rwkv_state_cache_operation(
-                mw,
-                ready=built,
-                prewarm_reason="state cache build",
+            finish(
+                result,
+                parent=parent,
+                elapsed_ms=(time.monotonic() - start) * 1000,
             )
 
         try:
             with_progress(
-                build,
+                build_with_progress,
                 done,
                 parent=parent,
                 label="Building RWKV state cache...",
@@ -12966,10 +13024,10 @@ def _save_reviewer_backend_cache(
     backend: RwkvReviewerBackend | None = None,
     checkpoint_entries: Sequence[_RwkvStateCacheCheckpointEntry] = (),
     write_context: _RwkvStateCacheWriteContext | None = None,
-) -> None:
+) -> Exception | None:
     if history.deck_id is not None:
         _log_scoped_rwkv_state_cache_write_skip("save", history)
-        return
+        return None
 
     if backend is None:
         with _reviewer_backend_state_lock:
@@ -12983,11 +13041,11 @@ def _save_reviewer_backend_cache(
         and supports_streaming()
     )
     if not stream_snapshot and not callable(cache_snapshot):
-        return
+        return None
 
     context = write_context or _rwkv_state_cache_write_context(reviewer)
     if context is None:
-        return
+        return None
     cache_dir = context.cache_dir
 
     try:
@@ -13010,7 +13068,7 @@ def _save_reviewer_backend_cache(
                 checkpoint_entries=checkpoint_entries,
                 context=context,
             )
-            return
+            return None
 
         entries_by_review_id = {
             entry["lastReviewId"]: entry
@@ -13073,8 +13131,10 @@ def _save_reviewer_backend_cache(
             len(retained_checkpoint_entries),
             snapshot_path.stat().st_size,
         )
-    except Exception:
+    except Exception as error:
         logger.exception("failed to save RWKV state cache")
+        return error
+    return None
 
 
 def _save_reviewer_backend_state_store(
@@ -13128,7 +13188,7 @@ def _save_reviewer_backend_state_store(
         raise ValueError("missing RWKV state-cache store path")
     live_store_path = context.cache_dir / _RWKV_STATE_CACHE_STORE_FILE
     if context.state_store_temporary:
-        os.replace(store_path, live_store_path)
+        _replace_rwkv_state_cache_file(store_path, live_store_path)
         context.state_store_path = live_store_path
         context.state_store_temporary = False
     elif store_path != live_store_path:
@@ -14826,11 +14886,38 @@ def _atomic_write_stream(
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
             temporary_path = Path(file.name)
             write(file)
-        os.replace(temporary_path, path)
+        _replace_rwkv_state_cache_file(temporary_path, path)
     except Exception:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise
+
+
+def _replace_rwkv_state_cache_file(source: Path, destination: Path) -> None:
+    for retry_index in range(len(_RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS) + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            retryable = sys.platform == "win32" and (
+                isinstance(error, PermissionError)
+                or getattr(error, "winerror", None) in (5, 32, 33)
+            )
+            if not retryable or retry_index == len(
+                _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS
+            ):
+                raise
+            delay = _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS[retry_index]
+            logger.warning(
+                "RWKV state cache file replacement blocked; retrying: "
+                "source=%s destination=%s attempt=%s delay=%.2f error=%s",
+                source,
+                destination,
+                retry_index + 1,
+                delay,
+                error,
+            )
+            time.sleep(delay)
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
