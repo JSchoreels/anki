@@ -681,6 +681,7 @@ class AnkiQt(QMainWindow):
             self._unloadProfile()
             onsuccess()
 
+        self.deckBrowser.cancel_rwkv_count_refresh()
         gui_hooks.profile_will_close()
         self.unloadCollection(callback)
 

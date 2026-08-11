@@ -93,6 +93,9 @@ class DeckBrowser:
         if self._refresh_needed:
             self.refresh()
 
+    def cancel_rwkv_count_refresh(self) -> None:
+        self._rwkv_count_generation += 1
+
     def op_executed(
         self, changes: OpChanges, handler: object | None, focused: bool
     ) -> bool:
@@ -142,7 +145,7 @@ class DeckBrowser:
         return False
 
     def set_current_deck(self, deck_id: DeckId) -> None:
-        self._rwkv_count_generation += 1
+        self.cancel_rwkv_count_refresh()
         set_current_deck(parent=self.mw, deck_id=deck_id).success(
             lambda _: self.mw.progress.single_shot(0, self.mw.onOverview)
         ).run_in_background(initiator=self)
@@ -163,7 +166,7 @@ class DeckBrowser:
 
     def _renderPage(self, reuse: bool = False) -> None:
         if not reuse:
-            self._rwkv_count_generation += 1
+            self.cancel_rwkv_count_refresh()
             generation = self._rwkv_count_generation
 
             def get_data(col: Collection) -> RenderData:

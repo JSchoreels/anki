@@ -26,14 +26,24 @@ Current application version: `26.05+fsrs7`
 
 ### Fixed
 
+- Keep fast consecutive answers, undo, and redo responsive while an RWKV queue
+  refresh is still running, without discarding the resident model state.
+- Keep review responsive with a cold RWKV state by keeping cache restoration off
+  the card-rendering path and avoiding repeated full-history validation.
+- Avoid rebuilding the full RWKV resident state after editor saves that leave
+  the card's FSRS preset unchanged, including after undo.
 - Avoid editor and incremental RWKV refresh stalls by resolving small FSRS
   preset overlay requests directly while retaining batch resolution for larger
   card sets.
-- Avoid forcing a full RWKV queue refresh after answering an undo-restored card
-  when the configured queue-update interval is not due, and refresh only the
-  affected cached inputs once it becomes due.
+- Restore undone cards on a rebuilt RWKV queue so the correct due counts and
+  next-card order remain visible, without forcing a full refresh before the
+  configured queue-update interval is due.
 - Avoid an exit-time UI stall by updating undo actions before reviewer completion
   callbacks can start RWKV deck-browser prewarming.
+- Avoid logging an RWKV deck-count error when its background preparation finishes
+  after the collection has closed.
+- Keep the reviewer open at an RWKV queue boundary when concurrent state work
+  temporarily invalidates the first score refresh.
 
 ## [26.05+fsrs7.build.78](https://github.com/JSchoreels/anki/releases/tag/26.05%2Bfsrs7.build.78) — 2026-08-03
 

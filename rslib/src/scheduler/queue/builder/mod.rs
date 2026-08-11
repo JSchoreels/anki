@@ -742,6 +742,10 @@ mod test {
         assert_eq!(cached.shown_top_card, Some(current));
         assert_eq!(cached.main.front().unwrap().id, current);
 
+        let restored = col.get_queued_cards(1, false, true)?;
+        assert_eq!(restored.cards[0].card.id, current);
+        assert_eq!(restored.review_count, 3);
+
         col.answer_good();
         let next_card = col.get_queued_cards(1, false, true)?;
         assert_eq!(next_card.cards[0].card.id, next);

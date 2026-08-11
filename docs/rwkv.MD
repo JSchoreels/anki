@@ -98,7 +98,19 @@ calibration replays also hide the resident state while they temporarily use the
 backend, then restore and republish it only if the collection generation is still
 current. A real answer or undo never waits for a long replay: it invalidates that
 work, leaves the runtime unready, and lets the next canonical restore include the
-collection change.
+collection change. Answers, undo, and redo wait on their collection worker for
+an in-flight prediction reader to release the resident backend before applying
+the state change. This keeps the UI thread responsive and preserves the resident
+state instead of treating ordinary queue scoring as state loss.
+
+Card rendering never starts a cache restore on the UI thread. When the resident
+state is cold, review-time predictions temporarily fall back until startup or
+background collection work restores it. When deleting the visible reviewer card
+makes the persisted history stale, review-time predictions also defer that
+restore. An unavailable or failed cache result is remembered for that cold-state
+generation and is carried across later answers, preventing queue scoring, Card
+Info, and answer preparation from repeating the same validation. An explicit
+cache build or the next startup recovery can still perform the canonical rebuild.
 
 Prediction readers use the same non-blocking execution lease. Stats,
 rescheduling, review-queue, deck-count, and Card Info work is bound to the exact
@@ -385,10 +397,11 @@ review due counts of its descendants display an ellipsis instead of the stored
 FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
 falls back to its stored count. A scope deferred during state-cache restoration
 remains pending until the completion refresh starts a fresh count pass. Leaving
-or refreshing the deck browser cancels queued preparation and later UI updates,
-and preparing a reviewer queue clears the count-only cache. This keeps startup
-responsive while allowing every displayed RWKV scope to converge to its RWKV
-eligibility counts before the reviewer is opened.
+or refreshing the deck browser, or unloading the profile, cancels queued
+preparation and later UI updates, and preparing a reviewer queue clears the
+count-only cache. This keeps startup responsive while allowing every displayed
+RWKV scope to converge to its RWKV eligibility counts before the reviewer is
+opened.
 
 When the desktop Dynamic Desired Retention provider is available, RWKV review
 input batches are resolved through its bulk API before queue scoring or RWKV
@@ -637,6 +650,9 @@ previously installed map until a later refresh completes. Skipped post-answer
 interval refreshes fetch the next card after the answered-card score update.
 When the answered card was the last queued card, Anki uses the same split
 prepare/score/install pipeline before requesting the next card. If the backend
+is busy, this required refresh waits for prediction access. If concurrent state
+work makes the prepared snapshot stale, Anki rebuilds and retries it once before
+requesting the next card. If the backend
 cannot provide the immutable input snapshot, Anki continues with normal queue
 order instead of falling back to a long Python-side full-deck scan. This is
 especially important after undo restores RWKV state and invalidates predictions

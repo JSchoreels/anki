@@ -362,6 +362,32 @@ def test_profile_load_marks_rwkv_startup_before_loading_collection(
     ]
 
 
+def test_profile_unload_cancels_rwkv_counts_before_closing_collection(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.deckBrowser = SimpleNamespace(
+        cancel_rwkv_count_refresh=lambda: calls.append("cancel rwkv counts")
+    )
+    mw.unloadCollection = lambda _callback: calls.append(  # type: ignore[method-assign]
+        "unload collection"
+    )
+    monkeypatch.setattr(
+        aqt.main.gui_hooks,
+        "profile_will_close",
+        lambda: calls.append("profile will close"),
+    )
+
+    mw.unloadProfile(lambda: calls.append("done"))
+
+    assert calls == [
+        "cancel rwkv counts",
+        "profile will close",
+        "unload collection",
+    ]
+
+
 def test_close_event_unloads_profile_when_no_background_op() -> None:
     mw, calls, progress = setup_mw()
     event = CloseEvent()

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 
 import aqt
@@ -327,10 +327,14 @@ def answer_card(
     *,
     parent: QWidget,
     answer: CardAnswer,
+    after_answer: Callable[[], None] | None = None,
 ) -> CollectionOp[OpChanges]:
     def answer_v3(col: Collection) -> OpChanges:
         assert isinstance(col.sched, V3Scheduler)
-        return col.sched.answer_card(answer)
+        changes = col.sched.answer_card(answer)
+        if after_answer is not None:
+            after_answer()
+        return changes
 
     return CollectionOp(parent, answer_v3)
 

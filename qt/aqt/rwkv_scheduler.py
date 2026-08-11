@@ -230,6 +230,7 @@ _reviewer_backend_warmup_states: dict[
 ] = {}
 _reviewer_backend_warmup_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_warmup_pending_generations: dict[tuple[int, int], int] = {}
+_reviewer_backend_cold_fallback_generations: dict[tuple[int, int], int] = {}
 _rwkv_memorised_history_identity_cache: dict[
     tuple[int, int],
     tuple[int, RwkvResidentStateIdentity],
@@ -243,7 +244,9 @@ _rwkv_review_queue_collection_key: RwkvReviewQueueCollectionKey | None = None
 _dynamic_desired_retention_generation = 0
 _rwkv_study_queue_generation = 0
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
-_RWKV_REVIEW_UNDO_QUEUE_CHANGE_PENDING_ATTR = "_rwkv_review_undo_queue_change_pending"
+_RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR = (
+    "_rwkv_review_handled_queue_change_pending"
+)
 _rwkv_stats_prepare_lock = threading.Lock()
 _rwkv_stats_prepare_in_flight: dict[
     RwkvStatsPrepareKey,
@@ -628,6 +631,15 @@ class _ReviewerBackendPredictionStateToken:
     resident_state_ready: bool
     dynamic_desired_retention_generation: int
     study_queue_generation: int
+
+
+@dataclass(frozen=True)
+class _ReviewerBackendMutationContext:
+    backend: RwkvReviewerBackend
+    backend_assignment_generation: int
+    collection_owner: object | None
+    collection: object | None
+    collection_backend: object | None
 
 
 class _RwkvPendingAnswerState(NamedTuple):
@@ -2473,13 +2485,19 @@ class RwkvStatefulReviewerBackend:
 
 
 def record_collection_undo(changes: object) -> list[int]:
-    """Roll back RWKV state after Anki undoes an answered review."""
+    """Roll back RWKV state after Anki undoes an answered review.
+
+    This serializes with prediction work and must run on a background worker.
+    """
 
     return _record_collection_undo_or_redo(changes, redo=False)
 
 
 def record_collection_redo(changes: object) -> list[int]:
-    """Restore RWKV state after Anki redoes an answered review."""
+    """Restore RWKV state after Anki redoes an answered review.
+
+    This serializes with prediction work and must run on a background worker.
+    """
 
     return _record_collection_undo_or_redo(changes, redo=True)
 
@@ -2489,21 +2507,55 @@ def _record_collection_undo_or_redo(changes: object, *, redo: bool) -> list[int]
     if backend is None:
         return []
 
+    operation = "review redo" if redo else "review undo"
+    try:
+        return _record_collection_undo_or_redo_with_backend(
+            changes,
+            redo=redo,
+            backend=backend,
+            operation=operation,
+        )
+    except Exception:
+        _invalidate_reviewer_backend_states(
+            backend,
+            reason=f"{operation} failed",
+        )
+        logger.exception("RWKV %s failed", operation)
+        return []
+
+
+def _record_collection_undo_or_redo_with_backend(
+    changes: object,
+    *,
+    redo: bool,
+    backend: RwkvReviewerBackend,
+    operation: str,
+) -> list[int]:
     counter = _undo_result_counter(changes)
     if counter is None:
         return []
 
-    operation = "review redo" if redo else "review undo"
-    if not _reviewer_backend_execution_lock.acquire(blocking=False):
+    with _reviewer_backend_state_lock:
+        pending = any(
+            key[0] == id(backend)
+            for key in _reviewer_backend_warmup_pending_generations
+        )
+        backend_changed = _reviewer_backend is not backend
+    if pending or backend_changed:
         _invalidate_reviewer_backend_states(
             backend,
-            reason=f"{operation} while RWKV backend was busy",
+            reason=f"{operation} while RWKV state was pending",
         )
-        logger.debug("RWKV %s skipped: backend busy", operation)
+        logger.debug(
+            "RWKV %s skipped: pending=%s backend_changed=%s",
+            operation,
+            pending,
+            backend_changed,
+        )
         return []
 
     next_counter = _undo_result_next_counter(changes)
-    try:
+    with _reviewer_backend_execution_lock:
         with _reviewer_backend_state_lock:
             pending = any(
                 key[0] == id(backend)
@@ -2543,8 +2595,6 @@ def _record_collection_undo_or_redo(changes: object, *, redo: bool) -> list[int]
                     reason="review redone" if redo else "review undone",
                 )
             return restored_card_ids
-    finally:
-        _reviewer_backend_execution_lock.release()
 
     return []
 
@@ -2571,7 +2621,7 @@ def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
         queue = []
         setattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, queue)
     queue.extend(valid_card_ids)
-    setattr(reviewer, _RWKV_REVIEW_UNDO_QUEUE_CHANGE_PENDING_ATTR, True)
+    mark_reviewer_study_queue_change_handled(reviewer)
 
     answered_ids = getattr(reviewer, "_answeredIds", None)
     if not isinstance(answered_ids, list):
@@ -2584,12 +2634,59 @@ def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
                 break
 
 
+def apply_reviewer_redo_card_ids(reviewer: object, card_ids: Sequence[int]) -> None:
+    """Update reviewer-local caches after RWKV state has applied a review redo."""
+
+    valid_card_ids = [
+        card_id for value in card_ids if (card_id := _valid_card_id(value)) is not None
+    ]
+    if not valid_card_ids:
+        return
+
+    _invalidate_reviewer_transient_scores_after_redo(reviewer, valid_card_ids)
+    queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
+    if isinstance(queue, list):
+        for card_id in valid_card_ids:
+            for index in range(len(queue) - 1, -1, -1):
+                if queue[index] == card_id:
+                    del queue[index]
+                    break
+
+    answered_ids = getattr(reviewer, "_answeredIds", None)
+    if isinstance(answered_ids, list):
+        answered_ids.extend(valid_card_ids)
+    mark_reviewer_study_queue_change_handled(reviewer)
+
+
 def _invalidate_reviewer_transient_scores_after_undo(
     reviewer: object,
     card_ids: Sequence[int],
 ) -> None:
     _rwkv_review_queue_score_generations.clear()
     _mark_rwkv_review_input_cards_dirty_after_undo(reviewer, card_ids)
+    _invalidate_resolved_preset_id_cache(reviewer, card_ids=card_ids)
+    for card_id in card_ids:
+        _set_rwkv_card_info_score(reviewer, card_id, None)
+
+
+def _invalidate_reviewer_transient_scores_after_redo(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> None:
+    _rwkv_review_queue_score_generations.clear()
+    cache = _rwkv_review_input_batch_cache(reviewer)
+    collection_key = _rwkv_review_collection_key(reviewer)
+    if collection_key is not None:
+        for cache_key, cached in list(cache.items()):
+            if cache_key[5] != collection_key:
+                continue
+            cache[cache_key] = replace(
+                cached,
+                session_answered_ids=tuple((*cached.session_answered_ids, *card_ids)),
+                dirty_card_ids=tuple(
+                    dict.fromkeys((*cached.dirty_card_ids, *card_ids))
+                ),
+            )
     _invalidate_resolved_preset_id_cache(reviewer, card_ids=card_ids)
     for card_id in card_ids:
         _set_rwkv_card_info_score(reviewer, card_id, None)
@@ -2640,10 +2737,18 @@ def reviewer_has_undo_card_ids(reviewer: object) -> bool:
     )
 
 
-def _consume_reviewer_undo_queue_change(reviewer: object) -> bool:
-    if not bool(getattr(reviewer, _RWKV_REVIEW_UNDO_QUEUE_CHANGE_PENDING_ATTR, False)):
+def mark_reviewer_study_queue_change_handled(reviewer: object) -> None:
+    """Keep the generic change hook from invalidating an applied RWKV mutation."""
+
+    setattr(reviewer, _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR, True)
+
+
+def _consume_reviewer_handled_study_queue_change(reviewer: object) -> bool:
+    if not bool(
+        getattr(reviewer, _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR, False)
+    ):
         return False
-    setattr(reviewer, _RWKV_REVIEW_UNDO_QUEUE_CHANGE_PENDING_ATTR, False)
+    setattr(reviewer, _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR, False)
     return True
 
 
@@ -2904,11 +3009,46 @@ def set_reviewer_backend(
     return previous
 
 
+def _capture_reviewer_backend_mutation_context(
+    reviewer: object,
+) -> _ReviewerBackendMutationContext | None:
+    collection_owner = getattr(reviewer, "mw", None)
+    collection = _collection(reviewer)
+    with _reviewer_backend_state_lock:
+        backend = _reviewer_backend
+        if backend is None:
+            return None
+        return _ReviewerBackendMutationContext(
+            backend=backend,
+            backend_assignment_generation=_reviewer_backend_assignment_generation,
+            collection_owner=collection_owner,
+            collection=collection,
+            collection_backend=getattr(collection, "_backend", None),
+        )
+
+
+def _reviewer_backend_mutation_context_is_current(
+    context: _ReviewerBackendMutationContext,
+    reviewer: object,
+) -> bool:
+    with _reviewer_backend_state_lock:
+        return (
+            _reviewer_backend is context.backend
+            and _reviewer_backend_assignment_generation
+            == context.backend_assignment_generation
+            and getattr(reviewer, "mw", None) is context.collection_owner
+            and _collection(reviewer) is context.collection
+            and getattr(context.collection, "_backend", None)
+            is context.collection_backend
+        )
+
+
 def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
     keys = (
         _reviewer_backend_warmup_states.keys()
         | _reviewer_backend_warmup_generations.keys()
         | _reviewer_backend_warmup_pending_generations.keys()
+        | _reviewer_backend_cold_fallback_generations.keys()
         | _rwkv_memorised_history_identity_cache.keys()
     )
     for key in keys:
@@ -2917,6 +3057,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
         )
     _reviewer_backend_warmup_states.clear()
     _reviewer_backend_warmup_pending_generations.clear()
+    _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_memorised_history_identity_cache.clear()
 
 
@@ -2962,28 +3103,6 @@ def _require_reviewer_backend_warmup_current(
         raise _ReviewerBackendWarmupInvalidated
 
 
-def _acquire_reviewer_backend_execution(
-    reviewer: object,
-    backend: RwkvReviewerBackend,
-    key: tuple[int, int],
-    generation: int,
-) -> bool:
-    _reviewer_backend_execution_lock.acquire()
-    try:
-        if _reviewer_backend_warmup_is_current(
-            reviewer,
-            backend,
-            key,
-            generation,
-        ):
-            return True
-    except Exception:
-        _reviewer_backend_execution_lock.release()
-        raise
-    _reviewer_backend_execution_lock.release()
-    return False
-
-
 @contextmanager
 def _try_reviewer_backend_prediction_access(
     *,
@@ -2993,8 +3112,9 @@ def _try_reviewer_backend_prediction_access(
     expected_resident_state_key: tuple[int, int] | None = None,
     expected_resident_state_generation: int | None = None,
     expected_state_token: _ReviewerBackendPredictionStateToken | None = None,
+    wait_for_access: bool = False,
 ) -> Iterator[RwkvReviewerBackend | None]:
-    """Claim non-blocking access to resident backend state for prediction."""
+    """Claim access to resident backend state for prediction."""
 
     inherited_backend = getattr(
         _reviewer_backend_prediction_local,
@@ -3013,7 +3133,7 @@ def _try_reviewer_backend_prediction_access(
     ):
         yield None
         return
-    if not _reviewer_backend_execution_lock.acquire(blocking=False):
+    if not _reviewer_backend_execution_lock.acquire(blocking=wait_for_access):
         yield None
         return
 
@@ -3236,30 +3356,38 @@ def _claim_reviewer_backend_temporary_operation(
             or key in _reviewer_backend_warmup_pending_generations
         ):
             return None
-        generation = _reviewer_backend_warmup_generations.get(key, 0)
-        previous_state_present = key in _reviewer_backend_warmup_states
-        previous_identity = _reviewer_backend_warmup_states.pop(key, None)
-        _rwkv_memorised_history_identity_cache.pop(key, None)
-        _reviewer_backend_warmup_pending_generations[key] = generation
 
-    operation = _ReviewerBackendTemporaryOperation(
-        reviewer=reviewer,
-        backend=backend,
-        key=key,
-        generation=generation,
-        previous_state_present=previous_state_present,
-        previous_identity=previous_identity,
-    )
-    if _acquire_reviewer_backend_execution(
-        reviewer,
-        backend,
-        key,
-        generation,
-    ):
-        return operation
+    _reviewer_backend_execution_lock.acquire()
+    claimed = False
+    try:
+        with _reviewer_backend_state_lock:
+            col = _collection(reviewer)
+            if (
+                _reviewer_backend is not backend
+                or col is None
+                or getattr(col, "db", None) is None
+                or key != (id(backend), id(col))
+                or key in _reviewer_backend_warmup_pending_generations
+            ):
+                return None
+            generation = _reviewer_backend_warmup_generations.get(key, 0)
+            previous_state_present = key in _reviewer_backend_warmup_states
+            previous_identity = _reviewer_backend_warmup_states.pop(key, None)
+            _rwkv_memorised_history_identity_cache.pop(key, None)
+            _reviewer_backend_warmup_pending_generations[key] = generation
 
-    _finish_reviewer_backend_warmup(key, generation)
-    return None
+        claimed = True
+        return _ReviewerBackendTemporaryOperation(
+            reviewer=reviewer,
+            backend=backend,
+            key=key,
+            generation=generation,
+            previous_state_present=previous_state_present,
+            previous_identity=previous_identity,
+        )
+    finally:
+        if not claimed:
+            _reviewer_backend_execution_lock.release()
 
 
 def _finish_reviewer_backend_temporary_operation(
@@ -3345,13 +3473,13 @@ def _temporary_reviewer_backend_operation(
                 state_safe = True
         finally:
             try:
-                _reviewer_backend_execution_lock.release()
+                _finish_reviewer_backend_temporary_operation(
+                    operation,
+                    restored=state_safe,
+                )
             finally:
                 try:
-                    _finish_reviewer_backend_temporary_operation(
-                        operation,
-                        restored=state_safe,
-                    )
+                    _reviewer_backend_execution_lock.release()
                 finally:
                     if previous_prediction_backend is None:
                         delattr(_reviewer_backend_prediction_local, "backend")
@@ -3455,8 +3583,10 @@ def update_reviewer_scheduling_states(
     try:
         curve_enabled = rwkv_review_enabled(reviewer, card)
         review_active = rwkv_review_active(reviewer, card)
-        if review_active and not _prepare_reviewer_backend_for_review(reviewer):
-            logger.debug("RWKV scheduling prediction skipped: warm-up pending")
+        if review_active and not _reviewer_backend_ready_for_review(reviewer):
+            logger.debug(
+                "RWKV scheduling prediction skipped: resident state unavailable"
+            )
             return states
 
         with _try_reviewer_backend_prediction_access(
@@ -3548,29 +3678,50 @@ def record_reviewer_answer(
     card: object,
     ease: int,
 ) -> None:
-    """Update desktop RWKV state after a real review has been answered."""
+    """Update desktop RWKV state after a real review has been answered.
+
+    This serializes with prediction work and must run on a background worker.
+    """
 
     card_id = _card_id(card)
     collection_backend = getattr(_collection(reviewer), "_backend", None)
+    mutation_context: _ReviewerBackendMutationContext | None = None
     try:
-        backend = _reviewer_backend
-        if backend is None:
+        mutation_context = _capture_reviewer_backend_mutation_context(reviewer)
+        if mutation_context is None:
+            return
+        backend = mutation_context.backend
+        collection_backend = mutation_context.collection_backend
+        if not _reviewer_backend_mutation_context_is_current(
+            mutation_context,
+            reviewer,
+        ):
+            logger.debug("RWKV answer update skipped: backend context changed")
             return
 
-        if not _reviewer_backend_execution_lock.acquire(blocking=False):
+        if _reviewer_backend_warmup_pending(reviewer):
             _invalidate_reviewer_backend_state(
                 reviewer,
-                reason="review answered while RWKV backend was busy",
+                reason="review answered while RWKV state was pending",
+                preserve_cold_fallback=True,
+                expected_mutation_context=mutation_context,
             )
-            logger.debug("RWKV answer update skipped: backend busy")
+            logger.debug("RWKV answer update skipped: state pending")
             return
-        try:
-            if _reviewer_backend is not backend or _reviewer_backend_warmup_pending(
-                reviewer
+
+        with _reviewer_backend_execution_lock:
+            if not _reviewer_backend_mutation_context_is_current(
+                mutation_context,
+                reviewer,
             ):
+                logger.debug("RWKV answer update skipped: backend context changed")
+                return
+            if _reviewer_backend_warmup_pending(reviewer):
                 _invalidate_reviewer_backend_state(
                     reviewer,
                     reason="review answered while RWKV state was pending",
+                    preserve_cold_fallback=True,
+                    expected_mutation_context=mutation_context,
                 )
                 logger.debug("RWKV answer update skipped: state pending")
                 return
@@ -3580,26 +3731,41 @@ def record_reviewer_answer(
                 _invalidate_reviewer_backend_state(
                     reviewer,
                     reason="review answered before warm-up completed",
+                    preserve_cold_fallback=True,
+                    expected_mutation_context=mutation_context,
                 )
                 logger.debug("RWKV answer update skipped: warm-up pending")
+                return
+            if not _reviewer_backend_mutation_context_is_current(
+                mutation_context,
+                reviewer,
+            ):
+                logger.debug("RWKV answer update skipped: backend context changed")
                 return
             backend.review_answered(
                 reviewer=reviewer,
                 card=card,
                 ease=ease,
             )
+            if not _reviewer_backend_mutation_context_is_current(
+                mutation_context,
+                reviewer,
+            ):
+                logger.debug("RWKV answer bookkeeping skipped: backend context changed")
+                return
             _mark_reviewer_backend_identity_unknown(
                 reviewer,
                 reason="review answered",
+                expected_mutation_context=mutation_context,
             )
             if card_id is not None:
                 _invalidate_resolved_preset_id_cache(reviewer, card_ids=[card_id])
-        finally:
-            _reviewer_backend_execution_lock.release()
     except Exception:
         _invalidate_reviewer_backend_state(
             reviewer,
             reason="review answer update failed",
+            preserve_cold_fallback=True,
+            expected_mutation_context=mutation_context,
         )
         logger.exception("RWKV review state update failed")
     finally:
@@ -3932,6 +4098,8 @@ def prepare_reviewer_queue_order_async_work(
 
 def score_reviewer_queue_order_async_work(
     work: RwkvReviewQueueOrderAsyncWork,
+    *,
+    wait_for_backend: bool = False,
 ) -> RwkvReviewQueueOrderAsyncResult:
     if not _rwkv_review_queue_async_collection_is_current(work):
         return _aborted_reviewer_queue_order_async_result(work)
@@ -3941,6 +4109,7 @@ def score_reviewer_queue_order_async_work(
         expected_state_generation=work.state_generation,
         expected_resident_state_key=work.resident_state_key,
         expected_resident_state_generation=work.resident_state_generation,
+        wait_for_access=wait_for_backend,
     ) as backend:
         if backend is None:
             logger.debug(
@@ -4831,14 +5000,20 @@ def _prepare_reviewer_backend_for_card_info(reviewer: object) -> bool:
     return _prepare_reviewer_backend_from_cache(reviewer)
 
 
-def _prepare_reviewer_backend_for_review(reviewer: object) -> bool:
-    """Use warmed or cached RWKV state for review-time intervals."""
+def _reviewer_backend_ready_for_review(reviewer: object) -> bool:
+    """Check resident review state without restoring cache on the caller."""
 
     if _reviewer_backend is None or not callable(
         getattr(_reviewer_backend, "warm_up", None)
     ):
         return True
-    if _reviewer_backend_warmed_up(reviewer):
+    return _reviewer_backend_warmed_up(reviewer)
+
+
+def _prepare_reviewer_backend_for_review(reviewer: object) -> bool:
+    """Restore resident review state from collection/background work if needed."""
+
+    if _reviewer_backend_ready_for_review(reviewer):
         return True
     if _reviewer_backend_warmup_pending(reviewer):
         return False
@@ -4860,67 +5035,99 @@ def _prepare_reviewer_backend_from_cache(
         return False
 
     with _reviewer_backend_state_lock:
-        if _reviewer_backend is not backend:
-            return False
-        if key in _reviewer_backend_warmup_pending_generations:
+        observed_generation = _reviewer_backend_warmup_generations.get(key, 0)
+        if (
+            _reviewer_backend is not backend
+            or key in _reviewer_backend_warmup_pending_generations
+            or _reviewer_backend_cold_fallback_generations.get(key)
+            == observed_generation
+        ):
             return False
         if key in _reviewer_backend_warmup_states:
             return True
-        warmup_generation = _reviewer_backend_warmup_generations.get(key, 0)
-        _reviewer_backend_warmup_pending_generations[key] = warmup_generation
-    if not _acquire_reviewer_backend_execution(
-        reviewer,
-        backend,
-        key,
-        warmup_generation,
-    ):
-        _finish_reviewer_backend_warmup(key, warmup_generation)
-        return False
 
-    def is_current() -> bool:
-        return _reviewer_backend_warmup_is_current(
-            reviewer,
-            backend,
-            key,
-            warmup_generation,
-        )
-
-    start = time.monotonic()
+    _reviewer_backend_execution_lock.acquire()
+    claimed = False
     try:
-        restored_identity = _restore_reviewer_backend_cache(
-            reviewer,
-            backend=backend,
-            is_current=is_current,
-            progress=progress,
-        )
-        if not is_current():
-            return False
-        if restored_identity is not None and _publish_reviewer_backend_state(
-            key,
-            restored_identity,
-            expected_generation=warmup_generation,
-        ):
+        with _reviewer_backend_state_lock:
+            col = _collection(reviewer)
+            warmup_generation = _reviewer_backend_warmup_generations.get(key, 0)
+            if (
+                _reviewer_backend is not backend
+                or col is None
+                or getattr(col, "db", None) is None
+                or key != (id(backend), id(col))
+                or key in _reviewer_backend_warmup_pending_generations
+                or _reviewer_backend_cold_fallback_generations.get(key)
+                == warmup_generation
+            ):
+                return False
+            if key in _reviewer_backend_warmup_states:
+                return True
+            _reviewer_backend_warmup_pending_generations[key] = warmup_generation
+            claimed = True
+
+        def is_current() -> bool:
+            return _reviewer_backend_warmup_is_current(
+                reviewer,
+                backend,
+                key,
+                warmup_generation,
+            )
+
+        def remember_cold_fallback() -> None:
+            with _reviewer_backend_state_lock:
+                if (
+                    _reviewer_backend_warmup_generations.get(key, 0)
+                    == warmup_generation
+                    and _reviewer_backend_warmup_pending_generations.get(key)
+                    == warmup_generation
+                ):
+                    _reviewer_backend_cold_fallback_generations[key] = warmup_generation
+
+        start = time.monotonic()
+        try:
+            restored_identity = _restore_reviewer_backend_cache(
+                reviewer,
+                backend=backend,
+                is_current=is_current,
+                progress=progress,
+            )
+            if not is_current():
+                return False
+            if restored_identity is not None and _publish_reviewer_backend_state(
+                key,
+                restored_identity,
+                expected_generation=warmup_generation,
+            ):
+                logger.debug(
+                    "restored RWKV reviewer state cache: elapsed_ms=%.1f",
+                    (time.monotonic() - start) * 1000,
+                )
+                return True
+
             logger.debug(
-                "restored RWKV reviewer state cache: elapsed_ms=%.1f",
+                "RWKV state cache unavailable: elapsed_ms=%.1f",
                 (time.monotonic() - start) * 1000,
             )
-            return True
-
-        logger.debug(
-            "RWKV state cache unavailable: elapsed_ms=%.1f",
-            (time.monotonic() - start) * 1000,
-        )
-        return False
-    except _ReviewerBackendWarmupInvalidated:
+            remember_cold_fallback()
+            return False
+        except _ReviewerBackendWarmupInvalidated:
+            pass
+        except Exception:
+            remember_cold_fallback()
+            logger.exception("RWKV state cache preparation failed")
         return False
     finally:
         try:
-            _finish_rwkv_state_cache_checkpoint_writes_safely(backend)
+            if claimed:
+                _finish_rwkv_state_cache_checkpoint_writes_safely(backend)
         finally:
             try:
-                _reviewer_backend_execution_lock.release()
+                if claimed:
+                    _finish_reviewer_backend_warmup(key, warmup_generation)
             finally:
-                _finish_reviewer_backend_warmup(key, warmup_generation)
+                _reviewer_backend_execution_lock.release()
 
 
 def _reviewer_backend_warmup_pending(reviewer: object) -> bool:
@@ -5240,6 +5447,10 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             on_done(clear_pending)
 
     def fail(stage: str) -> None:
+        if not should_continue():
+            logger.debug("RWKV deck browser count %s cancelled", stage)
+            finish()
+            return
         logger.exception("RWKV deck browser count %s failed", stage)
         finish(clear_pending=True)
 
@@ -7445,6 +7656,13 @@ def _resolved_fsrs_preset_id(reviewer: object, card_id: int) -> str | None:
     if isinstance(resolved_preset_id, str) and resolved_preset_id:
         return resolved_preset_id
 
+    cache = _resolved_preset_id_cache.setdefault(
+        _preset_id_cache_key(reviewer),
+        {},
+    )
+    if card_id in cache:
+        return cache[card_id]
+
     mw = getattr(reviewer, "mw", None)
     col = getattr(mw, "col", None)
     fsrs_preset_for_card = getattr(col, "fsrs_preset_for_card", None)
@@ -7457,7 +7675,11 @@ def _resolved_fsrs_preset_id(reviewer: object, card_id: int) -> str | None:
         logger.debug("failed to resolve FSRS preset for RWKV review input")
         return None
 
-    return preset_id if isinstance(preset_id, str) and preset_id else None
+    if isinstance(preset_id, str) and preset_id:
+        cache[card_id] = preset_id
+        return preset_id
+
+    return None
 
 
 def _resolved_fsrs_preset_ids(
@@ -7604,6 +7826,28 @@ def _reviewer_backend_warmed_up(reviewer: object) -> bool:
         )
 
 
+def defer_reviewer_backend_cache_restore(
+    reviewer: object,
+    *,
+    reason: str,
+) -> None:
+    """Keep review-time prediction readers from restoring a known-stale cache."""
+
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return
+    with _reviewer_backend_state_lock:
+        if _reviewer_backend is None or id(_reviewer_backend) != key[0]:
+            return
+        generation = _reviewer_backend_warmup_generations.get(key, 0)
+        _reviewer_backend_cold_fallback_generations[key] = generation
+    logger.debug(
+        "RWKV review-time cache restore deferred: reason=%s generation=%s",
+        reason,
+        generation,
+    )
+
+
 def _resident_state_identity(
     history: RwkvHistoricalReviewInputs,
 ) -> RwkvResidentStateIdentity:
@@ -7623,12 +7867,21 @@ def _invalidate_reviewer_backend_state(
     reviewer: object,
     *,
     reason: str,
+    preserve_cold_fallback: bool = False,
+    expected_mutation_context: _ReviewerBackendMutationContext | None = None,
 ) -> None:
-    key = _reviewer_backend_warmup_key(reviewer)
     invalidated = False
     was_warm = False
     generation = 0
     with _reviewer_backend_state_lock:
+        if expected_mutation_context is not None and not (
+            _reviewer_backend_mutation_context_is_current(
+                expected_mutation_context,
+                reviewer,
+            )
+        ):
+            return
+        key = _reviewer_backend_warmup_key(reviewer)
         _clear_rwkv_review_queue_score_cache()
         if (
             key is not None
@@ -7637,10 +7890,19 @@ def _invalidate_reviewer_backend_state(
         ):
             invalidated = True
             was_warm = key in _reviewer_backend_warmup_states
+            previous_generation = _reviewer_backend_warmup_generations.get(key, 0)
+            cold_fallback = (
+                _reviewer_backend_cold_fallback_generations.get(key)
+                == previous_generation
+            )
             _reviewer_backend_warmup_states.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
-            generation = _reviewer_backend_warmup_generations.get(key, 0) + 1
+            generation = previous_generation + 1
             _reviewer_backend_warmup_generations[key] = generation
+            if preserve_cold_fallback and cold_fallback:
+                _reviewer_backend_cold_fallback_generations[key] = generation
+            else:
+                _reviewer_backend_cold_fallback_generations.pop(key, None)
     try:
         _clear_rwkv_review_queue_scores(reviewer)
     except Exception:
@@ -7671,6 +7933,7 @@ def _publish_reviewer_backend_state(
         backend_changed = current_backend_id != key[0]
         if current_generation == expected_generation and not backend_changed:
             _reviewer_backend_warmup_states[key] = identity
+            _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache[key] = (
                 current_generation,
                 identity,
@@ -7690,18 +7953,34 @@ def _mark_reviewer_backend_identity_unknown(
     reviewer: object,
     *,
     reason: str,
+    expected_mutation_context: _ReviewerBackendMutationContext | None = None,
 ) -> None:
-    key = _reviewer_backend_warmup_key(reviewer)
-    if key is None:
-        return
     with _reviewer_backend_state_lock:
+        if expected_mutation_context is not None and not (
+            _reviewer_backend_mutation_context_is_current(
+                expected_mutation_context,
+                reviewer,
+            )
+        ):
+            return
+        key = _reviewer_backend_warmup_key(reviewer)
+        if key is None:
+            return
         if _reviewer_backend is None or id(_reviewer_backend) != key[0]:
             return
+        previous_generation = _reviewer_backend_warmup_generations.get(key, 0)
+        cold_fallback = (
+            _reviewer_backend_cold_fallback_generations.get(key) == previous_generation
+        )
         if key in _reviewer_backend_warmup_states:
             _reviewer_backend_warmup_states[key] = None
         _rwkv_memorised_history_identity_cache.pop(key, None)
-        generation = _reviewer_backend_warmup_generations.get(key, 0) + 1
+        generation = previous_generation + 1
         _reviewer_backend_warmup_generations[key] = generation
+        if cold_fallback:
+            _reviewer_backend_cold_fallback_generations[key] = generation
+        else:
+            _reviewer_backend_cold_fallback_generations.pop(key, None)
         _rwkv_review_queue_score_generations.clear()
     logger.debug(
         "RWKV resident identity cleared: reason=%s generation=%s",
@@ -7723,12 +8002,14 @@ def _invalidate_reviewer_backend_states(
                 _reviewer_backend_warmup_states.keys()
                 | _reviewer_backend_warmup_generations.keys()
                 | _reviewer_backend_warmup_pending_generations.keys()
+                | _reviewer_backend_cold_fallback_generations.keys()
                 | _rwkv_memorised_history_identity_cache.keys()
             )
             if key[0] == backend_id
         ]
         for key in matching_keys:
             _reviewer_backend_warmup_states.pop(key, None)
+            _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
             _reviewer_backend_warmup_generations[key] = (
                 _reviewer_backend_warmup_generations.get(key, 0) + 1
@@ -7756,6 +8037,7 @@ def _mark_reviewer_backend_identities_unknown(
                 _reviewer_backend_warmup_states.keys()
                 | _reviewer_backend_warmup_generations.keys()
                 | _reviewer_backend_warmup_pending_generations.keys()
+                | _reviewer_backend_cold_fallback_generations.keys()
                 | _rwkv_memorised_history_identity_cache.keys()
             )
             if key[0] == backend_id
@@ -7763,6 +8045,7 @@ def _mark_reviewer_backend_identities_unknown(
         for key in matching_keys:
             if key in _reviewer_backend_warmup_states:
                 _reviewer_backend_warmup_states[key] = None
+            _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
             _reviewer_backend_warmup_generations[key] = (
                 _reviewer_backend_warmup_generations.get(key, 0) + 1
@@ -7777,7 +8060,7 @@ def _mark_reviewer_backend_identities_unknown(
         )
 
 
-def _begin_forced_reviewer_backend_warmup(
+def _begin_forced_reviewer_backend_warmup_with_execution_locked(
     backend: RwkvReviewerBackend,
     key: tuple[int, int],
 ) -> _ReviewerBackendWarmupStart:
@@ -7785,6 +8068,7 @@ def _begin_forced_reviewer_backend_warmup(
         if _reviewer_backend is not backend:
             return _ReviewerBackendWarmupStart(None, False)
         _reviewer_backend_warmup_states.pop(key, None)
+        _reviewer_backend_cold_fallback_generations.pop(key, None)
         _rwkv_memorised_history_identity_cache.pop(key, None)
         generation = _reviewer_backend_warmup_generations.get(key, 0) + 1
         _reviewer_backend_warmup_generations[key] = generation
@@ -7794,7 +8078,7 @@ def _begin_forced_reviewer_backend_warmup(
         return _ReviewerBackendWarmupStart(generation, False)
 
 
-def _begin_reviewer_backend_warmup(
+def _begin_reviewer_backend_warmup_state_with_execution_locked(
     reviewer: object,
     backend: RwkvReviewerBackend,
     key: tuple[int, int],
@@ -7803,7 +8087,10 @@ def _begin_reviewer_backend_warmup(
     require_retrievability_cache: bool,
 ) -> _ReviewerBackendWarmupStart:
     if force_rebuild:
-        return _begin_forced_reviewer_backend_warmup(backend, key)
+        return _begin_forced_reviewer_backend_warmup_with_execution_locked(
+            backend,
+            key,
+        )
 
     while True:
         with _reviewer_backend_state_lock:
@@ -7839,6 +8126,46 @@ def _begin_reviewer_backend_warmup(
             return _ReviewerBackendWarmupStart(observed_generation, False)
 
 
+def _begin_reviewer_backend_warmup(
+    reviewer: object,
+    backend: RwkvReviewerBackend,
+    key: tuple[int, int],
+    *,
+    force_rebuild: bool,
+    require_retrievability_cache: bool,
+) -> _ReviewerBackendWarmupStart:
+    """Claim warm-up state only after owning backend execution.
+
+    A returned generation means the execution lock remains held for the caller.
+    """
+
+    _reviewer_backend_execution_lock.acquire()
+    execution_claimed = False
+    try:
+        start = _begin_reviewer_backend_warmup_state_with_execution_locked(
+            reviewer,
+            backend,
+            key,
+            force_rebuild=force_rebuild,
+            require_retrievability_cache=require_retrievability_cache,
+        )
+        if start.generation is None:
+            return start
+        if not _reviewer_backend_warmup_is_current(
+            reviewer,
+            backend,
+            key,
+            start.generation,
+        ):
+            _finish_reviewer_backend_warmup(key, start.generation)
+            return _ReviewerBackendWarmupStart(None, False)
+        execution_claimed = True
+        return start
+    finally:
+        if not execution_claimed:
+            _reviewer_backend_execution_lock.release()
+
+
 def _warm_up_reviewer_backend(
     reviewer: object,
     *,
@@ -7872,14 +8199,6 @@ def _warm_up_reviewer_backend(
         _clear_rwkv_review_queue_scores(reviewer)
     except Exception:
         logger.exception("failed to clear RWKV queue scores before warm-up")
-    if not _acquire_reviewer_backend_execution(
-        reviewer,
-        backend,
-        key,
-        warmup_generation,
-    ):
-        _finish_reviewer_backend_warmup(key, warmup_generation)
-        return False
 
     def is_current() -> bool:
         return _reviewer_backend_warmup_is_current(
@@ -8038,9 +8357,9 @@ def _warm_up_reviewer_backend(
             _finish_rwkv_state_cache_checkpoint_writes_safely(backend)
         finally:
             try:
-                _reviewer_backend_execution_lock.release()
-            finally:
                 _finish_reviewer_backend_warmup(key, warmup_generation)
+            finally:
+                _reviewer_backend_execution_lock.release()
 
 
 def _reviewer_backend_warmup_context(
@@ -16709,11 +17028,18 @@ def _collection_content_change_card_ids(
     reviewer: object,
     initiator: object | None,
 ) -> tuple[int, ...]:
+    nested_editor = getattr(initiator, "editor", None)
     card = getattr(initiator, "card", None)
+    if card is None:
+        card = getattr(nested_editor, "card", None)
     card_id = _valid_card_id(getattr(card, "id", None))
     note_id = _valid_card_id(getattr(initiator, "nid", None))
     if note_id is None:
+        note_id = _valid_card_id(getattr(nested_editor, "nid", None))
+    if note_id is None:
         note = getattr(initiator, "note", None)
+        if note is None:
+            note = getattr(nested_editor, "note", None)
         note_id = _valid_card_id(getattr(note, "id", None))
 
     if note_id is None:
@@ -16818,7 +17144,7 @@ def study_queues_did_change(
 
     reviewer = getattr(mw, "reviewer", None)
     if reviewer is not None and (
-        initiator is reviewer or _consume_reviewer_undo_queue_change(reviewer)
+        initiator is reviewer or _consume_reviewer_handled_study_queue_change(reviewer)
     ):
         return
 
