@@ -13242,6 +13242,16 @@ def _finish_rwkv_state_cache_checkpoint_writes_safely(backend: object) -> None:
         )
 
 
+@contextmanager
+def _rwkv_state_cache_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    connection = sqlite3.connect(path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 def _prune_rwkv_state_cache_store(
     path: Path,
     store_generation: str,
@@ -13253,7 +13263,7 @@ def _prune_rwkv_state_cache_store(
         head_segment_id,
     )
     placeholders = ",".join("?" for _ in reachable_segment_ids)
-    with sqlite3.connect(path) as connection:
+    with _rwkv_state_cache_connection(path) as connection:
         connection.execute(
             f"delete from segment_state_chunks where segment_id not in ({placeholders})",
             reachable_segment_ids,
@@ -14025,7 +14035,7 @@ def _read_rwkv_state_cache_store_segment_history(
 ) -> RwkvHistoricalReviewInputs:
     if not path.is_file():
         raise FileNotFoundError(path)
-    with sqlite3.connect(path) as connection:
+    with _rwkv_state_cache_connection(path) as connection:
         schema_version = connection.execute("pragma user_version").fetchone()
         if schema_version != (_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION,):
             raise ValueError("unsupported RWKV state-cache store schema")
@@ -14098,7 +14108,7 @@ def _rwkv_state_cache_store_segment_chain(
         raise FileNotFoundError(path)
     chain: list[int] = []
     seen: set[int] = set()
-    with sqlite3.connect(path) as connection:
+    with _rwkv_state_cache_connection(path) as connection:
         schema_version = connection.execute("pragma user_version").fetchone()
         generation_row = connection.execute(
             "select value from store_metadata where key = 'generation'"

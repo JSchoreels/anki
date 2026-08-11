@@ -6050,6 +6050,51 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
         ).fetchall() == [(1,), (2,)]
 
 
+def test_rwkv_state_cache_connection_always_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_connect = sqlite3.connect
+
+    class TrackingConnection:
+        def __init__(self, path: Path) -> None:
+            self.connection = real_connect(path)
+            self.closed = False
+
+        def __enter__(self) -> TrackingConnection:
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return bool(self.connection.__exit__(*args))
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.connection, name)
+
+        def close(self) -> None:
+            self.closed = True
+            self.connection.close()
+
+    connections: list[TrackingConnection] = []
+
+    def connect(path: Path) -> TrackingConnection:
+        connection = TrackingConnection(path)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(rwkv_scheduler.sqlite3, "connect", connect)
+    store_path = tmp_path / "state.sqlite3"
+
+    with rwkv_scheduler._rwkv_state_cache_connection(store_path) as connection:
+        connection.execute("create table test (value integer)")
+    assert connections[-1].closed
+
+    with pytest.raises(RuntimeError):
+        with rwkv_scheduler._rwkv_state_cache_connection(store_path):
+            raise RuntimeError
+    assert connections[-1].closed
+
+
 def test_unchanged_rwkv_delta_store_reads_effective_segment_without_history_scan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

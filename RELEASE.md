@@ -26,9 +26,10 @@ Current application version: `26.05+fsrs7`
 
 ### Fixed
 
-- Retry RWKV state-cache publication when Windows temporarily locks an existing
-  cache file, and warn when rebuilt state is usable only for the current session
-  because it could not be saved for the next launch.
+- Explicitly close RWKV state-cache database readers before publication, retry
+  when Windows temporarily locks an existing cache file, and warn when rebuilt
+  state is usable only for the current session because it could not be saved for
+  the next launch.
 - Keep fast consecutive answers, undo, and redo responsive while an RWKV queue
   refresh is still running, without discarding the resident model state.
 - Keep review responsive with a cold RWKV state by keeping cache restoration off
