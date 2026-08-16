@@ -79,19 +79,33 @@ state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.
 While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
-the recurrent state, while collection mutations that can change replay inputs
-invalidate the resident state entirely. Each restore or rebuild is tied to the
+the recurrent state. Before applying that answer, Anki falls back to canonical
+recovery if a new learning start replaces older retained history or if the
+answer changed dynamic preset routing. Append-only **Grade Now** batches apply
+their newly written review rows to the same resident state, retain grouped
+undo/redo snapshots, and invalidate transient queue work. Batches containing
+only excluded cram rows also retain an identity-only rollback entry. If a batch
+cannot be reconciled safely, Anki invalidates the resident state instead. Known
+non-review mutations and their undo/redo retain the resident state when affected
+historical cards keep the same canonical membership and card, note, deck, and
+preset identities. Broad mutations such as filtered-deck rebuilds remain
+conservative when dynamic preset routing rules make the affected identities
+ambiguous. Other collection mutations that can change replay inputs invalidate
+the resident state entirely. Each restore or rebuild is tied to the
 collection generation at which it started, so a result that finishes after a
 review, undo, redo, deck move, preset change, or similar mutation cannot be
 published as ready. Memorised history reuses the resident identity while it is
 known; otherwise it derives the identity once for the current mutation generation
 and reuses that canonical result. A failed disk-cache write therefore cannot make
 stale on-disk metadata authoritative for the in-memory runtime.
-Selecting the current deck through the deck browser still clears transient queue
-scores and in-flight queue work, but retains the collection-wide resident history
-because it does not alter replay inputs. When the resident and persisted history
-identities match, Anki also advances the persisted collection marker so this
-queue-only change does not force a full cache validation on the next launch.
+Selecting the current deck or note type, changing deck/sidebar collapse state,
+adding a new note, deck, or note type, renaming or reparenting decks without
+ambiguous dynamic preset routing, and safely reconciled scheduling, note, tag,
+or flag changes retain the collection-wide resident history because they do not
+alter replay inputs. They still clear any transient scores or in-flight work
+that may depend on the changed content. When the resident and persisted history
+identities match, Anki also advances the persisted collection marker so these
+changes do not force a full cache validation on the next launch.
 
 State-cache work is serialized across profile changes. Workload simulations and
 calibration replays also hide the resident state while they temporarily use the
@@ -238,7 +252,13 @@ then waits for automatic startup sync to finish before attempting the
 operational cache restore. When the saved collection modification marker and
 replay semantics still match, Anki verifies the persisted cache files directly
 and skips rebuilding the complete canonical history in Python. A missing or
-changed marker falls back to the full canonical validation and refreshes the
+changed marker first computes the canonical retained-history fingerprint inside
+the Rust collection backend and asks it to validate the expected manifest
+identity. If Rust returns a match and the replay semantics also match, Anki
+verifies and restores the cache without transferring or
+materializing the review history in Python. A fingerprint mismatch or an
+unavailable backend falls back to the full canonical Python validation, which
+also preserves checkpoint recovery for changed history, and refreshes the
 marker after success. Anki offers to rebuild only if restoration and validation
 fail. This ordering avoids restoring the pre-sync state and immediately
 reconciling it in a second progress operation. Deck-count preparation remains
@@ -246,6 +266,16 @@ pending during this startup window instead of starting its own cache restore.
 Checkpoint construction and recovery validation derive all requested history
 prefixes in one chronological pass, and repeated model-identity checks reuse
 the content hash until the model file changes.
+
+Developers can compare the canonical Python builder with the Rust fingerprint
+on an explicit copied collection database. The command refuses an omitted path;
+never pass a live profile database:
+
+```sh
+just rwkv-history-fingerprint-bench \
+  --collection-copy /path/to/copied/collection.anki2 \
+  --rounds 5
+```
 
 After collection sync, Anki reconciles resident RWKV state only when sync
 downloaded collection changes. A no-change sync, or a sync that only uploads
@@ -732,11 +762,14 @@ short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 `fold_index`, and `source`.
 
 The deck options action **Calculate Calibration Graph Data** replays historical
-queries only for this derived table, uses a chronological 70% train / 30% test
-split, writes training rows with role `final_fit`, writes held-out rows with
-role `test_fold`, and restores the active RWKV backend state afterward.
-Calibration graph consumers should ignore `final_fit` rows and use only
-`test_fold` plus future `post_optimization` rows.
+queries only for this derived table. When role-aware FSRS calibration data is
+available, RWKV copies the active FSRS `validation_fold` review ids and fold
+indices into its `test_fold` rows. Other historical RWKV rows are written as
+`final_fit`, so comparison graphs evaluate both models on the same reviews.
+If FSRS validation data is unavailable, RWKV retains the chronological 70%
+train / 30% test split as a standalone fallback. The operation restores the
+active RWKV backend state afterward. Calibration graph consumers should ignore
+`final_fit` rows and use only `test_fold` plus future `post_optimization` rows.
 Add-ons that need these rows can call
 `aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
 The synchronous API returns immediately when current role-aware data is

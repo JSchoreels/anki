@@ -24,8 +24,30 @@ repeated here unless they materially affect a fork feature.
 
 Current application version: `26.05+fsrs7`
 
+### Added
+
+- Add a portable macOS edition that keeps profiles, collections, media, add-ons,
+  backups, preferences, logs, and temporary files beside the app, and can run at
+  the same time as a normal Anki installation without sharing local state.
+
 ### Fixed
 
+- Align RWKV calibration test rows and fold indices with FSRS validation folds,
+  so UM+ compares both models on the same review samples instead of narrowing
+  the comparison to RWKV's independent 30% holdout.
+- Speed up RWKV state-cache validation after unrelated collection changes by
+  fingerprinting retained review history in Rust instead of transferring and
+  materializing the complete history in Python.
+- Keep the resident RWKV state after append-only Grade Now operations, including
+  excluded cram-only batches, and retain grouped rollback snapshots for their
+  undo/redo, avoiding unnecessary full-history cache validation.
+- Preserve resident RWKV history across current-deck selection, deck-tree
+  collapse, deck rename/reparent, new note/deck/note-type creation, current
+  note-type selection, RWKV rescheduling, bulk content edits, and safely
+  reconciled scheduling or filtered-deck mutations—including their undo/redo—
+  when canonical history routing remains unchanged.
+- Fall back to canonical RWKV recovery when a normal answer starts a replacement
+  learning sequence or changes dynamic preset routing.
 - Explicitly close RWKV state-cache database readers before publication, retry
   when Windows temporarily locks an existing cache file, and warn when rebuilt
   state is usable only for the current session because it could not be saved for

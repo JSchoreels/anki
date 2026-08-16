@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from anki.collection import OpChanges, OpChangesWithId
+from anki.collection import Collection, OpChanges, OpChangesWithId
 from anki.models import ChangeNotetypeRequest, NotetypeDict, NotetypeId
 from anki.stdmodels import StockNotetypeKind
 from aqt.operations import CollectionOp
@@ -15,7 +15,15 @@ def add_notetype_legacy(
     parent: QWidget,
     notetype: NotetypeDict,
 ) -> CollectionOp[OpChangesWithId]:
-    return CollectionOp(parent, lambda col: col.models.add_dict(notetype))
+    def add_notetype_preserving_rwkv_state(col: Collection) -> OpChangesWithId:
+        from aqt import rwkv_scheduler
+
+        return rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+            col,
+            lambda: col.models.add_dict(notetype),
+        )
+
+    return CollectionOp(parent, add_notetype_preserving_rwkv_state)
 
 
 def update_notetype_legacy(

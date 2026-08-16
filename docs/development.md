@@ -239,6 +239,20 @@ just macos-installer
 This uses the same Briefcase build path as `tools/build-installer`, packages an
 unsigned local `.dmg`, and writes it under `out/installer/dist`.
 
+To build an isolated macOS portable edition, run:
+
+```
+just macos-portable
+```
+
+This writes a `.zip` under `out/portable/dist`. The archive contains a distinct
+`Anki Portable.app`, an adjacent `Anki Portable Data` folder, and usage notes.
+Keep the extracted folder together: the portable app stores its preferences,
+profiles, collections, media, add-ons, backups, logs, and temporary files in
+that data folder. It has a separate macOS bundle identifier and single-instance
+key, does not register Anki package file associations, and disables application
+updates so it can run alongside a normal Anki installation without changing it.
+
 ### Issues During Building
 
 If you are experiencing issues building the installer, make sure that all dependencies

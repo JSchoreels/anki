@@ -32,7 +32,14 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
-from anki import decks_pb2, frontend_pb2, generic_pb2, hooks
+from anki import (
+    decks_pb2,
+    frontend_pb2,
+    generic_pb2,
+    hooks,
+    image_occlusion_pb2,
+    notes_pb2,
+)
 from anki.cards import CardId
 from anki.collection import (
     NestedOpChanges,
@@ -1361,7 +1368,25 @@ def raw_backend_request(endpoint: str) -> Callable[[], bytes]:
     assert hasattr(RustBackend, f"{endpoint}_raw")
 
     def wrapped() -> bytes:
-        output = getattr(aqt.mw.col._backend, f"{endpoint}_raw")(request.data)
+        raw_request = request.data
+
+        def mutation() -> bytes:
+            return getattr(
+                aqt.mw.col._backend,
+                f"{endpoint}_raw",
+            )(raw_request)
+
+        rwkv_note_ids = _rwkv_raw_backend_mutation_note_ids(endpoint, raw_request)
+        output = (
+            aqt.rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+                aqt.mw.col,
+                mutation,
+                note_ids=rwkv_note_ids,
+                force_reconciliation=True,
+            )
+            if rwkv_note_ids is not None
+            else mutation()
+        )
         op_changes_type = int(request.headers.get("Anki-Op-Changes", "0"))
         if op_changes_type:
             op_message_types = (OpChanges, OpChangesOnly, NestedOpChanges)
@@ -1383,6 +1408,23 @@ def raw_backend_request(endpoint: str) -> Callable[[], bytes]:
         return output
 
     return wrapped
+
+
+def _rwkv_raw_backend_mutation_note_ids(
+    endpoint: str,
+    data: bytes,
+) -> tuple[int, ...] | None:
+    if endpoint in {"add_note", "add_image_occlusion_note"}:
+        return ()
+    if endpoint == "update_notes":
+        update = notes_pb2.UpdateNotesRequest()
+        update.ParseFromString(data)
+        return tuple(note.id for note in update.notes)
+    if endpoint == "update_image_occlusion_note":
+        update_image = image_occlusion_pb2.UpdateImageOcclusionNoteRequest()
+        update_image.ParseFromString(data)
+        return (update_image.note_id,)
+    return None
 
 
 # all methods in here require a collection

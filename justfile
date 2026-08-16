@@ -36,6 +36,12 @@ macos-installer:
     ./tools/build-installer
     @echo "Installer written under out/installer/dist/"
 
+# Build a local isolated macOS portable app (.zip)
+macos-portable:
+    @if [ "{{ os() }}" != "macos" ]; then echo "macos-portable must be run on macOS" >&2; exit 1; fi
+    RELEASE=2 {{ ninja }} portable_package
+    @echo "Portable app written under out/portable/dist/"
+
 # Build and run all checks (lint + test) - lets ninja handle dependencies
 check:
     {{ ninja }} pylib qt check
@@ -185,6 +191,11 @@ complexipy-diff:
 rwkv-review-type-repair *args:
     {{ ninja }} pyenv
     {{ python }} qt/tools/rwkv_review_type_repair.py {{ args }}
+
+# Compare Python and Rust RWKV history fingerprints on a copied collection.
+rwkv-history-fingerprint-bench *args:
+    {{ ninja }} pylib qt
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_history_fingerprint_bench.py {{ args }}
 
 # Measure RWKV review-type metrics on selected current deck ids in a copied collection.
 rwkv-review-type-metrics collection target-deck-ids:

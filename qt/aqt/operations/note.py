@@ -3,14 +3,32 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
-from anki.collection import OpChanges, OpChangesWithCount
+from anki.collection import Collection, OpChanges, OpChangesWithCount
 from anki.decks import DeckId
 from anki.notes import Note, NoteId
 from aqt.operations import CollectionOp
 from aqt.qt import QWidget
 from aqt.utils import tooltip, tr
+
+_T = TypeVar("_T")
+
+
+def _run_preserving_rwkv_state(
+    col: Collection,
+    mutation: Callable[[], _T],
+    *,
+    note_ids: Sequence[NoteId] = (),
+) -> _T:
+    from aqt import rwkv_scheduler
+
+    return rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        col,
+        mutation,
+        note_ids=note_ids,
+    )
 
 
 def add_note(
@@ -19,17 +37,35 @@ def add_note(
     note: Note,
     target_deck_id: DeckId,
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.add_note(note, target_deck_id))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.add_note(note, target_deck_id),
+        ),
+    )
 
 
 def update_note(*, parent: QWidget, note: Note) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.update_note(note))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.update_note(note),
+            note_ids=[note.id],
+        ),
+    )
 
 
 def update_notes(*, parent: QWidget, notes: Sequence[Note]) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.update_notes(notes)).success(
-        lambda _: tooltip(tr.browsing_cards_updated(count=len(notes)))
-    )
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.update_notes(notes),
+            note_ids=[note.id for note in notes],
+        ),
+    ).success(lambda _: tooltip(tr.browsing_cards_updated(count=len(notes))))
 
 
 def remove_notes(
@@ -54,13 +90,17 @@ def find_and_replace(
 ) -> CollectionOp[OpChangesWithCount]:
     return CollectionOp(
         parent,
-        lambda col: col.find_and_replace(
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.find_and_replace(
+                note_ids=note_ids,
+                search=search,
+                replacement=replacement,
+                regex=regex,
+                field_name=field_name,
+                match_case=match_case,
+            ),
             note_ids=note_ids,
-            search=search,
-            replacement=replacement,
-            regex=regex,
-            field_name=field_name,
-            match_case=match_case,
         ),
     ).success(
         lambda out: tooltip(

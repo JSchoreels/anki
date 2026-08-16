@@ -21,6 +21,7 @@ use std::fmt::Write;
 
 pub(crate) use revlog::FsrsReviewRetrievabilityCacheRow;
 pub(crate) use revlog::FsrsReviewRetrievabilitySampleRole;
+pub(crate) use revlog::RwkvHistoricalReviewRow;
 pub(crate) use revlog::RwkvReviewRetrievabilityCacheRow;
 pub(crate) use revlog::RwkvReviewRetrievabilitySampleRole;
 pub(crate) use sqlite::ProcessTextFlags;

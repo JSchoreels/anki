@@ -96,6 +96,20 @@ pub(crate) struct StudiedToday {
     pub seconds: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RwkvHistoricalReviewRow {
+    pub(crate) review_id: i64,
+    pub(crate) card_id: i64,
+    pub(crate) note_id: i64,
+    pub(crate) deck_id: i64,
+    pub(crate) ease: i64,
+    pub(crate) duration_millis: i64,
+    pub(crate) review_kind: i64,
+    pub(crate) interval_days: i64,
+    pub(crate) ease_factor: i64,
+    pub(crate) is_learning_start: bool,
+}
+
 impl FromSql for RevlogReviewKind {
     fn column_result(value: ValueRef<'_>) -> std::result::Result<Self, FromSqlError> {
         if let ValueRef::Integer(i) = value {
@@ -552,6 +566,100 @@ impl SqliteStorage {
             .prepare_cached(concat!(include_str!("get.sql"), " where cid=?"))?
             .query_and_then([cid], row_to_revlog_entry)?
             .collect()
+    }
+
+    pub(crate) fn rwkv_historical_review_rows(
+        &self,
+        ignored_review_ids: &[RevlogId],
+    ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
+        let (ignored_clause, active_ignored_review_ids) = if ignored_review_ids.is_empty() {
+            (String::new(), Vec::new())
+        } else {
+            let mut ids = String::new();
+            ids_to_string(&mut ids, ignored_review_ids);
+            let active_sql = format!(
+                "select r.id
+                 from revlog r
+                 join cards c on c.id = r.cid
+                 where r.ease between 1 and 4
+                   and r.type in (0, 1, 2, 3, 4, 5)
+                   and not (r.type = 3 and r.factor = 0)
+                   and r.id in {ids}
+                 order by r.id"
+            );
+            let active = self
+                .db
+                .prepare(&active_sql)?
+                .query_map([], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<i64>, _>>()?;
+            (format!("and r.id not in {ids}"), active)
+        };
+        let sql = format!(
+            "
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    case when c.odid != 0 then c.odid else c.did end as deck_id,
+    r.ease,
+    r.time,
+    r.type,
+    cast(r.ivl as integer) as interval_days,
+    cast(r.factor as integer) as ease_factor,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+    {ignored_clause}
+), retained_starts as (
+  select
+    cid,
+    coalesce(
+      max(case when type = 0 and (previous_type is null or previous_type != 0) then id end),
+      min(id)
+    ) as start_id
+  from eligible
+  group by cid
+)
+select
+  e.id,
+  e.cid,
+  e.nid,
+  e.deck_id,
+  e.ease,
+  e.time,
+  e.type,
+  e.interval_days,
+  e.ease_factor,
+  e.id = s.start_id and e.type = 0
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid"
+        );
+        let rows = self
+            .db
+            .prepare(&sql)?
+            .query_map([], |row| {
+                Ok(RwkvHistoricalReviewRow {
+                    review_id: row.get(0)?,
+                    card_id: row.get(1)?,
+                    note_id: row.get(2)?,
+                    deck_id: row.get(3)?,
+                    ease: row.get(4)?,
+                    duration_millis: row.get(5)?,
+                    review_kind: row.get(6)?,
+                    interval_days: row.get(7)?,
+                    ease_factor: row.get(8)?,
+                    is_learning_start: row.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok((rows, active_ignored_review_ids))
     }
 
     pub(crate) fn get_revlog_entries_for_searched_cards_after_stamp(

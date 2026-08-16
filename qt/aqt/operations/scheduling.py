@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from types import SimpleNamespace
+from typing import TypeVar
 
 import aqt
 import aqt.forms
@@ -26,6 +27,27 @@ from anki.scheduler.v3 import Scheduler as V3Scheduler
 from aqt.operations import CollectionOp
 from aqt.qt import *
 from aqt.utils import disable_help_button, getText, tooltip, tr
+
+_T = TypeVar("_T")
+
+
+def _run_preserving_rwkv_state(
+    col: Collection,
+    mutation: Callable[[], _T],
+    *,
+    card_ids: Sequence[int] = (),
+    note_ids: Sequence[int] = (),
+    require_no_preset_overlay: bool = False,
+) -> _T:
+    from aqt import rwkv_scheduler
+
+    return rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        col,
+        mutation,
+        card_ids=card_ids,
+        note_ids=note_ids,
+        require_no_preset_overlay=require_no_preset_overlay,
+    )
 
 
 def set_due_date_dialog(
@@ -57,7 +79,12 @@ def set_due_date_dialog(
         return None
     else:
         return CollectionOp(
-            parent, lambda col: col.sched.set_due_date(card_ids, days, config_key)
+            parent,
+            lambda col: _run_preserving_rwkv_state(
+                col,
+                lambda: col.sched.set_due_date(card_ids, days, config_key),
+                card_ids=card_ids,
+            ),
         ).success(
             lambda _: tooltip(
                 tr.scheduling_set_due_date_done(cards=len(card_ids)),
@@ -73,6 +100,10 @@ def grade_now(
     ease: int,
     card_options: Sequence[GradeNowCardOptions] | None = None,
 ) -> CollectionOp[OpChanges]:
+    assert aqt.mw
+    mw = aqt.mw
+    card_ids = tuple(card_ids)
+    card_options = tuple(card_options or ())
     if ease == 1:
         rating = CardAnswer.AGAIN
     elif ease == 2:
@@ -81,13 +112,27 @@ def grade_now(
         rating = CardAnswer.GOOD
     else:
         rating = CardAnswer.EASY
-    return CollectionOp(
-        parent,
-        lambda col: col._backend.grade_now(
+
+    def grade_now_v3(col: Collection) -> OpChanges:
+        from aqt import rwkv_scheduler
+
+        reviewer = getattr(mw, "reviewer", None)
+        reconciliation = (
+            rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, card_ids)
+            if reviewer is not None
+            else None
+        )
+        changes = col._backend.grade_now(
             card_ids=card_ids,
             rating=rating,
-            card_options=card_options or [],
-        ),
+            card_options=card_options,
+        )
+        rwkv_scheduler.record_grade_now_answers(reconciliation)
+        return changes
+
+    return CollectionOp(
+        parent,
+        grade_now_v3,
     ).success(
         lambda _: tooltip(
             tr.scheduling_graded_cards_done(cards=len(card_ids)), parent=parent
@@ -121,11 +166,15 @@ def forget_cards(
 
     return CollectionOp(
         parent,
-        lambda col: col.sched.schedule_cards_as_new(
-            card_ids,
-            restore_position=restore_position,
-            reset_counts=reset_counts,
-            context=context,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.schedule_cards_as_new(
+                card_ids,
+                restore_position=restore_position,
+                reset_counts=reset_counts,
+                context=context,
+            ),
+            card_ids=card_ids,
         ),
     ).success(
         lambda _: tooltip(
@@ -197,12 +246,17 @@ def reposition_new_cards(
 ) -> CollectionOp[OpChangesWithCount]:
     return CollectionOp(
         parent,
-        lambda col: col.sched.reposition_new_cards(
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.reposition_new_cards(
+                card_ids=card_ids,
+                starting_from=starting_from,
+                step_size=step_size,
+                randomize=randomize,
+                shift_existing=shift_existing,
+            ),
             card_ids=card_ids,
-            starting_from=starting_from,
-            step_size=step_size,
-            randomize=randomize,
-            shift_existing=shift_existing,
+            require_no_preset_overlay=shift_existing,
         ),
     ).success(
         lambda out: tooltip(
@@ -216,7 +270,14 @@ def suspend_cards(
     parent: QWidget,
     card_ids: Sequence[CardId],
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.sched.suspend_cards(card_ids))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.suspend_cards(card_ids),
+            card_ids=card_ids,
+        ),
+    )
 
 
 def suspend_note(
@@ -224,13 +285,27 @@ def suspend_note(
     parent: QWidget,
     note_ids: Sequence[NoteId],
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.sched.suspend_notes(note_ids))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.suspend_notes(note_ids),
+            note_ids=note_ids,
+        ),
+    )
 
 
 def unsuspend_cards(
     *, parent: QWidget, card_ids: Sequence[CardId]
 ) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.sched.unsuspend_cards(card_ids))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.unsuspend_cards(card_ids),
+            card_ids=card_ids,
+        ),
+    )
 
 
 def bury_cards(
@@ -238,7 +313,14 @@ def bury_cards(
     parent: QWidget,
     card_ids: Sequence[CardId],
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.sched.bury_cards(card_ids))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.bury_cards(card_ids),
+            card_ids=card_ids,
+        ),
+    )
 
 
 def bury_notes(
@@ -246,13 +328,27 @@ def bury_notes(
     parent: QWidget,
     note_ids: Sequence[NoteId],
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.sched.bury_notes(note_ids))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.bury_notes(note_ids),
+            note_ids=note_ids,
+        ),
+    )
 
 
 def unbury_cards(
     *, parent: QWidget, card_ids: Sequence[CardId]
 ) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.sched.unbury_cards(card_ids))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.unbury_cards(card_ids),
+            card_ids=card_ids,
+        ),
+    )
 
 
 def rebuild_filtered_deck(
@@ -262,7 +358,14 @@ def rebuild_filtered_deck(
 
 
 def empty_filtered_deck(*, parent: QWidget, deck_id: DeckId) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.sched.empty_filtered_deck(deck_id))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.empty_filtered_deck(deck_id),
+            require_no_preset_overlay=True,
+        ),
+    )
 
 
 def add_or_update_filtered_deck(
@@ -279,7 +382,11 @@ def _rebuild_filtered_deck(
 ) -> OpChangesWithCount:
     deck = col.sched.get_or_create_filtered_deck(deck_id=deck_id)
     _prepare_filtered_deck_retrievability_scores(col, deck.config)
-    return col.sched.rebuild_filtered_deck(deck_id)
+    return _run_preserving_rwkv_state(
+        col,
+        lambda: col.sched.rebuild_filtered_deck(deck_id),
+        require_no_preset_overlay=True,
+    )
 
 
 def _add_or_update_filtered_deck(
@@ -287,7 +394,11 @@ def _add_or_update_filtered_deck(
     deck: FilteredDeckForUpdate,
 ) -> OpChangesWithId:
     _prepare_filtered_deck_retrievability_scores(col, deck.config)
-    return col.sched.add_or_update_filtered_deck(deck)
+    return _run_preserving_rwkv_state(
+        col,
+        lambda: col.sched.add_or_update_filtered_deck(deck),
+        require_no_preset_overlay=True,
+    )
 
 
 def _prepare_filtered_deck_retrievability_scores(
@@ -319,7 +430,12 @@ def unbury_deck(
     mode: UnburyDeck.Mode.V = UnburyDeck.ALL,
 ) -> CollectionOp[OpChanges]:
     return CollectionOp(
-        parent, lambda col: col.sched.unbury_deck(deck_id=deck_id, mode=mode)
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.unbury_deck(deck_id=deck_id, mode=mode),
+            require_no_preset_overlay=True,
+        ),
     )
 
 
@@ -344,4 +460,11 @@ def custom_study(
     parent: QWidget,
     request: CustomStudyRequest,
 ) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.sched.custom_study(request))
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.sched.custom_study(request),
+            require_no_preset_overlay=True,
+        ),
+    )

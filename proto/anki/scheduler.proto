@@ -141,6 +141,11 @@ service SchedulerService {
       returns (RwkvReviewInputRowsForCardsResponse);
   rpc GetFsrsPresetIdsForCards(cards.CardIds)
       returns (FsrsPresetIdsForCardsResponse);
+  // Computes the canonical RWKV history identity inside the collection
+  // backend, avoiding a full revlog transfer through Python when validating a
+  // persisted state cache.
+  rpc RwkvHistoricalReviewFingerprint(RwkvHistoricalReviewFingerprintRequest)
+      returns (RwkvHistoricalReviewFingerprintResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -738,6 +743,37 @@ message FsrsPresetIdsForCardsResponse {
     string preset_id = 2;
   }
   repeated Item items = 1;
+}
+
+message RwkvHistoricalReviewFingerprintRequest {
+  repeated int64 ignored_review_ids = 1;
+  bool dynamic_preset_replay = 2;
+  // Add-on preset identifiers are hashed by the desktop with its persisted
+  // compatibility algorithm. Numeric deck-config identifiers need not be
+  // included.
+  map<string, int64> stable_preset_ids = 3;
+  // Supplied by the desktop so collections written before the fork's
+  // deck-config compatibility encoding retain their existing replay identity.
+  map<int64, bool> first_review_uses_creation_by_config_id = 4;
+  // When present, Rust compares the canonical history and verifies that every
+  // requested ignored review still belongs to the eligible history.
+  RwkvHistoricalReviewIdentity expected_identity = 5;
+}
+
+message RwkvHistoricalReviewIdentity {
+  int64 last_review_id = 1;
+  uint64 review_count = 2;
+  string history_hash = 3;
+}
+
+message RwkvHistoricalReviewFingerprintResponse {
+  int64 last_review_id = 1;
+  uint64 review_count = 2;
+  string history_hash = 3;
+  repeated int64 active_ignored_review_ids = 4;
+  uint64 queried_review_count = 5;
+  // False when expected_identity is absent.
+  bool history_is_valid = 6;
 }
 
 message FuzzDeltaRequest {

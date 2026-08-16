@@ -86,6 +86,15 @@ appShared = "https://ankiweb.net/shared/"
 appUpdate = "https://ankiweb.net/update/desktop"
 appHelpSite = HELP_SITE
 
+
+def is_portable() -> bool:
+    return os.environ.get("ANKI_PORTABLE") == "1"
+
+
+def application_name() -> str:
+    return "Anki Portable" if is_portable() else "Anki"
+
+
 from aqt.main import AnkiQt  # isort:skip
 from aqt.profiles import ProfileManager, VideoDriver  # isort:skip
 
@@ -683,8 +692,8 @@ def _run(argv: list[str] | None = None, exec: bool = True) -> AnkiApp | None:
         os.environ["QT_QPA_PLATFORM"] = "windows:altgr"
 
     # create the app
-    QCoreApplication.setApplicationName("Anki")
-    QGuiApplication.setDesktopFileName("anki")
+    QCoreApplication.setApplicationName(application_name())
+    QGuiApplication.setDesktopFileName("anki-portable" if is_portable() else "anki")
     app = AnkiApp(argv)
     if app.secondInstance():
         # we've signaled the primary instance, so we should close

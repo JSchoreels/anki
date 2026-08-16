@@ -707,6 +707,554 @@ def test_reviewer_answer_does_not_invalidate_rwkv_queue_caches() -> None:
     assert rpc.calls == []
 
 
+def test_grade_now_reconciles_filtered_answer_and_preserves_resident_state() -> None:
+    previous_review_id = (41 * 86_400 + 100) * 1000
+    grade_now_review_id = (42 * 86_400 + 100) * 1000
+    previous_rows = [
+        (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500),
+    ]
+    grade_now_rows = [
+        (grade_now_review_id, 1, 10, 100, 3, 0, 3, 10, 2500),
+    ]
+
+    class DB:
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select max(id) from revlog"
+            assert args == ()
+            return previous_review_id
+
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert "r.cid in (1)" in sql
+            if args:
+                assert args == (previous_review_id,)
+                assert "where r.id > ?" in sql
+                return grade_now_rows
+            assert "where r.ease between 1 and 4" in sql
+            return previous_rows
+
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.decks.get_current_id = lambda: 100
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=0, deck_id=999)
+    card.odid = 100
+    card.current_deck_id = lambda: card.odid or card.did
+    reviewer.mw.col.get_card = lambda card_id: card
+
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(
+            last_review_id=previous_review_id,
+            review_count=1,
+        )
+    )
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.25}
+
+    reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, [1])
+
+    assert reconciliation is not None
+    assert rwkv_scheduler.record_grade_now_answers(reconciliation) is True
+    assert len(runtime.answered_inputs) == 1
+    review_input = runtime.answered_inputs[0]
+    assert review_input.identity.deck_id == 100
+    assert review_input.card_type == int(RwkvReviewState.FILTERED)
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 86_400
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] is None
+
+    rwkv_scheduler.study_queues_did_change(
+        reviewer.mw,
+        initiator=None,
+        changes=collection_pb2.OpChanges(card=True, study_queues=True),
+    )
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+    assert rwkv_scheduler._rwkv_study_queue_generation == 1
+    assert not getattr(
+        reviewer,
+        rwkv_scheduler._RWKV_GRADE_NOW_RECONCILED_QUEUE_CHANGE_PENDING_ATTR,
+    )
+
+
+def test_grade_now_falls_back_when_learning_replaces_retained_history() -> None:
+    previous_review_id = (41 * 86_400 + 100) * 1000
+    grade_now_review_id = (42 * 86_400 + 100) * 1000
+
+    class DB:
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select max(id) from revlog"
+            assert args == ()
+            return previous_review_id
+
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            if args:
+                return [(grade_now_review_id, 1, 10, 100, 3, 0, 0, -60, 2500)]
+            return [(previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500)]
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_card = lambda card_id: _rwkv_card(
+        card_id=card_id,
+        note_id=10,
+        duration_millis=0,
+    )
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(
+            last_review_id=previous_review_id,
+            review_count=1,
+        )
+    )
+
+    reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, [1])
+
+    assert reconciliation is not None
+    assert rwkv_scheduler.record_grade_now_answers(reconciliation) is False
+    assert runtime.answered_inputs == []
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert not getattr(
+        reviewer,
+        rwkv_scheduler._RWKV_GRADE_NOW_RECONCILED_QUEUE_CHANGE_PENDING_ATTR,
+        False,
+    )
+
+
+@pytest.mark.parametrize("changed_deck", [False, True])
+def test_collection_mutation_reconciliation_checks_historical_routing(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_deck: bool,
+) -> None:
+    current_deck = 100
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert "select distinct cid" in sql
+            assert args == ()
+            return [1]
+
+        def all(self, sql: str, *args: object) -> list[tuple[int, int, int]]:
+            assert "select id, nid" in sql
+            assert args == ()
+            return [(1, 10, current_deck)]
+
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select mod from col"
+            assert args == ()
+            return 123
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer._rwkv_resolved_preset_id = "preset"
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolved_fsrs_preset_ids",
+        lambda _reviewer, card_ids: {card_id: "preset" for card_id in card_ids},
+    )
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+
+    reconciliation = rwkv_scheduler.prepare_collection_mutation_reconciliation(
+        reviewer,
+        [1],
+    )
+    assert reconciliation is not None
+    if changed_deck:
+        current_deck = 200
+
+    reconciled = rwkv_scheduler.record_collection_mutation_reconciliation(
+        reconciliation
+    )
+
+    assert reconciled is not changed_deck
+    if changed_deck:
+        assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    else:
+        rwkv_scheduler.study_queues_did_change(
+            reviewer.mw,
+            initiator=None,
+            changes=collection_pb2.OpChanges(card=True, study_queues=True),
+        )
+        assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+def test_collection_mutation_wrapper_preserves_metadata_only_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace(
+        scalar=lambda sql: 123 if sql == "select mod from col" else None
+    )
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+    monkeypatch.setattr("aqt.mw", reviewer.mw)
+
+    changes = rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col,
+        lambda: collection_pb2.OpChanges(config=True, study_queues=True),
+    )
+    rwkv_scheduler.study_queues_did_change(
+        reviewer.mw,
+        initiator=None,
+        changes=changes,
+    )
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._rwkv_study_queue_generation == 1
+
+
+def test_collection_mutation_wrapper_preserves_non_queue_config_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace(
+        scalar=lambda sql: 123 if sql == "select mod from col" else None
+    )
+    reviewer.mw.col.get_config = lambda _key: None
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    refreshed_markers: list[object] = []
+    monkeypatch.setattr("aqt.mw", reviewer.mw)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, identity: refreshed_markers.append(identity),
+    )
+
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col,
+        lambda: collection_pb2.OpChanges(config=True),
+    )
+    rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._dynamic_desired_retention_generation == 1
+    assert refreshed_markers == [resident_identity]
+
+
+def test_collection_content_change_refreshes_preserved_cache_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.get_config = lambda _key: None
+    reviewer.mw.col.db = SimpleNamespace()
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    refreshed_markers: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, identity: refreshed_markers.append(identity),
+    )
+
+    rwkv_scheduler.collection_content_did_change(reviewer.mw, initiator=object())
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert refreshed_markers == [resident_identity]
+
+
+def test_reconciled_collection_mutation_survives_undo_and_redo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert "select distinct cid" in sql
+            assert args == ()
+            return [1]
+
+        def all(self, sql: str, *args: object) -> list[tuple[int, int, int]]:
+            assert "select id, nid" in sql
+            assert args == ()
+            return [(1, 10, 100)]
+
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select mod from col"
+            assert args == ()
+            return 123
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_config = lambda _key: None
+    counter = _UndoCounter(reviewer)
+    counter.set(4)
+    monkeypatch.setattr("aqt.mw", reviewer.mw)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolved_fsrs_preset_ids",
+        lambda _reviewer, card_ids: {card_id: "preset" for card_id in card_ids},
+    )
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+
+    changes = collection_pb2.OpChanges(card=True, study_queues=True)
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col,
+        lambda: changes,
+        card_ids=[1],
+    )
+    assert rwkv_scheduler._rwkv_collection_mutation_undo_entries == []
+
+    def mutate() -> collection_pb2.OpChanges:
+        counter.set(5)
+        return changes
+
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col,
+        mutate,
+        card_ids=[1],
+    )
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+
+    assert record_collection_undo(_undo_result(counter=5, next_counter=6)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+    assert record_collection_redo(_undo_result(counter=6, next_counter=7)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0) == 0
+
+
+def test_live_learning_restart_requires_canonical_recovery() -> None:
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert "r.cid in (1)" in sql
+            assert args == ()
+            return [
+                (1_000, 1, 10, 100, 3, 100, 1, 4, 2500),
+                (2_000, 1, 10, 100, 3, 100, 0, 1, 2500),
+            ]
+
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_config = lambda _key: {}
+    review_input = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=False,
+        ease=3,
+        card_type=int(RwkvReviewState.LEARN_START),
+    )
+    setattr(
+        reviewer,
+        rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR,
+        rwkv_scheduler._RwkvPendingAnswerState(
+            1,
+            3,
+            int(RwkvReviewState.LEARN_START),
+            int(RwkvReviewState.LEARN_START),
+            2_000,
+            review_input,
+        ),
+    )
+
+    assert (
+        rwkv_scheduler._rwkv_live_answer_canonical_recovery_reason(
+            reviewer,
+            _rwkv_card(card_id=1, note_id=10, duration_millis=0),
+            3,
+        )
+        == "review answer replaced retained learning history"
+    )
+
+
+def test_live_answer_rechecks_dynamic_preset_routing() -> None:
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.get_config = lambda _key: {"rules": [{}]}
+    reviewer.mw.col.get_card = lambda _card_id: _rwkv_card(
+        card_id=1,
+        note_id=10,
+        duration_millis=0,
+    )
+    reviewer.mw.col.fsrs_preset_for_card = lambda _card_id: SimpleNamespace(
+        id="new-preset"
+    )
+    review_input = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        identity=RwkvReviewIdentity(
+            card_id=1,
+            note_id=10,
+            deck_id=100,
+            preset_id=_expected_preset_hash("old-preset"),
+        ),
+        is_query=False,
+        ease=3,
+    )
+    setattr(
+        reviewer,
+        rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR,
+        rwkv_scheduler._RwkvPendingAnswerState(
+            1,
+            3,
+            int(RwkvReviewState.REVIEW),
+            int(RwkvReviewState.REVIEW),
+            2_000,
+            review_input,
+        ),
+    )
+
+    assert (
+        rwkv_scheduler._rwkv_live_answer_canonical_recovery_reason(
+            reviewer,
+            _rwkv_card(card_id=1, note_id=10, duration_millis=0),
+            3,
+        )
+        == "review answer changed RWKV identity routing"
+    )
+
+
+def test_grade_now_batch_can_be_undone_and_redone_incrementally() -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviewer = _rwkv_reviewer()
+    counter = _UndoCounter(reviewer)
+    counter.set(7)
+    inputs = [
+        replace(
+            _rwkv_review_input(card_id=1, note_id=10),
+            is_query=False,
+            ease=3,
+        ),
+        replace(
+            _rwkv_review_input(card_id=2, note_id=20),
+            is_query=False,
+            ease=4,
+        ),
+    ]
+    query_card = _rwkv_card(card_id=3, note_id=30, duration_millis=0)
+
+    before = backend.predict_review(reviewer=reviewer, card=query_card)
+    backend.review_inputs_answered(reviewer, inputs)
+    after = backend.predict_review(reviewer=reviewer, card=query_card)
+    undone = backend.answer_undone(7, 8)
+    after_undo = backend.predict_review(reviewer=reviewer, card=query_card)
+    redone = backend.answer_redone(8, 9)
+    after_redo = backend.predict_review(reviewer=reviewer, card=query_card)
+
+    assert before is not None
+    assert after is not None
+    assert after_undo is not None
+    assert after_redo is not None
+    assert after.retrievability == pytest.approx(0.65)
+    assert undone == [1, 2]
+    assert after_undo.retrievability == before.retrievability
+    assert redone == [1, 2]
+    assert after_redo.retrievability == after.retrievability
+
+
+def test_grade_now_excluded_batch_preserves_undo_and_redo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_review_id = 1_000
+    excluded_review_id = 2_000
+    previous_row = (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500)
+    excluded_row = (excluded_review_id, 1, 10, 100, 3, 0, 3, 4, 0)
+
+    class DB:
+        def scalar(self, sql: str, *args: object) -> int:
+            assert args == ()
+            if sql == "select max(id) from revlog":
+                return previous_review_id
+            assert sql == "select mod from col"
+            return 123
+
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            if "select id, nid" in sql:
+                assert args == ()
+                return [(1, 10, 100)]
+            if "r.id > ?" in sql:
+                assert args == (previous_review_id,)
+                return [excluded_row]
+            assert "from revlog r" in sql
+            assert args == ()
+            return [previous_row]
+
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert "select distinct cid" in sql
+            assert args == ()
+            return [1]
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_config = lambda _key: None
+    reviewer.mw.col.get_card = lambda _card_id: _rwkv_card(
+        card_id=1,
+        note_id=10,
+        duration_millis=0,
+        deck_id=100,
+    )
+    counter = _UndoCounter(reviewer)
+    counter.set(6)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolved_fsrs_preset_ids",
+        lambda _reviewer, card_ids: {card_id: "preset" for card_id in card_ids},
+    )
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(last_review_id=previous_review_id, review_count=1)
+    )
+
+    reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, [1])
+    assert reconciliation is not None
+    counter.set(7)
+    assert rwkv_scheduler.record_grade_now_answers(reconciliation)
+    assert runtime.answered_inputs == []
+
+    changes = collection_pb2.OpChanges(card=True, study_queues=True)
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert record_collection_undo(_undo_result(counter=7, next_counter=8)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+    assert record_collection_redo(_undo_result(counter=8, next_counter=9)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+
 def test_reviewer_undo_skips_its_queue_invalidation_once() -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = _rwkv_reviewer(rpc=rpc)
@@ -6450,6 +6998,209 @@ def test_reviewer_rwkv_cache_skips_history_scan_when_collection_is_unchanged(
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
 
 
+def test_rwkv_historical_fingerprint_passes_stable_addon_preset_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Backend:
+        def rwkv_historical_review_fingerprint(
+            self,
+            **kwargs: object,
+        ) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(
+                last_review_id=2_000,
+                review_count=2,
+                history_hash="a" * 64,
+                active_ignored_review_ids=[1_000],
+                queried_review_count=2,
+                history_is_valid=True,
+            )
+
+    overlay = {
+        "presets": [{"id": "addon:current"}],
+        "rules": [{"preset_id": "addon:rule"}],
+        "simulator_rules": [{"preset_id": "addon:simulator"}],
+    }
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=Backend(),
+                get_config=lambda _key: overlay,
+                decks=SimpleNamespace(
+                    all_config=lambda: [
+                        {
+                            "id": 123,
+                            "rwkvReviewFirstReviewElapsedFromCardCreation": False,
+                        },
+                        {
+                            "id": 456,
+                            "rwkvReviewFirstReviewElapsedFromCardCreation": True,
+                        },
+                    ]
+                ),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_dynamic_preset_replay_enabled_for_collection",
+        lambda _reviewer: True,
+    )
+
+    fingerprint = rwkv_scheduler._rwkv_historical_review_fingerprint(
+        reviewer,
+        ignored_review_ids=(1_000, 3_000),
+        expected_identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+            last_review_id=2_000,
+            review_count=2,
+            history_hash="a" * 64,
+        ),
+    )
+
+    assert fingerprint == rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+        identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+            last_review_id=2_000,
+            review_count=2,
+            history_hash="a" * 64,
+        ),
+        active_ignored_review_ids=(1_000,),
+        queried_review_count=2,
+        history_is_valid=True,
+    )
+    assert calls == [
+        {
+            "ignored_review_ids": (1_000, 3_000),
+            "dynamic_preset_replay": True,
+            "stable_preset_ids": {
+                preset_id: _expected_preset_hash(preset_id)
+                for preset_id in (
+                    "addon:current",
+                    "addon:rule",
+                    "addon:simulator",
+                )
+            },
+            "first_review_uses_creation_by_config_id": {123: False, 456: True},
+            "expected_identity": scheduler_pb2.RwkvHistoricalReviewIdentity(
+                last_review_id=2_000,
+                review_count=2,
+                history_hash="a" * 64,
+            ),
+        }
+    ]
+
+
+def test_rwkv_state_cache_uses_matching_rust_history_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected = cast(Any, object())
+    validation_calls: list[dict[str, object]] = []
+    identity = rwkv_scheduler._RwkvHistoryPrefixIdentity(
+        last_review_id=2_000,
+        review_count=2,
+        history_hash="b" * 64,
+    )
+
+    def validate_history(
+        *_args: object,
+        **kwargs: object,
+    ) -> rwkv_scheduler._RwkvHistoricalReviewFingerprint:
+        validation_calls.append(kwargs)
+        return rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+            identity=identity,
+            active_ignored_review_ids=(1_000,),
+            queried_review_count=2,
+            history_is_valid=True,
+        )
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_historical_review_fingerprint",
+        validate_history,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "replay-key",
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_unchanged_rwkv_state_cache_binary",
+        lambda *_args, **_kwargs: expected,
+    )
+
+    stored = rwkv_scheduler._read_rwkv_state_cache_from_rust_fingerprint(
+        SimpleNamespace(),
+        backend=cast(Any, object()),
+        cache_dir=tmp_path,
+        metadata={
+            "lastReviewId": identity.last_review_id,
+            "reviewCount": identity.review_count,
+            "historyHash": identity.history_hash,
+            "replayKey": "replay-key",
+        },
+        ignored_review_ids=(1_000,),
+    )
+
+    assert stored is expected
+    assert validation_calls == [
+        {
+            "ignored_review_ids": (1_000,),
+            "expected_identity": identity,
+        }
+    ]
+
+
+def test_rwkv_state_cache_rejects_mismatched_rust_history_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_historical_review_fingerprint",
+        lambda *_args, **_kwargs: rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+            identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+                last_review_id=2_000,
+                review_count=2,
+                history_hash="b" * 64,
+            ),
+            active_ignored_review_ids=(),
+            queried_review_count=2,
+            history_is_valid=False,
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "replay-key",
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_unchanged_rwkv_state_cache_binary",
+        lambda *_args, **_kwargs: pytest.fail(
+            "mismatched fingerprint must not restore the cache"
+        ),
+    )
+
+    assert (
+        rwkv_scheduler._read_rwkv_state_cache_from_rust_fingerprint(
+            SimpleNamespace(),
+            backend=cast(Any, object()),
+            cache_dir=tmp_path,
+            metadata={
+                "lastReviewId": 2_000,
+                "reviewCount": 2,
+                "historyHash": "c" * 64,
+                "replayKey": "replay-key",
+            },
+            ignored_review_ids=(),
+        )
+        is None
+    )
+
+
 def test_reviewer_rwkv_cache_adds_collection_marker_after_full_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7897,6 +8648,142 @@ def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
     runtime.reviewed.clear()
     assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
     assert runtime.reviewed == []
+
+
+def test_rwkv_calibration_recompute_uses_fsrs_validation_folds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_active_fsrs_validation_fold_indices",
+        lambda _reviewer, *, last_review_id: {first_review: 3},
+    )
+
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+    cache_rows = {
+        review_id: (sample_role, fold_index)
+        for review_id, _prediction, _source, _updated_at, sample_role, fold_index in (
+            reviewer.mw.col.rwkv_retrievability_rows
+        )
+    }
+    assert cache_rows == {
+        first_review: (
+            rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD,
+            3,
+        ),
+        second_review: (
+            rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
+            -1,
+        ),
+    }
+
+
+def test_rwkv_calibration_fold_roles_fall_back_to_chronological_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = _rwkv_checkpoint_test_history(10)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_active_fsrs_validation_fold_indices",
+        lambda _reviewer, *, last_review_id: None,
+    )
+
+    sample_roles, fold_indices = rwkv_scheduler._rwkv_calibration_fold_role_maps(
+        object(),
+        history,
+    )
+
+    assert [sample_roles[review_id] for review_id in history.review_ids] == [
+        *[rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT] * 7,
+        *[rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD] * 3,
+    ]
+    assert [fold_indices[review_id] for review_id in history.review_ids] == [
+        *[-1] * 7,
+        *[0] * 3,
+    ]
+
+
+def test_rwkv_calibration_alignment_rejects_legacy_fold_indices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_active_fsrs_validation_fold_indices",
+        lambda _reviewer, *, last_review_id: {1_000: 3},
+    )
+
+    class DB:
+        def all(self, _sql: str, _last_review_id: int) -> list[tuple[int, int]]:
+            return [(1_000, 0)]
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+    assert (
+        rwkv_scheduler._rwkv_calibration_test_folds_match_fsrs(
+            reviewer,
+            last_review_id=1_000,
+        )
+        is False
+    )
+
+
+def test_active_fsrs_validation_folds_follow_graph_role_precedence() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        """
+create table search_stats_fsrs_review_retrievability (
+  revlog_id integer not null,
+  prediction real not null,
+  source text not null,
+  updated_at integer not null,
+  sample_role text not null,
+  fold_index integer not null
+)
+"""
+    )
+    connection.executemany(
+        """
+insert into search_stats_fsrs_review_retrievability
+  (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+values (?, 0.5, 'test', ?, ?, ?)
+""",
+        [
+            (1_000, 10, "final_fit", -1),
+            (1_000, 10, "validation_fold", 2),
+            (2_000, 10, "validation_fold", 3),
+            (2_000, 11, "post_optimization", -1),
+            (3_000, 12, "validation_fold", 4),
+            (4_000, 13, "validation_fold", 1),
+        ],
+    )
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[int, int]]:
+            return cast(list[tuple[int, int]], connection.execute(sql, args).fetchall())
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+    assert rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer,
+        last_review_id=3_000,
+    ) == {1_000: 2, 3_000: 4}
 
 
 def test_rwkv_state_cache_build_satisfies_sse_explicit_revlog_contract(

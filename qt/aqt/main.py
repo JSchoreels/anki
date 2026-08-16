@@ -613,7 +613,7 @@ class AnkiQt(QMainWindow):
         restoreGeom(self, "mainWindow")
         restoreState(self, "mainWindow")
         # titlebar
-        self.setWindowTitle(f"{self.pm.name} - Anki")
+        self.setWindowTitle(f"{self.pm.name} - {aqt.application_name()}")
         # show and raise window for osx
         self.show()
         self.activateWindow()
@@ -1692,6 +1692,7 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.actionEmptyCards.triggered, self.onEmptyCards)
         qconnect(m.actionNoteTypes.triggered, self.onNoteTypes)
         qconnect(m.action_check_for_updates.triggered, self.on_check_for_updates)
+        m.action_check_for_updates.setVisible(not aqt.is_portable())
         qconnect(m.actionPreferences.triggered, self.onPrefs)
 
         # View
@@ -1712,7 +1713,7 @@ title="{}" {}>{}</button>""".format(
         m.actionFullScreen.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
 
     def updateTitleBar(self) -> None:
-        self.setWindowTitle("Anki")
+        self.setWindowTitle(aqt.application_name())
 
     # View
     ##########################################################################

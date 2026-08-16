@@ -100,6 +100,13 @@ class _RwkvHistoryPrefixIdentity(NamedTuple):
     history_hash: str
 
 
+class _RwkvHistoricalReviewFingerprint(NamedTuple):
+    identity: _RwkvHistoryPrefixIdentity
+    active_ignored_review_ids: tuple[int, ...]
+    queried_review_count: int
+    history_is_valid: bool
+
+
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
 _REVIEWER_PENDING_ANSWER_STATE_ATTR = "_rwkv_pending_answer_state"
 _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR = "_rwkv_synthetic_answer_states"
@@ -132,6 +139,7 @@ _MAX_RWKV_REVIEW_REFRESH_INTERVAL = 10_000
 _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
 _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR = "_rwkv_review_input_batch_cache"
 _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT = 4
+_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_fsrs_review_retrievability"
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
@@ -247,6 +255,16 @@ _rwkv_study_queue_generation = 0
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR = (
     "_rwkv_review_handled_queue_change_pending"
+)
+_RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR = (
+    "_rwkv_reconciled_collection_change_pending"
+)
+# Kept as internal aliases for existing tests/callers of the old private names.
+_RWKV_RECONCILED_QUEUE_CHANGE_PENDING_ATTR = (
+    _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR
+)
+_RWKV_GRADE_NOW_RECONCILED_QUEUE_CHANGE_PENDING_ATTR = (
+    _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR
 )
 _rwkv_stats_prepare_lock = threading.Lock()
 _rwkv_stats_prepare_in_flight: dict[
@@ -566,6 +584,15 @@ class RwkvReviewRollbackFrame:
 
 
 @dataclass(frozen=True)
+class RwkvReviewRollbackBatch:
+    counter: int
+    frames: tuple[RwkvReviewRollbackFrame, ...]
+
+
+RwkvReviewRollbackEntry = RwkvReviewRollbackFrame | RwkvReviewRollbackBatch
+
+
+@dataclass(frozen=True)
 class RwkvReviewPredictionRequest:
     review_input: RwkvReviewInput
     card_state: object | None = None
@@ -643,6 +670,54 @@ class _ReviewerBackendMutationContext:
     collection_backend: object | None
 
 
+@dataclass(frozen=True)
+class _RwkvGradeNowCardHistory:
+    last_review_id: int | None = None
+    last_review_kind: int | None = None
+    review_count: int = 0
+
+
+@dataclass(frozen=True)
+class RwkvGradeNowReconciliation:
+    reviewer: object
+    mutation_context: _ReviewerBackendMutationContext
+    warmup_key: tuple[int, int]
+    warmup_generation: int
+    previous_last_review_id: int
+    card_ids: tuple[int, ...]
+    identities_by_card_id: dict[int, RwkvReviewIdentity]
+    histories_by_card_id: dict[int, _RwkvGradeNowCardHistory]
+    previous_undo_counter: int | None
+
+
+@dataclass(frozen=True)
+class RwkvCollectionMutationReconciliation:
+    reviewer: object
+    mutation_context: _ReviewerBackendMutationContext
+    warmup_key: tuple[int, int]
+    warmup_generation: int
+    card_ids: tuple[int, ...]
+    historical_card_ids: frozenset[int]
+    identities_by_card_id: dict[int, RwkvReviewIdentity]
+    require_no_preset_overlay: bool
+    previous_undo_counter: int | None
+
+
+@dataclass(frozen=True)
+class _RwkvReconciledCollectionChange:
+    collection_mod: int | None
+
+
+@dataclass(frozen=True)
+class _RwkvCollectionMutationRollbackEntry:
+    counter: int
+    reconciliation: RwkvCollectionMutationReconciliation
+
+
+_rwkv_collection_mutation_undo_entries: list[_RwkvCollectionMutationRollbackEntry] = []
+_rwkv_collection_mutation_redo_entries: list[_RwkvCollectionMutationRollbackEntry] = []
+
+
 class _RwkvPendingAnswerState(NamedTuple):
     card_id: int
     ease: int
@@ -679,6 +754,10 @@ class _ReviewerBackendTemporaryOperation:
 
 
 class _ReviewerBackendWarmupInvalidated(Exception):
+    pass
+
+
+class _RwkvGradeNowReconciliationUnavailable(Exception):
     pass
 
 
@@ -1042,8 +1121,8 @@ class RwkvStatefulReviewerBackend:
         self._global_state: object | None = None
         self._resident_state_populated = False
         self._state_generation = 0
-        self._undo_frames: list[RwkvReviewRollbackFrame] = []
-        self._redo_frames: list[RwkvReviewRollbackFrame] = []
+        self._undo_frames: list[RwkvReviewRollbackEntry] = []
+        self._redo_frames: list[RwkvReviewRollbackEntry] = []
         self._prediction_cache: OrderedDict[
             RwkvReviewInput,
             RwkvReviewPrediction | None,
@@ -2212,6 +2291,43 @@ class RwkvStatefulReviewerBackend:
                 ease=ease,
             )
         )
+        frame = self._apply_answered_review_input(review_input)
+        self._save_rollback_frame(
+            reviewer,
+            frame,
+        )
+
+    def review_input_answered(self, review_input: RwkvReviewInput) -> None:
+        if review_input.ease is None:
+            return
+
+        self._apply_answered_review_input(review_input)
+
+    def review_inputs_answered(
+        self,
+        reviewer: object,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> None:
+        frames = tuple(
+            self._apply_answered_review_input(review_input)
+            for review_input in review_inputs
+            if review_input.ease is not None
+        )
+        if frames:
+            self._save_rollback_frame(
+                reviewer,
+                RwkvReviewRollbackBatch(counter=0, frames=frames),
+            )
+
+    def _apply_answered_review_input(
+        self,
+        review_input: RwkvReviewInput,
+    ) -> RwkvReviewRollbackFrame:
+        if review_input.ease is None:
+            raise ValueError("answered RWKV input is missing an ease")
+
+        review_input = _rwkv_state_update_input(review_input)
+        identity = review_input.identity
         before = self._snapshot(identity, review_input)
         before_curve_prediction = self._curve_prediction_for_card(identity.card_id)
         transition = self._runtime.review(
@@ -2223,64 +2339,59 @@ class RwkvStatefulReviewerBackend:
             global_state=before.global_state,
         )
         self._store_transition(identity, transition)
-        self._save_rollback_frame(
-            reviewer,
-            RwkvReviewRollbackFrame(
-                counter=0,
-                identity=identity,
-                before=before,
-                after=self._snapshot(identity, review_input),
-                before_curve_prediction=before_curve_prediction,
-            ),
+        return RwkvReviewRollbackFrame(
+            counter=0,
+            identity=identity,
+            before=before,
+            after=self._snapshot(identity, review_input),
+            before_curve_prediction=before_curve_prediction,
         )
 
-    def review_input_answered(self, review_input: RwkvReviewInput) -> None:
-        if review_input.ease is None:
-            return
-
-        review_input = _rwkv_state_update_input(review_input)
-        identity = review_input.identity
-        before = self._snapshot(identity, review_input)
-        transition = self._runtime.review(
-            review_input=review_input,
-            card_state=before.card_state,
-            note_state=before.note_state,
-            deck_state=before.deck_state,
-            preset_state=before.preset_state,
-            global_state=before.global_state,
-        )
-        self._store_transition(identity, transition)
-
-    def answer_undone(self, counter: int, next_counter: int | None) -> int | None:
+    def answer_undone(
+        self,
+        counter: int,
+        next_counter: int | None,
+    ) -> int | list[int] | None:
         index = _rollback_frame_index(self._undo_frames, counter)
         if index is None:
             return None
 
-        frame = self._undo_frames.pop(index)
-        self._restore_snapshot(frame.identity, frame.before)
-        self._restore_curve_prediction(frame.before_curve_prediction)
+        entry = self._undo_frames.pop(index)
+        frames = _rollback_entry_frames(entry)
+        for frame in reversed(frames):
+            self._restore_snapshot(frame.identity, frame.before)
+        for frame in frames:
+            self._restore_curve_prediction(frame.before_curve_prediction)
         _append_bounded(
             self._redo_frames,
             replace(
-                frame, counter=next_counter if next_counter is not None else counter
+                entry, counter=next_counter if next_counter is not None else counter
             ),
         )
-        return frame.identity.card_id
+        card_ids = [frame.identity.card_id for frame in frames]
+        return card_ids if isinstance(entry, RwkvReviewRollbackBatch) else card_ids[0]
 
-    def answer_redone(self, counter: int, next_counter: int | None) -> int | None:
+    def answer_redone(
+        self,
+        counter: int,
+        next_counter: int | None,
+    ) -> int | list[int] | None:
         index = _rollback_frame_index(self._redo_frames, counter)
         if index is None:
             return None
 
-        frame = self._redo_frames.pop(index)
-        self._restore_snapshot(frame.identity, frame.after)
+        entry = self._redo_frames.pop(index)
+        frames = _rollback_entry_frames(entry)
+        for frame in frames:
+            self._restore_snapshot(frame.identity, frame.after)
         _append_bounded(
             self._undo_frames,
             replace(
-                frame, counter=next_counter if next_counter is not None else counter
+                entry, counter=next_counter if next_counter is not None else counter
             ),
         )
-        return frame.identity.card_id
+        card_ids = [frame.identity.card_id for frame in frames]
+        return card_ids if isinstance(entry, RwkvReviewRollbackBatch) else card_ids[0]
 
     def _store_transition(
         self,
@@ -2309,7 +2420,7 @@ class RwkvStatefulReviewerBackend:
     def _save_rollback_frame(
         self,
         reviewer: object,
-        frame: RwkvReviewRollbackFrame,
+        frame: RwkvReviewRollbackEntry,
     ) -> None:
         self._redo_frames.clear()
         counter = _current_undo_counter(reviewer)
@@ -2492,18 +2603,20 @@ class RwkvStatefulReviewerBackend:
 
 
 def record_collection_undo(changes: object) -> list[int]:
-    """Roll back RWKV state after Anki undoes an answered review.
+    """Reconcile RWKV state after Anki undoes a collection operation.
 
-    This serializes with prediction work and must run on a background worker.
+    Answered reviews restore a recurrent-state snapshot; known non-review
+    mutations verify that canonical history routing remains unchanged.
     """
 
     return _record_collection_undo_or_redo(changes, redo=False)
 
 
 def record_collection_redo(changes: object) -> list[int]:
-    """Restore RWKV state after Anki redoes an answered review.
+    """Reconcile RWKV state after Anki redoes a collection operation.
 
-    This serializes with prediction work and must run on a background worker.
+    Answered reviews restore a recurrent-state snapshot; known non-review
+    mutations verify that canonical history routing remains unchanged.
     """
 
     return _record_collection_undo_or_redo(changes, redo=True)
@@ -2601,9 +2714,90 @@ def _record_collection_undo_or_redo_with_backend(
                     backend,
                     reason="review redone" if redo else "review undone",
                 )
-            return restored_card_ids
+                return restored_card_ids
 
+    _record_collection_mutation_undo_or_redo(changes, redo=redo)
     return []
+
+
+def _record_collection_mutation_undo_or_redo(
+    changes: object,
+    *,
+    redo: bool,
+) -> bool:
+    counter = _undo_result_counter(changes)
+    if counter is None:
+        return False
+
+    source = (
+        _rwkv_collection_mutation_redo_entries
+        if redo
+        else _rwkv_collection_mutation_undo_entries
+    )
+    destination = (
+        _rwkv_collection_mutation_undo_entries
+        if redo
+        else _rwkv_collection_mutation_redo_entries
+    )
+    entry_index = next(
+        (
+            index
+            for index in range(len(source) - 1, -1, -1)
+            if source[index].counter == counter
+        ),
+        None,
+    )
+    if entry_index is None:
+        return False
+
+    entry = source.pop(entry_index)
+    reconciliation = entry.reconciliation
+    reviewer = reconciliation.reviewer
+    try:
+        _require_collection_mutation_reconciliation_current(reconciliation)
+    except _RwkvGradeNowReconciliationUnavailable as error:
+        _invalidate_reviewer_backend_state(
+            reviewer,
+            reason="collection mutation undo/redo requires canonical recovery",
+            expected_mutation_context=reconciliation.mutation_context,
+        )
+        logger.debug("RWKV collection mutation undo/redo skipped: %s", error)
+        return False
+    except Exception:
+        _invalidate_reviewer_backend_state(
+            reviewer,
+            reason="collection mutation undo/redo reconciliation failed",
+            expected_mutation_context=reconciliation.mutation_context,
+        )
+        logger.exception("RWKV collection mutation undo/redo reconciliation failed")
+        return False
+
+    next_counter = _undo_result_next_counter(changes)
+    _append_bounded_collection_mutation_entry(
+        destination,
+        replace(
+            entry,
+            counter=next_counter if next_counter is not None else counter,
+        ),
+    )
+    _mark_collection_change_reconciled(reviewer)
+    for card_id in reconciliation.card_ids:
+        try:
+            _set_rwkv_card_info_score(
+                reviewer,
+                card_id,
+                None,
+                collection_backend=reconciliation.mutation_context.collection_backend,
+            )
+        except Exception:
+            logger.exception("failed to clear undo/redo card RWKV info score")
+    logger.debug(
+        "RWKV collection mutation %s reconciled: cards=%s historical=%s",
+        "redo" if redo else "undo",
+        len(reconciliation.card_ids),
+        len(reconciliation.historical_card_ids),
+    )
+    return True
 
 
 def queue_reviewer_undo_card_ids(reviewer: object, card_ids: Sequence[int]) -> None:
@@ -2759,6 +2953,43 @@ def _consume_reviewer_handled_study_queue_change(reviewer: object) -> bool:
     return True
 
 
+def _reconciled_collection_change_owner(reviewer: object) -> object:
+    return getattr(reviewer, "mw", None) or reviewer
+
+
+def _mark_collection_change_reconciled(reviewer: object) -> None:
+    pending = _RwkvReconciledCollectionChange(_rwkv_collection_modified(reviewer))
+    owner = _reconciled_collection_change_owner(reviewer)
+    setattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
+    if owner is not reviewer:
+        setattr(reviewer, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
+
+
+def _consume_reconciled_collection_change(reviewer: object) -> bool:
+    owner = _reconciled_collection_change_owner(reviewer)
+    pending = getattr(
+        owner,
+        _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR,
+        None,
+    )
+    active_reviewer = getattr(owner, "reviewer", None)
+    for target in (owner, reviewer, active_reviewer):
+        if target is not None:
+            setattr(
+                target,
+                _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR,
+                False,
+            )
+    if not isinstance(pending, _RwkvReconciledCollectionChange):
+        return False
+    current_mod = _rwkv_collection_modified(reviewer)
+    return (
+        pending.collection_mod is None
+        or current_mod is None
+        or current_mod == pending.collection_mod
+    )
+
+
 def _current_undo_counter(reviewer: object) -> int | None:
     col = _collection(reviewer)
     undo_status = getattr(col, "undo_status", None)
@@ -2797,7 +3028,7 @@ def _valid_card_id(value: object) -> int | None:
 
 
 def _rollback_frame_index(
-    frames: Sequence[RwkvReviewRollbackFrame],
+    frames: Sequence[RwkvReviewRollbackEntry],
     counter: int,
 ) -> int | None:
     for index in range(len(frames) - 1, -1, -1):
@@ -2806,9 +3037,15 @@ def _rollback_frame_index(
     return None
 
 
+def _rollback_entry_frames(
+    entry: RwkvReviewRollbackEntry,
+) -> tuple[RwkvReviewRollbackFrame, ...]:
+    return entry.frames if isinstance(entry, RwkvReviewRollbackBatch) else (entry,)
+
+
 def _append_bounded(
-    frames: list[RwkvReviewRollbackFrame],
-    frame: RwkvReviewRollbackFrame,
+    frames: list[RwkvReviewRollbackEntry],
+    frame: RwkvReviewRollbackEntry,
 ) -> None:
     frames.append(frame)
     del frames[:-_RWKV_REVIEW_UNDO_LIMIT]
@@ -3066,6 +3303,8 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
     _reviewer_backend_warmup_pending_generations.clear()
     _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_memorised_history_identity_cache.clear()
+    _rwkv_collection_mutation_undo_entries.clear()
+    _rwkv_collection_mutation_redo_entries.clear()
 
 
 def _invalidate_reviewer_backend_runtime_state_for_profile_open() -> None:
@@ -3680,6 +3919,813 @@ def update_reviewer_scheduling_states(
     return states
 
 
+def run_collection_mutation_preserving_rwkv_state(
+    col: object,
+    mutation: Callable[[], _T],
+    *,
+    card_ids: Sequence[int] = (),
+    note_ids: Sequence[int] = (),
+    require_no_preset_overlay: bool = False,
+    force_reconciliation: bool = False,
+) -> _T:
+    """Run a known non-review mutation and retain unchanged recurrent history."""
+
+    import aqt
+
+    mw = aqt.mw
+    reviewer = (
+        getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+        if mw is not None and getattr(mw, "col", None) is col
+        else SimpleNamespace(mw=SimpleNamespace(col=col))
+    )
+    resolved_card_ids = _rwkv_collection_mutation_card_ids(
+        reviewer,
+        card_ids=card_ids,
+        note_ids=note_ids,
+    )
+    reconciliation = (
+        prepare_collection_mutation_reconciliation(
+            reviewer,
+            resolved_card_ids,
+            require_no_preset_overlay=require_no_preset_overlay,
+        )
+        if resolved_card_ids is not None
+        else None
+    )
+    result = mutation()
+    changes = (
+        result
+        if isinstance(result, collection_pb2.OpChanges)
+        else getattr(result, "changes", None)
+    )
+    if force_reconciliation or (
+        isinstance(changes, collection_pb2.OpChanges)
+        and _rwkv_operation_changes_require_reconciliation(changes)
+    ):
+        record_collection_mutation_reconciliation(reconciliation)
+    return result
+
+
+def _rwkv_operation_changes_require_reconciliation(
+    changes: collection_pb2.OpChanges,
+) -> bool:
+    return any(
+        (
+            changes.study_queues,
+            changes.card,
+            changes.note,
+            changes.deck,
+            changes.tag,
+            changes.notetype,
+            changes.config,
+            changes.deck_config,
+        )
+    )
+
+
+def prepare_collection_mutation_reconciliation(
+    reviewer: object,
+    card_ids: Sequence[int] = (),
+    *,
+    require_no_preset_overlay: bool = False,
+) -> RwkvCollectionMutationReconciliation | None:
+    """Capture identity routing for a non-review collection mutation."""
+
+    valid_card_ids = tuple(
+        dict.fromkeys(
+            card_id
+            for value in card_ids
+            if (card_id := _valid_card_id(value)) is not None
+        )
+    )
+    if require_no_preset_overlay and _fsrs_preset_overlay_has_routing_rules(reviewer):
+        return None
+
+    mutation_context = _capture_reviewer_backend_mutation_context(reviewer)
+    if mutation_context is None:
+        return None
+    warmup_key = _reviewer_backend_warmup_key(reviewer)
+    if warmup_key is None:
+        return None
+    with _reviewer_backend_state_lock:
+        if (
+            not _reviewer_backend_mutation_context_is_current(
+                mutation_context,
+                reviewer,
+            )
+            or warmup_key in _reviewer_backend_warmup_pending_generations
+            or warmup_key not in _reviewer_backend_warmup_states
+        ):
+            return None
+        warmup_generation = _reviewer_backend_warmup_generations.get(warmup_key, 0)
+
+    historical_card_ids = _historical_rwkv_card_ids(reviewer, valid_card_ids)
+    if historical_card_ids is None:
+        return None
+    identities_by_card_id = _rwkv_identities_for_card_ids(
+        reviewer,
+        historical_card_ids,
+    )
+    if identities_by_card_id is None:
+        return None
+
+    return RwkvCollectionMutationReconciliation(
+        reviewer=reviewer,
+        mutation_context=mutation_context,
+        warmup_key=warmup_key,
+        warmup_generation=warmup_generation,
+        card_ids=valid_card_ids,
+        historical_card_ids=frozenset(historical_card_ids),
+        identities_by_card_id=identities_by_card_id,
+        require_no_preset_overlay=require_no_preset_overlay,
+        previous_undo_counter=_current_undo_counter(reviewer),
+    )
+
+
+def record_collection_mutation_reconciliation(
+    reconciliation: RwkvCollectionMutationReconciliation | None,
+) -> bool:
+    """Preserve resident state when a non-review mutation kept history routing."""
+
+    if reconciliation is None:
+        return False
+
+    reviewer = reconciliation.reviewer
+    mutation_context = reconciliation.mutation_context
+    try:
+        _require_collection_mutation_reconciliation_current(reconciliation)
+        _save_collection_mutation_rollback_entry(reconciliation)
+        _mark_collection_change_reconciled(reviewer)
+        logger.debug(
+            "RWKV collection mutation reconciled: cards=%s historical=%s",
+            len(reconciliation.card_ids),
+            len(reconciliation.historical_card_ids),
+        )
+        return True
+    except _RwkvGradeNowReconciliationUnavailable as error:
+        _invalidate_reviewer_backend_state(
+            reviewer,
+            reason="collection mutation requires canonical recovery",
+            expected_mutation_context=mutation_context,
+        )
+        logger.debug("RWKV collection mutation reconciliation skipped: %s", error)
+        return False
+    except Exception:
+        _invalidate_reviewer_backend_state(
+            reviewer,
+            reason="collection mutation reconciliation failed",
+            expected_mutation_context=mutation_context,
+        )
+        logger.exception("RWKV collection mutation reconciliation failed")
+        return False
+    finally:
+        for card_id in reconciliation.card_ids:
+            try:
+                _set_rwkv_card_info_score(
+                    reviewer,
+                    card_id,
+                    None,
+                    collection_backend=mutation_context.collection_backend,
+                )
+            except Exception:
+                logger.exception("failed to clear changed card RWKV info score")
+
+
+def _require_collection_mutation_reconciliation_current(
+    reconciliation: RwkvCollectionMutationReconciliation,
+) -> None:
+    reviewer = reconciliation.reviewer
+    if (
+        reconciliation.require_no_preset_overlay
+        and _fsrs_preset_overlay_has_routing_rules(reviewer)
+    ):
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "mutation routing became ambiguous"
+        )
+
+    current_historical_card_ids = _historical_rwkv_card_ids(
+        reviewer,
+        reconciliation.card_ids,
+    )
+    if (
+        current_historical_card_ids is None
+        or frozenset(current_historical_card_ids) != reconciliation.historical_card_ids
+    ):
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "mutation changed canonical review membership"
+        )
+
+    _invalidate_resolved_preset_id_cache(
+        reviewer,
+        card_ids=reconciliation.card_ids,
+    )
+    current_identities = _rwkv_identities_for_card_ids(
+        reviewer,
+        current_historical_card_ids,
+    )
+    if current_identities != reconciliation.identities_by_card_id:
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "mutation changed RWKV identity routing"
+        )
+
+    with _reviewer_backend_execution_lock:
+        if not _rwkv_collection_mutation_reconciliation_is_current(reconciliation):
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "resident state changed during collection mutation"
+            )
+
+
+def _save_collection_mutation_rollback_entry(
+    reconciliation: RwkvCollectionMutationReconciliation,
+) -> None:
+    counter = _current_undo_counter(reconciliation.reviewer)
+    if (
+        counter is None
+        or reconciliation.previous_undo_counter is None
+        or counter == reconciliation.previous_undo_counter
+    ):
+        return
+    _rwkv_collection_mutation_redo_entries.clear()
+    _append_bounded_collection_mutation_entry(
+        _rwkv_collection_mutation_undo_entries,
+        _RwkvCollectionMutationRollbackEntry(
+            counter=counter,
+            reconciliation=reconciliation,
+        ),
+    )
+
+
+def _append_bounded_collection_mutation_entry(
+    entries: list[_RwkvCollectionMutationRollbackEntry],
+    entry: _RwkvCollectionMutationRollbackEntry,
+) -> None:
+    entries.append(entry)
+    del entries[:-_RWKV_REVIEW_UNDO_LIMIT]
+
+
+def _rwkv_collection_mutation_reconciliation_is_current(
+    reconciliation: RwkvCollectionMutationReconciliation,
+) -> bool:
+    reviewer = reconciliation.reviewer
+    with _reviewer_backend_state_lock:
+        return (
+            _reviewer_backend_mutation_context_is_current(
+                reconciliation.mutation_context,
+                reviewer,
+            )
+            and _reviewer_backend_warmup_key(reviewer) == reconciliation.warmup_key
+            and _reviewer_backend_warmup_generations.get(
+                reconciliation.warmup_key,
+                0,
+            )
+            == reconciliation.warmup_generation
+            and reconciliation.warmup_key
+            not in _reviewer_backend_warmup_pending_generations
+            and reconciliation.warmup_key in _reviewer_backend_warmup_states
+        )
+
+
+def _rwkv_collection_mutation_card_ids(
+    reviewer: object,
+    *,
+    card_ids: Sequence[int],
+    note_ids: Sequence[int],
+) -> tuple[int, ...] | None:
+    valid_card_ids = [
+        card_id for value in card_ids if (card_id := _valid_card_id(value)) is not None
+    ]
+    valid_note_ids = [
+        note_id for value in note_ids if (note_id := _valid_card_id(value)) is not None
+    ]
+    if valid_note_ids:
+        col = _collection(reviewer)
+        db = getattr(col, "db", None)
+        list_rows = getattr(db, "list", None)
+        if not callable(list_rows):
+            return None
+        try:
+            valid_card_ids.extend(
+                card_id
+                for value in list_rows(
+                    f"select id from cards where nid in {ids2str(valid_note_ids)}"
+                )
+                if (card_id := _valid_card_id(value)) is not None
+            )
+        except Exception:
+            logger.debug(
+                "failed to resolve note cards for RWKV collection mutation",
+                exc_info=True,
+            )
+            return None
+    return tuple(dict.fromkeys(valid_card_ids))
+
+
+def _rwkv_identities_for_card_ids(
+    reviewer: object,
+    card_ids: Iterable[int],
+) -> dict[int, RwkvReviewIdentity] | None:
+    valid_card_ids = tuple(dict.fromkeys(card_ids))
+    if not valid_card_ids:
+        return {}
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return None
+    try:
+        rows = all_rows(
+            f"""
+select id, nid, case when odid != 0 then odid else did end
+from cards
+where id in {ids2str(valid_card_ids)}
+"""
+        )
+        _resolved_fsrs_preset_ids(reviewer, valid_card_ids)
+    except Exception:
+        logger.debug(
+            "failed to resolve RWKV identities for collection mutation",
+            exc_info=True,
+        )
+        return None
+
+    identities: dict[int, RwkvReviewIdentity] = {}
+    for row in rows:
+        if len(row) < 3:
+            return None
+        card_id, note_id, deck_id = row[:3]
+        if not (
+            isinstance(card_id, int)
+            and not isinstance(card_id, bool)
+            and isinstance(note_id, int)
+            and not isinstance(note_id, bool)
+            and isinstance(deck_id, int)
+            and not isinstance(deck_id, bool)
+        ):
+            return None
+        identities[card_id] = RwkvReviewIdentity(
+            card_id=card_id,
+            note_id=note_id,
+            deck_id=deck_id,
+            preset_id=_preset_id(reviewer, card_id, deck_id),
+        )
+    return identities if set(identities) == set(valid_card_ids) else None
+
+
+def prepare_grade_now_reconciliation(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> RwkvGradeNowReconciliation | None:
+    """Capture the append-only history needed to apply Grade Now incrementally."""
+
+    valid_card_ids = tuple(
+        dict.fromkeys(
+            card_id
+            for value in card_ids
+            if (card_id := _valid_card_id(value)) is not None
+        )
+    )
+    if not valid_card_ids:
+        return None
+
+    mutation_context = _capture_reviewer_backend_mutation_context(reviewer)
+    if mutation_context is None:
+        return None
+    backend = mutation_context.backend
+    if not any(
+        callable(getattr(backend, method, None))
+        for method in ("review_inputs_answered", "review_input_answered")
+    ):
+        return None
+
+    warmup_key = _reviewer_backend_warmup_key(reviewer)
+    if warmup_key is None:
+        return None
+    with _reviewer_backend_state_lock:
+        if (
+            not _reviewer_backend_mutation_context_is_current(
+                mutation_context,
+                reviewer,
+            )
+            or warmup_key in _reviewer_backend_warmup_pending_generations
+            or warmup_key not in _reviewer_backend_warmup_states
+        ):
+            return None
+        warmup_generation = _reviewer_backend_warmup_generations.get(warmup_key, 0)
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    scalar = getattr(db, "scalar", None)
+    get_card = getattr(col, "get_card", None)
+    if not callable(scalar) or not callable(get_card):
+        return None
+
+    try:
+        previous_last_review_id = scalar("select max(id) from revlog")
+        if previous_last_review_id is None:
+            previous_last_review_id = 0
+        if not isinstance(previous_last_review_id, int) or isinstance(
+            previous_last_review_id,
+            bool,
+        ):
+            return None
+
+        histories_by_card_id = _rwkv_grade_now_card_histories(
+            _historical_rwkv_review_rows(
+                reviewer,
+                card_ids=valid_card_ids,
+            )
+        )
+        identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
+        for card_id in valid_card_ids:
+            identity = rwkv_review_identity(reviewer, get_card(card_id))
+            if identity is None:
+                return None
+            identities_by_card_id[card_id] = identity
+
+        return RwkvGradeNowReconciliation(
+            reviewer=reviewer,
+            mutation_context=mutation_context,
+            warmup_key=warmup_key,
+            warmup_generation=warmup_generation,
+            previous_last_review_id=previous_last_review_id,
+            card_ids=valid_card_ids,
+            identities_by_card_id=identities_by_card_id,
+            histories_by_card_id=histories_by_card_id,
+            previous_undo_counter=_current_undo_counter(reviewer),
+        )
+    except Exception:
+        logger.debug("RWKV Grade Now preparation failed", exc_info=True)
+        return None
+
+
+def record_grade_now_answers(
+    reconciliation: RwkvGradeNowReconciliation | None,
+) -> bool:
+    """Apply a completed Grade Now operation to the resident RWKV state."""
+
+    if reconciliation is None:
+        return False
+
+    reviewer = reconciliation.reviewer
+    mutation_context = reconciliation.mutation_context
+    collection_backend = mutation_context.collection_backend
+    try:
+        review_inputs = _rwkv_grade_now_review_inputs(reconciliation)
+        with _reviewer_backend_execution_lock:
+            if not _rwkv_grade_now_reconciliation_is_current(reconciliation):
+                raise _RwkvGradeNowReconciliationUnavailable(
+                    "resident state changed while grading"
+                )
+            review_inputs_answered = getattr(
+                mutation_context.backend,
+                "review_inputs_answered",
+                None,
+            )
+            if callable(review_inputs_answered):
+                review_inputs_answered(reviewer, review_inputs)
+            else:
+                review_input_answered = getattr(
+                    mutation_context.backend,
+                    "review_input_answered",
+                    None,
+                )
+                if not callable(review_input_answered):
+                    raise _RwkvGradeNowReconciliationUnavailable(
+                        "backend cannot apply external answers"
+                    )
+                for review_input in review_inputs:
+                    review_input_answered(review_input)
+
+            if review_inputs:
+                _mark_reviewer_backend_identity_unknown(
+                    reviewer,
+                    reason="Grade Now answered",
+                    expected_mutation_context=mutation_context,
+                )
+            else:
+                _save_collection_mutation_rollback_entry(
+                    _grade_now_no_state_change_reconciliation(reconciliation)
+                )
+
+        _mark_collection_change_reconciled(reviewer)
+        logger.debug(
+            "RWKV Grade Now state reconciled: cards=%s reviews=%s",
+            len(reconciliation.card_ids),
+            len(review_inputs),
+        )
+        return True
+    except _RwkvGradeNowReconciliationUnavailable as error:
+        _invalidate_reviewer_backend_state(
+            reviewer,
+            reason="Grade Now requires canonical recovery",
+            expected_mutation_context=mutation_context,
+        )
+        logger.debug("RWKV Grade Now reconciliation skipped: %s", error)
+        return False
+    except Exception:
+        _invalidate_reviewer_backend_state(
+            reviewer,
+            reason="Grade Now reconciliation failed",
+            expected_mutation_context=mutation_context,
+        )
+        logger.exception("RWKV Grade Now reconciliation failed")
+        return False
+    finally:
+        for card_id in reconciliation.card_ids:
+            try:
+                _set_rwkv_card_info_score(
+                    reviewer,
+                    card_id,
+                    None,
+                    collection_backend=collection_backend,
+                )
+            except Exception:
+                logger.exception("failed to clear graded card RWKV info score")
+
+
+def _grade_now_no_state_change_reconciliation(
+    reconciliation: RwkvGradeNowReconciliation,
+) -> RwkvCollectionMutationReconciliation:
+    historical_card_ids = frozenset(
+        card_id
+        for card_id, history in reconciliation.histories_by_card_id.items()
+        if history.review_count
+    )
+    return RwkvCollectionMutationReconciliation(
+        reviewer=reconciliation.reviewer,
+        mutation_context=reconciliation.mutation_context,
+        warmup_key=reconciliation.warmup_key,
+        warmup_generation=reconciliation.warmup_generation,
+        card_ids=reconciliation.card_ids,
+        historical_card_ids=historical_card_ids,
+        identities_by_card_id={
+            card_id: reconciliation.identities_by_card_id[card_id]
+            for card_id in historical_card_ids
+        },
+        require_no_preset_overlay=False,
+        previous_undo_counter=reconciliation.previous_undo_counter,
+    )
+
+
+def _rwkv_grade_now_reconciliation_is_current(
+    reconciliation: RwkvGradeNowReconciliation,
+) -> bool:
+    reviewer = reconciliation.reviewer
+    with _reviewer_backend_state_lock:
+        return (
+            _reviewer_backend_mutation_context_is_current(
+                reconciliation.mutation_context,
+                reviewer,
+            )
+            and _reviewer_backend_warmup_key(reviewer) == reconciliation.warmup_key
+            and _reviewer_backend_warmup_generations.get(
+                reconciliation.warmup_key,
+                0,
+            )
+            == reconciliation.warmup_generation
+            and reconciliation.warmup_key
+            not in _reviewer_backend_warmup_pending_generations
+            and reconciliation.warmup_key in _reviewer_backend_warmup_states
+        )
+
+
+def _rwkv_grade_now_review_inputs(
+    reconciliation: RwkvGradeNowReconciliation,
+) -> list[RwkvReviewInput]:
+    reconciliation = _rwkv_grade_now_reconciliation_with_current_identities(
+        reconciliation
+    )
+    rows = _rwkv_grade_now_review_rows(
+        reconciliation.reviewer,
+        reconciliation.card_ids,
+        after_review_id=reconciliation.previous_last_review_id,
+    )
+    rows_by_card_id: dict[int, Sequence[object]] = {}
+    for row in rows:
+        card_id = row[1] if len(row) > 1 else None
+        if not isinstance(card_id, int) or isinstance(card_id, bool):
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "Grade Now produced an invalid review row"
+            )
+        if card_id in rows_by_card_id:
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "Grade Now produced multiple reviews for one card"
+            )
+        rows_by_card_id[card_id] = row
+
+    if set(rows_by_card_id) != set(reconciliation.card_ids):
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "Grade Now reviews were not an append-only suffix"
+        )
+
+    return [
+        review_input
+        for row in rows
+        if (
+            review_input := _rwkv_grade_now_review_input(
+                reconciliation,
+                row,
+            )
+        )
+        is not None
+    ]
+
+
+def _rwkv_grade_now_reconciliation_with_current_identities(
+    reconciliation: RwkvGradeNowReconciliation,
+) -> RwkvGradeNowReconciliation:
+    reviewer = reconciliation.reviewer
+    col = _collection(reviewer)
+    get_card = getattr(col, "get_card", None)
+    if not callable(get_card):
+        raise _RwkvGradeNowReconciliationUnavailable("graded cards cannot be reloaded")
+
+    _invalidate_resolved_preset_id_cache(
+        reviewer,
+        card_ids=reconciliation.card_ids,
+    )
+    identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
+    for card_id in reconciliation.card_ids:
+        identity = rwkv_review_identity(reviewer, get_card(card_id))
+        if identity is None:
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "graded card identity is unavailable"
+            )
+        previous_identity = reconciliation.identities_by_card_id[card_id]
+        history = reconciliation.histories_by_card_id.get(
+            card_id,
+            _RwkvGradeNowCardHistory(),
+        )
+        if history.review_count and identity != previous_identity:
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "Grade Now changed existing RWKV identity routing"
+            )
+        identities_by_card_id[card_id] = (
+            previous_identity if history.review_count else identity
+        )
+
+    return replace(
+        reconciliation,
+        identities_by_card_id=identities_by_card_id,
+    )
+
+
+def _rwkv_grade_now_review_input(
+    reconciliation: RwkvGradeNowReconciliation,
+    row: Sequence[object],
+) -> RwkvReviewInput | None:
+    if len(row) < 9:
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "Grade Now review row is incomplete"
+        )
+    (
+        review_id,
+        card_id,
+        note_id,
+        deck_id,
+        ease,
+        duration_millis,
+        review_kind,
+        interval_days,
+        ease_factor,
+    ) = row[:9]
+    if not (
+        isinstance(review_id, int)
+        and not isinstance(review_id, bool)
+        and isinstance(card_id, int)
+        and not isinstance(card_id, bool)
+        and isinstance(note_id, int)
+        and not isinstance(note_id, bool)
+        and isinstance(deck_id, int)
+        and not isinstance(deck_id, bool)
+        and isinstance(ease, int)
+        and not isinstance(ease, bool)
+        and isinstance(duration_millis, int)
+        and not isinstance(duration_millis, bool)
+        and isinstance(review_kind, int)
+        and not isinstance(review_kind, bool)
+        and isinstance(interval_days, int)
+        and not isinstance(interval_days, bool)
+        and isinstance(ease_factor, int)
+        and not isinstance(ease_factor, bool)
+    ):
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "Grade Now review row has invalid fields"
+        )
+    if not 1 <= ease <= 4 or review_kind not in (0, 1, 2, 3, 4, 5):
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "Grade Now review row has unsupported answer data"
+        )
+    if review_kind == 3 and ease_factor == 0:
+        return None
+
+    identity = reconciliation.identities_by_card_id.get(card_id)
+    if identity is None or identity.note_id != note_id or identity.deck_id != deck_id:
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "Grade Now changed RWKV identity routing"
+        )
+
+    history = reconciliation.histories_by_card_id.get(
+        card_id,
+        _RwkvGradeNowCardHistory(),
+    )
+    is_learning_start = review_kind == 0 and history.last_review_kind != 0
+    if is_learning_start and history.review_count:
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "Grade Now replaced an older retained learning sequence"
+        )
+
+    timing = _timing_today(reconciliation.reviewer)
+    days_elapsed = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(days_elapsed, int) or not isinstance(next_day_at, int):
+        raise _RwkvGradeNowReconciliationUnavailable("scheduler timing is unavailable")
+    day_offset = _historical_review_day_offset(
+        review_id,
+        days_elapsed=days_elapsed,
+        next_day_at=next_day_at,
+    )
+    if history.last_review_id is None:
+        elapsed_days = -1
+        elapsed_seconds = -1
+    else:
+        elapsed_seconds = max(0, (review_id - history.last_review_id) // 1000)
+        elapsed_days = max(
+            0,
+            day_offset
+            - _historical_review_day_offset(
+                history.last_review_id,
+                days_elapsed=days_elapsed,
+                next_day_at=next_day_at,
+            ),
+        )
+
+    historical_state = _historical_review_state(
+        review_kind,
+        is_learning_start=is_learning_start,
+    )
+    state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
+    return RwkvReviewInput(
+        identity=identity,
+        is_query=False,
+        ease=ease,
+        duration_millis=duration_millis,
+        card_type=historical_state,
+        card_queue=_historical_review_queue(review_kind),
+        card_due=None,
+        interval_days=interval_days,
+        ease_factor=ease_factor,
+        reps=None,
+        lapses=None,
+        day_offset=day_offset,
+        current_state_kind=state_kind,
+        current_normal_state_kind=normal_state_kind,
+        current_elapsed_days=elapsed_days,
+        current_elapsed_seconds=elapsed_seconds,
+    )
+
+
+def _rwkv_grade_now_card_histories(
+    rows: Sequence[Sequence[object]],
+) -> dict[int, _RwkvGradeNowCardHistory]:
+    retained_start_by_card = _benchmark_retained_historical_review_starts(rows)
+    histories: dict[int, _RwkvGradeNowCardHistory] = {}
+    for index, row in enumerate(rows):
+        if (
+            _benchmark_retained_historical_review_state(
+                index,
+                row,
+                retained_start_by_card,
+            )
+            is None
+        ):
+            continue
+        if len(row) < 8:
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "existing review row is incomplete"
+            )
+        review_id, card_id, review_kind = row[0], row[1], row[6]
+        if not (
+            isinstance(review_id, int)
+            and not isinstance(review_id, bool)
+            and isinstance(card_id, int)
+            and not isinstance(card_id, bool)
+            and isinstance(review_kind, int)
+            and not isinstance(review_kind, bool)
+        ):
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "existing review row has invalid fields"
+            )
+        previous = histories.get(card_id, _RwkvGradeNowCardHistory())
+        histories[card_id] = _RwkvGradeNowCardHistory(
+            last_review_id=review_id,
+            last_review_kind=review_kind,
+            review_count=previous.review_count + 1,
+        )
+    return histories
+
+
 def record_reviewer_answer(
     reviewer: object,
     card: object,
@@ -3749,6 +4795,18 @@ def record_reviewer_answer(
             ):
                 logger.debug("RWKV answer update skipped: backend context changed")
                 return
+            if recovery_reason := _rwkv_live_answer_canonical_recovery_reason(
+                reviewer,
+                card,
+                ease,
+            ):
+                _invalidate_reviewer_backend_state(
+                    reviewer,
+                    reason=recovery_reason,
+                    expected_mutation_context=mutation_context,
+                )
+                logger.debug("RWKV answer update deferred: %s", recovery_reason)
+                return
             backend.review_answered(
                 reviewer=reviewer,
                 card=card,
@@ -3812,6 +4870,52 @@ def record_reviewer_answer(
                 else:
                     synthetic_states.pop(pending.card_id, None)
             delattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR)
+
+
+def _rwkv_live_answer_canonical_recovery_reason(
+    reviewer: object,
+    card: object,
+    ease: int,
+) -> str | None:
+    card_id = _card_id(card)
+    if card_id is None:
+        return "review answer card identity is unavailable"
+
+    pending = getattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR, None)
+    review_input = (
+        pending.review_input
+        if isinstance(pending, _RwkvPendingAnswerState)
+        and pending.card_id == card_id
+        and pending.ease == ease
+        else _rwkv_answer_input(reviewer, card, ease)
+    )
+    if review_input is None:
+        return "review answer input is unavailable"
+
+    if review_input.card_type == int(RwkvReviewState.LEARN_START):
+        db = getattr(_collection(reviewer), "db", None)
+        if not callable(getattr(db, "all", None)):
+            return "review answer history cannot be verified"
+        rows = _historical_rwkv_review_rows(reviewer, card_ids=[card_id])
+        if len(rows) > 1:
+            return "review answer replaced retained learning history"
+
+    if not _fsrs_preset_overlay_has_known_routing_rules(reviewer):
+        return None
+
+    col = _collection(reviewer)
+    get_card = getattr(col, "get_card", None)
+    if not callable(get_card):
+        return "review answer identity cannot be reloaded"
+    _invalidate_resolved_preset_id_cache(reviewer, card_ids=[card_id])
+    try:
+        current_identity = rwkv_review_identity(reviewer, get_card(card_id))
+    except Exception:
+        logger.debug("failed to reload answered card identity", exc_info=True)
+        return "review answer identity cannot be reloaded"
+    if current_identity != review_input.identity:
+        return "review answer changed RWKV identity routing"
+    return None
 
 
 def refresh_answered_card_queue_score(
@@ -7910,6 +9014,8 @@ def _invalidate_reviewer_backend_state(
                 _reviewer_backend_cold_fallback_generations[key] = generation
             else:
                 _reviewer_backend_cold_fallback_generations.pop(key, None)
+            _rwkv_collection_mutation_undo_entries.clear()
+            _rwkv_collection_mutation_redo_entries.clear()
     try:
         _clear_rwkv_review_queue_scores(reviewer)
     except Exception:
@@ -8847,7 +9953,7 @@ def recompute_rwkv_calibration_data(
             )
             reset_cache_snapshot()
             sample_role_by_review_id, fold_index_by_review_id = (
-                _rwkv_calibration_fold_role_maps(history)
+                _rwkv_calibration_fold_role_maps(reviewer, history)
             )
             writer = _RwkvReviewRetrievabilityCacheWriter(
                 reviewer,
@@ -8932,7 +10038,10 @@ limit 1
     except Exception:
         logger.debug("failed to check RWKV calibration-data availability")
         return False
-    return available == 1
+    return available == 1 and _rwkv_calibration_test_folds_match_fsrs(
+        reviewer,
+        last_review_id=last_review_id,
+    )
 
 
 def ensure_rwkv_calibration_data(
@@ -9166,6 +10275,7 @@ def _rwkv_unavailable_metric_comparison(reason: str) -> dict[str, object]:
 
 
 def _rwkv_calibration_fold_role_maps(
+    reviewer: object,
     history: RwkvHistoricalReviewInputs,
 ) -> tuple[dict[int, str], dict[int, int]]:
     review_ids = [
@@ -9179,6 +10289,34 @@ def _rwkv_calibration_fold_role_maps(
     ]
     if len(review_ids) < 2:
         return {}, {}
+
+    fsrs_validation_folds = _active_fsrs_validation_fold_indices(
+        reviewer,
+        last_review_id=history.last_review_id,
+    )
+    if fsrs_validation_folds:
+        sample_role_by_review_id = {
+            review_id: (
+                _RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD
+                if review_id in fsrs_validation_folds
+                else _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT
+            )
+            for review_id in review_ids
+        }
+        fold_index_by_review_id = {
+            review_id: fsrs_validation_folds.get(review_id, -1)
+            for review_id in review_ids
+        }
+        aligned_reviews = sum(
+            review_id in fsrs_validation_folds for review_id in review_ids
+        )
+        logger.debug(
+            "aligned RWKV calibration samples with FSRS validation folds: "
+            "reviews=%s validation_reviews=%s",
+            len(review_ids),
+            aligned_reviews,
+        )
+        return sample_role_by_review_id, fold_index_by_review_id
 
     train_end = max(1, int(len(review_ids) * _RWKV_CALIBRATION_TRAIN_FRACTION))
     train_end = min(train_end, len(review_ids) - 1)
@@ -9197,6 +10335,135 @@ def _rwkv_calibration_fold_role_maps(
         {review_id: 0 for review_id in review_ids[train_end:]}
     )
     return sample_role_by_review_id, fold_index_by_review_id
+
+
+def _active_fsrs_validation_fold_indices(
+    reviewer: object,
+    *,
+    last_review_id: int,
+) -> dict[int, int] | None:
+    """Return the FSRS validation rows currently visible to calibration graphs."""
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return None
+
+    try:
+        rows = all_rows(
+            f"""
+with latest as (
+  select revlog_id, max(updated_at) as updated_at
+  from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+  where revlog_id <= ?
+    and sample_role in ('final_fit', 'validation_fold', 'post_optimization')
+  group by revlog_id
+)
+select cache.revlog_id, cache.fold_index
+from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
+join latest
+  on latest.revlog_id = cache.revlog_id
+ and latest.updated_at = cache.updated_at
+where cache.sample_role = 'validation_fold'
+order by cache.revlog_id
+""",
+            last_review_id,
+        )
+    except Exception:
+        logger.debug(
+            "FSRS validation folds unavailable for RWKV calibration alignment",
+            exc_info=True,
+        )
+        return None
+
+    validation_folds: dict[int, int] = {}
+    for row in rows:
+        if len(row) < 2:
+            continue
+        review_id, fold_index = row[:2]
+        if (
+            isinstance(review_id, int)
+            and not isinstance(review_id, bool)
+            and review_id > 0
+            and isinstance(fold_index, int)
+            and not isinstance(fold_index, bool)
+            and fold_index >= 0
+        ):
+            validation_folds[review_id] = fold_index
+    return validation_folds
+
+
+def _rwkv_calibration_test_folds_match_fsrs(
+    reviewer: object,
+    *,
+    last_review_id: int,
+) -> bool:
+    fsrs_validation_folds = _active_fsrs_validation_fold_indices(
+        reviewer,
+        last_review_id=last_review_id,
+    )
+    if not fsrs_validation_folds:
+        return True
+
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return False
+    try:
+        rows = all_rows(
+            f"""
+with latest as (
+  select revlog_id, max(updated_at) as updated_at
+  from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+  where revlog_id <= ?
+    and (
+      sample_role in ('test_fold', 'post_optimization')
+      or (
+        sample_role = 'final_fit'
+        and source in ('rwkv_calibration_train', 'rwkv_calibration_recompute')
+      )
+    )
+  group by revlog_id
+)
+select cache.revlog_id, cache.fold_index
+from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
+join latest
+  on latest.revlog_id = cache.revlog_id
+ and latest.updated_at = cache.updated_at
+where cache.sample_role = 'test_fold'
+order by cache.revlog_id
+""",
+            last_review_id,
+        )
+    except Exception:
+        logger.debug(
+            "failed to verify RWKV calibration alignment with FSRS folds",
+            exc_info=True,
+        )
+        return False
+
+    active_test_folds: dict[int, int] = {}
+    for row in rows:
+        if len(row) < 2:
+            return False
+        review_id, fold_index = row[:2]
+        if not (
+            isinstance(review_id, int)
+            and not isinstance(review_id, bool)
+            and review_id > 0
+            and isinstance(fold_index, int)
+            and not isinstance(fold_index, bool)
+            and fold_index >= 0
+        ):
+            return False
+        active_test_folds[review_id] = fold_index
+
+    return bool(active_test_folds) and all(
+        fsrs_validation_folds.get(review_id) == fold_index
+        for review_id, fold_index in active_test_folds.items()
+    )
 
 
 def _rwkv_calibration_predictions_for_history(
@@ -13396,6 +14663,16 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
     existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
+    if not additional_ignored_review_ids:
+        stored = _read_rwkv_state_cache_from_rust_fingerprint(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            ignored_review_ids=existing_ignored_review_ids,
+        )
+        if stored is not None:
+            return stored
     metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
     newest_known_review_id = max(
         (metadata_last_review_id, *additional_ignored_review_ids)
@@ -13679,6 +14956,57 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
     )
 
 
+def _read_rwkv_state_cache_from_rust_fingerprint(
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+    ignored_review_ids: tuple[int, ...],
+) -> RwkvStoredStateCache | None:
+    try:
+        replay_key = _rwkv_replay_semantics_key(
+            reviewer,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+        )
+    except Exception:
+        logger.debug(
+            "failed to build replay key for Rust RWKV history validation",
+            exc_info=True,
+        )
+        return None
+
+    history_hash = metadata.get("historyHash")
+    if replay_key != metadata.get("replayKey") or not _rwkv_history_hash_is_valid(
+        history_hash
+    ):
+        return None
+    expected_identity = _RwkvHistoryPrefixIdentity(
+        last_review_id=_int_value(metadata.get("lastReviewId")) or 0,
+        review_count=_int_value(metadata.get("reviewCount")) or 0,
+        history_hash=cast(str, history_hash),
+    )
+    fingerprint = _rwkv_historical_review_fingerprint(
+        reviewer,
+        ignored_review_ids=ignored_review_ids,
+        expected_identity=expected_identity,
+    )
+    if fingerprint is None or not fingerprint.history_is_valid:
+        return None
+    stored = _read_unchanged_rwkv_state_cache_binary(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=metadata,
+    )
+    if stored is not None:
+        logger.debug(
+            "validated RWKV state cache from Rust history fingerprint: reviews=%s",
+            fingerprint.queried_review_count,
+        )
+    return stored
+
+
 def _read_rwkv_state_cache_store(
     reviewer: object,
     *,
@@ -13886,10 +15214,10 @@ def _read_unchanged_rwkv_state_cache_binary(
     cache_dir: Path,
     metadata: dict[str, object],
 ) -> RwkvStoredStateCache | None:
-    """Read the effective cache state after a collection marker match.
+    """Read the effective cache state after collection identity validation.
 
-    The marker proves the collection inputs have not changed since this
-    manifest was written. The persisted files are still checked against the
+    The caller has matched either the collection marker or the canonical
+    history fingerprint. The persisted files are still checked against the
     manifest before their state is accepted.
     """
 
@@ -13935,7 +15263,7 @@ def _read_unchanged_rwkv_state_cache_binary(
         )
     except Exception:
         logger.warning(
-            "failed to read RWKV cache through unchanged-collection fast path; "
+            "failed to read RWKV cache through validated-history fast path; "
             "falling back to canonical validation",
             exc_info=True,
         )
@@ -15613,6 +16941,118 @@ def _replay_rwkv_cache_reviews(
         warm_up(reviews)
 
 
+def _rwkv_historical_review_fingerprint(
+    reviewer: object,
+    *,
+    ignored_review_ids: Sequence[int] = (),
+    expected_identity: _RwkvHistoryPrefixIdentity | None = None,
+) -> _RwkvHistoricalReviewFingerprint | None:
+    col = _collection(reviewer)
+    backend = getattr(col, "_backend", None)
+    fingerprint = getattr(backend, "rwkv_historical_review_fingerprint", None)
+    if not callable(fingerprint):
+        return None
+
+    stable_preset_ids: dict[str, int] = {}
+    overlay = _fsrs_preset_overlay_config(reviewer)
+    if overlay is not None:
+        for key in ("presets", "rules", "simulator_rules"):
+            items = overlay.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                preset_id = (
+                    item.get("id" if key == "presets" else "preset_id")
+                    if isinstance(item, dict)
+                    else None
+                )
+                if isinstance(preset_id, str) and preset_id:
+                    stable_preset_ids[preset_id] = _stable_preset_id(preset_id)
+
+    start = time.monotonic()
+    try:
+        first_review_uses_creation_by_config_id = {
+            config_id: uses_creation
+            for config_id, uses_creation in _rwkv_first_review_elapsed_config_key(
+                reviewer
+            )
+            if isinstance(config_id, int) and isinstance(uses_creation, bool)
+        }
+        response = fingerprint(
+            ignored_review_ids=ignored_review_ids,
+            dynamic_preset_replay=(
+                _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
+            ),
+            stable_preset_ids=stable_preset_ids,
+            first_review_uses_creation_by_config_id=(
+                first_review_uses_creation_by_config_id
+            ),
+            expected_identity=(
+                scheduler_pb2.RwkvHistoricalReviewIdentity(
+                    last_review_id=expected_identity.last_review_id,
+                    review_count=expected_identity.review_count,
+                    history_hash=expected_identity.history_hash,
+                )
+                if expected_identity is not None
+                else None
+            ),
+        )
+    except Exception:
+        logger.debug(
+            "Rust RWKV historical fingerprint unavailable",
+            exc_info=True,
+        )
+        return None
+
+    last_review_id = getattr(response, "last_review_id", None)
+    review_count = getattr(response, "review_count", None)
+    history_hash = getattr(response, "history_hash", None)
+    queried_review_count = getattr(response, "queried_review_count", None)
+    history_is_valid = getattr(
+        response,
+        "history_is_valid",
+        None,
+    )
+    if not (
+        isinstance(last_review_id, int)
+        and not isinstance(last_review_id, bool)
+        and last_review_id >= 0
+        and isinstance(review_count, int)
+        and not isinstance(review_count, bool)
+        and review_count >= 0
+        and _rwkv_history_hash_is_valid(history_hash)
+        and isinstance(queried_review_count, int)
+        and not isinstance(queried_review_count, bool)
+        and queried_review_count >= 0
+        and isinstance(history_is_valid, bool)
+    ):
+        return None
+    active_ignored_review_ids = tuple(
+        sorted(
+            {
+                review_id
+                for value in getattr(response, "active_ignored_review_ids", ())
+                if (review_id := _valid_card_id(value)) is not None
+            }
+        )
+    )
+    logger.debug(
+        "Rust RWKV historical fingerprint built: reviews=%s elapsed_ms=%.1f",
+        queried_review_count,
+        (time.monotonic() - start) * 1000,
+    )
+    return _RwkvHistoricalReviewFingerprint(
+        identity=_RwkvHistoryPrefixIdentity(
+            last_review_id=last_review_id,
+            review_count=review_count,
+            history_hash=cast(str, history_hash),
+        ),
+        active_ignored_review_ids=active_ignored_review_ids,
+        queried_review_count=queried_review_count,
+        history_is_valid=history_is_valid,
+    )
+
+
 def _historical_rwkv_review_inputs(
     reviewer: object,
     *,
@@ -16236,6 +17676,7 @@ def _historical_rwkv_review_rows(
     *,
     after_review_id: int | None = None,
     deck_id: int | None = None,
+    card_ids: Sequence[int] | None = None,
     limit: int | None = None,
 ) -> list[Sequence[object]]:
     col = _collection(reviewer)
@@ -16248,6 +17689,17 @@ def _historical_rwkv_review_rows(
     deck_ids = _deck_tree_ids(reviewer, deck_id)
     effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
     deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
+    if card_ids is not None:
+        valid_card_ids = [
+            card_id
+            for value in card_ids
+            if (card_id := _valid_card_id(value)) is not None
+        ]
+        if not valid_card_ids:
+            return []
+        card_clause = f"and r.cid in {ids2str(valid_card_ids)}"
+    else:
+        card_clause = ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
     sql = f"""
 select
@@ -16265,6 +17717,7 @@ join cards c on c.id = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
   {after_clause}
   {deck_clause}
+  {card_clause}
 order by r.id, r.cid
 {limit_clause}
 """
@@ -16285,6 +17738,44 @@ order by r.id, r.cid
         (time.monotonic() - start) * 1000,
     )
     return rows
+
+
+def _rwkv_grade_now_review_rows(
+    reviewer: object,
+    card_ids: Sequence[int],
+    *,
+    after_review_id: int,
+) -> list[Sequence[object]]:
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        raise _RwkvGradeNowReconciliationUnavailable("review database is unavailable")
+
+    effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
+    return cast(
+        list[Sequence[object]],
+        all_rows(
+            f"""
+select
+  r.id,
+  r.cid,
+  c.nid,
+  {effective_deck_sql},
+  r.ease,
+  r.time,
+  r.type,
+  cast(r.ivl as integer),
+  cast(r.factor as integer)
+from revlog r
+join cards c on c.id = r.cid
+where r.id > ?
+  and r.cid in {ids2str(card_ids)}
+order by r.id, r.cid
+""",
+            after_review_id,
+        ),
+    )
 
 
 def _historical_rwkv_review_count_through(
@@ -17077,6 +18568,13 @@ def collection_content_did_change(mw: object, initiator: object | None) -> None:
     """Refresh content-dependent inputs without discarding unchanged RWKV state."""
 
     reviewer = SimpleNamespace(mw=mw)
+    if _consume_reconciled_collection_change(reviewer):
+        _preserve_reconciled_non_queue_collection_change(
+            reviewer,
+            reason="collection content mutation",
+        )
+        return
+
     changed_card_ids = _collection_content_change_card_ids(reviewer, initiator)
     if _fsrs_preset_overlay_has_routing_rules(reviewer) and not (
         changed_card_ids
@@ -17087,6 +18585,7 @@ def collection_content_did_change(mw: object, initiator: object | None) -> None:
         return
 
     generation = _invalidate_rwkv_review_input_caches(mw)
+    _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
     logger.debug(
         "RWKV resident state retained after collection content mutation: "
         "cards=%s generation=%s",
@@ -17096,19 +18595,43 @@ def collection_content_did_change(mw: object, initiator: object | None) -> None:
 
 
 def _fsrs_preset_overlay_has_routing_rules(reviewer: object) -> bool:
+    return _fsrs_preset_overlay_routing_rules_active(
+        reviewer,
+        unavailable=True,
+        reason="collection content mutation",
+    )
+
+
+def _fsrs_preset_overlay_has_known_routing_rules(reviewer: object) -> bool:
+    """Return true only when the collection explicitly reports routing rules."""
+
+    return _fsrs_preset_overlay_routing_rules_active(
+        reviewer,
+        unavailable=False,
+        reason="review answer",
+    )
+
+
+def _fsrs_preset_overlay_routing_rules_active(
+    reviewer: object,
+    *,
+    unavailable: bool,
+    reason: str,
+) -> bool:
     col = _collection(reviewer)
     get_config = getattr(col, "get_config", None)
     if not callable(get_config):
-        return True
+        return unavailable
 
     try:
         overlay = get_config(_FSRS_PRESET_OVERLAY_CONFIG_KEY)
     except Exception:
         logger.debug(
-            "failed to inspect FSRS preset overlay after collection content mutation",
+            "failed to inspect FSRS preset overlay after %s",
+            reason,
             exc_info=True,
         )
-        return True
+        return unavailable
 
     if not isinstance(overlay, dict):
         return False
@@ -17223,11 +18746,40 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
     """Discard resident state and preset assignments after collection changes."""
 
     reviewer = SimpleNamespace(mw=mw)
+    if _consume_reconciled_collection_change(reviewer):
+        _preserve_reconciled_non_queue_collection_change(
+            reviewer,
+            reason="collection routing mutation",
+        )
+        return
+
     _invalidate_reviewer_backend_state(
         reviewer,
         reason="collection routing mutation",
     )
     _invalidate_resolved_preset_id_cache(reviewer)
+
+
+def _preserve_reconciled_non_queue_collection_change(
+    reviewer: object,
+    *,
+    reason: str,
+) -> None:
+    mw = getattr(reviewer, "mw", None)
+    generation = _invalidate_rwkv_review_input_caches(mw)
+    _invalidate_resolved_preset_id_cache(reviewer)
+    _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
+    logger.debug(
+        "RWKV resident state retained after reconciled %s: generation=%s",
+        reason,
+        generation,
+    )
+
+
+def _refresh_ready_rwkv_state_cache_collection_mod(reviewer: object) -> None:
+    resident_identity = _rwkv_ready_state_cache_history_identity(reviewer)
+    if resident_identity is not None:
+        _refresh_rwkv_state_cache_collection_mod(reviewer, resident_identity)
 
 
 def study_queues_did_change(
@@ -17246,8 +18798,11 @@ def study_queues_did_change(
         return
 
     transient_reviewer = SimpleNamespace(mw=mw)
+    mutation_reconciled = _consume_reconciled_collection_change(
+        reviewer or transient_reviewer
+    )
     deck_browser = getattr(mw, "deckBrowser", None)
-    resident_state_preserved = (
+    resident_state_preserved = mutation_reconciled or (
         changes is not None
         and changes.config
         and deck_browser is not None
@@ -17270,12 +18825,7 @@ def study_queues_did_change(
             logger.exception(
                 "failed to clear RWKV queue scores after queue-only mutation"
             )
-        resident_identity = _rwkv_ready_state_cache_history_identity(transient_reviewer)
-        if resident_identity is not None:
-            _refresh_rwkv_state_cache_collection_mod(
-                transient_reviewer,
-                resident_identity,
-            )
+        _refresh_ready_rwkv_state_cache_collection_mod(transient_reviewer)
     else:
         _invalidate_reviewer_backend_state(
             transient_reviewer,
@@ -17293,10 +18843,11 @@ def study_queues_did_change(
     clear_deck_browser_rwkv_count_scores(mw)
     logger.debug(
         "RWKV study queue caches invalidated: generation=%s initiator=%s "
-        "resident_state_preserved=%s",
+        "resident_state_preserved=%s mutation_reconciled=%s",
         generation,
         type(initiator).__name__ if initiator is not None else None,
         resident_state_preserved,
+        mutation_reconciled,
     )
 
 
@@ -19179,6 +20730,11 @@ def _apply_rwkv_review_reschedule_if_current(
 
     if mw is not state_token.collection_owner or state_token.collection_backend is None:
         return None
+    reconciliation = prepare_collection_mutation_reconciliation(
+        SimpleNamespace(mw=mw),
+        [item.card_id for item in items],
+    )
+    result: object | None = None
     with _try_reviewer_backend_prediction_access(
         expected_state_token=state_token,
     ) as backend:
@@ -19190,11 +20746,15 @@ def _apply_rwkv_review_reschedule_if_current(
                 expected_state_token=state_token,
             ):
                 return None
-            return _apply_rwkv_review_reschedule(
+            result = _apply_rwkv_review_reschedule(
                 mw,
                 items,
                 collection_backend=state_token.collection_backend,
             )
+    changes = getattr(result, "changes", None)
+    if isinstance(changes, collection_pb2.OpChanges) and changes.study_queues:
+        record_collection_mutation_reconciliation(reconciliation)
+    return result
 
 
 def _rwkv_review_scores_for_candidates(

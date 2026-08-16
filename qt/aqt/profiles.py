@@ -678,7 +678,7 @@ create table if not exists profiles
         self.profile["hostNum"] = val or 0
 
     def check_for_updates(self) -> bool:
-        return self.meta.get("check_for_updates", True)
+        return not aqt.is_portable() and self.meta.get("check_for_updates", True)
 
     def set_update_check(self, on: bool) -> None:
         self.meta["check_for_updates"] = on

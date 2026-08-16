@@ -18,6 +18,7 @@ from aqt.mediasrv import (
     UnsafePathException,
     _editor_content_security_policy,
     _handle_local_file_request,
+    _rwkv_raw_backend_mutation_note_ids,
     _should_log_request,
     ensure_safe_path,
     is_localhost_origin,
@@ -46,6 +47,27 @@ NEXT_S90_UNAVAILABLE_ROWS = [
         "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
     ),
 ]
+
+
+def test_rwkv_raw_backend_mutation_scopes() -> None:
+    from anki import image_occlusion_pb2, notes_pb2
+
+    update_notes = notes_pb2.UpdateNotesRequest(
+        notes=[notes_pb2.Note(id=10), notes_pb2.Note(id=20)]
+    )
+    update_image = image_occlusion_pb2.UpdateImageOcclusionNoteRequest(note_id=30)
+
+    assert _rwkv_raw_backend_mutation_note_ids("add_note", b"") == ()
+    assert _rwkv_raw_backend_mutation_note_ids("add_image_occlusion_note", b"") == ()
+    assert _rwkv_raw_backend_mutation_note_ids(
+        "update_notes",
+        update_notes.SerializeToString(),
+    ) == (10, 20)
+    assert _rwkv_raw_backend_mutation_note_ids(
+        "update_image_occlusion_note",
+        update_image.SerializeToString(),
+    ) == (30,)
+    assert _rwkv_raw_backend_mutation_note_ids("remove_notes", b"") is None
 
 
 class TestEnsureSafePath:

@@ -9,6 +9,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from tools.build_installer import (
+    PORTABLE_BUNDLE,
+    PORTABLE_DATA_DIR,
+    PORTABLE_FORMAL_NAME,
+    PORTABLE_MARKER,
     _find_fcitx_file,
     build,
     bundle_fcitx,
@@ -22,6 +26,7 @@ from tools.build_installer import (
     main,
     normalize_wheel_path,
     package,
+    package_portable_archive,
     repair_macos_anki_audio_layout,
 )
 
@@ -32,6 +37,7 @@ dummy_wheel_path = support_dir / "dummy_package-0.1.0-py3-none-any.whl"
 @pytest.fixture
 def out_dir(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr("tools.build_installer.out_dir", tmp_path)
+    monkeypatch.setattr("tools.build_installer.portable_out_dir", tmp_path / "portable")
     shutil.copy(dummy_wheel_path, tmp_path / dummy_wheel_path.name)
     return tmp_path
 
@@ -48,7 +54,7 @@ def build_args(wheel_path: Path) -> dict[str, Any]:
 @pytest.fixture
 def cmd_args(wheel_path: Path) -> argparse.Namespace:
     version = "0.0.1"
-    return argparse.Namespace(version=version, **build_args(wheel_path))
+    return argparse.Namespace(version=version, portable=False, **build_args(wheel_path))
 
 
 @pytest.fixture
@@ -115,6 +121,21 @@ def test_sources_path(monkeypatch, tmp_path: Path, platform: str, root: str) -> 
     assert sources_path.name == root
 
 
+def test_portable_sources_path(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("sys.platform", "darwin")
+    sources_path = get_briefcase_sources_path(tmp_path, portable=True)
+    assert sources_path == (
+        tmp_path
+        / "build"
+        / "anki"
+        / "macos"
+        / "app"
+        / f"{PORTABLE_FORMAL_NAME}.app"
+        / "Contents"
+        / "Resources"
+    )
+
+
 @pytest.mark.parametrize(
     "platform, output_format", [("linux", ["linux", "zip"]), ("win32", [])]
 )
@@ -131,6 +152,14 @@ def test_briefcase_config(out_dir: Path, cmd_args: argparse.Namespace) -> None:
         in config
     )
     assert any(s.startswith("template=") for s in config)
+
+
+def test_portable_briefcase_config(cmd_args: argparse.Namespace) -> None:
+    cmd_args.portable = True
+    config = get_briefcase_config_args(cmd_args)
+    assert f'formal_name="{PORTABLE_FORMAL_NAME}"' in config
+    assert f'bundle="{PORTABLE_BUNDLE}"' in config
+    assert "document_type={}" in config
 
 
 def test_compile_fails_loudly(
@@ -189,6 +218,21 @@ def test_main(mocker, wheel_path: Path) -> None:
     package_mock = mocker.patch("tools.build_installer.package")
     args = main([*version_args, "package"])
     package_mock.assert_called_once_with(args)
+
+
+def test_main_portable(mocker, wheel_path: Path) -> None:
+    build_mock = mocker.patch("tools.build_installer.build")
+    args = main(
+        [
+            "--version",
+            "0.0.1",
+            "--portable",
+            "build",
+            *_to_cmd_list(build_args(wheel_path)),
+        ]
+    )
+    assert args.portable
+    build_mock.assert_called_once_with(args)
 
 
 def test_find_fcitx_file_returns_match(tmp_path: Path) -> None:
@@ -254,6 +298,37 @@ def test_repair_macos_anki_audio_layout_renames_lib_to_libs(
 
     assert (audio_dir / "libs" / "libass.9.dylib").exists()
     assert not lib_dir.exists()
+
+
+def test_package_portable_archive(monkeypatch, mocker, tmp_path: Path) -> None:
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    resources = get_briefcase_sources_path(tmp_path, portable=True)
+    resources.mkdir(parents=True)
+    (resources / PORTABLE_MARKER).touch()
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    generated_dmg = dist_dir / "generated.dmg"
+    generated_dmg.touch()
+
+    def create_archive(command: list[str]) -> None:
+        Path(command[-1]).touch()
+
+    ditto = mocker.patch("subprocess.check_call", side_effect=create_archive)
+    archive = package_portable_archive(tmp_path, "0.0.1")
+
+    assert archive == dist_dir / "anki-0.0.1-portable-mac-apple.zip"
+    assert archive.exists()
+    assert not generated_dmg.exists()
+    assert not (tmp_path / "portable-package").exists()
+    assert ditto.call_args.args[0][:5] == [
+        "ditto",
+        "-c",
+        "-k",
+        "--sequesterRsrc",
+        "--keepParent",
+    ]
+    assert PORTABLE_DATA_DIR in (installer_dir / "portable-readme.txt").read_text()
 
 
 def test_build_and_package(out_dir: Path, cmd_args: argparse.Namespace) -> None:

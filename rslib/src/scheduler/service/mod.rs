@@ -33,6 +33,8 @@ use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
 use anki_proto::scheduler::RwkvAnsweredCardQueueScorePatchRequest;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
+use anki_proto::scheduler::RwkvHistoricalReviewFingerprintRequest;
+use anki_proto::scheduler::RwkvHistoricalReviewFingerprintResponse;
 use anki_proto::scheduler::RwkvRetrievabilityScoreResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
@@ -1082,6 +1084,13 @@ impl crate::services::SchedulerService for Collection {
             .collect();
 
         Ok(FsrsPresetIdsForCardsResponse { items })
+    }
+
+    fn rwkv_historical_review_fingerprint(
+        &mut self,
+        input: RwkvHistoricalReviewFingerprintRequest,
+    ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+        Collection::rwkv_historical_review_fingerprint(self, input)
     }
 }
 

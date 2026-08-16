@@ -83,12 +83,22 @@ class ModelChooser(QHBoxLayout):
         def callback(ret: StudyDeck) -> None:
             if not ret.name:
                 return
+            from aqt import rwkv_scheduler
+
             m = self.deck.models.by_name(ret.name)
             assert m is not None
-            self.deck.conf["curModel"] = m["id"]
-            cdeck = self.deck.decks.current()
-            cdeck["mid"] = m["id"]
-            self.deck.decks.save(cdeck)
+
+            def change_current_notetype() -> None:
+                self.deck.conf["curModel"] = m["id"]
+                cdeck = self.deck.decks.current()
+                cdeck["mid"] = m["id"]
+                self.deck.decks.save(cdeck)
+
+            rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+                self.deck,
+                change_current_notetype,
+                force_reconciliation=True,
+            )
             gui_hooks.current_note_type_did_change(current)
             self.mw.reset()
 
