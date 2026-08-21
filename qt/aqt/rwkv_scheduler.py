@@ -4128,6 +4128,13 @@ def _require_collection_mutation_reconciliation_current(
             "mutation changed RWKV identity routing"
         )
 
+    if not reconciliation.historical_card_ids:
+        if not _rwkv_collection_mutation_reconciliation_is_current(reconciliation):
+            raise _RwkvGradeNowReconciliationUnavailable(
+                "resident state changed during collection mutation"
+            )
+        return
+
     with _reviewer_backend_execution_lock:
         if not _rwkv_collection_mutation_reconciliation_is_current(reconciliation):
             raise _RwkvGradeNowReconciliationUnavailable(

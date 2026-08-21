@@ -926,6 +926,61 @@ def test_collection_mutation_wrapper_preserves_metadata_only_change(
     assert rwkv_scheduler._rwkv_study_queue_generation == 1
 
 
+def test_new_card_mutation_does_not_wait_for_background_prediction() -> None:
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert "select distinct cid" in sql
+            assert args == ()
+            return []
+
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select mod from col"
+            assert args == ()
+            return 123
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+
+    reconciliation = rwkv_scheduler.prepare_collection_mutation_reconciliation(
+        reviewer,
+    )
+    assert reconciliation is not None
+
+    result: Future[bool] = Future()
+    completed = threading.Event()
+
+    def reconcile() -> None:
+        try:
+            result.set_result(
+                rwkv_scheduler.record_collection_mutation_reconciliation(reconciliation)
+            )
+        except BaseException as exc:
+            result.set_exception(exc)
+        finally:
+            completed.set()
+
+    rwkv_scheduler._reviewer_backend_execution_lock.acquire()
+    worker = threading.Thread(target=reconcile)
+    try:
+        worker.start()
+        completed_while_prediction_busy = completed.wait(timeout=1)
+    finally:
+        rwkv_scheduler._reviewer_backend_execution_lock.release()
+        worker.join(timeout=5)
+
+    assert completed_while_prediction_busy
+    assert not worker.is_alive()
+    assert result.result(timeout=5) is True
+
+
 def test_collection_mutation_wrapper_preserves_non_queue_config_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

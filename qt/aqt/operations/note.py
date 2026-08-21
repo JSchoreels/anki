@@ -73,9 +73,14 @@ def remove_notes(
     parent: QWidget,
     note_ids: Sequence[NoteId],
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.remove_notes(note_ids)).success(
-        lambda out: tooltip(tr.browsing_cards_deleted(count=out.count)),
-    )
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.remove_notes(note_ids),
+            note_ids=note_ids,
+        ),
+    ).success(lambda out: tooltip(tr.browsing_cards_deleted(count=out.count)))
 
 
 def find_and_replace(

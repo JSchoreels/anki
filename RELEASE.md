@@ -47,6 +47,8 @@ Current application version: `26.05+fsrs7`
   note-type selection, RWKV rescheduling, bulk content edits, and safely
   reconciled scheduling or filtered-deck mutations—including their undo/redo—
   when canonical history routing remains unchanged.
+- Keep creating or deleting unreviewed cards responsive while background RWKV
+  prediction work is still running.
 - Fall back to canonical RWKV recovery when a normal answer starts a replacement
   learning sequence or changes dynamic preset routing.
 - Explicitly close RWKV state-cache database readers before publication, retry
