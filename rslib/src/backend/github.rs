@@ -22,8 +22,8 @@ use crate::updates::updates_dir;
 use crate::updates::user_agent;
 use crate::updates::DownloadUpdateProgress;
 
-const ALL_RELEASES_URL: &str = "https://api.github.com/repos/ankitects/anki/releases";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/ankitects/anki/releases/latest";
+const ALL_RELEASES_URL: &str = "https://api.github.com/repos/JSchoreels/anki/releases";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/JSchoreels/anki/releases/latest";
 
 // NOTE: must match platform suffixes in build_installer.py
 fn get_platform_suffix() -> Option<&'static str> {

@@ -26,6 +26,7 @@ Current application version: `26.05+fsrs7`
 
 ### Added
 
+- Check for and install updates published by the Anki FSRS7 fork.
 - Add a portable macOS edition that keeps profiles, collections, media, add-ons,
   backups, preferences, logs, and temporary files beside the app, and can run at
   the same time as a normal Anki installation without sharing local state.
