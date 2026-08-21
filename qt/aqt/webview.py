@@ -964,7 +964,9 @@ html {{ {font} }}
     def on_operation_did_execute(
         self, changes: OpChanges, handler: object | None
     ) -> None:
-        if handler is self.parentWidget():
+        # HTTP-backed operations use the active top-level window as their
+        # initiator, while CollectionOp callers may use the immediate parent.
+        if handler is self.parentWidget() or handler is self.window():
             return
 
         changes_json = to_json_bytes(MessageToDict(changes)).decode()

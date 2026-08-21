@@ -33,6 +33,8 @@ Current application version: `26.05+fsrs7`
 
 ### Fixed
 
+- Save complete IME text when editing the current review card instead of
+  reloading the editor during text composition.
 - Align RWKV calibration test rows and fold indices with FSRS validation folds,
   so UM+ compares both models on the same review samples instead of narrowing
   the comparison to RWKV's independent 30% holdout.
