@@ -23,6 +23,8 @@ use crate::card::CardType;
 use crate::scheduler::rwkv::relative_overdueness;
 
 mod bulk;
+#[cfg(test)]
+mod collection_benchmark;
 #[cfg(target_os = "macos")]
 mod matmul;
 
@@ -7370,6 +7372,7 @@ mod tests {
 
     use rusqlite::Connection;
 
+    use super::collection_benchmark::deck_config_ids_by_deck;
     use super::*;
 
     struct TimeMixerAffineTransform {
@@ -7925,6 +7928,7 @@ mod tests {
             uri,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )?;
+        let preset_by_deck = deck_config_ids_by_deck(&db)?;
         let current_deck_id_sql = scan_bench_current_deck_id_sql(&db)?;
         let limit_clause = if limit == 0 {
             String::new()
@@ -8003,7 +8007,7 @@ order by e.id, e.cid
                 card_id: row.card_id,
                 note_id: Some(row.note_id),
                 deck_id: Some(row.deck_id),
-                preset_id: Some(row.deck_id),
+                preset_id: preset_by_deck.get(&row.deck_id).copied().flatten(),
                 is_query: false,
                 ease: Some(row.ease as u8),
                 duration_millis: Some(row.duration_millis),
@@ -10015,11 +10019,7 @@ order by e.id, e.cid
                 let previous_day_offset = ((previous_secs - created_secs).max(0)) / SECONDS_PER_DAY;
                 (day_offset - previous_day_offset).max(0)
             });
-            let preset_id = preset_by_deck
-                .get(&deck_id)
-                .copied()
-                .flatten()
-                .or(Some(deck_id));
+            let preset_id = preset_by_deck.get(&deck_id).copied().flatten();
             outcomes.push(ease != 1);
             target_reviews.push(target_deck_ids.is_empty() || target_deck_ids.contains(&deck_id));
             reviews.push(ReviewInput {
@@ -10039,24 +10039,6 @@ order by e.id, e.cid
             });
         }
         Ok((reviews, outcomes, target_reviews))
-    }
-
-    fn deck_config_ids_by_deck(
-        connection: &Connection,
-    ) -> rusqlite::Result<HashMap<i64, Option<i64>>> {
-        let decks_json: String =
-            connection.query_row("select decks from col limit 1", [], |row| row.get(0))?;
-        let decks: serde_json::Value = serde_json::from_str(&decks_json).unwrap_or_default();
-        let mut by_deck = HashMap::new();
-        if let Some(decks) = decks.as_object() {
-            for (id, deck) in decks {
-                if let Ok(deck_id) = id.parse::<i64>() {
-                    let config_id = deck.get("conf").and_then(|value| value.as_i64());
-                    by_deck.insert(deck_id, config_id);
-                }
-            }
-        }
-        Ok(by_deck)
     }
 
     fn historical_state(review_kind: i64, is_learning_start: bool) -> i64 {

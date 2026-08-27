@@ -17,6 +17,11 @@ use anki::rwkv::RwkvInference;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
 
+#[path = "../rwkv/collection_benchmark.rs"]
+mod collection_benchmark;
+
+use collection_benchmark::deck_config_ids_by_deck;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse()?;
 
@@ -1020,9 +1025,17 @@ impl CollectionWorkload {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
         )?;
         let timing = BenchTiming::today();
-        let warmup_reviews = collection_warmup_reviews(&db, warmup_limit, &timing, deck_id)?;
-        let query_inputs =
-            collection_query_inputs(&db, query_limit, target_retention, &timing, deck_id)?;
+        let preset_by_deck = deck_config_ids_by_deck(&db)?;
+        let warmup_reviews =
+            collection_warmup_reviews(&db, warmup_limit, &timing, &preset_by_deck, deck_id)?;
+        let query_inputs = collection_query_inputs(
+            &db,
+            query_limit,
+            target_retention,
+            &timing,
+            &preset_by_deck,
+            deck_id,
+        )?;
         Ok(Self {
             source: "collection".into(),
             warmup_reviews,
@@ -1057,6 +1070,7 @@ fn collection_warmup_reviews(
     db: &Connection,
     limit: usize,
     timing: &BenchTiming,
+    preset_by_deck: &HashMap<i64, Option<i64>>,
     deck_id: Option<i64>,
 ) -> rusqlite::Result<Vec<ReviewInput>> {
     let current_deck_id_sql = current_deck_id_sql(db)?;
@@ -1094,7 +1108,7 @@ fn collection_warmup_reviews(
             card_id: row.card_id,
             note_id: Some(row.note_id),
             deck_id: Some(row.deck_id),
-            preset_id: Some(row.deck_id),
+            preset_id: preset_by_deck.get(&row.deck_id).copied().flatten(),
             is_query: false,
             ease: Some(row.ease as u8),
             duration_millis: Some(row.duration_millis),
@@ -1176,6 +1190,7 @@ fn collection_query_inputs(
     limit: usize,
     target_retention: f32,
     timing: &BenchTiming,
+    preset_by_deck: &HashMap<i64, Option<i64>>,
     deck_id: Option<i64>,
 ) -> rusqlite::Result<Vec<ReviewInput>> {
     let current_deck_id_sql = current_deck_id_sql(db)?;
@@ -1226,7 +1241,7 @@ limit {limit}"
             card_id,
             note_id: Some(note_id),
             deck_id: Some(deck_id),
-            preset_id: Some(deck_id),
+            preset_id: preset_by_deck.get(&deck_id).copied().flatten(),
             is_query: true,
             ease: None,
             duration_millis: None,

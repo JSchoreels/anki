@@ -989,7 +989,11 @@ cheaper transform representation.
 The synthetic benchmark collections used for these measurements were copied or
 scratch SQLite collections under `/private/tmp`; replace the path or recreate
 the same shapes if those files are gone. Do not run these benchmarks directly
-against a live profile database. The shapes were:
+against a live profile database. Collection-backed Rust benchmarks resolve each
+loaded deck's current deck-config ID from either normalized deck protobufs or
+legacy deck JSON and use it as the preset stream ID. They do not evaluate add-on
+preset overlay rules; use the production replay path when those rules matter.
+The shapes were:
 
 - `rwkv-synthetic-50k.anki2`: 5,000 cards with 10 reviews each.
 - `rwkv-synthetic-50k-long-cards.anki2`: 50 cards with 1,000 reviews each.
