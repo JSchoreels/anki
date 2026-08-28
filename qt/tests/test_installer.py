@@ -220,7 +220,8 @@ def test_main(mocker, wheel_path: Path) -> None:
     package_mock.assert_called_once_with(args)
 
 
-def test_main_portable(mocker, wheel_path: Path) -> None:
+def test_main_portable(monkeypatch, mocker, wheel_path: Path) -> None:
+    monkeypatch.setattr("sys.platform", "darwin")
     build_mock = mocker.patch("tools.build_installer.build")
     args = main(
         [
