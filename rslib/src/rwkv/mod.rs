@@ -1945,11 +1945,14 @@ fn simulation_card(
 ) -> RwkvSimulationCard {
     let elapsed_days = input_elapsed_days(&input.review_input);
     let mut due_day = 0;
-    if prediction.retrievability.is_finite()
-        && prediction.retrievability > target_retention
-        && prediction.current_interval.is_some()
-    {
-        due_day = (prediction.current_interval.unwrap() as i64 - elapsed_days).max(1);
+    match prediction.current_interval {
+        Some(current_interval)
+            if prediction.retrievability.is_finite()
+                && prediction.retrievability > target_retention =>
+        {
+            due_day = (current_interval as i64 - elapsed_days).max(1);
+        }
+        _ => {}
     }
     RwkvSimulationCard {
         review_input: input.clone(),
@@ -3638,14 +3641,12 @@ impl ReviewStateMaps {
                 .ok_or_else(state_cache_delta_too_large)?;
         }
         len = len.checked_add(1).ok_or_else(state_cache_delta_too_large)?;
-        if (full || self.global_dirty) && self.global.is_some() {
-            len = len
-                .checked_add(
-                    4 + serialized_module_state_len(
-                        self.global.as_ref().expect("checked global state"),
-                    ),
-                )
-                .ok_or_else(state_cache_delta_too_large)?;
+        if full || self.global_dirty {
+            if let Some(global) = &self.global {
+                len = len
+                    .checked_add(4 + serialized_module_state_len(global))
+                    .ok_or_else(state_cache_delta_too_large)?;
+            }
         }
         Ok(len)
     }

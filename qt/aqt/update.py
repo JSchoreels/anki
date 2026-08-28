@@ -7,84 +7,65 @@ from typing import Callable
 
 import aqt
 from anki.buildinfo import buildhash
-from anki.collection import CheckForUpdateResponse, Collection, GithubRelease
-from anki.utils import dev_mode, int_time, int_version, plat_desc
+from anki.buildinfo import version as version_str
+from anki.collection import GithubRelease
 from aqt.operations import QueryOp
 from aqt.package import (
     download_github_update_and_install as _download_github_update_and_install,
 )
 from aqt.qt import *
-from aqt.utils import openLink, show_warning, showText, tr
+from aqt.utils import show_warning, tooltip, tr
 
 
-def check_for_update() -> None:
-    from aqt import mw
+def _release_is_newer(
+    release: GithubRelease,
+    *,
+    current_version: str = version_str,
+    current_buildhash: str = buildhash,
+) -> bool:
+    from packaging.version import Version
 
-    def do_check(_col: Collection) -> CheckForUpdateResponse:
-        return mw.backend.check_for_update(
-            version=int_version(),
-            buildhash=buildhash,
-            os=plat_desc(),
-            install_id=mw.pm.meta["id"],
-            last_message_id=max(0, mw.pm.meta["lastMsg"]),
-        )
+    release_version = Version(release.tag_name)
+    installed_version = Version(current_version)
+    release_base = Version(release_version.public.split("+", maxsplit=1)[0])
+    installed_base = Version(installed_version.public.split("+", maxsplit=1)[0])
 
-    def on_done(resp: CheckForUpdateResponse) -> None:
-        # is clock off?
-        if not dev_mode:
-            diff = abs(resp.current_time - int_time())
-            if diff > 300:
-                diff_text = tr.qt_misc_second(count=diff)
-                warn = (
-                    tr.qt_misc_in_order_to_ensure_your_collection(val="%s") % diff_text
-                )
-                show_warning(
-                    warn,
-                    parent=mw,
-                    textFormat=Qt.TextFormat.RichText,
-                    callback=mw.app.closeAllWindows,
-                )
-                return
-        # should we show a message?
-        if msg := resp.message:
-            showText(msg, parent=mw, type="html")
-            mw.pm.meta["lastMsg"] = resp.last_message_id
-        # has Anki been updated?
-        if ver := resp.new_version:
-            if mw.pm.meta.get("suppressUpdate", None) != ver:
-                prompt_to_update(mw, ver)
+    if release_base != installed_base:
+        return release_base > installed_base
 
-    def on_fail(exc: Exception) -> None:
-        print(f"update check failed: {exc}")
+    target = release.target_commitish.lower()
+    installed_hash = current_buildhash.lower()
+    if target and installed_hash and target.startswith(installed_hash):
+        return False
 
-    QueryOp(parent=mw, op=do_check, success=on_done).failure(
-        on_fail
-    ).without_collection().run_in_background()
+    return release_version > installed_version or len(target) >= 8
 
 
-def prompt_to_update(mw: aqt.AnkiQt, ver: str) -> None:
-    msg = (
-        tr.qt_misc_anki_updatedanki_has_been_released(val=ver)
-        + tr.qt_misc_would_you_like_to_download_it()
-    )
+def check_for_update(*, parent: aqt.AnkiQt, manual: bool) -> None:
+    from packaging.version import Version
 
-    msgbox = QMessageBox(mw)
-    msgbox.setStandardButtons(
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-    )
-    msgbox.setIcon(QMessageBox.Icon.Information)
-    msgbox.setText(msg)
+    version = Version(version_str)
 
-    button = QPushButton(tr.qt_misc_ignore_this_update())
-    msgbox.addButton(button, QMessageBox.ButtonRole.RejectRole)
-    msgbox.setDefaultButton(QMessageBox.StandardButton.Yes)
-    ret = msgbox.exec()
+    def on_success(release: GithubRelease) -> None:
+        if _release_is_newer(release):
+            prompt_and_install_github_update(parent, release)
+        elif manual:
+            tooltip(tr.addons_no_updates_available(), parent=parent)
 
-    if msgbox.clickedButton() == button:
-        # ignore this update
-        mw.pm.meta["suppressUpdate"] = ver
-    elif ret == QMessageBox.StandardButton.Yes:
-        openLink(aqt.appWebsiteDownloadSection)
+    def on_failure(exc: Exception) -> None:
+        if manual:
+            show_warning(str(exc), parent=parent)
+        else:
+            print(f"update check failed: {exc}")
+
+    op = get_latest_release_op(
+        parent=parent,
+        include_prerelease=version.is_prerelease,
+        on_success=on_success,
+    ).failure(on_failure)
+    if manual:
+        op = op.with_progress()
+    op.run_in_background()
 
 
 def prompt_and_install_github_update(mw: aqt.AnkiQt, release: GithubRelease) -> None:

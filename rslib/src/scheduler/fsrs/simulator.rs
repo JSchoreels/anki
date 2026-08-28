@@ -664,11 +664,7 @@ impl Collection {
         // calculate any missing memory state
         for c in &mut cards {
             if is_included_card(c) && c.memory_state.is_none() {
-                let fsrs_data = self.compute_memory_state(c.id)?;
-                c.memory_state = fsrs_data.state.map(Into::into);
-                c.desired_retention = Some(fsrs_data.desired_retention);
-                c.decay = Some(fsrs_data.decay);
-                self.storage.update_card(c)?;
+                self.compute_and_update_memory_state(c)?;
             }
         }
         let preset_router = if with_preset_router {
@@ -729,7 +725,7 @@ impl Collection {
             })
             .collect_vec();
         let introduced_today_count = self
-            .search_cards(&format!("{} introduced:1", &req.search), SortMode::NoOrder)?
+            .search_cards(&format!("{} introduced:1", req.search), SortMode::NoOrder)?
             .len()
             .min(req.new_limit as usize);
         if req.new_limit > 0 {

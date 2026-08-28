@@ -1,4 +1,12 @@
+<!-- DO NOT MANUALLY EDIT THIS FILE -->
+<!-- This file is copied from docs-site/developers/development.mdx automatically -->
+
 # Anki development
+
+<!-- <<<cog
+from cogdocs import get_file_contents
+cog.out(get_file_contents("development"))
+>>> -->
 
 ## Packaged betas
 
@@ -39,7 +47,7 @@ On all platforms, you will need to install:
   or `bash tools\install-n2` on Windows. If you want to use Ninja, it can be downloaded
   from https://github.com/ninja-build/ninja/releases/tag/v1.11.1 and
   placed on your path, or from your distro/homebrew if it's 1.10+.
-  - On Windows, if you have WSL installed, it may conflict with MSYS2 bash. If you are getting an error, try running `C:\msys64\usr\bin\bash.exe tools/install-n2` instead.
+    - On Windows, if you have WSL installed, it may conflict with MSYS2 bash. If you are getting an error, try running `C:\msys64\usr\bin\bash.exe tools/install-n2` instead.
 - (Optional) [just](https://just.systems/man/en/packages.html) command runner.
   Install with `brew install just` or `uv tool install just`.
   We are experimenting with `just` as the official tool for running
@@ -48,9 +56,9 @@ On all platforms, you will need to install:
 
 Platform-specific requirements:
 
-- [Windows](./windows.md)
-- [Mac](./mac.md)
-- [Linux](./linux.md)
+- [Windows](https://anki.mintlify.app/windows)
+- [Mac](https://anki.mintlify.app/mac)
+- [Linux](https://anki.mintlify.app/linux)
 
 ## Running Anki during development
 
@@ -67,7 +75,7 @@ This will build Anki and run it in place.
 The first build will take a while, as it downloads and builds a bunch of
 dependencies. When the build is complete, Anki will automatically start.
 
-If Anki fails to start, you may need to install [extra libraries](https://docs.ankiweb.net/platform/linux/missing-libraries.html).
+If Anki fails to start, you may need to install [extra libraries](https://anki.mintlify.app/manual/platform/linux/missing-libraries).
 
 ## Running tests/checks
 
@@ -82,29 +90,6 @@ To run all tests at once, from the top-level folder:
 You can also run specific checks. For example, if you see during the checks
 that `check:svelte:editor` is failing, you can use `./ninja check:svelte:editor`
 to re-run that check, or `./ninja check:svelte` to re-run all Svelte checks.
-
-### Known issue: direct Qt pytest imports the wrong Anki package
-
-Running a targeted Qt test directly with `python3 -m pytest qt/tests/...` can
-import a globally installed `anki` package instead of this checkout. A common
-symptom is a collection error in `aqt.mediasrv` before any tests are collected:
-
-```
-assert hasattr(RustBackend, f"{endpoint}_raw")
-```
-
-This happens when the generated backend wrapper from the active Python
-environment does not match this fork's backend endpoints.
-
-Build the local Python and Qt outputs first, then put them on `PYTHONPATH`:
-
-```
-./ninja pylib qt
-PYTHONPATH=pylib:out/pylib:out/qt python3 -m pytest qt/tests/test_reviewer.py
-```
-
-The repo's ninja/just test targets set up the generated outputs for normal test
-runs. Use the explicit `PYTHONPATH` form for one-off targeted Qt pytest commands.
 
 ## Fixing formatting
 
@@ -183,15 +168,28 @@ Windows, Yarn cache can be found in `%LOCALAPPDATA%\Yarn`.
 
 If you invoke Rust outside of the build scripts (eg by running cargo, or
 with Rust Analyzer), output files will go into `target/` unless you have
-overriden the default output location.
+overridden the default output location.
+
+## Storage and Performance
+
+Most editors use rust-analyzer for Rust support, which runs `cargo check` in the
+background whenever you save a file, so that problems are surfaced before you try to
+build. This is useful, but on lower-end machines, it can noticeably increase disk
+usage and CPU load. If that's a problem for you, consider disabling "check on save"
+(e.g. set `rust-analyzer.checkOnSave` to `false` in VS Code) as a trade-off — you'll
+lose real-time error checking, but rust-analyzer can still be used for code completion,
+go-to-definition, etc.
+
+If you chose to disable "check on save" and don't run `cargo` commands manually, you
+may delete the `target/` folder (if any) as that's no longer used.
 
 ## IDEs
 
-Please see [this separate page](./editing.md) for setting up an editor/IDE.
+Please see [this separate page](https://anki.mintlify.app/editing) for setting up an editor/IDE.
 
 ## Making changes to the build
 
-See [this page](./build.md)
+See [this page](https://anki.mintlify.app/build)
 
 ## Generating documentation
 
@@ -230,37 +228,14 @@ Depending on your operating system, this produces a file under `out/installer/di
 - A .dmg file on macOS.
 - A tarball on Linux.
 
-On macOS, you can also run:
-
-```
-just macos-installer
-```
-
-This uses the same Briefcase build path as `tools/build-installer`, packages an
-unsigned local `.dmg`, and writes it under `out/installer/dist`.
-
-To build an isolated macOS portable edition, run:
-
-```
-just macos-portable
-```
-
-This writes a `.zip` under `out/portable/dist`. The archive contains a distinct
-`Anki Portable.app`, an adjacent `Anki Portable Data` folder, and usage notes.
-Keep the extracted folder together: the portable app stores its preferences,
-profiles, collections, media, add-ons, backups, logs, and temporary files in
-that data folder. It has a separate macOS bundle identifier and single-instance
-key, does not register Anki package file associations, and disables application
-updates so it can run alongside a normal Anki installation without changing it.
-
 ### Issues During Building
 
 If you are experiencing issues building the installer, make sure that all dependencies
-are installed. See [Building from source](#building-from-source) for more info.
+are installed. See [Building from source](https://anki.mintlify.app/development#building-from-source) for more info.
 
 ## Releasing
 
-See [Releasing](./releasing.md).
+See [Releasing](https://anki.mintlify.app/releasing).
 
 # Mixing development and study
 
@@ -274,3 +249,5 @@ If you're using PyCharm:
 - click "Edit 'run'..." - in Script options and enter:
   "-p [dev profile name]" without the quotes
 - click "Ok"
+
+<!-- <<<end>>> -->

@@ -41,7 +41,7 @@ jobs:
           pip install --break-system-packages 'packaging>=24,<26'
           current_version=$(cat .version)
           echo "Current .version: $current_version"
-          python3 .github/scripts/validate_version.py "$INPUT_VERSION" "$current_version"
+          python3 tools/validate_version.py "$INPUT_VERSION" "$current_version"
           echo "Version check passed"
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -71,15 +71,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
-
-      - name: Sync translations
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          python3 .github/scripts/sync_translations.py
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          ANKI_NO_GIT_PUSH: "1"
 
       - name: Update .version and commit
         run: |

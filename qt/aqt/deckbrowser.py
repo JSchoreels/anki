@@ -472,7 +472,7 @@ class DeckBrowser:
         )
         a = rwkv_menu.addAction(tr.decks_rwkv_reschedule_all_decks())
         assert a is not None
-        qconnect(a.triggered, lambda: self._reschedule_all_decks_with_rwkv_curve())
+        qconnect(a.triggered, self._reschedule_all_decks_with_rwkv_curve)
         a = m.addAction(tr.actions_export())
         assert a is not None
         qconnect(a.triggered, lambda b, did=did: self._export(DeckId(int(did))))
@@ -522,7 +522,7 @@ class DeckBrowser:
                 deck_id=did,
                 collapsed=node.collapsed,
                 scope=DeckCollapseScope.REVIEWER,
-            ).run_in_background()
+            ).run_in_background(initiator=self)
             self._renderPage(reuse=True)
 
     def _handle_drag_and_drop(self, source: DeckId, target: DeckId) -> None:

@@ -1892,10 +1892,8 @@ def test_study_queue_refresh_with_rwkv_undo_card_runs_when_unfocused(
     reviewer.mw = SimpleNamespace(fade_in_webview=lambda: calls.append("fade"))
     reviewer.nextCard = next_card
     reviewer._prepare_rwkv_queue_order_then_next_card = lambda *args, **kwargs: (
-        (_ for _ in ()).throw(
-            AssertionError("undo-restored card should not wait for ascending order")
-        )
-    )
+        _ for _ in ()
+    ).throw(AssertionError("undo-restored card should not wait for ascending order"))
     aqt.rwkv_scheduler.queue_reviewer_undo_card_ids(reviewer, [456])
 
     changes = OpChanges()

@@ -3872,6 +3872,22 @@
     "repository": "https://github.com/GuillaumeGomez/sysinfo"
   },
   {
+    "authors": "Mullvad VPN",
+    "description": "Bindings to SystemConfiguration framework for macOS",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "system-configuration",
+    "repository": "https://github.com/mullvad/system-configuration-rs"
+  },
+  {
+    "authors": "Mullvad VPN",
+    "description": "Low level bindings to SystemConfiguration framework for macOS",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "system-configuration-sys",
+    "repository": "https://github.com/mullvad/system-configuration-rs"
+  },
+  {
     "authors": "Val Packett <val@packett.cool>",
     "description": "Get system information/statistics in a cross-platform way",
     "license": "Unlicense",
@@ -4793,6 +4809,14 @@
   },
   {
     "authors": "Microsoft",
+    "description": "Windows registry",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-registry",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "authors": "Microsoft",
     "description": "Windows error handling",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -4845,6 +4869,14 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "windows-strings",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "authors": "Microsoft",
+    "description": "Rust for Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-sys",
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {

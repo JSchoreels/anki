@@ -25,4 +25,5 @@ message GithubRelease {
   string filename = 2;
   string url = 3;
   string checksum = 4;
+  string target_commitish = 5;
 }

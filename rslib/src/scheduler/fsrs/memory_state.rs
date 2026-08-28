@@ -29,6 +29,7 @@ use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::search::Negated;
+use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::StateKind;
 
@@ -193,7 +194,7 @@ pub(crate) struct UpdateMemoryStateRequest {
 
 pub(crate) struct UpdateMemoryStateEntry {
     pub req: Option<UpdateMemoryStateRequest>,
-    pub search: SearchNode,
+    pub search: Node,
     pub ignore_before: TimestampMillis,
     pub preset_name: String,
     pub current_preset: u32,
@@ -245,14 +246,7 @@ impl Collection {
             },
         ) in entries.into_iter().enumerate()
         {
-            let rescheduling = req.as_ref().is_some_and(|req| req.reschedule);
-            if let Some(progress) = preset_progress.get_mut(entry_index) {
-                progress.name.clone_from(&preset_name);
-                progress.rescheduling = rescheduling;
-            }
-
-            let search =
-                SearchBuilder::all([search.into(), SearchNode::State(StateKind::New).negated()]);
+            let search = SearchBuilder::all([search, SearchNode::State(StateKind::New).negated()]);
             let revlog = self.revlog_for_srs(search)?;
 
             let Some(req) = &req else {
@@ -841,6 +835,18 @@ impl Collection {
             desired_retention,
             decay,
         })
+    }
+
+    // Used for extra-ordinary circumstances where a memory state is needed but is
+    // not availiable, e.g. the card has been moved to a different deck.
+    // Try to use update_memory_state where you can.
+    pub fn compute_and_update_memory_state(&mut self, card: &mut Card) -> Result<()> {
+        let fsrs_data = self.compute_memory_state(card.id)?;
+        card.memory_state = fsrs_data.state.map(Into::into);
+        card.desired_retention = Some(fsrs_data.desired_retention);
+        card.decay = Some(fsrs_data.decay);
+        self.storage.update_card(card)?;
+        Ok(())
     }
 }
 
@@ -2000,7 +2006,7 @@ mod tests {
 
             let entry = UpdateMemoryStateEntry {
                 req: None,
-                search: SearchNode::WholeCollection,
+                search: Node::Search(SearchNode::WholeCollection),
                 ignore_before: TimestampMillis(0),
                 preset_name: "Default".to_string(),
                 current_preset: 1,

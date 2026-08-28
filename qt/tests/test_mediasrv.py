@@ -21,8 +21,8 @@ from aqt.mediasrv import (
     _rwkv_raw_backend_mutation_note_ids,
     _should_log_request,
     ensure_safe_path,
+    get_sveltekit_route,
     is_localhost_origin,
-    is_sveltekit_page,
 )
 
 RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
@@ -150,10 +150,16 @@ class TestIsLocalhostOrigin:
         assert is_localhost_origin(origin) is False
 
 
-class TestIsSveltekitPage:
+class TestGetSveltekitRoute:
     def test_dynamic_desired_retention_plot_is_internal_page(self) -> None:
-        assert is_sveltekit_page("dynamic-desired-retention-plot")
-        assert is_sveltekit_page("dynamic-desired-retention-plot/_app/start.js")
+        assert (
+            get_sveltekit_route("dynamic-desired-retention-plot")
+            == "dynamic-desired-retention-plot"
+        )
+        assert (
+            get_sveltekit_route("dynamic-desired-retention-plot/_app/start.js")
+            == "dynamic-desired-retention-plot"
+        )
 
 
 class TestRequestLogging:
@@ -340,6 +346,24 @@ class TestRwkvReschedule:
             assert reschedule_rwkv_review_cards() == b""
 
         assert calls == [(mw, deck_id)]
+
+
+class TestCheckDynamicRequestPermissions:
+    """A missing Content-type header must abort(403), not raise KeyError."""
+
+    def test_missing_content_type_header_aborts_403(self, monkeypatch) -> None:
+        from unittest import mock
+
+        from werkzeug.exceptions import Forbidden
+
+        import aqt
+        from aqt.mediasrv import _check_dynamic_request_permissions, app
+
+        monkeypatch.setattr(aqt, "mw", mock.Mock(), raising=False)
+
+        with app.test_request_context(method="POST"):
+            with pytest.raises(Forbidden):
+                _check_dynamic_request_permissions()
 
 
 class TestEditorPageCSP:

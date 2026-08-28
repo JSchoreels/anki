@@ -35,6 +35,7 @@ use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 use crate::search::JoinSearches;
 use crate::search::Negated;
+use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::StateKind;
 use crate::storage::comma_separated_ids;
@@ -431,7 +432,9 @@ impl Collection {
                     });
                     Ok(UpdateMemoryStateEntry {
                         req: params,
-                        search: SearchNode::DeckIdsWithoutChildren(comma_separated_ids(&search)),
+                        search: Node::Search(SearchNode::DeckIdsWithoutChildren(
+                            comma_separated_ids(&search),
+                        )),
                         ignore_before: config
                             .map(ignore_revlogs_before_ms_from_config)
                             .unwrap_or(Ok(0.into()))?,

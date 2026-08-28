@@ -440,6 +440,13 @@ def test_cleanup_and_exit_closes_profile_manager(monkeypatch) -> None:
     mw.pm = type(
         "ProfileManager", (), {"close": lambda self: calls.append("close_pm")}
     )()
+    mw.toolbarWeb = type(
+        "ToolbarWeb", (), {"cleanup": lambda self: calls.append("cleanup_toolbar")}
+    )()
+    mw.web = type("Web", (), {"cleanup": lambda self: calls.append("cleanup_web")})()
+    mw.bottomWeb = type(
+        "BottomWeb", (), {"cleanup": lambda self: calls.append("cleanup_bottom")}
+    )()
     mw.app = type(
         "App",
         (),
@@ -461,6 +468,9 @@ def test_cleanup_and_exit_closes_profile_manager(monkeypatch) -> None:
         "shutdown_media",
         "await_backup_completion",
         "close_pm",
+        "cleanup_toolbar",
+        "cleanup_web",
+        "cleanup_bottom",
         "delete_later",
         "unset_shutdown_block",
     ]

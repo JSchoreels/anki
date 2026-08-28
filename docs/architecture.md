@@ -1,4 +1,12 @@
+<!-- DO NOT MANUALLY EDIT THIS FILE -->
+<!-- This file is copied from docs-site/developers/architecture.mdx automatically -->
+
 # Anki Architecture
+
+<!-- <<<cog
+from cogdocs import get_file_contents
+cog.out(get_file_contents("architecture"))
+>>> -->
 
 Very brief notes for now.
 
@@ -7,8 +15,8 @@ Very brief notes for now.
 At the highest level, Anki is logically separated into two parts.
 
 A neat visualization of the file layout is available here:
-<https://mango-dune-07a8b7110.1.azurestaticapps.net/?repo=ankitects%2Fanki>
-(or go to <https://githubnext.com/projects/repo-visualization#explore-for-yourself> and enter `ankitects/anki`).
+[https://mango-dune-07a8b7110.1.azurestaticapps.net/?repo=ankitects%2Fanki](https://mango-dune-07a8b7110.1.azurestaticapps.net/?repo=ankitects%2Fanki)
+(or go to [https://githubnext.com/projects/repo-visualization#explore-for-yourself](https://githubnext.com/projects/repo-visualization#explore-for-yourself) and enter `ankitects/anki`).
 
 ### Library (rslib & pylib)
 
@@ -44,8 +52,7 @@ At the moment, the protobuf is not considered public API. Some pylib methods
 expose a protobuf object directly to callers, but when they do so, they use a
 type alias, so callers outside pylib should never need to import a generated
 \_pb2.py file.
-
-## Search Query Reads
+\n+## Search Query Reads
 
 Search parsing and SQL generation live in `rslib/src/search/`. Arbitrary named
 field searches resolve field names against each notetype, so they read from
@@ -100,11 +107,11 @@ Data flow:
    so FSRS-7 uses its native forgetting-curve mixture instead of a single
    scalar decay approximation.
 4. Fit four linear models from samples:
-   - `Again`
-   - `Hard`
-   - `Good`
-   - `Easy`
-     using `time = a + b * (1 - R) + c * S + d * reps + e * D`.
+    - `Again`
+    - `Hard`
+    - `Good`
+    - `Easy`
+      using `time = a + b * (1 - R) + c * S + d * reps + e * D`.
 5. During `simulate_workload`, each DR sweep updates review costs from those
    fitted models and then runs a summary simulation over DR targets `30..99`.
    The summary path skips daily memorized curve range-filling and computes the
@@ -115,39 +122,39 @@ Data flow:
    weighted score is computed for the reviewless end state so weighted
    efficiency can use net gain over the no-review baseline.
 6. The workload response includes workload summary metrics keyed by swept DR:
-   - `memorized`
-   - `weighted_memorized`
-   - `reviewless_end_weighted_memorized`
-   - `cost`
-   - `review_count`
-     When the workload modal's split-by-preset toggle is enabled, the response
-     also includes `preset_workload` entries. Review count, learn count, and time
-     cost are attributed to the preset active for the simulated card at each
-     review event, so cards that switch preset mid-simulation contribute earlier
-     reps to the earlier preset and later reps to the later preset. Memorized and
-     weighted memorized are end-state card metrics, so they are attributed to the
-     card's final active preset. Efficiency for split curves uses per-preset
-     reviewless baselines, so each preset subtracts only the no-review end-state
-     contribution of cards attributed to that preset instead of subtracting the
-     all-card baseline.
+    - `memorized`
+    - `weighted_memorized`
+    - `reviewless_end_weighted_memorized`
+    - `cost`
+    - `review_count`
+      When the workload modal's split-by-preset toggle is enabled, the response
+      also includes `preset_workload` entries. Review count, learn count, and time
+      cost are attributed to the preset active for the simulated card at each
+      review event, so cards that switch preset mid-simulation contribute earlier
+      reps to the earlier preset and later reps to the later preset. Memorized and
+      weighted memorized are end-state card metrics, so they are attributed to the
+      card's final active preset. Efficiency for split curves uses per-preset
+      reviewless baselines, so each preset subtracts only the no-review end-state
+      contribution of cards attributed to that preset instead of subtracting the
+      all-card baseline.
 7. The workload response also includes a flattened review-time matrix for UI
    inspection:
-   - `review_time_again_seconds`
-   - `review_time_hard_seconds`
-   - `review_time_good_seconds`
-   - `review_time_easy_seconds`
-   - `review_time_sample_counts` (raw per-cell sample counts)
-   - `review_time_again_coeffs`
-   - `review_time_hard_coeffs`
-   - `review_time_good_coeffs`
-   - `review_time_easy_coeffs`
-   - `review_time_grade_weights`
-   - `review_time_transition_probs` (4x4, row-major `P(next|current)`)
-   - `review_time_transition_counts` (4x4, row-major raw counts)
-   - `review_time_success_grade_probs` (R-bucket x 3, row-major `P(Hard/Good/Easy|R)`)
-   - `review_time_success_grade_counts` (R-bucket sample counts)
-   - `review_time_r_bucket_count`
-   - `review_time_s_bucket_count` (fixed to `1`, UI compatibility)
+    - `review_time_again_seconds`
+    - `review_time_hard_seconds`
+    - `review_time_good_seconds`
+    - `review_time_easy_seconds`
+    - `review_time_sample_counts` (raw per-cell sample counts)
+    - `review_time_again_coeffs`
+    - `review_time_hard_coeffs`
+    - `review_time_good_coeffs`
+    - `review_time_easy_coeffs`
+    - `review_time_grade_weights`
+    - `review_time_transition_probs` (4x4, row-major `P(next|current)`)
+    - `review_time_transition_counts` (4x4, row-major raw counts)
+    - `review_time_success_grade_probs` (R-bucket x 3, row-major `P(Hard/Good/Easy|R)`)
+    - `review_time_success_grade_counts` (R-bucket sample counts)
+    - `review_time_r_bucket_count`
+    - `review_time_s_bucket_count` (fixed to `1`, UI compatibility)
 
 Scope:
 
@@ -158,41 +165,41 @@ Scope:
   reflect the selected DR on all cards (not only newly introduced cards).
 - Help Me Decide review-time modeling now uses four linear regressions from
   revlog `taken_millis` samples:
-  - `Again`
-  - `Hard`
-  - `Good`
-  - `Easy`
-    with model form: `time = a + b * (1 - R) + c * S + d * reps + e * D`.
-    These predicted costs are also injected into simulator review costs during
-    each DR sweep, so `Time` and `Memorized/Time` charts use the same model.
-    The workload graph also exposes an absolute `R*f(S)` chart and a
-    `Net R*f(S)/t` chart based on weighted score above the reviewless baseline.
-    The workload response also exposes fitted coefficients:
-  - `review_time_again_coeffs` (`a,b,c,d,e`)
-  - `review_time_hard_coeffs` (`a,b,c,d,e`)
-  - `review_time_good_coeffs` (`a,b,c,d,e`)
-  - `review_time_easy_coeffs` (`a,b,c,d,e`)
-    and empirical grade weights from transition-matrix steady-state:
-  - `review_time_grade_weights` (`Again,Hard,Good,Easy`).
-    Transition matrix (`Again/Hard/Good/Easy -> Again/Hard/Good/Easy`) is
-    estimated from consecutive review-kind entries and used to derive
-    `P(next_grade|prev_grade)`. During DR sweep, simulator success-grade mix
-    (`Hard/Good/Easy`) is computed by blending:
-  - `P(Hard/Good/Easy|R-bucket)` (5% R buckets, Laplace-smoothed), and
-  - transition-derived prior from `P(next_grade|prev_grade)`
-    with reliability-weighted geometric pooling.
-    `P(Hard/Good/Easy|R-bucket)` is additionally reliability-shrunk toward a
-    distance-weighted neighborhood prior (`w=n/(n+k)`), to stabilize sparse
-    low-sample buckets. Optional simulator toggle
-    `help_me_decide_enforce_monotonic_success_grade_probs` applies weighted
-    isotonic constraints (`Hard` non-decreasing as R decreases, `Easy`
-    non-increasing as R decreases), then recomputes `Good`.
-    This blended distribution is injected into `config.review_rating_prob`, so
-    `Time` and `Memorized/Time` use both R-conditioned and transition-informed
-    grade mixes. The blend can be overridden in Deck Options simulator with
-    `help_me_decide_transition_blend_alpha` (`0`=R-only, `1`=transition-only).
-    Deck Options currently defaults this override to `0` and leaves
-    `help_me_decide_enforce_monotonic_success_grade_probs` disabled.
+    - `Again`
+    - `Hard`
+    - `Good`
+    - `Easy`
+      with model form: `time = a + b * (1 - R) + c * S + d * reps + e * D`.
+      These predicted costs are also injected into simulator review costs during
+      each DR sweep, so `Time` and `Memorized/Time` charts use the same model.
+      The workload graph also exposes an absolute `R*f(S)` chart and a
+      `Net R*f(S)/t` chart based on weighted score above the reviewless baseline.
+      The workload response also exposes fitted coefficients:
+    - `review_time_again_coeffs` (`a,b,c,d,e`)
+    - `review_time_hard_coeffs` (`a,b,c,d,e`)
+    - `review_time_good_coeffs` (`a,b,c,d,e`)
+    - `review_time_easy_coeffs` (`a,b,c,d,e`)
+      and empirical grade weights from transition-matrix steady-state:
+    - `review_time_grade_weights` (`Again,Hard,Good,Easy`).
+      Transition matrix (`Again/Hard/Good/Easy -> Again/Hard/Good/Easy`) is
+      estimated from consecutive review-kind entries and used to derive
+      `P(next_grade|prev_grade)`. During DR sweep, simulator success-grade mix
+      (`Hard/Good/Easy`) is computed by blending:
+    - `P(Hard/Good/Easy|R-bucket)` (5% R buckets, Laplace-smoothed), and
+    - transition-derived prior from `P(next_grade|prev_grade)`
+      with reliability-weighted geometric pooling.
+      `P(Hard/Good/Easy|R-bucket)` is additionally reliability-shrunk toward a
+      distance-weighted neighborhood prior (`w=n/(n+k)`), to stabilize sparse
+      low-sample buckets. Optional simulator toggle
+      `help_me_decide_enforce_monotonic_success_grade_probs` applies weighted
+      isotonic constraints (`Hard` non-decreasing as R decreases, `Easy`
+      non-increasing as R decreases), then recomputes `Good`.
+      This blended distribution is injected into `config.review_rating_prob`, so
+      `Time` and `Memorized/Time` use both R-conditioned and transition-informed
+      grade mixes. The blend can be overridden in Deck Options simulator with
+      `help_me_decide_transition_blend_alpha` (`0`=R-only, `1`=transition-only).
+      Deck Options currently defaults this override to `0` and leaves
+      `help_me_decide_enforce_monotonic_success_grade_probs` disabled.
 
 ## FSRS Parameter Source
 
@@ -277,9 +284,9 @@ FSRS training-item extraction is model-family-aware:
   the previous windowed analytic optimizer is not used because it was tied to
   the old single-stability parameter layout.
 - Optimize progress now reports:
-  - total training targets,
-  - long-term targets (`delta_t >= 1`),
-  - same-day/short-term targets (`delta_t < 1`).
+    - total training targets,
+    - long-term targets (`delta_t >= 1`),
+    - same-day/short-term targets (`delta_t < 1`).
 - For FSRS-7, target `delta_t` is derived as fractional elapsed days from
   revlog timestamps (with a 1ms floor to keep `delta_t > 0`).
 - Optimize All Presets prepares each preset's read-only training input
@@ -305,20 +312,20 @@ FSRS training-item extraction is model-family-aware:
   evaluate, and health-check target selection; the scheduling-penalty toggle is
   used by optimization and fold-based health checks.
   Their per-preset UI state is persisted in `deck_config.config.other` JSON as:
-  - `fsrs7IncludeSameDayOptimize`
-  - `fsrs7EnableSchedulingPenalties` (absent means disabled)
-  - `fsrsEvaluationSearch` (separate search expression used by Evaluate /
-    Check Health / Optimize comparison metrics; optimize training still uses
-    `param_search`)
-  - For Check Health specifically:
-    - optimization/training uses `param_search`
-    - metric evaluation uses `fsrsEvaluationSearch` (or `param_search` if blank)
-  - Optimize All Decks reads `fsrs7IncludeSameDayOptimize` and
-    `fsrs7EnableSchedulingPenalties` from each preset's stored `other` JSON
-    before optimizing that preset.
-  - The FSRS options UI also provides a transient same-day "Help Me Decide"
-    comparison that optimizes FSRS-7 parameters with and without same-day reviews
-    and evaluates both parameter sets on all targets and long-term-only targets.
+    - `fsrs7IncludeSameDayOptimize`
+    - `fsrs7EnableSchedulingPenalties` (absent means disabled)
+    - `fsrsEvaluationSearch` (separate search expression used by Evaluate /
+      Check Health / Optimize comparison metrics; optimize training still uses
+      `param_search`)
+    - For Check Health specifically:
+        - optimization/training uses `param_search`
+        - metric evaluation uses `fsrsEvaluationSearch` (or `param_search` if blank)
+    - Optimize All Decks reads `fsrs7IncludeSameDayOptimize` and
+      `fsrs7EnableSchedulingPenalties` from each preset's stored `other` JSON
+      before optimizing that preset.
+    - The FSRS options UI also provides a transient same-day "Help Me Decide"
+      comparison that optimizes FSRS-7 parameters with and without same-day reviews
+      and evaluates both parameter sets on all targets and long-term-only targets.
 
 Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/34` length with finite values), it falls back to best
@@ -419,11 +426,11 @@ Implication for aggregates:
 Current exact-vs-scalar status:
 
 - Exact model-based ordering in Rust is used for:
-  - Browser sort by `Retrievability`
-  - Review queue retrievability order (`ascending` / `descending`)
-  - RWKV-only new-card gather order (`ascending/descending retrievability (RWKV)`)
-  - Filtered deck retrievability order (`ascending` / `descending`), preferring
-    a current-day RWKV score and falling back to FSRS
+    - Browser sort by `Retrievability`
+    - Review queue retrievability order (`ascending` / `descending`)
+    - RWKV-only new-card gather order (`ascending/descending retrievability (RWKV)`)
+    - Filtered deck retrievability order (`ascending` / `descending`), preferring
+      a current-day RWKV score and falling back to FSRS
 - Retrievability property filtering is exact-model-based. Search builds a
   temporary `search_exact_retrievability` table (`cid`, `fsrs_r`, `rwkv_r`,
   `rwkv_curve_r`, `s90`) from `FSRS::current_retrievability`, the stored `S90`,
@@ -474,14 +481,17 @@ Current exact-vs-scalar status:
   rows to the Card Info response after the backend stats have been read; these
   rows are not persisted to collection storage.
 - Add-on helper APIs expose exact interval-at-target-retrievability math:
-  - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
-  - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
-  - `fsrs_interval_at_retrievability_variable_batch([{card_id, stability, target_retrievability}, ...])`
-  - `fsrs_interval_at_retrievability_by_config_batch([{request_index, config_id, stability}, ...], target_retrievability)`
-    The card batch helper resolves card presets with the batch preset resolver
-    and reuses one FSRS instance per resolved preset. The variable card batch
-    helper uses the same preset path while allowing each item to request a
-    different target retrievability. The config batch helper reads deck config
-    parameters directly.
+    - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
+    - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
+    - `fsrs_interval_at_retrievability_variable_batch([{card_id, stability, target_retrievability}, ...])`
+    - `fsrs_interval_at_retrievability_by_config_batch([{request_index, config_id, stability}, ...], target_retrievability)`
+      The card batch helper resolves card presets with the batch preset resolver
+      and reuses one FSRS instance per resolved preset. The variable card batch
+      helper uses the same preset path while allowing each item to request a
+      different target retrievability. The config batch helper reads deck config
+      parameters directly.
 - Legacy sqlite FSRS helper expressions continue to use stored scalar decay, but
   the standard retrievability search/order paths above no longer depend on them.
+
+<!-- <<<end>>> -->
+

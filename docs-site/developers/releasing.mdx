@@ -2,20 +2,18 @@
 title: "Releasing"
 ---
 
-Releases are managed by two GitHub Actions workflows under `.github/workflows/`:
+Releases are managed by two GitHub Actions workflows in this fork:
 
-1. **`prepare-release.yml`** — Run first. Validates the version, checks that CI
-   passed, updates `.version`, and pushes everything to the dispatching branch
-   in a single commit. CI then runs automatically on the resulting commit (for
-   `release/**` branches). The CI check can be skipped with `skip-ci-check`.
+1. **`prepare-release.yml`** — Validates a version, checks CI and duplicate
+   tags/releases, commits `.version`, and pushes the dispatching branch.
 
-2. **`release.yml`** — Run after CI passes on the prepared commit. Builds
-   installers and wheels for all platforms (Linux x86/ARM, macOS Intel/ARM,
-   Windows), and can optionally sign macOS/Windows artifacts, create a draft
-   GitHub release, publish wheels to TestPyPI, and publish wheels to PyPI.
+2. **`release.yml`** — Builds installers and wheels for all platforms (Linux
+   x86/ARM, macOS Intel/ARM, Windows), and can optionally sign macOS/Windows
+   artifacts, create a draft GitHub release, publish wheels to TestPyPI, and
+   publish wheels to PyPI.
 
-Both workflows are `workflow_dispatch` and share a `release` concurrency group so
-they cannot run simultaneously.
+Both workflows are manually dispatched and share a `release` concurrency group,
+so only one preparation/build operation runs at a time.
 
 ## Version format
 
@@ -25,6 +23,53 @@ suffixes (`b1`, `rc1`, `a1`). Months must be zero-padded.
 
 Examples: `26.05b1` (beta), `26.05rc1` (release candidate), `26.05` (stable),
 `26.05.1` (patch).
+
+Fork application versions add the local suffix `+fsrs7`, for example
+`26.09b1+fsrs7`. Unsigned draft releases append
+`.build.<github-actions-run-number>` to the release tag, while the application
+keeps the base fork version. The Actions run number is the monotonically
+increasing fork build number: never reset, reuse, or manually replace it.
+
+## Synchronizing an upstream Anki release
+
+Use this process whenever this fork is aligned to a new official Anki release:
+
+1. Confirm every developer's work is committed and pushed. Fetch `origin`,
+   `upstream`, all collaborator remotes, and tags. Audit unmerged remote commits
+   before changing the release branch.
+2. Identify the official release tag and review its range from the previous
+   upstream tag. Merge that exact tag, not `upstream/main`, so post-release
+   commits are excluded:
+
+    ```
+    git merge --no-ff <official-tag>
+    ```
+
+3. Resolve conflicts by retaining the fork's user-facing behavior and accepting
+   the upstream changes included in that tag. Do not merge stale collaborator
+   branches whose commits are already present or superseded.
+4. Set `.version` to `<official-tag>+fsrs7`; do not put the build number in this
+   file. Verify the update endpoints in `rslib/src/backend/github.rs` still use
+   `JSchoreels/anki`, and that both automatic and manual update checks use the
+   fork's GitHub releases.
+5. Update `RELEASE.md`. Link the official upstream release and summarize both
+   the upstream alignment and the fork-specific changes retained in the build.
+6. Run targeted tests and `just check`. Commit the merge, push the exact release
+   commit, and wait for its complete CI matrix to succeed.
+7. Dispatch `just release::draft --ref <branch>`. Its preflight waits for CI;
+   do not use `--skip-ci-check=true` unless a maintainer explicitly accepts the
+   risk. The workflow creates an unsigned draft tag named
+   `<version>.build.<run-number>`.
+8. Verify the workflow, installers, draft target commit, and release assets.
+   Replace generated notes with notes that link the official release and explain
+   the fork changes.
+9. Publish that verified draft as the current release, preserving its beta/RC
+   status when applicable, and verify the GitHub Releases API returns it to the
+   application's update checker.
+
+If the draft build fails, fix the release commit, push it, wait for CI again,
+and dispatch a new draft. Do not publish the failed draft or reuse its build
+number.
 
 ## Release branch workflow
 
@@ -49,28 +94,23 @@ candidates, and the stable release all come from the same branch.
     just release::prepare --version 26.05b1 --ref release/26.05
     ```
 
-4. Pull the version bump commit:
+4. Pull the preparation commit, then verify on TestPyPI:
 
     ```
     git pull origin release/26.05
-    ```
-
-5. Verify on TestPyPI:
-
-    ```
     just release::testpypi --ref release/26.05
     ```
 
-6. Publish the full release:
+5. Publish the full release:
 
     ```
     just release::public --ref release/26.05
     ```
 
-7. For subsequent pre-releases or the stable release from the same cycle,
-   repeat steps 3-6 with the new version (e.g. `26.05b2`, `26.05rc1`, `26.05`).
+6. For subsequent pre-releases or the stable release from the same cycle,
+   repeat steps 3-5 with the new version (e.g. `26.05b2`, `26.05rc1`, `26.05`).
 
-8. After the stable release, merge the release branch back to `main` to pick up
+7. After the stable release, merge the release branch back to `main` to pick up
    the `.version` bump and any cherry-picked fixes:
 
     ```
@@ -79,7 +119,7 @@ candidates, and the stable release all come from the same branch.
     git push origin main
     ```
 
-9. Delete the release branch after the stable release is published.
+8. Delete the release branch after the stable release is published.
 
 ### Security and hotfix releases
 
@@ -108,7 +148,7 @@ Once the fix is ready:
 4. Prepare and publish:
 
     ```
-    just release::prepare --version 26.05.1 --ref release/26.05
+    just release::prepare --version 26.05.1
     just release::public --ref release/26.05
     ```
 
@@ -177,10 +217,10 @@ flowchart TD
     style pypi fill:#2d333b,stroke:#7ee787,color:#adbac7
 ```
 
-## Workflow inputs
+## Inputs
 
-**prepare-release:** takes a `version` string and an optional `skip-ci-check`
-boolean (default `false`).
+**prepare-release:** takes a `version`, the workflow ref, and an optional
+`skip-ci-check` flag.
 
 **release:** takes a `version` (must match `.version` for public release
 operations) and five boolean inputs:
@@ -220,17 +260,16 @@ signed and published:
 | Input              | Effect                                                                                                                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                        |
-| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires `sign=true`, the `release` environment, passing CI (unless skipped), no duplicate tag/release, and `version` matching `.version`.                   |
+| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires passing CI (unless skipped), no duplicate tag/release, and `version` matching `.version`. Unsigned fork drafts receive an automatic build suffix.   |
 | `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                 |
 | `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI (unless skipped), and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. It does not require signing unless `draft-release=true`. |
 | `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases.                                                                                                                                                                                            |
 | `version`          | For `draft-release` or `publish-pypi`: must match `.version`. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).                                                                     |
 
-## Dispatching with just
+## Running releases with just
 
-Release workflows can be dispatched via `just` using the `release` module
-defined in `release.just`. All recipes require an explicit `--ref` argument
-pointing to the release branch.
+The `release` module in `release.just` wraps both workflow dispatches. Release
+recipes take an explicit `--ref` pointing at the commit or branch to build.
 
 Run `just --list --list-submodules` to see all available recipes and their
 arguments.
@@ -271,11 +310,12 @@ To test the signing flow from a feature branch:
 ## Important notes
 
 - The release workflow builds the exact commit at `github.sha`. It does not
-  write `.version` — that is done by the prepare workflow. If you dispatch
-  release before prepare's commit has propagated, the build will use whatever
+  write `.version` — that is done by the prepare script. If you dispatch release
+  before the prepare commit has been pushed, the build will use whatever
   `.version` was HEAD at dispatch time.
-- `draft-release=true` with `sign=false` is rejected — draft releases must use
-  signed installer artifacts.
+- `just release::draft` intentionally creates unsigned fork builds. It assigns
+  the GitHub Actions run number as the build number and keeps that build number
+  in the release tag rather than the application version.
 - When `publish-pypi=true`, wheels are published to TestPyPI first, then to
   PyPI after the TestPyPI job succeeds. If `draft-release=true` is also set,
   PyPI publishing waits for the draft GitHub release to succeed too.

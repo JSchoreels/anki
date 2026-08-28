@@ -73,7 +73,7 @@ def clear_unused_tags(*, parent: QWidget) -> CollectionOp[OpChangesWithCount]:
         parent,
         lambda col: _run_preserving_rwkv_state(
             col,
-            lambda: col.tags.clear_unused_tags(),
+            col.tags.clear_unused_tags,
         ),
     ).success(
         lambda out: tooltip(

@@ -552,9 +552,11 @@ class SidebarTreeView(QTreeView):
 
             CollectionOp(
                 self.browser,
-                lambda col: rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
-                    col,
-                    lambda: col.set_config_bool(collapse_key, not expanded),
+                lambda col: (
+                    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+                        col,
+                        lambda: col.set_config_bool(collapse_key, not expanded),
+                    )
                 ),
             ).run_in_background(initiator=self)
 

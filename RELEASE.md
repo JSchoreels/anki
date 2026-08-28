@@ -22,11 +22,23 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-Current application version: `26.05+fsrs7`
+No user-visible changes yet.
+
+## 26.09b1+fsrs7 — 2026-08-28
+
+Current application version: `26.09b1+fsrs7`
+
+This release aligns the fork with the
+[official Anki 26.09b1 beta](https://github.com/ankitects/anki/releases/tag/26.09b1).
+It merges that exact upstream tag, excluding later work from upstream `main`,
+while retaining the fork's FSRS7/RWKV scheduling, performance, portable-build,
+and reviewer-editing changes. The published release tag adds the fork's
+monotonically increasing GitHub Actions build number.
 
 ### Added
 
-- Check for and install updates published by the Anki FSRS7 fork.
+- Check for and install updates published by the Anki FSRS7 fork during both
+  automatic startup checks and manual **Check for Updates** checks.
 - Add a portable macOS edition that keeps profiles, collections, media, add-ons,
   backups, preferences, logs, and temporary files beside the app, and can run at
   the same time as a normal Anki installation without sharing local state.

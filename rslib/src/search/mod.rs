@@ -567,7 +567,7 @@ impl Collection {
             let ord = if reverse { ord.reverse() } else { ord };
             ord.then_with(|| cid_a.cmp(cid_b))
         });
-        for (target, (cid, _)) in ids.iter_mut().zip(with_metric.into_iter()) {
+        for (target, (cid, _)) in ids.iter_mut().zip(with_metric) {
             *target = cid;
         }
         tracing::debug!(

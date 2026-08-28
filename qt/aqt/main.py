@@ -25,12 +25,10 @@ import aqt.sound
 from anki import hooks
 from anki._backend import RustBackend as _RustBackend
 from anki._legacy import deprecated
-from anki.buildinfo import version as version_str
 from anki.collection import (
     Collection,
     Config,
     ExperimentFlag,
-    GithubRelease,
     OpChanges,
     UndoStatus,
 )
@@ -216,7 +214,6 @@ class MainWebView(AnkiWebView):
         event.accept()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        import aqt.importing
         from aqt.import_export.importing import import_file
 
         if self.mw.state != "deckBrowser":
@@ -225,10 +222,7 @@ class MainWebView(AnkiWebView):
         paths = [url.toLocalFile() for url in mime.urls()]
         deck_paths = filter(lambda p: not p.endswith(".colpkg"), paths)
         for path in deck_paths:
-            if not self.mw.pm.legacy_import_export():
-                import_file(self.mw, path)
-            else:
-                aqt.importing.importFile(self.mw, path)
+            import_file(self.mw, path)
 
             # importing continues after the above call returns, so it is not
             # currently safe for us to import more than one file at once
@@ -374,6 +368,7 @@ class AnkiQt(QMainWindow):
         qconnect(self.app.focusChanged, self.on_focus_changed)
 
     def on_focus_changed(self, old: QWidget, new: QWidget) -> None:
+        aqt.dialogs._on_focus_did_change(new)
         gui_hooks.focus_did_change(new, old)
 
     # Profiles
@@ -719,6 +714,9 @@ class AnkiQt(QMainWindow):
         # Rust background jobs are not awaited implicitly
         self.backend.await_backup_completion()
         self.pm.close()
+        self.toolbarWeb.cleanup()
+        self.web.cleanup()
+        self.bottomWeb.cleanup()
         self.deleteLater()
         app = self.app
         app._unset_windows_shutdown_block_reason()
@@ -1561,21 +1559,9 @@ title="{}" {}>{}</button>""".format(
         aqt.dialogs.open("Preferences", self)
 
     def on_check_for_updates(self) -> None:
-        from packaging.version import Version
+        from aqt.update import check_for_update
 
-        from aqt.update import get_latest_release_op, prompt_and_install_github_update
-
-        version = Version(version_str)
-
-        def on_success(release: GithubRelease) -> None:
-            if Version(release.tag_name) > version:
-                prompt_and_install_github_update(self, release)
-            else:
-                tooltip(tr.addons_no_updates_available(), parent=self)
-
-        get_latest_release_op(
-            parent=self, include_prerelease=version.is_prerelease, on_success=on_success
-        ).with_progress().run_in_background()
+        check_for_update(parent=self, manual=True)
 
     def onNoteTypes(self) -> None:
         import aqt.models
@@ -1610,31 +1596,18 @@ title="{}" {}>{}</button>""".format(
             showInfo(f"{tr.qt_misc_please_use_fileimport_to_import_this()} ({path})")
             return None
 
-        if not self.pm.legacy_import_export():
-            import_file(self, path)
-        else:
-            import aqt.importing
-
-            aqt.importing.importFile(self, path)
+        import_file(self, path)
 
     def onImport(self) -> None:
         "Importing triggered via File>Import."
-        import aqt.importing
         from aqt.import_export.importing import prompt_for_file_then_import
 
-        if not self.pm.legacy_import_export():
-            prompt_for_file_then_import(self)
-        else:
-            aqt.importing.onImport(self)
+        prompt_for_file_then_import(self)
 
     def onExport(self, did: DeckId | None = None) -> None:
-        import aqt.exporting
         from aqt.import_export.exporting import ExportDialog
 
-        if not self.pm.legacy_import_export():
-            ExportDialog(self, did=did)
-        else:
-            aqt.exporting.ExportDialog(self, did=did)
+        ExportDialog(self, did=did)
 
     # Installing add-ons from CLI / mimetype handler
     ##########################################################################
@@ -1758,7 +1731,7 @@ title="{}" {}>{}</button>""".format(
         from aqt.update import check_for_update
 
         if aqt.mw.pm.check_for_updates():
-            check_for_update()
+            check_for_update(parent=self, manual=False)
 
     # Timers
     ##########################################################################
