@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::hash::Hasher;
+
+use fnv::FnvHasher;
 
 use super::DueCard;
 use super::NewCard;
@@ -538,16 +541,29 @@ impl QueueBuilder {
         for candidate in due_cards {
             with_key.push((
                 candidate,
-                exact_retrievability_key(col, candidate.card.id, self.context.timing)?,
+                exact_review_order_key(
+                    col,
+                    candidate.card.id,
+                    self.context.timing,
+                    self.context.sort_options.review_order,
+                )?,
+                fnvhash_due_card(&candidate.card),
             ));
         }
-        with_key.sort_by(|(candidate_a, key_a), (candidate_b, key_b)| {
-            key_a
-                .total_cmp(key_b)
-                .then_with(|| candidate_a.card.id.cmp(&candidate_b.card.id))
-        });
+        let descending = matches!(
+            self.context.sort_options.review_order,
+            ReviewCardOrder::RetrievabilityDescending
+        );
+        with_key.sort_by(
+            |(candidate_a, key_a, hash_a), (candidate_b, key_b, hash_b)| {
+                let ord = key_a.total_cmp(key_b);
+                let ord = if descending { ord.reverse() } else { ord };
+                ord.then_with(|| hash_a.cmp(hash_b))
+                    .then_with(|| candidate_a.card.id.cmp(&candidate_b.card.id))
+            },
+        );
 
-        for (candidate, _) in with_key {
+        for (candidate, _, _) in with_key {
             if candidate.counts_towards_review_limit
                 && (self.limits.root_limit_reached(LimitKind::Review)
                     || self
@@ -641,17 +657,6 @@ impl QueueBuilder {
         if self.limits.root_limit_reached(LimitKind::Review) {
             return Ok(());
         }
-        if self.context.fsrs
-            && !self.context.sort_options.rwkv_review_enabled
-            && !self.context.sort_options.rwkv_review_instant_order_enabled
-            && matches!(
-                self.context.sort_options.review_order,
-                ReviewCardOrder::RetrievabilityAscending
-                    | ReviewCardOrder::RetrievabilityDescending
-            )
-        {
-            return self.gather_due_cards_with_exact_retrievability(col, kind);
-        }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
             self.context.sort_options.gather_review_order(),
@@ -672,56 +677,6 @@ impl QueueBuilder {
                 Ok(true)
             },
         )
-    }
-
-    fn gather_due_cards_with_exact_retrievability(
-        &mut self,
-        col: &mut Collection,
-        kind: DueCardKind,
-    ) -> Result<()> {
-        let mut due_cards = Vec::new();
-        col.storage.for_each_due_card_in_active_decks(
-            self.context.timing,
-            ReviewCardOrder::Day,
-            kind,
-            self.context.fsrs,
-            |card| {
-                due_cards.push(card);
-                Ok(true)
-            },
-        )?;
-
-        let descending = matches!(
-            self.context.sort_options.review_order,
-            ReviewCardOrder::RetrievabilityDescending
-        );
-        let mut with_key = Vec::with_capacity(due_cards.len());
-        for card in due_cards {
-            with_key.push((
-                card,
-                exact_retrievability_key(col, card.id, self.context.timing)?,
-            ));
-        }
-        with_key.sort_by(|(card_a, key_a), (card_b, key_b)| {
-            let ord = key_a.total_cmp(key_b);
-            let ord = if descending { ord.reverse() } else { ord };
-            ord.then_with(|| card_a.id.cmp(&card_b.id))
-        });
-
-        for (card, _) in with_key {
-            if self.limits.root_limit_reached(LimitKind::Review) {
-                break;
-            }
-            if !self
-                .limits
-                .limit_reached(card.current_deck_id, LimitKind::Review)?
-                && self.add_due_card(card)
-            {
-                self.limits
-                    .reserve_review(card.current_deck_id, card.original_deck_id)?;
-            }
-        }
-        Ok(())
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
@@ -932,15 +887,20 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
     }
 }
 
-fn exact_retrievability_key(
+fn exact_review_order_key(
     col: &mut Collection,
     card_id: CardId,
     timing: SchedTimingToday,
+    order: ReviewCardOrder,
 ) -> Result<f32> {
     let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
     if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
-        col.fsrs_current_retrievability_for_card(card.id, state.stability_internal, elapsed_days)
+        if matches!(order, ReviewCardOrder::RelativeOverdueness) {
+            col.fsrs_relative_overdueness_for_card_state(&card, state, elapsed_days)
+        } else {
+            col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed_days)
+        }
     } else {
         // keep SM2-style fallback ordering when FSRS state is missing
         let due = card.original_or_current_due() as i64;
@@ -952,4 +912,11 @@ fn exact_retrievability_key(
         };
         Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
     }
+}
+
+fn fnvhash_due_card(card: &DueCard) -> i64 {
+    let mut hasher = FnvHasher::default();
+    hasher.write_i64(card.id.0);
+    hasher.write_i64(card.mtime.0);
+    hasher.finish() as i64
 }

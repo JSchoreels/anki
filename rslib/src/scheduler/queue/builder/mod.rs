@@ -391,6 +391,8 @@ impl Context {
             && matches!(
                 self.sort_options.review_order,
                 ReviewCardOrder::RetrievabilityAscending
+                    | ReviewCardOrder::RetrievabilityDescending
+                    | ReviewCardOrder::RelativeOverdueness
             )
     }
 
@@ -527,14 +529,18 @@ impl Collection {
 mod test {
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::hash::Hasher;
 
     use anki_proto::deck_config::deck_config::config::NewCardGatherPriority;
     use anki_proto::deck_config::deck_config::config::NewCardSortOrder;
+    use fnv::FnvHasher;
+    use fsrs::DEFAULT_PARAMETERS;
 
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
+    use crate::deckconfig::FsrsVersion;
     use crate::search::SortMode;
 
     impl Collection {
@@ -560,6 +566,14 @@ mod test {
             let mut conf = self.get_deck_config(dcid, false).unwrap().unwrap();
             conf.inner.reviews_per_day = limit;
             self.add_or_update_deck_config(&mut conf).unwrap();
+        }
+
+        fn set_deck_fsrs7_defaults(&mut self, deck: DeckId) {
+            let config_id = self.get_deck(deck).unwrap().unwrap().config_id().unwrap();
+            let mut config = self.get_deck_config(config_id, false).unwrap().unwrap();
+            config.inner.fsrs_version = FsrsVersion::Seven as i32;
+            config.inner.fsrs_params_7 = DEFAULT_PARAMETERS.to_vec();
+            self.add_or_update_deck_config(&mut config).unwrap();
         }
 
         fn queue_as_deck_and_template(&mut self, deck_id: DeckId) -> Vec<(DeckId, u16)> {
@@ -1009,6 +1023,7 @@ mod test {
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_fsrs7_defaults(deck.id);
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
         let mut note1 = nt.new_note();
@@ -1040,9 +1055,13 @@ mod test {
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
 
-        // exact FSRS ordering should tie on identical state/elapsed/DR and fall
-        // back to card id, not stale per-card decay.
-        assert_eq!(col.queue_as_ids(deck.id), vec![card1.id, card2.id]);
+        // Exact FSRS ordering should tie on identical state/elapsed/DR and use
+        // the normal id/mtime hash tiebreaker, not stale per-card decay.
+        let first_queue = col.queue_as_ids(deck.id);
+        assert_eq!(first_queue.len(), 2);
+        assert!(first_queue.contains(&card1.id));
+        assert!(first_queue.contains(&card2.id));
+        assert_eq!(col.queue_as_ids(deck.id), first_queue);
         Ok(())
     }
 
@@ -1074,6 +1093,13 @@ mod test {
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-elapsed_secs));
         col.storage.update_card(&card)?;
         Ok(card.id)
+    }
+
+    fn fnvhash_card_and_mod(card: &Card) -> i64 {
+        let mut hasher = FnvHasher::default();
+        hasher.write_i64(card.id.0);
+        hasher.write_i64(card.mtime.0);
+        hasher.finish() as i64
     }
 
     #[test]
@@ -1117,6 +1143,198 @@ mod test {
             vec![intraday_learning, day_learning, review]
         );
         assert_eq!(col.counts(), [0, 2, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_descending_retrievability_order_interleaves_due_non_new_queues() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityDescending);
+
+        let timing = col.timing_today()?;
+        let review = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            2 * 86_400,
+            30.0,
+        )?;
+        let day_learning = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::DayLearn,
+            CardType::Relearn,
+            timing.days_elapsed as i32,
+            4 * 86_400,
+            30.0,
+        )?;
+        let intraday_learning = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Learn,
+            CardType::Relearn,
+            (timing.now.0 - 1) as i32,
+            6 * 86_400,
+            30.0,
+        )?;
+
+        assert_eq!(
+            col.queue_as_ids(deck.id),
+            vec![review, day_learning, intraday_learning]
+        );
+        assert_eq!(col.counts(), [0, 2, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_retrievability_order_uses_both_stabilities_and_difficulty() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_fsrs7_defaults(deck.id);
+
+        let timing = col.timing_today()?;
+        let first = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            10.0,
+        )?;
+        let second = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            10.0,
+        )?;
+
+        let first_card = col.storage.get_card(first)?.unwrap();
+        let second_card = col.storage.get_card(second)?.unwrap();
+        let state_a = FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: Some(20.0),
+            difficulty: 5.0,
+        };
+        let state_b = FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: Some(5.0),
+            difficulty: 8.0,
+        };
+        let key_a = col.fsrs_current_retrievability_for_card_state(first, state_a, 20.0)?;
+        let key_b = col.fsrs_current_retrievability_for_card_state(first, state_b, 20.0)?;
+        assert_ne!(key_a, key_b);
+        let (low_state, high_state) = if key_a < key_b {
+            (state_a, state_b)
+        } else {
+            (state_b, state_a)
+        };
+
+        // Put the lower-R state second in the scalar helper's hash tie order,
+        // so this test would fail if only slow stability were considered.
+        let (high_r_id, low_r_id) =
+            if fnvhash_card_and_mod(&first_card) < fnvhash_card_and_mod(&second_card) {
+                (first, second)
+            } else {
+                (second, first)
+            };
+
+        let mut high_r = col.storage.get_card(high_r_id)?.unwrap();
+        high_r.memory_state = Some(high_state);
+        col.storage.update_card(&high_r)?;
+
+        let mut low_r = col.storage.get_card(low_r_id)?.unwrap();
+        low_r.memory_state = Some(low_state);
+        col.storage.update_card(&low_r)?;
+
+        let high_key = col.fsrs_current_retrievability_for_card_state(
+            high_r.id,
+            high_r.memory_state.unwrap(),
+            20.0,
+        )?;
+        let low_key = col.fsrs_current_retrievability_for_card_state(
+            low_r.id,
+            low_r.memory_state.unwrap(),
+            20.0,
+        )?;
+        assert!(low_key < high_key);
+        assert_eq!(col.queue_as_ids(deck.id), vec![low_r_id, high_r_id]);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_relative_overdueness_uses_the_card_target_interval() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RelativeOverdueness);
+        col.set_deck_fsrs7_defaults(deck.id);
+
+        let timing = col.timing_today()?;
+        let first = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            10.0,
+        )?;
+        let second = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32,
+            20 * 86_400,
+            10.0,
+        )?;
+        let first_card = col.storage.get_card(first)?.unwrap();
+        let second_card = col.storage.get_card(second)?.unwrap();
+        let (low_hash_id, high_hash_id) =
+            if fnvhash_card_and_mod(&first_card) < fnvhash_card_and_mod(&second_card) {
+                (first, second)
+            } else {
+                (second, first)
+            };
+
+        let state = first_card.memory_state.unwrap();
+        let mut target_a_card = first_card.clone();
+        target_a_card.desired_retention = Some(0.8);
+        let target_a_key =
+            col.fsrs_relative_overdueness_for_card_state(&target_a_card, state, 20.0)?;
+        let mut target_b_card = first_card;
+        target_b_card.desired_retention = Some(0.95);
+        let target_b_key =
+            col.fsrs_relative_overdueness_for_card_state(&target_b_card, state, 20.0)?;
+        assert_ne!(target_a_key, target_b_key);
+        let (lower_key_target, higher_key_target) = if target_a_key < target_b_key {
+            (0.8, 0.95)
+        } else {
+            (0.95, 0.8)
+        };
+
+        // Exact R is identical for both cards, so assign the lower relative-
+        // overdueness key against the normal hash order to catch an R-only sort.
+        let mut low_hash_card = col.storage.get_card(low_hash_id)?.unwrap();
+        low_hash_card.desired_retention = Some(higher_key_target);
+        col.storage.update_card(&low_hash_card)?;
+        let mut high_hash_card = col.storage.get_card(high_hash_id)?.unwrap();
+        high_hash_card.desired_retention = Some(lower_key_target);
+        col.storage.update_card(&high_hash_card)?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![high_hash_id, low_hash_id]);
         Ok(())
     }
 

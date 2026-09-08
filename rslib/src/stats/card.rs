@@ -5,7 +5,7 @@ use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
-use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
+use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::timing::is_unix_epoch_timestamp;
@@ -63,9 +63,9 @@ impl Collection {
             card.memory_state
                 .zip(Some(seconds_elapsed))
                 .map(|(state, seconds)| {
-                    fsrs_current_retrievability_for_params(
+                    fsrs_current_retrievability_for_state(
                         &fsrs_preset.params,
-                        state.stability_internal,
+                        state,
                         seconds as f32 / 86_400.0,
                     )
                 });
@@ -271,6 +271,7 @@ mod test {
     use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
     use crate::scheduler::fsrs::preset::AddonFsrsPreset;
     use crate::scheduler::fsrs::preset::AddonFsrsVersion;
     use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
@@ -377,18 +378,19 @@ mod test {
         let stability = 42.0;
         let elapsed_days = 120.0;
         let timing = col.timing_today()?;
-        card.memory_state = Some(FsrsMemoryState {
+        let state = FsrsMemoryState {
             stability,
             stability_internal: stability,
-            stability_fast: None,
-            difficulty: 5.0,
-        });
+            stability_fast: Some(17.0),
+            difficulty: 8.0,
+        };
+        card.memory_state = Some(state);
         card.last_review_time = Some(timing.now.adding_secs(-(elapsed_days as i64) * 86_400));
         card.decay = Some(params[23]);
         col.storage.update_card(&card)?;
 
         let report = col.card_stats(cid)?;
-        let expected = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
+        let expected = fsrs_current_retrievability_for_state(&params, state, elapsed_days)?;
         assert_eq!(
             report.fsrs_retrievability.map(|v| format!("{v:.6}")),
             Some(format!("{expected:.6}"))

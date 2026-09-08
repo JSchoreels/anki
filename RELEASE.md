@@ -32,6 +32,16 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Compute built-in FSRS-7 retrievability and Relative Overdueness from the full
+  dual-trace memory state and selected preset, including Browser/search,
+  filtered decks, review queues, Card Info, and deterministic queue ties.
+
+- Apply both ascending and descending retrievability order globally across due
+  review, interday-learning, and due-now intraday cards before review limits.
+
+- Restore aggregate progress, ETA, active preset bars, and completion/skip
+  details while **Optimize All Presets** runs concurrently.
+
 - Correct FSRS-7 Dynamic DR intervals to use the full memory state, including
   fast stability.
 

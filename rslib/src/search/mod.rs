@@ -32,7 +32,7 @@ use crate::browser_table::Column;
 use crate::card::Card;
 use crate::card::CardType;
 use crate::prelude::*;
-use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
+use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
@@ -509,8 +509,7 @@ impl Collection {
         };
         let elapsed_days =
             self.elapsed_seconds_since_last_review_for_card(card, timing) as f32 / 86_400.0;
-        let r =
-            fsrs_current_retrievability_for_params(params, state.stability_internal, elapsed_days)?;
+        let r = fsrs_current_retrievability_for_state(params, state, elapsed_days)?;
         Ok(Some((r, state.stability)))
     }
 
@@ -1227,10 +1226,10 @@ mod test {
             card.interval = 20;
             card.due = 0;
             card.memory_state = Some(FsrsMemoryState {
-                stability: 30.0,
-                stability_internal: 30.0,
-                stability_fast: None,
-                difficulty: 5.0,
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: Some(5.0),
+                difficulty: 8.0,
             });
             card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
         }
@@ -1484,8 +1483,16 @@ mod test {
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
 
-        let exact_r = col.fsrs_current_retrievability_for_card(card1.id, 30.0, 20.0)?;
-        let query = format!("prop:r>{:.6}", exact_r - 0.0005);
+        let state = card1.memory_state.unwrap();
+        let exact_r = col.fsrs_current_retrievability_for_card_state(card1.id, state, 20.0)?;
+        let scalar_r = col.fsrs_current_retrievability_for_card(card1.id, 10.0, 20.0)?;
+        assert_ne!(exact_r, scalar_r);
+        let midpoint = (exact_r + scalar_r) / 2.0;
+        let query = if exact_r < scalar_r {
+            format!("prop:r<{midpoint:.6}")
+        } else {
+            format!("prop:r>{midpoint:.6}")
+        };
         let filtered = col.search_cards(&query, SortMode::NoOrder)?;
         assert_eq!(filtered.len(), 2);
 

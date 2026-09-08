@@ -8,11 +8,16 @@ by scheduling math.
 
 - Use `card.data.s` / `memory_state.stability` when displaying or exposing
   `prop:s`.
-- Use `card.data.s_int` / `memory_state.stability_internal` when calling FSRS
-  interval, retrievability, or next-state math.
+- Use `card.data.s_int` / `memory_state.stability_internal` for the internal slow
+  stability. Exact FSRS-7 retrievability, interval, and next-state math must also
+  preserve `card.data.s_fast` / `memory_state.stability_fast` and difficulty,
+  and use the card's selected 34-parameter preset.
 - Fall back from internal stability to S90 only when reading legacy data that
   does not have `s_int`.
 - Do not rederive S90 from `s` in add-ons; Anki now writes S90 directly to `s`.
+- Treat Anki's existing scalar-stability FSRS helper APIs as compatibility
+  approximations for FSRS-7; they assume difficulty 5 and equal stability
+  traces.
 
 ## FSRS Helper
 
@@ -21,7 +26,9 @@ by scheduling math.
 - [x] Add a shared SQL expression/helper for `s_int` with fallback to `s`.
 - [x] Update card template `fsrs-S` display to use stored S90 directly.
 - [x] Update card template `fsrs-R` and Target R column to pass internal
-      stability into retrievability math.
+      stability into the scalar compatibility math.
+- [ ] Decide whether FSRS Helper should adopt a future full-state Anki API for
+      exact FSRS-7 R and target intervals.
 - [x] Update reschedule/recompute code to preserve internal stability when
       writing `FSRSMemoryState`.
 - [x] Update postpone/advance/flatten/disperse/schedule-break paths that pass

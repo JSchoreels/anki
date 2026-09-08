@@ -391,9 +391,9 @@ impl RowContext {
             .memory_state
             .zip(cards[0].seconds_since_last_review(&timing))
             .map(|(state, seconds)| {
-                col.fsrs_current_retrievability_for_card(
+                col.fsrs_current_retrievability_for_card_state(
                     cards[0].id,
-                    state.stability_internal,
+                    state,
                     seconds as f32 / 86_400.0,
                 )
             })
@@ -699,7 +699,7 @@ mod tests {
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
-    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
+    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
     use crate::search::SortMode;
 
     fn fsrs7_params_for_retrievability_test() -> Vec<f32> {
@@ -755,19 +755,20 @@ mod tests {
         let stability = 42.0;
         let elapsed_days = 120.0;
         let timing = col.timing_today()?;
-        card.memory_state = Some(FsrsMemoryState {
+        let state = FsrsMemoryState {
             stability,
             stability_internal: stability,
-            stability_fast: None,
-            difficulty: 5.0,
-        });
+            stability_fast: Some(17.0),
+            difficulty: 8.0,
+        };
+        card.memory_state = Some(state);
         card.last_review_time = Some(timing.now.adding_secs(-(elapsed_days as i64) * 86_400));
         card.decay = Some(params[23]);
         col.storage.update_card(&card)?;
 
         let ctx = RowContext::new(&mut col, cid.0, false, false)?;
         let actual = ctx.get_cell_text(Column::Retrievability)?;
-        let expected = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
+        let expected = fsrs_current_retrievability_for_state(&params, state, elapsed_days)?;
         assert_eq!(actual, format!("{:.0}%", expected * 100.0));
         Ok(())
     }

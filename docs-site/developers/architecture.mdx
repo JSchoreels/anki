@@ -246,14 +246,17 @@ the learning or relearning queue with `remaining_steps = 0`, so later `Hard` and
 `Good` answers use FSRS short-term intervals instead of replaying the last
 configured step.
 
-When FSRS review order is ascending retrievability, due review,
+When FSRS review order is ascending or descending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
 into one exact-retrievability ordering. Intraday cards with a future timestamp
 remain hidden until their due time, at which point the queue is rebuilt so they
 can be inserted according to their current retrievability. The ordering key is
-the card's current FSRS retrievability from its selected deck preset, not its
-relative distance from desired retention. New cards are not included in this
-FSRS ordering because they do not have FSRS retrievability yet. In desktop RWKV
+the card's current FSRS retrievability from its selected deck preset. Relative
+Overdueness uses the same shared gather path, with the model-independent key
+`-elapsed_days / interval_at_retrievability(full_state, desired_retention)`.
+New cards are not included in these FSRS orderings because they do not have FSRS
+retrievability yet. Equal keys use the same `fnvhash(id, mod)` tiebreaker as the
+legacy SQL order. In desktop RWKV
 mode, new-card gather order can instead use ascending or descending RWKV
 retrievability when the reviewer has installed a current-day RWKV queue score
 map; unscored new cards retain ascending-position fallback order.
@@ -337,7 +340,9 @@ FSRS-7-length params), deck options keeps the current selected params instead of
 cross-writing a different family into that slot.
 
 When `fsrs_params_7` has 34 values (FSRS-7), card-info forgetting-curve
-visualization uses the FSRS-7 mixture curve parameters in `w[23..33]`. The
+visualization uses the FSRS-7 mixture curve parameters in `w[23..33]` together
+with each reconstructed state's internal slow stability, fast stability, and
+difficulty. The
 deck-options custom single-decay table is disabled for FSRS-7 because there is
 no single `decay` parameter to sweep.
 Deck options treats 35-value FSRS-7 preview parameter sets as outdated and
@@ -357,9 +362,11 @@ SchedulerService exposes two FSRS math helpers for add-ons:
 - `FsrsNextInterval(card_id, stability, desired_retention)`
 
 Both read the target card's deck config and use the backend-selected FSRS
-parameter array (including FSRS-7 with 34 params). This avoids add-ons
-re-implementing forgetting-curve math in Python and keeps results aligned with
-backend scheduling/evaluation behavior.
+parameter array. Their scalar `stability` signatures predate FSRS-7; for a
+34-parameter model they explicitly assume difficulty 5 and equal slow/fast
+stability. They remain compatibility approximations for add-ons, not the source
+of built-in FSRS-7 metrics. An exact future public API must accept or resolve the
+complete memory state.
 
 ## FSRS Retrievability Reads
 
@@ -373,8 +380,9 @@ RWKV score map has been prepared:
   which uses RWKV scores for cards present in the transient stats score map and
   falls back to FSRS for the rest
 
-For FSRS-7, this uses the native forgetting-curve mixture (no scalar decay
-approximation).
+For FSRS-7, built-in callers pass internal slow stability, fast stability, and
+difficulty to the native forgetting-curve mixture; they do not use the scalar
+add-on compatibility helper or the stored scalar decay.
 
 FSRS calibration consumers can populate a local review-time prediction cache in
 the profile-local retrievability cache database, not in the synced collection
@@ -391,7 +399,9 @@ optimization, is not card state, is not synced as part of collection sync/full
 upload, and should not be used for current retrievability ordering/search.
 
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
-stored scalar decay from `card.data` for ordering/search expressions.
+stored scalar decay from `card.data` for legacy expressions. Built-in FSRS
+retrievability and Relative Overdueness paths bypass them and sort/filter using
+preset-aware Rust metrics.
 
 Do not store current FSRS retrievability as persistent card state. Upstream's
 SQLite review ordering could compute retrievability directly from `card.data`
@@ -414,17 +424,19 @@ Implication for aggregates:
 
 - Stats retrievability aggregate (`sum_by_card` / average, i.e. `SUM(R)`-style
   view in stats) is model-based and aligned with selected FSRS params.
-- SQL-expression-based aggregates or sorts that call the sqlite FSRS helpers
-  are still scalar-decay-based, and can diverge (especially with FSRS-7).
+- Add-on/custom SQL expressions that call the sqlite FSRS helpers are still
+  scalar-decay-based and can diverge (especially with FSRS-7).
 
 Current exact-vs-scalar status:
 
 - Exact model-based ordering in Rust is used for:
     - Browser sort by `Retrievability`
     - Review queue retrievability order (`ascending` / `descending`)
+    - Review queue Relative Overdueness
     - RWKV-only new-card gather order (`ascending/descending retrievability (RWKV)`)
     - Filtered deck retrievability order (`ascending` / `descending`), preferring
       a current-day RWKV score and falling back to FSRS
+    - Filtered deck Relative Overdueness (FSRS full-state target interval)
 - Retrievability property filtering is exact-model-based. Search builds a
   temporary `search_exact_retrievability` table (`cid`, `fsrs_r`, `rwkv_r`,
   `rwkv_curve_r`, `s90`) from `FSRS::current_retrievability`, the stored `S90`,
@@ -453,7 +465,8 @@ Current exact-vs-scalar status:
   nonzero persistence rule.
 - The scheduler's internal stability is stored separately in `card.data.s_int`
   on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
-  math use `s_int`; legacy card data without `s_int` treats `s` as both values.
+  math use `s_int`; exact FSRS-7 retrievability also uses `s_fast` and `d`.
+  Legacy card data without `s_int` treats `s` as both stability values.
 - FSRS-7's fast stability trace is stored in `card.data.s_fast` on new FSRS
   writes. Legacy card data without `s_fast` treats the internal slow stability
   as the fast trace fallback.
@@ -474,12 +487,15 @@ Current exact-vs-scalar status:
   The GUI `card_info_will_add_rows` hook appends display-only `label`/`value`
   rows to the Card Info response after the backend stats have been read; these
   rows are not persisted to collection storage.
-- Add-on helper APIs expose exact interval-at-target-retrievability math:
+- Add-on helper APIs expose scalar-compatible interval-at-target-retrievability
+  math:
     - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
     - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
     - `fsrs_interval_at_retrievability_variable_batch([{card_id, stability, target_retrievability}, ...])`
     - `fsrs_interval_at_retrievability_by_config_batch([{request_index, config_id, stability}, ...], target_retrievability)`
-      The card batch helper resolves card presets with the batch preset resolver
+      These signatures assume difficulty 5 and equal slow/fast stability for
+      FSRS-7, so they are approximations rather than exact full-state APIs. The
+      card batch helper resolves card presets with the batch preset resolver
       and reuses one FSRS instance per resolved preset. The variable card batch
       helper uses the same preset path while allowing each item to request a
       different target retrievability. The config batch helper reads deck config

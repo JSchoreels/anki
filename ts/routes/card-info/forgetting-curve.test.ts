@@ -52,6 +52,13 @@ test("stabilityS90 derives S90 from FSRS-7 curve params", () => {
     expect(stabilityS90(10, 0.1542, fsrs7Params())).toBeCloseTo(12.8789, 3);
 });
 
+test("stabilityS90 uses both FSRS-7 stabilities and difficulty", () => {
+    const scalar = stabilityS90(10, 0.1542, fsrs7Params());
+    const fullState = stabilityS90(10, 0.1542, fsrs7Params(), 5, 8);
+
+    expect(fullState).not.toBeCloseTo(scalar, 3);
+});
+
 test("prepareData carries S90 for the forgetting curve tooltip", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-03T00:00:00Z"));
@@ -75,6 +82,34 @@ test("prepareData carries S90 for the forgetting curve tooltip", () => {
 
         expect(data.at(-1)?.stability).toBe(10);
         expect(data.at(-1)?.stabilityS90).toBeCloseTo(12.8789, 3);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+test("prepareData computes FSRS-7 retrievability from the full memory state", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-21T00:00:00Z"));
+
+    try {
+        const data = prepareData(
+            [
+                {
+                    time: Date.parse("2024-01-01T00:00:00Z") / 1000,
+                    memoryState: {
+                        stability: 10,
+                        stabilityInternal: 10,
+                        stabilityFast: 5,
+                        difficulty: 8,
+                    },
+                },
+            ] as any,
+            20,
+            0.1542,
+            fsrs7Params(),
+        );
+
+        expect(data.at(-1)?.retrievability).toBeCloseTo(82.88255, 4);
     } finally {
         vi.useRealTimers();
     }

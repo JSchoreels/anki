@@ -22,9 +22,13 @@ function forgettingCurveFsrs6(stability: number, daysElapsed: number, decay: num
     return Math.pow((daysElapsed / stability) * factor + 1.0, -decay);
 }
 
-function forgettingCurveFsrs7(stability: number, daysElapsed: number, params: number[]): number {
-    const stabilityFast = stability;
-    const difficulty = 5.0;
+function forgettingCurveFsrs7(
+    stability: number,
+    stabilityFast: number,
+    difficulty: number,
+    daysElapsed: number,
+    params: number[],
+): number {
     const decay1Mag = Math.min(0.95, Math.max(0.01, params[23] * Math.pow(stabilityFast, params[33] - 0.3)));
     const decay1 = -decay1Mag;
     const decay2 = -Math.min(0.95, Math.max(0.01, params[24]));
@@ -45,12 +49,14 @@ function forgettingCurveFsrs7(stability: number, daysElapsed: number, params: nu
 
 function forgettingCurve(
     stability: number,
+    stabilityFast: number,
+    difficulty: number,
     daysElapsed: number,
     decay: number,
     params: number[] | undefined,
 ): number {
     if (params && params.length >= FSRS7_PARAM_COUNT) {
-        return forgettingCurveFsrs7(stability, daysElapsed, params);
+        return forgettingCurveFsrs7(stability, stabilityFast, difficulty, daysElapsed, params);
     }
     return forgettingCurveFsrs6(stability, daysElapsed, decay);
 }
@@ -59,6 +65,8 @@ export function stabilityS90(
     stability: number,
     decay: number,
     params: number[] | undefined,
+    stabilityFast = stability,
+    difficulty = 5.0,
 ): number {
     if (!params || params.length < FSRS7_PARAM_COUNT) {
         return stability;
@@ -67,7 +75,8 @@ export function stabilityS90(
     let low = 0;
     let high = Math.max(stability, 1);
     while (
-        forgettingCurve(stability, high, decay, params) > S90_TARGET_RETRIEVABILITY
+        forgettingCurve(stability, stabilityFast, difficulty, high, decay, params)
+            > S90_TARGET_RETRIEVABILITY
         && high < S_MAX
     ) {
         high = Math.min(high * 2, S_MAX);
@@ -75,7 +84,10 @@ export function stabilityS90(
 
     for (let i = 0; i < S90_SEARCH_STEPS; i++) {
         const mid = (low + high) / 2;
-        if (forgettingCurve(stability, mid, decay, params) > S90_TARGET_RETRIEVABILITY) {
+        if (
+            forgettingCurve(stability, stabilityFast, difficulty, mid, decay, params)
+                > S90_TARGET_RETRIEVABILITY
+        ) {
             low = mid;
         } else {
             high = mid;
@@ -144,6 +156,8 @@ export function prepareData(
     const data: DataPoint[] = [];
     let lastReviewTime = 0;
     let lastStability = 0;
+    let lastStabilityFast = 0;
+    let lastDifficulty = 5.0;
     let lastStabilityS90 = 0;
     const step = Math.min(maxDays / MIN_POINTS, 1);
     let daysSinceFirstLearn = 0;
@@ -158,8 +172,16 @@ export function prepareData(
                 lastStability = entry.memoryState?.stabilityInternal
                     ?? entry.memoryState?.stability
                     ?? 0;
+                lastStabilityFast = entry.memoryState?.stabilityFast ?? lastStability;
+                lastDifficulty = entry.memoryState?.difficulty ?? 5.0;
                 lastStabilityS90 = entry.memoryState?.stability
-                    ?? stabilityS90(lastStability, decay, params);
+                    ?? stabilityS90(
+                        lastStability,
+                        decay,
+                        params,
+                        lastStabilityFast,
+                        lastDifficulty,
+                    );
                 data.push({
                     date: new Date(reviewTime * 1000),
                     daysSinceFirstLearn: 0,
@@ -175,7 +197,14 @@ export function prepareData(
             let elapsedDays = 0;
             while (elapsedDays < totalDaysElapsed - step) {
                 elapsedDays += step;
-                const retrievability = forgettingCurve(lastStability, elapsedDays, decay, params);
+                const retrievability = forgettingCurve(
+                    lastStability,
+                    lastStabilityFast,
+                    lastDifficulty,
+                    elapsedDays,
+                    decay,
+                    params,
+                );
                 data.push({
                     date: new Date((lastReviewTime + elapsedDays * 86400) * 1000),
                     daysSinceFirstLearn: data[data.length - 1].daysSinceFirstLearn + step,
@@ -199,8 +228,16 @@ export function prepareData(
             lastStability = entry.memoryState?.stabilityInternal
                 ?? entry.memoryState?.stability
                 ?? 0;
+            lastStabilityFast = entry.memoryState?.stabilityFast ?? lastStability;
+            lastDifficulty = entry.memoryState?.difficulty ?? 5.0;
             lastStabilityS90 = entry.memoryState?.stability
-                ?? stabilityS90(lastStability, decay, params);
+                ?? stabilityS90(
+                    lastStability,
+                    decay,
+                    params,
+                    lastStabilityFast,
+                    lastDifficulty,
+                );
         });
 
     if (data.length === 0) {
@@ -212,7 +249,14 @@ export function prepareData(
     let elapsedDays = 0;
     while (elapsedDays < totalDaysSinceLastReview - step) {
         elapsedDays += step;
-        const retrievability = forgettingCurve(lastStability, elapsedDays, decay, params);
+        const retrievability = forgettingCurve(
+            lastStability,
+            lastStabilityFast,
+            lastDifficulty,
+            elapsedDays,
+            decay,
+            params,
+        );
         data.push({
             date: new Date((lastReviewTime + elapsedDays * 86400) * 1000),
             daysSinceFirstLearn: data[data.length - 1].daysSinceFirstLearn + step,
@@ -225,6 +269,8 @@ export function prepareData(
     daysSinceFirstLearn += totalDaysSinceLastReview;
     const retrievability = forgettingCurve(
         lastStability,
+        lastStabilityFast,
+        lastDifficulty,
         totalDaysSinceLastReview,
         decay,
         params,
@@ -244,6 +290,8 @@ export function prepareData(
         previewDaysElapsed += step;
         const retrievability = forgettingCurve(
             lastStability,
+            lastStabilityFast,
+            lastDifficulty,
             elapsedDays + previewDaysElapsed,
             decay,
             params,

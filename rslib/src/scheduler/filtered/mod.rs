@@ -137,9 +137,9 @@ impl Collection {
         );
 
         if fsrs {
-            if let Some(reverse) = filtered_retrievability_sort_reverse(term.order()) {
-                return self.move_cards_matching_term_with_exact_retrievability(
-                    ctx, term, &search, position, reverse,
+            if let Some(order) = exact_fsrs_search_order(term.order()) {
+                return self.move_cards_matching_term_with_exact_fsrs_order(
+                    ctx, term, &search, position, order,
                 );
             }
         }
@@ -156,24 +156,24 @@ impl Collection {
         Ok(position)
     }
 
-    fn move_cards_matching_term_with_exact_retrievability(
+    fn move_cards_matching_term_with_exact_fsrs_order(
         &mut self,
         ctx: &DeckFilterContext,
         term: &FilteredSearchTerm,
         search: &str,
         mut position: i32,
-        reverse: bool,
+        order: ExactFsrsSearchOrder,
     ) -> Result<i32> {
         let mut cards_with_keys = Vec::new();
         for card in self.all_cards_for_search(search)? {
-            let key = exact_retrievability_key_for_card(self, &card, ctx.timing)?;
+            let key = exact_fsrs_search_key_for_card(self, &card, ctx.timing, order)?;
             let hash = fnvhash_card_and_mod(&card);
             cards_with_keys.push((card, key, hash));
         }
 
         cards_with_keys.sort_unstable_by(|(card_a, key_a, hash_a), (card_b, key_b, hash_b)| {
             let ord = key_a.partial_cmp(key_b).unwrap_or(Ordering::Equal);
-            let ord = if reverse { ord.reverse() } else { ord };
+            let ord = if order.reverse() { ord.reverse() } else { ord };
             ord.then_with(|| hash_a.cmp(hash_b))
                 .then_with(|| card_a.id.cmp(&card_b.id))
         });
@@ -304,10 +304,27 @@ fn apply_update_to_filtered_deck(deck: &mut Deck, update: FilteredDeckForUpdate)
     deck.kind = DeckKind::Filtered(update.config);
 }
 
-fn filtered_retrievability_sort_reverse(order: FilteredSearchOrder) -> Option<bool> {
+#[derive(Clone, Copy)]
+enum ExactFsrsSearchOrder {
+    Retrievability { reverse: bool },
+    RelativeOverdueness,
+}
+
+impl ExactFsrsSearchOrder {
+    fn reverse(self) -> bool {
+        matches!(self, Self::Retrievability { reverse: true })
+    }
+}
+
+fn exact_fsrs_search_order(order: FilteredSearchOrder) -> Option<ExactFsrsSearchOrder> {
     match order {
-        FilteredSearchOrder::RetrievabilityAscending => Some(false),
-        FilteredSearchOrder::RetrievabilityDescending => Some(true),
+        FilteredSearchOrder::RetrievabilityAscending => {
+            Some(ExactFsrsSearchOrder::Retrievability { reverse: false })
+        }
+        FilteredSearchOrder::RetrievabilityDescending => {
+            Some(ExactFsrsSearchOrder::Retrievability { reverse: true })
+        }
+        FilteredSearchOrder::RelativeOverdueness => Some(ExactFsrsSearchOrder::RelativeOverdueness),
         _ => None,
     }
 }
@@ -345,17 +362,43 @@ fn exact_retrievability_key_for_card(
 
     if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-        col.fsrs_current_retrievability_for_card(card.id, state.stability_internal, elapsed_days)
+        col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed_days)
     } else {
-        let due = card.original_or_current_due() as i64;
-        let review_day = due.saturating_sub(card.interval as i64);
-        let days_elapsed = if due > 365_000 {
-            (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
-        } else {
-            timing.days_elapsed.saturating_sub(review_day as u32)
-        };
-        Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
+        Ok(sm2_relative_overdueness_key(card, timing))
     }
+}
+
+fn exact_fsrs_search_key_for_card(
+    col: &mut Collection,
+    card: &Card,
+    timing: SchedTimingToday,
+    order: ExactFsrsSearchOrder,
+) -> Result<f32> {
+    match order {
+        ExactFsrsSearchOrder::Retrievability { .. } => {
+            exact_retrievability_key_for_card(col, card, timing)
+        }
+        ExactFsrsSearchOrder::RelativeOverdueness => {
+            if let Some(state) = card.memory_state {
+                let elapsed_days =
+                    elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                col.fsrs_relative_overdueness_for_card_state(card, state, elapsed_days)
+            } else {
+                Ok(sm2_relative_overdueness_key(card, timing))
+            }
+        }
+    }
+}
+
+fn sm2_relative_overdueness_key(card: &Card, timing: SchedTimingToday) -> f32 {
+    let due = card.original_or_current_due() as i64;
+    let review_day = due.saturating_sub(card.interval as i64);
+    let days_elapsed = if due > 365_000 {
+        (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
+    } else {
+        timing.days_elapsed.saturating_sub(review_day as u32)
+    };
+    -((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0)
 }
 
 #[cfg(test)]
@@ -434,9 +477,9 @@ mod test {
             card.due = 100;
             card.interval = 20;
             card.memory_state = Some(FsrsMemoryState {
-                stability: 30.0,
-                stability_internal: 30.0,
-                stability_fast: None,
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: Some(20.0),
                 difficulty: 5.0,
             });
             card.desired_retention = Some(0.8);
@@ -445,8 +488,8 @@ mod test {
         card2.memory_state = Some(FsrsMemoryState {
             stability: 10.0,
             stability_internal: 10.0,
-            stability_fast: None,
-            difficulty: 5.0,
+            stability_fast: Some(5.0),
+            difficulty: 8.0,
         });
         card1.decay = Some(0.1);
         card2.decay = Some(2.0);
@@ -490,6 +533,46 @@ mod test {
         });
         let expected_ids: Vec<_> = expected_order.into_iter().map(|(id, _, _)| id).collect();
         assert_eq!(ordered_ids, expected_ids);
+        Ok(())
+    }
+
+    #[test]
+    fn filtered_relative_overdueness_uses_exact_target_interval() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let timing = col.timing_today()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: Some(5.0),
+            difficulty: 8.0,
+        });
+        card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+
+        card.desired_retention = Some(0.8);
+        let first = exact_fsrs_search_key_for_card(
+            &mut col,
+            &card,
+            timing,
+            ExactFsrsSearchOrder::RelativeOverdueness,
+        )?;
+        card.desired_retention = Some(0.95);
+        let second = exact_fsrs_search_key_for_card(
+            &mut col,
+            &card,
+            timing,
+            ExactFsrsSearchOrder::RelativeOverdueness,
+        )?;
+
+        assert_ne!(first, second);
+        assert!(matches!(
+            exact_fsrs_search_order(FilteredSearchOrder::RelativeOverdueness),
+            Some(ExactFsrsSearchOrder::RelativeOverdueness)
+        ));
         Ok(())
     }
 

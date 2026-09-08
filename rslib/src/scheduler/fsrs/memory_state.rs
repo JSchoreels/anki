@@ -95,6 +95,45 @@ pub(crate) fn fsrs_current_retrievability_for_params(
     fsrs_current_retrievability_scalar_for_params(params, stability, elapsed_days)
 }
 
+/// Calculate retrievability from the complete stored FSRS state.
+///
+/// FSRS-7's forgetting curve depends on both stability traces and difficulty,
+/// so built-in callers must use this instead of the scalar compatibility
+/// helper below.
+pub(crate) fn fsrs_current_retrievability_for_state(
+    params: &[f32],
+    state: FsrsMemoryState,
+    elapsed_days: f32,
+) -> Result<f32> {
+    let fsrs = FSRS::new(params)?;
+    let retrievability = fsrs.current_retrievability(state.into(), elapsed_days.max(0.0));
+    require!(retrievability.is_finite(), "invalid FSRS parameter values");
+    Ok(retrievability)
+}
+
+/// Return the negative fraction of the target interval that has elapsed.
+///
+/// The FSRS-7 mixture curve has no scalar decay that can be inverted in SQL,
+/// so the target interval must be derived from the complete memory state.
+pub(crate) fn fsrs_relative_overdueness_for_state(
+    params: &[f32],
+    state: FsrsMemoryState,
+    elapsed_days: f32,
+    target_retrievability: f32,
+) -> Result<f32> {
+    let fsrs = FSRS::new(params)?;
+    let target_interval =
+        fsrs.interval_at_retrievability(state.into(), target_retrievability.clamp(0.0001, 0.9999));
+    let relative_overdueness = -elapsed_days.max(0.0) / target_interval.max(0.0001);
+    require!(
+        relative_overdueness.is_finite(),
+        "invalid FSRS parameter values"
+    );
+    Ok(relative_overdueness)
+}
+
+/// Scalar compatibility helper for callers that do not have a complete
+/// FSRS-7 state. It assumes difficulty 5 and equal slow/fast stability.
 pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     params: &[f32],
     stability: f32,
@@ -607,6 +646,31 @@ impl Collection {
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
         fsrs_current_retrievability_for_params(&params, stability, elapsed_days)
+    }
+
+    pub(crate) fn fsrs_current_retrievability_for_card_state(
+        &mut self,
+        card_id: CardId,
+        state: FsrsMemoryState,
+        elapsed_days: f32,
+    ) -> Result<f32> {
+        let params = self.fsrs_params_for_card_id(card_id)?;
+        fsrs_current_retrievability_for_state(&params, state, elapsed_days)
+    }
+
+    pub(crate) fn fsrs_relative_overdueness_for_card_state(
+        &mut self,
+        card: &Card,
+        state: FsrsMemoryState,
+        elapsed_days: f32,
+    ) -> Result<f32> {
+        let preset = self.fsrs_preset_for_card(card)?;
+        fsrs_relative_overdueness_for_state(
+            &preset.params,
+            state,
+            elapsed_days,
+            card.desired_retention.unwrap_or(preset.desired_retention),
+        )
     }
 
     pub fn fsrs_next_interval_for_card(
@@ -1533,6 +1597,45 @@ mod tests {
         let actual_interval_at_target =
             fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)?;
         assert!((actual_interval_at_target - expected_interval_at_target).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs7_full_state_retrievability_preserves_fast_stability_and_difficulty() -> Result<()> {
+        let params = DEFAULT_PARAMETERS.to_vec();
+        let elapsed_days = 20.0;
+        let first = FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: Some(5.0),
+            difficulty: 5.0,
+        };
+        let second = FsrsMemoryState {
+            stability_fast: Some(20.0),
+            ..first
+        };
+        let third = FsrsMemoryState {
+            difficulty: 8.0,
+            ..first
+        };
+
+        let fsrs = FSRS::new(&params)?;
+        let expected = fsrs.current_retrievability(first.into(), elapsed_days);
+        let actual = fsrs_current_retrievability_for_state(&params, first, elapsed_days)?;
+        assert!((actual - expected).abs() < 1e-6);
+        assert_ne!(
+            actual,
+            fsrs_current_retrievability_for_state(&params, second, elapsed_days)?
+        );
+        assert_ne!(
+            actual,
+            fsrs_current_retrievability_for_state(&params, third, elapsed_days)?
+        );
+
+        let relative_overdueness =
+            fsrs_relative_overdueness_for_state(&params, first, elapsed_days, 0.9)?;
+        let expected_target_interval = fsrs.interval_at_retrievability(first.into(), 0.9);
+        assert!((relative_overdueness + elapsed_days / expected_target_interval).abs() < 1e-6);
         Ok(())
     }
 
