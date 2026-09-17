@@ -834,6 +834,103 @@ def test_after_answering_deferred_refresh_skips_queue_rewrite_without_intervenin
     assert reviewer._answeredIds == [123]
 
 
+def test_after_answering_refreshes_invalidated_rwkv_queue_before_next_card(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    work = object()
+    result = object()
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            uses_collection: bool = True,
+        ) -> None:
+            calls.append("collection" if uses_collection else "free")
+            future: Future[object] = Future()
+            future.set_result(task())
+            on_done(future)
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        lambda reviewer: calls.append("build") or work,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "score_reviewer_queue_order_async_work",
+        lambda queued_work, *, wait_for_backend=False: (
+            calls.append(f"score:{wait_for_backend}") or result
+        ),
+    )
+
+    def install(reviewer: object, scored_result: object) -> bool:
+        assert scored_result is result
+        calls.append("install")
+        aqt.rwkv_scheduler._clear_reviewer_queue_order_refresh_required(
+            reviewer,
+            through_generation=1,
+        )
+        return True
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        install,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_due",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_before_next_card",
+        lambda reviewer: False,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer._rwkv_review_queue_refresh_required = 1
+    reviewer.state = "transition"
+    reviewer.mw = SimpleNamespace(
+        taskman=Taskman(),
+        update_undo_actions=lambda: calls.append("undo"),
+    )
+    reviewer._v3 = SimpleNamespace(
+        queued_cards=SimpleNamespace(
+            new_count=0,
+            learning_count=0,
+            review_count=10,
+        )
+    )
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: calls.append("next")
+
+    reviewer._after_answering(3)
+
+    assert calls == [
+        "collection",
+        "build",
+        "free",
+        "score:True",
+        "collection",
+        "install",
+        "undo",
+        "next",
+    ]
+    assert reviewer._answeredIds == [123]
+    assert not aqt.rwkv_scheduler.reviewer_queue_order_refresh_required(reviewer)
+
+
 def test_after_answering_refreshes_rwkv_queue_before_closing_last_card(
     monkeypatch,
 ) -> None:

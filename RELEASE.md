@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Fixed
+
+- Prevent editing a card during RWKV reviews from prematurely ending the study
+  session when only RWKV-selected cards remain.
+
 ## 26.09b3+fsrs7 — 2026-09-11
 
 Current application version: `26.09b3+fsrs7`

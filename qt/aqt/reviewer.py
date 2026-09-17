@@ -1125,6 +1125,10 @@ class Reviewer:
             return
 
         rwkv_queue_order_enabled = aqt.rwkv_scheduler.reviewer_queue_order_enabled(self)
+        rwkv_queue_order_refresh_required = (
+            rwkv_queue_order_enabled
+            and aqt.rwkv_scheduler.reviewer_queue_order_refresh_required(self)
+        )
         rwkv_queue_order_refresh_due = (
             rwkv_queue_order_enabled
             and aqt.rwkv_scheduler.reviewer_queue_order_refresh_due(self)
@@ -1138,13 +1142,14 @@ class Reviewer:
             and self._answered_card_was_last_queued_review()
         )
         if (
-            rwkv_queue_order_refresh_due
+            rwkv_queue_order_refresh_required
+            or rwkv_queue_order_refresh_due
             or rwkv_last_queued_card
             or rwkv_last_queued_review
         ):
             queued_at = time.monotonic()
             answered_card_id = self.card.id
-            refresh_before_next_card = (
+            refresh_before_next_card = rwkv_queue_order_refresh_required or (
                 rwkv_queue_order_refresh_due
                 and aqt.rwkv_scheduler.reviewer_queue_order_refresh_before_next_card(
                     self

@@ -256,6 +256,7 @@ _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR = (
     "_rwkv_review_handled_queue_change_pending"
 )
+_RWKV_REVIEW_QUEUE_REFRESH_REQUIRED_ATTR = "_rwkv_review_queue_refresh_required"
 _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR = (
     "_rwkv_reconciled_collection_change_pending"
 )
@@ -5077,7 +5078,13 @@ def prepare_current_deck_review_queue_scores(
 def prepare_reviewer_queue_order(reviewer: object) -> None:
     """Prepare transient RWKV review ordering scores for the current deck."""
 
+    required_generation = _reviewer_queue_order_refresh_required_generation(reviewer)
     _prepare_current_deck_review_queue_scores(reviewer, reason="review queue")
+    if required_generation is not None:
+        _clear_reviewer_queue_order_refresh_required(
+            reviewer,
+            through_generation=required_generation,
+        )
 
 
 def prepare_reviewer_queue_order_async_work(
@@ -5549,6 +5556,10 @@ def install_reviewer_queue_order_async_result(
             is_current=result_is_current,
         ):
             return False
+        _clear_reviewer_queue_order_refresh_required(
+            reviewer,
+            through_generation=result.context.dynamic_desired_retention_generation,
+        )
         logger.debug(
             "installed RWKV async %s scores: deck_id=%s scored=%s "
             "warmup_elapsed_ms=%.1f build_elapsed_ms=%.1f score_elapsed_ms=%.1f "
@@ -5714,6 +5725,33 @@ def reviewer_queue_order_enabled(reviewer: object) -> bool:
     return isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
         deck_config
     )
+
+
+def reviewer_queue_order_refresh_required(reviewer: object) -> bool:
+    """Return whether invalidation requires a refresh before the next queue fetch."""
+
+    return _reviewer_queue_order_refresh_required_generation(reviewer) is not None
+
+
+def _reviewer_queue_order_refresh_required_generation(
+    reviewer: object,
+) -> int | None:
+    generation = getattr(reviewer, _RWKV_REVIEW_QUEUE_REFRESH_REQUIRED_ATTR, None)
+    return (
+        generation
+        if isinstance(generation, int) and not isinstance(generation, bool)
+        else None
+    )
+
+
+def _clear_reviewer_queue_order_refresh_required(
+    reviewer: object,
+    *,
+    through_generation: int,
+) -> None:
+    required_generation = _reviewer_queue_order_refresh_required_generation(reviewer)
+    if required_generation is None or required_generation <= through_generation:
+        setattr(reviewer, _RWKV_REVIEW_QUEUE_REFRESH_REQUIRED_ATTR, None)
 
 
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
@@ -18567,6 +18605,13 @@ def _invalidate_rwkv_review_input_caches(mw: object) -> int:
 
     reviewer = SimpleNamespace(mw=mw)
     _clear_rwkv_review_queue_scores(reviewer)
+    active_reviewer = getattr(mw, "reviewer", None)
+    if active_reviewer is not None:
+        setattr(
+            active_reviewer,
+            _RWKV_REVIEW_QUEUE_REFRESH_REQUIRED_ATTR,
+            generation,
+        )
     clear_deck_browser_rwkv_count_scores(mw)
     return generation
 

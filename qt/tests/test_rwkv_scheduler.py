@@ -246,6 +246,24 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
     assert rwkv_scheduler.reviewer_queue_order_refresh_due(reviewer)
 
 
+def test_queue_refresh_preserves_newer_invalidation() -> None:
+    reviewer = SimpleNamespace(_rwkv_review_queue_refresh_required=2)
+
+    rwkv_scheduler._clear_reviewer_queue_order_refresh_required(
+        reviewer,
+        through_generation=1,
+    )
+
+    assert rwkv_scheduler.reviewer_queue_order_refresh_required(reviewer)
+
+    rwkv_scheduler._clear_reviewer_queue_order_refresh_required(
+        reviewer,
+        through_generation=2,
+    )
+
+    assert not rwkv_scheduler.reviewer_queue_order_refresh_required(reviewer)
+
+
 def test_rwkv_first_review_elapsed_source_reads_direct_and_nested_config() -> None:
     assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
         {"rwkvReviewFirstReviewElapsedFromCardCreation": True}
@@ -1017,7 +1035,7 @@ def test_collection_mutation_wrapper_preserves_non_queue_config_change(
     assert refreshed_markers == [resident_identity]
 
 
-def test_collection_content_change_refreshes_preserved_cache_marker(
+def test_collection_content_change_refreshes_preserved_cache_and_queue_markers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
@@ -1041,6 +1059,7 @@ def test_collection_content_change_refreshes_preserved_cache_marker(
 
     assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
     assert refreshed_markers == [resident_identity]
+    assert rwkv_scheduler.reviewer_queue_order_refresh_required(reviewer)
 
 
 def test_reconciled_collection_mutation_survives_undo_and_redo(
@@ -12233,6 +12252,8 @@ def test_async_queue_order_supports_stateless_backend_without_warmup(
     backend = Backend()
     previous_backend = set_reviewer_backend(cast(Any, backend))
     try:
+        rwkv_scheduler._dynamic_desired_retention_generation = 1
+        reviewer._rwkv_review_queue_refresh_required = 1
         work = rwkv_scheduler.prepare_reviewer_queue_order_async_work(reviewer)
         assert work is not None
         assert work.resident_state_key is None
@@ -12251,6 +12272,7 @@ def test_async_queue_order_supports_stateless_backend_without_warmup(
     assert result.scores == ((1, pytest.approx(0.1)),)
     assert len(rpc.calls) == 1
     assert rpc.calls[0]["deck_id"] == 100
+    assert not rwkv_scheduler.reviewer_queue_order_refresh_required(reviewer)
 
 
 def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
