@@ -61,7 +61,7 @@ const FSRS_VALIDATION_FOLDS: usize = 5;
 const FSRS_CALIBRATION_PROGRESS_SCALE: usize = 1000;
 
 fn model_version_for_params(params: &[f32]) -> ComputeParametersVersion {
-    if params.len() == 34 {
+    if super::uses_fractional_intervals(params) {
         ComputeParametersVersion::Fsrs7
     } else {
         ComputeParametersVersion::Fsrs6

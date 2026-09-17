@@ -9,16 +9,18 @@ import { fsrsParams, withSelectedFsrsParams } from "./lib";
 test("fsrsParams prefers fsrsParams7 when valid", () => {
     const config = new DeckConfig_Config();
     config.fsrsParams6 = Array.from({ length: 21 }, (_, i) => i + 1);
-    config.fsrsParams7 = Array.from({ length: 21 }, (_, i) => 100 + i);
+    config.fsrsParams7 = Array.from({ length: 34 }, (_, i) => 100 + i);
     expect(fsrsParams(config)).toStrictEqual(config.fsrsParams7);
 });
 
-test("fsrsParams falls back when fsrsParams7 is not usable", () => {
+test("fsrsParams uses FSRS-7 defaults when stored params are not usable", () => {
     const config = new DeckConfig_Config();
+    const defaults = new DeckConfig_Config();
     config.fsrsParams4 = Array.from({ length: 17 }, (_, i) => i + 1);
     config.fsrsParams6 = Array.from({ length: 21 }, (_, i) => 10 + i);
     config.fsrsParams7 = [0.1, 0.2, 0.3];
-    expect(fsrsParams(config)).toStrictEqual(config.fsrsParams6);
+    defaults.fsrsParams7 = Array.from({ length: 34 }, (_, i) => 100 + i);
+    expect(fsrsParams(config, defaults)).toStrictEqual(defaults.fsrsParams7);
 });
 
 test("fsrsParams uses selected version when usable", () => {

@@ -103,7 +103,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: simulateFsrsRequest = buildSimulateFsrsRequest({
         config: $config,
-        params: fsrsParams($config),
+        params: fsrsParams($config, defaults),
         search: `preset:"${state.getCurrentNameForSearch()}" -is:suspended`,
         newCardsIgnoreReviewLimit: $newCardsIgnoreReviewLimit,
         reviewFuzzEnabled: $reviewFuzzEnabled,

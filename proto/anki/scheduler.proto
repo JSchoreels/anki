@@ -78,6 +78,10 @@ service SchedulerService {
   // The number of days the calculated interval was fuzzed by on the previous
   // review (if any). Utilized by the FSRS add-on.
   rpc FuzzDelta(FuzzDeltaRequest) returns (FuzzDeltaResponse);
+  // Build answer states after replacing any supplied intervals with
+  // unrounded day values from an external scheduler such as RWKV-Curve.
+  rpc SchedulingStatesWithIntervals(SchedulingStatesWithIntervalsRequest)
+      returns (SchedulingStates);
   // Helper APIs for add-ons that need scheduler-accurate FSRS math.
   rpc FsrsCurrentRetrievability(FsrsCurrentRetrievabilityRequest)
       returns (FsrsCurrentRetrievabilityResponse);
@@ -783,6 +787,14 @@ message FuzzDeltaRequest {
 
 message FuzzDeltaResponse {
   sint32 delta_days = 1;
+}
+
+message SchedulingStatesWithIntervalsRequest {
+  int64 card_id = 1;
+  optional float again = 2;
+  optional float hard = 3;
+  optional float good = 4;
+  optional float easy = 5;
 }
 
 message FsrsCurrentRetrievabilityRequest {

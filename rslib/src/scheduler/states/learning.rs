@@ -1,7 +1,9 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use super::fsrs_interval_as_secs;
+use super::button_intervals::button_intervals;
+use super::button_intervals::ButtonInterval;
+use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::ReviewState;
@@ -28,18 +30,80 @@ impl LearnState {
     }
 
     pub(crate) fn next_states(self, ctx: &StateContext) -> SchedulingStates {
+        let intervals = self.fsrs_button_intervals(ctx);
         SchedulingStates {
             current: self.into(),
-            again: self.answer_again(ctx),
-            hard: self.answer_hard(ctx),
-            good: self.answer_good(ctx),
-            easy: self.answer_easy(ctx).into(),
+            again: self.answer_again(ctx, intervals[0]),
+            hard: self.answer_hard(ctx, intervals[1]),
+            good: self.answer_good(ctx, intervals[2]),
+            easy: self.answer_easy(ctx, intervals[3]),
             dynamic_desired_retentions: None,
             dynamic_desired_retention_enabled: false,
         }
     }
 
-    fn answer_again(self, ctx: &StateContext) -> CardState {
+    fn fsrs_button_intervals(self, ctx: &StateContext) -> [Option<ButtonInterval>; 4] {
+        let Some(states) = &ctx.fsrs_next_states else {
+            return [None; 4];
+        };
+        let steps = ctx.fsrs_uses_learning_queues();
+        let again_step = steps && ctx.steps.again_delay_secs_learn().is_some();
+        let hard_step = steps && ctx.steps.hard_delay_secs(self.remaining_steps).is_some();
+        let good_step = steps && ctx.steps.good_delay_secs(self.remaining_steps).is_some();
+        button_intervals(
+            ctx,
+            [
+                (!again_step).then_some(states.again.interval),
+                (!hard_step).then_some(states.hard.interval),
+                (!good_step).then_some(states.good.interval),
+                Some(states.easy.interval),
+            ],
+            DayRule::Graduating,
+        )
+    }
+
+    fn graduate(
+        remaining_steps: u32,
+        interval: ButtonInterval,
+        memory_state: Option<FsrsMemoryState>,
+        ctx: &StateContext,
+    ) -> CardState {
+        match interval {
+            ButtonInterval::Secs(scheduled_secs) => LearnState {
+                remaining_steps,
+                scheduled_secs,
+                elapsed_secs: 0,
+                memory_state,
+            }
+            .into(),
+            ButtonInterval::Days {
+                days,
+                fuzz_delta_days,
+            } => ReviewState {
+                scheduled_days: days,
+                fuzz_delta_days,
+                ease_factor: ctx.initial_ease_factor,
+                memory_state,
+                ..Default::default()
+            }
+            .into(),
+        }
+    }
+
+    fn graduate_sm2(ctx: &StateContext, interval: u32) -> CardState {
+        let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
+        let (scheduled_days, fuzz_delta_days) =
+            ctx.with_review_fuzz_and_delta(interval.max(1) as f32, minimum, maximum);
+        ReviewState {
+            scheduled_days,
+            fuzz_delta_days,
+            ease_factor: ctx.initial_ease_factor,
+            ..Default::default()
+        }
+        .into()
+    }
+
+    fn answer_again(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.again.memory.into());
         if ctx.fsrs_uses_learning_queues() {
             if let Some(again_delay) = ctx.steps.again_delay_secs_learn() {
@@ -52,41 +116,18 @@ impl LearnState {
                 .into();
             }
         }
-        {
-            let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
-            let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
-                (
-                    states.again.interval,
-                    ctx.fsrs_uses_short_term_learning_queue() && states.again.interval < 0.5,
-                )
-            } else {
-                (ctx.graduating_interval_good as f32, false)
-            };
-
-            if short_term {
-                LearnState {
-                    remaining_steps: ctx.steps.remaining_for_failed(),
-                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
-                    elapsed_secs: 0,
-                    memory_state,
-                }
-                .into()
-            } else {
-                let (scheduled_days, fuzz_delta_days) =
-                    ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum);
-                ReviewState {
-                    scheduled_days,
-                    fuzz_delta_days,
-                    ease_factor: ctx.initial_ease_factor,
-                    memory_state,
-                    ..Default::default()
-                }
-                .into()
-            }
+        match interval {
+            Some(interval) => Self::graduate(
+                ctx.steps.remaining_for_failed(),
+                interval,
+                memory_state,
+                ctx,
+            ),
+            None => Self::graduate_sm2(ctx, ctx.graduating_interval_good),
         }
     }
 
-    fn answer_hard(self, ctx: &StateContext) -> CardState {
+    fn answer_hard(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
         if ctx.fsrs_uses_learning_queues() {
             if let Some(hard_delay) = ctx.steps.hard_delay_secs(self.remaining_steps) {
@@ -99,41 +140,13 @@ impl LearnState {
                 .into();
             }
         }
-        {
-            let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
-            let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
-                (
-                    states.hard.interval,
-                    ctx.fsrs_uses_short_term_learning_queue() && states.hard.interval < 0.5,
-                )
-            } else {
-                (ctx.graduating_interval_good as f32, false)
-            };
-
-            if short_term {
-                LearnState {
-                    remaining_steps: 0,
-                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
-                    elapsed_secs: 0,
-                    memory_state,
-                }
-                .into()
-            } else {
-                let (scheduled_days, fuzz_delta_days) =
-                    ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum);
-                ReviewState {
-                    scheduled_days,
-                    fuzz_delta_days,
-                    ease_factor: ctx.initial_ease_factor,
-                    memory_state,
-                    ..Default::default()
-                }
-                .into()
-            }
+        match interval {
+            Some(interval) => Self::graduate(0, interval, memory_state, ctx),
+            None => Self::graduate_sm2(ctx, ctx.graduating_interval_good),
         }
     }
 
-    fn answer_good(self, ctx: &StateContext) -> CardState {
+    fn answer_good(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
         if ctx.fsrs_uses_learning_queues() {
             if let Some(good_delay) = ctx.steps.good_delay_secs(self.remaining_steps) {
@@ -146,57 +159,17 @@ impl LearnState {
                 .into();
             }
         }
-        {
-            let (minimum, maximum) = ctx.min_and_max_review_intervals(1);
-            let (interval, short_term) = if let Some(states) = &ctx.fsrs_next_states {
-                (
-                    states.good.interval,
-                    ctx.fsrs_uses_short_term_learning_queue() && states.good.interval < 0.5,
-                )
-            } else {
-                (ctx.graduating_interval_good as f32, false)
-            };
-
-            if short_term {
-                LearnState {
-                    remaining_steps: 0,
-                    scheduled_secs: fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs),
-                    elapsed_secs: 0,
-                    memory_state,
-                }
-                .into()
-            } else {
-                let (scheduled_days, fuzz_delta_days) =
-                    ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum);
-                ReviewState {
-                    scheduled_days,
-                    fuzz_delta_days,
-                    ease_factor: ctx.initial_ease_factor,
-                    memory_state,
-                    ..Default::default()
-                }
-                .into()
-            }
+        match interval {
+            Some(interval) => Self::graduate(0, interval, memory_state, ctx),
+            None => Self::graduate_sm2(ctx, ctx.graduating_interval_good),
         }
     }
 
-    fn answer_easy(self, ctx: &StateContext) -> ReviewState {
-        let (mut minimum, maximum) = ctx.min_and_max_review_intervals(1);
-        let interval = if let Some(states) = &ctx.fsrs_next_states {
-            let good = ctx.with_review_fuzz(states.good.interval, minimum, maximum);
-            minimum = good + 1;
-            states.easy.interval.round().max(1.0) as u32
-        } else {
-            ctx.graduating_interval_easy
-        };
-        let (scheduled_days, fuzz_delta_days) =
-            ctx.with_review_fuzz_and_delta(interval as f32, minimum, maximum);
-        ReviewState {
-            scheduled_days,
-            fuzz_delta_days,
-            ease_factor: ctx.initial_ease_factor,
-            memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
-            ..Default::default()
+    fn answer_easy(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
+        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into());
+        match interval {
+            Some(interval) => Self::graduate(0, interval, memory_state, ctx),
+            None => Self::graduate_sm2(ctx, ctx.graduating_interval_easy),
         }
     }
 }

@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+pub(crate) mod button_intervals;
 pub(crate) mod filtered;
 pub(crate) mod fuzz;
 pub(crate) mod interval_kind;
@@ -98,6 +99,8 @@ pub(crate) struct StateContext<'a> {
     pub fsrs_short_term_with_steps_enabled: bool,
     pub fsrs_learning_queues_disabled: bool,
     pub fsrs_allow_short_term: bool,
+    /// The active model consumes and produces fractional-day intervals.
+    pub fsrs_fractional_intervals: bool,
     // learning
     pub steps: LearningSteps<'a>,
     pub graduating_interval_good: u32,
@@ -141,8 +144,8 @@ impl StateContext<'_> {
     }
 
     pub(crate) fn fsrs_uses_short_term_learning_queue(&self) -> bool {
-        self.fsrs_allow_short_term
-            && self.fsrs_short_term_with_steps_enabled
+        (self.fsrs_fractional_intervals
+            || self.fsrs_allow_short_term && self.fsrs_short_term_with_steps_enabled)
             && self.fsrs_uses_learning_queues()
     }
 
@@ -177,6 +180,7 @@ impl StateContext<'_> {
             fsrs_short_term_with_steps_enabled: false,
             fsrs_learning_queues_disabled: false,
             fsrs_allow_short_term: false,
+            fsrs_fractional_intervals: false,
         }
     }
 }

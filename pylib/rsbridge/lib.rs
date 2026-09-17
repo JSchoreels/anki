@@ -31,7 +31,7 @@ struct RwkvInferenceState {
     inner: rwkv::RwkvInferenceState,
 }
 
-type RwkvIntervalTuple = (Option<u32>, Option<u32>, Option<u32>, Option<u32>);
+type RwkvUnroundedIntervalTuple = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
 type RwkvProbabilityTuple = (f32, f32, f32, f32);
 type RwkvSerializedStateMap = Vec<(i64, Py<PyBytes>)>;
 type RwkvSerializedState = (
@@ -179,9 +179,9 @@ impl RwkvInference {
         f32,
         Option<f32>,
         Option<u32>,
-        Option<u32>,
-        RwkvIntervalTuple,
-        RwkvIntervalTuple,
+        Option<f32>,
+        RwkvUnroundedIntervalTuple,
+        RwkvUnroundedIntervalTuple,
         RwkvProbabilityTuple,
         Py<PyBytes>,
         Py<PyBytes>,
@@ -227,8 +227,8 @@ impl RwkvInference {
             output.curve_retrievability,
             output.current_interval,
             output.current_s90,
-            interval_tuple(output.intervals),
-            interval_tuple(output.s90s),
+            unrounded_interval_tuple(output.intervals),
+            unrounded_interval_tuple(output.s90s),
             probability_tuple(output.button_probabilities),
             PyBytes::new(py, &output.card_state).unbind(),
             PyBytes::new(py, &output.note_state).unbind(),
@@ -246,9 +246,9 @@ impl RwkvInference {
             f32,
             Option<f32>,
             Option<u32>,
-            Option<u32>,
-            RwkvIntervalTuple,
-            RwkvIntervalTuple,
+            Option<f32>,
+            RwkvUnroundedIntervalTuple,
+            RwkvUnroundedIntervalTuple,
             RwkvProbabilityTuple,
         )>,
     > {
@@ -268,8 +268,8 @@ impl RwkvInference {
                             output.curve_retrievability,
                             output.current_interval,
                             output.current_s90,
-                            interval_tuple(output.intervals),
-                            interval_tuple(output.s90s),
+                            unrounded_interval_tuple(output.intervals),
+                            unrounded_interval_tuple(output.s90s),
                             probability_tuple(output.button_probabilities),
                         )
                     })
@@ -1078,7 +1078,7 @@ fn parse_rwkv_workload_bucket_probabilities(
     Ok(probabilities)
 }
 
-fn interval_tuple(intervals: [Option<u32>; 4]) -> RwkvIntervalTuple {
+fn unrounded_interval_tuple(intervals: [Option<f32>; 4]) -> RwkvUnroundedIntervalTuple {
     (intervals[0], intervals[1], intervals[2], intervals[3])
 }
 

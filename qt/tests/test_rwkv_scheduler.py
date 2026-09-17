@@ -53,10 +53,12 @@ from aqt.rwkv_scheduler import (
     record_collection_undo,
     record_reviewer_answer,
     rwkv_card_info_rows,
+    rwkv_curve_scheduling_states,
     rwkv_review_enabled,
     rwkv_review_identity,
     rwkv_review_input,
     set_reviewer_backend,
+    unrounded_interval_from_recall_curve,
     update_reviewer_scheduling_states,
 )
 from aqt.rwkv_srs_benchmark import (
@@ -3605,6 +3607,19 @@ def test_interval_from_recall_curve_interpolates_target() -> None:
     assert interval == 4
 
 
+def test_unrounded_interval_from_recall_curve_keeps_fractional_crossing() -> None:
+    interval = unrounded_interval_from_recall_curve(
+        [
+            RwkvRecallPoint(elapsed_days=0.25, retrievability=0.95),
+            RwkvRecallPoint(elapsed_days=0.5, retrievability=0.85),
+        ],
+        target_retention=0.90,
+        max_interval_days=36500,
+    )
+
+    assert interval == pytest.approx(0.375)
+
+
 def test_interval_from_recall_curve_returns_max_when_target_not_reached() -> None:
     interval = interval_from_recall_curve(
         [
@@ -3756,6 +3771,53 @@ def test_apply_review_interval_overrides_rejects_invalid_interval() -> None:
             SchedulingStates(),
             RwkvIntervalOverride(good=0),
         )
+
+
+def test_rwkv_curve_scheduling_states_passes_fractional_intervals_to_backend() -> None:
+    rebuilt = SchedulingStates()
+    rebuilt.again.CopyFrom(_learning_state())
+    rebuilt.hard.CopyFrom(_learning_state())
+    rebuilt.again.normal.learning.scheduled_secs = 900
+    rebuilt.hard.normal.learning.scheduled_secs = 18_000
+    rebuilt.good.CopyFrom(_normal_review_state(interval=2, fuzz_delta=0))
+    rebuilt.easy.CopyFrom(_normal_review_state(interval=4, fuzz_delta=0))
+
+    class Backend:
+        request: scheduler_pb2.SchedulingStatesWithIntervalsRequest | None = None
+
+        def scheduling_states_with_intervals(
+            self,
+            request: scheduler_pb2.SchedulingStatesWithIntervalsRequest,
+        ) -> SchedulingStates:
+            self.request = request
+            return rebuilt
+
+    backend = Backend()
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(col=SimpleNamespace(_backend=backend))
+    )
+    card = SimpleNamespace(id=123)
+
+    updated = rwkv_curve_scheduling_states(
+        reviewer,
+        card,
+        SchedulingStates(),
+        RwkvIntervalOverride(again=0.125, hard=0.5, good=2.25, easy=4.75),
+        RwkvIntervalOverride(again=0.2, hard=0.4, good=2.2, easy=4.4),
+    )
+
+    assert backend.request is not None
+    assert backend.request.card_id == 123
+    assert backend.request.again == pytest.approx(0.125)
+    assert backend.request.hard == pytest.approx(0.5)
+    assert backend.request.good == pytest.approx(2.25)
+    assert backend.request.easy == pytest.approx(4.75)
+    assert updated.again.normal.learning.scheduled_secs == 900
+    assert updated.hard.normal.learning.scheduled_secs == 18_000
+    assert updated.good.normal.review.scheduled_days == 2
+    assert updated.easy.normal.review.scheduled_days == 4
+    assert updated.good.normal.review.memory_state.stability == pytest.approx(2.2)
+    assert updated.easy.normal.review.memory_state.stability == pytest.approx(4.4)
 
 
 def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:

@@ -1,9 +1,9 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use fsrs::NextStates;
-
-use super::fsrs_interval_as_secs;
+use super::button_intervals::button_intervals;
+use super::button_intervals::ButtonInterval;
+use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::LearnState;
@@ -12,7 +12,6 @@ use super::SchedulingStates;
 use super::StateContext;
 use crate::card::FsrsMemoryState;
 use crate::revlog::RevlogReviewKind;
-use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 
 pub const INITIAL_EASE_FACTOR: f32 = 2.5;
 pub const MINIMUM_EASE_FACTOR: f32 = 1.3;
@@ -66,11 +65,61 @@ impl ReviewState {
     }
 
     pub(crate) fn next_states(self, ctx: &StateContext) -> SchedulingStates {
+        if let Some(states) = &ctx.fsrs_next_states {
+            let again_step = ctx.fsrs_uses_learning_queues()
+                && ctx.relearn_steps.again_delay_secs_learn().is_some();
+            let intervals = button_intervals(
+                ctx,
+                [
+                    (!again_step).then_some(states.again.interval),
+                    Some(states.hard.interval),
+                    Some(states.good.interval),
+                    Some(states.easy.interval),
+                ],
+                DayRule::Review {
+                    previous_interval: self.scheduled_days,
+                },
+            );
+            let passing = |interval: Option<ButtonInterval>,
+                           answer: fn(Self, u32, i32, &StateContext) -> ReviewState|
+             -> CardState {
+                match interval {
+                    Some(ButtonInterval::Days {
+                        days,
+                        fuzz_delta_days,
+                    }) => answer(self, days, fuzz_delta_days, ctx).into(),
+                    Some(ButtonInterval::Secs(scheduled_secs)) => {
+                        let review = answer(self, 1, 0, ctx);
+                        RelearnState {
+                            learning: LearnState {
+                                remaining_steps: 0,
+                                scheduled_secs,
+                                elapsed_secs: 0,
+                                memory_state: review.memory_state,
+                            },
+                            review,
+                        }
+                        .into()
+                    }
+                    None => unreachable!("passing buttons always have an interval"),
+                }
+            };
+            return SchedulingStates {
+                current: self.into(),
+                again: self.answer_again(ctx, intervals[0]),
+                hard: passing(intervals[1], Self::answer_hard),
+                good: passing(intervals[2], Self::answer_good),
+                easy: passing(intervals[3], Self::answer_easy),
+                dynamic_desired_retentions: None,
+                dynamic_desired_retention_enabled: false,
+            };
+        }
+
         let (hard_interval, good_interval, easy_interval) = self.passing_review_intervals(ctx);
 
         SchedulingStates {
             current: self.into(),
-            again: self.answer_again(ctx),
+            again: self.answer_again(ctx, None),
             hard: self
                 .answer_hard(hard_interval.0, hard_interval.1, ctx)
                 .into(),
@@ -109,7 +158,7 @@ impl ReviewState {
         }
     }
 
-    fn answer_again(self, ctx: &StateContext) -> CardState {
+    fn answer_again(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let lapses = self.lapses + 1;
         let (scheduled_days, fuzz_delta_days, memory_state) = self.failing_review_interval(ctx);
         let stored_scheduled_days = scheduled_days.round().max(1.0) as u32;
@@ -124,19 +173,6 @@ impl ReviewState {
             leeched,
             memory_state,
         };
-        let again_relearn = RelearnState {
-            learning: LearnState {
-                remaining_steps: ctx.relearn_steps.remaining_for_failed(),
-                scheduled_secs: fsrs_interval_as_secs(
-                    scheduled_days,
-                    ctx.fsrs_minimum_interval_secs,
-                ),
-                elapsed_secs: 0,
-                memory_state,
-            },
-            review: again_review,
-        };
-
         let again_delay = if ctx.fsrs_uses_learning_queues() {
             ctx.relearn_steps.again_delay_secs_learn()
         } else {
@@ -153,8 +189,17 @@ impl ReviewState {
                 review: again_review,
             }
             .into()
-        } else if ctx.fsrs_uses_short_term_learning_queue() && scheduled_days < 0.5 {
-            again_relearn.into()
+        } else if let Some(ButtonInterval::Secs(scheduled_secs)) = interval {
+            RelearnState {
+                learning: LearnState {
+                    remaining_steps: ctx.relearn_steps.remaining_for_failed(),
+                    scheduled_secs,
+                    elapsed_secs: 0,
+                    memory_state,
+                },
+                review: again_review,
+            }
+            .into()
         } else {
             again_review.into()
         }
@@ -209,58 +254,13 @@ impl ReviewState {
 
     /// Return the intervals for hard, good and easy, each of which depends on
     /// the previous.
+    /// SM-2 only; FSRS intervals go through `button_intervals`.
     fn passing_review_intervals(self, ctx: &StateContext) -> ((u32, i32), (u32, i32), (u32, i32)) {
-        if let Some(states) = &ctx.fsrs_next_states {
-            self.passing_fsrs_review_intervals(ctx, states)
-        } else if self.days_late() < 0 {
+        if self.days_late() < 0 {
             self.passing_early_review_intervals(ctx)
         } else {
             self.passing_nonearly_review_intervals(ctx)
         }
-    }
-
-    fn passing_fsrs_review_intervals(
-        self,
-        ctx: &StateContext,
-        states: &NextStates,
-    ) -> ((u32, i32), (u32, i32), (u32, i32)) {
-        let hard = constrain_passing_interval(
-            ctx,
-            states.hard.interval,
-            minimum_review_fuzz_interval(
-                states.hard.interval,
-                self.scheduled_days,
-                ctx.maximum_review_interval,
-                ctx.review_fuzz_config,
-            )
-            .max(1),
-            true,
-        );
-        let good = constrain_passing_interval(
-            ctx,
-            states.good.interval,
-            minimum_review_fuzz_interval(
-                states.good.interval,
-                self.scheduled_days,
-                ctx.maximum_review_interval,
-                ctx.review_fuzz_config,
-            )
-            .max(hard.0 + 1),
-            true,
-        );
-        let easy = constrain_passing_interval(
-            ctx,
-            states.easy.interval,
-            minimum_review_fuzz_interval(
-                states.easy.interval,
-                self.scheduled_days,
-                ctx.maximum_review_interval,
-                ctx.review_fuzz_config,
-            )
-            .max(good.0 + 1),
-            true,
-        );
-        (hard, good, easy)
     }
 
     fn passing_nonearly_review_intervals(
@@ -439,10 +439,10 @@ mod test {
         };
 
         ctx.lapse_multiplier = 0.5;
-        assert!(!state.answer_again(&ctx).leeched());
+        assert!(!state.answer_again(&ctx, None).leeched());
 
         ctx.lapse_multiplier = 0.1;
-        assert!(state.answer_again(&ctx).leeched());
+        assert!(state.answer_again(&ctx, None).leeched());
     }
 
     #[test]
@@ -464,10 +464,10 @@ mod test {
         };
 
         ctx.fsrs_again_s90 = Some(21.0);
-        assert!(!state.answer_again(&ctx).leeched());
+        assert!(!state.answer_again(&ctx, None).leeched());
 
         ctx.fsrs_again_s90 = Some(20.99);
-        assert!(state.answer_again(&ctx).leeched());
+        assert!(state.answer_again(&ctx, None).leeched());
     }
 
     fn fsrs_item_state(interval: f32) -> ItemState {
@@ -479,6 +479,15 @@ mod test {
                 stability_fast: interval.max(0.1),
             },
         }
+    }
+
+    fn fsrs_passing_days(state: ReviewState, ctx: &StateContext) -> (u32, u32, u32) {
+        let next = state.next_states(ctx);
+        let days = |state: CardState| match state {
+            CardState::Normal(NormalState::Review(review)) => review.scheduled_days,
+            other => panic!("expected a review state, got {other:?}"),
+        };
+        (days(next.hard), days(next.good), days(next.easy))
     }
 
     #[test]
@@ -600,9 +609,9 @@ mod test {
                 good: fsrs_item_state(good),
                 easy: fsrs_item_state(easy),
             });
-            let (_, good, easy) = state.passing_review_intervals(&ctx);
-            assert_eq!(good.0, expected_good);
-            assert_eq!(easy.0, expected_easy);
+            let (_, good, easy) = fsrs_passing_days(state, &ctx);
+            assert_eq!(good, expected_good);
+            assert_eq!(easy, expected_easy);
         }
     }
 
@@ -624,18 +633,18 @@ mod test {
             ..Default::default()
         };
         // A genuine decrease outside the default fuzz range is allowed.
-        assert!(state.passing_review_intervals(&ctx).1 .0 < 6);
+        assert!(fsrs_passing_days(state, &ctx).1 < 6);
         ctx.review_fuzz_config = ReviewFuzzConfig {
             base: 3.0,
             ..Default::default()
         };
-        assert_eq!(state.passing_review_intervals(&ctx).1 .0, 6);
+        assert_eq!(fsrs_passing_days(state, &ctx).1, 6);
         ctx.maximum_review_interval = 3;
-        let (_, good, easy) = state.passing_review_intervals(&ctx);
-        assert!(good.0 <= 3);
-        assert!(easy.0 <= 3);
+        let (_, good, easy) = fsrs_passing_days(state, &ctx);
+        assert!(good <= 3);
+        assert!(easy <= 3);
         ctx.maximum_review_interval = 36500;
         ctx.review_fuzz_config = ReviewFuzzConfig::none();
-        assert_eq!(state.passing_review_intervals(&ctx).1 .0, 3);
+        assert_eq!(fsrs_passing_days(state, &ctx).1, 3);
     }
 }

@@ -10,6 +10,13 @@ second disabled. To use FSRS intervals with RWKV-Instant queue selection, leave
 the first option disabled and enable the second. Mobile clients do not load the
 RWKV backend and continue to schedule with FSRS/SM2.
 
+RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
+the predicted curve. Curve crossings are refined on the curve itself rather
+than treated as straight lines between search points. Live answer scheduling
+then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
+intraday seconds without fuzz, while intervals at or above 12 hours use normal
+whole-day fuzz and answer-button ordering.
+
 ## Settings And Storage
 
 Desktop-only RWKV review settings are stored in deck config `other` under the

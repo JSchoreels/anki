@@ -24,6 +24,12 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Make FSRS-7 use exact fractional elapsed time and unrounded sub-day answer
+  intervals, with a consistent 12-hour cutoff across review and learning cards.
+- Keep RWKV-Curve answer intervals and S90 values fractional until scheduling,
+  and locate target-retention crossings accurately on the predicted curve.
+- Use the bundled FSRS-7 defaults when a preset has not been optimized for
+  FSRS-7, instead of falling back to parameters from an older FSRS version.
 - Prevent editing a card during RWKV reviews from prematurely ending the study
   session when only RWKV-selected cards remain.
 

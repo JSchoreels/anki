@@ -45,6 +45,7 @@ use anki_proto::scheduler::RwkvReviewQueueScoresRequest;
 use anki_proto::scheduler::RwkvReviewRescheduleRequest;
 use anki_proto::scheduler::RwkvReviewRetrievabilityCacheRowsRequest;
 use anki_proto::scheduler::RwkvStatsGraphScoresRequest;
+use anki_proto::scheduler::SchedulingStatesWithIntervalsRequest;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
@@ -71,6 +72,7 @@ use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
+use crate::scheduler::fsrs::uses_fractional_intervals;
 use crate::scheduler::new::NewCardDueOrder;
 use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
 use crate::scheduler::states::CardState;
@@ -546,6 +548,7 @@ impl crate::services::SchedulerService for Collection {
                 fsrs_short_term_with_steps_enabled,
                 fsrs_learning_queues_disabled,
                 fsrs_allow_short_term,
+                fsrs_fractional_intervals: uses_fractional_intervals(params),
                 steps: crate::scheduler::states::steps::LearningSteps::new(
                     &config.inner.learn_steps,
                 ),
@@ -733,6 +736,17 @@ impl crate::services::SchedulerService for Collection {
         Ok(FuzzDeltaResponse {
             delta_days: self.get_fuzz_delta(input.card_id.into(), input.interval)?,
         })
+    }
+
+    fn scheduling_states_with_intervals(
+        &mut self,
+        input: SchedulingStatesWithIntervalsRequest,
+    ) -> Result<anki_proto::scheduler::SchedulingStates> {
+        self.scheduling_states_with_intervals(
+            CardId(input.card_id),
+            [input.again, input.hard, input.good, input.easy],
+        )
+        .map(Into::into)
     }
 
     fn fsrs_current_retrievability(

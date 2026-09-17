@@ -13,6 +13,10 @@ pub(crate) mod review_time_model;
 pub mod simulator;
 pub mod try_collect;
 
+pub(crate) fn uses_fractional_intervals(params: &[f32]) -> bool {
+    params.len() == fsrs::DEFAULT_PARAMETERS.len()
+}
+
 pub(crate) fn params_fingerprint(params: &[f32]) -> u64 {
     params.iter().fold(0xcbf29ce484222325, |hash, param| {
         let hash = hash ^ u64::from(param.to_bits());

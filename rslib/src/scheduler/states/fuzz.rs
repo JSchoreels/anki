@@ -109,6 +109,7 @@ impl StoredReviewFuzzConfig {
 
 impl StateContext<'_> {
     /// Apply fuzz, respecting the passed bounds.
+    #[cfg(test)]
     pub(crate) fn with_review_fuzz(&self, interval: f32, minimum: u32, maximum: u32) -> u32 {
         self.with_review_fuzz_and_delta(interval, minimum, maximum)
             .0

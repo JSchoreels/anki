@@ -172,12 +172,17 @@ impl DeckConfig {
         }
     }
 
-    /// Retrieve FSRS params according to selected version. If selected params
-    /// are unusable, we fall back to best available params for compatibility
-    /// with existing collections that predate explicit version selection.
-    /// Returns an empty slice if none of the stored arrays are usable.
+    /// Retrieve FSRS params according to the selected version. FSRS-7 uses
+    /// its own defaults when it has not been optimized; older versions retain
+    /// the legacy stored-parameter fallback behavior.
     pub fn fsrs_params(&self) -> &[f32] {
-        if Self::params_usable_in_current_fsrs(self.selected_fsrs_params()) {
+        let version = FsrsVersion::try_from(self.inner.fsrs_version).unwrap_or(FsrsVersion::Seven);
+        if version == FsrsVersion::Seven
+            && (self.inner.fsrs_params_7.len() != fsrs::DEFAULT_PARAMETERS.len()
+                || !self.inner.fsrs_params_7.iter().all(|w| w.is_finite()))
+        {
+            &fsrs::DEFAULT_PARAMETERS
+        } else if Self::params_usable_in_current_fsrs(self.selected_fsrs_params()) {
             self.selected_fsrs_params()
         } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_7) {
             &self.inner.fsrs_params_7
@@ -450,13 +455,13 @@ mod tests {
     }
 
     #[test]
-    fn fsrs_params_falls_back_for_legacy_configs() {
+    fn unoptimized_fsrs7_uses_fsrs7_defaults() {
         let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
-        config.inner.fsrs_params_7 = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        config.inner.fsrs_params_7.clear();
         config.inner.fsrs_params_6 = vec![2.0_f32; 21];
 
-        assert_eq!(config.fsrs_params(), &[2.0_f32; 21]);
+        assert_eq!(config.fsrs_params(), fsrs::DEFAULT_PARAMETERS);
     }
 
     #[test]

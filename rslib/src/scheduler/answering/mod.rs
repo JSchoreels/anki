@@ -41,6 +41,7 @@ use crate::scheduler::fsrs::memory_state::get_decay_from_params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::round_to_two_decimals;
+use crate::scheduler::fsrs::uses_fractional_intervals;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
 use crate::search::SearchNode;
@@ -165,6 +166,7 @@ impl CardStateUpdater {
             fsrs_short_term_with_steps_enabled: self.fsrs_short_term_with_steps,
             fsrs_learning_queues_disabled: self.fsrs_learning_queues_disabled,
             fsrs_allow_short_term: self.fsrs_allow_short_term,
+            fsrs_fractional_intervals: uses_fractional_intervals(&self.fsrs_preset.params),
         })
     }
 
@@ -318,28 +320,68 @@ impl Collection {
         let ctx = self.card_state_updater(card, desired_retention_override)?;
         let current = ctx.current_card_state();
 
-        let load_balancer_ctx = if let Some(load_balancer) = self
+        let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
+
+        let state_ctx = ctx.state_context(load_balancer_ctx)?;
+        let mut states = current.next_states(&state_ctx);
+        states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
+        states.dynamic_desired_retention_enabled =
+            ctx.fsrs_preset.dynamic_desired_retention.is_some();
+        Ok(states)
+    }
+
+    fn review_load_balancer_ctx(
+        &self,
+        ctx: &CardStateUpdater,
+        note_id: NoteId,
+    ) -> Result<Option<LoadBalancerContext<'_>>> {
+        let Some(load_balancer) = self
             .state
             .card_queues
             .as_ref()
             .and_then(|card_queues| card_queues.load_balancer.as_ref())
-        {
-            // Only get_deck_config when load balancer is enabled
-            if let Some(deck_config_id) = ctx.original_deck.config_id() {
-                let note_id = self
-                    .get_deck_config(deck_config_id, false)?
-                    .map(|deck_config| deck_config.inner.bury_reviews)
-                    .unwrap_or(false)
-                    .then_some(note_id);
-                Some(load_balancer.review_context(note_id, deck_config_id))
-            } else {
-                None
-            }
-        } else {
-            None
+        else {
+            return Ok(None);
         };
+        let Some(deck_config_id) = ctx.original_deck.config_id() else {
+            return Ok(None);
+        };
+        let note_id = self
+            .get_deck_config(deck_config_id, false)?
+            .map(|deck_config| deck_config.inner.bury_reviews)
+            .unwrap_or(false)
+            .then_some(note_id);
+        Ok(Some(load_balancer.review_context(note_id, deck_config_id)))
+    }
 
-        let state_ctx = ctx.state_context(load_balancer_ctx)?;
+    /// Build answer states after replacing any supplied unrounded intervals.
+    pub fn scheduling_states_with_intervals(
+        &mut self,
+        cid: CardId,
+        intervals: [Option<f32>; 4],
+    ) -> Result<SchedulingStates> {
+        let card = self.storage.get_card(cid)?.or_not_found(cid)?;
+        let note_id = card.note_id;
+        let ctx = self.card_state_updater(card, None)?;
+        let current = ctx.current_card_state();
+        let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
+        let mut state_ctx = ctx.state_context(load_balancer_ctx)?;
+        if let Some(states) = state_ctx.fsrs_next_states.as_mut() {
+            for (item, interval) in [
+                &mut states.again,
+                &mut states.hard,
+                &mut states.good,
+                &mut states.easy,
+            ]
+            .into_iter()
+            .zip(intervals)
+            {
+                if let Some(interval) = interval.filter(|days| days.is_finite() && *days > 0.0) {
+                    item.interval = interval;
+                }
+            }
+            state_ctx.fsrs_fractional_intervals = true;
+        }
         let mut states = current.next_states(&state_ctx);
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
@@ -643,7 +685,13 @@ impl Collection {
             };
             let days_elapsed = last_review_time
                 .map(|last_review_time| {
-                    fsrs_elapsed_days(&card, last_review_time, timing.next_day_at, now)
+                    fsrs_elapsed_days(
+                        &card,
+                        last_review_time,
+                        timing.next_day_at,
+                        now,
+                        uses_fractional_intervals(&fsrs_preset.params),
+                    )
                 })
                 .unwrap_or_default();
             elapsed_days_for_log = Some(days_elapsed);
@@ -840,9 +888,11 @@ pub(crate) fn fsrs_elapsed_days(
     last_review_time: TimestampSecs,
     next_day_at: TimestampSecs,
     now: TimestampSecs,
+    fractional: bool,
 ) -> f32 {
-    if matches!(card.queue, CardQueue::Learn)
-        && matches!(card.ctype, CardType::Learn | CardType::Relearn)
+    if fractional
+        || matches!(card.queue, CardQueue::Learn)
+            && matches!(card.ctype, CardType::Learn | CardType::Relearn)
     {
         (now.elapsed_secs_since(last_review_time).max(0) as f32) / 86_400.0
     } else {
@@ -1012,6 +1062,21 @@ pub(crate) mod test {
     }
 
     const SHORT_TERM_RELEARNING_RETENTION: f32 = 0.85;
+
+    #[test]
+    fn fsrs7_uses_fractional_elapsed_time_for_review_cards() {
+        const HOUR: i64 = 3_600;
+        const DAY: i64 = 86_400;
+        let monday = 1_000 * DAY;
+        let last_review = TimestampSecs(monday + 23 * HOUR);
+        let now = TimestampSecs(monday + 2 * DAY + 5 * HOUR);
+        let mut card = Card::new(NoteId(1), 0, DeckId(1), 0);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+
+        assert_eq!(fsrs_elapsed_days(&card, last_review, now, now, true), 1.25);
+        assert_eq!(fsrs_elapsed_days(&card, now, now, last_review, true), 0.0);
+    }
 
     fn add_due_review_card(
         col: &mut Collection,

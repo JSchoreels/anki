@@ -781,7 +781,13 @@ impl Collection {
                         };
                         let days_elapsed = last_review_time
                             .map(|last_review_time| {
-                                fsrs_elapsed_days(card, last_review_time, timing.next_day_at, now)
+                                fsrs_elapsed_days(
+                                    card,
+                                    last_review_time,
+                                    timing.next_day_at,
+                                    now,
+                                    super::uses_fractional_intervals(&preset.params),
+                                )
                             })
                             .unwrap_or_default();
                         let dynamic_states = dynamic_dr.next_states(

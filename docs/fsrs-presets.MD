@@ -13,6 +13,10 @@ For each normal deck config, Anki exposes a matching FSRS preset with id
 - historical retention
 - ignore-before review-log date
 
+When FSRS-7 is selected but its 34-parameter array is empty or invalid, the
+derived preset uses the bundled FSRS-7 defaults. It does not substitute stored
+parameters from FSRS-6 or an older model family.
+
 For existing collections, per-deck desired retention overrides are preserved
 when resolving the FSRS preset for a card. If no deck-specific desired retention
 is set, the resolver uses the deck config's desired retention.

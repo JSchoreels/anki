@@ -288,10 +288,10 @@ class RwkvRecallPoint:
 
 @dataclass(frozen=True)
 class RwkvIntervalOverride:
-    again: int | None = None
-    hard: int | None = None
-    good: int | None = None
-    easy: int | None = None
+    again: float | None = None
+    hard: float | None = None
+    good: float | None = None
+    easy: float | None = None
 
 
 RwkvButtonProbabilities = tuple[float, float, float, float]
@@ -302,7 +302,7 @@ class RwkvReviewPrediction:
     retrievability: float | None = None
     curve_retrievability: float | None = None
     current_interval: int | None = None
-    current_s90: int | None = None
+    current_s90: float | None = None
     interval_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
     s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
     button_probabilities: RwkvButtonProbabilities | None = None
@@ -3909,7 +3909,9 @@ def update_reviewer_scheduling_states(
                     interval_override_used=curve_enabled and has_interval_overrides,
                 )
                 if curve_enabled and has_interval_overrides:
-                    return apply_review_interval_overrides(
+                    return rwkv_curve_scheduling_states(
+                        reviewer,
+                        card,
                         states,
                         prediction.interval_overrides,
                         prediction.s90_overrides,
@@ -8199,7 +8201,27 @@ def interval_from_recall_curve(
     max_interval_days: int,
     nonmonotonic_tolerance: float = 1e-4,
 ) -> int | None:
-    """Return the first interval where projected recall reaches the target."""
+    """Return the first whole-day interval where recall reaches the target."""
+
+    interval = unrounded_interval_from_recall_curve(
+        points,
+        target_retention,
+        max_interval_days=max_interval_days,
+        nonmonotonic_tolerance=nonmonotonic_tolerance,
+    )
+    if interval is None:
+        return None
+    return _clamped_interval(interval, max_interval_days)
+
+
+def unrounded_interval_from_recall_curve(
+    points: Sequence[RwkvRecallPoint],
+    target_retention: float,
+    *,
+    max_interval_days: int,
+    nonmonotonic_tolerance: float = 1e-4,
+) -> float | None:
+    """Return the unrounded day where projected recall reaches the target."""
 
     if not _valid_probability(target_retention):
         raise ValueError("target_retention must be between 0 and 1")
@@ -8220,18 +8242,68 @@ def interval_from_recall_curve(
 
     previous = ordered_points[0]
     if previous.retrievability <= target_retention:
-        return _clamped_interval(previous.elapsed_days, max_interval_days)
+        return min(previous.elapsed_days, float(max_interval_days))
 
     for point in ordered_points[1:]:
         if point.retrievability <= target_retention:
-            return _clamped_interval(
+            return min(
                 _interpolated_elapsed_days(previous, point, target_retention),
-                max_interval_days,
+                float(max_interval_days),
             )
 
         previous = point
 
-    return max_interval_days
+    return float(max_interval_days)
+
+
+def rwkv_curve_scheduling_states(
+    reviewer: object,
+    card: object,
+    states: SchedulingStates,
+    overrides: RwkvIntervalOverride,
+    s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride(),
+) -> SchedulingStates:
+    """Build answer states from RWKV-Curve's unrounded intervals."""
+
+    backend = getattr(_collection(reviewer), "_backend", None)
+    build = getattr(backend, "scheduling_states_with_intervals", None)
+    card_id = _card_id(card)
+    if not callable(build) or card_id is None:
+        whole_days = RwkvIntervalOverride(
+            **{
+                rating: _whole_days(getattr(overrides, rating))
+                for rating in _RWKV_RATING_FIELDS
+            }
+        )
+        return apply_review_interval_overrides(states, whole_days, s90_overrides)
+
+    request = scheduler_pb2.SchedulingStatesWithIntervalsRequest(card_id=card_id)
+    for rating in _RWKV_RATING_FIELDS:
+        interval = getattr(overrides, rating)
+        if interval is not None:
+            setattr(request, rating, _validated_unrounded_interval(interval))
+    rebuilt = SchedulingStates()
+    rebuilt.CopyFrom(build(request))
+    return apply_review_s90_overrides(rebuilt, overrides, s90_overrides)
+
+
+def apply_review_s90_overrides(
+    states: SchedulingStates,
+    overrides: RwkvIntervalOverride,
+    s90_overrides: RwkvIntervalOverride,
+) -> SchedulingStates:
+    updated_states = SchedulingStates()
+    updated_states.CopyFrom(states)
+    for rating in _RWKV_RATING_FIELDS:
+        if getattr(overrides, rating) is None:
+            continue
+        s90 = getattr(s90_overrides, rating)
+        if s90 is not None:
+            _set_review_s90_if_present(
+                getattr(updated_states, rating),
+                _validated_unrounded_interval(s90),
+            )
+    return updated_states
 
 
 def apply_review_interval_overrides(
@@ -8252,15 +8324,17 @@ def apply_review_interval_overrides(
     ):
         if interval is None:
             continue
+        whole_days = _whole_days(interval)
+        assert whole_days is not None
         _set_review_interval_if_present(
             getattr(updated_states, rating),
-            _validated_interval(interval),
+            whole_days,
         )
         s90 = getattr(s90_overrides, rating)
         if s90 is not None:
             _set_review_s90_if_present(
                 getattr(updated_states, rating),
-                _validated_interval(s90),
+                _validated_unrounded_interval(s90),
             )
 
     return updated_states
@@ -8282,14 +8356,14 @@ def _validate_prediction(prediction: RwkvReviewPrediction) -> None:
     if prediction.current_interval is not None:
         _validated_interval(prediction.current_interval)
     if prediction.current_s90 is not None:
-        _validated_interval(prediction.current_s90)
+        _validated_unrounded_interval(prediction.current_s90)
     for rating in _RWKV_RATING_FIELDS:
         interval = getattr(prediction.interval_overrides, rating)
         if interval is not None:
-            _validated_interval(interval)
+            _validated_unrounded_interval(interval)
         s90 = getattr(prediction.s90_overrides, rating)
         if s90 is not None:
-            _validated_interval(s90)
+            _validated_unrounded_interval(s90)
 
 
 def _store_reviewer_prediction(
@@ -8543,9 +8617,9 @@ def set_answer_rwkv_s90(
     set_answer_rwkv_metadata(answer, reviewer, card, ease)
 
 
-def _s90_for_ease(overrides: RwkvIntervalOverride, ease: int) -> int | None:
+def _s90_for_ease(overrides: RwkvIntervalOverride, ease: int) -> float | None:
     if 1 <= ease <= len(_RWKV_RATING_FIELDS):
-        return cast(int | None, getattr(overrides, _RWKV_RATING_FIELDS[ease - 1]))
+        return cast(float | None, getattr(overrides, _RWKV_RATING_FIELDS[ease - 1]))
     return None
 
 
@@ -12838,8 +12912,8 @@ def _simulate_rwkv_workload_for_target(
             if review_count % state_update_interval == 0:
                 _rwkv_simulation_store_answer(answer_input)
 
-            interval = _s90_for_ease(prediction.interval_overrides, ease)
-            interval = min(scheduling.max_interval, max(1, interval or 1))
+            interval = _whole_days(_s90_for_ease(prediction.interval_overrides, ease))
+            interval = min(scheduling.max_interval, interval or 1)
             card.interval_days = interval
             card.last_review_day = day
             card.due_day = day + interval
@@ -13467,7 +13541,7 @@ def _valid_retrievability_or_default(value: object, default: float) -> float:
     return cast(float, value) if _valid_probability(value) else default
 
 
-def _rwkv_s90_weight(current_s90: int | None) -> float:
+def _rwkv_s90_weight(current_s90: float | None) -> float:
     if current_s90 is None or current_s90 <= 0:
         return 1.0
     return 1.0 - math.exp((-8.0 / 365.0) * current_s90)
@@ -24016,6 +24090,23 @@ def _validated_interval(interval: int) -> int:
     return interval
 
 
+def _validated_unrounded_interval(interval: float) -> float:
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not math.isfinite(interval)
+        or interval <= 0
+    ):
+        raise ValueError("interval overrides must be positive numbers of days")
+    return float(interval)
+
+
+def _whole_days(interval: float | None) -> int | None:
+    if interval is None:
+        return None
+    return max(1, math.ceil(_validated_unrounded_interval(interval)))
+
+
 def _chunks(items: Sequence[_T], size: int) -> Iterator[Sequence[_T]]:
     if size < 1:
         raise ValueError("chunk size must be positive")
@@ -24041,7 +24132,7 @@ def _set_review_interval_if_present(
 
 def _set_review_s90_if_present(
     state: SchedulingState,
-    s90: int,
+    s90: float,
 ) -> None:
     review = _review_state_for_interval_override(state)
     if review is None:

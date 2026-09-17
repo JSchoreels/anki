@@ -217,9 +217,13 @@ retrievability properties (`prop:r`, `prop:rwkv:r`, or
 `prop:s`, or `prop:d`, because those metrics depend on derived state or the
 selected FSRS preset.
 
-Deck options also expose the global FSRS short-term toggle (`same-day review`
-behavior for learning/relearning paths) backed by
-`BoolKey::FsrsShortTermWithStepsEnabled`.
+Deck options also expose the global FSRS short-term toggle backed by
+`BoolKey::FsrsShortTermWithStepsEnabled`. It controls the legacy FSRS
+short-term path. FSRS-7 always keeps an unrounded interval below 12 hours in
+the intraday learning/relearning queue, unless learning queues are disabled.
+Intervals of 12 hours or more are fuzzed into whole days, with day-based answer
+buttons kept in strict order where the maximum interval permits it. Configured
+learning and relearning steps still take precedence.
 
 Deck options also expose a global FSRS learning-queue bypass backed by
 `BoolKey::FsrsLearningQueuesDisabled`. It defaults to disabled. When enabled
@@ -233,6 +237,11 @@ interval before storing it on the card. This applies both when empty relearning
 steps schedule the card directly as a review card and when configured
 relearning steps keep the card in the relearning queue with an embedded review
 interval.
+
+FSRS-7 answer scheduling and Dynamic Desired Retention use the exact
+wall-clock time since the previous review, expressed in fractional days, for
+review and interday-learning cards as well as intraday cards. Older FSRS model
+families retain scheduler-day elapsed time for those non-intraday states.
 
 When FSRS same-day scheduling keeps a card in a learning or relearning queue,
 the computed day interval is stored on the card as seconds. Sub-second FSRS

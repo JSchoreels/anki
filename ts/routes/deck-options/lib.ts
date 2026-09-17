@@ -631,9 +631,20 @@ export function withSelectedFsrsParams(
     return updated;
 }
 
-export function fsrsParams(config: DeckConfig_Config): number[] {
+export function fsrsParams(
+    config: DeckConfig_Config,
+    defaults?: DeckConfig_Config,
+): number[] {
     const selected = selectedFsrsParams(config);
-    if (fsrsParamsUsable(selected)) {
+    if (config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN) {
+        if (selected.length === 34 && fsrsParamsUsable(selected)) {
+            return selected;
+        }
+        const defaultParams = defaults?.fsrsParams7;
+        return defaultParams?.length === 34 && fsrsParamsUsable(defaultParams)
+            ? defaultParams
+            : [];
+    } else if (fsrsParamsUsable(selected)) {
         return selected;
     } else if (fsrsParamsUsable(config.fsrsParams7)) {
         return config.fsrsParams7;

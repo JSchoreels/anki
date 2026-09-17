@@ -38,6 +38,7 @@ from aqt.rwkv_scheduler import (
     interval_from_recall_curve,
     rwkv_review_identity,
     rwkv_review_input,
+    unrounded_interval_from_recall_curve,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         return RwkvReviewPrediction(
             retrievability=_probability_as_float(probability),
             curve_retrievability=self._curve_retrievability(review_input),
-            current_interval=intervals.good,
+            current_interval=_whole_interval(intervals.good),
             current_s90=s90s.good,
             interval_overrides=intervals,
             s90_overrides=s90s,
@@ -218,7 +219,7 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             predictions[index] = RwkvReviewPrediction(
                 retrievability=_probability_as_float(probability),
                 curve_retrievability=self._curve_retrievability(review_input),
-                current_interval=intervals.good,
+                current_interval=_whole_interval(intervals.good),
                 current_s90=s90s.good,
                 interval_overrides=intervals,
                 s90_overrides=s90s,
@@ -255,12 +256,14 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         return self._curve_interval_overrides(
             review_input,
             review_input.target_retentions,
+            unrounded=True,
         )
 
     def _s90_overrides(self, review_input: RwkvReviewInput) -> RwkvIntervalOverride:
         return self._curve_interval_overrides(
             review_input,
             (0.9, 0.9, 0.9, 0.9),
+            unrounded=True,
         )
 
     def _curve_retrievability(self, review_input: RwkvReviewInput) -> float | None:
@@ -281,11 +284,16 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         self,
         review_input: RwkvReviewInput,
         target_retentions: tuple[float | None, ...],
+        *,
+        unrounded: bool = False,
     ) -> RwkvIntervalOverride:
         curve = self._curves.get(review_input.identity.card_id)
         if curve is None:
             return RwkvIntervalOverride()
 
+        search_days: list[float] = list(_interval_search_days(self._max_interval_days))
+        if unrounded:
+            search_days = list(_SUB_DAY_SEARCH_POINTS) + search_days
         points = [
             RwkvRecallPoint(
                 elapsed_days=day,
@@ -293,11 +301,16 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
                     self._process.predict_func(curve, day * 86_400)
                 ),
             )
-            for day in _interval_search_days(self._max_interval_days)
+            for day in search_days
         ]
 
+        find_interval = (
+            unrounded_interval_from_recall_curve
+            if unrounded
+            else interval_from_recall_curve
+        )
         intervals = [
-            interval_from_recall_curve(
+            find_interval(
                 points,
                 target_retention=_valid_target_retention(
                     target_retention,
@@ -429,9 +442,9 @@ class _RustRwkvRuntime:
                     else None
                 ),
                 current_interval=_optional_interval(current_interval),
-                current_s90=_optional_interval(current_s90),
-                interval_overrides=_interval_override_from_tuple(intervals),
-                s90_overrides=_interval_override_from_tuple(s90s),
+                current_s90=_optional_unrounded_interval(current_s90),
+                interval_overrides=_unrounded_interval_override_from_tuple(intervals),
+                s90_overrides=_unrounded_interval_override_from_tuple(s90s),
                 button_probabilities=_button_probabilities_from_tuple(
                     button_probabilities
                 ),
@@ -733,9 +746,9 @@ class _RustRwkvRuntime:
                     else None
                 ),
                 current_interval=_optional_interval(current_interval),
-                current_s90=_optional_interval(current_s90),
-                interval_overrides=_interval_override_from_tuple(intervals),
-                s90_overrides=_interval_override_from_tuple(s90s),
+                current_s90=_optional_unrounded_interval(current_s90),
+                interval_overrides=_unrounded_interval_override_from_tuple(intervals),
+                s90_overrides=_unrounded_interval_override_from_tuple(s90s),
                 button_probabilities=_button_probabilities_from_tuple(
                     button_probabilities
                 ),
@@ -1521,16 +1534,26 @@ def _state_bytes(state: object | None) -> bytes | None:
     raise TypeError("RWKV Rust state must be bytes")
 
 
-def _interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
+def _whole_interval(value: float | None) -> int | None:
+    return None if value is None else max(1, math.ceil(value))
+
+
+def _unrounded_interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
     if not isinstance(values, tuple) or len(values) != 4:
         return RwkvIntervalOverride()
 
     return RwkvIntervalOverride(
-        again=_optional_interval(values[0]),
-        hard=_optional_interval(values[1]),
-        good=_optional_interval(values[2]),
-        easy=_optional_interval(values[3]),
+        again=_optional_unrounded_interval(values[0]),
+        hard=_optional_unrounded_interval(values[1]),
+        good=_optional_unrounded_interval(values[2]),
+        easy=_optional_unrounded_interval(values[3]),
     )
+
+
+def _optional_unrounded_interval(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and value > 0 else None
 
 
 def _button_probabilities_from_tuple(
@@ -1713,6 +1736,24 @@ def _duration_millis(review_input: RwkvReviewInput) -> float:
     if review_input.duration_millis is None:
         return 0.0
     return float(review_input.duration_millis)
+
+
+_SUB_DAY_SEARCH_POINTS = (
+    1 / 1440,
+    5 / 1440,
+    10 / 1440,
+    20 / 1440,
+    30 / 1440,
+    1 / 24,
+    2 / 24,
+    3 / 24,
+    4 / 24,
+    6 / 24,
+    8 / 24,
+    12 / 24,
+    16 / 24,
+    20 / 24,
+)
 
 
 def _interval_search_days(max_interval_days: int) -> list[int]:

@@ -153,31 +153,6 @@ impl Collection {
         // grab the config and sort it
         let mut config = self.storage.all_deck_config()?;
         config.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        // pre-fill empty fsrs params with older params
-        config.iter_mut().for_each(|c| {
-            if c.inner.fsrs_params_7.is_empty() {
-                c.inner.fsrs_params_7 = if !c.inner.fsrs_params_6.is_empty() {
-                    c.inner.fsrs_params_6.clone()
-                } else if c.inner.fsrs_params_5.is_empty() {
-                    c.inner.fsrs_params_4.clone()
-                } else {
-                    c.inner.fsrs_params_5.clone()
-                };
-            }
-            if c.inner.fsrs_version == FsrsVersion::Seven as i32 && c.inner.fsrs_params_7.is_empty()
-            {
-                c.inner.fsrs_version = if !c.inner.fsrs_params_6.is_empty() {
-                    FsrsVersion::Six as i32
-                } else if !c.inner.fsrs_params_5.is_empty() {
-                    FsrsVersion::Five as i32
-                } else if !c.inner.fsrs_params_4.is_empty() {
-                    FsrsVersion::Four as i32
-                } else {
-                    FsrsVersion::Seven as i32
-                };
-            }
-        });
-
         // combine with use counts
         let counts = self.get_deck_config_use_counts()?;
         Ok(config
@@ -975,7 +950,7 @@ mod test {
     }
 
     #[test]
-    fn valid_fsrs7_params_are_preferred_on_update() -> Result<()> {
+    fn incompatible_fsrs7_params_use_fsrs7_defaults_on_update() -> Result<()> {
         let mut col = Collection::new();
         let output = col.get_deck_configs_for_update(DeckId(1))?;
         let mut input = UpdateDeckConfigsRequest {
@@ -1008,7 +983,8 @@ mod test {
         col.update_deck_configs(input)?;
 
         let stored = col.get_deck_config(DeckConfigId(1), true)?.unwrap();
-        assert_eq!(stored.fsrs_params(), &expected);
+        assert_eq!(stored.inner.fsrs_params_7, expected);
+        assert_eq!(stored.fsrs_params(), fsrs::DEFAULT_PARAMETERS);
         Ok(())
     }
 
