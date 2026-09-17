@@ -1074,7 +1074,7 @@ fn valid_card_desired_retention(desired_retention: f32) -> bool {
     desired_retention.is_finite() && desired_retention > 0.0 && desired_retention < 1.0
 }
 
-fn card_reviewed_today(card: &Card, timing: SchedTimingToday) -> bool {
+pub(crate) fn card_reviewed_today(card: &Card, timing: SchedTimingToday) -> bool {
     card.last_review_time.is_some_and(|last_review_time| {
         let today_start = timing.next_day_at.0.saturating_sub(86_400);
         last_review_time.0 >= today_start && last_review_time.0 < timing.next_day_at.0

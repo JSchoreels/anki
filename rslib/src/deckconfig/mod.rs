@@ -84,6 +84,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
     rwkv_review_refresh_on_exit: false,
     rwkv_review_allow_same_day_review: DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW,
+    same_day_reviews_ignore_review_limit: false,
     rwkv_review_instant_order_enabled: false,
     rwkv_review_dynamic_preset_replay: false,
     rwkv_review_candidate_refresh_enabled: false,

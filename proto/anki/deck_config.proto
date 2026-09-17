@@ -206,6 +206,7 @@ message DeckConfig {
     bool rwkv_review_first_review_elapsed_from_card_creation = 82;
     bool rwkv_review_enforce_grade_order = 83;
     uint32 rwkv_review_minimum_reviews_per_day = 84;
+    bool same_day_reviews_ignore_review_limit = 85;
 
     bool disable_autoplay = 23;
     uint32 cap_answer_time_to_secs = 24;

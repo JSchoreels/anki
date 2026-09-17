@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::convert::TryFrom;
 
 use rusqlite::params;
@@ -550,6 +551,24 @@ impl SqliteStorage {
         }
 
         Ok(review_times)
+    }
+
+    /// Cards with a genuine answer in the half-open timestamp range.
+    pub(crate) fn card_ids_reviewed_between(
+        &self,
+        start: TimestampSecs,
+        end: TimestampSecs,
+    ) -> Result<HashSet<CardId>> {
+        self.db
+            .prepare_cached(
+                "select distinct cid from revlog \
+                 where id >= ? and id < ? \
+                 and ease between 1 and 4 \
+                 and (type != 3 or factor != 0)",
+            )?
+            .query_map([start.0 * 1000, end.0 * 1000], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(Into::into)
     }
 
     /// Only intended to be used by the undo code, as Anki can not sync revlog

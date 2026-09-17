@@ -17,11 +17,13 @@ use crate::scheduler::timing::SchedTimingToday;
 pub(crate) struct DueCounts {
     pub new: u32,
     pub review: u32,
+    pub review_limit_exempt: u32,
     /// interday+intraday
     pub learning: u32,
 
     pub intraday_learning: u32,
     pub interday_learning: u32,
+    pub interday_learning_limit_exempt: u32,
     pub total_cards: u32,
 }
 
@@ -48,10 +50,15 @@ impl Collection {
     /// Get due counts for decks at the given timestamp.
     pub(crate) fn due_counts(
         &mut self,
-        days_elapsed: u32,
+        timing: SchedTimingToday,
         learn_cutoff: u32,
     ) -> Result<HashMap<DeckId, DueCounts>> {
-        self.storage.due_counts(days_elapsed, learn_cutoff)
+        self.storage.due_counts(
+            timing.days_elapsed,
+            learn_cutoff,
+            timing.next_day_at.adding_secs(-86_400),
+            timing.next_day_at,
+        )
     }
 
     pub(crate) fn apply_rwkv_review_queue_counts(
@@ -153,18 +160,32 @@ impl Collection {
                 score.target_retention,
             );
             let rwkv_due = matches!(eligibility, RwkvReviewScoreEligibility::Eligible);
+            let Some(counts) = counts.get_mut(&metadata.current_deck_id) else {
+                continue;
+            };
+            let same_day_ignore_review_limit = context
+                .decks
+                .get(&metadata.source_deck_id)
+                .and_then(Deck::config_id)
+                .and_then(|config_id| context.configs.get(&config_id))
+                .is_some_and(|config| config.inner.same_day_reviews_ignore_review_limit)
+                && metadata.reviewed_today;
             if rwkv_due != metadata.fsrs_due_today {
-                let Some(counts) = counts.get_mut(&metadata.current_deck_id) else {
-                    continue;
-                };
                 if rwkv_due {
                     counts.review = counts.review.saturating_add(1);
+                    if same_day_ignore_review_limit {
+                        counts.review_limit_exempt = counts.review_limit_exempt.saturating_add(1);
+                    }
                 } else {
                     counts.review = counts.review.saturating_sub(1);
+                    if same_day_ignore_review_limit {
+                        counts.review_limit_exempt = counts.review_limit_exempt.saturating_sub(1);
+                    }
                 }
             }
 
-            if matches!(eligibility, RwkvReviewScoreEligibility::Blocked)
+            if !same_day_ignore_review_limit
+                && matches!(eligibility, RwkvReviewScoreEligibility::Blocked)
                 && matches!(
                     rwkv_review_score_eligibility_ignoring_retention(
                         score.retrievability,
@@ -197,7 +218,14 @@ impl Collection {
             if let Some(count) = counts.get(&deck.id) {
                 minimums.reserve_rwkv_reviews(
                     deck.id,
-                    count.review.saturating_add(count.interday_learning),
+                    count
+                        .review
+                        .saturating_sub(count.review_limit_exempt)
+                        .saturating_add(
+                            count
+                                .interday_learning
+                                .saturating_sub(count.interday_learning_limit_exempt),
+                        ),
                 )?;
             }
         }

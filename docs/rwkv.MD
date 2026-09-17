@@ -342,18 +342,25 @@ reviews in the selected deck tree before the same card is admitted again, and
 stored last review time. If both values are nonzero, both guards must be
 satisfied.
 
+RWKV-selected cards also honor the general **Same-day reviews ignore review
+limit** daily-limits option. When enabled, an eligible scored card already
+answered during the current scheduler day remains available after the maximum
+review limit is reached. It does not reserve review-limit capacity, and
+answering it again does not increment the deck's completed-review counter.
+
 `rwkv_review_minimum_reviews_per_day` sets a floor for the number of reviews
 RWKV-Instant offers in a scheduler day. Normally eligible review and interday
 learning cards, plus reviews already completed today, count toward the floor.
 If the floor has not been met, RWKV pulls forward scored review cards above
 their target-retention threshold, starting with the lowest retrievability.
 Ordinary maximum review limits, sibling burying, and same-day/repeat-spacing
-guards still take precedence. A deck's completed and queued reviews also count
-toward every ancestor deck's floor; when a parent deck is studied, unmet
-subdeck floors are enforced within their respective subtrees. Cards currently
-in a filtered deck's review or interday-learning queue count toward the floor
-of their original deck and its ancestors. This accounting is transient and
-does not mark those cards as reviewed today.
+guards still take precedence. Limit-exempt same-day repeats may bypass the
+maximum, but do not satisfy the minimum. A deck's completed and queued reviews
+also count toward every ancestor deck's floor; when a parent deck is studied,
+unmet subdeck floors are enforced within their respective subtrees. Cards
+currently in a filtered deck's review or interday-learning queue count toward
+the floor of their original deck and its ancestors. This accounting is
+transient and does not mark those cards as reviewed today.
 
 Due review cards without an RWKV score remain eligible through the normal
 due-card path. When the new-card gather order is `Ascending

@@ -77,7 +77,7 @@ impl QueueBuilder {
     }
 
     fn gather_review_cards_by_rwkv_priority(&mut self, col: &mut Collection) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::Review) {
+        if self.review_limit_stops_gathering() {
             return Ok(());
         }
 
@@ -127,7 +127,7 @@ impl QueueBuilder {
         let mut chunk_size = (self.limits.remaining_root_limit(LimitKind::Review) as usize)
             .max(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE)
             .min(remaining_scores.len());
-        while !remaining_scores.is_empty() && !self.limits.root_limit_reached(LimitKind::Review) {
+        while !remaining_scores.is_empty() && !self.review_limit_stops_gathering() {
             if chunk_size < remaining_scores.len() {
                 remaining_scores.select_nth_unstable_by(chunk_size, compare_scores);
             }
@@ -151,7 +151,7 @@ impl QueueBuilder {
             };
 
             for &(card_id, score) in score_chunk.iter() {
-                if self.limits.root_limit_reached(LimitKind::Review) {
+                if self.review_limit_stops_gathering() {
                     break;
                 }
                 let Some(card) = cards_by_id.get(&card_id).copied() else {
@@ -184,14 +184,7 @@ impl QueueBuilder {
                     }
                     RwkvReviewScoreEligibility::Blocked => continue,
                 }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card(card)
-                {
-                    self.limits
-                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
-                }
+                self.add_rwkv_review_card(card)?;
             }
 
             remaining_scores = rest;
@@ -200,9 +193,7 @@ impl QueueBuilder {
 
         let scored_card_ids = ranked_scores.iter().map(|(card_id, _)| *card_id).collect();
         self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)?;
-        if !self.limits.root_limit_reached(LimitKind::Review)
-            && self.limits.any_rwkv_review_minimum_remaining()
-        {
+        if !self.review_limit_stops_gathering() && self.limits.any_rwkv_review_minimum_remaining() {
             self.gather_rwkv_review_minimum_cards(
                 col,
                 &ranked_scores,
@@ -214,7 +205,7 @@ impl QueueBuilder {
     }
 
     fn gather_review_cards_by_configured_order(&mut self, col: &mut Collection) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::Review) {
+        if self.review_limit_stops_gathering() {
             return Ok(());
         }
 
@@ -265,7 +256,7 @@ impl QueueBuilder {
         )?;
 
         for card in cards.iter().copied() {
-            if self.limits.root_limit_reached(LimitKind::Review) {
+            if self.review_limit_stops_gathering() {
                 break;
             }
             let eligible = if scored_card_ids.contains(&card.id) {
@@ -276,14 +267,12 @@ impl QueueBuilder {
             } else {
                 card.due <= self.context.timing.days_elapsed as i32
             };
-            if eligible
-                && !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                && self.add_due_card(card)
-            {
-                self.limits
-                    .reserve_review(card.current_deck_id, card.original_deck_id)?;
+            if eligible {
+                if metadata.contains_key(&card.id) {
+                    self.add_rwkv_review_card(card)?;
+                } else {
+                    self.add_due_card_respecting_review_limit(card)?;
+                }
             }
         }
 
@@ -311,7 +300,7 @@ impl QueueBuilder {
                 if !self.limits.any_rwkv_review_minimum_remaining() {
                     break;
                 }
-                if self.limits.root_limit_reached(LimitKind::Review) {
+                if self.review_limit_stops_gathering() {
                     break;
                 }
                 if !self
@@ -321,6 +310,7 @@ impl QueueBuilder {
                         eligibility_by_card.get(&card.id),
                         Some(RwkvReviewScoreEligibility::Blocked)
                     )
+                    || self.card_ignores_review_limit(card)
                 {
                     continue;
                 }
@@ -351,14 +341,7 @@ impl QueueBuilder {
                     }
                     RwkvReviewScoreEligibility::Blocked => continue,
                 }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card(card)
-                {
-                    self.limits
-                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
-                }
+                self.add_rwkv_review_card(card)?;
             }
         }
 
@@ -397,7 +380,7 @@ impl QueueBuilder {
                 .then_with(|| card_id_a.cmp(card_id_b))
         });
         for score_chunk in pull_scores.chunks(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE) {
-            if self.limits.root_limit_reached(LimitKind::Review) {
+            if self.review_limit_stops_gathering() {
                 break;
             }
             let chunk_card_ids: Vec<_> = score_chunk.iter().map(|(card_id, _)| *card_id).collect();
@@ -412,7 +395,7 @@ impl QueueBuilder {
                 rwkv_review_candidate_metadata(col, &active_card_ids, self.context.timing)?;
 
             for &(card_id, score) in score_chunk {
-                if self.limits.root_limit_reached(LimitKind::Review) {
+                if self.review_limit_stops_gathering() {
                     break;
                 }
                 let Some(card) = cards_by_id.get(&card_id).copied() else {
@@ -421,6 +404,7 @@ impl QueueBuilder {
                 if !self
                     .limits
                     .rwkv_review_minimum_remaining(card.current_deck_id)?
+                    || self.card_ignores_review_limit(card)
                 {
                     continue;
                 }
@@ -466,15 +450,46 @@ impl QueueBuilder {
                     }
                     RwkvReviewScoreEligibility::Blocked => continue,
                 }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card(card)
-                {
-                    self.limits
-                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
-                }
+                self.add_rwkv_review_card(card)?;
             }
+        }
+        Ok(())
+    }
+
+    fn review_limit_stops_gathering(&self) -> bool {
+        !self.context.same_day_reviews_may_ignore_limit
+            && self.limits.root_limit_reached(LimitKind::Review)
+    }
+
+    fn add_rwkv_review_card(&mut self, card: DueCard) -> Result<()> {
+        self.add_due_card_respecting_review_limit(card)
+    }
+
+    fn card_ignores_review_limit(&self, card: DueCard) -> bool {
+        if !self.context.reviewed_today_card_ids.contains(&card.id) {
+            return false;
+        }
+        let source_deck_id = card.original_deck_id.or(card.current_deck_id);
+        self.context
+            .deck_map
+            .get(&source_deck_id)
+            .and_then(Deck::config_id)
+            .and_then(|config_id| self.context.config_map.get(&config_id))
+            .is_some_and(|config| config.inner.same_day_reviews_ignore_review_limit)
+    }
+
+    fn add_due_card_respecting_review_limit(&mut self, card: DueCard) -> Result<()> {
+        let ignore_limit = self.card_ignores_review_limit(card);
+        if !ignore_limit
+            && self
+                .limits
+                .limit_reached(card.current_deck_id, LimitKind::Review)?
+        {
+            return Ok(());
+        }
+        if self.add_due_card(card) && !ignore_limit {
+            self.limits
+                .reserve_review(card.current_deck_id, card.original_deck_id)?;
         }
         Ok(())
     }
@@ -497,7 +512,7 @@ impl QueueBuilder {
         col: &mut Collection,
         scored_card_ids: &HashSet<CardId>,
     ) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::Review) {
+        if self.review_limit_stops_gathering() {
             return Ok(());
         }
 
@@ -512,17 +527,10 @@ impl QueueBuilder {
                 if scored_card_ids.contains(&card.id) {
                     return Ok(true);
                 }
-                if self.limits.root_limit_reached(LimitKind::Review) {
+                if self.review_limit_stops_gathering() {
                     return Ok(false);
                 }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card(card)
-                {
-                    self.limits
-                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
-                }
+                self.add_due_card_respecting_review_limit(card)?;
                 Ok(true)
             },
         )
@@ -645,7 +653,7 @@ impl QueueBuilder {
             |card| {
                 due_cards.push(DueCardForRetrievabilitySort {
                     card,
-                    counts_towards_review_limit: true,
+                    counts_towards_review_limit: !self.card_ignores_review_limit(card),
                     interday_or_review: true,
                 });
                 Ok(true)
@@ -654,7 +662,7 @@ impl QueueBuilder {
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::Review) {
+        if self.review_limit_stops_gathering() {
             return Ok(());
         }
         col.storage.for_each_due_card_in_active_decks(
@@ -663,17 +671,10 @@ impl QueueBuilder {
             kind,
             self.context.fsrs,
             |card| {
-                if self.limits.root_limit_reached(LimitKind::Review) {
+                if self.review_limit_stops_gathering() {
                     return Ok(false);
                 }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card(card)
-                {
-                    self.limits
-                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
-                }
+                self.add_due_card_respecting_review_limit(card)?;
                 Ok(true)
             },
         )

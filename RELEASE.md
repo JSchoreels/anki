@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Added
+
+- Add a daily-limits option that lets same-day repeats bypass the maximum
+  reviews/day limit without reducing the number of ordinary reviews available.
+
 ### Fixed
 
 - Keep S90 and FSRS-7's internal stability distinct when converting legacy

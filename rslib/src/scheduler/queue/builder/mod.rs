@@ -8,6 +8,7 @@ pub(crate) mod sized_chain;
 mod sorting;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -137,6 +138,8 @@ struct Context {
     fsrs: bool,
     fsrs_short_term_with_steps: bool,
     rwkv_review_queue_scores: Option<Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>>,
+    reviewed_today_card_ids: HashSet<CardId>,
+    same_day_reviews_may_ignore_limit: bool,
 }
 
 impl QueueBuilder {
@@ -163,6 +166,17 @@ impl QueueBuilder {
             limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
         }
         let sort_options = sort_options(&root_deck, &config_map);
+        let same_day_reviews_may_ignore_limit = config_map
+            .values()
+            .any(|config| config.inner.same_day_reviews_ignore_review_limit);
+        let reviewed_today_card_ids = if same_day_reviews_may_ignore_limit {
+            col.storage.card_ids_reviewed_between(
+                timing.next_day_at.adding_secs(-86_400),
+                timing.next_day_at,
+            )?
+        } else {
+            HashSet::new()
+        };
         let rwkv_review_queue_scores = if sort_options.uses_rwkv_retrievability_scores() {
             if let Some(scores) = col.rwkv_review_queue_scores(root_deck.id, timing.days_elapsed) {
                 Some(scores)
@@ -219,6 +233,8 @@ impl QueueBuilder {
                 fsrs_short_term_with_steps: col
                     .get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
                 rwkv_review_queue_scores,
+                reviewed_today_card_ids,
+                same_day_reviews_may_ignore_limit,
             },
         })
     }
@@ -541,9 +557,30 @@ mod test {
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::FsrsVersion;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
     use crate::search::SortMode;
 
     impl Collection {
+        fn add_review_log_today(
+            &mut self,
+            card_id: CardId,
+            timing: SchedTimingToday,
+        ) -> Result<()> {
+            self.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: timing.now.as_millis().into(),
+                    cid: card_id,
+                    button_chosen: 3,
+                    interval: 1,
+                    review_kind: RevlogReviewKind::Review,
+                    ..Default::default()
+                },
+                true,
+            )?;
+            Ok(())
+        }
+
         fn set_deck_gather_order(&mut self, deck: &mut Deck, order: NewCardGatherPriority) {
             let mut conf = DeckConfig::default();
             conf.inner.new_card_gather_priority = order as i32;
@@ -659,6 +696,13 @@ mod test {
             let config_id = self.get_deck(deck).unwrap().unwrap().config_id().unwrap();
             let mut config = self.get_deck_config(config_id, false).unwrap().unwrap();
             config.inner.rwkv_review_minimum_reviews_per_day = minimum;
+            self.add_or_update_deck_config(&mut config).unwrap();
+        }
+
+        fn set_deck_same_day_reviews_ignore_review_limit(&mut self, deck: DeckId, enabled: bool) {
+            let config_id = self.get_deck(deck).unwrap().unwrap().config_id().unwrap();
+            let mut config = self.get_deck_config(config_id, false).unwrap().unwrap();
+            config.inner.same_day_reviews_ignore_review_limit = enabled;
             self.add_or_update_deck_config(&mut config).unwrap();
         }
 
@@ -1793,6 +1837,106 @@ mod test {
         )?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![higher_target]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_same_day_reviews_may_ignore_review_limit() -> Result<()> {
+        for order in [
+            ReviewCardOrder::Day,
+            ReviewCardOrder::RetrievabilityAscending,
+        ] {
+            let mut col = Collection::new();
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_rwkv_review_order_with_options(&mut deck, order, 0.75, true);
+            col.set_deck_same_day_reviews_ignore_review_limit(deck.id, true);
+            col.set_deck_review_limit(deck.id, 1);
+
+            let timing = col.timing_today()?;
+            let first_due = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )?;
+            let second_due = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )?;
+            let same_day = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32 + 1,
+                2 * 86_400,
+                30.0,
+            )?;
+            let mut card = col.storage.get_card(same_day)?.unwrap();
+            card.last_review_time = Some(timing.now);
+            col.storage.update_card(&card)?;
+            col.add_review_log_today(same_day, timing)?;
+            col.set_rwkv_review_queue_scores(
+                deck.id,
+                HashMap::from([(first_due, 0.20), (second_due, 0.30), (same_day, 0.10)]),
+            )?;
+
+            let queue = col.queue_as_ids(deck.id);
+            assert_eq!(queue.len(), 2, "review order {order:?}");
+            assert!(queue.contains(&same_day), "review order {order:?}");
+            assert_eq!(
+                queue.iter().filter(|card| **card != same_day).count(),
+                1,
+                "review order {order:?}"
+            );
+
+            col.set_deck_review_limit(deck.id, 0);
+            assert_eq!(col.queue_as_ids(deck.id), vec![same_day]);
+
+            col.set_deck_same_day_reviews_ignore_review_limit(deck.id, false);
+            assert!(col.queue_as_ids(deck.id).is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_same_day_reviews_may_ignore_review_limit() -> Result<()> {
+        for order in [
+            ReviewCardOrder::Day,
+            ReviewCardOrder::RetrievabilityAscending,
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, true, false)?;
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_review_order(&mut deck, order);
+            col.set_deck_same_day_reviews_ignore_review_limit(deck.id, true);
+            col.set_deck_review_limit(deck.id, 0);
+
+            let timing = col.timing_today()?;
+            let same_day = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )?;
+            col.add_review_log_today(same_day, timing)?;
+
+            assert_eq!(col.queue_as_ids(deck.id), vec![same_day], "{order:?}");
+
+            col.set_deck_same_day_reviews_ignore_review_limit(deck.id, false);
+            assert!(col.queue_as_ids(deck.id).is_empty(), "{order:?}");
+        }
         Ok(())
     }
 

@@ -42,6 +42,7 @@ use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::fsrs::uses_fractional_intervals;
+use crate::scheduler::rwkv::card_reviewed_today;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::PreviewState;
 use crate::search::SearchNode;
@@ -594,6 +595,9 @@ impl Collection {
         let mut review_delta = 0;
         match from_queue {
             CardQueue::New => new_delta += 1,
+            CardQueue::Review | CardQueue::DayLearn
+                if updater.config.inner.same_day_reviews_ignore_review_limit
+                    && card_reviewed_today(&updater.card, updater.timing) => {}
             CardQueue::Review | CardQueue::DayLearn => review_delta += 1,
             _ => {}
         }
@@ -1213,6 +1217,58 @@ pub(crate) mod test {
         assert_eq!(revlogs[0].review_kind, RevlogReviewKind::Relearning);
         assert_eq!(col.can_undo(), Some(&Op::AnswerCard));
 
+        Ok(())
+    }
+
+    #[test]
+    fn same_day_review_does_not_consume_another_daily_limit_credit() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.same_day_reviews_ignore_review_limit = true;
+        });
+        let card_id = add_due_review_card(&mut col, 10, 0, None)?;
+        let states = col.get_scheduling_states(card_id)?;
+
+        col.answer_card(&mut CardAnswer {
+            card_id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: true,
+        })?;
+
+        let timing = col.timing_today()?;
+        let mut card = col.storage.get_card(card_id)?.unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.due = timing.days_elapsed as i32;
+        col.storage.update_card(&card)?;
+        let states = col.get_scheduling_states(card_id)?;
+        col.answer_card(&mut CardAnswer {
+            card_id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: true,
+        })?;
+
+        let deck = col.get_deck(DeckId(1))?.unwrap();
+        assert_eq!(deck.common.review_studied, 1);
         Ok(())
     }
 

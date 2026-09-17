@@ -104,22 +104,33 @@ fn add_counts(node: &mut DeckTreeNode, counts: &HashMap<DeckId, DueCounts>) {
 struct NodeCountsV3 {
     new: u32,
     review: u32,
+    review_limit_exempt: u32,
     intraday_learning: u32,
     interday_learning: u32,
+    interday_learning_limit_exempt: u32,
     total: u32,
 }
 
 impl NodeCountsV3 {
     fn capped(&self, remaining: &RemainingLimits) -> Self {
         let mut capped = self.clone();
-        // apply review limit to interday learning
-        capped.interday_learning = capped.interday_learning.min(remaining.review);
-        let mut remaining_reviews = remaining.review.saturating_sub(capped.interday_learning);
+        // apply review limit to interday learning, excluding same-day repeats
+        let limited_interday = capped
+            .interday_learning
+            .saturating_sub(capped.interday_learning_limit_exempt)
+            .min(remaining.review);
+        capped.interday_learning =
+            limited_interday.saturating_add(capped.interday_learning_limit_exempt);
+        let mut remaining_reviews = remaining.review.saturating_sub(limited_interday);
         // any remaining review limit is applied to reviews
-        capped.review = capped.review.min(remaining_reviews);
+        let limited_reviews = capped
+            .review
+            .saturating_sub(capped.review_limit_exempt)
+            .min(remaining_reviews);
+        capped.review = limited_reviews.saturating_add(capped.review_limit_exempt);
         capped.new = capped.new.min(remaining.new);
         if remaining.cap_new_to_review {
-            remaining_reviews = remaining_reviews.saturating_sub(capped.review);
+            remaining_reviews = remaining_reviews.saturating_sub(limited_reviews);
             capped.new = capped.new.min(remaining_reviews);
         }
         capped
@@ -130,8 +141,10 @@ impl AddAssign for NodeCountsV3 {
     fn add_assign(&mut self, rhs: Self) {
         self.new += rhs.new;
         self.review += rhs.review;
+        self.review_limit_exempt += rhs.review_limit_exempt;
         self.intraday_learning += rhs.intraday_learning;
         self.interday_learning += rhs.interday_learning;
+        self.interday_learning_limit_exempt += rhs.interday_learning_limit_exempt;
         self.total += rhs.total;
     }
 }
@@ -142,6 +155,7 @@ impl AddAssign for NodeCountsV3 {
 fn sum_counts_and_apply_limits_v3(
     node: &mut DeckTreeNode,
     limits: &HashMap<DeckId, RemainingLimits>,
+    limit_exempt: &HashMap<DeckId, (u32, u32)>,
     mut parent_limits: Option<RemainingLimits>,
 ) -> NodeCountsV3 {
     let mut remaining = limits
@@ -157,15 +171,24 @@ fn sum_counts_and_apply_limits_v3(
     let mut this_node_uncapped = NodeCountsV3 {
         new: node.new_count,
         review: node.review_count,
+        review_limit_exempt: limit_exempt
+            .get(&DeckId(node.deck_id))
+            .map(|counts| counts.0)
+            .unwrap_or_default(),
         intraday_learning: node.intraday_learning,
         interday_learning: node.interday_learning_uncapped,
+        interday_learning_limit_exempt: limit_exempt
+            .get(&DeckId(node.deck_id))
+            .map(|counts| counts.1)
+            .unwrap_or_default(),
         total: node.total_in_deck,
     };
     let mut total_including_children = node.total_in_deck;
 
     // add capped child counts / uncapped total
     for child in &mut node.children {
-        this_node_uncapped += sum_counts_and_apply_limits_v3(child, limits, parent_limits);
+        this_node_uncapped +=
+            sum_counts_and_apply_limits_v3(child, limits, limit_exempt, parent_limits);
         total_including_children += child.total_including_children;
     }
 
@@ -275,8 +298,31 @@ impl Collection {
                 .get_config_bool(BoolKey::ApplyAllParentLimits)
                 .then(Default::default);
             let dconf = self.storage.get_deck_config_map()?;
-            let mut counts = self.due_counts(days_elapsed, learn_cutoff)?;
+            let mut counts = self.due_counts(timing_at_stamp, learn_cutoff)?;
+            for (deck_id, count) in &mut counts {
+                let enabled = decks_map
+                    .get(deck_id)
+                    .and_then(Deck::config_id)
+                    .and_then(|config_id| dconf.get(&config_id))
+                    .is_some_and(|config| config.inner.same_day_reviews_ignore_review_limit);
+                if !enabled {
+                    count.review_limit_exempt = 0;
+                    count.interday_learning_limit_exempt = 0;
+                }
+            }
             self.apply_rwkv_review_queue_counts(&mut counts, &decks_map, &dconf, timing_at_stamp)?;
+            let limit_exempt = counts
+                .iter()
+                .map(|(deck_id, counts)| {
+                    (
+                        *deck_id,
+                        (
+                            counts.review_limit_exempt,
+                            counts.interday_learning_limit_exempt,
+                        ),
+                    )
+                })
+                .collect();
             add_counts(&mut tree, &counts);
             let limits = remaining_limits_map(
                 decks_map.values(),
@@ -284,7 +330,7 @@ impl Collection {
                 days_elapsed,
                 new_cards_ignore_review_limit,
             );
-            sum_counts_and_apply_limits_v3(&mut tree, &limits, parent_limits);
+            sum_counts_and_apply_limits_v3(&mut tree, &limits, &limit_exempt, parent_limits);
         }
 
         Ok(tree)
@@ -351,6 +397,9 @@ mod test {
     use crate::deckconfig::DeckConfigId;
     use crate::deckconfig::ReviewCardOrder;
     use crate::error::Result;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::timing::SchedTimingToday;
 
     #[test]
     fn wellformed() -> Result<()> {
@@ -501,6 +550,25 @@ mod test {
         Ok(card.id)
     }
 
+    fn add_review_log_today(
+        col: &mut Collection,
+        card_id: CardId,
+        timing: SchedTimingToday,
+    ) -> Result<()> {
+        col.storage.add_revlog_entry(
+            &RevlogEntry {
+                id: timing.now.as_millis().into(),
+                cid: card_id,
+                button_chosen: 3,
+                interval: 1,
+                review_kind: RevlogReviewKind::Review,
+                ..Default::default()
+            },
+            true,
+        )?;
+        Ok(())
+    }
+
     fn enable_rwkv_review_counts(
         col: &mut Collection,
         deck: &mut Deck,
@@ -533,6 +601,72 @@ mod test {
 
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 1);
+        assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_counts_include_limit_exempt_same_day_reviews() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        enable_rwkv_review_counts(&mut col, &mut deck, true)?;
+        let config_id = deck.config_id().unwrap();
+        let mut config = col.get_deck_config(config_id, false)?.unwrap();
+        config.inner.reviews_per_day = 0;
+        config.inner.same_day_reviews_ignore_review_limit = true;
+        col.add_or_update_deck_config(&mut config)?;
+        let timing = col.timing_today()?;
+
+        let same_day = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32 + 1,
+            0.75,
+            Some(timing.now),
+        )?;
+        add_review_log_today(&mut col, same_day, timing)?;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(same_day, 0.50)]))?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 1);
+        assert_eq!(tree.children[0].review_uncapped, 1);
+
+        config.inner.same_day_reviews_ignore_review_limit = false;
+        col.add_or_update_deck_config(&mut config)?;
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 0);
+        assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn deck_tree_counts_include_limit_exempt_same_day_reviews() -> Result<()> {
+        let mut col = Collection::new();
+        let deck = col.get_or_create_normal_deck("Default")?;
+        let config_id = deck.config_id().unwrap();
+        let mut config = col.get_deck_config(config_id, false)?.unwrap();
+        config.inner.reviews_per_day = 0;
+        config.inner.same_day_reviews_ignore_review_limit = true;
+        col.add_or_update_deck_config(&mut config)?;
+        let timing = col.timing_today()?;
+
+        let same_day = add_review_card(
+            &mut col,
+            deck.id,
+            timing.days_elapsed as i32,
+            0.75,
+            Some(timing.now),
+        )?;
+        add_review_log_today(&mut col, same_day, timing)?;
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 1);
+        assert_eq!(tree.children[0].review_uncapped, 1);
+
+        config.inner.same_day_reviews_ignore_review_limit = false;
+        col.add_or_update_deck_config(&mut config)?;
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 0);
         assert_eq!(tree.children[0].review_uncapped, 1);
         Ok(())
     }

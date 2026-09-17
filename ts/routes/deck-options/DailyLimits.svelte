@@ -131,6 +131,11 @@
             help: tr.deckConfigReviewLimitTooltip() + reviewV3Extra,
             url: HelpPage.DeckOptions.maximumReviewsday,
         },
+        sameDayReviewsIgnoreReviewLimit: {
+            title: tr.deckConfigSameDayReviewsIgnoreReviewLimit(),
+            help: tr.deckConfigSameDayReviewsIgnoreReviewLimitTooltip(),
+            url: HelpPage.DeckOptions.maximumReviewsday,
+        },
         newCardsIgnoreReviewLimit: {
             title: tr.deckConfigNewCardsIgnoreReviewLimit(),
             help: newCardsIgnoreReviewLimitHelp,
@@ -193,6 +198,24 @@
 
         <Item>
             <Warning warning={reviewsTooLow} />
+        </Item>
+
+        <Item>
+            <SwitchRow
+                bind:value={$config.sameDayReviewsIgnoreReviewLimit}
+                defaultValue={defaults.sameDayReviewsIgnoreReviewLimit}
+            >
+                <SettingTitle
+                    on:click={() =>
+                        openHelpModal(
+                            Object.keys(settings).indexOf(
+                                "sameDayReviewsIgnoreReviewLimit",
+                            ),
+                        )}
+                >
+                    {settings.sameDayReviewsIgnoreReviewLimit.title}
+                </SettingTitle>
+            </SwitchRow>
         </Item>
 
         <Item>

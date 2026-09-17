@@ -44,9 +44,11 @@ fn row_to_due_counts(row: &Row) -> Result<(DeckId, DueCounts)> {
     let deck_id = row.get(0)?;
     let new = row.get(1)?;
     let review = row.get(2)?;
-    let interday_learning: u32 = row.get(3)?;
-    let intraday_learning: u32 = row.get(4)?;
-    let total_cards: u32 = row.get(5)?;
+    let review_limit_exempt = row.get(3)?;
+    let interday_learning: u32 = row.get(4)?;
+    let interday_learning_limit_exempt = row.get(5)?;
+    let intraday_learning: u32 = row.get(6)?;
+    let total_cards: u32 = row.get(7)?;
     // used as-is in v1/v2; recalculated in v3 after limits are applied
     let learning = intraday_learning + interday_learning;
     Ok((
@@ -54,9 +56,11 @@ fn row_to_due_counts(row: &Row) -> Result<(DeckId, DueCounts)> {
         DueCounts {
             new,
             review,
+            review_limit_exempt,
             learning,
             intraday_learning,
             interday_learning,
+            interday_learning_limit_exempt,
             total_cards,
         },
     ))
@@ -296,7 +300,11 @@ impl SqliteStorage {
         &self,
         day_cutoff: u32,
         learn_cutoff: u32,
+        review_day_start: TimestampSecs,
+        review_day_end: TimestampSecs,
     ) -> Result<HashMap<DeckId, DueCounts>> {
+        let review_day_start_millis = review_day_start.as_millis();
+        let review_day_end_millis = review_day_end.as_millis();
         let params = named_params! {
             ":new_queue": CardQueue::New as u8,
             ":review_queue": CardQueue::Review as u8,
@@ -305,6 +313,8 @@ impl SqliteStorage {
             ":learn_cutoff": learn_cutoff,
             ":daylearn_queue": CardQueue::DayLearn as u8,
             ":preview_queue": CardQueue::PreviewRepeat as u8,
+            ":review_day_start": review_day_start_millis.0,
+            ":review_day_end": review_day_end_millis.0,
         }
         .to_vec();
         let sql = concat!(include_str!("due_counts.sql"), " group by did");

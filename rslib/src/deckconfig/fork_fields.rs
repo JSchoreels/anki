@@ -26,6 +26,8 @@ const DYNAMIC_DR_MAX_DEFAULT: f32 = 0.995;
 #[serde(rename_all = "snake_case")]
 struct ForkDeckConfigFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    same_day_reviews_ignore_review_limit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_params_7: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_minimum_interval_secs: Option<u32>,
@@ -68,6 +70,9 @@ struct ForkDeckConfigFields {
 impl ForkDeckConfigFields {
     fn from_config(config: &DeckConfigInner) -> Self {
         Self {
+            same_day_reviews_ignore_review_limit: true_only(
+                config.same_day_reviews_ignore_review_limit,
+            ),
             fsrs_params_7: non_empty_vec(&config.fsrs_params_7),
             fsrs_minimum_interval_secs: non_default(
                 config.fsrs_minimum_interval_secs,
@@ -118,6 +123,9 @@ impl ForkDeckConfigFields {
     }
 
     fn apply_to_config(self, config: &mut DeckConfigInner) {
+        if let Some(value) = self.same_day_reviews_ignore_review_limit {
+            config.same_day_reviews_ignore_review_limit = value;
+        }
         if let Some(value) = self.fsrs_params_7 {
             config.fsrs_params_7 = value;
         }
@@ -435,6 +443,7 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.review_fuzz_factor_mid = None;
     config.review_fuzz_factor_long = None;
     config.review_fuzz_enabled = None;
+    config.same_day_reviews_ignore_review_limit = false;
     config.rwkv_review_enabled = false;
     config.rwkv_review_batch_size = 0;
     config.rwkv_review_refresh_interval = 0;
@@ -495,6 +504,7 @@ mod tests {
             review_fuzz_factor_mid: Some(0.1),
             review_fuzz_factor_long: Some(0.05),
             review_fuzz_enabled: Some(false),
+            same_day_reviews_ignore_review_limit: true,
             rwkv_review_enabled: true,
             rwkv_review_batch_size: 1024,
             rwkv_review_refresh_interval: 5,
@@ -525,6 +535,7 @@ mod tests {
             .is_empty());
         assert_eq!(storage_config.fsrs_version, FsrsVersion::Seven as i32);
         assert_eq!(storage_config.review_fuzz_base, None);
+        assert!(!storage_config.same_day_reviews_ignore_review_limit);
         assert!(!storage_config.rwkv_review_enabled);
         assert_eq!(storage_config.rwkv_review_batch_size, 0);
         assert_eq!(storage_config.rwkv_review_refresh_interval, 0);
@@ -541,6 +552,10 @@ mod tests {
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
         let fsrs_other = other.get(FSRS_FORK_FIELDS_KEY).unwrap();
+        assert_eq!(
+            fsrs_other.get("same_day_reviews_ignore_review_limit"),
+            Some(&json!(true))
+        );
         assert!(fsrs_other.get("rwkv_review_enabled").is_none());
         assert!(fsrs_other.get("rwkv_review_batch_size").is_none());
         assert!(fsrs_other.get("rwkv_review_refresh_interval").is_none());
@@ -605,6 +620,10 @@ mod tests {
         );
         assert_eq!(decoded.fsrs_version, config.fsrs_version);
         assert_eq!(decoded.review_fuzz_base, config.review_fuzz_base);
+        assert_eq!(
+            decoded.same_day_reviews_ignore_review_limit,
+            config.same_day_reviews_ignore_review_limit
+        );
         assert_eq!(decoded.rwkv_review_enabled, config.rwkv_review_enabled);
         assert_eq!(
             decoded.rwkv_review_batch_size,

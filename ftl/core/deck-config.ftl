@@ -43,6 +43,12 @@ deck-config-new-cards-ignore-review-limit-tooltip =
     By default, the review limit also applies to new cards, and no new cards will be
     shown when the review limit has been reached. If this option is enabled, new cards
     will be shown regardless of the review limit.
+deck-config-same-day-reviews-ignore-review-limit = Same-day reviews ignore review limit
+deck-config-same-day-reviews-ignore-review-limit-tooltip =
+    Cards already answered during the current scheduler day can be shown again
+    after the maximum reviews/day limit is reached. Repeated answers do not
+    reduce the number of other review cards available that day. Intraday
+    learning and relearning cards already behave this way.
 deck-config-apply-all-parent-limits = Limits start from top
 deck-config-apply-all-parent-limits-tooltip =
     By default, the daily limits of a higher-level deck do not apply if you're studying from its subdeck.

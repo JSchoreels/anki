@@ -141,6 +141,8 @@ pub struct DeckConfSchema11 {
         skip_serializing_if = "is_default_rwkv_review_allow_same_day_review"
     )]
     rwkv_review_allow_same_day_review: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    same_day_reviews_ignore_review_limit: bool,
     #[serde(
         default = "default_rwkv_review_min_intervening_reviews",
         skip_serializing_if = "is_default_rwkv_review_min_intervening_reviews"
@@ -514,6 +516,7 @@ impl Default for DeckConfSchema11 {
             rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
             rwkv_review_refresh_on_exit: false,
             rwkv_review_allow_same_day_review: DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW,
+            same_day_reviews_ignore_review_limit: false,
             rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
             rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
             rwkv_review_instant_order_enabled: false,
@@ -586,6 +589,7 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_refresh_interval: c.rwkv_review_refresh_interval,
             rwkv_review_refresh_on_exit: c.rwkv_review_refresh_on_exit,
             rwkv_review_allow_same_day_review: c.rwkv_review_allow_same_day_review,
+            same_day_reviews_ignore_review_limit: c.same_day_reviews_ignore_review_limit,
             rwkv_review_min_intervening_reviews: c.rwkv_review_min_intervening_reviews,
             rwkv_review_min_elapsed_secs: c.rwkv_review_min_elapsed_secs,
             rwkv_review_instant_order_enabled: c.rwkv_review_instant_order_enabled,
@@ -656,6 +660,7 @@ impl From<DeckConfSchema11> for DeckConfig {
 // latest schema -> schema 11
 impl From<DeckConfig> for DeckConfSchema11 {
     fn from(c: DeckConfig) -> DeckConfSchema11 {
+        let same_day_reviews_ignore_review_limit = c.inner.same_day_reviews_ignore_review_limit;
         let rwkv_review_enforce_grade_order = c.inner.rwkv_review_enforce_grade_order;
         let rwkv_review_minimum_reviews_per_day = c.inner.rwkv_review_minimum_reviews_per_day;
         let i = deck_config_inner_for_storage(&c.inner);
@@ -786,6 +791,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
             rwkv_review_refresh_interval: i.rwkv_review_refresh_interval,
             rwkv_review_refresh_on_exit: i.rwkv_review_refresh_on_exit,
             rwkv_review_allow_same_day_review: i.rwkv_review_allow_same_day_review,
+            same_day_reviews_ignore_review_limit,
             rwkv_review_min_intervening_reviews: i.rwkv_review_min_intervening_reviews,
             rwkv_review_min_elapsed_secs: i.rwkv_review_min_elapsed_secs,
             rwkv_review_instant_order_enabled: i.rwkv_review_instant_order_enabled,
@@ -846,6 +852,7 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "rwkvReviewRefreshInterval",
     "rwkvReviewRefreshOnExit",
     "rwkvReviewAllowSameDayReview",
+    "sameDayReviewsIgnoreReviewLimit",
     "rwkvReviewInstantOrderEnabled",
     "rwkvReviewDynamicPresetReplay",
     "rwkvReviewCandidateRefreshEnabled",
@@ -1019,6 +1026,22 @@ mod test {
 
         let serialized = serde_json::to_value(config)?;
         assert_eq!(serialized["rwkvReviewAllowSameDayReview"], json!(false));
+
+        Ok(())
+    }
+
+    #[test]
+    fn same_day_reviews_ignore_review_limit_omits_default_and_serializes_enabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized.get("sameDayReviewsIgnoreReviewLimit").is_none());
+
+        let config = DeckConfSchema11 {
+            same_day_reviews_ignore_review_limit: true,
+            ..DeckConfSchema11::default()
+        };
+
+        let serialized = serde_json::to_value(config)?;
+        assert_eq!(serialized["sameDayReviewsIgnoreReviewLimit"], json!(true));
 
         Ok(())
     }
