@@ -24,6 +24,7 @@ use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
@@ -237,7 +238,12 @@ impl Collection {
 
                 let original = card.clone();
                 card.interval = item.interval_days;
-                card.memory_state = Some(rwkv_rescheduled_memory_state(&card, item.s90));
+                card.memory_state = Some(if card.memory_state.is_some() {
+                    rwkv_rescheduled_memory_state(&card, item.s90)
+                } else {
+                    let preset = col.fsrs_preset_for_card(&card)?;
+                    fsrs_memory_state_for_s90(&preset.params, item.s90)?
+                });
                 if let Some(target_retention) = item.target_retention {
                     card.desired_retention = Some(target_retention);
                 }
@@ -1257,7 +1263,11 @@ mod test {
         let updated = col.storage.get_card(card.id)?.unwrap();
         assert_eq!(result.output, 1);
         assert_eq!(updated.interval, 12);
-        assert_eq!(updated.memory_state.unwrap().stability, 9.5);
+        let memory_state = updated.memory_state.unwrap();
+        assert_eq!(memory_state.stability, 9.5);
+        let fsrs = fsrs::FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+        assert!((s90 - 9.5).abs() < 0.01, "{s90}");
         assert_eq!(updated.desired_retention, Some(0.75));
         assert_eq!(
             col.storage.get_revlog_entries_for_card(card.id)?.len(),

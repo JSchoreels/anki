@@ -150,6 +150,11 @@ impl Collection {
         debug!("check review log");
         self.check_revlog(&mut out)?;
 
+        debug!("foreign FSRS memory states");
+        let foreign_cards = self.storage.card_ids_with_foreign_fsrs_state()?;
+        out.card_properties_invalid +=
+            self.repair_foreign_fsrs_memory_states_inner(foreign_cards)?;
+
         debug!("missing decks");
         self.check_missing_deck_names(&mut out)?;
 

@@ -435,7 +435,16 @@ impl Backend {
         };
 
         // ensure re-opened regardless of outcome
-        col.replace(builder.build()?);
+        let mut reopened = builder.build()?;
+        if !self.server {
+            if let Err(err) = reopened.repair_foreign_fsrs_memory_states() {
+                tracing::warn!(
+                    ?err,
+                    "repairing foreign FSRS memory states after full sync failed"
+                );
+            }
+        }
+        col.replace(reopened);
 
         let result = match result {
             Ok(sync_result) => {

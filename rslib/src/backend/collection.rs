@@ -24,7 +24,13 @@ impl BackendCollectionService for Backend {
             .set_tr(self.tr.clone())
             .set_shared_progress_state(self.progress_state.clone());
 
-        *guard = Some(builder.build()?);
+        let mut col = builder.build()?;
+        if !self.server {
+            if let Err(err) = col.repair_foreign_fsrs_memory_states() {
+                tracing::warn!(?err, "repairing foreign FSRS memory states on open failed");
+            }
+        }
+        *guard = Some(col);
 
         Ok(())
     }

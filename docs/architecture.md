@@ -481,7 +481,11 @@ Current exact-vs-scalar status:
 - The scheduler's internal stability is stored separately in `card.data.s_int`
   on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
   math use `s_int`; exact FSRS-7 retrievability also uses `s_fast` and `d`.
-  Legacy card data without `s_int` treats `s` as both stability values.
+  The read fallback for legacy card data without `s_int` initially treats `s`
+  as both stability values. With FSRS enabled, collection open, normal sync,
+  scheduled `.apkg` import, and Check Database replace that incomplete state
+  from usable review history or from the complete model state whose S90 is the
+  stored `s`, without changing the card's interval or due date.
 - FSRS-7's fast stability trace is stored in `card.data.s_fast` on new FSRS
   writes. Legacy card data without `s_fast` treats the internal slow stability
   as the fast trace fallback.
@@ -502,8 +506,11 @@ Current exact-vs-scalar status:
   The GUI `card_info_will_add_rows` hook appends display-only `label`/`value`
   rows to the Card Info response after the backend stats have been read; these
   rows are not persisted to collection storage.
-- Add-on helper APIs expose scalar-compatible interval-at-target-retrievability
-  math:
+- The add-on `fsrs_next_interval(card_id, stability, desired_retention)` helper
+  treats `stability` as the displayed S90 and derives a complete state before
+  calculating the requested interval.
+- Other add-on helper APIs expose scalar-compatible
+  interval-at-target-retrievability math:
     - `fsrs_interval_at_retrievability(card_id, stability, target_retrievability)`
     - `fsrs_interval_at_retrievability_batch([{card_id, stability}, ...], target_retrievability)`
     - `fsrs_interval_at_retrievability_variable_batch([{card_id, stability, target_retrievability}, ...])`

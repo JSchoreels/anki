@@ -1412,6 +1412,7 @@ class Collection(DeprecatedNamesMixin):
     def fsrs_next_interval(
         self, card_id: CardId, stability: float, desired_retention: float
     ) -> float:
+        """Return the interval for a displayed stability (S90) and retention."""
         return self._backend.fsrs_next_interval(
             card_id=card_id,
             stability=stability,

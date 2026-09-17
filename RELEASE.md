@@ -24,6 +24,9 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Keep S90 and FSRS-7's internal stability distinct when converting legacy
+  schedules, serving add-on interval requests, rescheduling, and accepting
+  cards from clients that do not preserve FSRS-7's extra state fields.
 - Make FSRS-7 use exact fractional elapsed time and unrounded sub-day answer
   intervals, with a consistent 12-hour cutoff across review and learning cards.
 - Keep RWKV-Curve answer intervals and S90 values fractional until scheduling,

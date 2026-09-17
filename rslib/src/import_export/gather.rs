@@ -29,6 +29,8 @@ pub(super) struct ExchangeData {
     pub(super) media_filenames: HashSet<String>,
     pub(super) days_elapsed: u32,
     pub(super) creation_utc_offset: Option<i32>,
+    /// Card ids in the source package whose FSRS state lacks internal fields.
+    pub(super) foreign_fsrs_card_ids: HashSet<CardId>,
 }
 
 impl ExchangeData {

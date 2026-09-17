@@ -586,7 +586,8 @@ interval is the RWKV S90 equivalent. The selected answer's S90 is written to the
 card memory-state payload as `memory_state.stability`, which is the user-facing
 S90 field consumed by stats and Browser stability views. Existing FSRS
 `memory_state.stability_internal` values are not overwritten by the RWKV S90
-write.
+write. If the card has no FSRS state yet, Anki derives the complete state for
+the card's resolved preset whose S90 matches the RWKV value.
 
 The deck cogwheel's **RWKV** submenu supports rescheduling either the selected
 deck tree or all decks. Both operations update the stored RWKV memory state,
@@ -599,8 +600,9 @@ current/query RWKV-Curve, not a
 hypothetical answer-button curve, to compute the target-retention interval and
 the current S90 value. The backend applies those values to the card without
 writing a review-log entry: `memory_state.stability` is updated to the RWKV S90,
-existing `memory_state.stability_internal` is preserved, the review interval and
-due day are recomputed from the card's last review day. New, learning,
+existing `memory_state.stability_internal` is preserved (or a matching complete
+state is created when absent), and the review interval and due day are
+recomputed from the card's last review day. New, learning,
 relearning, suspended, and filtered cards are not changed by this maintenance
 action.
 

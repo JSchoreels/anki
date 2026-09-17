@@ -78,7 +78,7 @@ impl Context<'_> {
         notetype_map: &HashMap<NoteId, NotetypeId>,
         remapped_templates: &HashMap<NotetypeId, TemplateMap>,
         imported_decks: &HashMap<DeckId, DeckId>,
-    ) -> Result<()> {
+    ) -> Result<Vec<CardId>> {
         let mut ctx = CardContext::new(
             self.usn,
             self.data.days_elapsed,
@@ -92,7 +92,13 @@ impl Context<'_> {
             return Err(AnkiError::SchedulerUpgradeRequired);
         }
         ctx.import_cards(mem::take(&mut self.data.cards))?;
-        ctx.import_revlog(mem::take(&mut self.data.revlog))
+        ctx.import_revlog(mem::take(&mut self.data.revlog))?;
+        Ok(self
+            .data
+            .foreign_fsrs_card_ids
+            .iter()
+            .filter_map(|old_id| ctx.imported_cards.get(old_id).copied())
+            .collect())
     }
 }
 

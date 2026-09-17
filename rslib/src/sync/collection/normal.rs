@@ -135,6 +135,14 @@ impl NormalSyncer<'_> {
         self.process_unchunked_changes(&state).await?;
         debug!("begin stream from server");
         self.process_chunks_from_server(&state).await?;
+        let foreign_cards = self.col.storage.card_ids_with_foreign_fsrs_state()?;
+        match self
+            .col
+            .repair_foreign_fsrs_memory_states_inner(foreign_cards)
+        {
+            Ok(cards) => debug!(cards, "repaired foreign FSRS memory states"),
+            Err(err) => tracing::warn!(?err, "repairing foreign FSRS memory states failed"),
+        }
         debug!("begin stream to server");
         self.send_chunks_to_server(&state).await?;
 

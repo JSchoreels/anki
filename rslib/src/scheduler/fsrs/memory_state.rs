@@ -24,6 +24,8 @@ use crate::scheduler::fsrs::params::include_same_day_for_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
+use crate::scheduler::fsrs::preset::FsrsPreset;
+use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 use crate::scheduler::states::fuzz::with_review_fuzz;
@@ -32,6 +34,7 @@ use crate::search::Negated;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::StateKind;
+use crate::storage::comma_separated_ids;
 
 #[cfg(test)]
 const S_MIN: f32 = 0.0001;
@@ -152,20 +155,19 @@ pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     Ok(retrievability)
 }
 
-pub(crate) fn fsrs_next_interval_for_params(
+/// Return the interval at `desired_retention` for the state whose S90 is
+/// `stability`.
+///
+/// The public add-on API exposes the same stability shown on the card (S90),
+/// not FSRS-7's internal slow stability.
+pub(crate) fn fsrs_next_interval_for_s90(
     params: &[f32],
     stability: f32,
     desired_retention: f32,
 ) -> Result<f32> {
     let fsrs = FSRS::new(params)?;
-    Ok(fsrs.next_interval_for_state(
-        MemoryState {
-            stability,
-            difficulty: 5.0,
-            stability_fast: stability,
-        },
-        desired_retention.clamp(0.0001, 0.9999),
-    ))
+    let state = memory_state_from_sm2_with_params(&fsrs, params, 2.5, stability, 0.9)?;
+    Ok(fsrs.next_interval_for_state(state, desired_retention.clamp(0.0001, 0.9999)))
 }
 
 pub(crate) fn fsrs_interval_at_retrievability_for_params(
@@ -205,11 +207,13 @@ pub(crate) fn fsrs_memory_state_for_fsrs(
     }
 }
 
-/// Compute memory state from SM-2 fields.
+/// Compute the memory state whose forgetting curve reaches `sm2_retention` at
+/// `interval` days.
 ///
-/// FSRS-7 no longer has a legacy scalar decay slot, so conversion is delegated
-/// to the selected FSRS implementation to initialize dual-trace state
-/// consistently.
+/// The fsrs crate supplies the state shape. Its FSRS-7 conversion puts the
+/// interval in the internal slow-stability slot, which is not the requested
+/// point on the two-component curve, so both stability traces are scaled while
+/// preserving their ratio and difficulty.
 pub(crate) fn memory_state_from_sm2_with_params(
     fsrs: &FSRS,
     _params: &[f32],
@@ -217,7 +221,120 @@ pub(crate) fn memory_state_from_sm2_with_params(
     interval: f32,
     sm2_retention: f32,
 ) -> Result<MemoryState> {
-    Ok(fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?)
+    let shape = fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?;
+    Ok(scale_state_to_interval(
+        fsrs,
+        shape,
+        interval,
+        sm2_retention,
+    ))
+}
+
+/// Build a complete model state from an externally visible S90 value.
+pub(crate) fn fsrs_memory_state_for_s90(params: &[f32], s90: f32) -> Result<FsrsMemoryState> {
+    let fsrs = FSRS::new(params)?;
+    let state = memory_state_from_sm2_with_params(&fsrs, params, 2.5, s90, 0.9)?;
+    Ok(FsrsMemoryState {
+        stability: s90,
+        stability_internal: state.stability,
+        stability_fast: Some(state.stability_fast),
+        difficulty: state.difficulty,
+    })
+}
+
+/// Build a complete model state from an S90 and difficulty supplied by an
+/// older client that did not preserve FSRS-7's internal fields.
+pub(crate) fn fsrs_memory_state_for_s90_and_difficulty(
+    fsrs: &FSRS,
+    s90: f32,
+    difficulty: f32,
+) -> Option<FsrsMemoryState> {
+    let shape = fsrs.memory_state_from_sm2(2.5, s90, 0.9).ok()?;
+    let shape = MemoryState {
+        difficulty: difficulty.clamp(1.0, 10.0),
+        ..shape
+    };
+    let state = scale_state_to_interval(fsrs, shape, s90, 0.9);
+    Some(FsrsMemoryState {
+        stability: s90,
+        stability_internal: state.stability,
+        stability_fast: Some(state.stability_fast),
+        difficulty: state.difficulty,
+    })
+}
+
+const STABILITY_MIN: f32 = 0.0001;
+const STABILITY_MAX: f32 = 36_500.0;
+
+/// Scale both traces of `shape` until its forgetting curve reaches
+/// `retention` at `interval`, while preserving the trace ratio and difficulty.
+fn scale_state_to_interval(
+    fsrs: &FSRS,
+    shape: MemoryState,
+    interval: f32,
+    retention: f32,
+) -> MemoryState {
+    const TOLERANCE: f64 = 1e-5;
+    const MAX_STEPS: usize = 64;
+
+    let ratio = shape.stability_fast / shape.stability;
+    if !(ratio.is_finite()
+        && ratio > 0.0
+        && interval.is_finite()
+        && interval > 0.0
+        && retention > 0.0
+        && retention < 1.0)
+    {
+        return shape;
+    }
+
+    let target = (interval.clamp(STABILITY_MIN, STABILITY_MAX) as f64).ln();
+    let state_at = |log_stability: f64| {
+        let stability = (log_stability.exp() as f32).clamp(STABILITY_MIN, STABILITY_MAX);
+        MemoryState {
+            stability,
+            stability_fast: (stability * ratio).clamp(STABILITY_MIN, STABILITY_MAX),
+            difficulty: shape.difficulty,
+        }
+    };
+    let error_at = |log_stability: f64| {
+        let reached = fsrs.interval_at_retrievability(state_at(log_stability), retention);
+        (reached.max(f32::MIN_POSITIVE) as f64).ln() - target
+    };
+
+    let mut low = (STABILITY_MIN as f64).ln();
+    let mut high = (STABILITY_MAX as f64).ln();
+    let mut x = (shape.stability.clamp(STABILITY_MIN, STABILITY_MAX) as f64).ln();
+    let mut error = error_at(x);
+    let mut previous: Option<(f64, f64)> = None;
+    for _ in 0..MAX_STEPS {
+        if !error.is_finite() || error.abs() <= TOLERANCE {
+            break;
+        }
+        if error < 0.0 {
+            low = x;
+        } else {
+            high = x;
+        }
+        let mut next = match previous {
+            Some((previous_x, previous_error)) if error != previous_error => {
+                x - error * (x - previous_x) / (error - previous_error)
+            }
+            _ => x - error,
+        };
+        if !(next > low && next < high) {
+            next = 0.5 * (low + high);
+        }
+        previous = Some((x, error));
+        x = next;
+        error = error_at(x);
+    }
+
+    if error.is_finite() {
+        state_at(x)
+    } else {
+        shape
+    }
 }
 
 #[derive(Debug)]
@@ -407,15 +524,12 @@ impl Collection {
                     let days_elapsed = timing.next_day_at.elapsed_days_since(*last_review) as i32;
                     let original_interval = card.interval;
                     let previous_interval = last_info.previous_interval.unwrap_or(0);
-                    let interval = fsrs.next_interval(
-                        Some(
-                            card.memory_state
-                                .expect("We set it before this function is called")
-                                .stability,
-                        ),
+                    let interval = fsrs.next_interval_for_state(
+                        card.memory_state
+                            .expect("We set it before this function is called")
+                            .into(),
                         card.desired_retention
                             .expect("We set it before this function is called"),
-                        0,
                     );
                     let min_interval = minimum_review_fuzz_interval(
                         interval,
@@ -680,7 +794,7 @@ impl Collection {
         desired_retention: f32,
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
-        fsrs_next_interval_for_params(&params, stability, desired_retention)
+        fsrs_next_interval_for_s90(&params, stability, desired_retention)
     }
 
     pub fn fsrs_interval_at_retrievability_for_card(
@@ -922,6 +1036,93 @@ impl Collection {
         self.storage.update_card(card)?;
         Ok(())
     }
+
+    /// Restore complete FSRS state on cards written by clients that preserve
+    /// only the public S90 and difficulty fields.
+    pub(crate) fn repair_foreign_fsrs_memory_states(&mut self) -> Result<usize> {
+        if !self.get_config_bool(BoolKey::Fsrs) {
+            return Ok(0);
+        }
+        let card_ids = self.storage.card_ids_with_foreign_fsrs_state()?;
+        if card_ids.is_empty() {
+            return Ok(0);
+        }
+        self.transact_no_undo(|col| col.repair_foreign_fsrs_memory_states_inner(card_ids))
+    }
+
+    /// Repair a known set of imported/synced cards. Expects a transaction.
+    pub(crate) fn repair_foreign_fsrs_memory_states_inner(
+        &mut self,
+        card_ids: Vec<CardId>,
+    ) -> Result<usize> {
+        if card_ids.is_empty() || !self.get_config_bool(BoolKey::Fsrs) {
+            return Ok(0);
+        }
+
+        let cards = self.all_cards_for_ids(&card_ids, false)?;
+        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+        let mut groups: HashMap<(FsrsPresetId, u32), (FsrsPreset, Vec<Card>)> = HashMap::new();
+        for card in cards {
+            let preset = presets_by_card.get(&card.id).or_not_found(card.id)?.clone();
+            groups
+                .entry((preset.id.clone(), preset.desired_retention.to_bits()))
+                .or_insert_with(|| (preset, Vec::new()))
+                .1
+                .push(card);
+        }
+
+        let timing = self.timing_today()?;
+        let usn = self.usn()?;
+        let mut repaired = 0;
+        for (_preset_id, (preset, cards)) in groups {
+            let fsrs = FSRS::new(&preset.params)?;
+            let ids = cards.iter().map(|card| card.id).collect_vec();
+            let revlog = self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&ids)))?;
+            let items: HashMap<CardId, FsrsItemForMemoryState> = fsrs_items_for_memory_states(
+                &fsrs,
+                &preset.params,
+                revlog,
+                timing.next_day_at,
+                preset.historical_retention,
+                preset.ignore_revlogs_before_ms()?,
+            )?
+            .into_iter()
+            .filter_map(|(card_id, item)| item.map(|item| (card_id, item)))
+            .collect();
+            let decay = get_decay_from_params(&preset.params);
+
+            for mut card in cards {
+                let original = card.clone();
+                let Some(stored) = card.memory_state else {
+                    continue;
+                };
+                let memory_state = if let Some(item) = items.get(&card.id) {
+                    let state = fsrs.memory_state(item.item.clone(), item.starting_state)?;
+                    fsrs_memory_state_for_fsrs(&fsrs, state)
+                } else {
+                    let Some(state) = fsrs_memory_state_for_s90_and_difficulty(
+                        &fsrs,
+                        stored.stability,
+                        stored.difficulty,
+                    ) else {
+                        continue;
+                    };
+                    state
+                };
+
+                card.memory_state = Some(memory_state);
+                card.desired_retention = Some(preset.desired_retention);
+                card.decay = Some(decay);
+                if items.contains_key(&card.id) {
+                    card.last_review_time = self.storage.time_of_last_review(card.id)?;
+                }
+                self.update_card_inner(&mut card, original, usn)?;
+                repaired += 1;
+            }
+        }
+
+        Ok(repaired)
+    }
 }
 
 impl Card {
@@ -1085,6 +1286,12 @@ pub(crate) fn fsrs_item_for_memory_state(
             // if the ease factor is less than 1.1, the revlog entry is generated by FSRS
             if first_review.ease_factor <= 1.1 {
                 starting_state.difficulty = (first_review.ease_factor - 0.1) * 9.0 + 1.0;
+                starting_state = scale_state_to_interval(
+                    fsrs,
+                    starting_state,
+                    first_review.interval,
+                    historical_retention,
+                );
             }
             // remove the first review because it has been converted to the starting state
             item.reviews.remove(0);
@@ -1554,17 +1761,136 @@ mod tests {
     }
 
     #[test]
-    fn fsrs7_sm2_conversion_handles_small_legacy_decay_slot() -> Result<()> {
-        let params = vec![
+    fn fsrs7_sm2_conversion_preserves_the_interval_at_historical_retention() -> Result<()> {
+        let alternate_params = vec![
             0.1558, 3.0107, 6.2423, 22.3570, 5.6837, 0.5279, 2.2999, 1.9751, 0.2886, 1.2884,
             0.8518, 0.0149, 0.7189, 0.6297, 0.3777, 2.8929, 0.9740, 0.5923, 3.6757, 0.8299, 0.0010,
             0.6994, 2.6457, 0.5673, 1.3138, 2.5067, 0.9955, 0.0499, 0.4071, 0.5686, 0.8969, 0.2210,
             0.8008, 0.0147,
         ];
-        let fsrs = FSRS::new(&params)?;
-        let state = memory_state_from_sm2_with_params(&fsrs, &params, 2.5, 100.0, 0.9)?;
-        assert!(state.stability.is_finite());
-        assert!(state.difficulty.is_finite());
+        for params in [DEFAULT_PARAMETERS.to_vec(), alternate_params] {
+            let fsrs = FSRS::new(&params)?;
+            for expected_interval in [1.0, 30.0, 100.0] {
+                let state =
+                    memory_state_from_sm2_with_params(&fsrs, &params, 2.5, expected_interval, 0.9)?;
+                assert!(state.stability.is_finite());
+                assert!(state.difficulty.is_finite());
+                let interval = fsrs.interval_at_retrievability(state, 0.9);
+                assert!((interval - expected_interval).abs() < 0.01, "{interval}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn truncated_fsrs7_history_preserves_interval_after_restoring_difficulty() -> Result<()> {
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let item = fsrs_item_for_memory_state(
+            &fsrs,
+            &DEFAULT_PARAMETERS,
+            vec![
+                RevlogEntry {
+                    ease_factor: 1050,
+                    interval: 30,
+                    ..revlog(RevlogReviewKind::Review, 40)
+                },
+                revlog(RevlogReviewKind::Review, 0),
+            ],
+            TimestampSecs::now(),
+            0.9,
+            0.into(),
+        )?
+        .unwrap();
+        let state = item.starting_state.unwrap();
+
+        assert!((state.difficulty - 9.55).abs() < 0.001);
+        let interval = fsrs.interval_at_retrievability(state, 0.9);
+        assert!((interval - 30.0).abs() < 0.01, "{interval}");
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_next_interval_api_treats_stability_as_s90() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card_id = col.get_first_card().id;
+
+        let interval = col.fsrs_next_interval_for_card(card_id, 100.0, 0.9)?;
+
+        assert!((interval - 100.0).abs() < 0.01, "{interval}");
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_fsrs_state_without_revlog_is_rebuilt_from_s90() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 30;
+        card.due = 123;
+        col.storage.update_card(&card)?;
+        col.storage.db.execute(
+            r#"update cards set data = '{"s":20.0,"d":6.0}' where id = ?"#,
+            [card.id],
+        )?;
+
+        assert_eq!(
+            col.storage.card_ids_with_foreign_fsrs_state()?,
+            vec![card.id]
+        );
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 1);
+
+        let repaired = col.storage.get_card(card.id)?.unwrap();
+        let state = repaired.memory_state.unwrap();
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        assert_eq!(state.stability, 20.0);
+        assert_eq!(state.difficulty, 6.0);
+        assert_eq!(repaired.interval, 30);
+        assert_eq!(repaired.due, 123);
+        let s90 = fsrs.interval_at_retrievability(state.into(), 0.9);
+        assert!((s90 - 20.0).abs() < 0.01, "{s90}");
+        assert!(col.storage.card_ids_with_foreign_fsrs_state()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_fsrs_state_with_revlog_is_rebuilt_from_history() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 30;
+        col.storage.update_card(&card)?;
+        let mut entry = revlog(RevlogReviewKind::Review, 10);
+        entry.cid = card.id;
+        entry.interval = 30;
+        entry.ease_factor = 2500;
+        col.storage.add_revlog_entry(&entry, false)?;
+        let expected: FsrsMemoryState = col.compute_memory_state(card.id)?.state.unwrap().into();
+        col.storage.db.execute(
+            r#"update cards set data = '{"s":3.0,"d":8.0}' where id = ?"#,
+            [card.id],
+        )?;
+
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 1);
+
+        let repaired = col.storage.get_card(card.id)?.unwrap();
+        let actual = repaired.memory_state.unwrap();
+        assert!(
+            (actual.stability - expected.stability).abs() < 1e-4,
+            "actual {actual:?}, expected {expected:?}"
+        );
+        assert!((actual.stability_internal - expected.stability_internal).abs() < 1e-4);
+        assert!((actual.difficulty - expected.difficulty).abs() < 1e-4);
+        assert_eq!(
+            repaired.last_review_time,
+            Some(TimestampSecs(entry.id.0 / 1000))
+        );
         Ok(())
     }
 
@@ -1587,9 +1913,10 @@ mod tests {
         let actual = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
         assert!((actual - expected).abs() < 1e-6);
 
-        let expected_interval =
-            FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
-        let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
+        let fsrs = FSRS::new(&params)?;
+        let s90_state = memory_state_from_sm2_with_params(&fsrs, &params, 2.5, stability, 0.9)?;
+        let expected_interval = fsrs.next_interval_for_state(s90_state, desired_retention);
+        let actual_interval = fsrs_next_interval_for_s90(&params, stability, desired_retention)?;
         assert!((actual_interval - expected_interval).abs() < 1e-6);
 
         let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
@@ -1666,7 +1993,7 @@ mod tests {
 
         let expected_interval =
             FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
-        let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
+        let actual_interval = fsrs_next_interval_for_s90(&params, stability, desired_retention)?;
         assert!((actual_interval - expected_interval).abs() < 1e-6);
 
         let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(

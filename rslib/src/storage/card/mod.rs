@@ -121,6 +121,25 @@ fn row_to_new_card(row: &Row) -> result::Result<NewCard, rusqlite::Error> {
 }
 
 impl super::SqliteStorage {
+    /// Return cards with an FSRS state written by a client that did not
+    /// preserve the model's internal stability fields.
+    pub(crate) fn card_ids_with_foreign_fsrs_state(&self) -> Result<Vec<CardId>> {
+        self.db
+            .prepare_cached(
+                r#"select id, data from cards
+where data like '%"s":%' and data not like '%"s_int":%'"#,
+            )?
+            .query_and_then([], |row| -> Result<Option<CardId>> {
+                let data: CardData = row.get(1)?;
+                let is_foreign = data.fsrs_stability.is_some()
+                    && data.fsrs_difficulty.is_some()
+                    && data.fsrs_stability_internal.is_none();
+                Ok(is_foreign.then(|| row.get(0)).transpose()?)
+            })?
+            .filter_map(Result::transpose)
+            .collect()
+    }
+
     pub fn get_card(&self, cid: CardId) -> Result<Option<Card>> {
         self.db
             .prepare_cached(concat!(include_str!("get_card.sql"), " where id = ?"))?
