@@ -153,6 +153,27 @@ each card's deck config separately. This shared selection applies to stats,
 search, reviewer refreshes, and other callers without requiring them to choose a
 resolution strategy.
 
+Large batches derive the built-in preset once per home deck and share immutable
+preset data across matching cards, including add-on overlay matches. Home-deck
+grouping preserves desired-retention overrides on decks sharing a deck config.
+The result map reserves capacity for the batch. Derived built-in presets live
+only for that request, so later deck or configuration changes are resolved anew.
+
+Retrievability and relative-overdueness review queue builds use this shared
+batch resolver and construct one FSRS model per resolved preset for each build.
+Candidate scheduling state is read in bulk from the scheduling index using an
+11-column projection, without a preliminary due-date sort or a separate lookup
+for each card. An explicit queue-state type keeps only the fields used by queue
+construction and exact scoring. The shared card-data JSON decoder still handles
+memory state, retention, timestamps, and malformed-data defaults.
+Preset resolution accepts card ID and home-deck ID; other callers can continue
+to pass full cards through the existing wrapper. The queue selects these small
+inputs only for candidates with memory state, preserving the memoryless fallback.
+They still score every eligible due card from its complete current memory state
+before applying deck limits. No retrievability scores are cached across queue
+builds. See [the queue benchmark](fsrs-queue-performance.MD) for measurements and
+the reproduction command.
+
 ## Batch Optimization
 
 Add-ons that manage FSRS presets can optimize multiple draft presets with

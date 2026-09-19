@@ -226,6 +226,18 @@ rwkv-predict-bench *args:
 rwkv-query-math-bench:
     cargo test -p anki --release --lib rwkv_query_math_benchmark -- --ignored --nocapture
 
+# Measure exact FSRS queue sorting and review transitions on synthetic collections.
+fsrs-queue-bench:
+    cargo test -p anki --release --lib fsrs_queue_benchmark -- --ignored --nocapture
+
+# Profile the stages of exact FSRS queue builds with daily limits of 200 and 9,999.
+fsrs-queue-profile:
+    cargo test -p anki --release --lib fsrs_queue_profile -- --ignored --nocapture
+
+# Rebuild a 100,000-card queue repeatedly and print its PID for a native CPU sampler.
+fsrs-queue-sample:
+    cargo test -p anki --release --lib fsrs_queue_sampling -- --ignored --nocapture
+
 # Remove build outputs from out/ (pass keep-env to keep node_modules/pyenv); macOS/Linux
 clean *args:
     ./tools/clean {{ args }}

@@ -526,7 +526,7 @@ fn simulation_preset_route(
 
 fn simulation_addon_preset_for_card(
     card_id: CardId,
-    preset: FsrsPreset,
+    preset: Arc<FsrsPreset>,
     max_interval: u32,
     apply_dynamic_desired_retention: bool,
 ) -> Result<Option<(i64, SimulationPreset)>> {
@@ -536,7 +536,11 @@ fn simulation_addon_preset_for_card(
 
     Ok(Some((
         card_id.0,
-        simulation_preset_from_fsrs_preset(preset, max_interval, apply_dynamic_desired_retention)?,
+        simulation_preset_from_fsrs_preset(
+            Arc::unwrap_or_clone(preset),
+            max_interval,
+            apply_dynamic_desired_retention,
+        )?,
     )))
 }
 

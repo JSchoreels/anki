@@ -29,6 +29,10 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Reduce pauses when rebuilding retrievability-sorted review queues with large
+  due-card backlogs by reading candidate state and resolving FSRS presets in
+  batches, decoding only the needed scheduling columns, avoiding redundant
+  sorting and allocations, and reusing models and immutable preset data.
 - Keep S90 and FSRS-7's internal stability distinct when converting legacy
   schedules, serving add-on interval requests, rescheduling, and accepting
   cards from clients that do not preserve FSRS-7's extra state fields.

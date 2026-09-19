@@ -161,9 +161,10 @@ impl LoadBalancer {
                                 .collect()
                         });
 
-                        for (cid, nid) in cards {
-                            day[day_index].add(cid, nid);
-                        }
+                        day[day_index] = LoadBalancerDay {
+                            notes: cards.iter().map(|(_, nid)| *nid).collect(),
+                            cards,
+                        };
                     }
 
                     deckconfig_group
@@ -487,6 +488,52 @@ pub(crate) fn interval_to_weekday(interval: u32, next_day_at: TimestampSecs) -> 
 mod test {
     use super::*;
     use crate::scheduler::states::StateContext;
+
+    #[test]
+    fn initialization_preserves_day_loads_and_siblings_across_decks() -> Result<()> {
+        let mut col = Collection::new();
+        let mut other_config = DeckConfig {
+            id: DeckConfigId(0),
+            ..Default::default()
+        };
+        col.add_or_update_deck_config(&mut other_config)?;
+        let presets = HashMap::from([
+            (DeckId(1), DeckConfigId(1)),
+            (DeckId(2), DeckConfigId(1)),
+            (DeckId(3), other_config.id),
+        ]);
+        let mut same_day_siblings = Vec::new();
+        for (deck, note, due) in [(1, 11, 10), (2, 11, 10), (1, 12, 11), (3, 11, 10)] {
+            let mut card = Card {
+                deck_id: DeckId(deck),
+                note_id: NoteId(note),
+                due,
+                ..Default::default()
+            };
+            col.add_card(&mut card)?;
+            if deck < 3 && due == 10 {
+                same_day_siblings.push(card.id);
+            }
+        }
+        let mut balancer = LoadBalancer::new(
+            10,
+            presets,
+            ReviewFuzzConfig::default(),
+            TimestampSecs(0),
+            &col.storage,
+        )?;
+        let days = balancer.days_by_preset.get_mut(&DeckConfigId(1)).unwrap();
+        assert_eq!(days[0].cards.len(), 2);
+        assert_eq!(days[1].cards.len(), 1);
+        assert!(days[0].has_sibling(&NoteId(11)));
+        assert!(days[1].has_sibling(&NoteId(12)));
+        days[0].remove(same_day_siblings[0]);
+        assert!(days[0].has_sibling(&NoteId(11)));
+        days[0].remove(same_day_siblings[1]);
+        assert!(!days[0].has_sibling(&NoteId(11)));
+        assert_eq!(balancer.days_by_preset[&other_config.id][0].cards.len(), 1);
+        Ok(())
+    }
 
     #[test]
     fn cache_days_expand_to_cover_configured_fuzz() {

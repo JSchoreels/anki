@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 use fsrs::DEFAULT_PARAMETERS;
@@ -29,6 +30,22 @@ use crate::search::TryIntoSearch;
 pub(crate) const FSRS_PRESET_OVERLAY_CONFIG_KEY: &str = "fsrsPresetOverlay";
 const OUTDATED_FSRS7_PREVIEW_PARAM_COUNT: usize = 35;
 const FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS: usize = 128;
+
+/// Preset routing needs identity and home deck, not the full card state.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FsrsPresetCard {
+    pub id: CardId,
+    pub home_deck_id: DeckId,
+}
+
+impl From<&Card> for FsrsPresetCard {
+    fn from(card: &Card) -> Self {
+        Self {
+            id: card.id,
+            home_deck_id: card.original_deck_id.or(card.deck_id),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FsrsPresetId {
@@ -290,7 +307,16 @@ impl Collection {
     pub(crate) fn fsrs_presets_for_cards(
         &mut self,
         cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
+        self.fsrs_presets_for_card_inputs(
+            &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+        )
+    }
+
+    pub(crate) fn fsrs_presets_for_card_inputs(
+        &mut self,
+        cards: &[FsrsPresetCard],
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         if cards.len() <= FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS {
             self.fsrs_presets_for_cards_directly(cards)
         } else {
@@ -300,12 +326,12 @@ impl Collection {
 
     fn fsrs_presets_for_cards_directly(
         &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+        cards: &[FsrsPresetCard],
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         let start = Instant::now();
         let presets_by_card = cards
             .iter()
-            .map(|card| Ok((card.id, self.fsrs_preset_for_card(card)?)))
+            .map(|card| Ok((card.id, Arc::new(self.fsrs_preset_for_card_input(*card)?))))
             .collect::<Result<_>>()?;
 
         tracing::debug!(
@@ -319,24 +345,33 @@ impl Collection {
 
     fn fsrs_presets_for_cards_in_batch(
         &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+        cards: &[FsrsPresetCard],
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         let start = Instant::now();
         let mut presets_by_card = self.fsrs_overlay_presets_for_cards(cards)?;
         let overlay_matches = presets_by_card.len();
+        presets_by_card.reserve(cards.len() - overlay_matches);
         let fallback_start = Instant::now();
         let decks_by_id = self.storage.get_decks_map()?;
         let configs_by_id = self.storage.get_deck_config_map()?;
+        let mut presets_by_deck = HashMap::new();
 
         for card in cards {
             if presets_by_card.contains_key(&card.id) {
                 continue;
             }
-            let deck_id = card.original_deck_id.or(card.deck_id);
-            let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
-            let config_id = deck.config_id().or_invalid("home deck is filtered")?;
-            let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
-            presets_by_card.insert(card.id, FsrsPreset::from_deck_config(config, deck)?);
+            let deck_id = card.home_deck_id;
+            // Decks sharing a config may have different desired-retention overrides.
+            let preset = match presets_by_deck.entry(deck_id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
+                    let config_id = deck.config_id().or_invalid("home deck is filtered")?;
+                    let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
+                    entry.insert(Arc::new(FsrsPreset::from_deck_config(config, deck)?))
+                }
+            };
+            presets_by_card.insert(card.id, preset.clone());
         }
 
         tracing::debug!(
@@ -352,6 +387,10 @@ impl Collection {
     }
 
     pub(crate) fn fsrs_preset_for_card(&mut self, card: &Card) -> Result<FsrsPreset> {
+        self.fsrs_preset_for_card_input(card.into())
+    }
+
+    fn fsrs_preset_for_card_input(&mut self, card: FsrsPresetCard) -> Result<FsrsPreset> {
         self.fsrs_preset_overlay_cache()?;
         if let Some(preset) = self
             .state
@@ -423,7 +462,7 @@ impl Collection {
             }
         }
 
-        let deck_id = card.original_deck_id.or(card.deck_id);
+        let deck_id = card.home_deck_id;
         let deck = self.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
         self.fsrs_preset_for_deck(&deck)
     }
@@ -491,15 +530,19 @@ impl Collection {
 
     fn fsrs_overlay_presets_for_cards(
         &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+        cards: &[FsrsPresetCard],
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         let cache = self.fsrs_preset_overlay_cache()?;
         if cache.rules.is_empty() || cards.is_empty() {
             return Ok(HashMap::new());
         }
 
         let start = Instant::now();
-        let presets = cache.presets.clone();
+        let presets: HashMap<_, _> = cache
+            .presets
+            .iter()
+            .map(|(id, preset)| (id.clone(), Arc::new(preset.clone())))
+            .collect();
         let rules = cache.rules.clone();
         let uses_first_grade = rules.iter().any(|rule| node_uses_first_grade(&rule.node));
         let mut presets_by_card = HashMap::new();
@@ -729,6 +772,57 @@ mod test {
         assert_eq!(preset.desired_retention, 0.82);
         assert_eq!(preset.historical_retention, 0.73);
         assert_eq!(preset.ignore_revlogs_before_date, "2024-01-02");
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_batch_preserves_home_deck_retention_overrides() -> Result<()> {
+        let mut col = Collection::new();
+        let mut lower = col.get_or_create_normal_deck("Lower")?;
+        lower.normal_mut()?.desired_retention = Some(0.8);
+        col.add_or_update_deck(&mut lower)?;
+        let mut higher = col.get_or_create_normal_deck("Higher")?;
+        higher.normal_mut()?.desired_retention = Some(0.95);
+        col.add_or_update_deck(&mut higher)?;
+        assert_eq!(lower.config_id(), higher.config_id());
+
+        let cards = [
+            Card {
+                id: CardId(1),
+                deck_id: lower.id,
+                ..Default::default()
+            },
+            Card {
+                id: CardId(2),
+                deck_id: higher.id,
+                ..Default::default()
+            },
+            Card {
+                id: CardId(3),
+                deck_id: higher.id,
+                original_deck_id: lower.id,
+                ..Default::default()
+            },
+        ];
+        let presets = col.fsrs_presets_for_cards_in_batch(
+            &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+        )?;
+        let targets = cards
+            .iter()
+            .map(|card| presets[&card.id].desired_retention)
+            .collect::<Vec<_>>();
+        assert_eq!(targets, vec![0.8, 0.95, 0.8]);
+
+        lower.normal_mut()?.desired_retention = Some(0.85);
+        col.add_or_update_deck(&mut lower)?;
+        let presets = col.fsrs_presets_for_cards_in_batch(
+            &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+        )?;
+        let targets = cards
+            .iter()
+            .map(|card| presets[&card.id].desired_retention)
+            .collect::<Vec<_>>();
+        assert_eq!(targets, vec![0.85, 0.95, 0.85]);
         Ok(())
     }
 

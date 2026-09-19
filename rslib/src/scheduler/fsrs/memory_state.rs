@@ -24,8 +24,6 @@ use crate::scheduler::fsrs::params::include_same_day_for_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
-use crate::scheduler::fsrs::preset::FsrsPreset;
-use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 use crate::scheduler::states::fuzz::with_review_fuzz;
@@ -1053,7 +1051,7 @@ impl Collection {
 
         let cards = self.all_cards_for_ids(&card_ids, false)?;
         let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
-        let mut groups: HashMap<(FsrsPresetId, u32), (FsrsPreset, Vec<Card>)> = HashMap::new();
+        let mut groups = HashMap::<_, (_, Vec<Card>)>::new();
         for card in cards {
             let preset = presets_by_card.get(&card.id).or_not_found(card.id)?.clone();
             groups

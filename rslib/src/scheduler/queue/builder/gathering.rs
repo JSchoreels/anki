@@ -4,18 +4,22 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::Hasher;
+use std::time::Instant;
 
 use fnv::FnvHasher;
+use fsrs::FSRS;
 
 use super::DueCard;
+use super::DueCardWithState;
 use super::NewCard;
 use super::QueueBuilder;
-use crate::card::Card;
+use crate::card::CardQueue;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
+use crate::scheduler::fsrs::preset::FsrsPresetCard;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
@@ -540,29 +544,46 @@ impl QueueBuilder {
         &mut self,
         col: &mut Collection,
     ) -> Result<()> {
-        let mut due_cards = Vec::new();
-        self.gather_intraday_learning_cards_for_retrievability_sort(col, &mut due_cards)?;
-        self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Learning, &mut due_cards)?;
-        self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Review, &mut due_cards)?;
+        let started = Instant::now();
+        self.gather_future_learning_cards_for_retrievability_sort(col)?;
+        let mut cards = col
+            .storage
+            .due_cards_with_state_in_active_decks(self.context.timing)?;
+        let mut due_cards = Vec::with_capacity(cards.len());
+        cards.retain(|candidate| {
+            let interday_or_review =
+                matches!(candidate.queue, CardQueue::Review | CardQueue::DayLearn);
+            let card = candidate.card;
+            if !interday_or_review && self.card_is_pinned(card.id) {
+                return false;
+            }
+            due_cards.push(DueCardForRetrievabilitySort {
+                card,
+                counts_towards_review_limit: interday_or_review
+                    && !self.card_ignores_review_limit(card),
+                interday_or_review,
+            });
+            true
+        });
+        let gathered = Instant::now();
+        let candidate_count = due_cards.len();
 
+        let keys = exact_review_order_keys(
+            col,
+            &cards,
+            self.context.timing,
+            self.context.sort_options.review_order,
+        )?;
+        let scored = Instant::now();
         let mut with_key = Vec::with_capacity(due_cards.len());
-        for candidate in due_cards {
-            with_key.push((
-                candidate,
-                exact_review_order_key(
-                    col,
-                    candidate.card.id,
-                    self.context.timing,
-                    self.context.sort_options.review_order,
-                )?,
-                fnvhash_due_card(&candidate.card),
-            ));
+        for (candidate, key) in due_cards.into_iter().zip(keys) {
+            with_key.push((candidate, key, fnvhash_due_card(&candidate.card)));
         }
         let descending = matches!(
             self.context.sort_options.review_order,
             ReviewCardOrder::RetrievabilityDescending
         );
-        with_key.sort_by(
+        with_key.sort_unstable_by(
             |(candidate_a, key_a, hash_a), (candidate_b, key_b, hash_b)| {
                 let ord = key_a.total_cmp(key_b);
                 let ord = if descending { ord.reverse() } else { ord };
@@ -570,6 +591,7 @@ impl QueueBuilder {
                     .then_with(|| candidate_a.card.id.cmp(&candidate_b.card.id))
             },
         );
+        let sorted = Instant::now();
 
         for (candidate, _, _) in with_key {
             if candidate.counts_towards_review_limit
@@ -595,6 +617,15 @@ impl QueueBuilder {
             }
         }
 
+        tracing::debug!(
+            candidates = candidate_count,
+            gathered_ms = (gathered - started).as_secs_f64() * 1_000.0,
+            scored_ms = (scored - gathered).as_secs_f64() * 1_000.0,
+            sorted_ms = (sorted - scored).as_secs_f64() * 1_000.0,
+            enqueued_ms = sorted.elapsed().as_secs_f64() * 1_000.0,
+            "FSRS queue gather profile"
+        );
+
         Ok(())
     }
 
@@ -613,52 +644,20 @@ impl QueueBuilder {
         Ok(())
     }
 
-    fn gather_intraday_learning_cards_for_retrievability_sort(
+    fn gather_future_learning_cards_for_retrievability_sort(
         &mut self,
         col: &mut Collection,
-        due_cards: &mut Vec<DueCardForRetrievabilitySort>,
     ) -> Result<()> {
         col.storage.for_each_intraday_card_in_active_decks(
             self.context.timing.next_day_at,
             |card| {
-                if self.card_is_pinned(card.id) {
-                    return;
-                }
-                if card.due <= self.context.timing.now.0 as i32 {
-                    due_cards.push(DueCardForRetrievabilitySort {
-                        card,
-                        counts_towards_review_limit: false,
-                        interday_or_review: false,
-                    });
-                } else {
+                if !self.card_is_pinned(card.id) && card.due > self.context.timing.now.0 as i32 {
                     self.learning.push(card);
                 }
             },
         )?;
 
         Ok(())
-    }
-
-    fn gather_due_cards_for_retrievability_sort(
-        &mut self,
-        col: &mut Collection,
-        kind: DueCardKind,
-        due_cards: &mut Vec<DueCardForRetrievabilitySort>,
-    ) -> Result<()> {
-        col.storage.for_each_due_card_in_active_decks(
-            self.context.timing,
-            ReviewCardOrder::Day,
-            kind,
-            self.context.fsrs,
-            |card| {
-                due_cards.push(DueCardForRetrievabilitySort {
-                    card,
-                    counts_towards_review_limit: !self.card_ignores_review_limit(card),
-                    interday_or_review: true,
-                });
-                Ok(true)
-            },
-        )
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
@@ -873,7 +872,7 @@ impl QueueBuilder {
     }
 }
 
-fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
+fn elapsed_seconds_since_last_review(card: &DueCardWithState, timing: SchedTimingToday) -> u32 {
     if let Some(last_review_time) = card.last_review_time {
         timing.now.elapsed_secs_since_clamped(last_review_time)
     } else {
@@ -888,31 +887,76 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
     }
 }
 
-fn exact_review_order_key(
+fn exact_review_order_keys(
     col: &mut Collection,
-    card_id: CardId,
+    cards: &[DueCardWithState],
     timing: SchedTimingToday,
     order: ReviewCardOrder,
-) -> Result<f32> {
-    let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
-    if let Some(state) = card.memory_state {
-        let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
-        if matches!(order, ReviewCardOrder::RelativeOverdueness) {
-            col.fsrs_relative_overdueness_for_card_state(&card, state, elapsed_days)
-        } else {
-            col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed_days)
-        }
-    } else {
-        // keep SM2-style fallback ordering when FSRS state is missing
-        let due = card.original_or_current_due() as i64;
-        let review_day = due.saturating_sub(card.interval as i64);
-        let days_elapsed = if due > 365_000 {
-            (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
-        } else {
-            timing.days_elapsed.saturating_sub(review_day as u32)
-        };
-        Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
-    }
+) -> Result<Vec<f32>> {
+    let started = Instant::now();
+    // Cards without memory state use the legacy fallback and need no preset.
+    let fsrs_cards = cards
+        .iter()
+        .filter(|card| card.memory_state.is_some())
+        .map(|candidate| FsrsPresetCard {
+            id: candidate.card.id,
+            home_deck_id: candidate
+                .card
+                .original_deck_id
+                .or(candidate.card.current_deck_id),
+        })
+        .collect::<Vec<_>>();
+    let selected = Instant::now();
+    let presets = col.fsrs_presets_for_card_inputs(&fsrs_cards)?;
+    let resolved = Instant::now();
+    let mut models = HashMap::new();
+    let keys = cards
+        .iter()
+        .map(|card| {
+            if let Some(state) = card.memory_state {
+                let preset = presets.get(&card.card.id).or_not_found(card.card.id)?;
+                let fsrs = match models.entry(preset.id.clone()) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(FSRS::new(&preset.params)?)
+                    }
+                };
+                let elapsed_days =
+                    (elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0).max(0.0);
+                let key = if matches!(order, ReviewCardOrder::RelativeOverdueness) {
+                    let target = card
+                        .desired_retention
+                        .unwrap_or(preset.desired_retention)
+                        .clamp(0.0001, 0.9999);
+                    -elapsed_days
+                        / fsrs
+                            .interval_at_retrievability(state.into(), target)
+                            .max(0.0001)
+                } else {
+                    fsrs.current_retrievability(state.into(), elapsed_days)
+                };
+                require!(key.is_finite(), "invalid FSRS parameter values");
+                return Ok(key);
+            }
+            // keep SM2-style fallback ordering when FSRS state is missing
+            let due = card.original_or_current_due() as i64;
+            let review_day = due.saturating_sub(card.interval as i64);
+            let days_elapsed = if due > 365_000 {
+                (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
+            } else {
+                timing.days_elapsed.saturating_sub(review_day as u32)
+            };
+            Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    tracing::debug!(
+        cards = cards.len(),
+        selected_ms = (selected - started).as_secs_f64() * 1_000.0,
+        resolved_ms = (resolved - selected).as_secs_f64() * 1_000.0,
+        computed_ms = resolved.elapsed().as_secs_f64() * 1_000.0,
+        "FSRS queue score profile"
+    );
+    Ok(keys)
 }
 
 fn fnvhash_due_card(card: &DueCard) -> i64 {
@@ -920,4 +964,71 @@ fn fnvhash_due_card(card: &DueCard) -> i64 {
     hasher.write_i64(card.id.0);
     hasher.write_i64(card.mtime.0);
     hasher.finish() as i64
+}
+
+#[cfg(test)]
+pub(super) fn benchmark_retrievability_sort(col: &mut Collection) -> Result<()> {
+    let timing = col.timing_today()?;
+    let cards = col.storage.due_cards_with_state_in_active_decks(timing)?;
+    let keys = exact_review_order_keys(
+        col,
+        &cards,
+        timing,
+        ReviewCardOrder::RetrievabilityAscending,
+    )?;
+    let entries = cards
+        .iter()
+        .zip(keys)
+        .map(|(card, key)| {
+            let card = card.card;
+            (
+                DueCardForRetrievabilitySort {
+                    card,
+                    counts_towards_review_limit: true,
+                    interday_or_review: true,
+                },
+                key,
+                fnvhash_due_card(&card),
+            )
+        })
+        .collect::<Vec<_>>();
+    let compare = |a: &(DueCardForRetrievabilitySort, f32, i64),
+                   b: &(DueCardForRetrievabilitySort, f32, i64)| {
+        a.1.total_cmp(&b.1)
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.0.card.id.cmp(&b.0.card.id))
+    };
+    let mut stable_ms = Vec::new();
+    let mut unstable_ms = Vec::new();
+    for sample in 0..10 {
+        let mut stable_ids = Vec::new();
+        let mut unstable_ids = Vec::new();
+        for unstable in if sample % 2 == 0 {
+            [false, true]
+        } else {
+            [true, false]
+        } {
+            let mut entries = entries.clone();
+            let start = Instant::now();
+            if unstable {
+                entries.sort_unstable_by(compare);
+                unstable_ms.push(start.elapsed().as_secs_f64() * 1_000.0);
+                unstable_ids = entries.iter().map(|entry| entry.0.card.id).collect();
+            } else {
+                entries.sort_by(compare);
+                stable_ms.push(start.elapsed().as_secs_f64() * 1_000.0);
+                stable_ids = entries.iter().map(|entry| entry.0.card.id).collect();
+            }
+        }
+        assert_eq!(stable_ids, unstable_ids);
+    }
+    stable_ms.sort_by(f64::total_cmp);
+    unstable_ms.sort_by(f64::total_cmp);
+    println!(
+        "sort,{},stable_ms,{:.3},unstable_ms,{:.3}",
+        cards.len(),
+        stable_ms[5],
+        unstable_ms[5]
+    );
+    Ok(())
 }

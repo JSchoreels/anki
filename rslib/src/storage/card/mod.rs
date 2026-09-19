@@ -37,6 +37,7 @@ use crate::scheduler::fsrs::memory_state::get_last_revlog_info;
 use crate::scheduler::queue::BuryMode;
 use crate::scheduler::queue::DueCard;
 use crate::scheduler::queue::DueCardKind;
+use crate::scheduler::queue::DueCardWithState;
 use crate::scheduler::queue::NewCard;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::timestamp::TimestampMillis;
@@ -97,6 +98,34 @@ fn row_to_card(row: &Row) -> result::Result<Card, rusqlite::Error> {
         decay: data.decay,
         last_review_time: data.last_review_time,
         custom_data: data.custom_data,
+    })
+}
+
+fn row_to_due_card_with_state(row: &Row) -> result::Result<DueCardWithState, rusqlite::Error> {
+    let queue = row.get(4)?;
+    // Keep the shared decoder, including its malformed-data defaults.
+    let data: CardData = row.get(10)?;
+    Ok(DueCardWithState {
+        card: DueCard {
+            id: row.get(0)?,
+            note_id: row.get(1)?,
+            current_deck_id: row.get(2)?,
+            mtime: row.get(3)?,
+            due: row.get(5).ok().unwrap_or_default(),
+            reps: row.get(7)?,
+            original_deck_id: row.get(9)?,
+            kind: if queue == CardQueue::Review {
+                DueCardKind::Review
+            } else {
+                DueCardKind::Learning
+            },
+        },
+        queue,
+        interval: row.get(6)?,
+        original_due: row.get(8).ok().unwrap_or_default(),
+        memory_state: data.memory_state(),
+        desired_retention: data.fsrs_desired_retention,
+        last_review_time: data.last_review_time,
     })
 }
 
@@ -326,6 +355,45 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         }
 
         Ok(())
+    }
+
+    /// Scheduling state for exact queue scoring, without an intermediate SQL
+    /// sort or one additional card lookup per candidate. The two ranges let
+    /// SQLite use the scheduling index with the appropriate day/second
+    /// cutoff.
+    pub(crate) fn due_cards_with_state_in_active_decks(
+        &self,
+        timing: SchedTimingToday,
+    ) -> Result<Vec<DueCardWithState>> {
+        self.db
+            .prepare_cached(concat!(
+                include_str!("get_due_card_state.sql"),
+                " where did in (select id from active_decks) and queue in (2, 3) and due <= ?1 union all ",
+                include_str!("get_due_card_state.sql"),
+                " where did in (select id from active_decks) and queue in (1, 4) and due <= ?2"
+            ))?
+            .query_and_then(params![timing.days_elapsed, timing.now.min(timing.next_day_at)], |row| {
+                row_to_due_card_with_state(row).map_err(Into::into)
+            })?
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn due_cards_full_state_for_benchmark(
+        &self,
+        timing: SchedTimingToday,
+    ) -> Result<Vec<Card>> {
+        self.db
+            .prepare_cached(concat!(
+                include_str!("get_card.sql"),
+                " where did in (select id from active_decks) and queue in (2, 3) and due <= ?1 union all ",
+                include_str!("get_card.sql"),
+                " where did in (select id from active_decks) and queue in (1, 4) and due <= ?2"
+            ))?
+            .query_and_then(params![timing.days_elapsed, timing.now.min(timing.next_day_at)], |row| {
+                row_to_card(row).map_err(Into::into)
+            })?
+            .collect()
     }
 
     /// Call func() for each requested review card in the active decks,
@@ -1296,6 +1364,112 @@ mod test {
         let id1 = card.id;
         storage.add_card(&mut card).unwrap();
         assert_ne!(id1, card.id);
+    }
+
+    #[test]
+    fn due_card_state_matches_full_card_decoding() -> crate::error::Result<()> {
+        use super::row_to_card;
+        use super::row_to_due_card_with_state;
+        use crate::scheduler::queue::DueCardWithState;
+
+        let storage = create_test_storage();
+        // Query synthetic rows, including values older clients may have stored.
+        // No collection file or persisted fixture is involved.
+        let row = r#"with cards as (select
+            42 as id, 43 as nid, 44 as did, 2 as ord, 1234.5 as mod,
+            0 as usn, 2 as type, ?1 as queue, ?2 as due, 12.5 as ivl,
+            2500 as factor, 17 as reps, 3 as lapses, 2 as left,
+            ?2 as odue, ?3 as odid, 0 as flags, ?4 as data) "#;
+        let mut full = storage
+            .db
+            .prepare(&format!("{row}{}", include_str!("get_card.sql")))?;
+        let mut narrow = storage
+            .db
+            .prepare(&format!("{row}{}", include_str!("get_due_card_state.sql")))?;
+        for queue in [1, 2, 3, 4] {
+            for due in [
+                rusqlite::types::Value::Integer(100),
+                rusqlite::types::Value::Real(100.5),
+            ] {
+                for original_deck in [0, 45] {
+                    for data in [
+                        r#"{"s":30,"s_int":40,"s_fast":0.25,"d":6,"dr":0.85,"lrt":123456,"cd":"{\"x\":1}"}"#,
+                        r#"{"s":30,"d":6}"#,
+                        r#"{"s":30,"s_int":"bad","s_fast":[],"d":6,"dr":"bad","lrt":{}}"#,
+                        r#"{"s":"bad","d":6}"#,
+                        r#"{"s":30,"d":6,"cd":42}"#,
+                        "not json",
+                        "",
+                    ] {
+                        let params = params![queue, due, original_deck, data];
+                        let card = full.query_row(params, row_to_card)?;
+                        let candidate = narrow.query_row(params, row_to_due_card_with_state)?;
+                        assert_eq!(candidate, DueCardWithState::from(&card), "{data}");
+                        assert_eq!(candidate.interval, 12);
+                        assert_eq!(candidate.card.mtime, TimestampSecs(1234));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn due_cards_with_state_respects_queue_cutoffs_and_active_decks() -> crate::error::Result<()> {
+        use crate::scheduler::timing::SchedTimingToday;
+
+        let mut col = Collection::new();
+        let active = col.get_or_create_normal_deck("Active")?;
+        let child = col.get_or_create_normal_deck("Active::Child")?;
+        let inactive = col.get_or_create_normal_deck("Inactive")?;
+        let timing = SchedTimingToday {
+            now: TimestampSecs(1_000_000),
+            next_day_at: TimestampSecs(1_010_000),
+            days_elapsed: 100,
+        };
+        let mut expected = Vec::new();
+        for deck in [&active, &child, &inactive] {
+            for (queue, cutoff) in [
+                (CardQueue::Review, 100),
+                (CardQueue::DayLearn, 100),
+                (CardQueue::Learn, 1_000_000),
+                (CardQueue::PreviewRepeat, 1_000_000),
+                (CardQueue::New, 0),
+                (CardQueue::Suspended, 0),
+                (CardQueue::SchedBuried, 0),
+                (CardQueue::UserBuried, 0),
+            ] {
+                for offset in [-1, 0, 1] {
+                    let mut card = Card {
+                        deck_id: deck.id,
+                        queue,
+                        due: cutoff + offset,
+                        ..Default::default()
+                    };
+                    col.add_card(&mut card)?;
+                    if deck.id != inactive.id && cutoff != 0 && offset <= 0 {
+                        expected.push((deck.id, queue as i8, card.due));
+                    }
+                }
+            }
+        }
+        col.storage.update_active_decks(&active)?;
+        let mut actual = col
+            .storage
+            .due_cards_with_state_in_active_decks(timing)?
+            .into_iter()
+            .map(|candidate| {
+                (
+                    candidate.card.current_deck_id,
+                    candidate.queue as i8,
+                    candidate.card.due,
+                )
+            })
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+        Ok(())
     }
 
     #[test]

@@ -7,6 +7,9 @@ pub(crate) mod intersperser;
 pub(crate) mod sized_chain;
 mod sorting;
 
+#[cfg(test)]
+mod benchmark;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -23,6 +26,7 @@ use super::LearningQueueEntry;
 use super::MainQueueEntry;
 use super::MainQueueEntryKind;
 use crate::card::CardQueue;
+use crate::card::FsrsMemoryState;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::NewCardSortOrder;
@@ -34,7 +38,7 @@ use crate::scheduler::states::load_balancer::LoadBalancer;
 use crate::scheduler::timing::SchedTimingToday;
 
 /// Temporary holder for review cards that will be built into a queue.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DueCard {
     pub id: CardId,
     pub note_id: NoteId,
@@ -46,10 +50,60 @@ pub(crate) struct DueCard {
     pub reps: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DueCardKind {
     Review,
     Learning,
+}
+
+/// Only the scheduling state needed to score and enqueue a due candidate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DueCardWithState {
+    pub card: DueCard,
+    pub queue: CardQueue,
+    pub interval: u32,
+    pub original_due: i32,
+    pub memory_state: Option<FsrsMemoryState>,
+    pub desired_retention: Option<f32>,
+    pub last_review_time: Option<TimestampSecs>,
+}
+
+impl DueCardWithState {
+    fn original_or_current_due(&self) -> i32 {
+        if self.card.original_deck_id.0 > 0 {
+            self.original_due
+        } else {
+            self.card.due
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<&Card> for DueCardWithState {
+    fn from(card: &Card) -> Self {
+        Self {
+            card: DueCard {
+                id: card.id,
+                note_id: card.note_id,
+                mtime: card.mtime,
+                due: card.due,
+                current_deck_id: card.deck_id,
+                original_deck_id: card.original_deck_id,
+                kind: if card.queue == CardQueue::Review {
+                    DueCardKind::Review
+                } else {
+                    DueCardKind::Learning
+                },
+                reps: card.reps,
+            },
+            queue: card.queue,
+            interval: card.interval,
+            original_due: card.original_due,
+            memory_state: card.memory_state,
+            desired_retention: card.desired_retention,
+            last_review_time: card.last_review_time,
+        }
+    }
 }
 
 /// Temporary holder for new cards that will be built into a queue.
@@ -516,6 +570,7 @@ impl Collection {
         deck_id: DeckId,
         current_card: Option<&Card>,
     ) -> Result<CardQueues> {
+        let started = std::time::Instant::now();
         let mut queues = QueueBuilder::new(self, deck_id)?;
         self.storage
             .update_active_decks(&queues.context.root_deck)?;
@@ -530,12 +585,21 @@ impl Collection {
         if let Some(card) = current_card {
             queues.pin_current_card(card)?;
         }
+        let prepared = std::time::Instant::now();
         queues.gather_cards(self)?;
+        let gathered = std::time::Instant::now();
 
         let mut queues = queues.build(self.learn_ahead_secs() as i64);
         if let Some(card) = current_card {
             queues.preserve_current_card(card.id)?;
         }
+
+        tracing::debug!(
+            prepared_ms = (prepared - started).as_secs_f64() * 1_000.0,
+            gathered_ms = (gathered - prepared).as_secs_f64() * 1_000.0,
+            finalized_ms = gathered.elapsed().as_secs_f64() * 1_000.0,
+            "queue build profile"
+        );
 
         Ok(queues)
     }
@@ -1314,6 +1378,126 @@ mod test {
         )?;
         assert!(low_key < high_key);
         assert_eq!(col.queue_as_ids(deck.id), vec![low_r_id, high_r_id]);
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_batch_queue_order_matches_exact_scores_across_presets() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_fsrs7_defaults(deck.id);
+        let mut child = col.get_or_create_normal_deck("Default::Child")?;
+        child.normal_mut()?.desired_retention = Some(0.95);
+        col.add_or_update_deck(&mut child)?;
+        let mut home = col.get_or_create_normal_deck("Home")?;
+        home.normal_mut()?.desired_retention = Some(0.8);
+        col.add_or_update_deck(&mut home)?;
+        let timing = col.timing_today()?;
+        assert_eq!(timing.days_elapsed, 0);
+        // Exceed the preset resolver's small-batch threshold, and mix model
+        // families so accidentally sharing a model across presets changes order.
+        for index in 0..140 {
+            let id = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                (index % 7 + 1) * 86_400,
+                30.0,
+            )?;
+            let mut card = col.storage.get_card(id)?.unwrap();
+            if index % 4 == 1 {
+                card.deck_id = child.id;
+            } else if index % 4 == 3 {
+                card.original_deck_id = home.id;
+                card.original_due = card.due;
+            }
+            if index == 0 {
+                card.memory_state = None;
+            } else {
+                let state = card.memory_state.as_mut().unwrap();
+                state.stability_fast = Some((index % 5 + 1) as f32);
+                state.difficulty = (index % 9 + 1) as f32;
+            }
+            card.desired_retention = (index % 3 == 0).then_some(0.8);
+            col.update_cards_maybe_undoable(vec![card.clone()], false)?;
+            if index % 2 == 0 {
+                col.add_tags_to_notes(&[card.note_id], "legacy-model")?;
+            }
+        }
+        col.set_config(
+            "fsrsPresetOverlay",
+            &serde_json::json!({
+                "presets": [{
+                    "id": "addon:test:legacy", "name": "Legacy", "fsrs_version": "six",
+                    "params": fsrs::FSRS6_DEFAULT_PARAMETERS, "desired_retention": 0.85,
+                    "historical_retention": 0.9, "ignore_revlogs_before_date": ""
+                }],
+                "rules": [{"search": "tag:legacy-model", "preset_id": "addon:test:legacy"}]
+            }),
+        )?;
+        let cards = col.storage.get_all_cards();
+        for order in [
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+        ] {
+            let mut config = col
+                .get_deck_config(deck.config_id().unwrap(), false)?
+                .unwrap();
+            config.inner.review_order = order as i32;
+            col.add_or_update_deck_config(&mut config)?;
+            let mut builder = QueueBuilder::new(&mut col, deck.id)?;
+            builder.context.timing = timing;
+            col.storage
+                .update_active_decks(&builder.context.root_deck)?;
+            let mut expected = Vec::new();
+            for card in &cards {
+                let key = if let Some(state) = card.memory_state {
+                    let elapsed =
+                        (timing.now.0 - card.last_review_time.unwrap().0) as f32 / 86_400.0;
+                    if order == ReviewCardOrder::RelativeOverdueness {
+                        col.fsrs_relative_overdueness_for_card_state(card, state, elapsed)?
+                    } else {
+                        col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed)?
+                    }
+                } else {
+                    // Due on collection day zero: the legacy elapsed-day
+                    // calculation clamps a review before creation to zero.
+                    -0.001
+                };
+                expected.push((card.id, key, fnvhash_card_and_mod(card)));
+            }
+            expected.sort_by(|a, b| {
+                let order_by_key = a.1.total_cmp(&b.1);
+                let order_by_key = if order == ReviewCardOrder::RetrievabilityDescending {
+                    order_by_key.reverse()
+                } else {
+                    order_by_key
+                };
+                order_by_key
+                    .then_with(|| a.2.cmp(&b.2))
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            // Exercise uncached overlay matching in the batched path.
+            col.state.fsrs_preset_overlay_cache = None;
+            builder.gather_cards(&mut col)?;
+            assert_eq!(
+                builder
+                    .r_sorted_non_new
+                    .iter()
+                    .map(|card| card.id)
+                    .collect::<Vec<_>>(),
+                expected
+                    .into_iter()
+                    .map(|entry| entry.0)
+                    .collect::<Vec<_>>(),
+                "{order:?}"
+            );
+        }
         Ok(())
     }
 
