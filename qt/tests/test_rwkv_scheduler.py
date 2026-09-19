@@ -8573,6 +8573,130 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     )
 
 
+def test_rwkv_state_cache_recovery_is_coalesced_until_scheduled_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timers: list[Callable[[], None]] = []
+    builds: list[str | None] = []
+    mw = SimpleNamespace(
+        state="deckBrowser",
+        progress=SimpleNamespace(
+            single_shot=lambda _delay, callback: timers.append(callback)
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "configure_reviewer_backend_from_environment",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_resident_state_ready",
+        lambda _mw: False,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "build_rwkv_state_cache_with_progress",
+        lambda _mw, **kwargs: builds.append(kwargs.get("recovery_reason")),
+    )
+
+    assert rwkv_scheduler.request_rwkv_state_cache_recovery(
+        mw,
+        reason="reviewer exit",
+    )
+    assert not rwkv_scheduler.request_rwkv_state_cache_recovery(
+        mw,
+        reason="overview",
+    )
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw)
+    assert len(timers) == 1
+
+    timers.pop()()
+
+    assert builds == ["reviewer exit"]
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+
+
+def test_rwkv_state_cache_recovery_uses_explicit_progress_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "warm_up_rwkv_state",
+        lambda _mw, **_kwargs: True,
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+    mw = SimpleNamespace()
+    taskman, _progress_updates = _attach_progress_taskman(mw)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        mw,
+        recovery_reason="reviewer exit",
+    )
+
+    assert taskman.with_progress_kwargs is not None
+    assert taskman.with_progress_kwargs["label"] == "Recovering RWKV state..."
+
+
+def test_failed_rwkv_state_recovery_is_not_immediately_requeued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "warm_up_rwkv_state",
+        lambda _mw, **_kwargs: False,
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+    mw = SimpleNamespace()
+    _attach_progress_taskman(mw)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        mw,
+        recovery_reason="reviewer exit",
+    )
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "configure_reviewer_backend_from_environment",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_resident_state_ready",
+        lambda _mw: False,
+    )
+
+    assert not rwkv_scheduler.request_rwkv_state_cache_recovery(
+        mw,
+        reason="overview",
+    )
+
+
+def test_rwkv_state_cache_build_coalesces_existing_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "warm_up_rwkv_state",
+        lambda _mw, **_kwargs: pytest.fail("duplicate build started"),
+    )
+    mw = SimpleNamespace(_rwkv_state_cache_loading=True)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(mw)
+
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw)
+
+
 def test_rwkv_state_cache_build_skips_review_retrievability_cache_by_default(
     monkeypatch,
     tmp_path,
@@ -11273,6 +11397,11 @@ def test_current_deck_count_scoring_uses_active_reviewer_answered_ids(
     monkeypatch.setattr(
         rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
     )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_review",
+        lambda reviewer: True,
+    )
     previous_backend = set_reviewer_backend(backend)
     try:
         prepare_reviewer_queue_order(reviewer)
@@ -13064,6 +13193,101 @@ def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
 
     assert "<span class=review-count>…</span>" in table
     assert "4000" not in table
+
+
+def test_overview_renders_before_requesting_rwkv_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt.overview import Overview
+
+    events: list[str] = []
+
+    class ImmediateQueryOp:
+        def __init__(self, *, parent: object, op: object, success: object) -> None:
+            assert callable(op)
+            assert callable(success)
+            self.parent = parent
+            self.op = op
+            self.success = success
+
+        def run_in_background(self) -> None:
+            pending = self.op(self.parent.col)
+            self.success(pending)
+
+    scheduler = SimpleNamespace(counts=lambda: events.append("counts"))
+    mw = SimpleNamespace(
+        col=SimpleNamespace(sched=scheduler),
+        web=SimpleNamespace(setFocus=lambda: events.append("focus")),
+    )
+    overview = Overview.__new__(Overview)
+    overview.mw = mw
+    overview._refresh_needed = True
+    overview._rwkv_count_generation = 0
+    overview._rwkv_counts_pending = False
+    overview._renderPage = lambda: events.append("page")
+    overview._renderBottom = lambda: events.append("bottom")
+    monkeypatch.setattr("aqt.overview.QueryOp", ImmediateQueryOp)
+    monkeypatch.setattr(
+        "aqt.overview.gui_hooks.overview_did_refresh",
+        lambda _overview: events.append("hook"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "rwkv_state_cache_loading",
+        lambda _mw: False,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prepare_current_deck_review_queue_scores",
+        lambda _mw, **_kwargs: events.append("prepare"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "request_rwkv_state_cache_recovery",
+        lambda _mw, **_kwargs: events.append("recover"),
+    )
+
+    overview.refresh()
+
+    assert events == [
+        "prepare",
+        "counts",
+        "page",
+        "bottom",
+        "focus",
+        "hook",
+        "recover",
+    ]
+
+
+def test_overview_count_scoring_does_not_replay_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(rwkv_scheduler, "_current_deck_id", lambda _reviewer: 10)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_deck_config_for_deck_id",
+        lambda _reviewer, _deck_id: {},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_instant_order_enabled",
+        lambda _config: True,
+    )
+
+    def prepare_scores(**kwargs: object) -> None:
+        calls.append(bool(kwargs["allow_historical_rebuild"]))
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_rwkv_review_scores_for_deck",
+        prepare_scores,
+    )
+
+    rwkv_scheduler.prepare_current_deck_review_queue_scores(object())
+
+    assert calls == [False]
 
 
 @pytest.mark.parametrize("enforce_grade_order", [True, False])

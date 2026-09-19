@@ -40,6 +40,11 @@ repeated here unless they materially affect a fork feature.
   FSRS-7, instead of falling back to parameters from an older FSRS version.
 - Prevent editing a card during RWKV reviews from prematurely ending the study
   session when only RWKV-selected cards remain.
+- Prevent an empty pre-refresh RWKV queue from prematurely ending the study
+  session when a deferred post-answer refresh can provide more cards.
+- Recover a cold RWKV state once with explicit progress after leaving reviews,
+  while keeping deck and overview counts responsive and preventing count
+  refreshes from silently replaying the full review history.
 
 ## 26.09b3+fsrs7 — 2026-09-11
 

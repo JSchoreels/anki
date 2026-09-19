@@ -33,7 +33,7 @@ rev = "2c7c081b148f8c1053df33768bc99f05311cb9a0"
 
 [workspace.dependencies.fsrs]
 git = "https://github.com/open-spaced-repetition/fsrs-rs.git"
-rev = "c9562d6bf0e1d29b77457b307534a3592f5a77a2"
+rev = "6c8a85b6dfee06b22f4e43d385a0220f28293bac"
 
 [workspace.dependencies]
 # local

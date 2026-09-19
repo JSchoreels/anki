@@ -210,10 +210,8 @@ pub(crate) fn fsrs_memory_state_for_fsrs(
 /// Compute the memory state whose forgetting curve reaches `sm2_retention` at
 /// `interval` days.
 ///
-/// The fsrs crate supplies the state shape. Its FSRS-7 conversion puts the
-/// interval in the internal slow-stability slot, which is not the requested
-/// point on the two-component curve, so both stability traces are scaled while
-/// preserving their ratio and difficulty.
+/// The fsrs crate handles the version-specific conversion, including scaling
+/// both FSRS-7 stability traces while preserving their ratio.
 pub(crate) fn memory_state_from_sm2_with_params(
     fsrs: &FSRS,
     _params: &[f32],
@@ -221,13 +219,7 @@ pub(crate) fn memory_state_from_sm2_with_params(
     interval: f32,
     sm2_retention: f32,
 ) -> Result<MemoryState> {
-    let shape = fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?;
-    Ok(scale_state_to_interval(
-        fsrs,
-        shape,
-        interval,
-        sm2_retention,
-    ))
+    Ok(fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?)
 }
 
 /// Build a complete model state from an externally visible S90 value.

@@ -131,7 +131,13 @@ makes the persisted history stale, review-time predictions also defer that
 restore. An unavailable or failed cache result is remembered for that cold-state
 generation and is carried across later answers, preventing queue scoring, Card
 Info, and answer preparation from repeating the same validation. An explicit
-cache build or the next startup recovery can still perform the canonical rebuild.
+cache build, the coalesced recovery requested when the reviewer closes or a
+cold overview finishes rendering, or the next startup recovery can still
+perform the canonical rebuild. Automatic recovery runs as a separately labelled
+**RWKV State Cache** progress operation, so it is not hidden inside a deck-count
+query and repeated exits cannot queue duplicate rebuilds. A failed automatic
+recovery is not immediately requeued by its completion refresh; a later state
+change or an explicit cache build can try again.
 
 Prediction readers use the same non-blocking execution lease. Stats,
 rescheduling, review-queue, deck-count, and Card Info work is bound to the exact
@@ -436,11 +442,14 @@ already in filtered decks remain due based on filtered-deck membership and are
 not re-filtered by RWKV eligibility. Before a RWKV queue score map has been
 prepared, deck tree counts continue to show the normal FSRS due counts. The
 selected-deck overview prepares and installs the current deck's RWKV queue score
-map before rendering its counts. If profile startup is still restoring the RWKV
-state cache, the overview keeps the review count pending as an ellipsis and
-refreshes it when restoration finishes. The deck browser renders its initial
-tree without waiting for model inference, then scores disjoint RWKV-enabled
-deck scopes one at a time. Model scoring runs without collection access, and
+map before rendering its counts when resident or locally cached state is
+available. An ordinary overview count query never starts a full historical
+replay. If the state is cold or profile startup is still restoring it, counts
+remain responsive, recovery is scheduled separately, and the pending review
+count is shown as an ellipsis when recovery was already requested. The overview
+refreshes after recovery finishes. The deck browser renders its initial tree
+without waiting for model inference, then scores disjoint RWKV-enabled deck
+scopes one at a time. Model scoring runs without collection access, and
 each completed scope is installed in a separate transient count-only cache so
 the visible counts can be updated incrementally. The currently selected scope
 is processed first. While a scope is pending, its review due count and the
@@ -703,7 +712,10 @@ When the answered card was the last queued card, Anki uses the same split
 prepare/score/install pipeline before requesting the next card. If the backend
 is busy, this required refresh waits for prediction access. If concurrent state
 work makes the prepared snapshot stale, Anki rebuilds and retries it once before
-requesting the next card. If the backend
+requesting the next card. Pre-answer counts can still overstate the queue that
+remains after answer-time eligibility updates. If the next-card fetch is empty
+while a post-answer refresh is deferred, Anki promotes that refresh to a required
+refresh and retries the fetch once before ending the review session. If the backend
 cannot provide the immutable input snapshot, Anki continues with normal queue
 order instead of falling back to a long Python-side full-deck scan. This is
 especially important after undo restores RWKV state and invalidates predictions

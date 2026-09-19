@@ -79,6 +79,10 @@ class Overview:
             self._renderBottom()
             self.mw.web.setFocus()
             gui_hooks.overview_did_refresh(self)
+            aqt.rwkv_scheduler.request_rwkv_state_cache_recovery(
+                self.mw,
+                reason="overview",
+            )
 
         def get_counts(col: Collection) -> bool:
             rwkv_counts_pending = aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)

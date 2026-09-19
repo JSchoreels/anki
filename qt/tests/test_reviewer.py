@@ -1717,6 +1717,11 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
         "install_reviewer_queue_order_async_result",
         install_reviewer_queue_order_async_result,
     )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "request_rwkv_state_cache_recovery",
+        lambda _mw, **_kwargs: calls.append("recover"),
+    )
     reviewer = Reviewer.__new__(Reviewer)
     reviewer.card = SimpleNamespace(id=123)
     reviewer._answeredIds = [123]
@@ -1736,6 +1741,7 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
         "collection",
         "install",
         "undo",
+        "recover",
     ]
     assert reviewer.card is None
     assert reviewer.auto_advance_enabled is False
@@ -1756,17 +1762,29 @@ def test_cleanup_skips_rwkv_queue_order_exit_refresh_without_answers(
         "prepare_reviewer_queue_order",
         lambda reviewer: calls.append("prepare"),
     )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "request_rwkv_state_cache_recovery",
+        lambda _mw, **_kwargs: calls.append("recover"),
+    )
 
     reviewer = Reviewer.__new__(Reviewer)
     reviewer.card = SimpleNamespace(id=123)
     reviewer._answeredIds = []
     reviewer.auto_advance_enabled = True
+    reviewer._rwkv_deferred_queue_refresh = object()
+    reviewer._rwkv_empty_queue_refresh = object()
+    reviewer._rwkv_after_question_shown_callbacks = [lambda: calls.append("stale")]
+    reviewer.mw = object()
 
     reviewer.cleanup()
 
-    assert calls == []
+    assert calls == ["recover"]
     assert reviewer.card is None
     assert reviewer.auto_advance_enabled is False
+    assert reviewer._rwkv_deferred_queue_refresh is None
+    assert reviewer._rwkv_empty_queue_refresh is None
+    assert reviewer._rwkv_after_question_shown_callbacks == []
 
 
 def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
@@ -2444,6 +2462,105 @@ def test_next_card_restores_rwkv_undone_card_before_normal_queue() -> None:
     reviewer._linkHandler("ans")
 
     assert calls[-1] == "answer"
+
+
+def test_next_card_retries_after_deferred_rwkv_refresh_before_ending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    work = object()
+    result = object()
+    fetch_count = 0
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            uses_collection: bool = True,
+        ) -> None:
+            calls.append("collection" if uses_collection else "free")
+            future: Future[object] = Future()
+            future.set_result(task())
+            on_done(future)
+
+    def prepare(reviewer: object) -> object:
+        assert reviewer is reviewer_instance
+        calls.append("build")
+        return work
+
+    def score(arg: object, *, wait_for_backend: bool = False) -> object:
+        assert arg is work
+        assert wait_for_backend is True
+        calls.append("score")
+        return result
+
+    def install(reviewer: object, arg: object) -> bool:
+        assert reviewer is reviewer_instance
+        assert arg is result
+        calls.append("install")
+        return True
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        prepare,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "score_reviewer_queue_order_async_work",
+        score,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        install,
+    )
+
+    reviewer_instance = Reviewer.__new__(Reviewer)
+    reviewer_instance.card = SimpleNamespace(id=123)
+    reviewer_instance.state = "transition"
+    reviewer_instance._review_card_generation = 0
+    reviewer_instance._rwkv_remaining_count_override = None
+    reviewer_instance._reps = 1
+    reviewer_instance._previous_card_info = SimpleNamespace(set_card=lambda _card: None)
+    reviewer_instance._card_info = SimpleNamespace(set_card=lambda _card: None)
+    reviewer_instance.mw = SimpleNamespace(
+        taskman=Taskman(),
+        update_undo_actions=lambda: calls.append("undo"),
+        moveToState=lambda state: calls.append(f"state:{state}"),
+    )
+    reviewer_instance._get_rwkv_undo_restored_card = lambda: False
+    reviewer_instance.set_review_actions_blocked = lambda _blocked: None
+    reviewer_instance._set_review_answer_actions_blocked = lambda _blocked: None
+
+    def get_next_card() -> None:
+        nonlocal fetch_count
+        fetch_count += 1
+        calls.append(f"fetch:{fetch_count}")
+        if fetch_count == 2:
+            reviewer_instance.card = SimpleNamespace(id=456)
+
+    def show_question() -> None:
+        reviewer_instance.state = "question"
+        calls.append("question:456")
+
+    reviewer_instance._get_next_v3_card = get_next_card
+    reviewer_instance._showQuestion = show_question
+    reviewer_instance._defer_rwkv_queue_order_refresh(
+        queued_at=123.0,
+        answered_card_id=123,
+    )
+
+    reviewer_instance.nextCard()
+    reviewer_instance._run_after_question_shown_callbacks()
+
+    assert reviewer_instance.card.id == 456
+    assert fetch_count == 2
+    assert calls.count("build") == 1
+    assert calls.count("install") == 1
+    assert "question:456" in calls
+    assert "state:overview" not in calls
 
 
 def test_answer_rwkv_undo_restored_card_uses_rebuilt_queue(

@@ -5045,6 +5045,7 @@ def _prepare_current_deck_review_queue_scores(
     reviewer: object,
     *,
     reason: str,
+    allow_historical_rebuild: bool = True,
 ) -> None:
     deck_id = _current_deck_id(reviewer)
     if deck_id is None:
@@ -5064,6 +5065,7 @@ def _prepare_current_deck_review_queue_scores(
         deck_id=deck_id,
         deck_config=deck_config,
         reason=reason,
+        allow_historical_rebuild=allow_historical_rebuild,
     )
 
 
@@ -5072,9 +5074,18 @@ def prepare_current_deck_review_queue_scores(
     *,
     reason: str = "deck counts",
 ) -> None:
-    """Prepare transient RWKV review scores before deck counts are queried."""
+    """Prepare transient RWKV review scores before deck counts are queried.
 
-    _prepare_current_deck_review_queue_scores(SimpleNamespace(mw=mw), reason=reason)
+    This path may restore a valid local cache, but historical recovery is
+    scheduled separately so an ordinary count query cannot monopolize the
+    collection worker for a full replay.
+    """
+
+    _prepare_current_deck_review_queue_scores(
+        SimpleNamespace(mw=mw),
+        reason=reason,
+        allow_historical_rebuild=False,
+    )
 
 
 def prepare_reviewer_queue_order(reviewer: object) -> None:
@@ -7242,6 +7253,7 @@ def _prepare_rwkv_review_scores_for_deck(
     deck_id: int,
     deck_config: dict[str, object],
     reason: str,
+    allow_historical_rebuild: bool,
 ) -> None:
     start = time.monotonic()
     if _reviewer_backend is None:
@@ -7260,7 +7272,10 @@ def _prepare_rwkv_review_scores_for_deck(
 
     try:
         warmup_start = time.monotonic()
-        warmed_up = _warm_up_reviewer_backend(reviewer)
+        if allow_historical_rebuild:
+            warmed_up = _warm_up_reviewer_backend(reviewer)
+        else:
+            warmed_up = _prepare_reviewer_backend_for_review(reviewer)
         warmup_elapsed_ms = (time.monotonic() - warmup_start) * 1000
         if not warmed_up:
             _clear_rwkv_review_queue_scores(reviewer, deck_id)
@@ -9130,6 +9145,9 @@ def _invalidate_reviewer_backend_state(
             )
         ):
             return
+        mw = getattr(reviewer, "mw", None)
+        if mw is not None:
+            setattr(mw, "_rwkv_state_cache_recovery_failed", False)
         key = _reviewer_backend_warmup_key(reviewer)
         _clear_rwkv_review_queue_score_cache()
         if (
@@ -10873,6 +10891,7 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
     """Invalidate resident state before startup sync can change the collection."""
 
     _invalidate_reviewer_backend_runtime_state_for_profile_open()
+    _set_rwkv_state_cache_recovery_failed(mw, False)
     _set_rwkv_state_cache_loading(mw, True)
 
 
@@ -10974,13 +10993,94 @@ def _show_rwkv_state_cache_prompt(mw: object) -> None:
 def rwkv_state_cache_loading(mw: object) -> bool:
     """Return whether count preparation must wait for RWKV state restoration."""
 
-    if getattr(mw, "_rwkv_state_cache_loading", False):
+    if getattr(mw, "_rwkv_state_cache_loading", False) or getattr(
+        mw,
+        "_rwkv_state_cache_recovery_scheduled",
+        False,
+    ):
         return True
     return _reviewer_backend_warmup_pending(SimpleNamespace(mw=mw))
 
 
 def _set_rwkv_state_cache_loading(mw: object, loading: bool) -> None:
     setattr(mw, "_rwkv_state_cache_loading", loading)
+
+
+def _set_rwkv_state_cache_recovery_scheduled(mw: object, scheduled: bool) -> None:
+    setattr(mw, "_rwkv_state_cache_recovery_scheduled", scheduled)
+
+
+def _set_rwkv_state_cache_recovery_failed(mw: object, failed: bool) -> None:
+    setattr(mw, "_rwkv_state_cache_recovery_failed", failed)
+
+
+def request_rwkv_state_cache_recovery(
+    mw: object,
+    *,
+    reason: str,
+) -> bool:
+    """Schedule one visible canonical recovery when resident RWKV state is cold."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    if not _rwkv_collection_config_state(reviewer).review_enabled:
+        return False
+    if not configure_reviewer_backend_from_environment():
+        return False
+    if _rwkv_resident_state_ready(mw):
+        return False
+    if getattr(mw, "_rwkv_state_cache_recovery_failed", False):
+        logger.debug(
+            "RWKV state recovery request suppressed after failure: reason=%s",
+            reason,
+        )
+        return False
+    if getattr(mw, "_rwkv_state_cache_loading", False) or getattr(
+        mw,
+        "_rwkv_state_cache_recovery_scheduled",
+        False,
+    ):
+        logger.debug(
+            "RWKV state recovery request coalesced: reason=%s",
+            reason,
+        )
+        return False
+
+    _set_rwkv_state_cache_recovery_scheduled(mw, True)
+    logger.info("RWKV state recovery scheduled: reason=%s", reason)
+
+    def start_recovery() -> None:
+        _set_rwkv_state_cache_recovery_scheduled(mw, False)
+        if getattr(mw, "state", None) not in ("deckBrowser", "overview"):
+            logger.debug(
+                "RWKV state recovery cancelled outside count view: reason=%s state=%s",
+                reason,
+                getattr(mw, "state", None),
+            )
+            return
+        if not _rwkv_collection_config_state(reviewer).review_enabled:
+            _refresh_active_rwkv_count_view(mw)
+            return
+        if _rwkv_resident_state_ready(mw):
+            _refresh_active_rwkv_count_view(mw)
+            return
+
+        logger.info("RWKV state recovery starting: reason=%s", reason)
+        try:
+            build_rwkv_state_cache_with_progress(
+                mw,
+                recovery_reason=reason,
+            )
+        except Exception:
+            _set_rwkv_state_cache_recovery_failed(mw, True)
+            logger.exception("failed to start RWKV state recovery: reason=%s", reason)
+
+    progress_manager = getattr(mw, "progress", None)
+    single_shot = getattr(progress_manager, "single_shot", None)
+    if callable(single_shot):
+        single_shot(0, start_recovery)
+    else:
+        _run_on_main(mw, start_recovery)
+    return True
 
 
 def _refresh_active_rwkv_count_view(mw: object) -> bool:
@@ -11000,6 +11100,7 @@ def _finish_rwkv_state_cache_operation(
     ready: bool,
     prewarm_reason: str,
 ) -> None:
+    _set_rwkv_state_cache_recovery_scheduled(mw, False)
     _set_rwkv_state_cache_loading(mw, False)
     if _refresh_active_rwkv_count_view(mw) or not ready:
         return
@@ -11237,10 +11338,29 @@ def build_rwkv_state_cache_with_progress(
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
+    recovery_reason: str | None = None,
 ) -> None:
     """Build the local RWKV state cache with a modal progress dialog."""
 
     from aqt.utils import show_warning, tooltip
+
+    if getattr(mw, "_rwkv_state_cache_loading", False):
+        logger.debug(
+            "RWKV state cache operation coalesced: recovery_reason=%s",
+            recovery_reason,
+        )
+        return
+
+    _set_rwkv_state_cache_recovery_failed(mw, False)
+
+    operation_reason = (
+        "state cache recovery" if recovery_reason is not None else "state cache build"
+    )
+    progress_label = (
+        "Recovering RWKV state..."
+        if recovery_reason is not None
+        else "Building RWKV state cache..."
+    )
 
     def build(
         progress: RwkvStateCacheProgressCallback | None = None,
@@ -11294,17 +11414,30 @@ def build_rwkv_state_cache_with_progress(
                 elapsed_ms,
             )
         elif result.ready:
-            tooltip("RWKV state cache ready.", parent=parent)
+            tooltip(
+                "RWKV review state recovered."
+                if recovery_reason is not None
+                else "RWKV state cache ready.",
+                parent=parent,
+            )
             logger.debug(
-                "RWKV state cache build finished: elapsed_ms=%.1f",
+                "RWKV %s finished: recovery_reason=%s elapsed_ms=%.1f",
+                operation_reason,
+                recovery_reason,
                 elapsed_ms,
             )
         else:
-            tooltip("RWKV state cache could not be built.", parent=parent)
+            tooltip(
+                "RWKV state recovery failed."
+                if recovery_reason is not None
+                else "RWKV state cache could not be built.",
+                parent=parent,
+            )
+        _set_rwkv_state_cache_recovery_failed(mw, not result.ready)
         _finish_rwkv_state_cache_operation(
             mw,
             ready=result.ready,
-            prewarm_reason="state cache build",
+            prewarm_reason=operation_reason,
         )
 
     _set_rwkv_state_cache_loading(mw, True)
@@ -11315,10 +11448,11 @@ def build_rwkv_state_cache_with_progress(
         try:
             result = build()
         except Exception:
+            _set_rwkv_state_cache_recovery_failed(mw, True)
             _finish_rwkv_state_cache_operation(
                 mw,
                 ready=False,
-                prewarm_reason="state cache build",
+                prewarm_reason=operation_reason,
             )
             raise
         finish(
@@ -11352,13 +11486,23 @@ def build_rwkv_state_cache_with_progress(
             try:
                 result = future.result()
             except Exception:
+                _set_rwkv_state_cache_recovery_failed(mw, True)
                 _finish_rwkv_state_cache_operation(
                     mw,
                     ready=False,
-                    prewarm_reason="state cache build",
+                    prewarm_reason=operation_reason,
                 )
-                logger.exception("RWKV state cache build failed")
-                tooltip("RWKV state cache build failed.", parent=parent)
+                logger.exception(
+                    "RWKV %s failed: recovery_reason=%s",
+                    operation_reason,
+                    recovery_reason,
+                )
+                tooltip(
+                    "RWKV state recovery failed."
+                    if recovery_reason is not None
+                    else "RWKV state cache build failed.",
+                    parent=parent,
+                )
                 return
 
             finish(
@@ -11372,16 +11516,17 @@ def build_rwkv_state_cache_with_progress(
                 build_with_progress,
                 done,
                 parent=parent,
-                label="Building RWKV state cache...",
+                label=progress_label,
                 immediate=True,
                 uses_collection=True,
                 title="RWKV State Cache",
             )
         except Exception:
+            _set_rwkv_state_cache_recovery_failed(mw, True)
             _finish_rwkv_state_cache_operation(
                 mw,
                 ready=False,
-                prewarm_reason="state cache build",
+                prewarm_reason=operation_reason,
             )
             raise
 

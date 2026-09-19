@@ -181,6 +181,12 @@ class _RwkvQueueRefreshRequest:
         self.finishers.extend(newer.finishers)
 
 
+@dataclass(frozen=True)
+class _RwkvDeferredQueueRefresh:
+    queued_at: float
+    answered_card_id: CardId
+
+
 class AnswerAction(Enum):
     BURY_CARD = 0
     ANSWER_AGAIN = 1
@@ -222,6 +228,9 @@ class Reviewer:
         self._rwkv_remaining_count_override: (
             tuple[int, tuple[int, int, int] | None] | None
         ) = None
+        self._rwkv_deferred_queue_refresh: _RwkvDeferredQueueRefresh | None = None
+        self._rwkv_empty_queue_refresh: _RwkvDeferredQueueRefresh | None = None
+        self._rwkv_after_question_shown_callbacks: list[Callable[[], None]] = []
         self._rwkv_undo_restored_card_active = False
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
         self._scheduling_states_pending = False
@@ -277,8 +286,15 @@ class Reviewer:
         self._question_rendered = False
         self._answer_update_id = None
         self._answer_rendered = False
+        self._rwkv_deferred_queue_refresh = None
+        self._rwkv_empty_queue_refresh = None
+        self._rwkv_after_question_shown_callbacks = []
         self.set_review_actions_blocked(False)
         self._set_review_answer_actions_blocked(False)
+        aqt.rwkv_scheduler.request_rwkv_state_cache_recovery(
+            self.mw,
+            reason="reviewer exit",
+        )
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed is RefreshNeeded.QUEUES:
@@ -515,6 +531,8 @@ class Reviewer:
         self._card_info.set_card(self.card)
 
         if not self.card:
+            if self._retry_deferred_rwkv_queue_refresh():
+                return
             self._cancel_qa_transition()
             self.set_review_actions_blocked(False)
             self._set_review_answer_actions_blocked(False)
@@ -1176,12 +1194,9 @@ class Reviewer:
                     getattr(self, "_review_card_generation", 0) + 1,
                     None,
                 )
-                self._run_after_next_question_shown(
-                    lambda: self._prepare_rwkv_queue_order_then_next_card(
-                        queued_at,
-                        answered_card_id=answered_card_id,
-                        refresh_remaining_counts=True,
-                    )
+                self._defer_rwkv_queue_order_refresh(
+                    queued_at=queued_at,
+                    answered_card_id=answered_card_id,
                 )
                 self.nextCard()
         elif rwkv_queue_order_enabled:
@@ -1561,6 +1576,85 @@ class Reviewer:
             callbacks = []
             self._rwkv_after_question_shown_callbacks = callbacks
         callbacks.append(callback)
+
+    def _defer_rwkv_queue_order_refresh(
+        self,
+        *,
+        queued_at: float,
+        answered_card_id: CardId,
+    ) -> None:
+        request = _RwkvDeferredQueueRefresh(
+            queued_at=queued_at,
+            answered_card_id=answered_card_id,
+        )
+        self._rwkv_deferred_queue_refresh = request
+
+        def refresh_after_question_shown() -> None:
+            self._run_deferred_rwkv_queue_refresh(
+                request,
+                show_next_card=False,
+            )
+
+        self._run_after_next_question_shown(refresh_after_question_shown)
+
+    def _retry_deferred_rwkv_queue_refresh(self) -> bool:
+        request = getattr(self, "_rwkv_deferred_queue_refresh", None)
+        if not isinstance(request, _RwkvDeferredQueueRefresh):
+            return False
+
+        logger.debug(
+            "reviewer fetched no queued card; retrying after deferred RWKV refresh: "
+            "answered_card_id=%s",
+            request.answered_card_id,
+        )
+        return self._run_deferred_rwkv_queue_refresh(request, show_next_card=True)
+
+    def _run_deferred_rwkv_queue_refresh(
+        self,
+        request: _RwkvDeferredQueueRefresh,
+        *,
+        show_next_card: bool,
+    ) -> bool:
+        if getattr(self, "_rwkv_deferred_queue_refresh", None) is not request:
+            return False
+
+        self._rwkv_deferred_queue_refresh = None
+        if show_next_card:
+            self._prepare_empty_rwkv_queue_refresh_then_next_card(request)
+            return True
+
+        self._prepare_rwkv_queue_order_then_next_card(
+            request.queued_at,
+            answered_card_id=request.answered_card_id,
+            refresh_remaining_counts=True,
+        )
+        return True
+
+    def _prepare_empty_rwkv_queue_refresh_then_next_card(
+        self,
+        request: _RwkvDeferredQueueRefresh,
+    ) -> None:
+        initial_state = self.state
+        initial_generation = getattr(self, "_review_card_generation", 0)
+        self._rwkv_empty_queue_refresh = request
+
+        def show_next(_installed: bool | None) -> None:
+            if getattr(self, "_rwkv_empty_queue_refresh", None) is not request:
+                return
+            self._rwkv_empty_queue_refresh = None
+            if self._rwkv_queue_refresh_target_is_current(
+                None,
+                initial_state,
+                initial_generation,
+            ):
+                self.nextCard()
+
+        self._prepare_rwkv_queue_order_async(
+            request.queued_at,
+            answered_card_id=request.answered_card_id,
+            on_finished=show_next,
+            wait_for_backend=True,
+        )
 
     def _run_after_question_shown_callbacks(self) -> None:
         callbacks = getattr(self, "_rwkv_after_question_shown_callbacks", None)
