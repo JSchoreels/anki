@@ -45,6 +45,9 @@ repeated here unless they materially affect a fork feature.
 - Recover a cold RWKV state once with explicit progress after leaving reviews,
   while keeping deck and overview counts responsive and preventing count
   refreshes from silently replaying the full review history.
+- Keep RWKV queue state warm when reviewed cards are reset to New, explain that
+  their previous reviews remain in use, and defer starting their RWKV history
+  from scratch until the next explicit state rebuild.
 
 ## 26.09b3+fsrs7 — 2026-09-11
 

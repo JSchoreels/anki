@@ -87,8 +87,14 @@ the same benchmark-compatible ID features for cards, notes, decks, and presets.
 While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
 the recurrent state. Before applying that answer, Anki falls back to canonical
-recovery if a new learning start replaces older retained history or if the
-answer changed dynamic preset routing. Append-only **Grade Now** batches apply
+recovery if an unmarked new learning start replaces older retained history or
+if the answer changed dynamic preset routing. Forgetting a card explicitly
+marks its next learning sequence as append-only, so the resident state keeps
+using the card's previous reviews without a collection-wide replay. The marker
+is profile-local and remains active across restarts and undo/redo. The explicit
+**Rebuild RWKV State** action in Deck Options clears these markers and applies
+the canonical latest-learning-sequence rule again. Anki's Forget operation does
+not delete the underlying review log. Append-only **Grade Now** batches apply
 their newly written review rows to the same resident state, retain grouped
 undo/redo snapshots, and invalidate transient queue work. Batches containing
 only excluded cram rows also retain an identity-only rollback entry. If a batch

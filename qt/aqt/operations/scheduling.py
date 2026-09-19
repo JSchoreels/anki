@@ -26,7 +26,7 @@ from anki.scheduler.v3 import CardAnswer, GradeNowCardOptions
 from anki.scheduler.v3 import Scheduler as V3Scheduler
 from aqt.operations import CollectionOp
 from aqt.qt import *
-from aqt.utils import disable_help_button, getText, tooltip, tr
+from aqt.utils import disable_help_button, getText, showInfo, tooltip, tr
 
 _T = TypeVar("_T")
 
@@ -47,6 +47,21 @@ def _run_preserving_rwkv_state(
         card_ids=card_ids,
         note_ids=note_ids,
         require_no_preset_overlay=require_no_preset_overlay,
+    )
+
+
+def _run_forgetting_cards_preserving_rwkv_history(
+    col: Collection,
+    mutation: Callable[[], _T],
+    *,
+    card_ids: Sequence[int],
+) -> _T:
+    from aqt import rwkv_scheduler
+
+    return rwkv_scheduler.run_forgetting_cards_preserving_rwkv_history(
+        col,
+        mutation,
+        card_ids=card_ids,
     )
 
 
@@ -164,9 +179,21 @@ def forget_cards(
     restore_position = form.restore_position.isChecked()
     reset_counts = form.reset_counts.isChecked()
 
+    from aqt import rwkv_scheduler
+
+    rwkv_history_cards = rwkv_scheduler.forgotten_cards_with_rwkv_history(
+        aqt.mw,
+        card_ids,
+    )
+    if rwkv_history_cards:
+        showInfo(
+            tr.scheduling_rwkv_forget_preserves_history(cards=rwkv_history_cards),
+            parent=parent,
+        )
+
     return CollectionOp(
         parent,
-        lambda col: _run_preserving_rwkv_state(
+        lambda col: _run_forgetting_cards_preserving_rwkv_history(
             col,
             lambda: col.sched.schedule_cards_as_new(
                 card_ids,

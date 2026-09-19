@@ -182,3 +182,13 @@ scheduling-forgot-cards =
         [one] Reset { $cards } card.
        *[other] Reset { $cards } cards.
     }
+scheduling-rwkv-forget-preserves-history =
+    { $cards ->
+        [one] This card already has RWKV review history.
+       *[other] { $cards } selected cards already have RWKV review history.
+    }
+    Resetting will clear Anki's scheduling state, but RWKV will continue using the previous reviews so it can remain ready without rebuilding the full state.
+
+    To make RWKV start these cards from scratch, review the reset cards first, then choose “Rebuild RWKV State” in Deck Options.
+
+    Resetting a card does not delete its review log.
