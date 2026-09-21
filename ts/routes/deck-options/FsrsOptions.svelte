@@ -26,6 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         commitEditing,
         type DeckOptionsState,
+        fsrsParamsForEvaluation,
         ValueTab,
         withSelectedFsrsParams,
     } from "./lib";
@@ -747,6 +748,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         computingParams = true;
         computeParamsProgress = undefined;
         const params = selectedFsrsParams($config);
+        const currentEvaluationParams = fsrsParamsForEvaluation($config, defaults);
         try {
             requireValidFsrsParams("current", params);
             await runWithBackendProgress(
@@ -848,12 +850,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                     if (!alreadyOptimal) {
                         const comparisonIncludeSameDayReviews =
-                            includeSameDayOverrideForComparison(params, resp.params);
+                            includeSameDayOverrideForComparison(
+                                currentEvaluationParams,
+                                resp.params,
+                            );
                         const currentMetrics =
                             await evaluateParamsLegacyForOptimization("current", {
                                 search: evaluateSearch,
                                 ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                                params,
+                                params: currentEvaluationParams,
                                 includeSameDayReviews: comparisonIncludeSameDayReviews,
                             });
                         const optimizedMetrics =
@@ -1193,7 +1198,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
-        const params = selectedFsrsParams($config);
+        const params = fsrsParamsForEvaluation($config, defaults);
         checkingParams = true;
         computeParamsProgress = undefined;
         try {

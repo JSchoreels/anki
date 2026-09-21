@@ -4,7 +4,44 @@
 import { DeckConfig_Config, DeckConfig_Config_FsrsVersion } from "@generated/anki/deck_config_pb";
 import { expect, test } from "vitest";
 
-import { fsrsParams, withSelectedFsrsParams } from "./lib";
+import { fsrsSameDayEvaluationOverrideForComparison } from "./fsrs-param-diagnostics";
+import { fsrsParams, fsrsParamsForEvaluation, withSelectedFsrsParams } from "./lib";
+
+test("first FSRS-7 evaluation uses its defaults and preserves the requested comparison targets", () => {
+    const config = new DeckConfig_Config({
+        fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+        fsrsParams6: Array(21).fill(1),
+    });
+    const defaults = new DeckConfig_Config({ fsrsParams7: Array(34).fill(2) });
+    const params = fsrsParamsForEvaluation(config, defaults);
+
+    expect(params).toEqual(defaults.fsrsParams7);
+    expect(config.fsrsParams7).toEqual([]);
+    for (const includeSameDay of [true, false]) {
+        expect(fsrsSameDayEvaluationOverrideForComparison(params, Array(34).fill(3), includeSameDay))
+            .toBe(includeSameDay);
+    }
+});
+
+test("evaluation keeps explicit parameters available for validation", () => {
+    const defaults = new DeckConfig_Config({ fsrsParams7: Array(34).fill(2) });
+    for (const params of [Array(34).fill(3), [1, 2, 3], Array(35).fill(1), Array(34).fill(NaN)]) {
+        const config = new DeckConfig_Config({ fsrsParams7: params });
+        expect(fsrsParamsForEvaluation(config, defaults)).toEqual(params);
+    }
+});
+
+test("FSRS-6 evaluation uses the selected parameters even when FSRS-7 parameters are stored", () => {
+    const defaults = new DeckConfig_Config({ fsrsParams7: Array(34).fill(2) });
+    for (const params of [[], Array(21).fill(1)]) {
+        const config = new DeckConfig_Config({
+            fsrsVersion: DeckConfig_Config_FsrsVersion.SIX,
+            fsrsParams6: params,
+            fsrsParams7: Array(34).fill(3),
+        });
+        expect(fsrsParamsForEvaluation(config, defaults)).toEqual(params);
+    }
+});
 
 test("fsrsParams prefers fsrsParams7 when valid", () => {
     const config = new DeckConfig_Config();

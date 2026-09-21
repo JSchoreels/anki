@@ -17,6 +17,11 @@ When FSRS-7 is selected but its 34-parameter array is empty or invalid, the
 derived preset uses the bundled FSRS-7 defaults. It does not substitute stored
 parameters from FSRS-6 or an older model family.
 
+Deck-options evaluation also resolves an empty FSRS-7 parameter field to the
+bundled FSRS-7 defaults. The post-optimization comparison evaluates those defaults
+and the optimized parameters with the same selected same-day review setting;
+evaluating defaults does not fill or save the parameter field.
+
 For existing collections, per-deck desired retention overrides are preserved
 when resolving the FSRS preset for a card. If no deck-specific desired retention
 is set, the resolver uses the deck config's desired retention.
