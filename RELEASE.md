@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+## [26.09b3+fsrs7.build.91](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.91) — 2026-09-21
+
+Current application version: `26.09b3+fsrs7`
+
+The following entries collect the fork changes released in builds 89–91.
+
 ### Added
 
 - Let add-ons batch compact card details and selected note fields, reusing card
