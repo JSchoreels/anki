@@ -6,6 +6,7 @@ use fsrs::SimulatorConfig;
 use fsrs::FSRS;
 use itertools::Itertools;
 
+use super::legacy_fsrs_params;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
@@ -682,7 +683,7 @@ pub(crate) fn build_help_me_decide_review_time_model_from_revlogs(
     enforce_monotonic_success_grade_probs: bool,
     default_review_costs: [f32; 4],
 ) -> Result<HelpMeDecideReviewTimeModel> {
-    let fsrs = FSRS::new(params)?;
+    let fsrs = FSRS::new(legacy_fsrs_params(params))?;
     let mut samples = Vec::new();
     let mut transition_counts = [[0u32; 4]; 4];
 

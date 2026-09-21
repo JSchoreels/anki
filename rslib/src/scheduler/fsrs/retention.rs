@@ -5,6 +5,7 @@ use fsrs::extract_simulator_config;
 use fsrs::optimal_retention;
 use fsrs::SimulatorConfig;
 
+use super::legacy_fsrs_params;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 
@@ -23,7 +24,7 @@ impl Collection {
         let (config, cards) = self.simulate_request_to_config(&req)?;
         Ok(optimal_retention(
             &config,
-            &req.params,
+            legacy_fsrs_params(&req.params),
             |ip| {
                 anki_progress
                     .update(false, |p| {

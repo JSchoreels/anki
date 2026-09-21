@@ -614,8 +614,8 @@ export function fsrsParamsForEvaluation(
     defaults: DeckConfig_Config,
 ): number[] {
     const params = selectedFsrsParams(config);
-    // The legacy evaluation API infers the model from the parameter count;
-    // an empty array means FSRS-6, even when the selected preset uses FSRS-7.
+    // The legacy evaluation API preserves empty arrays as FSRS-6 defaults;
+    // resolve FSRS-7 defaults explicitly when that version is selected.
     return config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN && params.length === 0
         ? defaults.fsrsParams7
         : params;

@@ -27,6 +27,7 @@ use fsrs::FSRS;
 use itertools::Itertools;
 use rayon::prelude::*;
 
+use super::legacy_fsrs_params;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
@@ -1156,6 +1157,7 @@ fn simulate_workload_for_desired_retention(
     desired_retention: f32,
     preset_router: Option<&SimulationPresetRouter>,
 ) -> Result<fsrs::SimulationResult> {
+    let params = legacy_fsrs_params(params);
     let mut cards_for_dr = cards.to_vec();
     apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
     if let Some(preset_router) = preset_router {
@@ -1188,6 +1190,7 @@ fn simulate_workload_summary_for_desired_retention(
     desired_retention: f32,
     preset_router: Option<&SimulationPresetRouter>,
 ) -> Result<fsrs::SimulationSummaryResult> {
+    let params = legacy_fsrs_params(params);
     let mut cards_for_dr = cards.to_vec();
     apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
     if let Some(preset_router) = preset_router {
@@ -1225,6 +1228,7 @@ fn simulate_workload_split_summary_for_desired_retention(
     fsrs::SimulationSummaryResult,
     HashMap<String, PresetWorkloadPoint>,
 )> {
+    let params = legacy_fsrs_params(params);
     let mut cards_for_dr = cards.to_vec();
     apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
     let preset_workload = Arc::new(Mutex::new(HashMap::<String, PresetWorkloadPoint>::new()));
@@ -2396,6 +2400,28 @@ mod tests {
         };
         apply_simulation_desired_retention(&mut card, 0.9);
         assert_eq!(card.desired_retention, Some(0.9));
+    }
+
+    #[test]
+    fn empty_simulation_params_keep_fsrs6_defaults() -> crate::error::Result<()> {
+        let config = SimulatorConfig {
+            deck_size: 10,
+            learn_span: 30,
+            ..Default::default()
+        };
+        let empty = simulate_workload_for_desired_retention(&config, &[], &[], 0.9, None)?;
+        let explicit = simulate_workload_for_desired_retention(
+            &config,
+            &fsrs::FSRS6_DEFAULT_PARAMETERS,
+            &[],
+            0.9,
+            None,
+        )?;
+
+        assert!(empty.review_cnt_per_day.iter().sum::<usize>() > 0);
+        assert_eq!(empty.review_cnt_per_day, explicit.review_cnt_per_day);
+        assert_eq!(empty.memorized_cnt_per_day, explicit.memorized_cnt_per_day);
+        Ok(())
     }
 
     #[test]

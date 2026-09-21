@@ -194,7 +194,7 @@ impl DeckConfig {
         } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_4) {
             &self.inner.fsrs_params_4
         } else {
-            &[]
+            &fsrs::FSRS6_DEFAULT_PARAMETERS
         }
     }
 
@@ -463,6 +463,16 @@ mod tests {
         config.inner.fsrs_params_6 = vec![2.0_f32; 21];
 
         assert_eq!(config.fsrs_params(), fsrs::DEFAULT_PARAMETERS);
+    }
+
+    #[test]
+    fn unoptimized_legacy_versions_keep_fsrs6_defaults() {
+        for version in [FsrsVersion::Six, FsrsVersion::Five, FsrsVersion::Four] {
+            let mut config = DeckConfig::default();
+            config.inner.fsrs_version = version as i32;
+
+            assert_eq!(config.fsrs_params(), fsrs::FSRS6_DEFAULT_PARAMETERS);
+        }
     }
 
     #[test]

@@ -22,6 +22,12 @@ bundled FSRS-7 defaults. The post-optimization comparison evaluates those defaul
 and the optimized parameters with the same selected same-day review setting;
 evaluating defaults does not fill or save the parameter field.
 
+FSRS-6 and older presets with no usable stored parameters resolve to explicit
+FSRS-6 defaults. Add-on presets with empty parameters resolve defaults for their
+selected model family. Legacy parameter-only evaluation, memory-state, and
+simulation helpers retain their empty-array convention of FSRS-6 defaults; they
+do not inherit the upstream library's FSRS-7 empty-array default.
+
 For existing collections, per-deck desired retention overrides are preserved
 when resolving the FSRS preset for a card. If no deck-specific desired retention
 is set, the resolver uses the deck config's desired retention.

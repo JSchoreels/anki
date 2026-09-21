@@ -38,6 +38,7 @@ use fsrs::FSRS;
 use itertools::Itertools;
 use prost::Message;
 
+use super::legacy_fsrs_params;
 use crate::card::Card;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
@@ -768,7 +769,7 @@ fn existing_cards_for_dynamic_desired_retention(
     input: ExistingCardInput,
     params: &[f32],
 ) -> Result<Vec<fsrs::Card>> {
-    let fsrs = FSRS::new(params)?;
+    let fsrs = FSRS::new(legacy_fsrs_params(params))?;
     let mut items_by_card = fsrs_items_for_memory_states(
         &fsrs,
         params,
@@ -1495,7 +1496,7 @@ impl Collection {
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
-        let fsrs = FSRS::new(params)?;
+        let fsrs = FSRS::new(legacy_fsrs_params(params))?;
         Ok(fsrs.evaluate(items.items, |ip| {
             anki_progress
                 .update(false, |p| {
@@ -1687,7 +1688,7 @@ fn fsrs_review_retrievability_predictions_for_targets(
         return Ok(Vec::new());
     }
 
-    let fsrs = FSRS::new(params)?;
+    let fsrs = FSRS::new(legacy_fsrs_params(params))?;
     let mut predictions = Vec::new();
     for source in sources {
         if let Some(target_revlog_ids) = target_revlog_ids {
@@ -2114,6 +2115,32 @@ pub(crate) mod tests {
 
     pub(crate) fn convert(revlog: &[RevlogEntry], training: bool) -> Option<Vec<FSRSItem>> {
         convert_ignore_before(revlog, training, 0.into())
+    }
+
+    #[test]
+    fn legacy_evaluation_with_empty_params_matches_fsrs6_defaults() -> Result<()> {
+        let mut col = Collection::new();
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let cid = col.get_first_card().id;
+        for entry in [
+            revlog_for_card(cid.0, RevlogReviewKind::Learning, 5),
+            revlog_for_card(cid.0, RevlogReviewKind::Review, 3),
+            revlog_for_card(cid.0, RevlogReviewKind::Review, 1),
+        ] {
+            col.storage.add_revlog_entry(&entry, false)?;
+        }
+
+        let empty = col.evaluate_params_legacy(&vec![], "", 0.into(), None)?;
+        let explicit = col.evaluate_params_legacy(
+            &fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec(),
+            "",
+            0.into(),
+            None,
+        )?;
+
+        assert_eq!(empty.log_loss, explicit.log_loss);
+        assert_eq!(empty.rmse_bins, explicit.rmse_bins);
+        Ok(())
     }
 
     #[test]

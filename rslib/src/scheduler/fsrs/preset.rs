@@ -212,7 +212,13 @@ impl AddonFsrsPreset {
             "add-on FSRS preset id must start with addon:"
         );
         let fsrs_version = self.fsrs_version.into_fsrs_version();
-        let params = if fsrs_version == FsrsVersion::Seven
+        let params = if self.params.is_empty() {
+            if fsrs_version == FsrsVersion::Seven {
+                DEFAULT_PARAMETERS.to_vec()
+            } else {
+                fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec()
+            }
+        } else if fsrs_version == FsrsVersion::Seven
             && self.params.len() == OUTDATED_FSRS7_PREVIEW_PARAM_COUNT
         {
             tracing::warn!(
@@ -749,6 +755,25 @@ mod test {
     use crate::deckconfig::DeckConfigId;
     use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
     use crate::tests::NoteAdder;
+
+    #[test]
+    fn empty_addon_params_resolve_defaults_for_selected_version() -> Result<()> {
+        for (version, expected) in [
+            (AddonFsrsVersion::Seven, DEFAULT_PARAMETERS.as_slice()),
+            (AddonFsrsVersion::Six, FSRS6_DEFAULT_PARAMETERS.as_slice()),
+        ] {
+            let preset = AddonFsrsPreset {
+                id: "addon:defaults".into(),
+                fsrs_version: version,
+                ..Default::default()
+            }
+            .into_fsrs_preset()?;
+
+            assert_eq!(preset.params, expected);
+            assert_eq!(preset.fsrs()?.version(), FSRS::new(expected)?.version());
+        }
+        Ok(())
+    }
 
     #[test]
     fn fsrs_preset_is_derived_from_deck_config() -> Result<()> {

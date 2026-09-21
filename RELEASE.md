@@ -29,6 +29,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Update the upstream FSRS engine to validate FSRS-7 fast stability, while
+  preserving FSRS-6 defaults for older presets and legacy evaluation calls.
 - Evaluate an unoptimized FSRS-7 preset with the bundled FSRS-7 defaults, so
   the optimization comparison honors the selected same-day review setting.
 - Reduce pauses when rebuilding retrievability-sorted review queues with large
