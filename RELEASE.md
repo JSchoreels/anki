@@ -33,6 +33,8 @@ repeated here unless they materially affect a fork feature.
   preserving FSRS-6 defaults for older presets and legacy evaluation calls.
 - Evaluate an unoptimized FSRS-7 preset with the bundled FSRS-7 defaults, so
   the optimization comparison honors the selected same-day review setting.
+- Preserve Japanese readings and other text committed just before leaving an
+  editor field, including when closing the editor during a review.
 - Reduce pauses when rebuilding retrievability-sorted review queues with large
   due-card backlogs by reading candidate state and resolving FSRS presets in
   batches, decoding only the needed scheduling columns, avoiding redundant

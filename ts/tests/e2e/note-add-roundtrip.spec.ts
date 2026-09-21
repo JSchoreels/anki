@@ -25,9 +25,48 @@
  */
 
 import { AddNoteRequest, AddNoteResponse } from "@generated/anki/notes_pb";
+import type { BrowserContext, Page } from "@playwright/test";
 
 import { expect, installBridgeStub, test } from "./fixtures";
 import { bridgeCalls, decodeRequestBody, editableField, isRpc, rpcUrl } from "./helpers";
+
+async function editCurrentNote(addPage: Page, context: BrowserContext, front: string): Promise<Page> {
+    const field = editableField(addPage, 0);
+    await field.click();
+    await field.pressSequentially(front);
+
+    const addRequestPromise = addPage.waitForRequest(isRpc("addNote"));
+    const addResponsePromise = addPage.waitForResponse(
+        (response) => isRpc("addNote")(response.request()),
+    );
+    await addPage.getByRole("button", { name: "Add", exact: true }).click();
+    const addRequest = decodeRequestBody(await addRequestPromise, AddNoteRequest);
+    const addResponse = AddNoteResponse.fromBinary(
+        new Uint8Array(await (await addResponsePromise).body()),
+    );
+
+    const page = await context.newPage();
+    await installBridgeStub(page);
+    await page.goto("/editor/?mode=current", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+        () => typeof (window as any).loadNote === "function",
+        { timeout: 15_000 },
+    );
+    await page.evaluate(
+        ({ nid, notetypeId }) =>
+            (window as any).loadNote({
+                nid: BigInt(nid),
+                notetypeId: BigInt(notetypeId),
+                initial: true,
+            }),
+        {
+            nid: addResponse.noteId.toString(),
+            notetypeId: addRequest.note!.notetypeId.toString(),
+        },
+    );
+    await expect(editableField(page, 0)).toHaveText(front);
+    return page;
+}
 
 test("immediately clicking Add while second field is focused includes its latest value", async ({ editor: page }) => {
     const field0 = editableField(page, 0);
@@ -74,41 +113,45 @@ test("saveNow commits an active IME composition before reading the field", async
     expect(savedField).toBe("諦[あきら]める");
 });
 
+for (const mode of ["add", "current"] as const) {
+    test(`IME text committed immediately before blur is saved in ${mode} mode`, async ({ editor: addPage, context }) => {
+        const page = mode === "current" ? await editCurrentNote(addPage, context, "弁当[]") : addPage;
+        const field = editableField(page, 0);
+        await field.click();
+        if (mode === "add") {
+            await field.pressSequentially("弁当[]");
+        }
+
+        await field.evaluate((element) => {
+            element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, composed: true }));
+            element.textContent = "弁当[べんとう]";
+            element.dispatchEvent(
+                new CompositionEvent("compositionend", {
+                    data: "べんとう",
+                    bubbles: true,
+                    composed: true,
+                }),
+            );
+            // Focus may leave before the final DOM mutation reaches the field store.
+            element.blur();
+        });
+
+        if (mode === "add") {
+            const request = page.waitForRequest(isRpc("addNote"));
+            await page.getByRole("button", { name: "Add", exact: true }).click();
+            expect(decodeRequestBody(await request, AddNoteRequest).note?.fields[0]).toBe("弁当[べんとう]");
+        } else {
+            await page.evaluate(async () => {
+                await (window as any).saveNow();
+                await (window as any).reloadNote();
+            });
+            await expect(field).toHaveText("弁当[べんとう]");
+        }
+    });
+}
+
 test("saveNow waits for the blur save before reporting completion", async ({ editor: addPage, context }) => {
-    const field = editableField(addPage, 0);
-    await field.click();
-    await field.pressSequentially("original");
-
-    const addRequestPromise = addPage.waitForRequest(isRpc("addNote"));
-    const addResponsePromise = addPage.waitForResponse(
-        (response) => isRpc("addNote")(response.request()),
-    );
-    await addPage.getByRole("button", { name: "Add", exact: true }).click();
-    const addRequest = decodeRequestBody(await addRequestPromise, AddNoteRequest);
-    const addResponse = AddNoteResponse.fromBinary(
-        new Uint8Array(await (await addResponsePromise).body()),
-    );
-
-    const page = await context.newPage();
-    await installBridgeStub(page);
-    await page.goto("/editor/?mode=current", { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(
-        () => typeof (window as any).loadNote === "function",
-        { timeout: 15_000 },
-    );
-    await page.evaluate(
-        ({ nid, notetypeId }) =>
-            (window as any).loadNote({
-                nid: BigInt(nid),
-                notetypeId: BigInt(notetypeId),
-                initial: true,
-            }),
-        {
-            nid: addResponse.noteId.toString(),
-            notetypeId: addRequest.note!.notetypeId.toString(),
-        },
-    );
-    await page.waitForSelector(".field-container", { timeout: 15_000 });
+    const page = await editCurrentNote(addPage, context, "original");
 
     // Let the initial field-store synchronization finish before isolating the
     // save caused by focus loss.

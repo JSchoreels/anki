@@ -86,6 +86,15 @@ function useDOMMirror(): DOMMirrorAPI {
             false,
         );
 
+        function resubscribe(): void {
+            // A final IME commit can precede blur in the same task. Publish
+            // pending DOM edits before subscribing restores the stored value.
+            if (observer.takeRecords().length) {
+                saveHTMLToStore();
+            }
+            subscribe();
+        }
+
         /* do not update when focused as it will reset caret */
         const removeFocus = on(element, "focus", unsubscribe);
         let removeBlur: (() => void) | undefined;
@@ -94,13 +103,13 @@ function useDOMMirror(): DOMMirrorAPI {
             (allow: boolean): void => {
                 if (allow) {
                     if (!removeBlur) {
-                        removeBlur = on(element, "blur", subscribe);
+                        removeBlur = on(element, "blur", resubscribe);
                     }
 
                     const root = element.getRootNode() as Document | ShadowRoot;
 
                     if (root.activeElement !== element) {
-                        subscribe();
+                        resubscribe();
                     }
                 } else if (removeBlur) {
                     removeBlur();
