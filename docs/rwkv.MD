@@ -137,9 +137,10 @@ makes the persisted history stale, review-time predictions also defer that
 restore. An unavailable or failed cache result is remembered for that cold-state
 generation and is carried across later answers, preventing queue scoring, Card
 Info, and answer preparation from repeating the same validation. An explicit
-cache build, the coalesced recovery requested when the reviewer closes or a
-cold overview finishes rendering, or the next startup recovery can still
-perform the canonical rebuild. Automatic recovery runs as a separately labelled
+cache build, recovery before a cold reviewer declares its queue empty, the
+coalesced recovery requested when the reviewer closes or a cold overview finishes
+rendering, or the next startup recovery can still perform the canonical rebuild.
+Automatic recovery runs as a separately labelled
 **RWKV State Cache** progress operation, so it is not hidden inside a deck-count
 query and repeated exits cannot queue duplicate rebuilds. A failed automatic
 recovery is not immediately requeued by its completion refresh; a later state
@@ -456,9 +457,15 @@ count is shown as an ellipsis when recovery was already requested. The overview
 refreshes after recovery finishes. The deck browser renders its initial tree
 without waiting for model inference, then scores disjoint RWKV-enabled deck
 scopes one at a time. Model scoring runs without collection access, and
-each completed scope is installed in a separate transient count-only cache so
-the visible counts can be updated incrementally. The currently selected scope
-is processed first. While a scope is pending, its review due count and the
+each completed scope supplies transient count-only caches for its deck rows so
+the visible counts can be updated incrementally. Predictions are reused for
+each descendant, but every deck row applies its own study-scope repeat rules
+and intervening review history. Parent counts are evaluated independently of
+their children's displayed counts: a parent requiring six intervening reviews
+can show zero while a child requiring two shows one. The uncapped review total
+used by daily-limit labels follows the same scope, so different repeat
+eligibility is not presented as a daily-limit restriction. The currently
+selected scope is processed first. While a scope is pending, its review due count and the
 review due counts of its descendants display an ellipsis instead of the stored
 FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
 falls back to its stored count. A scope deferred during state-cache restoration
@@ -726,6 +733,14 @@ cannot provide the immutable input snapshot, Anki continues with normal queue
 order instead of falling back to a long Python-side full-deck scan. This is
 especially important after undo restores RWKV state and invalidates predictions
 that were computed for the now-undone answer.
+
+If that queue is empty while RWKV resident state is unavailable, the
+reviewer waits for the labelled state-cache recovery operation, then installs
+fresh RWKV queue scores and fetches again before ending the session. An existing
+state-cache operation is shared rather than duplicated. Recovery is attempted
+once for that empty queue; failure or a still-empty recovered queue ends the
+session normally. Completion cannot resume a reviewer session the user has left
+or whose collection or card generation has changed.
 
 With candidate refresh disabled, due interval refreshes remain exact. Anki does
 not precompute post-answer queue maps for all possible answer buttons while the

@@ -35,6 +35,10 @@ repeated here unless they materially affect a fork feature.
   the optimization comparison honors the selected same-day review setting.
 - Preserve Japanese readings and other text committed just before leaving an
   editor field, including when closing the editor during a review.
+- Recover unavailable RWKV state and refresh an empty review queue before ending
+  the session, so collection changes do not prematurely return to the overview.
+- Make RWKV deck-list counts match opening each subdeck when parent and child
+  decks have different same-day repeat rules or intervening review histories.
 - Reduce pauses when rebuilding retrievability-sorted review queues with large
   due-card backlogs by reading candidate state and resolving FSRS presets in
   batches, decoding only the needed scheduling columns, avoiding redundant

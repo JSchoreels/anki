@@ -230,6 +230,8 @@ class Reviewer:
         ) = None
         self._rwkv_deferred_queue_refresh: _RwkvDeferredQueueRefresh | None = None
         self._rwkv_empty_queue_refresh: _RwkvDeferredQueueRefresh | None = None
+        self._rwkv_empty_queue_recovery_generation: int | None = None
+        self._rwkv_empty_queue_recovery_attempted = False
         self._rwkv_after_question_shown_callbacks: list[Callable[[], None]] = []
         self._rwkv_undo_restored_card_active = False
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
@@ -288,6 +290,8 @@ class Reviewer:
         self._answer_rendered = False
         self._rwkv_deferred_queue_refresh = None
         self._rwkv_empty_queue_refresh = None
+        self._rwkv_empty_queue_recovery_generation = None
+        self._rwkv_empty_queue_recovery_attempted = False
         self._rwkv_after_question_shown_callbacks = []
         self.set_review_actions_blocked(False)
         self._set_review_answer_actions_blocked(False)
@@ -505,6 +509,10 @@ class Reviewer:
     ##########################################################################
 
     def nextCard(self) -> None:
+        if getattr(self, "_rwkv_empty_queue_recovery_generation", None) == getattr(
+            self, "_review_card_generation", 0
+        ):
+            return
         start = time.monotonic()
         self._review_card_generation = getattr(self, "_review_card_generation", 0) + 1
         count_override = getattr(self, "_rwkv_remaining_count_override", None)
@@ -533,12 +541,15 @@ class Reviewer:
         if not self.card:
             if self._retry_deferred_rwkv_queue_refresh():
                 return
+            if self._retry_rwkv_state_recovery():
+                return
             self._cancel_qa_transition()
             self.set_review_actions_blocked(False)
             self._set_review_answer_actions_blocked(False)
             self.mw.moveToState("overview")
             return
 
+        self._rwkv_empty_queue_recovery_attempted = False
         if self._reps is None:
             self._initWeb()
 
@@ -1596,6 +1607,51 @@ class Reviewer:
             )
 
         self._run_after_next_question_shown(refresh_after_question_shown)
+
+    def _retry_rwkv_state_recovery(self) -> bool:
+        if getattr(self, "_rwkv_empty_queue_recovery_attempted", False):
+            return False
+        if getattr(self.mw, "state", None) != "review":
+            return False
+
+        generation = self._review_card_generation
+        initial_state = self.state
+        collection = self.mw.col
+        self._rwkv_empty_queue_recovery_attempted = True
+        self._rwkv_empty_queue_recovery_generation = generation
+
+        def is_current() -> bool:
+            return (
+                self._rwkv_empty_queue_recovery_generation == generation
+                and self.mw.state == "review"
+                and self.mw.col is collection
+                and self._rwkv_queue_refresh_target_is_current(
+                    None, initial_state, generation
+                )
+            )
+
+        def show_next(_installed: bool | None) -> None:
+            if is_current():
+                self._rwkv_empty_queue_recovery_generation = None
+                self.nextCard()
+
+        def recovered(ready: bool) -> None:
+            if not is_current():
+                return
+            if ready:
+                self._prepare_rwkv_queue_order_async(
+                    on_finished=show_next,
+                    wait_for_backend=True,
+                )
+            else:
+                show_next(False)
+
+        self.set_review_actions_blocked(True)
+        if aqt.rwkv_scheduler.recover_reviewer_queue_state(self, recovered):
+            logger.debug("reviewer waiting for RWKV state recovery before ending")
+            return True
+        self._rwkv_empty_queue_recovery_generation = None
+        return False
 
     def _retry_deferred_rwkv_queue_refresh(self) -> bool:
         request = getattr(self, "_rwkv_deferred_queue_refresh", None)

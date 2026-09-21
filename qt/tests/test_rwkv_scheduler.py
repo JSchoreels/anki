@@ -13291,6 +13291,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         learn_count=4,
         review_count=5,
         review_uncapped=5,
+        review_uncapped_including_children=5,
         children=[],
     )
     pending_scope = SimpleNamespace(
@@ -13299,6 +13300,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         learn_count=2,
         review_count=60,
         review_uncapped=60,
+        review_uncapped_including_children=65,
         children=[child],
     )
     ready_scope = SimpleNamespace(
@@ -13307,6 +13309,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         learn_count=7,
         review_count=8,
         review_uncapped=8,
+        review_uncapped_including_children=8,
         children=[],
     )
     tree = SimpleNamespace(children=[pending_scope, ready_scope])

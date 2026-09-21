@@ -11196,6 +11196,19 @@ def _refresh_active_rwkv_count_view(mw: object) -> bool:
     return True
 
 
+def _notify_rwkv_state_cache_completion(mw: object, ready: bool) -> bool:
+    callbacks: list[Callable[[bool], None]] = getattr(
+        mw, "_rwkv_state_cache_completion_callbacks", []
+    )
+    setattr(mw, "_rwkv_state_cache_completion_callbacks", [])
+    for callback in callbacks:
+        try:
+            callback(ready)
+        except Exception:
+            logger.exception("RWKV state cache completion callback failed")
+    return bool(callbacks)
+
+
 def _finish_rwkv_state_cache_operation(
     mw: object,
     *,
@@ -11204,7 +11217,10 @@ def _finish_rwkv_state_cache_operation(
 ) -> None:
     _set_rwkv_state_cache_recovery_scheduled(mw, False)
     _set_rwkv_state_cache_loading(mw, False)
-    if _refresh_active_rwkv_count_view(mw) or not ready:
+    refreshed_counts = _refresh_active_rwkv_count_view(mw)
+    notified = _notify_rwkv_state_cache_completion(mw, ready)
+    # A waiting reviewer prepares its required queue before fetching another card.
+    if notified or refreshed_counts or not ready:
         return
     prewarm_reviewer_queue_score_cache(
         SimpleNamespace(mw=mw),
@@ -11223,6 +11239,7 @@ def load_rwkv_state_cache_with_progress(
     def finish(loaded: bool) -> None:
         if prompt_if_unavailable and not loaded:
             _set_rwkv_state_cache_loading(mw, False)
+            _notify_rwkv_state_cache_completion(mw, False)
             _show_rwkv_state_cache_prompt(mw)
             return
         _finish_rwkv_state_cache_operation(
@@ -11407,6 +11424,7 @@ def refresh_rwkv_state_after_sync(
                 parent=cast(QWidget | None, mw),
             )
         on_done()
+        _notify_rwkv_state_cache_completion(mw, ready)
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
@@ -11435,16 +11453,50 @@ def refresh_rwkv_state_after_sync(
     done(direct_future)
 
 
+def recover_reviewer_queue_state(
+    reviewer: object,
+    on_done: Callable[[bool], None],
+) -> bool:
+    """Recover cold RWKV state before an empty review queue ends the session."""
+
+    mw = getattr(reviewer, "mw")
+    if (
+        _reviewer_backend is None
+        or not reviewer_queue_order_enabled(reviewer)
+        or _rwkv_resident_state_ready(mw)
+        or getattr(mw, "_rwkv_state_cache_recovery_failed", False)
+    ):
+        return False
+    try:
+        build_rwkv_state_cache_with_progress(
+            mw,
+            recovery_reason="empty review queue",
+            on_done=on_done,
+        )
+    except Exception:
+        # The build's failure path has already notified the waiting reviewer.
+        logger.exception("failed to start RWKV empty review queue recovery")
+    return True
+
+
 def build_rwkv_state_cache_with_progress(
     mw: object,
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
     recovery_reason: str | None = None,
+    on_done: Callable[[bool], None] | None = None,
 ) -> None:
     """Build the local RWKV state cache with a modal progress dialog."""
 
     from aqt.utils import show_warning, tooltip
+
+    if on_done is not None:
+        callbacks: list[Callable[[bool], None]] = getattr(
+            mw, "_rwkv_state_cache_completion_callbacks", []
+        )
+        callbacks.append(on_done)
+        setattr(mw, "_rwkv_state_cache_completion_callbacks", callbacks)
 
     if getattr(mw, "_rwkv_state_cache_loading", False):
         logger.debug(
@@ -23981,12 +24033,47 @@ def _set_rwkv_deck_count_scores(
         if collection_backend is not None
         else getattr(collection, "_backend", None)
     )
-    request = _rwkv_score_request(
-        scoped_reviewer,
-        deck_id,
-        scores,
-        target_retentions_by_card_id=target_retentions_by_card_id,
-    )
+    requests = [
+        _rwkv_score_request(
+            scoped_reviewer,
+            deck_id,
+            scores,
+            target_retentions_by_card_id=target_retentions_by_card_id,
+        )
+    ]
+    child_ids = [
+        child_id
+        for child_id in _deck_tree_ids(scoped_reviewer, deck_id)
+        if child_id != deck_id
+    ]
+    if child_ids:
+        # Predictions are shared, but repeat spacing uses the same history as
+        # opening each deck. Passing the parent's intervening counts to a child
+        # would incorrectly include answers from its siblings.
+        card_decks = (
+            dict(
+                getattr(collection, "db").all(
+                    f"select id, did from cards where id in {ids2str([card_id for card_id, _ in scores])}"
+                )
+            )
+            if scores
+            else {}
+        )
+        for child_id in child_ids:
+            scope = set(_deck_tree_ids(scoped_reviewer, child_id))
+            child_scores = [
+                (card_id, score)
+                for card_id, score in scores
+                if card_decks.get(card_id) in scope
+            ]
+            requests.append(
+                _rwkv_score_request(
+                    scoped_reviewer,
+                    child_id,
+                    child_scores,
+                    target_retentions_by_card_id=target_retentions_by_card_id,
+                )
+            )
     if not _rwkv_collection_identity_is_current(
         collection_owner=collection_owner,
         collection=collection,
@@ -24006,16 +24093,15 @@ def _set_rwkv_deck_count_scores(
         ):
             return False
         set_scores_raw = getattr(backend, "set_rwkv_deck_count_scores_raw", None)
-        if callable(set_scores_raw):
-            set_scores_raw(request.SerializeToString())
-        else:
-            set_scores = getattr(backend, "set_rwkv_deck_count_scores", None)
-            if not callable(set_scores):
-                return False
-            set_scores(
-                deck_id=deck_id,
-                scores=list(request.scores),
-            )
+        set_scores = getattr(backend, "set_rwkv_deck_count_scores", None)
+        if not callable(set_scores_raw) and not callable(set_scores):
+            return False
+        for request in requests:
+            if callable(set_scores_raw):
+                set_scores_raw(request.SerializeToString())
+            else:
+                assert callable(set_scores)
+                set_scores(deck_id=request.deck_id, scores=list(request.scores))
         return _rwkv_collection_identity_is_current(
             collection_owner=collection_owner,
             collection=collection,

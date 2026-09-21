@@ -11,6 +11,7 @@ use anki_proto::decks::DeckTreeNode;
 use serde_tuple::Serialize_tuple;
 use unicase::UniCase;
 
+use super::counts::ScopedDueCounts;
 use super::limits::remaining_limits_map;
 use super::limits::RemainingLimits;
 use super::DueCounts;
@@ -84,16 +85,16 @@ fn add_collapsed_and_filtered(
 }
 
 fn add_counts(node: &mut DeckTreeNode, counts: &HashMap<DeckId, DueCounts>) {
-    if let Some(counts) = counts.get(&DeckId(node.deck_id)) {
-        node.new_count = counts.new;
-        node.review_count = counts.review;
-        node.learn_count = counts.learning;
-        node.intraday_learning = counts.intraday_learning;
-        node.interday_learning_uncapped = counts.interday_learning;
-        node.new_uncapped = counts.new;
-        node.review_uncapped = counts.review;
-        node.total_in_deck = counts.total_cards;
-    }
+    let empty = DueCounts::default();
+    let direct = counts.get(&DeckId(node.deck_id)).unwrap_or(&empty);
+    node.new_count = direct.new;
+    node.review_count = direct.review;
+    node.learn_count = direct.learning;
+    node.intraday_learning = direct.intraday_learning;
+    node.interday_learning_uncapped = direct.interday_learning;
+    node.new_uncapped = direct.new;
+    node.review_uncapped = direct.review;
+    node.total_in_deck = direct.total_cards;
     for child in &mut node.children {
         add_counts(child, counts);
     }
@@ -155,9 +156,23 @@ impl AddAssign for NodeCountsV3 {
 fn sum_counts_and_apply_limits_v3(
     node: &mut DeckTreeNode,
     limits: &HashMap<DeckId, RemainingLimits>,
-    limit_exempt: &HashMap<DeckId, (u32, u32)>,
+    counts: &HashMap<DeckId, DueCounts>,
+    scoped_counts: &ScopedDueCounts,
     mut parent_limits: Option<RemainingLimits>,
 ) -> NodeCountsV3 {
+    // Evaluate each study scope independently before updating its children's
+    // displayed counts. A child can have a different repeat guard/history, and
+    // its own study count must not replace its contribution to the parent queue.
+    let scope = scoped_counts.get(&DeckId(node.deck_id));
+    let counts = scope.unwrap_or(counts);
+    let own_scope = scope.map(|counts| {
+        add_counts(node, counts);
+        let capped =
+            sum_counts_and_apply_limits_v3(node, limits, counts, &HashMap::new(), parent_limits);
+        let uncapped = node.review_uncapped_including_children;
+        add_counts(node, counts);
+        (capped, uncapped)
+    });
     let mut remaining = limits
         .get(&DeckId(node.deck_id))
         .copied()
@@ -171,33 +186,41 @@ fn sum_counts_and_apply_limits_v3(
     let mut this_node_uncapped = NodeCountsV3 {
         new: node.new_count,
         review: node.review_count,
-        review_limit_exempt: limit_exempt
+        review_limit_exempt: counts
             .get(&DeckId(node.deck_id))
-            .map(|counts| counts.0)
+            .map(|counts| counts.review_limit_exempt)
             .unwrap_or_default(),
         intraday_learning: node.intraday_learning,
         interday_learning: node.interday_learning_uncapped,
-        interday_learning_limit_exempt: limit_exempt
+        interday_learning_limit_exempt: counts
             .get(&DeckId(node.deck_id))
-            .map(|counts| counts.1)
+            .map(|counts| counts.interday_learning_limit_exempt)
             .unwrap_or_default(),
         total: node.total_in_deck,
     };
     let mut total_including_children = node.total_in_deck;
+    let mut review_uncapped_including_children = node.review_uncapped;
 
     // add capped child counts / uncapped total
     for child in &mut node.children {
         this_node_uncapped +=
-            sum_counts_and_apply_limits_v3(child, limits, limit_exempt, parent_limits);
+            sum_counts_and_apply_limits_v3(child, limits, counts, scoped_counts, parent_limits);
         total_including_children += child.total_including_children;
+        review_uncapped_including_children += child.review_uncapped_including_children;
     }
 
-    let this_node_capped = this_node_uncapped.capped(&remaining);
+    let (this_node_capped, review_uncapped_including_children) = own_scope.unwrap_or_else(|| {
+        (
+            this_node_uncapped.capped(&remaining),
+            review_uncapped_including_children,
+        )
+    });
 
     node.new_count = this_node_capped.new;
     node.review_count = this_node_capped.review;
     node.learn_count = this_node_capped.intraday_learning + this_node_capped.interday_learning;
     node.total_including_children = total_including_children;
+    node.review_uncapped_including_children = review_uncapped_including_children;
 
     this_node_capped
 }
@@ -310,19 +333,8 @@ impl Collection {
                     count.interday_learning_limit_exempt = 0;
                 }
             }
-            self.apply_rwkv_review_queue_counts(&mut counts, &decks_map, &dconf, timing_at_stamp)?;
-            let limit_exempt = counts
-                .iter()
-                .map(|(deck_id, counts)| {
-                    (
-                        *deck_id,
-                        (
-                            counts.review_limit_exempt,
-                            counts.interday_learning_limit_exempt,
-                        ),
-                    )
-                })
-                .collect();
+            let scoped_counts =
+                self.rwkv_review_queue_counts(&counts, &decks_map, &dconf, timing_at_stamp)?;
             add_counts(&mut tree, &counts);
             let limits = remaining_limits_map(
                 decks_map.values(),
@@ -330,7 +342,13 @@ impl Collection {
                 days_elapsed,
                 new_cards_ignore_review_limit,
             );
-            sum_counts_and_apply_limits_v3(&mut tree, &limits, &limit_exempt, parent_limits);
+            sum_counts_and_apply_limits_v3(
+                &mut tree,
+                &limits,
+                &counts,
+                &scoped_counts,
+                parent_limits,
+            );
         }
 
         Ok(tree)
@@ -680,7 +698,7 @@ mod test {
 
         let card_id = add_review_card(&mut col, parent.id, timing.days_elapsed as i32, 0.75, None)?;
         let mut filtered = Deck::new_filtered();
-        filtered.name = NativeDeckName::from_native_str("Parent::Filtered");
+        filtered.name = NativeDeckName::from_human_name("Parent::Filtered");
         col.add_or_update_deck(&mut filtered)?;
 
         let mut card = col.storage.get_card(card_id)?.unwrap();
@@ -754,7 +772,7 @@ mod test {
         col.add_or_update_deck_config(&mut config)?;
 
         let mut filtered = Deck::new_filtered();
-        filtered.name = NativeDeckName::from_native_str("Parent::Filtered");
+        filtered.name = NativeDeckName::from_human_name("Parent::Filtered");
         col.add_or_update_deck(&mut filtered)?;
 
         let timing = col.timing_today()?;
@@ -847,6 +865,90 @@ mod test {
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 1);
         assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_browser_counts_match_each_decks_review_queue() -> Result<()> {
+        use crate::collection::RwkvReviewQueueScoreEntry;
+
+        for (parent_intervening, child_intervening, expected_parent, expected_child) in
+            [(4, 2, 0, 1), (6, 1, 1, 0), (6, 2, 1, 1)]
+        {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::ApplyAllParentLimits, true, false)?;
+            let mut parent = col.get_or_create_normal_deck("All")?;
+            let mut child = col.get_or_create_normal_deck("All::Reading")?;
+            let timing = col.timing_today()?;
+            for (deck, minimum, daily_limit) in [(&mut parent, 6, 50), (&mut child, 2, 9999)] {
+                enable_rwkv_review_counts(&mut col, deck, true)?;
+                let mut config = col
+                    .get_deck_config(deck.config_id().unwrap(), false)?
+                    .unwrap();
+                config.inner.rwkv_review_min_intervening_reviews = minimum;
+                config.inner.rwkv_review_min_elapsed_secs = 0;
+                config.inner.reviews_per_day = daily_limit;
+                config.inner.same_day_reviews_ignore_review_limit = true;
+                col.add_or_update_deck_config(&mut config)?;
+            }
+            parent.common.last_day_studied = timing.days_elapsed;
+            parent.common.review_studied = 50;
+            col.add_or_update_deck(&mut parent)?;
+            let mut leaf = col.get_or_create_normal_deck("All::Reading::Words")?;
+            leaf.normal_mut().unwrap().config_id = child.config_id().unwrap().0;
+            col.add_or_update_deck(&mut leaf)?;
+            let card = add_review_card(
+                &mut col,
+                leaf.id,
+                timing.days_elapsed as i32 + 1,
+                0.75,
+                Some(timing.now),
+            )?;
+            add_review_log_today(&mut col, card, timing)?;
+            let scores = |intervening_reviews| {
+                HashMap::from([(
+                    card,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.50,
+                        intervening_reviews: Some(intervening_reviews),
+                        target_retention: Some(0.75),
+                    },
+                )])
+            };
+
+            col.set_rwkv_deck_count_score_entries(parent.id, scores(parent_intervening))?;
+            col.set_rwkv_deck_count_score_entries(child.id, scores(child_intervening))?;
+            col.set_rwkv_deck_count_score_entries(leaf.id, scores(child_intervening))?;
+            let tree = col.deck_tree(Some(timing.now))?;
+            let parent_counts = get_deck_in_tree(tree, parent.id).unwrap();
+            assert_eq!(parent_counts.review_count, expected_parent);
+            assert_eq!(parent_counts.children[0].review_count, expected_child);
+            assert_eq!(
+                parent_counts.children[0].children[0].review_count,
+                expected_child
+            );
+            assert_eq!(
+                parent_counts.review_uncapped_including_children,
+                expected_parent
+            );
+            assert_eq!(
+                parent_counts.children[0].review_uncapped_including_children,
+                expected_child
+            );
+
+            for (deck, intervening, expected) in [
+                (&parent, parent_intervening, expected_parent),
+                (&child, child_intervening, expected_child),
+            ] {
+                col.set_rwkv_review_queue_score_entries(deck.id, scores(intervening))?;
+                let overview = get_deck_in_tree(col.deck_tree(Some(timing.now))?, deck.id).unwrap();
+                assert_eq!(overview.review_count, expected);
+                assert_eq!(
+                    col.build_queues(deck.id)?.counts().review,
+                    expected as usize
+                );
+            }
+        }
         Ok(())
     }
 

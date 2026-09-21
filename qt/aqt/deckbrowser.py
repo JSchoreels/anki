@@ -290,10 +290,8 @@ class DeckBrowser:
     def _review_limit_labels(self, tree: DeckTreeNode) -> dict[int, tuple[str, str]]:
         labels: dict[int, tuple[str, str]] = {}
 
-        def collect(node: DeckTreeNode) -> int:
-            total = node.review_uncapped + sum(
-                collect(child) for child in node.children
-            )
+        def collect(node: DeckTreeNode) -> None:
+            total = node.review_uncapped_including_children
             if (
                 node.deck_id not in self._rwkv_pending_deck_ids
                 and total > node.review_count
@@ -304,7 +302,8 @@ class DeckBrowser:
                 )
             else:
                 labels[node.deck_id] = ("", "")
-            return total
+            for child in node.children:
+                collect(child)
 
         for child in tree.children:
             collect(child)

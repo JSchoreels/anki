@@ -13,7 +13,7 @@ use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct DueCounts {
     pub new: u32,
     pub review: u32,
@@ -26,6 +26,8 @@ pub(crate) struct DueCounts {
     pub interday_learning_limit_exempt: u32,
     pub total_cards: u32,
 }
+
+pub(crate) type ScopedDueCounts = HashMap<DeckId, HashMap<DeckId, DueCounts>>;
 
 struct RwkvReviewCountContext<'a> {
     decks: &'a HashMap<DeckId, Deck>,
@@ -61,13 +63,13 @@ impl Collection {
         )
     }
 
-    pub(crate) fn apply_rwkv_review_queue_counts(
+    pub(crate) fn rwkv_review_queue_counts(
         &mut self,
-        counts: &mut HashMap<DeckId, DueCounts>,
+        counts: &HashMap<DeckId, DueCounts>,
         decks: &HashMap<DeckId, Deck>,
         configs: &HashMap<DeckConfigId, DeckConfig>,
         timing: SchedTimingToday,
-    ) -> Result<()> {
+    ) -> Result<ScopedDueCounts> {
         let deck_count_scores = self.take_rwkv_deck_count_scores_for_day(timing.days_elapsed);
         if !deck_count_scores.is_empty() {
             let filtered_review_counts = self.storage.filtered_review_counts_by_original_deck()?;
@@ -79,12 +81,14 @@ impl Collection {
             };
             let result = deck_count_scores
                 .iter()
-                .try_for_each(|(&score_deck_id, scores)| {
-                    self.apply_rwkv_score_scope_counts(counts, &context, score_deck_id, scores)
-                });
+                .map(|(&score_deck_id, scores)| {
+                    let scoped_counts =
+                        self.rwkv_score_scope_counts(counts, &context, score_deck_id, scores)?;
+                    Ok((score_deck_id, scoped_counts))
+                })
+                .collect();
             self.restore_rwkv_deck_count_scores(timing.days_elapsed, deck_count_scores);
-            result?;
-            return Ok(());
+            return result;
         }
 
         if let Some((score_deck_id, scores)) =
@@ -97,19 +101,31 @@ impl Collection {
                 timing,
                 filtered_review_counts: &filtered_review_counts,
             };
-            self.apply_rwkv_score_scope_counts(counts, &context, score_deck_id, &scores)?;
+            let scoped_counts =
+                self.rwkv_score_scope_counts(counts, &context, score_deck_id, &scores)?;
+            return Ok(HashMap::from([(score_deck_id, scoped_counts)]));
         }
 
-        Ok(())
+        Ok(HashMap::new())
     }
 
-    fn apply_rwkv_score_scope_counts(
+    fn rwkv_score_scope_counts(
         &mut self,
-        counts: &mut HashMap<DeckId, DueCounts>,
+        counts: &HashMap<DeckId, DueCounts>,
         context: &RwkvReviewCountContext<'_>,
         score_deck_id: DeckId,
         scores: &HashMap<CardId, crate::collection::RwkvReviewQueueScoreEntry>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<DeckId, DueCounts>> {
+        let Some(root_deck) = context.decks.get(&score_deck_id) else {
+            return Ok(HashMap::new());
+        };
+        let mut scope_decks = self.storage.child_decks(root_deck)?;
+        scope_decks.insert(0, root_deck.clone());
+        let scope_deck_ids: HashSet<_> = scope_decks.iter().map(|deck| deck.id).collect();
+        let mut counts: HashMap<_, _> = scope_deck_ids
+            .iter()
+            .filter_map(|deck_id| counts.get(deck_id).map(|counts| (*deck_id, counts.clone())))
+            .collect();
         let (allow_same_day_review, min_intervening_reviews, min_elapsed_secs) = match context
             .decks
             .get(&score_deck_id)
@@ -121,16 +137,8 @@ impl Collection {
                 config.inner.rwkv_review_min_intervening_reviews,
                 config.inner.rwkv_review_min_elapsed_secs,
             ),
-            _ => return Ok(()),
+            _ => return Ok(counts),
         };
-
-        let root_deck = context
-            .decks
-            .get(&score_deck_id)
-            .or_not_found(score_deck_id)?;
-        let mut scope_decks = self.storage.child_decks(root_deck)?;
-        scope_decks.insert(0, root_deck.clone());
-        let scope_deck_ids: HashSet<_> = scope_decks.iter().map(|deck| deck.id).collect();
 
         let scored_ids: Vec<_> = scores.keys().copied().collect();
         let metadata = rwkv_review_candidate_metadata(self, &scored_ids, context.timing)?;
@@ -243,7 +251,7 @@ impl Collection {
             }
         }
 
-        Ok(())
+        Ok(counts)
     }
 
     pub(crate) fn counts_for_deck_today(
