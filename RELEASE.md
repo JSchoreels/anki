@@ -24,6 +24,11 @@ repeated here unless they materially affect a fork feature.
 
 ### Added
 
+- Let add-ons batch compact card details and selected note fields, reusing card
+  reads for current FSRS metrics without transferring complete notes to Python.
+- Let add-ons fetch current FSRS metrics in batches without reconstructing each
+  card's review-history statistics, while retaining the full Card Info API.
+
 - Add a daily-limits option that lets same-day repeats bypass the maximum
   reviews/day limit without reducing the number of ordinary reviews available.
 

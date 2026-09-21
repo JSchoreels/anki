@@ -235,3 +235,31 @@ normal deck config writes migrate FSRS fields into `other["jschoreels.fsrs"]`,
 RWKV fields into `other["jschoreels.rwkv"]`, and clear the numbered fork fields
 before encoding. This avoids collisions if upstream later assigns one of those
 protobuf field numbers to a different setting.
+
+## Current card metrics
+
+`Collection.card_memory_metrics(card_ids, include_retrievability=True)` reads
+current memory state, stored desired retention, and optional current FSRS
+retrievability in a single backend call. It omits missing cards and preserves
+the order and duplicates of existing cards. Absent values remain absent.
+The stored desired retention is not replaced with a preset default.
+
+With `include_retrievability=False`, only stored card values are read. Otherwise
+the native full-state calculation uses the same selected presets, fractional
+elapsed time, and missing-last-review-time lookup as Card Info. Preset resolution
+is batched and request scoped. No historical states are reconstructed, and no
+card values or review logs are written. Missing state on a reviewed card remains
+absent; consumers requiring Card Info's initialization behavior should fall back
+to `card_stats_data()` for that card. The existing full statistics API is unchanged.
+
+
+`Collection.card_details()` additionally returns compact scheduling fields and
+optional selected note fields, reusing the same stored card reads for requested
+FSRS metrics. Metrics and note fields are opt-in. Passing `note_fields=None`
+skips note access; an empty list returns a present empty field selection. Selected
+fields retain their exact names, raw values, and note-type order. Only selected
+field values are copied from SQLite's borrowed field text into the response;
+full notes are not sent across the Python/Rust bridge. Note and field-selection
+caches are scoped to one request. Missing cards are omitted, while absent note
+fields signal a missing note, note type, or selected field index so consumers can
+retain their original error handling. No collection schema or stored data changes.

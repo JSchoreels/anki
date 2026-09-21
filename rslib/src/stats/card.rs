@@ -477,4 +477,122 @@ mod test {
         assert!((latest.stability_internal.unwrap() - stability_internal).abs() < 0.0001);
         Ok(())
     }
+
+    #[test]
+    fn memory_metrics_preserve_order_missing_cards_and_null_state() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        let before = col.storage.get_card(cid)?.unwrap();
+        assert!(col.card_memory_metrics(&[], true)?.is_empty());
+        let values = col.card_memory_metrics(&[cid, CardId(1), cid], true)?;
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], values[1]);
+        assert_eq!(values[0].card_id, cid.0);
+        assert!(values[0].memory_state.is_none());
+        assert!(values[0].desired_retention.is_none());
+        assert!(values[0].fsrs_retrievability.is_none());
+        assert_eq!(col.storage.get_card(cid)?.unwrap(), before);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_metrics_match_full_stats_with_fsrs7_overlay_and_large_batch() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        let params = fsrs7_params_for_retrievability_test();
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:metrics".into(),
+                    name: "Metrics".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params,
+                    desired_retention: 0.81,
+                    historical_retention: 0.9,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "deck:Default".into(),
+                    preset_id: "addon:metrics".into(),
+                }],
+                simulator_rules: vec![],
+            },
+        )?;
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.ctype = CardType::Review;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 42.0,
+            stability_internal: 30.0,
+            stability_fast: Some(2.5),
+            difficulty: 8.0,
+        });
+        card.desired_retention = Some(0.93);
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-172_801));
+        col.storage.update_card(&card)?;
+        // Exercise the shared batch resolver, including duplicate inputs.
+        let values = col.card_memory_metrics(&vec![cid; 150], true)?;
+        let full = col.card_stats(cid)?;
+        assert_eq!(values.len(), 150);
+        for value in values {
+            assert_eq!(value.memory_state, full.memory_state);
+            assert_eq!(value.desired_retention, Some(0.93));
+            assert!(
+                (value.fsrs_retrievability.unwrap() - full.fsrs_retrievability.unwrap()).abs()
+                    < 0.00001
+            );
+        }
+        let stored = col.card_memory_metrics(&[cid], false)?.remove(0);
+        assert_eq!(stored.memory_state, full.memory_state);
+        assert!(stored.fsrs_retrievability.is_none());
+        assert_eq!(col.storage.get_card(cid)?.unwrap(), card);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_metrics_preserve_missing_state_for_legacy_initialization() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![cid.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![],
+        })?;
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.memory_state = None;
+        card.last_review_time = None;
+        col.storage.update_card(&card)?;
+        let metrics = col.card_memory_metrics(&[cid], true)?.remove(0);
+        assert!(metrics.memory_state.is_none());
+        assert!(metrics.fsrs_retrievability.is_none());
+        assert_eq!(col.storage.get_card(cid)?.unwrap(), card);
+        // The original endpoint still initializes state and includes history.
+        let full = col.card_stats(cid)?;
+        assert!(full.memory_state.is_some());
+        assert_eq!(full.revlog.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_metrics_use_last_review_fallback_without_writing_it() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![cid.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![],
+        })?;
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.last_review_time = None;
+        col.storage.update_card(&card)?;
+        let metrics = col.card_memory_metrics(&[cid], true)?.remove(0);
+        assert_eq!(col.storage.get_card(cid)?.unwrap(), card);
+        let full = col.card_stats(cid)?;
+        assert_eq!(metrics.memory_state, full.memory_state);
+        assert_eq!(metrics.desired_retention, full.desired_retention);
+        assert!(
+            (metrics.fsrs_retrievability.unwrap() - full.fsrs_retrievability.unwrap()).abs()
+                < 0.00001
+        );
+        assert_eq!(full.revlog.len(), 1);
+        Ok(())
+    }
 }
