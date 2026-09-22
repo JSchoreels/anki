@@ -119,9 +119,9 @@ impl Collection {
         let Some(root_deck) = context.decks.get(&score_deck_id) else {
             return Ok(HashMap::new());
         };
-        let mut scope_decks = self.storage.child_decks(root_deck)?;
-        scope_decks.insert(0, root_deck.clone());
-        let scope_deck_ids: HashSet<_> = scope_decks.iter().map(|deck| deck.id).collect();
+        let mut decks = self.storage.child_decks(root_deck)?;
+        decks.insert(0, root_deck.clone());
+        let scope_deck_ids: HashSet<_> = decks.iter().map(|deck| deck.id).collect();
         let mut counts: HashMap<_, _> = scope_deck_ids
             .iter()
             .filter_map(|deck_id| counts.get(deck_id).map(|counts| (*deck_id, counts.clone())))
@@ -210,16 +210,19 @@ impl Collection {
             }
         }
 
-        let mut minimums = LimitTreeMap::build(
-            &scope_decks,
-            context.configs,
-            context.timing.days_elapsed,
-            false,
-        );
+        // Match the queue's ancestor minimums while keeping cards and counts
+        // restricted to the selected subtree.
+        if self.get_config_bool(BoolKey::ApplyAllParentLimits) {
+            for parent in self.storage.parent_decks(root_deck)? {
+                decks.insert(0, parent);
+            }
+        }
+        let mut minimums =
+            LimitTreeMap::build(&decks, context.configs, context.timing.days_elapsed, false);
         for &(original_deck_id, count) in context.filtered_review_counts {
             minimums.reserve_rwkv_reviews_if_present(original_deck_id, count);
         }
-        for deck in &scope_decks {
+        for deck in &decks {
             if deck.is_filtered() {
                 continue;
             }

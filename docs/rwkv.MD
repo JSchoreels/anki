@@ -370,7 +370,10 @@ Ordinary maximum review limits, sibling burying, and same-day/repeat-spacing
 guards still take precedence. Limit-exempt same-day repeats may bypass the
 maximum, but do not satisfy the minimum. A deck's completed and queued reviews
 also count toward every ancestor deck's floor; when a parent deck is studied,
-unmet subdeck floors are enforced within their respective subtrees. Cards
+unmet subdeck floors are enforced within their respective subtrees. When
+**Limits start from top** is enabled, studying a subdeck also applies its
+ancestors' unmet floors, using cards from the selected subtree. Deck browser
+counts include these inherited minimums, just like the review queue. Cards
 currently in a filtered deck's review or interday-learning queue count toward
 the floor of their original deck and its ancestors. This accounting is
 transient and does not mark those cards as reviewed today.
