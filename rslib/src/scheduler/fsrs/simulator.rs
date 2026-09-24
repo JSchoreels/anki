@@ -150,6 +150,7 @@ impl Collection {
             + req.deck_size as usize;
         let fsrs = FSRS::new(&req.params)?;
         let fsrs_card_params = Arc::new(fsrs::check_and_fill_parameters(&req.params)?);
+        let single_trace = SingleTraceStability::new(&req.params);
         let mut converted_cards = cards
             .into_iter()
             .filter(is_included_card)
@@ -174,6 +175,7 @@ impl Collection {
                     memory_state,
                     desired_retention,
                     fsrs_card_params.clone(),
+                    &single_trace,
                 )
             })
             .collect_vec();
@@ -319,6 +321,82 @@ impl Collection {
     }
 }
 
+/// fsrs-rs simulates FSRS-7 with one trace: the fast stability equals the
+/// stability. An existing card starts from the single-trace stability whose
+/// S90 equals the S90 of its full state, so its first simulated interval
+/// matches the scheduler. Passing the slow trace gave another S90, for
+/// example 12.88 days instead of 4.11 for (s, s_fast, d) = (10, 3, 8).
+pub(crate) struct SingleTraceStability {
+    /// Only for FSRS-7 parameters. Older models have one trace already.
+    fsrs: Option<FSRS>,
+    log_s90: Vec<f32>,
+}
+
+impl SingleTraceStability {
+    const POINTS: usize = 512;
+    const LOW: f32 = 0.001;
+    const HIGH: f32 = 36_500.0;
+
+    pub(crate) fn new(params: &[f32]) -> Self {
+        let fsrs = FSRS::new(params)
+            .ok()
+            .filter(|fsrs| fsrs.version() == fsrs::ModelVersion::Fsrs7);
+        let log_s90 = fsrs
+            .as_ref()
+            .map(|fsrs| {
+                (0..Self::POINTS)
+                    .map(|index| single_trace_s90(fsrs, Self::log_stability(index).exp()).ln())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { fsrs, log_s90 }
+    }
+
+    fn log_stability(index: usize) -> f32 {
+        let step = (Self::HIGH.ln() - Self::LOW.ln()) / (Self::POINTS - 1) as f32;
+        Self::LOW.ln() + step * index as f32
+    }
+
+    /// Interpolated in log space between the grid points around the S90.
+    pub(crate) fn stability(&self, memory_state: FsrsMemoryState) -> f32 {
+        let Some(fsrs) = &self.fsrs else {
+            return memory_state.stability_internal;
+        };
+        let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+        if !(s90.is_finite() && s90 > 0.0) {
+            return memory_state.stability_internal;
+        }
+        let target = s90.ln();
+        let upper = self.log_s90.partition_point(|&log_s90| log_s90 < target);
+        if upper == 0 {
+            return Self::LOW;
+        }
+        if upper == Self::POINTS {
+            return Self::HIGH;
+        }
+        let (low, high) = (self.log_s90[upper - 1], self.log_s90[upper]);
+        let fraction = if high > low {
+            (target - low) / (high - low)
+        } else {
+            0.0
+        };
+        let (from, to) = (Self::log_stability(upper - 1), Self::log_stability(upper));
+        (from + fraction * (to - from)).exp()
+    }
+}
+
+/// The S90 of the single trace that fsrs-rs simulates.
+fn single_trace_s90(fsrs: &FSRS, stability: f32) -> f32 {
+    fsrs.interval_at_retrievability(
+        fsrs::MemoryState {
+            stability,
+            stability_fast: stability,
+            difficulty: 5.0,
+        },
+        0.9,
+    )
+}
+
 impl Card {
     pub(crate) fn convert(
         card: Card,
@@ -326,7 +404,9 @@ impl Card {
         memory_state: FsrsMemoryState,
         desired_retention: f32,
         parameters: Arc<Vec<f32>>,
+        single_trace: &SingleTraceStability,
     ) -> Option<fsrs::Card> {
+        let stability = single_trace.stability(memory_state);
         match card.queue {
             CardQueue::DayLearn | CardQueue::Review => {
                 let due = card.original_or_current_due();
@@ -335,7 +415,7 @@ impl Card {
                 Some(fsrs::Card {
                     id: card.id.0,
                     difficulty: memory_state.difficulty,
-                    stability: memory_state.stability_internal,
+                    stability,
                     last_date,
                     due: relative_due as f32,
                     interval: card.interval as f32,
@@ -349,7 +429,7 @@ impl Card {
             CardQueue::Learn | CardQueue::SchedBuried | CardQueue::UserBuried => Some(fsrs::Card {
                 id: card.id.0,
                 difficulty: memory_state.difficulty,
-                stability: memory_state.stability_internal,
+                stability,
                 last_date: 0.0,
                 due: 0.0,
                 interval: card.interval as f32,
@@ -389,6 +469,38 @@ mod test {
             learning_step_count: 3u32,
             relearning_step_count: 2u32,
         }
+    }
+
+    #[test]
+    fn existing_cards_start_the_simulation_with_their_own_s90() -> Result<()> {
+        let fsrs = FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        let single_trace = SingleTraceStability::new(&fsrs::DEFAULT_PARAMETERS);
+        for (stability, stability_fast, difficulty) in [(10.0, 3.0, 8.0), (30.0, 5.0, 3.0)] {
+            let state = fsrs::MemoryState {
+                stability,
+                stability_fast,
+                difficulty,
+            };
+            let s90 = fsrs.interval_at_retrievability(state, 0.9);
+            let memory_state = FsrsMemoryState {
+                stability: s90,
+                stability_internal: stability,
+                stability_fast: Some(stability_fast),
+                difficulty,
+            };
+            let simulated = single_trace_s90(&fsrs, single_trace.stability(memory_state));
+            assert!((simulated / s90 - 1.0).abs() < 0.001, "{simulated} {s90}");
+        }
+        // Older models keep their only trace.
+        let legacy = SingleTraceStability::new(&fsrs::FSRS6_DEFAULT_PARAMETERS);
+        let state = FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        };
+        assert_eq!(legacy.stability(state), 10.0);
+        Ok(())
     }
 
     #[test]

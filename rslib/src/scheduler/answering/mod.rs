@@ -271,7 +271,17 @@ impl Collection {
         };
 
         let state_ctx = ctx.state_context(load_balancer_ctx);
-        Ok(current.next_states(&state_ctx))
+        let mut states = current.next_states(&state_ctx);
+        if state_ctx.fsrs7 && ctx.fsrs_next_states.is_some() {
+            // The model's next states carry the internal traces. Give add-ons
+            // and the card state customizer the S90 in `stability`, as on a
+            // stored card. Storage recomputes it from the traces.
+            let fsrs = FSRS::new(ctx.config.fsrs_params())?;
+            states.update_next_memory_states(|state| {
+                state.stability = fsrs_memory_state_for_fsrs(&fsrs, (*state).into()).stability;
+            });
+        }
+        Ok(states)
     }
 
     /// Describe the next intervals, to display on the answer buttons.
@@ -737,6 +747,26 @@ pub(crate) mod test {
             0.25
         );
         assert_eq!(fsrs_elapsed_days(last, TimestampSecs(last.0 - 1)), 0.0);
+    }
+
+    #[test]
+    fn fsrs7_next_states_carry_the_s90_as_stability() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let note = crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let cid = col.storage.card_ids_of_notes(&[note.id])?[0];
+        let fsrs = FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        let states = col.get_scheduling_states(cid)?;
+        let CardState::Normal(NormalState::Learning(good)) = states.good else {
+            panic!("a new card stays in learning on Good: {:?}", states.good);
+        };
+        let state = good.memory_state.unwrap();
+        assert_ne!(state.stability, state.stability_internal);
+        assert_eq!(
+            state.stability,
+            fsrs.interval_at_retrievability(state.into(), 0.9)
+        );
+        Ok(())
     }
 
     fn current_state(col: &mut Collection, card_id: CardId) -> CardState {
