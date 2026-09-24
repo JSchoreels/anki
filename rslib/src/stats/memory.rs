@@ -53,18 +53,12 @@ impl Collection {
         let decks = self.storage.get_decks_map()?;
         let configs = self.storage.get_deck_config_map()?;
         let mut metrics = FsrsMetricContext::new(&decks, &configs);
-        let now = self.timing_today()?.now;
+        let timing = self.timing_today()?;
         for (card, entry) in cards.iter().zip(entries.iter_mut()) {
             if let Some(state) = card.memory_state {
-                let last_review_time = if let Some(time) = card.last_review_time {
-                    time
-                } else {
-                    self.storage
-                        .time_of_last_review(card.id)?
-                        .unwrap_or_default()
-                };
+                // The same elapsed time as the Browser, the graphs and prop:r.
                 let elapsed_days =
-                    now.elapsed_secs_since(last_review_time).max(0) as f32 / 86_400.0;
+                    card.seconds_since_last_review(&timing).unwrap_or_default() as f32 / 86_400.0;
                 entry.fsrs_retrievability =
                     Some(metrics.current_retrievability(card, state, elapsed_days)?);
             }
@@ -108,6 +102,39 @@ mod tests {
             .is_none());
         assert_eq!(col.storage.get_card(cid)?.unwrap(), before);
         assert!(col.storage.get_revlog_entries_for_card(cid)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn batch_metrics_without_a_review_time_use_due_minus_interval() -> Result<()> {
+        let mut col = Collection::new();
+        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let cid = col.storage.card_ids_of_notes(&[note.id])?[0];
+        let timing = col.timing_today()?;
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.ctype = crate::card::CardType::Review;
+        card.queue = crate::card::CardQueue::Review;
+        card.interval = 10;
+        card.due = timing.days_elapsed as i32 + 5;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 20.0,
+            stability_internal: 12.0,
+            stability_fast: Some(0.7),
+            difficulty: 8.0,
+        });
+        card.last_review_time = None;
+        col.storage.update_card(&card)?;
+
+        let r = col.card_memory_metrics(&[cid], true)?[0]
+            .fsrs_retrievability
+            .unwrap();
+
+        // Reviewed 5 days ago, not at the epoch.
+        let elapsed = card.seconds_since_last_review(&timing).unwrap() as f32 / 86_400.0;
+        let expected = fsrs::FSRS::new(&fsrs::DEFAULT_PARAMETERS)?
+            .current_retrievability(card.memory_state.unwrap().into(), elapsed);
+        assert!((r - expected).abs() < 0.001);
+        assert!(r > 0.5);
         Ok(())
     }
 }
