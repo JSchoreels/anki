@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use super::button_intervals::ButtonInput;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::LearnState;
@@ -37,19 +38,21 @@ impl RelearnState {
                 let intervals = super::button_intervals::button_intervals(
                     ctx,
                     [
-                        ctx.relearn_steps
-                            .again_delay_secs_learn()
-                            .is_none()
-                            .then_some(states.again.interval),
-                        ctx.relearn_steps
-                            .hard_delay_secs(self.learning.remaining_steps)
-                            .is_none()
-                            .then_some(states.hard.interval),
-                        ctx.relearn_steps
-                            .good_delay_secs(self.learning.remaining_steps)
-                            .is_none()
-                            .then_some(states.good.interval),
-                        Some(states.easy.interval),
+                        ButtonInput::new(
+                            ctx.relearn_steps.again_delay_secs_learn(),
+                            states.again.interval,
+                        ),
+                        ButtonInput::new(
+                            ctx.relearn_steps
+                                .hard_delay_secs(self.learning.remaining_steps),
+                            states.hard.interval,
+                        ),
+                        ButtonInput::new(
+                            ctx.relearn_steps
+                                .good_delay_secs(self.learning.remaining_steps),
+                            states.good.interval,
+                        ),
+                        ButtonInput::Model(states.easy.interval),
                     ],
                     None,
                 );
