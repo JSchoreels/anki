@@ -77,8 +77,7 @@ impl CollectionBuilder {
         };
 
         if !self.skip_fsrs_defaults_upgrade {
-            col.upgrade_empty_fsrs_presets()?;
-            col.repair_incomplete_fsrs7_states()?;
+            col.upgrade_fsrs_states_or_log();
         }
         Ok(col)
     }
