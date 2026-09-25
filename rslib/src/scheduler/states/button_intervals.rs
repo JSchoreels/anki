@@ -15,16 +15,44 @@ pub(super) enum ButtonInterval {
     Days(u32),
 }
 
+/// What decides one answer button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ButtonInput {
+    /// A configured step with this delay in seconds. The step keeps its
+    /// delay, and the buttons after it are at least as long.
+    Step(u32),
+    /// The model's fractional interval in days.
+    Model(f32),
+}
+
+impl ButtonInput {
+    pub(super) fn new(step_secs: Option<u32>, model_days: f32) -> Self {
+        step_secs.map_or(Self::Model(model_days), Self::Step)
+    }
+}
+
+/// A button decided by a step gets `None`, but its delay is a floor for the
+/// buttons after it, so Again <= Hard <= Good <= Easy also holds across
+/// steps. A model button after a step of one day or more gets whole days.
 pub(super) fn button_intervals(
     ctx: &StateContext,
-    intervals: [Option<f32>; 4],
+    inputs: [ButtonInput; 4],
     previous_review_interval: Option<u32>,
 ) -> [Option<ButtonInterval>; 4] {
     let mut previous_secs = 0;
     let mut previous_days = 0;
     std::array::from_fn(|index| {
-        let interval = intervals[index]?;
-        if interval < 0.5 {
+        let interval = match inputs[index] {
+            ButtonInput::Step(secs) => {
+                previous_secs = previous_secs.max(secs);
+                if secs >= 86_400 {
+                    previous_days = previous_days.max(secs.div_ceil(86_400));
+                }
+                return None;
+            }
+            ButtonInput::Model(interval) => interval,
+        };
+        if interval < 0.5 && previous_days == 0 {
             let secs = ((interval * 86_400.0).round() as u32)
                 .max(1)
                 .max(previous_secs);
@@ -136,11 +164,12 @@ mod tests {
         };
         let states = learning.next_states(&ctx);
         // Again/Hard retain configured steps; Good/Easy use fractional output
-        // after the last configured step instead of forcing one-day graduation.
+        // after the last configured step instead of forcing one-day graduation,
+        // but are not shorter than the Hard step.
         assert_eq!(states.again.interval_kind(), IntervalKind::InSecs(60));
         assert_eq!(states.hard.interval_kind(), IntervalKind::InSecs(600));
-        assert_eq!(states.good.interval_kind(), IntervalKind::InSecs(259));
-        assert_eq!(states.easy.interval_kind(), IntervalKind::InSecs(346));
+        assert_eq!(states.good.interval_kind(), IntervalKind::InSecs(600));
+        assert_eq!(states.easy.interval_kind(), IntervalKind::InSecs(600));
         ctx.steps = LearningSteps::new(&[]);
         ctx.relearn_steps = LearningSteps::new(&[]);
         let review = ReviewState {
@@ -173,11 +202,59 @@ mod tests {
         }
     }
 
+    fn models(days: [f32; 4]) -> [ButtonInput; 4] {
+        days.map(ButtonInput::Model)
+    }
+
+    #[test]
+    fn model_buttons_are_not_shorter_than_a_step_before_them() {
+        let ctx = StateContext::defaults_for_testing();
+        // Steps "10m 1d", at the 1d step: Hard is the 1d step, and Good and
+        // Easy from the model are 2.7h and 3.3h.
+        assert_eq!(
+            button_intervals(
+                &ctx,
+                [
+                    ButtonInput::Step(600),
+                    ButtonInput::Step(86_400),
+                    ButtonInput::Model(0.1125),
+                    ButtonInput::Model(0.1375)
+                ],
+                None
+            ),
+            [
+                None,
+                None,
+                Some(ButtonInterval::Days(2)),
+                Some(ButtonInterval::Days(3))
+            ]
+        );
+        // A sub-day step raises a shorter sub-day model button to its delay.
+        assert_eq!(
+            button_intervals(
+                &ctx,
+                [
+                    ButtonInput::Step(60),
+                    ButtonInput::Step(600),
+                    ButtonInput::Model(0.003),
+                    ButtonInput::Model(0.004)
+                ],
+                None
+            ),
+            [
+                None,
+                None,
+                Some(ButtonInterval::Secs(600)),
+                Some(ButtonInterval::Secs(600))
+            ]
+        );
+    }
+
     #[test]
     fn fractional_buttons_remain_ordered_and_days_respect_maximum() {
         let mut ctx = StateContext::defaults_for_testing();
         assert_eq!(
-            button_intervals(&ctx, [Some(0.01), Some(0.005), Some(0.5), Some(0.75)], None),
+            button_intervals(&ctx, models([0.01, 0.005, 0.5, 0.75]), None),
             [
                 Some(ButtonInterval::Secs(864)),
                 Some(ButtonInterval::Secs(864)),
@@ -187,11 +264,20 @@ mod tests {
         );
         ctx.maximum_review_interval = 2;
         assert_eq!(
-            button_intervals(&ctx, [Some(3.0); 4], Some(1)),
+            button_intervals(&ctx, models([3.0; 4]), Some(1)),
             [Some(ButtonInterval::Days(2)); 4]
         );
         assert_eq!(
-            button_intervals(&ctx, [None, None, Some(2.0), Some(2.0)], None),
+            button_intervals(
+                &ctx,
+                [
+                    ButtonInput::Step(0),
+                    ButtonInput::Step(0),
+                    ButtonInput::Model(2.0),
+                    ButtonInput::Model(2.0)
+                ],
+                None
+            ),
             [
                 None,
                 None,

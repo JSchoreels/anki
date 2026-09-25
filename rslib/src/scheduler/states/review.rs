@@ -3,6 +3,7 @@
 
 use fsrs::NextStates;
 
+use super::button_intervals::ButtonInput;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::interval_kind::IntervalKind;
 use super::CardState;
@@ -76,13 +77,13 @@ impl ReviewState {
                 let intervals = super::button_intervals::button_intervals(
                     ctx,
                     [
-                        ctx.relearn_steps
-                            .again_delay_secs_learn()
-                            .is_none()
-                            .then_some(states.again.interval),
-                        Some(states.hard.interval),
-                        Some(states.good.interval),
-                        Some(states.easy.interval),
+                        ButtonInput::new(
+                            ctx.relearn_steps.again_delay_secs_learn(),
+                            states.again.interval,
+                        ),
+                        ButtonInput::Model(states.hard.interval),
+                        ButtonInput::Model(states.good.interval),
+                        ButtonInput::Model(states.easy.interval),
                     ],
                     Some(self.scheduled_days),
                 );
