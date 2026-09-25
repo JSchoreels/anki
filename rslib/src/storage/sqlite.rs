@@ -310,6 +310,17 @@ fn add_extract_fsrs_variable(db: &Connection) -> rusqlite::Result<()> {
 
 /// eg. extract_fsrs_retrievability(card.data, card.due, card.ivl,
 /// timing.days_elapsed, timing.next_day_at, timing.now) -> float | null
+/// These SQL functions only see the card data, so they use the one-curve
+/// form with the card's `decay`, as older clients do. Its stability is the
+/// public S90, not FSRS-7's slow trace, so that R is 90% at the S90.
+fn legacy_curve_state(state: crate::card::FsrsMemoryState) -> fsrs::MemoryState {
+    fsrs::MemoryState {
+        stability: state.stability,
+        stability_fast: state.stability,
+        difficulty: state.difficulty,
+    }
+}
+
 fn add_extract_fsrs_retrievability(db: &Connection) -> rusqlite::Result<()> {
     db.create_scalar_function(
         "extract_fsrs_retrievability",
@@ -358,7 +369,11 @@ fn add_extract_fsrs_retrievability(db: &Connection) -> rusqlite::Result<()> {
             };
             let decay = card_data.decay.unwrap_or(FSRS5_DEFAULT_DECAY);
             let retrievability = card_data.memory_state().map(|state| {
-                fsrs::current_retrievability(state.into(), seconds_elapsed as f32 / 86_400.0, decay)
+                fsrs::current_retrievability(
+                    legacy_curve_state(state),
+                    seconds_elapsed as f32 / 86_400.0,
+                    decay,
+                )
             });
             Ok(retrievability)
         },
@@ -428,7 +443,7 @@ fn add_extract_fsrs_relative_retrievability(db: &Connection) -> rusqlite::Result
                             };
 
                         let current_retrievability = fsrs::current_retrievability(
-                            state.into(),
+                            legacy_curve_state(state),
                             seconds_elapsed as f32 / 86_400.0,
                             decay,
                         )
@@ -697,6 +712,24 @@ mod test {
         assert!(pos.is_some());
         // but it won't match the fsrs value
         assert!(pos.unwrap() < -0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_retrievability_is_90_percent_at_the_s90() -> Result<()> {
+        let col = Collection::new();
+        let now = 1_700_000_000i64;
+        // An FSRS-7 card whose slow trace (40) is far from its S90 (20).
+        let data = format!(
+            r#"{{"s":20,"s_int":40,"s_fast":3,"d":5,"decay":0.2,"lrt":{}}}"#,
+            now - 20 * 86_400
+        );
+        let r: f64 = col.storage.db.query_row(
+            "select extract_fsrs_retrievability(?, 0, 0, 0, 0, ?)",
+            params![data, now],
+            |row| row.get(0),
+        )?;
+        assert!((r - 0.9).abs() < 0.0001, "{r}");
         Ok(())
     }
 }
