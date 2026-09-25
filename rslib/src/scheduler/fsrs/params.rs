@@ -33,6 +33,7 @@ use fsrs::CostAdrTrainingConfig;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
 use fsrs::ModelEvaluation;
+use fsrs::ModelVersion;
 use fsrs::SimulatorConfig;
 use fsrs::FSRS;
 use itertools::Itertools;
@@ -405,6 +406,39 @@ fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSR
     adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
 }
 
+/// Below this many items, fsrs-rs returns its default or initial parameters
+/// without training.
+const MIN_ITEMS_FOR_TRAINING: usize = 64;
+
+/// Keep the current parameters unless the optimized ones predict the training
+/// items better. The log loss of two FSRS-7 parameter sets on the same items is
+/// a fair comparison: scheduling penalties are part of the training objective
+/// only. Older models use whole-day elapsed time and cannot be fairly compared
+/// against FSRS-7 training items, so they are kept only when there is too little
+/// data to train.
+fn params_to_keep(current: &[f32], optimized: Params, items: &[FSRSItem]) -> Result<Params> {
+    let Ok(current_fsrs) = FSRS::new(current) else {
+        return Ok(optimized);
+    };
+    if current_fsrs.version() != ModelVersion::Fsrs7 {
+        return Ok(if items.len() < MIN_ITEMS_FOR_TRAINING {
+            current.to_vec()
+        } else {
+            optimized
+        });
+    }
+
+    let current_log_loss = current_fsrs.evaluate(items.to_vec(), |_| true)?.log_loss;
+    let optimized_log_loss = FSRS::new(&optimized)?
+        .evaluate(items.to_vec(), |_| true)?
+        .log_loss;
+    Ok(if current_log_loss <= optimized_log_loss {
+        current.to_vec()
+    } else {
+        optimized
+    })
+}
+
 fn time_series_split_items(
     sorted_items: TrainingItemsForFsrs,
     n_splits: usize,
@@ -599,6 +633,7 @@ pub(crate) fn compute_params_from_prepared(
         &current_params,
         compute_parameters(input)?,
     );
+    let params = params_to_keep(&current_params, params, &items)?;
     let existing_cards = existing_card_input
         .map(|input| existing_cards_for_dynamic_desired_retention(input, &params))
         .transpose()?
@@ -2170,6 +2205,51 @@ pub(crate) mod tests {
         assert_eq!(output.params, current_params);
         assert_eq!(output.fsrs_items, 0);
         assert_eq!(output.health_check_passed, None);
+        Ok(())
+    }
+
+    fn items_failed_after(days: f32, count: usize) -> Vec<FSRSItem> {
+        vec![
+            FSRSItem {
+                reviews: vec![
+                    FSRSReview {
+                        rating: 3,
+                        delta_t: 0.0,
+                    },
+                    FSRSReview {
+                        rating: 1,
+                        delta_t: days,
+                    },
+                ],
+            };
+            count
+        ]
+    }
+
+    #[test]
+    fn optimize_keeps_current_fsrs7_params_when_the_new_ones_fit_worse() -> Result<()> {
+        let items = items_failed_after(30.0, 100);
+        let good = fsrs::DEFAULT_PARAMETERS.to_vec();
+        let mut bad = good.clone();
+        bad[2] *= 30.0;
+
+        assert_eq!(params_to_keep(&good, bad.clone(), &items)?, good);
+        assert_eq!(params_to_keep(&bad, good.clone(), &items)?, good);
+        Ok(())
+    }
+
+    #[test]
+    fn optimize_keeps_legacy_params_when_too_few_items_to_train() -> Result<()> {
+        let legacy = fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec();
+        let optimized = fsrs::DEFAULT_PARAMETERS.to_vec();
+
+        let few = items_failed_after(30.0, MIN_ITEMS_FOR_TRAINING - 1);
+        assert_eq!(params_to_keep(&legacy, optimized.clone(), &few)?, legacy);
+        let enough = items_failed_after(30.0, MIN_ITEMS_FOR_TRAINING);
+        assert_eq!(
+            params_to_keep(&legacy, optimized.clone(), &enough)?,
+            optimized
+        );
         Ok(())
     }
 

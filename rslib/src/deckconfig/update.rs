@@ -30,6 +30,7 @@ use crate::scheduler::fsrs::memory_state::ComputeMemoryProgress;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
+use crate::scheduler::fsrs::params::ComputeAllParamsProgress;
 use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
@@ -495,6 +496,8 @@ impl Collection {
     }
     fn compute_all_params(&mut self, req: &mut UpdateDeckConfigsRequest) -> Result<()> {
         require!(req.fsrs, "FSRS must be enabled");
+        self.clear_progress();
+        let mut anki_progress = self.new_progress_handler::<ComputeAllParamsProgress>();
 
         // frontend didn't include any unmodified deck configs, so we need to fill them
         // in
@@ -545,6 +548,7 @@ impl Collection {
                 dynamic_desired_retention_simulator_options:
                     DynamicDesiredRetentionSimulatorOptions::default(),
             })?;
+            anki_progress.check_cancelled()?;
             if prepared.target_counts.total_targets == 0 {
                 debug!(preset = config.name, "skipping FSRS preset with no reviews");
             }
@@ -555,7 +559,7 @@ impl Collection {
             });
         }
 
-        for output in self.compute_params_batch(jobs)? {
+        for output in self.compute_params_batch_with_progress(jobs, anki_progress)? {
             match output.result {
                 Ok(params) => {
                     if params.fsrs_items == 0 {

@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::panic::catch_unwind;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -12,6 +14,7 @@ use fsrs::CombinedProgressState;
 use rayon::prelude::*;
 
 use crate::prelude::*;
+use crate::progress::ThrottlingProgressHandler;
 use crate::scheduler::fsrs::params::compute_params_from_prepared;
 use crate::scheduler::fsrs::params::new_compute_params_progress_phase;
 use crate::scheduler::fsrs::params::ComputeAllParamsPresetProgress;
@@ -57,7 +60,15 @@ impl Collection {
         inputs: Vec<ComputeParamsBatchInput>,
     ) -> Result<Vec<ComputeParamsBatchOutput>> {
         self.clear_progress();
+        let anki_progress = self.new_progress_handler::<ComputeAllParamsProgress>();
+        self.compute_params_batch_with_progress(inputs, anki_progress)
+    }
 
+    pub(crate) fn compute_params_batch_with_progress(
+        &mut self,
+        inputs: Vec<ComputeParamsBatchInput>,
+        anki_progress: ThrottlingProgressHandler<ComputeAllParamsProgress>,
+    ) -> Result<Vec<ComputeParamsBatchOutput>> {
         let mut jobs = Vec::with_capacity(inputs.len());
         let mut outputs = Vec::new();
         let mut progress_entries = Vec::with_capacity(inputs.len());
@@ -110,6 +121,7 @@ impl Collection {
 
         let total_optimizer_jobs = jobs.len() as u32;
         let progress_thread = self.create_compute_params_batch_progress_thread(
+            anki_progress,
             &jobs,
             progress_entries,
             total_optimizer_jobs,
@@ -122,12 +134,17 @@ impl Collection {
                     lane.jobs
                         .into_iter()
                         .map(|job| {
-                            let result = compute_params_from_prepared(
-                                job.input.prepared,
-                                Some(job.progress.clone()),
-                                Some(job.progress_phase.clone()),
-                                false,
-                            );
+                            // A panic must still mark the job as done, or the
+                            // progress thread never stops.
+                            let result = catch_unwind(AssertUnwindSafe(|| {
+                                compute_params_from_prepared(
+                                    job.input.prepared,
+                                    Some(job.progress.clone()),
+                                    Some(job.progress_phase.clone()),
+                                    false,
+                                )
+                            }))
+                            .unwrap_or_else(|_| invalid_input!("FSRS optimizer panicked"));
                             job.done.store(true, Ordering::Release);
                             ComputeParamsBatchOutput {
                                 index: job.input.index,
@@ -147,11 +164,11 @@ impl Collection {
 
     fn create_compute_params_batch_progress_thread(
         &self,
+        mut anki_progress: ThrottlingProgressHandler<ComputeAllParamsProgress>,
         jobs: &[ComputeParamsBatchJob],
         progress_entries: Vec<ComputeAllParamsPresetProgress>,
         total_optimizer_jobs: u32,
     ) -> Result<thread::JoinHandle<()>> {
-        let mut anki_progress = self.new_progress_handler::<ComputeAllParamsProgress>();
         anki_progress.set(ComputeAllParamsProgress {
             current_iteration: progress_entries
                 .iter()
