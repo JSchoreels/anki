@@ -148,29 +148,27 @@ impl super::SqliteStorage {
     }
 
     /// Detect incomplete states before deserialization fills the old scalar
-    /// compatibility defaults. The caller filters by the current preset model.
-    pub(crate) fn cards_with_incomplete_fsrs_state(&self) -> Result<Vec<(CardId, DeckId)>> {
+    /// compatibility defaults. With `home_decks`, only cards whose home deck
+    /// is in the list are read, so cards of other presets are not
+    /// deserialized.
+    pub(crate) fn cards_with_incomplete_fsrs_state(
+        &self,
+        home_decks: Option<&[DeckId]>,
+    ) -> Result<Vec<CardId>> {
+        let mut sql = "select id, data from cards where data like '%\"s\"%'".to_string();
+        if let Some(home_decks) = home_decks {
+            sql.push_str(" and (case when odid = 0 then did else odid end) in ");
+            ids_to_string(&mut sql, home_decks);
+        }
         self.db
-            .prepare_cached("select id, data, did, odid from cards where data like '%\"s\"%'")?
-            .query_and_then([], |row| -> Result<Option<(CardId, DeckId)>> {
+            .prepare(&sql)?
+            .query_and_then([], |row| -> Result<Option<CardId>> {
                 let data: CardData = row.get(1)?;
                 let incomplete = data.fsrs_stability.is_some()
                     && data.fsrs_difficulty.is_some()
                     && (data.fsrs_stability_internal.is_none()
                         || data.fsrs_stability_fast.is_none());
-                if incomplete {
-                    let original: DeckId = row.get(3)?;
-                    Ok(Some((
-                        row.get(0)?,
-                        if original.0 != 0 {
-                            original
-                        } else {
-                            row.get(2)?
-                        },
-                    )))
-                } else {
-                    Ok(None)
-                }
+                Ok(incomplete.then(|| row.get(0)).transpose()?)
             })?
             .filter_map(Result::transpose)
             .collect()

@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use fsrs::FSRS;
+use tracing::warn;
 
 use super::memory_state::fsrs_items_for_memory_states;
 use super::memory_state::get_decay_from_params;
@@ -14,7 +15,29 @@ use crate::prelude::*;
 use crate::search::SearchNode;
 use crate::storage::comma_separated_ids;
 
+/// Like [ignore_revlogs_before_ms_from_config], but a malformed date reads as
+/// no date. The migrations run when the collection opens, where an error
+/// would leave the user no way to fix the preset.
+pub(crate) fn ignore_revlogs_before_ms_or_none(config: &DeckConfig) -> TimestampMillis {
+    ignore_revlogs_before_ms_from_config(config).unwrap_or_else(|err| {
+        warn!(preset = config.name, %err, "ignoring malformed ignore reviews before date");
+        TimestampMillis(0)
+    })
+}
+
 impl Collection {
+    /// Run the FSRS migrations of an opened collection. An error does not
+    /// stop the open or the sync: the migration's transaction is rolled back,
+    /// the error is logged, and the next open tries again.
+    pub(crate) fn upgrade_fsrs_states_or_log(&mut self) {
+        if let Err(err) = self.upgrade_empty_fsrs_presets() {
+            warn!(%err, "failed to upgrade empty FSRS presets");
+        }
+        if let Err(err) = self.repair_incomplete_fsrs7_states() {
+            warn!(%err, "failed to repair incomplete FSRS-7 states");
+        }
+    }
+
     /// Empty presets follow the current defaults. Upgrade their cards and pin
     /// the chosen defaults atomically, before exposing them to R consumers.
     /// Explicit legacy parameter arrays continue to select their old model.
@@ -46,6 +69,7 @@ impl Collection {
                     .map(|deck| deck.id)
                     .collect();
                 if !deck_ids.is_empty() {
+                    let ignore_before = ignore_revlogs_before_ms_or_none(&config);
                     let search = SearchNode::DeckIdsWithoutChildren(comma_separated_ids(&deck_ids));
                     let cards = col.all_cards_for_search(search.clone())?;
                     let revlog = col.revlog_for_srs(search)?;
@@ -54,7 +78,7 @@ impl Collection {
                         revlog,
                         timing.next_day_at,
                         config.inner.historical_retention,
-                        ignore_revlogs_before_ms_from_config(&config)?,
+                        ignore_before,
                     )?
                     .into_iter()
                     .collect();
@@ -69,9 +93,14 @@ impl Collection {
                                 items.remove(&card.id).flatten(),
                                 config.inner.historical_retention,
                             )?;
-                            let deck = &decks[&card.original_or_current_deck_id()];
-                            card.desired_retention =
-                                Some(deck.effective_desired_retention(&config));
+                            // The search above can match a card through its
+                            // current deck, so its original deck may be gone.
+                            card.desired_retention = Some(
+                                decks
+                                    .get(&card.original_or_current_deck_id())
+                                    .map(|deck| deck.effective_desired_retention(&config))
+                                    .unwrap_or(config.inner.desired_retention),
+                            );
                             card.decay = Some(get_decay_from_params(&fsrs::DEFAULT_PARAMETERS));
                             col.update_card_inner(&mut card, original, usn)?;
                         }
@@ -257,30 +286,17 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_rolls_back_all_presets_and_cards_on_error_and_can_retry() -> Result<()> {
+    fn upgrade_reads_a_malformed_ignore_date_as_no_date() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
         empty_default_preset(&mut col)?;
-        let card = legacy_card(&mut col, DeckId(1))?;
         let invalid_deck = DeckAdder::new("Invalid date")
             .with_config(|config| config.inner.ignore_revlogs_before_date = "invalid".into())
             .add(&mut col);
-        let original_config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        let card = legacy_card(&mut col, invalid_deck.id)?;
 
-        let error = col.upgrade_empty_fsrs_presets().unwrap_err();
-
-        assert!(matches!(error, AnkiError::InvalidInput { .. }));
-        assert_eq!(col.storage.get_card(card.id)?.unwrap(), card);
-        assert_eq!(
-            col.get_deck_config(DeckConfigId(1), false)?.unwrap(),
-            original_config
-        );
-        let mut fixed = col
-            .get_deck_config(invalid_deck.config_id().unwrap(), false)?
-            .unwrap();
-        fixed.inner.ignore_revlogs_before_date.clear();
-        col.add_or_update_deck_config(&mut fixed)?;
         col.upgrade_empty_fsrs_presets()?;
+
         assert!(col
             .storage
             .get_card(card.id)?
@@ -289,12 +305,30 @@ mod tests {
             .unwrap()
             .stability_fast
             .is_some());
+        for id in [DeckConfigId(1), invalid_deck.config_id().unwrap()] {
+            let config = col.get_deck_config(id, false)?.unwrap();
+            assert_eq!(config.inner.fsrs_params_7, fsrs::DEFAULT_PARAMETERS);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn upgrade_does_not_panic_when_the_original_deck_is_missing() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        empty_default_preset(&mut col)?;
+        let mut card = legacy_card(&mut col, DeckId(1))?;
+        card.original_deck_id = DeckId(12345);
+        col.storage.update_card(&card)?;
+
+        col.upgrade_empty_fsrs_presets()?;
+
+        let upgraded = col.storage.get_card(card.id)?.unwrap();
+        assert!(upgraded.memory_state.unwrap().stability_fast.is_some());
+        let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
         assert_eq!(
-            col.get_deck_config(DeckConfigId(1), false)?
-                .unwrap()
-                .inner
-                .fsrs_params_7,
-            fsrs::DEFAULT_PARAMETERS
+            upgraded.desired_retention,
+            Some(config.inner.desired_retention)
         );
         Ok(())
     }

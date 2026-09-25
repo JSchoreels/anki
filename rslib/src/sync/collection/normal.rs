@@ -67,8 +67,7 @@ impl NormalSyncer<'_> {
     }
 
     pub async fn sync(&mut self) -> error::Result<SyncOutput> {
-        self.col.upgrade_empty_fsrs_presets()?;
-        self.col.repair_incomplete_fsrs7_states()?;
+        self.col.upgrade_fsrs_states_or_log();
         debug!("fetching meta...");
         let local = self.col.sync_meta()?;
         let local_bytes = local.collection_bytes;
@@ -95,8 +94,7 @@ impl NormalSyncer<'_> {
                         // Upgrade newly received empty presets only after the
                         // sync transaction completes. The resulting -1 USNs
                         // remain pending for the next upload.
-                        self.col.upgrade_empty_fsrs_presets()?;
-                        self.col.repair_incomplete_fsrs7_states()?;
+                        self.col.upgrade_fsrs_states_or_log();
                         Ok(success)
                     }
                     Err(e) => {

@@ -5,12 +5,13 @@ use std::collections::HashMap;
 
 use fsrs::MemoryState;
 use fsrs::FSRS;
+use tracing::warn;
 
 use super::memory_state::fsrs_items_for_memory_states;
 use super::memory_state::fsrs_memory_state_for_fsrs;
 use super::memory_state::get_decay_from_params;
 use super::memory_state::ComputeMemoryProgress;
-use super::params::ignore_revlogs_before_ms_from_config;
+use super::upgrade::ignore_revlogs_before_ms_or_none;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::search::SearchNode;
@@ -134,20 +135,23 @@ impl Collection {
     }
 
     pub(crate) fn incomplete_fsrs7_card_ids(&self) -> Result<Vec<CardId>> {
-        let decks = self.storage.get_decks_map()?;
         let configs = self.storage.get_deck_config_map()?;
-        let mut ids = Vec::new();
-        for (id, home_deck) in self.storage.cards_with_incomplete_fsrs_state()? {
-            if decks
-                .get(&home_deck)
-                .and_then(|deck| deck.config_id())
-                .and_then(|id| configs.get(&id))
-                .is_some_and(|config| config.fsrs_params().len() == 34)
-            {
-                ids.push(id);
-            }
+        let home_decks: Vec<_> = self
+            .storage
+            .get_decks_map()?
+            .into_values()
+            .filter(|deck| {
+                deck.config_id()
+                    .and_then(|id| configs.get(&id))
+                    .is_some_and(|config| config.fsrs_params().len() == 34)
+            })
+            .map(|deck| deck.id)
+            .collect();
+        if home_decks.is_empty() {
+            return Ok(vec![]);
         }
-        Ok(ids)
+        self.storage
+            .cards_with_incomplete_fsrs_state(Some(&home_decks))
     }
 
     pub(crate) fn repair_incomplete_fsrs7_states(&mut self) -> Result<usize> {
@@ -196,25 +200,31 @@ impl Collection {
                 revlog,
                 timing.next_day_at,
                 config.inner.historical_retention,
-                ignore_revlogs_before_ms_from_config(config)?,
+                ignore_revlogs_before_ms_or_none(config),
             )?
             .into_iter()
             .collect();
             for mut card in cards {
                 let original = card.clone();
                 let stored = card.memory_state.unwrap();
-                card.memory_state = Some(if let Some(item) = items.remove(&card.id).flatten() {
+                card.memory_state = if let Some(item) = items.remove(&card.id).flatten() {
                     let state = fsrs.memory_state(item.item, item.starting_state)?;
                     card.last_review_time = self.storage.time_of_last_review(card.id)?;
-                    fsrs_memory_state_for_fsrs(&fsrs, state)
+                    Some(fsrs_memory_state_for_fsrs(&fsrs, state))
                 } else {
-                    fsrs_memory_state_for_s90_and_difficulty(
+                    // With no usable history and an invalid stored state, clear
+                    // the state, as for a card that FSRS has not seen. An error
+                    // here would fail every open and every DB check.
+                    let state = fsrs_memory_state_for_s90_and_difficulty(
                         &fsrs,
                         stored.stability,
                         stored.difficulty,
-                    )
-                    .or_invalid("invalid incomplete FSRS memory state")?
-                });
+                    );
+                    if state.is_none() {
+                        warn!(card = card.id.0, "clearing invalid FSRS memory state");
+                    }
+                    state
+                };
                 let deck = &decks[&card.original_or_current_deck_id()];
                 card.desired_retention = Some(deck.effective_desired_retention(config));
                 card.decay = Some(get_decay_from_params(config.fsrs_params()));
@@ -304,6 +314,25 @@ mod tests {
         assert!(col.incomplete_fsrs7_card_ids()?.is_empty());
         assert_eq!(col.repair_incomplete_fsrs7_states()?, 0);
         assert_eq!(col.storage.get_card(cid)?.unwrap(), card);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_state_without_history_is_cleared_instead_of_failing() -> Result<()> {
+        let mut col = Collection::new();
+        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let cid = col.storage.card_ids_of_notes(&[note.id])?[0];
+        col.storage.db.execute(
+            "update cards set type=2, queue=2, due=123, ivl=30, data=? where id=?",
+            (r#"{"s":-1,"d":6}"#, cid),
+        )?;
+
+        assert_eq!(col.repair_incomplete_fsrs7_states()?, 1);
+
+        let card = col.storage.get_card(cid)?.unwrap();
+        assert_eq!(card.memory_state, None);
+        assert_eq!((card.due, card.interval), (123, 30));
+        assert_eq!(col.repair_incomplete_fsrs7_states()?, 0);
         Ok(())
     }
 
