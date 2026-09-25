@@ -832,11 +832,18 @@ impl super::SqliteStorage {
             .get(0)?)
     }
 
-    pub(crate) fn all_cards_for_fsrs_metrics(&self) -> Result<Vec<Card>> {
+    /// Cards with a memory state among the ids that `card_ids_sql` selects.
+    pub(crate) fn cards_with_memory_state_in(
+        &self,
+        card_ids_sql: &str,
+        args: &[String],
+    ) -> Result<Vec<Card>> {
         Ok(self
             .db
-            .prepare("select * from cards")?
-            .query_and_then([], row_to_card)?
+            .prepare(&format!(
+                "select * from cards where data like '%\"s\"%' and id in ({card_ids_sql})"
+            ))?
+            .query_and_then(rusqlite::params_from_iter(args), row_to_card)?
             .collect::<rusqlite::Result<_>>()?)
     }
 
