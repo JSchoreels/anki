@@ -49,7 +49,7 @@ impl<'a> FsrsMetricContext<'a> {
         state: FsrsMemoryState,
         elapsed_days: f32,
     ) -> Result<f32> {
-        let config_id = self.config_id_for_deck(deck_id)?;
+        let config_id = self.config_id_for_deck(deck_id);
         let retrievability = self
             .model(config_id)?
             .current_retrievability(state.into(), elapsed_days.max(0.0));
@@ -72,18 +72,16 @@ impl<'a> FsrsMetricContext<'a> {
         state: FsrsMemoryState,
         elapsed_days: f32,
     ) -> Result<f32> {
-        let deck = self
-            .decks
-            .get(&deck_id)
-            .or_invalid("missing deck for card")?;
-        let config_id = deck
-            .config_id()
-            .or_invalid("card belongs to a filtered deck")?;
+        let config_id = self.config_id_for_deck(deck_id);
         let config = self
             .configs
             .get(&config_id)
             .or_invalid("missing deck config for card")?;
-        let desired_retention = deck.effective_desired_retention(config);
+        let desired_retention = self
+            .decks
+            .get(&deck_id)
+            .map(|deck| deck.effective_desired_retention(config))
+            .unwrap_or(config.inner.desired_retention);
         let interval = self
             .model(config_id)?
             .interval_at_retrievability(state.into(), desired_retention.clamp(0.0001, 0.9999));
@@ -92,12 +90,16 @@ impl<'a> FsrsMetricContext<'a> {
         Ok(key)
     }
 
-    fn config_id_for_deck(&self, deck_id: DeckId) -> Result<DeckConfigId> {
+    /// The home deck's preset. A missing or filtered home deck, or a missing
+    /// preset, falls back to the Default preset, as `get_deck_config(id,
+    /// true)` does for card info and the Browser. So one damaged card cannot
+    /// fail R for every other card.
+    fn config_id_for_deck(&self, deck_id: DeckId) -> DeckConfigId {
         self.decks
             .get(&deck_id)
-            .or_invalid("missing deck for card")?
-            .config_id()
-            .or_invalid("card belongs to a filtered deck")
+            .and_then(|deck| deck.config_id())
+            .filter(|id| self.configs.contains_key(id))
+            .unwrap_or(DeckConfigId(1))
     }
 
     fn model(&mut self, config_id: DeckConfigId) -> Result<&FSRS> {
@@ -169,6 +171,38 @@ mod tests {
         let expected_interval = FSRS::new(configs[&first_config_id].fsrs_params())?
             .interval_at_retrievability(state.into(), 0.8);
         assert!((actual_key - (-20.0 / expected_interval)).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn a_card_with_a_missing_home_deck_uses_the_default_preset() -> Result<()> {
+        let col = Collection::new();
+        let decks = col.storage.get_decks_map()?;
+        let configs = col.storage.get_deck_config_map()?;
+        let mut metrics = FsrsMetricContext::new(&decks, &configs);
+        let state = FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: Some(5.0),
+            difficulty: 8.0,
+        };
+        let orphan = Card {
+            deck_id: DeckId(12345),
+            ..Default::default()
+        };
+        let default = Card {
+            deck_id: DeckId(1),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            metrics.current_retrievability(&orphan, state, 20.0)?,
+            metrics.current_retrievability(&default, state, 20.0)?
+        );
+        assert_eq!(
+            metrics.relative_overdueness(&orphan, state, 20.0)?,
+            metrics.relative_overdueness(&default, state, 20.0)?
+        );
         Ok(())
     }
 }
