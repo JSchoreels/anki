@@ -414,8 +414,8 @@ const MIN_ITEMS_FOR_TRAINING: usize = 64;
 /// items better. The log loss of two FSRS-7 parameter sets on the same items is
 /// a fair comparison: scheduling penalties are part of the training objective
 /// only. Older models use whole-day elapsed time and cannot be fairly compared
-/// against FSRS-7 training items, so they are kept only when there is too little
-/// data to train.
+/// against FSRS-7 training items, so they are kept only when there is too
+/// little data to train.
 fn params_to_keep(current: &[f32], optimized: Params, items: &[FSRSItem]) -> Result<Params> {
     let Ok(current_fsrs) = FSRS::new(current) else {
         return Ok(optimized);
