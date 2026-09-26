@@ -2759,7 +2759,13 @@ def _record_collection_mutation_undo_or_redo(
     reconciliation = entry.reconciliation
     reviewer = reconciliation.reviewer
     try:
-        _require_collection_mutation_reconciliation_current(reconciliation)
+        removed_historical_card_ids = (
+            _require_collection_mutation_reconciliation_current(reconciliation)
+        )
+        reconciliation = _retain_resident_state_after_historical_removal(
+            reconciliation,
+            removed_historical_card_ids,
+        )
     except _RwkvGradeNowReconciliationUnavailable as error:
         _invalidate_reviewer_backend_state(
             reviewer,
@@ -2783,6 +2789,7 @@ def _record_collection_mutation_undo_or_redo(
         replace(
             entry,
             counter=next_counter if next_counter is not None else counter,
+            reconciliation=reconciliation,
         ),
     )
     _mark_collection_change_reconciled(reviewer)
@@ -4143,7 +4150,13 @@ def record_collection_mutation_reconciliation(
     reviewer = reconciliation.reviewer
     mutation_context = reconciliation.mutation_context
     try:
-        _require_collection_mutation_reconciliation_current(reconciliation)
+        removed_historical_card_ids = (
+            _require_collection_mutation_reconciliation_current(reconciliation)
+        )
+        reconciliation = _retain_resident_state_after_historical_removal(
+            reconciliation,
+            removed_historical_card_ids,
+        )
         _save_collection_mutation_rollback_entry(reconciliation)
         _mark_collection_change_reconciled(
             reviewer,
@@ -4207,7 +4220,9 @@ def _removed_card_ids(
 
 def _require_collection_mutation_reconciliation_current(
     reconciliation: RwkvCollectionMutationReconciliation,
-) -> None:
+) -> frozenset[int]:
+    """Validate a reconciled mutation, returning historical cards it removed."""
+
     reviewer = reconciliation.reviewer
     if (
         reconciliation.require_no_preset_overlay
@@ -4236,8 +4251,22 @@ def _require_collection_mutation_reconciliation_current(
     current_identities = _rwkv_identities_for_card_ids(
         reviewer,
         current_historical_card_ids,
+        allow_removed=True,
     )
-    if current_identities != reconciliation.identities_by_card_id:
+    if current_identities is None:
+        raise _RwkvGradeNowReconciliationUnavailable(
+            "mutation RWKV identity routing is unavailable"
+        )
+    # Removed cards keep their review log; the resident state keeps their
+    # reviews until the next canonical restore instead of replaying everything.
+    removed_historical_card_ids = frozenset(
+        reconciliation.historical_card_ids - current_identities.keys()
+    )
+    if current_identities != {
+        card_id: identity
+        for card_id, identity in reconciliation.identities_by_card_id.items()
+        if card_id not in removed_historical_card_ids
+    }:
         raise _RwkvGradeNowReconciliationUnavailable(
             "mutation changed RWKV identity routing"
         )
@@ -4247,13 +4276,47 @@ def _require_collection_mutation_reconciliation_current(
             raise _RwkvGradeNowReconciliationUnavailable(
                 "resident state changed during collection mutation"
             )
-        return
+        return removed_historical_card_ids
 
     with _reviewer_backend_execution_lock:
         if not _rwkv_collection_mutation_reconciliation_is_current(reconciliation):
             raise _RwkvGradeNowReconciliationUnavailable(
                 "resident state changed during collection mutation"
             )
+    return removed_historical_card_ids
+
+
+def _retain_resident_state_after_historical_removal(
+    reconciliation: RwkvCollectionMutationReconciliation,
+    removed_historical_card_ids: frozenset[int],
+) -> RwkvCollectionMutationReconciliation:
+    """Keep resident state that still includes reviews of removed cards.
+
+    The canonical history no longer contains those reviews, so the resident
+    identity becomes unknown: it is neither persisted nor trusted as the cache
+    identity, and the next canonical restore replays without them. Undo keeps
+    working because the returned reconciliation records the new generation.
+    """
+
+    if not removed_historical_card_ids:
+        return reconciliation
+    _mark_reviewer_backend_identity_unknown(
+        reconciliation.reviewer,
+        reason="historical cards removed",
+        expected_mutation_context=reconciliation.mutation_context,
+    )
+    with _reviewer_backend_state_lock:
+        warmup_generation = _reviewer_backend_warmup_generations.get(
+            reconciliation.warmup_key,
+            0,
+        )
+    logger.info(
+        "RWKV resident state kept after removing cards with review history: "
+        "cards=%s generation=%s",
+        len(removed_historical_card_ids),
+        warmup_generation,
+    )
+    return replace(reconciliation, warmup_generation=warmup_generation)
 
 
 def _save_collection_mutation_rollback_entry(
@@ -4344,6 +4407,8 @@ def _rwkv_collection_mutation_card_ids(
 def _rwkv_identities_for_card_ids(
     reviewer: object,
     card_ids: Iterable[int],
+    *,
+    allow_removed: bool = False,
 ) -> dict[int, RwkvReviewIdentity] | None:
     valid_card_ids = tuple(dict.fromkeys(card_ids))
     if not valid_card_ids:
@@ -4390,7 +4455,9 @@ where id in {ids2str(valid_card_ids)}
             deck_id=deck_id,
             preset_id=_preset_id(reviewer, card_id, deck_id),
         )
-    return identities if set(identities) == set(valid_card_ids) else None
+    return (
+        identities if allow_removed or set(identities) == set(valid_card_ids) else None
+    )
 
 
 def prepare_grade_now_reconciliation(
@@ -19396,9 +19463,9 @@ def _prune_removed_cards_from_review_queue_scores(
 ) -> bool:
     """Keep installed queue scores after a reconciled removal of cards.
 
-    Reconciliation only succeeds when the removed cards had no RWKV history, so
-    every other card's inputs are unchanged and only the removed cards' scores
-    are dropped instead of rescoring the whole deck.
+    The resident state is unchanged by the removal, so every other card's
+    score is still current and only the removed cards' scores are dropped
+    instead of rescoring the whole deck.
     """
 
     global _rwkv_study_queue_generation

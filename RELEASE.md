@@ -27,8 +27,11 @@ repeated here unless they materially affect a fork feature.
 - Include parent RWKV daily review minimums in subdeck counts when parent
   limits apply, so the deck list reflects the reviews available after opening
   a subdeck.
-- Show the next card immediately after deleting a note without RWKV review
-  history during RWKV reviews, instead of rescoring the whole deck first.
+- Show the next card immediately after deleting a note during RWKV reviews,
+  instead of rescoring the whole deck first.
+- Keep RWKV scheduling active after deleting a card that has review history.
+  The RWKV state is rebuilt without the deleted reviews at the next launch
+  instead of being discarded immediately.
 
 ## [26.09b3+fsrs7.build.91](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.91) — 2026-09-21
 

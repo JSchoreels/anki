@@ -101,7 +101,13 @@ only excluded cram rows also retain an identity-only rollback entry. If a batch
 cannot be reconciled safely, Anki invalidates the resident state instead. Known
 non-review mutations and their undo/redo retain the resident state when affected
 historical cards keep the same canonical membership and card, note, deck, and
-preset identities. Broad mutations such as filtered-deck rebuilds remain
+preset identities. Deleting cards that have review history also retains the
+resident state: their reviews stay in the resident history even though the
+canonical history no longer includes them. The resident identity becomes
+unknown, so this state is never persisted or trusted as the cache identity, and
+the next canonical restore, normally at the next launch, rebuilds without those
+reviews. Undoing the deletion keeps the resident state.
+Broad mutations such as filtered-deck rebuilds remain
 conservative when dynamic preset routing rules make the affected identities
 ambiguous. Other collection mutations that can change replay inputs invalidate
 the resident state entirely. Each restore or rebuild is tied to the
@@ -117,8 +123,8 @@ ambiguous dynamic preset routing, and safely reconciled scheduling, note, tag,
 or flag changes retain the collection-wide resident history because they do not
 alter replay inputs. They still clear any transient scores or in-flight work
 that may depend on the changed content. A reconciled mutation that only removes
-cards without RWKV history, such as deleting a new note from the reviewer, is
-the exception: it drops the removed cards from the installed review-queue
+cards, such as deleting a note from the reviewer, is the exception: it drops the
+removed cards from the installed review-queue
 scores and keeps every other card's score, so the next card appears without
 rescoring the deck. When the resident and persisted history
 identities match, Anki also advances the persisted collection marker so these

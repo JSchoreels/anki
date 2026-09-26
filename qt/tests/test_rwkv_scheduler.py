@@ -1196,6 +1196,83 @@ def test_reconciled_collection_mutation_survives_undo_and_redo(
     assert rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0) == 0
 
 
+def test_removing_reviewed_card_keeps_resident_state_until_next_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_exists = True
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert args == ()
+            if "select distinct cid" in sql:
+                return [1]
+            assert "select id from cards where id in (1)" in sql
+            return [1] if card_exists else []
+
+        def all(self, sql: str, *args: object) -> list[tuple[int, int, int]]:
+            assert "select id, nid" in sql
+            assert args == ()
+            return [(1, 10, 100)] if card_exists else []
+
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select mod from col"
+            return 123
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_config = lambda _key: None
+    counter = _UndoCounter(reviewer)
+    counter.set(4)
+    refreshed_markers: list[object] = []
+    monkeypatch.setattr("aqt.mw", reviewer.mw)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolved_fsrs_preset_ids",
+        lambda _reviewer, card_ids: {card_id: "preset" for card_id in card_ids},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, identity: refreshed_markers.append(identity),
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+    changes = collection_pb2.OpChanges(card=True, note=True, study_queues=True)
+
+    def remove_card() -> collection_pb2.OpChanges:
+        nonlocal card_exists
+        card_exists = False
+        counter.set(5)
+        return changes
+
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col,
+        remove_card,
+        card_ids=[1],
+    )
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+
+    # Still warm, but no longer vouched for as the canonical cache identity.
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] is None
+    assert refreshed_markers == []
+
+    card_exists = True
+    assert record_collection_undo(_undo_result(counter=5, next_counter=6)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+    card_exists = False
+    assert record_collection_redo(_undo_result(counter=6, next_counter=7)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+
 def test_live_learning_restart_requires_canonical_recovery() -> None:
     class DB:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
