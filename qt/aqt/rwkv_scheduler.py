@@ -258,6 +258,7 @@ _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR = (
     "_rwkv_review_handled_queue_change_pending"
 )
 _RWKV_REVIEW_QUEUE_REFRESH_REQUIRED_ATTR = "_rwkv_review_queue_refresh_required"
+_RWKV_REVIEW_QUEUE_SCORES_PRUNED_ATTR = "_rwkv_review_queue_scores_pruned"
 _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR = (
     "_rwkv_reconciled_collection_change_pending"
 )
@@ -708,6 +709,7 @@ class RwkvCollectionMutationReconciliation:
 @dataclass(frozen=True)
 class _RwkvReconciledCollectionChange:
     collection_mod: int | None
+    removed_card_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2960,8 +2962,15 @@ def _reconciled_collection_change_owner(reviewer: object) -> object:
     return getattr(reviewer, "mw", None) or reviewer
 
 
-def _mark_collection_change_reconciled(reviewer: object) -> None:
-    pending = _RwkvReconciledCollectionChange(_rwkv_collection_modified(reviewer))
+def _mark_collection_change_reconciled(
+    reviewer: object,
+    *,
+    removed_card_ids: tuple[int, ...] = (),
+) -> None:
+    pending = _RwkvReconciledCollectionChange(
+        _rwkv_collection_modified(reviewer),
+        removed_card_ids=removed_card_ids,
+    )
     owner = _reconciled_collection_change_owner(reviewer)
     setattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
     if owner is not reviewer:
@@ -2969,6 +2978,12 @@ def _mark_collection_change_reconciled(reviewer: object) -> None:
 
 
 def _consume_reconciled_collection_change(reviewer: object) -> bool:
+    return _take_reconciled_collection_change(reviewer) is not None
+
+
+def _take_reconciled_collection_change(
+    reviewer: object,
+) -> _RwkvReconciledCollectionChange | None:
     owner = _reconciled_collection_change_owner(reviewer)
     pending = getattr(
         owner,
@@ -2984,13 +2999,15 @@ def _consume_reconciled_collection_change(reviewer: object) -> bool:
                 False,
             )
     if not isinstance(pending, _RwkvReconciledCollectionChange):
-        return False
+        return None
     current_mod = _rwkv_collection_modified(reviewer)
-    return (
+    if (
         pending.collection_mod is None
         or current_mod is None
         or current_mod == pending.collection_mod
-    )
+    ):
+        return pending
+    return None
 
 
 def _current_undo_counter(reviewer: object) -> int | None:
@@ -4128,7 +4145,10 @@ def record_collection_mutation_reconciliation(
     try:
         _require_collection_mutation_reconciliation_current(reconciliation)
         _save_collection_mutation_rollback_entry(reconciliation)
-        _mark_collection_change_reconciled(reviewer)
+        _mark_collection_change_reconciled(
+            reviewer,
+            removed_card_ids=_removed_card_ids(reviewer, reconciliation.card_ids),
+        )
         logger.debug(
             "RWKV collection mutation reconciled: cards=%s historical=%s",
             len(reconciliation.card_ids),
@@ -4162,6 +4182,27 @@ def record_collection_mutation_reconciliation(
                 )
             except Exception:
                 logger.exception("failed to clear changed card RWKV info score")
+
+
+def _removed_card_ids(
+    reviewer: object,
+    card_ids: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Return the mutation's cards when all of them were removed, else nothing."""
+
+    if not card_ids:
+        return ()
+    col = _collection(reviewer)
+    db = getattr(col, "db", None)
+    list_rows = getattr(db, "list", None)
+    if not callable(list_rows):
+        return ()
+    try:
+        remaining = list_rows(f"select id from cards where id in {ids2str(card_ids)}")
+    except Exception:
+        logger.debug("failed to check RWKV mutation card removal", exc_info=True)
+        return ()
+    return () if remaining else card_ids
 
 
 def _require_collection_mutation_reconciliation_current(
@@ -5822,6 +5863,20 @@ def reviewer_queue_order_refresh_required(reviewer: object) -> bool:
     """Return whether invalidation requires a refresh before the next queue fetch."""
 
     return _reviewer_queue_order_refresh_required_generation(reviewer) is not None
+
+
+def consume_reviewer_pruned_queue_scores(reviewer: object) -> bool:
+    """Return whether the last queue change kept installed scores by pruning."""
+
+    pruned = bool(getattr(reviewer, _RWKV_REVIEW_QUEUE_SCORES_PRUNED_ATTR, False))
+    setattr(reviewer, _RWKV_REVIEW_QUEUE_SCORES_PRUNED_ATTR, False)
+    if not pruned or reviewer_queue_order_refresh_required(reviewer):
+        return False
+    deck_id = _current_deck_id(reviewer)
+    return (
+        deck_id is not None
+        and _rwkv_review_queue_score_map_for_deck(reviewer, deck_id) is not None
+    )
 
 
 def _reviewer_queue_order_refresh_required_generation(
@@ -19335,6 +19390,71 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
     _invalidate_resolved_preset_id_cache(reviewer)
 
 
+def _prune_removed_cards_from_review_queue_scores(
+    reviewer: object,
+    removed_card_ids: tuple[int, ...],
+) -> bool:
+    """Keep installed queue scores after a reconciled removal of cards.
+
+    Reconciliation only succeeds when the removed cards had no RWKV history, so
+    every other card's inputs are unchanged and only the removed cards' scores
+    are dropped instead of rescoring the whole deck.
+    """
+
+    global _rwkv_study_queue_generation
+
+    start = time.monotonic()
+    deck_id = _current_deck_id(reviewer)
+    if deck_id is None:
+        return False
+    scores = _rwkv_review_queue_score_map_for_deck(reviewer, deck_id)
+    if scores is None:
+        return False
+    targets = _rwkv_review_queue_target_map_for_deck(reviewer, deck_id) or {}
+    removed = set(removed_card_ids)
+
+    with _reviewer_backend_state_lock:
+        fresh_for_backend_state = (
+            _rwkv_review_queue_score_generations.get(deck_id)
+            == _reviewer_backend_state_generation()
+        )
+        # Stale in-flight scoring must not reinstall removed cards.
+        _rwkv_study_queue_generation += 1
+        generation = _rwkv_study_queue_generation
+    with _rwkv_score_prewarm_lock:
+        _rwkv_score_prewarm_in_flight.clear()
+
+    retained_scores = sorted(
+        (card_id, score) for card_id, score in scores.items() if card_id not in removed
+    )
+    if not _set_rwkv_review_queue_scores(
+        reviewer,
+        deck_id,
+        retained_scores,
+        target_retentions_by_card_id={
+            card_id: target
+            for card_id, target in targets.items()
+            if card_id not in removed
+        },
+        fresh_for_backend_state=fresh_for_backend_state,
+    ):
+        return False
+
+    _invalidate_resolved_preset_id_cache(reviewer, card_ids=removed_card_ids)
+    clear_deck_browser_rwkv_count_scores(getattr(reviewer, "mw", None))
+    _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
+    logger.debug(
+        "RWKV queue scores pruned after reconciled card removal: deck_id=%s "
+        "removed=%s retained=%s generation=%s elapsed_ms=%.1f",
+        deck_id,
+        len(removed),
+        len(retained_scores),
+        generation,
+        (time.monotonic() - start) * 1000,
+    )
+    return True
+
+
 def _preserve_reconciled_non_queue_collection_change(
     reviewer: object,
     *,
@@ -19367,15 +19487,29 @@ def study_queues_did_change(
     global _rwkv_study_queue_generation
 
     reviewer = getattr(mw, "reviewer", None)
+    if reviewer is not None:
+        setattr(reviewer, _RWKV_REVIEW_QUEUE_SCORES_PRUNED_ATTR, False)
     if reviewer is not None and (
         initiator is reviewer or _consume_reviewer_handled_study_queue_change(reviewer)
     ):
         return
 
     transient_reviewer = SimpleNamespace(mw=mw)
-    mutation_reconciled = _consume_reconciled_collection_change(
+    reconciled_change = _take_reconciled_collection_change(
         reviewer or transient_reviewer
     )
+    if (
+        reconciled_change is not None
+        and reconciled_change.removed_card_ids
+        and _prune_removed_cards_from_review_queue_scores(
+            transient_reviewer,
+            reconciled_change.removed_card_ids,
+        )
+    ):
+        if reviewer is not None:
+            setattr(reviewer, _RWKV_REVIEW_QUEUE_SCORES_PRUNED_ATTR, True)
+        return
+    mutation_reconciled = reconciled_change is not None
     deck_browser = getattr(mw, "deckBrowser", None)
     resident_state_preserved = mutation_reconciled or (
         changes is not None

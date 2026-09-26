@@ -329,10 +329,14 @@ class Reviewer:
                     if current_card_was_deleted:
                         self._begin_deleted_card_transition()
                     self._refresh_needed = None
-                    self._prepare_rwkv_queue_order_then_next_card(
-                        fade_after=True,
-                        show_next_card=True,
-                    )
+                    if aqt.rwkv_scheduler.consume_reviewer_pruned_queue_scores(self):
+                        self.nextCard()
+                        self.mw.fade_in_webview()
+                    else:
+                        self._prepare_rwkv_queue_order_then_next_card(
+                            fade_after=True,
+                            show_next_card=True,
+                        )
                 else:
                     aqt.rwkv_scheduler.prepare_reviewer_queue_order(self)
                     self.nextCard()

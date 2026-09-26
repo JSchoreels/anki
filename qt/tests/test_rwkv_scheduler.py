@@ -1011,6 +1011,62 @@ def test_new_card_mutation_does_not_wait_for_background_prediction() -> None:
     assert result.result(timeout=5) is True
 
 
+@pytest.mark.parametrize("card_removed", [True, False])
+def test_reconciled_card_removal_keeps_other_queue_scores(
+    card_removed: bool,
+) -> None:
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            assert args == ()
+            if "select distinct cid" in sql:
+                return []
+            assert "select id from cards where id in (1)" in sql
+            return [] if card_removed else [1]
+
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select mod from col"
+            return 123
+
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7)
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+    rwkv_scheduler._set_rwkv_review_queue_scores(
+        reviewer,
+        100,
+        [(1, 0.25), (2, 0.75)],
+        target_retentions_by_card_id={1: 0.9, 2: 0.85},
+    )
+    reconciliation = rwkv_scheduler.prepare_collection_mutation_reconciliation(
+        reviewer,
+        [1],
+    )
+    assert rwkv_scheduler.record_collection_mutation_reconciliation(reconciliation)
+
+    rwkv_scheduler.study_queues_did_change(
+        reviewer.mw,
+        initiator=None,
+        changes=collection_pb2.OpChanges(card=True, note=True, study_queues=True),
+    )
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    if card_removed:
+        assert rpc.active_scores == {2: pytest.approx(0.75)}
+        assert rwkv_scheduler._rwkv_review_queue_target_map_for_deck(reviewer, 100) == {
+            2: pytest.approx(0.85)
+        }
+        assert rwkv_scheduler.consume_reviewer_pruned_queue_scores(reviewer)
+    else:
+        assert rpc.active_scores == {}
+        assert not rwkv_scheduler.consume_reviewer_pruned_queue_scores(reviewer)
+
+
 def test_collection_mutation_wrapper_preserves_non_queue_config_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

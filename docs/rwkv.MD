@@ -116,7 +116,11 @@ adding a new note, deck, or note type, renaming or reparenting decks without
 ambiguous dynamic preset routing, and safely reconciled scheduling, note, tag,
 or flag changes retain the collection-wide resident history because they do not
 alter replay inputs. They still clear any transient scores or in-flight work
-that may depend on the changed content. When the resident and persisted history
+that may depend on the changed content. A reconciled mutation that only removes
+cards without RWKV history, such as deleting a new note from the reviewer, is
+the exception: it drops the removed cards from the installed review-queue
+scores and keeps every other card's score, so the next card appears without
+rescoring the deck. When the resident and persisted history
 identities match, Anki also advances the persisted collection marker so these
 changes do not force a full cache validation on the next launch.
 

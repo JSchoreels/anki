@@ -2265,6 +2265,70 @@ def test_deleted_card_is_cleared_and_blocked_while_rwkv_queue_refreshes(
     assert reviewer.card.id == 789
 
 
+def test_deleted_card_shows_next_card_without_rescoring_pruned_rwkv_queue(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class DeletedCard:
+        id = 456
+
+        def load(self) -> None:
+            raise reviewer_module.NotFoundError("No such card", None, None, None)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("pruned RWKV scores should not be rebuilt")
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "consume_reviewer_pruned_queue_scores",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "defer_reviewer_backend_cache_restore",
+        lambda reviewer, *, reason: None,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = DeletedCard()
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._qa_transition_active = False
+    reviewer._qa_update_id = 4
+    reviewer._review_card_generation = 7
+    reviewer._rwkv_undo_restored_card_active = False
+    reviewer._show_answer_timer = None
+    reviewer._show_question_timer = None
+    reviewer.web = SimpleNamespace(eval=lambda script: None)
+    reviewer.bottom = SimpleNamespace(web=SimpleNamespace(eval=lambda script: None))
+    reviewer._prepare_rwkv_queue_order_then_next_card = fail
+
+    def next_card() -> None:
+        calls.append("next")
+        reviewer.card = SimpleNamespace(id=789)
+        reviewer.state = "question"
+
+    reviewer.nextCard = next_card
+    reviewer.mw = SimpleNamespace(
+        state="review",
+        fade_in_webview=lambda: calls.append("fade"),
+    )
+
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=True)
+
+    assert dirty is False
+    assert calls == ["next", "fade"]
+    assert reviewer.card.id == 789
+
+
 def test_enter_on_rwkv_undo_restored_card_with_pending_refresh_shows_answer() -> None:
     calls: list[str] = []
 
