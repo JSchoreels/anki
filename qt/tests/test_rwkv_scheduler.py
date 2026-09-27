@@ -15864,8 +15864,22 @@ def test_prepare_stats_retrievability_scores_waits_for_pending_warmup(
     ]
 
 
-def test_prepare_stats_retrievability_scores_reports_pending_after_warmup_timeout(
+@pytest.mark.parametrize(
+    ("search", "wait_for_warmup", "expected_waits"),
+    [
+        ("rated:7", True, 1),
+        ("rated:7", False, 0),
+        ("prop:rwkv:r<0.9", False, 1),
+        ("prop:rwkv-curve:r<0.9", False, 1),
+        ("is:rwkv:due", False, 1),
+        ("is:rwkv-curve:due", False, 1),
+    ],
+)
+def test_prepare_stats_waits_only_when_requested_or_search_needs_scores(
     monkeypatch: pytest.MonkeyPatch,
+    search: str,
+    wait_for_warmup: bool,
+    expected_waits: int,
 ) -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(_backend=rpc)))
@@ -15880,20 +15894,25 @@ def test_prepare_stats_retrievability_scores_reports_pending_after_warmup_timeou
         "_reviewer_backend_warmup_pending",
         lambda reviewer: True,
     )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_wait_for_reviewer_backend_warmup",
-        lambda reviewer, *, timeout_secs: False,
-    )
+    waits: list[float | None] = []
+
+    def wait(reviewer: object, *, timeout_secs: float | None) -> bool:
+        waits.append(timeout_secs)
+        return False
+
+    monkeypatch.setattr(rwkv_scheduler, "_wait_for_reviewer_backend_warmup", wait)
 
     try:
-        status = prepare_stats_retrievability_scores(reviewer, "rated:7")
+        status = prepare_stats_retrievability_scores(
+            reviewer, search, wait_for_warmup=wait_for_warmup
+        )
     finally:
         set_reviewer_backend(previous_backend)
 
     assert status == rwkv_scheduler.RwkvStatsPreparationStatus.PENDING
+    assert len(waits) == expected_waits
     assert len(rpc.stats_calls) == 1
-    assert rpc.stats_calls[0]["search"] == "rated:7"
+    assert rpc.stats_calls[0]["search"] == search
     assert rpc.stats_calls[0]["scores"] == []
 
 

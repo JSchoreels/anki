@@ -39,6 +39,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Improved
 
+- Show ordinary statistics while the RWKV model is warming up, then refresh
+  the RWKV graphs when scores become available.
 - Load the saved RWKV state faster at startup; restoring a 1.3 GB state took
   0.5s instead of 2.2s when it was not already cached by the system.
 - Speed up the RWKV Desired Retention workload simulator and reduce its memory

@@ -6068,6 +6068,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     search: str,
     *,
     warm_up_if_needed: bool = False,
+    wait_for_warmup: bool = True,
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
@@ -6109,7 +6110,20 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             else _prepare_reviewer_backend_for_stats
         )
         warmed_up = prepare_backend(reviewer)
-        if not warmed_up and _reviewer_backend_warmup_pending(reviewer):
+        # Ordinary graphs can render while RWKV warms up. Searches whose card
+        # membership depends on RWKV scores must still wait for those scores.
+        needs_scores = (
+            warm_up_if_needed
+            or prepare_instant_due
+            or prepare_curve_due
+            or prepare_curve_retrievability
+            or search_uses_rwkv_retrievability(search)
+        )
+        if (
+            not warmed_up
+            and (wait_for_warmup or needs_scores)
+            and _reviewer_backend_warmup_pending(reviewer)
+        ):
             warmed_up = _wait_for_reviewer_backend_warmup(
                 reviewer,
                 timeout_secs=(

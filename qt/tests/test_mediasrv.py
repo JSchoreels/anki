@@ -191,7 +191,10 @@ class TestGraphs:
 
         calls: list[str] = []
 
-        def prepare(reviewer: object, search: str) -> RwkvStatsPreparationStatus:
+        def prepare(
+            reviewer: object, search: str, *, wait_for_warmup: bool
+        ) -> RwkvStatsPreparationStatus:
+            assert not wait_for_warmup
             calls.append(search)
             return getattr(RwkvStatsPreparationStatus, status)
 

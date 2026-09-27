@@ -1378,6 +1378,7 @@ def graphs() -> Response:
     prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
         reviewer,
         request_proto.search,
+        wait_for_warmup=False,
     )
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()

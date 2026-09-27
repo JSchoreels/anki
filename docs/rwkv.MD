@@ -543,6 +543,13 @@ current screen's study queues and due counts.
 
 ## Stats And Search
 
+Ordinary graph requests return their available statistics immediately when
+RWKV warm-up is pending. The response marks RWKV scores as pending and the
+stats page retries every two seconds. Searches that use RWKV retrievability
+or due properties still wait for warm-up because their matching cards depend
+on those scores. Browser and filtered-deck preparation retain their existing
+waiting behavior.
+
 When the desktop stats page requests graph data, Anki may install transient
 per-card RWKV retrievability scores for cards in the stats search. Recent
 current-day Stats snapshots are keyed by their exact search text so concurrent

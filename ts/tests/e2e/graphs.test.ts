@@ -63,6 +63,27 @@ test("graphs page clears loading state after graph data arrives", async ({ page 
     });
 });
 
+test("ordinary graphs remain visible while pending RWKV scores are retried", async ({ page }) => {
+    let requests = 0;
+    await page.route("**/_anki/graphs", async (route) => {
+        const response = await route.fetch();
+        requests += 1;
+        const headers = response.headers();
+        delete headers["x-anki-rwkv-stats-pending"];
+        if (requests === 1) {
+            headers["x-anki-rwkv-stats-pending"] = "1";
+        }
+        await route.fulfill({ response, headers });
+    });
+
+    await page.goto(graphDebugPath);
+    await expect(page.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
+    await expect(page.locator(".spin.loading")).toHaveCount(1);
+    await expect(page.locator(".spin.loading")).toHaveCount(0);
+    expect(requests).toBe(2);
+    await expect(page.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
+});
+
 test("RWKV retrievability graph is visible when FSRS is disabled", async ({ page }) => {
     await page.route("**/_anki/graphs", async (route) => {
         const response = await route.fetch();
