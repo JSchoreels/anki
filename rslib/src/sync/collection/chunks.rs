@@ -25,6 +25,16 @@ use crate::sync::request::IntoSyncRequest;
 use crate::tags::join_tags;
 use crate::tags::split_tags;
 
+/// The objects of a remote chunk that were newer than the local ones.
+#[derive(Default)]
+pub(in crate::sync) struct AppliedChunk {
+    pub card_ids: Vec<CardId>,
+    pub note_ids: Vec<NoteId>,
+    /// A card was added, or moved to another note or effective deck, which
+    /// changes the identity of its reviews.
+    pub card_identity_changed: bool,
+}
+
 pub(in crate::sync) struct ChunkableIds {
     revlog: Vec<RevlogId>,
     cards: Vec<CardId>,
@@ -104,9 +114,6 @@ impl NormalSyncer<'_> {
             self.mark_remote_collection_changed(
                 !chunk.cards.is_empty() || !chunk.notes.is_empty() || !chunk.revlog.is_empty(),
             );
-            self.mark_remote_non_review_collection_changed(
-                !chunk.cards.is_empty() || !chunk.notes.is_empty(),
-            );
             for entry in &chunk.revlog {
                 self.record_remote_review(entry.id);
             }
@@ -116,7 +123,12 @@ impl NormalSyncer<'_> {
             })?;
 
             let done = chunk.done;
-            self.col.apply_chunk(chunk, state.pending_usn)?;
+            let applied = self.col.apply_chunk(chunk, state.pending_usn)?;
+            // Reviews rewrite their card's scheduling fields, which is not a
+            // change to the history the reviews belong to.
+            self.mark_remote_non_review_collection_changed(
+                applied.card_identity_changed || !applied.note_ids.is_empty(),
+            );
 
             self.progress.check_cancelled()?;
 
@@ -168,10 +180,19 @@ impl Collection {
     /// pending_usn is used to decide whether the local objects are newer.
     /// If the provided objects are not modified locally, the USN inside
     /// the individual objects is used.
-    pub(in crate::sync) fn apply_chunk(&mut self, chunk: Chunk, pending_usn: Usn) -> Result<()> {
+    pub(in crate::sync) fn apply_chunk(
+        &mut self,
+        chunk: Chunk,
+        pending_usn: Usn,
+    ) -> Result<AppliedChunk> {
         self.merge_revlog(chunk.revlog)?;
-        self.merge_cards(chunk.cards, pending_usn)?;
-        self.merge_notes(chunk.notes, pending_usn)
+        let mut applied = self.merge_cards(chunk.cards, pending_usn)?;
+        applied.note_ids = self.merge_notes(chunk.notes, pending_usn)?;
+        let mut changed_card_ids = std::mem::take(&mut applied.card_ids);
+        changed_card_ids.extend(self.storage.card_ids_of_notes(&applied.note_ids)?);
+        self.forget_fsrs_preset_overlay_card_matches(&changed_card_ids);
+        applied.card_ids = changed_card_ids;
+        Ok(applied)
     }
 
     fn merge_revlog(&self, entries: Vec<RevlogEntry>) -> Result<()> {
@@ -181,34 +202,40 @@ impl Collection {
         Ok(())
     }
 
-    fn merge_cards(&self, entries: Vec<CardEntry>, pending_usn: Usn) -> Result<()> {
+    fn merge_cards(&self, entries: Vec<CardEntry>, pending_usn: Usn) -> Result<AppliedChunk> {
+        let mut applied = AppliedChunk::default();
         for entry in entries {
-            self.add_or_update_card_if_newer(entry, pending_usn)?;
-        }
-        Ok(())
-    }
-
-    fn add_or_update_card_if_newer(&self, entry: CardEntry, pending_usn: Usn) -> Result<()> {
-        let proceed = if let Some(existing_card) = self.storage.get_card(entry.id)? {
-            !existing_card.usn.is_pending_sync(pending_usn) || existing_card.mtime < entry.mtime
-        } else {
-            true
-        };
-        if proceed {
-            let card = entry.into();
+            let existing_card = self.storage.get_card(entry.id)?;
+            let proceed = existing_card.as_ref().map_or(true, |existing_card| {
+                !existing_card.usn.is_pending_sync(pending_usn) || existing_card.mtime < entry.mtime
+            });
+            if !proceed {
+                continue;
+            }
+            let card: Card = entry.into();
+            applied.card_identity_changed |= existing_card.map_or(true, |existing_card| {
+                existing_card.note_id != card.note_id
+                    || existing_card.original_or_current_deck_id()
+                        != card.original_or_current_deck_id()
+            });
+            applied.card_ids.push(card.id);
             self.storage.add_or_update_card(&card)?;
         }
-        Ok(())
+        Ok(applied)
     }
 
-    fn merge_notes(&mut self, entries: Vec<NoteEntry>, pending_usn: Usn) -> Result<()> {
+    fn merge_notes(&mut self, entries: Vec<NoteEntry>, pending_usn: Usn) -> Result<Vec<NoteId>> {
+        let mut applied_note_ids = vec![];
         for entry in entries {
-            self.add_or_update_note_if_newer(entry, pending_usn)?;
+            let note_id = entry.id;
+            if self.add_or_update_note_if_newer(entry, pending_usn)? {
+                applied_note_ids.push(note_id);
+            }
         }
-        Ok(())
+        Ok(applied_note_ids)
     }
 
-    fn add_or_update_note_if_newer(&mut self, entry: NoteEntry, pending_usn: Usn) -> Result<()> {
+    fn add_or_update_note_if_newer(&mut self, entry: NoteEntry, pending_usn: Usn) -> Result<bool> {
         let proceed = if let Some(existing_note) = self.storage.get_note(entry.id)? {
             !existing_note.usn.is_pending_sync(pending_usn) || existing_note.mtime < entry.mtime
         } else {
@@ -222,7 +249,7 @@ impl Collection {
             note.prepare_for_update(&nt, false)?;
             self.storage.add_or_update_note(&note)?;
         }
-        Ok(())
+        Ok(proceed)
     }
 
     // Local->remote chunks
@@ -420,7 +447,7 @@ pub fn server_apply_chunk(
     col: &mut Collection,
     state: &mut ServerSyncState,
 ) -> Result<()> {
-    col.apply_chunk(req.chunk, state.client_usn)
+    col.apply_chunk(req.chunk, state.client_usn).map(|_| ())
 }
 
 impl Usn {
@@ -438,4 +465,83 @@ pub const CHUNK_SIZE: usize = 250;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ApplyChunkRequest {
     pub chunk: Chunk,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::scheduler::fsrs::preset::tagged_test_overlay;
+    use crate::scheduler::fsrs::preset::FsrsPresetId;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+    use crate::tests::NoteAdder;
+
+    #[test]
+    fn applied_remote_notes_refresh_preset_overlay_matches() -> Result<()> {
+        let mut col = Collection::new();
+        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.get_first_card();
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &tagged_test_overlay("medical"),
+        )?;
+        assert_ne!(
+            col.fsrs_preset_for_card(&card)?.id,
+            FsrsPresetId::Addon("addon:test:tagged".into())
+        );
+
+        let mut remote_note = col.storage.get_note(note.id)?.unwrap();
+        remote_note.tags.push("medical".into());
+        remote_note.set_modified_with_mtime(Usn(5), TimestampSecs(remote_note.mtime.0 + 1));
+        let applied = col.apply_chunk(
+            Chunk {
+                notes: vec![remote_note.into()],
+                ..Default::default()
+            },
+            Usn(-1),
+        )?;
+
+        assert_eq!(applied.note_ids, vec![note.id]);
+        assert_eq!(applied.card_ids, vec![card.id]);
+        assert!(!applied.card_identity_changed);
+        assert_eq!(
+            col.fsrs_preset_for_card(&card)?.id,
+            FsrsPresetId::Addon("addon:test:tagged".into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn applied_remote_cards_report_identity_changes() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.get_first_card();
+        let remote_entry = |col: &Collection, update: fn(&mut Card)| {
+            let mut remote = col.storage.get_card(card.id).unwrap().unwrap();
+            update(&mut remote);
+            remote.usn = Usn(5);
+            remote.mtime = TimestampSecs(remote.mtime.0 + 1);
+            Chunk {
+                cards: vec![remote.into()],
+                ..Default::default()
+            }
+        };
+
+        let rescheduled = remote_entry(&col, |card| card.interval = 10);
+        let applied = col.apply_chunk(rescheduled, Usn(-1))?;
+        assert_eq!(applied.card_ids, vec![card.id]);
+        assert!(!applied.card_identity_changed);
+
+        let filtered = remote_entry(&col, |card| {
+            card.original_deck_id = card.deck_id;
+            card.deck_id = DeckId(50);
+        });
+        assert!(!col.apply_chunk(filtered, Usn(-1))?.card_identity_changed);
+
+        let moved = remote_entry(&col, |card| {
+            card.deck_id = DeckId(60);
+            card.original_deck_id = DeckId(0);
+        });
+        assert!(col.apply_chunk(moved, Usn(-1))?.card_identity_changed);
+        Ok(())
+    }
 }

@@ -8238,7 +8238,7 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_historical_rwkv_review_rows",
-        lambda reviewer, *, after_review_id=None, deck_id=None: rows,
+        lambda reviewer, *, after_review_id=None, deck_id=None, card_ids=None: rows,
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -8312,7 +8312,6 @@ def test_historical_rwkv_review_inputs_skips_full_scan_when_cache_is_current(
     assert len(queries) == 1
     sql, args = queries[0]
     assert "r.id > ?" in sql
-    assert "limit 1" in sql
     assert args == (1234,)
     assert history.reviews == []
     assert history.review_ids == []
@@ -9015,6 +9014,11 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
     rows.sort()
     taskman, _progress_updates = _attach_progress_taskman(reviewer.mw)
     completed: list[bool] = []
+    count_view_refreshes: list[bool] = []
+    reviewer.mw.state = "deckBrowser"
+    reviewer.mw.onRefreshTimer = lambda: count_view_refreshes.append(
+        rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw)
+    )
 
     rwkv_scheduler.refresh_rwkv_state_after_sync(
         reviewer.mw,
@@ -9022,6 +9026,8 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
     )
 
     assert completed == [True]
+    # Deck counts deferred during the refresh are rendered once it is ready.
+    assert count_view_refreshes == [False]
     assert runtime.reviewed == [
         (1, 4),
         (1, 1),
@@ -9100,6 +9106,166 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
     assert "ignoredReviewIds" not in rebuilt_metadata
 
 
+def test_rwkv_restore_writes_store_checkpoint_when_ignored_reviews_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stored_history = _rwkv_checkpoint_test_history(2)
+    store_path = tmp_path / "rwkv-state-cache" / "state.sqlite3"
+    store_path.parent.mkdir()
+    store_path.write_bytes(b"store")
+
+    class Runtime:
+        resident_warm_up_state = True
+
+        def __init__(self) -> None:
+            self.checkpoint_writes: list[tuple[object, ...]] = []
+            self.replayed: list[int] = []
+
+        def review(self, **_kwargs: object) -> RwkvReviewTransition:
+            raise AssertionError("bulk warm-up expected")
+
+        def restore_warm_up_state_checkpoint(self, *_args: object) -> None:
+            pass
+
+        def write_warm_up_state_checkpoint(self, *args: object) -> int:
+            self.checkpoint_writes.append(args)
+            return 3
+
+        def warm_up_reviews(
+            self, reviews: Sequence[RwkvReviewInput], **_kwargs: object
+        ) -> None:
+            self.replayed.append(len(reviews))
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(cast(Any, runtime))
+    stored = rwkv_scheduler.RwkvStoredStateCache(
+        metadata={"snapshotReviewId": 0},
+        snapshot=None,
+        history=stored_history,
+        pending_history=replace(stored_history, reviews=[], review_ids=[]),
+        state_store_path=store_path,
+        state_store_generation="generation",
+        state_store_segment_id=2,
+        ignored_review_ids_changed=True,
+    )
+    saved: list[int | None] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache",
+        lambda *_args, **_kwargs: stored,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_base",
+        lambda _reviewer: {},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_save_reviewer_backend_cache",
+        lambda _reviewer, _history, **kwargs: saved.append(
+            kwargs["write_context"].state_store_head_segment_id
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, _history: None,
+    )
+
+    identity = rwkv_scheduler._restore_reviewer_backend_cache(
+        _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[]),
+        backend=cast(Any, backend),
+        is_current=lambda: True,
+    )
+
+    # The backend writer takes the history, not the runtime writer's encoding.
+    assert identity is not None
+    assert runtime.replayed == [2]
+    assert len(runtime.checkpoint_writes) == 1
+    assert runtime.checkpoint_writes[0][2] == 2
+    assert runtime.checkpoint_writes[0][3:7] == (
+        stored_history.last_review_id,
+        stored_history.review_count,
+        stored_history.history_hash,
+        stored_history.replay_key,
+    )
+    assert runtime.checkpoint_writes[0][-2:] == (False, True)
+    assert saved == [3]
+
+
+def test_rwkv_history_after_validated_prefix_reads_only_new_cards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    # (review_id, card_id, note_id, deck_id, ease, time, type, ivl, factor)
+    prefix_rows = [
+        (1_000, 1, 10, 100, 3, 1234, 0, 1, 2500),
+        (2_000, 2, 20, 100, 3, 1234, 0, 1, 2500),
+        (3_000, 3, 30, 100, 3, 1234, 0, 1, 2500),
+        (4_000, 1, 10, 100, 3, 1234, 1, 3, 2500),
+        (5_000, 2, 20, 100, 1, 1234, 1, 1, 2400),
+        (6_000, 3, 30, 100, 3, 1234, 1, 4, 2500),
+    ]
+    appended_rows = [
+        (7_000, 1, 10, 100, 1, 1234, 2, 1, 2300),
+        (8_000, 4, 40, 100, 3, 1234, 0, 1, 2500),
+        (9_000, 1, 10, 100, 3, 1234, 1, 2, 2300),
+    ]
+    ignored = frozenset({5_000})
+    prefix = rwkv_scheduler._historical_rwkv_review_inputs(
+        _rwkv_cache_reviewer(profile_folder=tmp_path, rows=list(prefix_rows)),
+        ignored_review_ids=ignored,
+    )
+    reviewer = _rwkv_cache_reviewer(
+        profile_folder=tmp_path,
+        rows=[*prefix_rows, *appended_rows],
+    )
+    full = rwkv_scheduler._historical_rwkv_review_inputs(
+        reviewer,
+        ignored_review_ids=ignored,
+    )
+    queries: list[str] = []
+    all_rows = reviewer.mw.col.db.all
+
+    def recording_all(sql: str, *args: object) -> list[tuple[int, ...]]:
+        queries.append(sql)
+        return all_rows(sql, *args)
+
+    reviewer.mw.col.db.all = recording_all
+
+    suffix = rwkv_scheduler._historical_rwkv_review_inputs_after_prefix(
+        reviewer,
+        prefix,
+    )
+
+    assert suffix.review_ids == [7_000, 8_000, 9_000]
+    assert suffix.reviews == full.reviews[-3:]
+    assert (
+        suffix.last_review_id,
+        suffix.review_count,
+        suffix.history_hash,
+        suffix.ignored_review_ids,
+        suffix.previous_review_id_by_card,
+        suffix.review_count_by_card,
+    ) == (
+        full.last_review_id,
+        full.review_count,
+        full.history_hash,
+        (5_000,),
+        full.previous_review_id_by_card,
+        full.review_count_by_card,
+    )
+    history_queries = [sql for sql in queries if "from revlog r" in sql]
+    assert history_queries
+    assert all("r.cid in (1,4)" in sql for sql in history_queries[1:])
+
+
 def test_stale_post_sync_failure_does_not_clobber_newer_ready_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -9145,7 +9311,7 @@ def test_stale_post_sync_failure_does_not_clobber_newer_ready_state(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_warm_up_reviewer_backend",
-        lambda reviewer, *, progress=None, additional_ignored_review_ids=(): False,
+        lambda reviewer, **_kwargs: False,
     )
     taskman = DeferredTaskman()
     reviewer.mw.taskman = taskman
@@ -18812,12 +18978,19 @@ def _rwkv_cache_reviewer(
                 ]
             assert "from revlog r" in sql
             assert "join cards c" in sql
+            selected = list(rows)
+            if "and r.cid in (" in sql:
+                _, _, after_in = sql.partition("and r.cid in (")
+                card_ids = {
+                    int(value) for value in after_in.partition(")")[0].split(",")
+                }
+                selected = [row for row in selected if row[1] in card_ids]
             if args:
                 assert len(args) == 1
                 after_review_id = args[0]
                 assert isinstance(after_review_id, int)
-                return [row for row in rows if row[0] > after_review_id]
-            return list(rows)
+                return [row for row in selected if row[0] > after_review_id]
+            return selected
 
         def scalar(self, sql: str, *args: object) -> int | None:
             if "select crt from col" in sql:

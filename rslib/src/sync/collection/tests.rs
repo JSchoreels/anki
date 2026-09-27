@@ -841,22 +841,40 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
     // make sure everything has been transferred across
     compare_sides(&mut col1, &mut col2)?;
 
-    // A review-only download is reported separately from other collection changes.
+    // A review-only download is reported separately from other collection
+    // changes, although answering also updates the reviewed card.
     col1.storage.add_revlog_entry(
         &RevlogEntry {
             id: RevlogId(124),
-            cid: CardId(456),
+            cid: cardid,
             usn: Usn(-1),
             interval: 11,
             ..Default::default()
         },
         true,
     )?;
+    col1.get_and_update_card(cardid, |card| {
+        card.interval = 11;
+        card.due += 11;
+        Ok(())
+    })?;
     ctx.normal_sync(&mut col1).await;
     let out = ctx.normal_sync(&mut col2).await;
     assert!(out.remote_collection_changed);
     assert_eq!(out.remote_review_ids, vec![RevlogId(124)]);
     assert!(!out.remote_non_review_collection_changed);
+    compare_sides(&mut col1, &mut col2)?;
+
+    // Moving a card to another deck changes the identity of its reviews.
+    col1.get_and_update_card(cardid, |card| {
+        card.deck_id = DeckId(1);
+        Ok(())
+    })?;
+    ctx.normal_sync(&mut col1).await;
+    let out = ctx.normal_sync(&mut col2).await;
+    assert!(out.remote_collection_changed);
+    assert!(out.remote_review_ids.is_empty());
+    assert!(out.remote_non_review_collection_changed);
 
     // make some modifications
     let mut note = col2.storage.get_note(note.id)?.unwrap();

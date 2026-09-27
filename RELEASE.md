@@ -36,6 +36,15 @@ repeated here unless they materially affect a fork feature.
   reviews, for example after syncing reviews done on another device. Space
   already taken by this is reclaimed automatically at the next start; one
   desktop cache shrank from 3.1 GB to 1.4 GB.
+- Keep the RWKV state when a sync brings in reviews older than 8 days, as
+  intended, instead of failing and rebuilding the whole state (about 20s on a
+  223,000-review collection). Reviews synced from another device are now
+  recognized as such even though they also update their cards.
+- Update deck list RWKV counts once the RWKV state has been refreshed after a
+  sync, instead of leaving them pending until the next refresh.
+- Apply FSRS preset rules to notes, cards, tags and decks changed by a sync
+  right away; previously cards could keep their earlier preset until another
+  change on this device.
 
 ### Improved
 
@@ -57,6 +66,13 @@ repeated here unless they materially affect a fork feature.
   of loading every card, and the add-on reads only the note fields its rules
   use; resolving desired retention for a 12,300-card deck took 0.23s instead
   of 0.9s.
+- Update the RWKV state faster after a sync. Reviews downloaded from another
+  device are now added to the saved state instead of re-reading the whole
+  review history; on a 223,000-review collection, syncing 50 reviews took
+  1.2s instead of 5.3s, and a sync without new reviews 1.2s instead of 1.6s.
+- Keep FSRS preset rule matches when unrelated settings change, such as the
+  selected deck, instead of re-running every rule search; the next RWKV
+  history check on a 223,000-review collection took 0.22s instead of 0.49s.
 - Speed up RWKV model steps on Apple Silicon. A 180-day workload simulation
   of 250 cards took 65s instead of 80s, with identical results, and scoring
   an 8,900-card deck's RWKV review queue took 78ms instead of 97ms, with

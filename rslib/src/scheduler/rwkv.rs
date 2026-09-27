@@ -92,8 +92,19 @@ impl Collection {
         let mut review_count_by_card = HashMap::new();
         let mut history_hash = rwkv_empty_history_hash();
         let mut last_review_id = 0;
+        let expected_prefix_len = input
+            .expected_identity
+            .as_ref()
+            .map(|expected| expected.review_count)
+            .filter(|&count| count > 0 && count < queried_review_count);
+        let mut prefix_matches_expected = false;
 
-        for row in rows {
+        for (index, row) in rows.into_iter().enumerate() {
+            if Some(index as u64) == expected_prefix_len {
+                // The first review after the prefix must be strictly newer, as
+                // incremental replay resumes after the prefix's last review id.
+                prefix_matches_expected = prefix_matches_expected && row.review_id > last_review_id;
+            }
             let card_id = CardId(row.card_id);
             let day_offset = rwkv_historical_day_offset(row.review_id, &timing);
             let previous_review_id = previous_review_id_by_card.insert(card_id, row.review_id);
@@ -140,6 +151,13 @@ impl Collection {
                     elapsed_seconds,
                 },
             );
+            if Some(index as u64 + 1) == expected_prefix_len {
+                prefix_matches_expected =
+                    input.expected_identity.as_ref().is_some_and(|expected| {
+                        expected.last_review_id == last_review_id
+                            && expected.history_hash == rwkv_history_hash_hex(history_hash)
+                    });
+            }
         }
 
         tracing::debug!(
@@ -158,6 +176,7 @@ impl Collection {
                     && expected.review_count == queried_review_count
                     && expected.history_hash == history_hash
             });
+        let history_prefix_is_valid = all_ignored_review_ids_are_active && prefix_matches_expected;
         Ok(RwkvHistoricalReviewFingerprintResponse {
             last_review_id,
             review_count: queried_review_count,
@@ -165,6 +184,7 @@ impl Collection {
             active_ignored_review_ids,
             queried_review_count,
             history_is_valid,
+            history_prefix_is_valid,
         })
     }
 
@@ -1237,6 +1257,71 @@ mod test {
                 ..Default::default()
             })?;
         assert!(!stale_ignored_fingerprint.history_is_valid);
+
+        Ok(())
+    }
+
+    #[test]
+    fn historical_fingerprint_validates_appended_history_prefix() -> Result<()> {
+        let mut col = Collection::new();
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        col.add_card(&mut card)?;
+        let first_review_id = card.id.0 + 10_000;
+        let add_review = |col: &mut Collection, review_id: i64, review_kind| {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: RevlogId(review_id),
+                    cid: card.id,
+                    usn: Usn(0),
+                    button_chosen: 3,
+                    interval: 1,
+                    ease_factor: 2_500,
+                    taken_millis: 1_000,
+                    review_kind,
+                    ..Default::default()
+                },
+                false,
+            )
+        };
+        add_review(&mut col, first_review_id, RevlogReviewKind::Learning)?;
+        add_review(&mut col, first_review_id + 2_000, RevlogReviewKind::Review)?;
+        let prefix = col
+            .rwkv_historical_review_fingerprint(RwkvHistoricalReviewFingerprintRequest::default())?;
+        let fingerprint_against_prefix = |col: &mut Collection| {
+            col.rwkv_historical_review_fingerprint(RwkvHistoricalReviewFingerprintRequest {
+                expected_identity: Some(scheduler::RwkvHistoricalReviewIdentity {
+                    last_review_id: prefix.last_review_id,
+                    review_count: prefix.review_count,
+                    history_hash: prefix.history_hash.clone(),
+                }),
+                ..Default::default()
+            })
+        };
+
+        let unchanged = fingerprint_against_prefix(&mut col)?;
+        assert!(unchanged.history_is_valid);
+        assert!(!unchanged.history_prefix_is_valid);
+
+        add_review(&mut col, first_review_id + 3_000, RevlogReviewKind::Review)?;
+        let appended = fingerprint_against_prefix(&mut col)?;
+        assert!(!appended.history_is_valid);
+        assert!(appended.history_prefix_is_valid);
+
+        add_review(&mut col, first_review_id + 1_000, RevlogReviewKind::Review)?;
+        let inserted = fingerprint_against_prefix(&mut col)?;
+        assert!(!inserted.history_is_valid);
+        assert!(!inserted.history_prefix_is_valid);
+
+        col.storage
+            .remove_revlog_entry(RevlogId(first_review_id + 1_000))?;
+        add_review(
+            &mut col,
+            first_review_id + 4_000,
+            RevlogReviewKind::Learning,
+        )?;
+        let relearned = fingerprint_against_prefix(&mut col)?;
+        assert!(!relearned.history_is_valid);
+        assert!(!relearned.history_prefix_is_valid);
 
         Ok(())
     }

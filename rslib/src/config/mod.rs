@@ -141,11 +141,7 @@ impl Collection {
             self.validate_fsrs_preset_overlay_json(&value)?;
         }
         let entry = ConfigEntry::boxed(key, value, self.usn()?, TimestampSecs::now());
-        let changed = self.set_config_undoable(entry)?;
-        if key == FSRS_PRESET_OVERLAY_CONFIG_KEY {
-            self.state.fsrs_preset_overlay_cache = None;
-        }
-        Ok(changed)
+        self.set_config_undoable(entry)
     }
 
     pub(crate) fn remove_config_inner<'a, K>(&mut self, key: K) -> Result<()>
@@ -153,11 +149,7 @@ impl Collection {
         K: Into<&'a str>,
     {
         let key = key.into();
-        self.remove_config_undoable(key)?;
-        if key == FSRS_PRESET_OVERLAY_CONFIG_KEY {
-            self.state.fsrs_preset_overlay_cache = None;
-        }
-        Ok(())
+        self.remove_config_undoable(key)
     }
 
     /// Remove all keys starting with provided prefix, which must end with '_'.

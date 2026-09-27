@@ -778,6 +778,10 @@ message RwkvHistoricalReviewFingerprintResponse {
   uint64 queried_review_count = 5;
   // False when expected_identity is absent.
   bool history_is_valid = 6;
+  // True when expected_identity is a strict prefix of the current history:
+  // it matches the first review_count reviews and every later review is
+  // newer, so only those later reviews need replaying.
+  bool history_prefix_is_valid = 7;
 }
 
 message FuzzDeltaRequest {

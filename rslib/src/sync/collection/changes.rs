@@ -5,6 +5,7 @@
 //! all in a single request.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -242,6 +243,14 @@ impl Collection {
         remote: UnchunkedChanges,
         latest_usn: Usn,
     ) -> Result<()> {
+        if !remote.notetypes.is_empty()
+            || !remote.decks_and_config.decks.is_empty()
+            || !remote.decks_and_config.config.is_empty()
+            || !remote.tags.is_empty()
+        {
+            // Preset overlay searches may match on any of these.
+            self.clear_fsrs_preset_overlay_card_matches();
+        }
         self.merge_notetypes(remote.notetypes, latest_usn)?;
         self.merge_decks(remote.decks_and_config.decks, latest_usn)?;
         self.merge_deck_config(remote.decks_and_config.config)?;
@@ -250,8 +259,18 @@ impl Collection {
             self.set_creation_stamp(crt)?;
         }
         if let Some(config) = remote.config {
+            let previous = self.storage.get_all_config()?;
+            let changed_keys = previous
+                .keys()
+                .chain(config.keys())
+                .filter(|key| previous.get(*key) != config.get(*key))
+                .cloned()
+                .collect::<HashSet<_>>();
             self.storage
                 .set_all_config(config, latest_usn, TimestampSecs::now())?;
+            for key in changed_keys {
+                self.invalidate_fsrs_preset_overlay_for_config_key(&key);
+            }
         }
 
         Ok(())

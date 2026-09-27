@@ -105,6 +105,7 @@ class _RwkvHistoricalReviewFingerprint(NamedTuple):
     active_ignored_review_ids: tuple[int, ...]
     queried_review_count: int
     history_is_valid: bool
+    history_prefix_is_valid: bool = False
 
 
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
@@ -9698,6 +9699,7 @@ def _warm_up_reviewer_backend(
     progress: RwkvStateCacheProgressCallback | None = None,
     additional_ignored_review_ids: Sequence[int] = (),
     on_cache_persistence_error: Callable[[Exception], None] | None = None,
+    discard_resident_state: bool = False,
 ) -> bool:
     context = _reviewer_backend_warmup_context(reviewer)
     if context is None:
@@ -9751,6 +9753,13 @@ def _warm_up_reviewer_backend(
             )
             restore_elapsed_ms = 0.0
         else:
+            if discard_resident_state:
+                # The invalidated state is replaced either way. Dropping it
+                # first lets the state-store read overlap history validation
+                # and avoids holding two copies of the state.
+                reset_cache_snapshot = getattr(backend, "reset_cache_snapshot", None)
+                if callable(reset_cache_snapshot):
+                    reset_cache_snapshot()
             restored_identity = _restore_reviewer_backend_cache(
                 reviewer,
                 backend=backend,
@@ -11526,6 +11535,7 @@ def refresh_rwkv_state_after_sync(
             reviewer,
             progress=progress,
             additional_ignored_review_ids=remote_review_ids,
+            discard_resident_state=True,
         )
 
     completion_lock = threading.Lock()
@@ -11576,6 +11586,9 @@ def refresh_rwkv_state_after_sync(
                 parent=cast(QWidget | None, mw),
             )
         on_done()
+        # The view rendered when the sync finished deferred its RWKV counts
+        # while the state was reloading.
+        _refresh_active_rwkv_count_view(mw)
         _notify_rwkv_state_cache_completion(mw, ready)
 
     taskman = getattr(mw, "taskman", None)
@@ -14406,13 +14419,35 @@ def _restore_reviewer_backend_cache(
                 and stored_history.reviews
                 and existing_store_context is not None
             ):
-                write_checkpoint = getattr(
+                write_state_cache_checkpoint = getattr(
                     backend,
                     "write_state_cache_checkpoint",
                     None,
                 )
-                if not callable(write_checkpoint):
+                if not callable(write_state_cache_checkpoint):
                     raise TypeError("RWKV state-store writer is unavailable")
+
+                # The store helper passes the runtime writer's positional
+                # arguments; the backend writer takes the history instead.
+                def write_checkpoint(
+                    path: Path,
+                    store_generation: str,
+                    parent_segment_id: int | None,
+                    *runtime_args: object,
+                ) -> int:
+                    full, durable = runtime_args[-2:]
+                    return cast(
+                        int,
+                        write_state_cache_checkpoint(
+                            path,
+                            store_generation,
+                            parent_segment_id,
+                            stored_history,
+                            full=full,
+                            durable=durable,
+                        ),
+                    )
+
                 _write_rwkv_state_cache_store_checkpoint(
                     existing_store_context,
                     stored_history,
@@ -15358,7 +15393,19 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     ):
         return None
-    if not additional_ignored_review_ids and _rwkv_state_cache_collection_unchanged(
+    # Only synced reviews older than the replay window are ignored; newer ones
+    # are replayed, which the fast paths below can do.
+    metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
+    newest_known_review_id = max(
+        (metadata_last_review_id, *additional_ignored_review_ids)
+    )
+    ignore_cutoff = newest_known_review_id - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+    newly_ignored_review_ids = {
+        review_id
+        for review_id in additional_ignored_review_ids
+        if review_id > 0 and review_id <= ignore_cutoff
+    }
+    if not newly_ignored_review_ids and _rwkv_state_cache_collection_unchanged(
         reviewer,
         metadata,
     ):
@@ -15372,7 +15419,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
     existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
-    if not additional_ignored_review_ids and not _rwkv_preserved_learning_start_cutoffs(
+    if not newly_ignored_review_ids and not _rwkv_preserved_learning_start_cutoffs(
         reviewer
     ):
         stored = _read_rwkv_state_cache_from_rust_fingerprint(
@@ -15384,16 +15431,6 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         )
         if stored is not None:
             return stored
-    metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
-    newest_known_review_id = max(
-        (metadata_last_review_id, *additional_ignored_review_ids)
-    )
-    ignore_cutoff = newest_known_review_id - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-    newly_ignored_review_ids = {
-        review_id
-        for review_id in additional_ignored_review_ids
-        if review_id > 0 and review_id <= ignore_cutoff
-    }
     try:
         current_history = _historical_rwkv_review_inputs(
             reviewer,
@@ -15716,13 +15753,36 @@ def _read_rwkv_state_cache_from_rust_fingerprint(
         speculative_restore.finish() if speculative_restore is not None else None
     )
     stored = None
-    if fingerprint is not None and fingerprint.history_is_valid:
+    if fingerprint is not None and (
+        fingerprint.history_is_valid or fingerprint.history_prefix_is_valid
+    ):
         stored = _read_unchanged_rwkv_state_cache_binary(
             reviewer,
             backend=backend,
             cache_dir=cache_dir,
             metadata=metadata,
         )
+    if (
+        stored is not None
+        and fingerprint is not None
+        and not fingerprint.history_is_valid
+    ):
+        # Reviews were appended after the cached history (typically downloaded
+        # by a sync), so only they need loading.
+        try:
+            stored = replace(
+                stored,
+                pending_history=_historical_rwkv_review_inputs_after_prefix(
+                    reviewer,
+                    stored.history,
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "failed to load RWKV reviews appended after the cached history",
+                exc_info=True,
+            )
+            stored = None
     if stored is not None and restored_target is not None:
         if restored_target == (
             stored.state_store_path,
@@ -15739,6 +15799,24 @@ def _read_rwkv_state_cache_from_rust_fingerprint(
             fingerprint.queried_review_count if fingerprint is not None else None,
         )
     return stored
+
+
+def _historical_rwkv_review_inputs_after_prefix(
+    reviewer: object,
+    prefix: RwkvHistoricalReviewInputs,
+) -> RwkvHistoricalReviewInputs:
+    """Load the reviews after a prefix the Rust fingerprint has validated."""
+
+    return _historical_rwkv_review_inputs(
+        reviewer,
+        after_review_id=prefix.last_review_id,
+        previous_review_id_by_card=prefix.previous_review_id_by_card,
+        previous_interval_days_by_card=prefix.previous_interval_days_by_card,
+        review_count_by_card=prefix.review_count_by_card,
+        previous_history_hash=prefix.history_hash,
+        previous_replay_key=prefix.replay_key,
+        ignored_review_ids=frozenset(prefix.ignored_review_ids),
+    )
 
 
 class _SpeculativeRwkvStateStoreRestore:
@@ -17930,6 +18008,7 @@ def _rwkv_historical_review_fingerprint(
         "history_is_valid",
         None,
     )
+    history_prefix_is_valid = getattr(response, "history_prefix_is_valid", False)
     if not (
         isinstance(last_review_id, int)
         and not isinstance(last_review_id, bool)
@@ -17942,6 +18021,7 @@ def _rwkv_historical_review_fingerprint(
         and not isinstance(queried_review_count, bool)
         and queried_review_count >= 0
         and isinstance(history_is_valid, bool)
+        and isinstance(history_prefix_is_valid, bool)
     ):
         return None
     active_ignored_review_ids = tuple(
@@ -17967,6 +18047,7 @@ def _rwkv_historical_review_fingerprint(
         active_ignored_review_ids=active_ignored_review_ids,
         queried_review_count=queried_review_count,
         history_is_valid=history_is_valid,
+        history_prefix_is_valid=history_prefix_is_valid,
     )
 
 
@@ -17985,6 +18066,13 @@ def _historical_rwkv_review_inputs(
     ignored_review_ids: AbstractSet[int] = frozenset(),
     prepare_recovery_checkpoint: bool = False,
 ) -> RwkvHistoricalReviewInputs:
+    """Build replay inputs for the canonical history, or its suffix.
+
+    With `after_review_id` and the previous per-card maps, only the reviews
+    after that id are returned. The history through that id must still match
+    those maps and `ignored_review_ids`, so only the cards reviewed since are
+    read.
+    """
     start = time.monotonic()
     requested_deck_id = deck_id
     previous_ids = dict(previous_review_id_by_card or {})
@@ -18014,12 +18102,12 @@ def _historical_rwkv_review_inputs(
             review_count_by_card,
         )
     )
+    suffix_card_ids: list[int] | None = None
     if after_review_id is not None and have_previous_state:
         incremental_rows = _historical_rwkv_review_rows(
             reviewer,
             after_review_id=after_review_id,
             deck_id=deck_id,
-            limit=1,
         )
         if not incremental_rows:
             review_count = sum(review_counts.values())
@@ -18042,7 +18130,9 @@ def _historical_rwkv_review_inputs(
                 deck_id=requested_deck_id,
                 history_hash=history_hash,
                 replay_key=replay_key,
+                ignored_review_ids=tuple(sorted(ignored_review_ids)),
             )
+        suffix_card_ids = _historical_rwkv_review_card_ids(incremental_rows)
 
     timing = _timing_today(reviewer)
     days_elapsed = getattr(timing, "days_elapsed", None)
@@ -18062,34 +18152,12 @@ def _historical_rwkv_review_inputs(
         )
 
     rows_start = time.monotonic()
-    raw_rows = list(
-        _historical_rwkv_review_rows(
-            reviewer,
-            deck_id=deck_id,
-        )
+    raw_rows, active_ignored_review_ids = _historical_rwkv_replay_rows(
+        reviewer,
+        deck_id=deck_id,
+        card_ids=suffix_card_ids,
+        ignored_review_ids=ignored_review_ids,
     )
-    active_ignored_review_ids = tuple(
-        sorted(
-            {
-                review_id
-                for row in raw_rows
-                if row
-                and isinstance((review_id := row[0]), int)
-                and review_id in ignored_review_ids
-            }
-        )
-    )
-    if active_ignored_review_ids:
-        active_ignored_review_id_set = set(active_ignored_review_ids)
-        raw_rows = [
-            row
-            for row in raw_rows
-            if not (
-                row
-                and isinstance(row[0], int)
-                and row[0] in active_ignored_review_id_set
-            )
-        ]
     retained_start_by_card = _benchmark_retained_historical_review_starts(
         raw_rows,
         preserved_learning_start_cutoffs=(
@@ -18351,6 +18419,9 @@ def _historical_rwkv_review_inputs(
                 total=row_count,
                 started_at=prepare_started_at,
             )
+    if suffix_card_ids is not None:
+        # Cards without new reviews were not read; the prefix counts them.
+        review_count = sum(review_counts.values())
     logger.debug(
         "RWKV historical review inputs built: rows=%s reviews=%s "
         "dynamic_preset_replay=%s historical_preset_rules=%s "
@@ -18385,6 +18456,47 @@ def _historical_rwkv_review_inputs(
         ignored_review_ids=active_ignored_review_ids,
         prepared_checkpoint_histories=prepared_checkpoint_histories,
     )
+
+
+def _historical_rwkv_replay_rows(
+    reviewer: object,
+    *,
+    deck_id: int | None,
+    card_ids: Sequence[int] | None,
+    ignored_review_ids: AbstractSet[int],
+) -> tuple[list[Sequence[object]], tuple[int, ...]]:
+    """Load history rows without ignored reviews, and the ignored ids found.
+
+    Rows restricted to `card_ids` continue a known history prefix, which holds
+    the ignored reviews of the other cards, so all ignored ids stay active.
+    """
+
+    raw_rows = list(
+        _historical_rwkv_review_rows(reviewer, deck_id=deck_id, card_ids=card_ids)
+    )
+    active_ignored_review_ids = tuple(
+        sorted(
+            ignored_review_ids
+            if card_ids is not None
+            else {
+                review_id
+                for row in raw_rows
+                if row
+                and isinstance((review_id := row[0]), int)
+                and review_id in ignored_review_ids
+            }
+        )
+    )
+    if not active_ignored_review_ids:
+        return raw_rows, active_ignored_review_ids
+    active_ignored_review_id_set = set(active_ignored_review_ids)
+    return [
+        row
+        for row in raw_rows
+        if not (
+            row and isinstance(row[0], int) and row[0] in active_ignored_review_id_set
+        )
+    ], active_ignored_review_ids
 
 
 def _report_rwkv_review_input_prepare_progress(

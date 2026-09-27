@@ -74,14 +74,11 @@ impl Collection {
         self.transact_inner(None, func).map(|out| out.output)
     }
 
+    /// Config changes are handled per key as they are written.
     fn maybe_clear_fsrs_preset_overlay_cache_after_op(&mut self, changes: &OpChanges) {
         let c = &changes.changes;
-        if c.config {
-            self.state.fsrs_preset_overlay_cache = None;
-        } else if c.card || c.note || c.deck || c.deck_config || c.tag || c.notetype {
-            if let Some(cache) = self.state.fsrs_preset_overlay_cache.as_mut() {
-                cache.clear_card_matches();
-            }
+        if c.card || c.note || c.deck || c.deck_config || c.tag || c.notetype {
+            self.clear_fsrs_preset_overlay_card_matches();
         }
     }
 }

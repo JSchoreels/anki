@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::card::Card;
+use crate::config::ConfigKey;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
 use crate::deckconfig::FsrsVersion;
@@ -85,6 +86,13 @@ impl FsrsPresetOverlayCache {
     pub(crate) fn clear_card_matches(&mut self) {
         self.card_to_preset.clear();
         self.cards_without_preset.clear();
+    }
+
+    fn forget_card_matches(&mut self, card_ids: &[CardId]) {
+        for card_id in card_ids {
+            self.card_to_preset.remove(card_id);
+            self.cards_without_preset.remove(card_id);
+        }
     }
 }
 
@@ -310,6 +318,35 @@ fn node_uses_regex(node: &Node) -> bool {
 }
 
 impl Collection {
+    /// Config writes affect cached overlay matches only through the overlay
+    /// itself, or through the day timing used by date-relative searches.
+    pub(crate) fn invalidate_fsrs_preset_overlay_for_config_key(&mut self, key: &str) {
+        let timing_keys: [&str; 3] = [
+            ConfigKey::CreationOffset.into(),
+            ConfigKey::LocalOffset.into(),
+            ConfigKey::Rollover.into(),
+        ];
+        if key == FSRS_PRESET_OVERLAY_CONFIG_KEY {
+            self.state.fsrs_preset_overlay_cache = None;
+        } else if timing_keys.contains(&key) {
+            self.clear_fsrs_preset_overlay_card_matches();
+        }
+    }
+
+    pub(crate) fn clear_fsrs_preset_overlay_card_matches(&mut self) {
+        if let Some(cache) = self.state.fsrs_preset_overlay_cache.as_mut() {
+            cache.clear_card_matches();
+        }
+    }
+
+    /// Drop cached overlay matches of cards whose card or note changed
+    /// outside an undoable operation, such as when a sync applied them.
+    pub(crate) fn forget_fsrs_preset_overlay_card_matches(&mut self, card_ids: &[CardId]) {
+        if let Some(cache) = self.state.fsrs_preset_overlay_cache.as_mut() {
+            cache.forget_card_matches(card_ids);
+        }
+    }
+
     pub(crate) fn fsrs_presets_for_cards(
         &mut self,
         cards: &[Card],
@@ -741,6 +778,28 @@ impl Collection {
             card_to_preset: HashMap::new(),
             cards_without_preset: HashSet::new(),
         })
+    }
+}
+
+/// An overlay routing cards tagged `tag` to the `addon:test:tagged` preset.
+#[cfg(test)]
+pub(crate) fn tagged_test_overlay(tag: &str) -> FsrsPresetOverlay {
+    FsrsPresetOverlay {
+        presets: vec![AddonFsrsPreset {
+            id: "addon:test:tagged".into(),
+            name: "Tagged".into(),
+            fsrs_version: AddonFsrsVersion::Six,
+            params: vec![1.0; 21],
+            desired_retention: 0.81,
+            historical_retention: 0.71,
+            ignore_revlogs_before_date: String::new(),
+            ..Default::default()
+        }],
+        rules: vec![FsrsPresetRule {
+            search: format!("tag:{tag}"),
+            preset_id: "addon:test:tagged".into(),
+        }],
+        simulator_rules: Vec::new(),
     }
 }
 
@@ -1537,6 +1596,48 @@ mod test {
             col.fsrs_preset_for_card(&card)?.id,
             FsrsPresetId::Addon("addon:test:tagged".into())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_cache_invalidation_follows_config_keys() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.get_first_card();
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &tagged_test_overlay("medical"),
+        )?;
+        col.fsrs_preset_for_card(&card)?;
+        let has_cached_match = |col: &Collection| {
+            col.state
+                .fsrs_preset_overlay_cache
+                .as_ref()
+                .is_some_and(|cache| cache.cards_without_preset.contains(&card.id))
+        };
+        assert!(has_cached_match(&col));
+
+        // Selecting a deck, for example, does not affect preset routing.
+        col.transact(Op::UpdateConfig, |col| {
+            col.set_config(ConfigKey::CurrentDeckId, &DeckId(1))
+                .map(|_| ())
+        })?;
+        assert!(has_cached_match(&col));
+
+        // Day timing changes what date-relative searches match.
+        col.transact(Op::UpdateConfig, |col| {
+            col.set_config(ConfigKey::Rollover, &5).map(|_| ())
+        })?;
+        assert!(col.state.fsrs_preset_overlay_cache.is_some());
+        assert!(!has_cached_match(&col));
+
+        col.transact(Op::UpdateConfig, |col| {
+            col.remove_config_inner(FSRS_PRESET_OVERLAY_CONFIG_KEY)
+        })?;
+        assert!(col.state.fsrs_preset_overlay_cache.is_none());
+        col.fsrs_preset_for_card(&card)?;
+        col.undo()?;
+        assert!(col.state.fsrs_preset_overlay_cache.is_none());
         Ok(())
     }
 }
