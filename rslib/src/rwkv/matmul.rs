@@ -67,3 +67,79 @@ pub(super) fn matrix_times_matrix(
         );
     }
 }
+
+#[link(name = "Accelerate", kind = "framework")]
+extern "C" {
+    fn vvexpf(y: *mut f32, x: *const f32, n: *const i32);
+    fn vvtanhf(y: *mut f32, x: *const f32, n: *const i32);
+}
+
+/// Stack chunk used by the vectorized activations, so they never allocate.
+const ACTIVATION_CHUNK: usize = 1024;
+
+/// Applies `exp` to every element of `input`, writing into `output`.
+fn exp_into(input: &[f32], output: &mut [f32]) {
+    assert_eq!(input.len(), output.len());
+    let len = i32::try_from(input.len()).expect("activation chunk exceeds vForce limits");
+    // SAFETY: both slices hold `len` contiguous f32 values.
+    unsafe { vvexpf(output.as_mut_ptr(), input.as_ptr(), &len) };
+}
+
+/// `tanh` over every element, using Accelerate's vectorized implementation.
+pub(super) fn tanh_in_place(values: &mut [f32]) {
+    let mut input = [0.0f32; ACTIVATION_CHUNK];
+    for chunk in values.chunks_mut(ACTIVATION_CHUNK) {
+        let input = &mut input[..chunk.len()];
+        input.copy_from_slice(chunk);
+        let len = i32::try_from(chunk.len()).expect("activation chunk exceeds vForce limits");
+        // SAFETY: both slices hold `len` contiguous f32 values.
+        unsafe { vvtanhf(chunk.as_mut_ptr(), input.as_ptr(), &len) };
+    }
+}
+
+/// The logistic function over every element. Uses the same `exp(-|x|)`
+/// formulation as the scalar `sigmoid()`, with a vectorized `exp`.
+pub(super) fn sigmoid_in_place(values: &mut [f32]) {
+    let mut negative_magnitude = [0.0f32; ACTIVATION_CHUNK];
+    let mut exp = [0.0f32; ACTIVATION_CHUNK];
+    for chunk in values.chunks_mut(ACTIVATION_CHUNK) {
+        let len = chunk.len();
+        for (target, value) in negative_magnitude[..len].iter_mut().zip(chunk.iter()) {
+            *target = -value.abs();
+        }
+        exp_into(&negative_magnitude[..len], &mut exp[..len]);
+        for (value, exp) in chunk.iter_mut().zip(&exp[..len]) {
+            *value = if *value >= 0.0 {
+                1.0 / (1.0 + exp)
+            } else {
+                exp / (1.0 + exp)
+            };
+        }
+    }
+}
+
+/// `x * sigmoid(x)` over every element.
+pub(super) fn silu_in_place(values: &mut [f32]) {
+    let mut gates = [0.0f32; ACTIVATION_CHUNK];
+    for chunk in values.chunks_mut(ACTIVATION_CHUNK) {
+        let gates = &mut gates[..chunk.len()];
+        gates.copy_from_slice(chunk);
+        sigmoid_in_place(gates);
+        for (value, gate) in chunk.iter_mut().zip(gates.iter()) {
+            *value *= gate;
+        }
+    }
+}
+
+/// `exp(-scale * sigmoid(x))` over every element.
+pub(super) fn scaled_sigmoid_decay_in_place(values: &mut [f32], scale: f32) {
+    let mut exponent = [0.0f32; ACTIVATION_CHUNK];
+    for chunk in values.chunks_mut(ACTIVATION_CHUNK) {
+        sigmoid_in_place(chunk);
+        let exponent = &mut exponent[..chunk.len()];
+        for (target, value) in exponent.iter_mut().zip(chunk.iter()) {
+            *target = -scale * value;
+        }
+        exp_into(exponent, chunk);
+    }
+}

@@ -57,6 +57,10 @@ repeated here unless they materially affect a fork feature.
   of loading every card, and the add-on reads only the note fields its rules
   use; resolving desired retention for a 12,300-card deck took 0.23s instead
   of 0.9s.
+- Speed up RWKV model steps on Apple Silicon. A 180-day workload simulation
+  of 250 cards took 65s instead of 80s, with identical results, and scoring
+  an 8,900-card deck's RWKV review queue took 78ms instead of 97ms, with
+  retrievabilities within 0.0000002 and an unchanged card order.
 
 ## [26.09b3+fsrs7.build.91](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.91) — 2026-09-21
 

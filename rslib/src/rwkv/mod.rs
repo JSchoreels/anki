@@ -6,6 +6,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -1584,19 +1587,59 @@ insert into segments (
         // bounding the memory of the concurrent copies.
         let concurrent_targets = (WORKLOAD_TARGET_STATE_BUDGET_BYTES
             / base_state.state_len().max(1))
-        .clamp(1, rayon::current_num_threads());
-        let mut results = Vec::with_capacity(target_drs.len());
-        for batch in target_drs.chunks(concurrent_targets) {
-            let points = batch
-                .par_iter()
-                .map(|dr| simulate_target(*dr))
-                .collect::<io::Result<Vec<_>>>()?;
-            for (dr, point) in batch.iter().zip(points) {
-                results.push((*dr, point));
-                progress(results.len() as u32 + 1, total_steps)?;
+        .clamp(1, rayon::current_num_threads())
+        .min(target_drs.len().max(1));
+        // Higher targets review more often and take longest, so start them
+        // first, and let each worker pull the next target as soon as it is
+        // free instead of waiting for the slowest target of a fixed batch.
+        let mut queue = target_drs.iter().copied().enumerate().collect::<Vec<_>>();
+        queue.sort_by_key(|(_, dr)| std::cmp::Reverse(*dr));
+        let next_target = AtomicUsize::new(0);
+        let stopped = AtomicBool::new(false);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut points = (0..target_drs.len()).map(|_| None).collect::<Vec<_>>();
+        std::thread::scope(|scope| {
+            let (queue, next_target, stopped) = (&queue, &next_target, &stopped);
+            let simulate_target = &simulate_target;
+            scope.spawn(move || {
+                rayon::scope(|workers| {
+                    for _ in 0..concurrent_targets {
+                        let sender = sender.clone();
+                        workers.spawn(move |_| {
+                            while !stopped.load(Ordering::Relaxed) {
+                                let Some(&(index, dr)) =
+                                    queue.get(next_target.fetch_add(1, Ordering::Relaxed))
+                                else {
+                                    break;
+                                };
+                                let result = simulate_target(dr);
+                                if sender.send((index, result)).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+            let mut completed = 0;
+            for (index, result) in receiver {
+                let step = result.and_then(|point| {
+                    points[index] = Some(point);
+                    completed += 1;
+                    progress(completed + 1, total_steps)
+                });
+                if let Err(err) = step {
+                    stopped.store(true, Ordering::Relaxed);
+                    return Err(err);
+                }
             }
-        }
-        Ok(results)
+            Ok(())
+        })?;
+        Ok(target_drs
+            .into_iter()
+            .zip(points)
+            .map(|(dr, point)| (dr, point.expect("every workload target completed")))
+            .collect())
     }
 
     fn workload_worker(
@@ -3249,7 +3292,7 @@ impl SrsModel {
 
         self.features_0
             .apply_batch(&scratch.feature_input, rows, &mut scratch.feature_hidden);
-        silu_in_place(&mut scratch.feature_hidden);
+        query_silu_batch_in_place(&mut scratch.feature_hidden);
         self.features_norm.apply_batch(
             &scratch.feature_hidden,
             rows,
@@ -3257,7 +3300,7 @@ impl SrsModel {
         );
         self.features_3
             .apply_batch(&scratch.normalized_features, rows, &mut scratch.x);
-        silu_in_place(&mut scratch.x);
+        query_silu_batch_in_place(&mut scratch.x);
 
         for (module_id, module) in self.modules.iter().enumerate() {
             module.run_query_batch(&mut scratch.x, items, module_id, &mut scratch.module);
@@ -5706,10 +5749,10 @@ impl TimeMixer {
             .apply_batch(&scratch.mixed[1], rows, &mut scratch.k);
         self.k_scale_linear
             .apply_batch(&scratch.mixed[6], rows, &mut scratch.k_scale);
-        sigmoid_in_place(&mut scratch.k_scale);
+        query_sigmoid_batch_in_place(&mut scratch.k_scale);
         self.v_scale_linear
             .apply_batch(&scratch.mixed[7], rows, &mut scratch.v_scale);
-        sigmoid_in_place(&mut scratch.v_scale);
+        query_sigmoid_batch_in_place(&mut scratch.v_scale);
 
         if self.layer_id == 0 {
             self.w_v
@@ -5745,7 +5788,7 @@ impl TimeMixer {
         );
         self.lora_a_g
             .apply_batch(&scratch.mixed[5], rows, &mut scratch.lora_hidden);
-        sigmoid_in_place(&mut scratch.lora_hidden);
+        query_sigmoid_batch_in_place(&mut scratch.lora_hidden);
         self.lora_b_g
             .apply_batch(&scratch.lora_hidden, rows, &mut scratch.g);
 
@@ -5755,9 +5798,7 @@ impl TimeMixer {
             &mut scratch.lora_hidden,
             &mut scratch.w,
         );
-        scratch.w.iter_mut().for_each(|value| {
-            *value = query_decay(*value);
-        });
+        query_decay_batch_in_place(&mut scratch.w);
 
         scratch
             .k
@@ -6048,7 +6089,7 @@ impl LoraSimple {
     ) {
         self.a.apply_batch(input, rows, hidden);
         self.b.apply_batch(hidden, rows, out);
-        sigmoid_in_place(out);
+        query_sigmoid_batch_in_place(out);
     }
 
     fn apply_tanh(&self, input: &[f32]) -> Vec<f32> {
@@ -6104,7 +6145,7 @@ impl LoraSimple {
         out: &mut Vec<f32>,
     ) {
         self.a.apply_batch(input, rows, hidden);
-        hidden.iter_mut().for_each(|value| *value = value.tanh());
+        query_tanh_batch_in_place(hidden);
         self.b.apply_batch(hidden, rows, out);
     }
 }
@@ -6134,6 +6175,19 @@ impl Linear {
         } else {
             out.fill(0.0);
         }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: aarch64 guarantees NEON support. The helper receives
+            // slices whose dimensions were checked above and only accesses
+            // complete weight columns and output elements within them.
+            unsafe { linear_apply_row_neon(input, &self.weight_by_input, out) };
+            #[cfg(test)]
+            rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+            return;
+        }
+
+        #[allow(unreachable_code)]
         for (column, scale) in input.iter().copied().enumerate() {
             if scale == 0.0 {
                 continue;
@@ -6382,6 +6436,64 @@ unsafe fn add_scaled_in_place_neon(out: &mut [f32], weights: &[f32], scale: f32)
     while offset < len {
         out[offset] += weights[offset] * vgetq_lane_f32(scale, 0);
         offset += 1;
+    }
+}
+
+/// Exact single-row linear projection microkernel for AArch64 NEON machines.
+///
+/// Keeps a tile of up to 64 output accumulators in registers while walking
+/// every input column, so the output is loaded and stored once per tile
+/// instead of once per column. Each output element still starts from `out`'s
+/// initial value and accumulates ascending columns with the same fused
+/// multiply-add and zero-scale skip as `add_scaled_in_place()`, so results
+/// are bit-identical to the column-at-a-time loop.
+#[cfg(target_arch = "aarch64")]
+unsafe fn linear_apply_row_neon(input: &[f32], weights: &[f32], out: &mut [f32]) {
+    use std::arch::aarch64::*;
+
+    let output = out.len();
+    debug_assert_eq!(weights.len(), input.len() * output);
+    let out_ptr = out.as_mut_ptr();
+    let weight_ptr = weights.as_ptr();
+    let mut tile = 0;
+
+    macro_rules! tile {
+        ($lanes:literal) => {
+            while tile + 4 * $lanes <= output {
+                let mut acc = [vdupq_n_f32(0.0); $lanes];
+                for (lane, acc) in acc.iter_mut().enumerate() {
+                    *acc = vld1q_f32(out_ptr.add(tile + 4 * lane));
+                }
+                for (column, &scale) in input.iter().enumerate() {
+                    if scale == 0.0 {
+                        continue;
+                    }
+                    let scale = vdupq_n_f32(scale);
+                    let column_ptr = weight_ptr.add(column * output + tile);
+                    for (lane, acc) in acc.iter_mut().enumerate() {
+                        *acc = vfmaq_f32(*acc, vld1q_f32(column_ptr.add(4 * lane)), scale);
+                    }
+                }
+                for (lane, acc) in acc.iter().enumerate() {
+                    vst1q_f32(out_ptr.add(tile + 4 * lane), *acc);
+                }
+                tile += 4 * $lanes;
+            }
+        };
+    }
+    tile!(16);
+    tile!(4);
+    tile!(1);
+
+    for offset in tile..output {
+        let mut value = *out_ptr.add(offset);
+        for (column, &scale) in input.iter().enumerate() {
+            if scale == 0.0 {
+                continue;
+            }
+            value += *weight_ptr.add(column * output + offset) * scale;
+        }
+        *out_ptr.add(offset) = value;
     }
 }
 
@@ -7436,12 +7548,53 @@ fn sigmoid(value: f32) -> f32 {
     }
 }
 
+// exp(-0.5), rounded to f32.
+#[cfg(any(target_os = "macos", test))]
+const QUERY_DECAY_SCALE: f32 = 0.606_530_67;
+
 #[cfg(any(target_os = "macos", test))]
 fn query_decay(value: f32) -> f32 {
     // exp(-exp(-0.5 - softplus(-x))) = exp(-exp(-0.5) * sigmoid(x)).
     // Query-only: recurrent state updates keep their original arithmetic.
-    const SCALE: f32 = 0.606_530_67; // exp(-0.5), rounded to f32
-    (-SCALE * sigmoid(value)).exp()
+    (-QUERY_DECAY_SCALE * sigmoid(value)).exp()
+}
+
+// Batched query-only activations. On macOS they use Accelerate's vectorized
+// transcendental functions, which may differ from the scalar ones in the last
+// bit; answer rows and warm-up state updates keep the scalar functions.
+
+#[cfg(any(target_os = "macos", test))]
+fn query_sigmoid_batch_in_place(values: &mut [f32]) {
+    #[cfg(target_os = "macos")]
+    matmul::sigmoid_in_place(values);
+    #[cfg(not(target_os = "macos"))]
+    sigmoid_in_place(values);
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn query_silu_batch_in_place(values: &mut [f32]) {
+    #[cfg(target_os = "macos")]
+    matmul::silu_in_place(values);
+    #[cfg(not(target_os = "macos"))]
+    silu_in_place(values);
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn query_tanh_batch_in_place(values: &mut [f32]) {
+    #[cfg(target_os = "macos")]
+    matmul::tanh_in_place(values);
+    #[cfg(not(target_os = "macos"))]
+    values.iter_mut().for_each(|value| *value = value.tanh());
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn query_decay_batch_in_place(values: &mut [f32]) {
+    #[cfg(target_os = "macos")]
+    matmul::scaled_sigmoid_decay_in_place(values, QUERY_DECAY_SCALE);
+    #[cfg(not(target_os = "macos"))]
+    values
+        .iter_mut()
+        .for_each(|value| *value = query_decay(*value));
 }
 
 fn softplus(value: f32) -> f32 {
@@ -8084,6 +8237,43 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn linear_apply_into_matches_column_loop_bit_exactly() {
+        // Output widths cover the 64-, 16- and 4-lane tiles plus a scalar tail.
+        for (input, output) in [(128, 128), (92, 512), (16, 128), (128, 4), (13, 87), (7, 3)] {
+            let linear = Linear {
+                input,
+                output,
+                weight_by_input: deterministic_simd_values(input * output, 29, -0.0078125),
+                bias: Some(deterministic_simd_values(output, 11, 0.015625)),
+            };
+            let mut values = deterministic_simd_values(input, 17, 0.03125);
+            for index in (0..values.len()).step_by(5) {
+                values[index] = 0.0;
+            }
+
+            let mut expected = linear.bias.clone().unwrap();
+            for (column, scale) in values.iter().copied().enumerate() {
+                if scale != 0.0 {
+                    add_scaled_in_place(
+                        &mut expected,
+                        &linear.weight_by_input[column * output..(column + 1) * output],
+                        scale,
+                    );
+                }
+            }
+            let actual = linear.apply(&values);
+
+            let bits = |values: &[f32]| {
+                values
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bits(&actual), bits(&expected), "{input}x{output}");
+        }
+    }
+
     fn sequential_time_mixer_state(steps: &[RwkvScanCapturedStep]) -> Vec<f32> {
         let mut state = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
         for step in steps {
@@ -8558,6 +8748,128 @@ order by e.id, e.cid
             println!(
                 "single_timestep_warmup_fraction={:.6}",
                 (nanos as f64 / 1_000_000.0) / warmup_ms.max(f64::MIN_POSITIVE)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn rwkv_workload_simulation_collection_benchmark() {
+        let Ok(collection_path) = std::env::var("ANKI_RWKV_SIM_BENCH_COLLECTION") else {
+            eprintln!(
+                "set ANKI_RWKV_SIM_BENCH_COLLECTION to a copied collection.anki2 path to run this benchmark"
+            );
+            return;
+        };
+        let weights_path = std::env::var("ANKI_RWKV_SIM_BENCH_MODEL")
+            .unwrap_or_else(|_| "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin".to_string());
+        let cards = scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_CARDS", 250);
+        let days = scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_DAYS", 365) as u32;
+        let min_dr = scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_MIN_DR", 30) as u32;
+        let max_dr = scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_MAX_DR", 99) as u32;
+        let dr_step = scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_DR_STEP", 1) as u32;
+        let state_update_interval =
+            scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_STATE_UPDATE_INTERVAL", 1) as u32;
+        let rounds = scan_bench_env_usize("ANKI_RWKV_SIM_BENCH_ROUNDS", 1);
+
+        let reviews =
+            collection_reviews_for_scan_bench(std::path::Path::new(&collection_path), 0, None)
+                .expect("collection review load failed");
+        let mut inference =
+            RwkvInference::load(std::path::PathBuf::from(weights_path), 0.9, 36_500)
+                .expect("RWKV load failed");
+        let warmup_started = std::time::Instant::now();
+        inference
+            .warm_up_reviews(reviews.clone(), false)
+            .expect("RWKV warm-up failed");
+        let warmup_ms = warmup_started.elapsed().as_secs_f64() * 1000.0;
+
+        // Query every sampled card today, from its latest historical review.
+        let today = reviews
+            .iter()
+            .filter_map(|review| review.day_offset)
+            .max()
+            .unwrap_or(0);
+        let mut latest_by_card: HashMap<i64, (&ReviewInput, i64)> = HashMap::new();
+        for review in &reviews {
+            let entry = latest_by_card.entry(review.card_id).or_insert((review, 0));
+            entry.0 = review;
+            entry.1 += 1;
+        }
+        let mut card_ids = latest_by_card.keys().copied().collect::<Vec<_>>();
+        card_ids.sort_unstable();
+        let stride = (card_ids.len() / cards.max(1)).max(1);
+        let inputs = card_ids
+            .iter()
+            .step_by(stride)
+            .take(cards)
+            .map(|card_id| {
+                let (review, reps) = latest_by_card[card_id];
+                let elapsed_days = (today - review.day_offset.unwrap_or(today)).max(0);
+                RwkvWorkloadSimulationInput {
+                    review_input: ReviewInput {
+                        is_query: true,
+                        ease: None,
+                        duration_millis: None,
+                        card_type: Some(CardType::Review as i64),
+                        day_offset: Some(today),
+                        current_elapsed_days: Some(elapsed_days),
+                        current_elapsed_seconds: Some(elapsed_days * 86_400),
+                        target_retentions: [None; 4],
+                        ..review.clone()
+                    },
+                    interval_days: Some(elapsed_days.max(1)),
+                    ease_factor: Some(2500),
+                    reps: Some(reps),
+                    lapses: Some(0),
+                }
+            })
+            .collect::<Vec<_>>();
+        let config = || RwkvWorkloadSimulationConfig {
+            min_dr,
+            max_dr,
+            target_dr_step: dr_step,
+            days_to_simulate: days,
+            review_limit: 9_999,
+            new_limit: 0,
+            new_cards_ignore_review_limit: false,
+            max_interval: 36_500,
+            review_order: ReviewCardOrder::RetrievabilityAscending,
+            suspend_after_lapses: None,
+            state_update_interval,
+            review_model: RwkvWorkloadReviewModel {
+                grade_seconds: [12.0, 9.0, 7.0, 5.0],
+                bucket_probabilities: vec![],
+            },
+        };
+
+        println!("collection_reviews={}", reviews.len());
+        println!("warmup_ms={warmup_ms:.3}");
+        println!("sim_cards={}", inputs.len());
+        for round in 0..rounds {
+            let started = std::time::Instant::now();
+            let output = inference
+                .simulate_workload_from_warm_up(inputs.clone(), config(), &mut |_, _| Ok(()))
+                .expect("simulation failed");
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let mut hash = 0xcbf29ce484222325u64;
+            let mut mix = |value: u32| {
+                hash ^= u64::from(value);
+                hash = hash.wrapping_mul(0x100000001b3);
+            };
+            mix(output.reviewless_end_memorized.to_bits());
+            mix(output.reviewless_end_weighted_memorized.to_bits());
+            let mut reviews_total = 0u64;
+            for (dr, point) in &output.points {
+                mix(*dr);
+                mix(point.memorized.to_bits());
+                mix(point.weighted_memorized.to_bits());
+                mix(point.cost.to_bits());
+                mix(point.review_count);
+                reviews_total += u64::from(point.review_count);
+            }
+            println!(
+                "round={round} sim_ms={elapsed_ms:.1} simulated_reviews={reviews_total} output_hash={hash:016x}"
             );
         }
     }
@@ -9757,6 +10069,42 @@ order by e.id, e.cid
             .fold(0.0_f32, f32::max);
 
         assert!(max_delta <= 1e-6, "max batch prediction delta: {max_delta}");
+    }
+
+    #[test]
+    fn batched_query_activations_match_scalar_functions() {
+        let values = (-200_000..=200_000)
+            .map(|i| i as f32 / 1_000.0)
+            .chain([
+                0.0,
+                -0.0,
+                1e-30,
+                -1e-30,
+                1e30,
+                -1e30,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ])
+            .collect::<Vec<_>>();
+        let check = |name: &str, batch: fn(&mut [f32]), scalar: &dyn Fn(f32) -> f32| {
+            let mut actual = values.clone();
+            batch(&mut actual);
+            for (value, actual) in values.iter().zip(&actual) {
+                let expected = scalar(*value);
+                let tolerance = (4.0 * f32::EPSILON * expected.abs()).max(1e-30);
+                assert!(
+                    (actual - expected).abs() <= tolerance
+                        || actual.to_bits() == expected.to_bits(),
+                    "{name}({value}): {actual} vs {expected}"
+                );
+            }
+        };
+        check("sigmoid", query_sigmoid_batch_in_place, &sigmoid);
+        check("silu", query_silu_batch_in_place, &|value| {
+            value * sigmoid(value)
+        });
+        check("tanh", query_tanh_batch_in_place, &f32::tanh);
+        check("decay", query_decay_batch_in_place, &query_decay);
     }
 
     #[test]
