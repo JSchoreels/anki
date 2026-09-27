@@ -2,8 +2,9 @@
 
 This FAQ explains RWKV as a spaced-repetition algorithm and summarizes what
 the RWKV support in this Anki fork currently does. It uses the benchmark
-description, the linked discussions, and the repository implementation. It
-intentionally leaves out individual bug reports, temporary workarounds, and
+description, the linked message-level discussions, and the repository
+implementation. It intentionally leaves out individual bug reports,
+temporary workarounds, and
 subjective comparisons unless they clarify a stable behavior.
 
 Behavior can differ between RWKV variants, add-ons, forks, and versions. The
@@ -14,10 +15,13 @@ Last reviewed: 2026-09-27.
 
 ## Sources
 
-- [TheMoeWay: Release Anki: RWKV Edition](https://discord.com/channels/617136488840429598/1525841501622370476)
-- [Anki: RWKV thread](https://discord.com/channels/368267295601983490/1526305928603766784)
-- [Anki: #fsrs-discussion](https://discord.com/channels/368267295601983490/1347982145418694747)
-- [Reddit: After ~6 months of work on my fork, integrating FSRS7 and RWKV](https://www.reddit.com/r/Anki/comments/1w0p9qc/after_6_months_of_work_on_my_fork_integrating/)
+- [TheMoeWay: deck-scope question](https://discord.com/channels/617136488840429598/1525841501622370476/1551521915452002356)
+- [TheMoeWay: calibration-bucket question](https://discord.com/channels/617136488840429598/1525841501622370476/1552174896539238511)
+- [TheMoeWay: RWKV-Instant interval explanation](https://discord.com/channels/617136488840429598/1525841501622370476/1553715420295462957)
+- [Anki: RWKV-Curve/Instant question](https://discord.com/channels/368267295601983490/1526305928603766784/1552363440973025311)
+- [Anki: deck/preset context reply](https://discord.com/channels/368267295601983490/1526305928603766784/1552364924376850545)
+- [Anki: mobile-support reply](https://discord.com/channels/368267295601983490/1347982145418694747/1553731488997052537)
+- [Reddit: fork description](https://www.reddit.com/r/Anki/comments/1w0p9qc/comment/paqq1oe/)
 - [SRS benchmark: RWKV features](https://github.com/open-spaced-repetition/srs-benchmark#features-note)
 
 ## Table of contents
@@ -151,14 +155,17 @@ probability can sometimes increase with time when other state features change.
 
 RWKV-Curve exposes the model through interval-producing behavior. It is the
 closer fit for a user who wants a conventional interval display while still
-using RWKV's learned representation.
+using RWKV's learned representation. This distinction is also illustrated in
+the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983490/1526305928603766784/1552363440973025311).
 
 ### How do intervals and desired retention fit in?
 
 An interval is an important input and output for conventional scheduling, but
 it is not RWKV-Instant's only signal. Instant uses the current predicted recall
 and queue policy to decide which cards to present; the displayed interval does
-not by itself determine the next review.
+not by itself determine the next review. The [fork's interval explanation](https://discord.com/channels/617136488840429598/1525841501622370476/1553715420295462957)
+describes the same separation between Instant and interval-producing
+schedulers.
 
 The fork contains hooks for desired-retention overrides and reads desired
 retention from the relevant scheduling context. An add-on or configuration can
@@ -185,7 +192,9 @@ The benchmark describes RWKV as reading the review history of all cards. The
 fork also carries context for cards, notes, decks, presets, and collection-wide
 state. As a result, a review in one deck can contribute to shared learner
 context while deck and preset features tell the model where that review came
-from.
+from. This collection-wide behavior is the subject of the [deck-scope question](https://discord.com/channels/617136488840429598/1525841501622370476/1551521915452002356),
+and a separate [deck/preset discussion](https://discord.com/channels/368267295601983490/1526305928603766784/1552364924376850545)
+highlights the contextual features.
 
 This is not the same as treating all subjects as identical. It means that the
 model can combine general learner signals with subject- and deck-specific
@@ -248,7 +257,8 @@ given desired-retention value.
 A calibration graph groups reviews by predicted recall probability and compares
 the predictions with the observed outcomes. A 90% bucket means that the
 reviews in that bucket were predicted near 90%; it is not a permanent label
-attached to a card.
+attached to a card. This is the interpretation behind the [calibration-bucket question](https://discord.com/channels/617136488840429598/1525841501622370476/1552174896539238511)
+in the discussion.
 
 For RWKV, a graph can replay the current model over historical reviews. Anki
 does not reliably record which scheduler produced every historical prediction,
@@ -306,17 +316,19 @@ runtime. The repository does not define one fixed rebuild time for all users.
 
 ### Does the fork run on mobile?
 
-The linked fork description is desktop-focused. It reports that AnkiWeb sync
-works, while the mobile client falls back to FSRS-6 scheduling rather than
-running the desktop fork's FSRS-7 or RWKV behavior. Verify the current fork
-release before relying on that behavior, because mobile support is version-
-specific.
+The [fork description](https://www.reddit.com/r/Anki/comments/1w0p9qc/comment/paqq1oe/)
+is desktop-focused. A [mobile-support reply](https://discord.com/channels/368267295601983490/1347982145418694747/1553731488997052537)
+reports that AnkiWeb sync works, while the mobile client falls back to FSRS-6
+scheduling rather than running the desktop fork's FSRS-7 or RWKV behavior.
+Verify the current fork release before relying on that behavior, because
+mobile support is version-specific.
 
 ### Is this an official Anki release?
 
-No. The linked fork discussion describes it as an unofficial, experimental
-build for testing scheduling ideas in real use. It should not be treated as a
-promise about the behavior or support policy of official Anki releases.
+No. The [fork description](https://www.reddit.com/r/Anki/comments/1w0p9qc/comment/paqq1oe/)
+describes it as an unofficial, experimental build for testing scheduling ideas
+in real use. It should not be treated as a promise about the behavior or
+support policy of official Anki releases.
 
 ### What are the resource and performance trade-offs?
 
