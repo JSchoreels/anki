@@ -14,6 +14,7 @@ Last reviewed: 2026-09-27.
 - [Anki: RWKV thread](https://discord.com/channels/368267295601983490/1526305928603766784)
 - [Anki: #fsrs-discussion](https://discord.com/channels/368267295601983490/1347982145418694747)
 - [Reddit: After ~6 months of work on my fork, integrating FSRS7 and RWKV](https://www.reddit.com/r/Anki/comments/1w0p9qc/after_6_months_of_work_on_my_fork_integrating/)
+- [SRS benchmark: RWKV features](https://github.com/open-spaced-repetition/srs-benchmark#features-note)
 
 ## Table of contents
 
@@ -53,6 +54,19 @@ The most useful mental model from the discussion is that RWKV learned both an
 FSRS-like spaced-repetition algorithm and an optimizer for that algorithm. The
 shared, pretrained part learns how to update a learner model; the per-user
 state is then updated by the user's review stream.
+
+The [SRS benchmark's RWKV description](https://github.com/open-spaced-repetition/srs-benchmark#features-note)
+adds a more technical view: RWKV is a modified recurrent architecture that
+combines properties of an RNN and a Transformer. It can process the complete
+review history across all cards, using grades and intervals together with
+features such as review duration, the number of new and reviewed cards that
+day, sibling-card information, deck and preset hierarchy, and calendar
+context. The benchmark describes RWKV as trained across users and evaluated on
+held-out users rather than optimized separately for each user. RWKV-Instant
+directly predicts recall probability immediately before a review instead of
+using a traditional forgetting curve, so some predictions can look
+counter-intuitive, such as never reaching exactly 100% or increasing with
+time.
 
 An informal explanation in the thread described this as two kinds of weights:
 
