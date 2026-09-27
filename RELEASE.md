@@ -44,6 +44,17 @@ repeated here unless they materially affect a fork feature.
 - Speed up the RWKV Desired Retention workload simulator and reduce its memory
   use, with identical results; a default simulation of a large collection took
   47s instead of 120s and peaked at 2.3 GB instead of 5.5 GB.
+- Get RWKV scheduling ready sooner after launch. The review-history check
+  that guards the saved RWKV state is about 3x faster (0.23s instead of 0.66s
+  for 223,000 reviews), and the state now loads while that check runs instead
+  of after it.
+- Refresh RWKV deck list counts faster for decks with many subdecks; a deck
+  with 26 subdecks took 45ms instead of 110ms.
+- Score RWKV decks faster when the Dynamic Desired Retention add-on is
+  installed. Anki passes card ids to add-on versions that accept them instead
+  of loading every card, and the add-on reads only the note fields its rules
+  use; resolving desired retention for a 12,300-card deck took 0.23s instead
+  of 0.9s.
 
 ## [26.09b3+fsrs7.build.91](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.91) — 2026-09-21
 

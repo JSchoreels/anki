@@ -4560,6 +4560,61 @@ def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
     )
 
 
+def test_rwkv_dynamic_desired_retention_passes_card_ids_without_loading_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Collection:
+        def get_card(self, card_id: int) -> object:
+            raise AssertionError("card ids are passed to the provider")
+
+    col = Collection()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    inputs = [
+        (
+            1,
+            replace(
+                _rwkv_review_input(card_id=1, note_id=10), target_retentions=(0.9,) * 4
+            ),
+        ),
+        (
+            2,
+            replace(
+                _rwkv_review_input(card_id=2, note_id=20), target_retentions=(0.8,) * 4
+            ),
+        ),
+    ]
+
+    def info_for_card_ids(
+        *,
+        collection: object,
+        card_ids: Sequence[int],
+        current_desired_retentions: Mapping[int, float | None],
+    ) -> dict[int, SimpleNamespace]:
+        assert collection is col
+        assert list(card_ids) == [1, 2]
+        assert current_desired_retentions == {
+            1: pytest.approx(0.9),
+            2: pytest.approx(0.8),
+        }
+        return {1: SimpleNamespace(desired_retention=0.5)}
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_info_for_card_ids_resolver",
+        lambda: info_for_card_ids,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_info_for_cards_resolver",
+        lambda: pytest.fail("the card-id API is preferred"),
+    )
+
+    assert rwkv_scheduler._dynamic_desired_retention_targets_for_inputs(
+        reviewer,
+        inputs,
+    ) == {1: pytest.approx(0.5)}
+
+
 def test_rwkv_review_input_uses_exact_elapsed_for_review_cards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7112,6 +7167,49 @@ def test_rwkv_restore_writes_store_segment_only_when_recovery_adopts_it(
         assert cleaned == [(store_path, "generation", 2)]
 
 
+def test_rwkv_restore_keeps_already_restored_store_segment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history = _rwkv_checkpoint_test_history(2)
+    stored = rwkv_scheduler.RwkvStoredStateCache(
+        metadata={"snapshotReviewId": history.last_review_id},
+        snapshot=None,
+        history=replace(history, reviews=[], review_ids=[]),
+        pending_history=rwkv_scheduler._rwkv_empty_history_suffix(history),
+        state_store_path=tmp_path / "state.sqlite3",
+        state_store_generation="generation",
+        state_store_segment_id=2,
+        state_store_restored=True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache",
+        lambda *_args, **_kwargs: stored,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, _history: None,
+    )
+    backend = SimpleNamespace(
+        restore_cache_snapshot=lambda _snapshot: pytest.fail("no snapshot restore"),
+        warm_up=lambda _reviews: pytest.fail("no reviews to replay"),
+        restore_state_cache_checkpoint=lambda *_args: pytest.fail(
+            "segment was already restored"
+        ),
+    )
+
+    identity = rwkv_scheduler._restore_reviewer_backend_cache(
+        _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[]),
+        backend=cast(Any, backend),
+        is_current=lambda: True,
+    )
+
+    assert identity is not None
+    assert identity.history_hash == history.history_hash
+
+
 def _rwkv_test_state_store(path: Path, segments: dict[int, int | None]) -> None:
     connection = sqlite3.connect(path)
     try:
@@ -7855,6 +7953,134 @@ def test_rwkv_state_cache_rejects_mismatched_rust_history_fingerprint(
         )
         is None
     )
+
+
+class _SpeculativeRestoreBackend:
+    def __init__(self) -> None:
+        self.restored_targets: list[tuple[object, ...]] = []
+        self.reset_count = 0
+        self.restore_started = threading.Event()
+
+    def supports_delta_state_store(self) -> bool:
+        return True
+
+    def has_resident_state(self) -> bool:
+        return False
+
+    def restore_state_cache_checkpoint(self, *target: object) -> None:
+        self.restored_targets.append(target)
+        self.restore_started.set()
+
+    def reset_cache_snapshot(self) -> None:
+        self.reset_count += 1
+
+
+def _speculative_restore_metadata(history_hash: str) -> dict[str, object]:
+    return {
+        "lastReviewId": 2_000,
+        "reviewCount": 2,
+        "historyHash": history_hash,
+        "replayKey": "replay-key",
+        "storage": rwkv_scheduler._RWKV_STATE_CACHE_STORE_KIND,
+        "storeGeneration": "generation-1",
+        "snapshotSegmentId": 7,
+    }
+
+
+def _speculative_restore_fingerprint(
+    history_is_valid: bool,
+) -> rwkv_scheduler._RwkvHistoricalReviewFingerprint:
+    return rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+        identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+            last_review_id=2_000,
+            review_count=2,
+            history_hash="b" * 64,
+        ),
+        active_ignored_review_ids=(),
+        queried_review_count=2,
+        history_is_valid=history_is_valid,
+    )
+
+
+def test_rwkv_state_cache_restores_store_segment_while_validating_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend = _SpeculativeRestoreBackend()
+    store_path = tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+
+    def validate_history(
+        *_args: object,
+        **_kwargs: object,
+    ) -> rwkv_scheduler._RwkvHistoricalReviewFingerprint:
+        # The segment restore runs while the history is still being checked.
+        assert backend.restore_started.wait(timeout=5)
+        return _speculative_restore_fingerprint(history_is_valid=True)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_historical_review_fingerprint", validate_history
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "replay-key",
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_unchanged_rwkv_state_cache_binary",
+        lambda *_args, **_kwargs: rwkv_scheduler.RwkvStoredStateCache(
+            metadata={},
+            snapshot=None,
+            history=cast(Any, object()),
+            state_store_path=store_path,
+            state_store_generation="generation-1",
+            state_store_segment_id=7,
+        ),
+    )
+
+    stored = rwkv_scheduler._read_rwkv_state_cache_from_rust_fingerprint(
+        SimpleNamespace(),
+        backend=cast(Any, backend),
+        cache_dir=tmp_path,
+        metadata=_speculative_restore_metadata("b" * 64),
+        ignored_review_ids=(),
+    )
+
+    assert stored is not None
+    assert stored.state_store_restored
+    assert backend.restored_targets == [(store_path, "generation-1", 7)]
+    assert backend.reset_count == 0
+
+
+def test_rwkv_state_cache_resets_speculative_restore_after_history_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend = _SpeculativeRestoreBackend()
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_historical_review_fingerprint",
+        lambda *_args, **_kwargs: _speculative_restore_fingerprint(
+            history_is_valid=False
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "replay-key",
+    )
+
+    stored = rwkv_scheduler._read_rwkv_state_cache_from_rust_fingerprint(
+        SimpleNamespace(),
+        backend=cast(Any, backend),
+        cache_dir=tmp_path,
+        metadata=_speculative_restore_metadata("c" * 64),
+        ignored_review_ids=(),
+    )
+
+    assert stored is None
+    assert len(backend.restored_targets) == 1
+    assert backend.reset_count == 1
 
 
 def test_reviewer_rwkv_cache_adds_collection_marker_after_full_validation(

@@ -10,6 +10,7 @@ use crate::prelude::*;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
+use crate::scheduler::rwkv::RwkvReviewCandidateMetadata;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 
@@ -79,14 +80,33 @@ impl Collection {
                 timing,
                 filtered_review_counts: &filtered_review_counts,
             };
-            let result = deck_count_scores
+            // Child deck scopes repeat their parent's cards, so card metadata is
+            // loaded once for every scope that needs it.
+            let scored_ids: Vec<_> = deck_count_scores
                 .iter()
-                .map(|(&score_deck_id, scores)| {
-                    let scoped_counts =
-                        self.rwkv_score_scope_counts(counts, &context, score_deck_id, scores)?;
-                    Ok((score_deck_id, scoped_counts))
+                .filter(|(&score_deck_id, _)| {
+                    rwkv_scope_order_settings(&context, score_deck_id).is_some()
                 })
+                .flat_map(|(_, scores)| scores.keys().copied())
+                .collect::<HashSet<_>>()
+                .into_iter()
                 .collect();
+            let result =
+                rwkv_review_candidate_metadata(self, &scored_ids, timing).and_then(|metadata| {
+                    deck_count_scores
+                        .iter()
+                        .map(|(&score_deck_id, scores)| {
+                            let scoped_counts = self.rwkv_score_scope_counts(
+                                counts,
+                                &context,
+                                score_deck_id,
+                                scores,
+                                &metadata,
+                            )?;
+                            Ok((score_deck_id, scoped_counts))
+                        })
+                        .collect()
+                });
             self.restore_rwkv_deck_count_scores(timing.days_elapsed, deck_count_scores);
             return result;
         }
@@ -101,8 +121,14 @@ impl Collection {
                 timing,
                 filtered_review_counts: &filtered_review_counts,
             };
+            let metadata = if rwkv_scope_order_settings(&context, score_deck_id).is_some() {
+                let scored_ids: Vec<_> = scores.keys().copied().collect();
+                rwkv_review_candidate_metadata(self, &scored_ids, timing)?
+            } else {
+                HashMap::new()
+            };
             let scoped_counts =
-                self.rwkv_score_scope_counts(counts, &context, score_deck_id, &scores)?;
+                self.rwkv_score_scope_counts(counts, &context, score_deck_id, &scores, &metadata)?;
             return Ok(HashMap::from([(score_deck_id, scoped_counts)]));
         }
 
@@ -115,6 +141,7 @@ impl Collection {
         context: &RwkvReviewCountContext<'_>,
         score_deck_id: DeckId,
         scores: &HashMap<CardId, crate::collection::RwkvReviewQueueScoreEntry>,
+        metadata: &HashMap<CardId, RwkvReviewCandidateMetadata>,
     ) -> Result<HashMap<DeckId, DueCounts>> {
         let Some(root_deck) = context.decks.get(&score_deck_id) else {
             return Ok(HashMap::new());
@@ -126,22 +153,12 @@ impl Collection {
             .iter()
             .filter_map(|deck_id| counts.get(deck_id).map(|counts| (*deck_id, counts.clone())))
             .collect();
-        let (allow_same_day_review, min_intervening_reviews, min_elapsed_secs) = match context
-            .decks
-            .get(&score_deck_id)
-            .and_then(|deck| deck.config_id())
-            .and_then(|config_id| context.configs.get(&config_id))
-        {
-            Some(config) if config.inner.rwkv_review_instant_order_enabled => (
-                config.inner.rwkv_review_allow_same_day_review,
-                config.inner.rwkv_review_min_intervening_reviews,
-                config.inner.rwkv_review_min_elapsed_secs,
-            ),
-            _ => return Ok(counts),
+        let Some((allow_same_day_review, min_intervening_reviews, min_elapsed_secs)) =
+            rwkv_scope_order_settings(context, score_deck_id)
+        else {
+            return Ok(counts);
         };
 
-        let scored_ids: Vec<_> = scores.keys().copied().collect();
-        let metadata = rwkv_review_candidate_metadata(self, &scored_ids, context.timing)?;
         let mut pull_candidates = Vec::new();
         for (card_id, score) in scores {
             let Some(metadata) = metadata.get(card_id) else {
@@ -269,4 +286,25 @@ impl Collection {
             review: deck.common.review_studied,
         })
     }
+}
+
+/// The scope deck's RWKV repeat-spacing settings, or None when instant RWKV
+/// ordering is off and the FSRS counts stand.
+fn rwkv_scope_order_settings(
+    context: &RwkvReviewCountContext<'_>,
+    score_deck_id: DeckId,
+) -> Option<(bool, u32, u32)> {
+    context
+        .decks
+        .get(&score_deck_id)
+        .and_then(|deck| deck.config_id())
+        .and_then(|config_id| context.configs.get(&config_id))
+        .filter(|config| config.inner.rwkv_review_instant_order_enabled)
+        .map(|config| {
+            (
+                config.inner.rwkv_review_allow_same_day_review,
+                config.inner.rwkv_review_min_intervening_reviews,
+                config.inner.rwkv_review_min_elapsed_secs,
+            )
+        })
 }

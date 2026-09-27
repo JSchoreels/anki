@@ -97,7 +97,7 @@ pub(crate) struct StudiedToday {
     pub seconds: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RwkvHistoricalReviewRow {
     pub(crate) review_id: i64,
     pub(crate) card_id: i64,
@@ -613,53 +613,28 @@ impl SqliteStorage {
                 .collect::<std::result::Result<Vec<i64>, _>>()?;
             (format!("and r.id not in {ids}"), active)
         };
+        // Rows come back in rowid (review id) order, so no sort or window
+        // function is needed; the per-card replay start is derived below.
         let sql = format!(
-            "
-with eligible as (
-  select
-    r.id,
-    r.cid,
-    c.nid,
-    case when c.odid != 0 then c.odid else c.did end as deck_id,
-    r.ease,
-    r.time,
-    r.type,
-    cast(r.ivl as integer) as interval_days,
-    cast(r.factor as integer) as ease_factor,
-    lag(r.type) over (partition by r.cid order by r.id) as previous_type
-  from revlog r
-  join cards c on c.id = r.cid
-  where r.ease between 1 and 4
-    and r.type in (0, 1, 2, 3, 4, 5)
-    and not (r.type = 3 and r.factor = 0)
-    {ignored_clause}
-), retained_starts as (
-  select
-    cid,
-    coalesce(
-      max(case when type = 0 and (previous_type is null or previous_type != 0) then id end),
-      min(id)
-    ) as start_id
-  from eligible
-  group by cid
-)
-select
-  e.id,
-  e.cid,
-  e.nid,
-  e.deck_id,
-  e.ease,
-  e.time,
-  e.type,
-  e.interval_days,
-  e.ease_factor,
-  e.id = s.start_id and e.type = 0
-from eligible e
-join retained_starts s on s.cid = e.cid
-where e.id >= s.start_id
-order by e.id, e.cid"
+            "select
+  r.id,
+  r.cid,
+  c.nid,
+  case when c.odid != 0 then c.odid else c.did end,
+  r.ease,
+  r.time,
+  r.type,
+  cast(r.ivl as integer),
+  cast(r.factor as integer)
+from revlog r
+join cards c on c.id = r.cid
+where r.ease between 1 and 4
+  and r.type in (0, 1, 2, 3, 4, 5)
+  and not (r.type = 3 and r.factor = 0)
+  {ignored_clause}
+order by r.id"
         );
-        let rows = self
+        let mut rows = self
             .db
             .prepare(&sql)?
             .query_map([], |row| {
@@ -673,10 +648,11 @@ order by e.id, e.cid"
                     review_kind: row.get(6)?,
                     interval_days: row.get(7)?,
                     ease_factor: row.get(8)?,
-                    is_learning_start: row.get(9)?,
+                    is_learning_start: false,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        retain_rwkv_rows_from_latest_learning_start(&mut rows);
 
         Ok((rows, active_ignored_review_ids))
     }
@@ -780,6 +756,43 @@ order by e.id, e.cid"
             .execute_batch(include_str!("v2_upgrade.sql"))
             .map_err(Into::into)
     }
+}
+
+/// Drops each card's reviews before its latest learning start, where a
+/// learning start is a learning review not preceded by another learning
+/// review. Cards without one keep their full history. `rows` must be in
+/// review id order.
+fn retain_rwkv_rows_from_latest_learning_start(rows: &mut Vec<RwkvHistoricalReviewRow>) {
+    struct CardReplayStart {
+        previous_kind: i64,
+        latest_learning_start: Option<i64>,
+        first_review_id: i64,
+    }
+    let mut starts: HashMap<i64, CardReplayStart> = HashMap::new();
+    for row in rows.iter() {
+        match starts.entry(row.card_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(CardReplayStart {
+                    previous_kind: row.review_kind,
+                    latest_learning_start: (row.review_kind == 0).then_some(row.review_id),
+                    first_review_id: row.review_id,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let start = entry.get_mut();
+                if row.review_kind == 0 && start.previous_kind != 0 {
+                    start.latest_learning_start = Some(row.review_id);
+                }
+                start.previous_kind = row.review_kind;
+            }
+        }
+    }
+    rows.retain_mut(|row| {
+        let start = &starts[&row.card_id];
+        let start_id = start.latest_learning_start.unwrap_or(start.first_review_id);
+        row.is_learning_start = row.review_id == start_id && row.review_kind == 0;
+        row.review_id >= start_id
+    });
 }
 
 #[cfg(test)]
@@ -1388,5 +1401,145 @@ mod tests {
             }
         }
         Ok(review_times)
+    }
+
+    /// The window-function query `rwkv_historical_review_rows` used before the
+    /// replay start moved into Rust; kept as the parity reference.
+    fn reference_rwkv_historical_review_rows(
+        storage: &SqliteStorage,
+        ignored_clause: &str,
+    ) -> Result<Vec<RwkvHistoricalReviewRow>> {
+        let sql = format!(
+            "
+with eligible as (
+  select
+    r.id, r.cid, c.nid,
+    case when c.odid != 0 then c.odid else c.did end as deck_id,
+    r.ease, r.time, r.type,
+    cast(r.ivl as integer) as interval_days,
+    cast(r.factor as integer) as ease_factor,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+    {ignored_clause}
+), retained_starts as (
+  select
+    cid,
+    coalesce(
+      max(case when type = 0 and (previous_type is null or previous_type != 0) then id end),
+      min(id)
+    ) as start_id
+  from eligible
+  group by cid
+)
+select e.id, e.cid, e.nid, e.deck_id, e.ease, e.time, e.type, e.interval_days,
+  e.ease_factor, e.id = s.start_id and e.type = 0
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid"
+        );
+        storage
+            .db
+            .prepare(&sql)?
+            .query_map([], |row| {
+                Ok(RwkvHistoricalReviewRow {
+                    review_id: row.get(0)?,
+                    card_id: row.get(1)?,
+                    note_id: row.get(2)?,
+                    deck_id: row.get(3)?,
+                    ease: row.get(4)?,
+                    duration_millis: row.get(5)?,
+                    review_kind: row.get(6)?,
+                    interval_days: row.get(7)?,
+                    ease_factor: row.get(8)?,
+                    is_learning_start: row.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    #[test]
+    fn rwkv_historical_review_rows_match_window_query() -> Result<()> {
+        let (col, _tempdir, _col_path) = temp_collection("rwkv-historical-rows")?;
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        for card_index in 0..40_i64 {
+            let card_id = 1_000 + card_index;
+            let odid = if card_index % 7 == 0 { 9 } else { 0 };
+            col.storage.db.execute(
+                "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl,
+                 factor, reps, lapses, left, odue, odid, flags, data)
+                 values (?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, 0, '')",
+                params![card_id, card_id / 3, 1 + card_index % 4, odid],
+            )?;
+        }
+        // Card 5000 has reviews but no card row, so the join drops them.
+        let card_ids = (1_000..1_040).chain([5_000]).collect::<Vec<i64>>();
+        let mut review_ids = Vec::new();
+        for review_index in 0..2_000_i64 {
+            let review_id = 10_000 + review_index * 3 + next(3) as i64;
+            let card_id = card_ids[next(card_ids.len() as u64) as usize];
+            // Bias towards learning rows so cards restart learning often.
+            let kind = [0, 0, 0, 1, 1, 2, 3, 4, 5, 6][next(10) as usize];
+            let ease = next(6) as i64;
+            let factor = if next(5) == 0 { 0 } else { 2_500 };
+            col.storage.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)
+                 values (?, ?, 0, ?, ?, 0, ?, ?, ?)",
+                params![
+                    review_id,
+                    card_id,
+                    ease,
+                    next(40) as i64 - 10,
+                    factor,
+                    next(60_000) as i64,
+                    kind
+                ],
+            )?;
+            review_ids.push(review_id);
+        }
+
+        let (rows, active) = col.storage.rwkv_historical_review_rows(&[])?;
+        assert!(active.is_empty());
+        assert!(rows.iter().any(|row| row.is_learning_start));
+        let eligible: usize = col.storage.db.query_row(
+            "select count() from revlog r join cards c on c.id = r.cid
+             where r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5)
+               and not (r.type = 3 and r.factor = 0)",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            rows.len() < eligible,
+            "some pre-restart reviews are dropped"
+        );
+        assert_eq!(
+            rows,
+            reference_rwkv_historical_review_rows(&col.storage, "")?
+        );
+
+        let ignored = review_ids
+            .iter()
+            .step_by(37)
+            .map(|id| RevlogId(*id))
+            .collect::<Vec<_>>();
+        let mut ids = String::new();
+        ids_to_string(&mut ids, &ignored);
+        let (rows, _active) = col.storage.rwkv_historical_review_rows(&ignored)?;
+        assert_eq!(
+            rows,
+            reference_rwkv_historical_review_rows(&col.storage, &format!("and r.id not in {ids}"))?
+        );
+        Ok(())
     }
 }

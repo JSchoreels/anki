@@ -795,6 +795,8 @@ class RwkvStoredStateCache:
     state_store_generation: str | None = None
     state_store_segment_id: int | None = None
     ignored_review_ids_changed: bool = False
+    # The backend already holds this store segment's state.
+    state_store_restored: bool = False
 
 
 @dataclass(frozen=True)
@@ -1181,6 +1183,9 @@ class RwkvStatefulReviewerBackend:
         return self._runtime_owns_warm_up_state() and callable(
             getattr(self._runtime, "append_warm_up_snapshot_binary", None)
         )
+
+    def has_resident_state(self) -> bool:
+        return self._resident_state_populated
 
     def supports_delta_state_store(self) -> bool:
         return self._runtime_owns_warm_up_state() and all(
@@ -14209,6 +14214,7 @@ def _restore_reviewer_backend_cache(
     state_store_generation = stored.state_store_generation
     state_store_segment_id = stored.state_store_segment_id
     ignored_review_ids_changed = stored.ignored_review_ids_changed
+    state_store_restored = stored.state_store_restored
     del stored
     try:
         _require_reviewer_backend_warmup_current(is_current)
@@ -14222,11 +14228,12 @@ def _restore_reviewer_backend_cache(
             )
             if not callable(restore_state_store):
                 return None
-            restore_state_store(
-                state_store_path,
-                state_store_generation,
-                state_store_segment_id,
-            )
+            if not state_store_restored:
+                restore_state_store(
+                    state_store_path,
+                    state_store_generation,
+                    state_store_segment_id,
+                )
         elif stored_snapshot is not None:
             restore_snapshot(stored_snapshot)
         else:
@@ -15676,25 +15683,127 @@ def _read_rwkv_state_cache_from_rust_fingerprint(
         review_count=_int_value(metadata.get("reviewCount")) or 0,
         history_hash=cast(str, history_hash),
     )
-    fingerprint = _rwkv_historical_review_fingerprint(
-        reviewer,
-        ignored_review_ids=ignored_review_ids,
-        expected_identity=expected_identity,
-    )
-    if fingerprint is None or not fingerprint.history_is_valid:
-        return None
-    stored = _read_unchanged_rwkv_state_cache_binary(
-        reviewer,
-        backend=backend,
+    speculative_restore = _SpeculativeRwkvStateStoreRestore.start(
+        backend,
         cache_dir=cache_dir,
         metadata=metadata,
     )
+    try:
+        fingerprint = _rwkv_historical_review_fingerprint(
+            reviewer,
+            ignored_review_ids=ignored_review_ids,
+            expected_identity=expected_identity,
+        )
+    except BaseException:
+        if speculative_restore is not None and speculative_restore.finish():
+            speculative_restore.discard()
+        raise
+    restored_target = (
+        speculative_restore.finish() if speculative_restore is not None else None
+    )
+    stored = None
+    if fingerprint is not None and fingerprint.history_is_valid:
+        stored = _read_unchanged_rwkv_state_cache_binary(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+        )
+    if stored is not None and restored_target is not None:
+        if restored_target == (
+            stored.state_store_path,
+            stored.state_store_generation,
+            stored.state_store_segment_id,
+        ):
+            stored = replace(stored, state_store_restored=True)
+            restored_target = None
+    if speculative_restore is not None and restored_target is not None:
+        speculative_restore.discard()
     if stored is not None:
         logger.debug(
             "validated RWKV state cache from Rust history fingerprint: reviews=%s",
-            fingerprint.queried_review_count,
+            fingerprint.queried_review_count if fingerprint is not None else None,
         )
     return stored
+
+
+class _SpeculativeRwkvStateStoreRestore:
+    """Restore the manifest's state-store segment while its history is checked.
+
+    Validating the history and reading the segment are independent and each
+    take a few hundred milliseconds on large collections, so they overlap. Only
+    a backend without resident state is used, so a rejected restore can be
+    undone by resetting it.
+    """
+
+    def __init__(
+        self,
+        backend: RwkvReviewerBackend,
+        target: tuple[Path, str, int],
+    ) -> None:
+        self._backend = backend
+        self._target = target
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="rwkv-state-store-restore",
+            daemon=True,
+        )
+
+    @classmethod
+    def start(
+        cls,
+        backend: RwkvReviewerBackend | None,
+        *,
+        cache_dir: Path,
+        metadata: Mapping[str, object],
+    ) -> _SpeculativeRwkvStateStoreRestore | None:
+        supports_store = getattr(backend, "supports_delta_state_store", None)
+        has_resident_state = getattr(backend, "has_resident_state", None)
+        store_generation = metadata.get("storeGeneration")
+        segment_id = _int_value(metadata.get("snapshotSegmentId"))
+        if (
+            backend is None
+            or metadata.get("storage") != _RWKV_STATE_CACHE_STORE_KIND
+            or not callable(supports_store)
+            or not supports_store()
+            or not callable(has_resident_state)
+            or has_resident_state()
+            or not callable(getattr(backend, "reset_cache_snapshot", None))
+            or not isinstance(store_generation, str)
+            or not store_generation
+            or segment_id is None
+            or segment_id <= 0
+        ):
+            return None
+        restore = cls(
+            backend,
+            (cache_dir / _RWKV_STATE_CACHE_STORE_FILE, store_generation, segment_id),
+        )
+        restore._thread.start()
+        return restore
+
+    def _run(self) -> None:
+        try:
+            cast(Any, self._backend).restore_state_cache_checkpoint(*self._target)
+        except BaseException as exc:
+            self._error = exc
+
+    def finish(self) -> tuple[Path, str, int] | None:
+        """Wait for the restore; return its target if it succeeded."""
+
+        self._thread.join()
+        if self._error is not None:
+            logger.debug(
+                "speculative RWKV state-store restore failed",
+                exc_info=self._error,
+            )
+            self.discard()
+            return None
+        return self._target
+
+    def discard(self) -> None:
+        cast(Any, self._backend).reset_cache_snapshot()
 
 
 def _read_rwkv_state_cache_store(
@@ -19799,8 +19908,13 @@ def _dynamic_desired_retention_targets_for_inputs(
     reviewer: object,
     inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
 ) -> dict[int, float]:
-    info_for_cards = _dynamic_desired_retention_info_for_cards_resolver()
-    if info_for_cards is None:
+    info_for_card_ids = _dynamic_desired_retention_info_for_card_ids_resolver()
+    info_for_cards = (
+        _dynamic_desired_retention_info_for_cards_resolver()
+        if info_for_card_ids is None
+        else None
+    )
+    if info_for_card_ids is None and info_for_cards is None:
         return {}
 
     current_desired_retentions = {
@@ -19813,6 +19927,21 @@ def _dynamic_desired_retention_targets_for_inputs(
         return {}
 
     col = _collection(reviewer)
+    if info_for_card_ids is not None:
+        # Passing ids spares a backend round trip per card; the provider reads
+        # only the note fields its rules need.
+        info_by_card_id = _dynamic_desired_retention_info_for_card_ids(
+            collection=col,
+            card_ids=list(current_desired_retentions),
+            current_desired_retentions=current_desired_retentions,
+            info_for_card_ids=info_for_card_ids,
+        )
+        return _dynamic_desired_retention_targets_from_info(
+            info_by_card_id,
+            current_desired_retentions,
+        )
+
+    assert info_for_cards is not None
     get_card = getattr(col, "get_card", None)
     if not callable(get_card):
         return {}
@@ -19836,14 +19965,21 @@ def _dynamic_desired_retention_targets_for_inputs(
         current_desired_retentions=current_desired_retentions,
         info_for_cards=info_for_cards,
     )
+    return _dynamic_desired_retention_targets_from_info(
+        info_by_card_id,
+        [card_id for card in cards if (card_id := _card_id(card)) is not None],
+    )
+
+
+def _dynamic_desired_retention_targets_from_info(
+    info_by_card_id: object | None,
+    card_ids: Iterable[int],
+) -> dict[int, float]:
     if not isinstance(info_by_card_id, Mapping):
         return {}
 
     target_retentions_by_card_id: dict[int, float] = {}
-    for card in cards:
-        card_id = _card_id(card)
-        if card_id is None:
-            continue
+    for card_id in card_ids:
         info = info_by_card_id.get(card_id)
         target_retention = getattr(info, "desired_retention", None)
         if _valid_probability(target_retention):
@@ -19855,6 +19991,20 @@ def _dynamic_desired_retention_targets_for_inputs(
 def _dynamic_desired_retention_info_for_cards_resolver() -> (
     Callable[..., object] | None
 ):
+    return _dynamic_desired_retention_api_function(
+        "effective_desired_retention_info_for_cards"
+    )
+
+
+def _dynamic_desired_retention_info_for_card_ids_resolver() -> (
+    Callable[..., object] | None
+):
+    return _dynamic_desired_retention_api_function(
+        "effective_desired_retention_info_for_card_ids"
+    )
+
+
+def _dynamic_desired_retention_api_function(name: str) -> Callable[..., object] | None:
     try:
         dynamic_desired_retention = importlib.import_module("dynamic_desired_retention")
     except ImportError:
@@ -19863,15 +20013,26 @@ def _dynamic_desired_retention_info_for_cards_resolver() -> (
         logger.debug("failed to import Dynamic DR provider for RWKV", exc_info=True)
         return None
 
-    effective_desired_retention_info_for_cards = getattr(
-        dynamic_desired_retention,
-        "effective_desired_retention_info_for_cards",
-        None,
-    )
-    if not callable(effective_desired_retention_info_for_cards):
-        return None
+    function = getattr(dynamic_desired_retention, name, None)
+    return function if callable(function) else None
 
-    return effective_desired_retention_info_for_cards
+
+def _dynamic_desired_retention_info_for_card_ids(
+    *,
+    collection: object,
+    card_ids: Sequence[int],
+    current_desired_retentions: Mapping[int, float | None],
+    info_for_card_ids: Callable[..., object],
+) -> object | None:
+    try:
+        return info_for_card_ids(
+            collection=collection,
+            card_ids=card_ids,
+            current_desired_retentions=current_desired_retentions,
+        )
+    except Exception:
+        logger.debug("failed to resolve Dynamic DR targets for RWKV", exc_info=True)
+        return None
 
 
 def _dynamic_desired_retention_info_for_cards(
