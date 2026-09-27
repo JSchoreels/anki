@@ -7552,7 +7552,8 @@ fn sigmoid(value: f32) -> f32 {
 #[cfg(any(target_os = "macos", test))]
 const QUERY_DECAY_SCALE: f32 = 0.606_530_67;
 
-#[cfg(any(target_os = "macos", test))]
+/// Scalar reference for `query_decay_batch_in_place()`.
+#[cfg(test)]
 fn query_decay(value: f32) -> f32 {
     // exp(-exp(-0.5 - softplus(-x))) = exp(-exp(-0.5) * sigmoid(x)).
     // Query-only: recurrent state updates keep their original arithmetic.
