@@ -191,6 +191,8 @@ _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
 _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_STORE_FILE = "state-v12.sqlite3"
 _RWKV_STATE_CACHE_STORE_TEMP_FILE = ".state-v12-building.sqlite3"
+_RWKV_STATE_CACHE_STORE_COMPACT_FILE = ".state-v12-compacting.sqlite3"
+_RWKV_STATE_CACHE_COMPACT_MIN_FREE_BYTES = 64 * 1024 * 1024
 _RWKV_STATE_CACHE_STORE_KIND = "delta-sqlite-v1"
 _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
@@ -2247,11 +2249,19 @@ class RwkvStatefulReviewerBackend:
             score_batches.append(scores)
         return score_batches
 
+    def supports_resident_workload_simulation(self) -> bool:
+        supports = getattr(self._runtime, "supports_resident_workload_simulation", None)
+        return (
+            self._runtime_owns_warm_up_state()
+            and callable(supports)
+            and bool(supports())
+        )
+
     def simulate_workload(
         self,
         *,
         inputs: Sequence[tuple[int, RwkvReviewInput, int]],
-        snapshot: RwkvBackendCacheSnapshot,
+        snapshot: RwkvBackendCacheSnapshot | None,
         min_dr: int,
         max_dr: int,
         target_dr_step: int,
@@ -2261,6 +2271,7 @@ class RwkvStatefulReviewerBackend:
         review_model: _RwkvSimulatorReviewModel,
         progress: RwkvWorkloadProgressCallback | None = None,
     ) -> object | None:
+        """Simulate from `snapshot`, or from the resident state when it is None."""
         simulate_workload = getattr(self._runtime, "simulate_workload", None)
         if not callable(simulate_workload):
             return None
@@ -12910,6 +12921,15 @@ def simulate_rwkv_workload(
     restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
     if not callable(cache_snapshot) or not callable(restore_cache_snapshot):
         raise ValueError("RWKV backend does not support simulator snapshots")
+    supports_resident_simulation = getattr(
+        backend,
+        "supports_resident_workload_simulation",
+        None,
+    )
+    if callable(supports_resident_simulation) and supports_resident_simulation():
+        # The embedded runtime simulates from its resident state without
+        # changing it, so the operation needs no serialized copy of that state.
+        cache_snapshot = _no_rwkv_cache_snapshot
 
     review_model = _rwkv_simulator_review_model(reviewer)
     _apply_rwkv_review_time_model(response, review_model)
@@ -13002,6 +13022,8 @@ def simulate_rwkv_workload(
                 )
                 return response
 
+            if original_snapshot is None:
+                raise ValueError("RWKV resident workload simulation is unavailable")
             restore_required = True
             restore_cache_snapshot(original_snapshot)
             operation.require_current()
@@ -13097,11 +13119,15 @@ def _rwkv_simulation_inputs(
     return inputs
 
 
+def _no_rwkv_cache_snapshot() -> None:
+    return None
+
+
 def _simulate_rwkv_workload_with_embedded_runtime(
     *,
     backend: object,
     simulation_inputs: Sequence[tuple[int, RwkvReviewInput, int]],
-    snapshot: RwkvBackendCacheSnapshot,
+    snapshot: RwkvBackendCacheSnapshot | None,
     days_to_simulate: int,
     scheduling: _RwkvWorkloadScheduling,
     target_dr_step: int,
@@ -14254,17 +14280,22 @@ def _restore_reviewer_backend_cache(
                     )
                     <= len(history.reviews)
                 ]
+            # Only recovery adopts the final segment as the effective state. An
+            # ordinary restore keeps the manifest's segment and appends these
+            # reviews to the delta log, so a segment written here would be
+            # unreachable.
+            snapshot_review_counts = [
+                *checkpoint_review_counts,
+                *(
+                    [len(history.reviews)]
+                    if recovered_from_checkpoint and state_store_path is not None
+                    else []
+                ),
+            ]
             checkpoint_writer = _RwkvStateCacheCheckpointWriter(
                 reviewer,
                 history,
-                [
-                    *checkpoint_review_counts,
-                    *(
-                        [len(history.reviews)]
-                        if state_store_path is not None and history.reviews
-                        else []
-                    ),
-                ],
+                snapshot_review_counts,
                 full_review_counts=checkpoint_review_counts,
                 base_history=stored_history,
                 state_store_path=state_store_path,
@@ -14281,14 +14312,7 @@ def _restore_reviewer_backend_cache(
                 progress=progress,
                 label="Updating RWKV state cache",
                 record_retrievability_cache=record_retrievability_cache,
-                snapshot_after_reviews=[
-                    *checkpoint_review_counts,
-                    *(
-                        [len(history.reviews)]
-                        if state_store_path is not None and history.reviews
-                        else []
-                    ),
-                ],
+                snapshot_after_reviews=snapshot_review_counts,
                 snapshot_recorder=checkpoint_writer,
                 is_current=is_current,
             )
@@ -14326,6 +14350,12 @@ def _restore_reviewer_backend_cache(
                         stored_metadata.get("snapshotReviewId")
                     )
                     or stored_history.last_review_id,
+                )
+                _remove_unreachable_rwkv_state_cache_segments(
+                    state_store_path,
+                    state_store_generation,
+                    state_store_segment_id,
+                    progress=progress,
                 )
             else:
                 _require_reviewer_backend_warmup_current(is_current)
@@ -14393,6 +14423,14 @@ def _restore_reviewer_backend_cache(
                 reviewer,
                 stored_history,
                 backend=backend,
+            )
+        else:
+            _require_reviewer_backend_warmup_current(is_current)
+            _remove_unreachable_rwkv_state_cache_segments(
+                state_store_path,
+                state_store_generation,
+                state_store_segment_id,
+                progress=progress,
             )
         _require_reviewer_backend_warmup_current(is_current)
         _refresh_rwkv_state_cache_collection_mod(reviewer, history)
@@ -15085,7 +15123,8 @@ def _prune_rwkv_state_cache_store(
     path: Path,
     store_generation: str,
     head_segment_id: int,
-) -> None:
+) -> int:
+    """Delete segments outside the head's parent chain; return how many."""
     reachable_segment_ids = _rwkv_state_cache_store_segment_chain(
         path,
         store_generation,
@@ -15093,6 +15132,17 @@ def _prune_rwkv_state_cache_store(
     )
     placeholders = ",".join("?" for _ in reachable_segment_ids)
     with _rwkv_state_cache_connection(path) as connection:
+        (unreachable_segments,) = connection.execute(
+            f"select count(*) from segments where id not in ({placeholders})",
+            reachable_segment_ids,
+        ).fetchone()
+        (unreachable_chunks,) = connection.execute(
+            "select count(*) from segment_state_chunks "
+            f"where segment_id not in ({placeholders})",
+            reachable_segment_ids,
+        ).fetchone()
+        if not unreachable_segments and not unreachable_chunks:
+            return 0
         connection.execute(
             f"delete from segment_state_chunks where segment_id not in ({placeholders})",
             reachable_segment_ids,
@@ -15101,6 +15151,82 @@ def _prune_rwkv_state_cache_store(
             f"delete from segments where id not in ({placeholders})",
             reachable_segment_ids,
         )
+    return int(unreachable_segments)
+
+
+def _remove_unreachable_rwkv_state_cache_segments(
+    path: Path | None,
+    store_generation: str | None,
+    head_segment_id: int | None,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> None:
+    """Remove store segments the manifest cannot reach and reclaim their space.
+
+    Earlier versions wrote a delta segment on every incremental restore without
+    adopting it, so existing stores can hold many unreachable segments. This is
+    best-effort: the restored state never depends on those segments.
+    """
+    if path is None or store_generation is None or head_segment_id is None:
+        return
+    try:
+        removed_segments = _prune_rwkv_state_cache_store(
+            path,
+            store_generation,
+            head_segment_id,
+        )
+        if not removed_segments:
+            return
+        free_bytes = _rwkv_state_cache_store_free_bytes(path)
+        logger.info(
+            "removed unreachable RWKV state-cache segments: segments=%s free_bytes=%s",
+            removed_segments,
+            free_bytes,
+        )
+        if free_bytes >= _RWKV_STATE_CACHE_COMPACT_MIN_FREE_BYTES:
+            _report_rwkv_state_cache_progress(
+                progress,
+                "Compacting RWKV state cache...",
+            )
+            started_at = time.monotonic()
+            size_before = path.stat().st_size
+            _compact_rwkv_state_cache_store(path)
+            logger.info(
+                "compacted RWKV state-cache store: bytes_before=%s bytes_after=%s "
+                "elapsed_ms=%.1f",
+                size_before,
+                path.stat().st_size,
+                (time.monotonic() - started_at) * 1000,
+            )
+    except Exception:
+        logger.warning(
+            "failed to remove unreachable RWKV state-cache segments",
+            exc_info=True,
+        )
+
+
+def _rwkv_state_cache_store_free_bytes(path: Path) -> int:
+    with _rwkv_state_cache_connection(path) as connection:
+        (page_size,) = connection.execute("pragma page_size").fetchone()
+        (free_pages,) = connection.execute("pragma freelist_count").fetchone()
+    return int(page_size) * int(free_pages)
+
+
+def _compact_rwkv_state_cache_store(path: Path) -> None:
+    compacted_path = path.with_name(_RWKV_STATE_CACHE_STORE_COMPACT_FILE)
+    _remove_rwkv_state_cache_store_files(compacted_path)
+    try:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("vacuum into ?", (str(compacted_path),))
+        finally:
+            connection.close()
+        # VACUUM INTO does not sync its output before the replacement.
+        with compacted_path.open("r+b") as file:
+            os.fsync(file.fileno())
+        _replace_rwkv_state_cache_file(compacted_path, path)
+    finally:
+        _remove_rwkv_state_cache_store_files(compacted_path)
 
 
 def _append_rwkv_state_cache_deltas(

@@ -32,6 +32,18 @@ repeated here unless they materially affect a fork feature.
 - Keep RWKV scheduling active after deleting a card that has review history.
   The RWKV state is rebuilt without the deleted reviews at the next launch
   instead of being discarded immediately.
+- Stop the local RWKV state cache from growing each time Anki starts with new
+  reviews, for example after syncing reviews done on another device. Space
+  already taken by this is reclaimed automatically at the next start; one
+  desktop cache shrank from 3.1 GB to 1.4 GB.
+
+### Improved
+
+- Load the saved RWKV state faster at startup; restoring a 1.3 GB state took
+  0.5s instead of 2.2s when it was not already cached by the system.
+- Speed up the RWKV Desired Retention workload simulator and reduce its memory
+  use, with identical results; a default simulation of a large collection took
+  47s instead of 120s and peaked at 2.3 GB instead of 5.5 GB.
 
 ## [26.09b3+fsrs7.build.91](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.91) — 2026-09-21
 

@@ -265,7 +265,21 @@ delta so the old chain becomes unreachable and can be pruned.
 Ordinary newer reviews remain in `deltas-v1.log`, avoiding a state-store write
 after every answer. Later startup loads restore the effective state-store
 segment, replay any delta-log reviews, then replay newer revlogs from the
-collection. The manifest in `state-v1.meta.json` records the base segment, its
+collection. Those newer revlogs are appended to the delta log as well: only a
+checkpoint recovery writes a state-store segment during a restore, because only
+recovery adopts that segment as the effective state. Replaying the log is cheap
+(about 60 µs per review on Apple Silicon). Earlier versions also wrote an
+unreferenced delta segment on every restore that found newer revlogs, so one
+desktop store had grown to 3.06 GB, 1.7 GB of it unreachable. The next restore
+that keeps the manifest's segment removes such segments and, when that frees at
+least 64 MiB, compacts the file with `VACUUM INTO` and atomically replaces it;
+on that store this took 2.9s and left 1.35 GB.
+Restores read state deltas through 16 MiB buffered blob reads and seek past
+entries that a newer segment already provided. On a copy of that store, a cold
+restore of its 1.3 GB chain fell from 2.2s to 0.5s, close to the time needed
+just to read the blobs. The format and
+restored state are unchanged.
+The manifest in `state-v1.meta.json` records the base segment, its
 store generation, the latest effective revlog id, and the historical recovery
 base. It also records a chained SHA-256 identity of the canonical replay
 inputs plus a replay-semantics identity covering first-review elapsed-time
@@ -659,10 +673,22 @@ leech suspension. The simulator runs a fixed target-retention sweep over RWKV-en
 new and review cards matched by the selected deck/preset search, snapshots and
 restores the recurrent RWKV state for each target, and reports the result through the
 same workload chart shape as the FSRS Help Me Decide tool. The embedded Rust
-runtime runs the whole sweep behind one bridge call: it restores the snapshot
-for each target, predicts due reviews, chooses deterministic simulated grades,
-and applies answer-state transitions sequentially inside Rust. Development
-backends without that embedded simulator fall back to the older Python loop.
+runtime runs the whole sweep behind one bridge call, directly from its resident
+warmed state: it copies only the card, note, deck, and preset streams of the
+simulated cards plus the global stream, gives each target its own copy of that
+subset, predicts due reviews from borrowed states, chooses deterministic
+simulated grades, and applies answer-state transitions sequentially inside each
+target. Nothing else can influence a simulated card, so the results are
+identical to replaying every target on a full copy of the state. The resident
+state itself is left unchanged, so the simulation no longer serializes the whole
+state to Python first. Targets run concurrently while their copies fit a 1 GiB
+budget; a sampled simulation needs a few tens of MB per target, while an exact
+simulation of a large deck falls back to one target at a time. On a
+13,864-card desktop collection with default settings (250 sampled cards, 365
+days, DR step 1), a release build measured 120.2s and 5.5 GB peak memory before
+these changes and 46.8s and 2.3 GB after, with identical output.
+Development backends without that embedded simulator fall back to the older
+Python loop.
 Simulated grade sampling uses the same deterministic per-card quantiles across
 target retentions, and reported review counts are normalized to be nondecreasing
 as target retention rises, reducing adjacent-DR sawtooth noise in the Reviews

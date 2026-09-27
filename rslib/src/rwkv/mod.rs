@@ -45,6 +45,13 @@ const STATE_CACHE_DELTA_MAGIC: &[u8] = b"ARWKVSTATEDELTA1\0";
 const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(test)]
 const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024;
+/// Restores read state deltas through a buffer of this size. On a cold
+/// 1.3 GB store, 8 KiB reads took 1.9 s, 1 MiB 0.67 s and 16 MiB 0.41 s.
+#[cfg(not(test))]
+const STATE_CACHE_READ_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+/// Small enough that tests refill and seek across chunk boundaries.
+#[cfg(test)]
+const STATE_CACHE_READ_BUFFER_BYTES: usize = 4 * 1024;
 
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
@@ -52,6 +59,10 @@ const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
 /// stack scratch used per block; larger blocks amortize weight-matrix streaming
 /// over more rows.
 const LINEAR_BLOCK_ROWS: usize = 32;
+/// Upper bound on the recurrent state copied for workload-simulation targets
+/// that run concurrently. A sampled simulation needs a few tens of MB per
+/// target; one over a whole collection falls back to one target at a time.
+const WORKLOAD_TARGET_STATE_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -592,7 +603,7 @@ struct RwkvWorkloadTargetConfig<'a> {
 
 struct RwkvWorkloadTargetSweep {
     inputs: Vec<RwkvWorkloadSimulationInput>,
-    snapshot: RwkvWorkloadSimulationSnapshot,
+    base_state: ReviewStateMaps,
     target_drs: Vec<u32>,
     days_to_simulate: i64,
     review_limit: usize,
@@ -604,7 +615,6 @@ struct RwkvWorkloadTargetSweep {
     state_update_interval: u32,
     review_model: RwkvWorkloadReviewModel,
     base_features: FeatureState,
-    base_curves: HashMap<i64, ReviewCurve>,
     total_steps: u32,
 }
 
@@ -1430,39 +1440,61 @@ insert into segments (
     }
 
     pub fn simulate_workload(
-        &mut self,
+        &self,
         inputs: Vec<RwkvWorkloadSimulationInput>,
         mut snapshot: RwkvWorkloadSimulationSnapshot,
         config: RwkvWorkloadSimulationConfig,
         progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
     ) -> io::Result<RwkvWorkloadSimulationOutput> {
-        if config.min_dr > config.max_dr {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "RWKV workload min DR must be <= max DR",
-            ));
-        }
+        check_workload_dr_range(&config)?;
         let Some(runtime_state) = snapshot.runtime_state.take() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "RWKV workload simulation requires a runtime state snapshot",
             ));
         };
+        let base_features = read_runtime_feature_state(&runtime_state)?;
+        let base_state = ReviewStateMaps::from_snapshot_for_inputs(&snapshot, &inputs)?;
+        self.simulate_workload_with_state(inputs, base_features, base_state, config, progress)
+    }
 
+    /// Simulates from the resident warmed state instead of a serialized
+    /// snapshot, leaving that state unchanged.
+    pub fn simulate_workload_from_warm_up(
+        &self,
+        inputs: Vec<RwkvWorkloadSimulationInput>,
+        config: RwkvWorkloadSimulationConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<RwkvWorkloadSimulationOutput> {
+        check_workload_dr_range(&config)?;
+        let base_state = self.warm_up_states.subset_for_inputs(&inputs);
+        self.simulate_workload_with_state(
+            inputs,
+            self.features.clone(),
+            base_state,
+            config,
+            progress,
+        )
+    }
+
+    /// `base_state` only needs the card, note, deck and preset streams of
+    /// `inputs` plus the global stream: nothing else can influence or be
+    /// advanced by the simulation.
+    fn simulate_workload_with_state(
+        &self,
+        inputs: Vec<RwkvWorkloadSimulationInput>,
+        base_features: FeatureState,
+        base_state: ReviewStateMaps,
+        config: RwkvWorkloadSimulationConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<RwkvWorkloadSimulationOutput> {
         let target_dr_step = config.target_dr_step.max(1);
         let target_drs = target_drs(config.min_dr, config.max_dr, target_dr_step);
         let total_steps = target_drs.len() as u32 + 1;
         progress(0, total_steps)?;
-        let mut reviewless_worker = self.worker_from_cache_state(&runtime_state)?;
-        let base_features = reviewless_worker.features.clone();
-        let base_curves = reviewless_worker.curves.clone();
-        let reviewless_state_maps = ReviewStateMaps::from_serialized(
-            &snapshot.card_states,
-            &snapshot.note_states,
-            &snapshot.deck_states,
-            &snapshot.preset_states,
-            snapshot.global_state.as_deref(),
-        )?;
+        // Simulation workers never read recall curves, so they start without
+        // copies of them.
+        let mut reviewless_worker = self.workload_worker(base_features.clone(), HashMap::new());
         let introduced_inputs = inputs
             .iter()
             .filter(|input| input.review_input.card_type != Some(CardType::New as i64))
@@ -1471,7 +1503,7 @@ insert into segments (
         let (reviewless_end_memorized, reviewless_end_weighted_memorized) = reviewless_worker
             .simulation_memorized_for_inputs(
                 &introduced_inputs,
-                &reviewless_state_maps,
+                &base_state,
                 S90_TARGET_RETENTION,
                 config.days_to_simulate as i64,
             )?;
@@ -1480,7 +1512,7 @@ insert into segments (
         let mut points = self.simulate_workload_targets(
             RwkvWorkloadTargetSweep {
                 inputs,
-                snapshot,
+                base_state,
                 target_drs,
                 days_to_simulate: config.days_to_simulate as i64,
                 review_limit: config.review_limit as usize,
@@ -1492,7 +1524,6 @@ insert into segments (
                 state_update_interval: config.state_update_interval.max(1),
                 review_model: config.review_model,
                 base_features,
-                base_curves,
                 total_steps,
             },
             progress,
@@ -1513,7 +1544,7 @@ insert into segments (
     ) -> io::Result<Vec<(u32, RwkvWorkloadSimulationPoint)>> {
         let RwkvWorkloadTargetSweep {
             inputs,
-            snapshot,
+            base_state,
             target_drs,
             days_to_simulate,
             review_limit,
@@ -1525,24 +1556,13 @@ insert into segments (
             state_update_interval,
             review_model,
             base_features,
-            base_curves,
             total_steps,
         } = sweep;
 
-        let target_count = target_drs.len();
-        let mut results = Vec::with_capacity(target_count);
-        // The warmed runtime state can be large, so keep target DR workers
-        // sequential instead of cloning the state for every target at once.
-        for (offset, dr) in target_drs.into_iter().enumerate() {
-            let mut worker = self.workload_worker(base_features.clone(), base_curves.clone());
-            let mut state_maps = ReviewStateMaps::from_serialized(
-                &snapshot.card_states,
-                &snapshot.note_states,
-                &snapshot.deck_states,
-                &snapshot.preset_states,
-                snapshot.global_state.as_deref(),
-            )?;
-            let point = worker.simulate_workload_for_target(
+        let simulate_target = |dr: u32| {
+            let mut worker = self.workload_worker(base_features.clone(), HashMap::new());
+            let mut state_maps = base_state.clone_states();
+            worker.simulate_workload_for_target(
                 &inputs,
                 &mut state_maps,
                 RwkvWorkloadTargetConfig {
@@ -1557,16 +1577,26 @@ insert into segments (
                     state_update_interval,
                     review_model: &review_model,
                 },
-            )?;
-            results.push((offset, dr, point));
-            progress(offset as u32 + 2, total_steps)?;
+            )
+        };
+        // Every target advances its own copy of the inputs' streams. Sampled
+        // inputs make those copies small, so run several targets at once while
+        // bounding the memory of the concurrent copies.
+        let concurrent_targets = (WORKLOAD_TARGET_STATE_BUDGET_BYTES
+            / base_state.state_len().max(1))
+        .clamp(1, rayon::current_num_threads());
+        let mut results = Vec::with_capacity(target_drs.len());
+        for batch in target_drs.chunks(concurrent_targets) {
+            let points = batch
+                .par_iter()
+                .map(|dr| simulate_target(*dr))
+                .collect::<io::Result<Vec<_>>>()?;
+            for (dr, point) in batch.iter().zip(points) {
+                results.push((*dr, point));
+                progress(results.len() as u32 + 1, total_steps)?;
+            }
         }
-
-        results.sort_by_key(|(offset, _, _)| *offset);
-        Ok(results
-            .into_iter()
-            .map(|(_, dr, point)| (dr, point))
-            .collect())
+        Ok(results)
     }
 
     fn workload_worker(
@@ -1753,13 +1783,13 @@ insert into segments (
     ) -> Vec<RwkvWorkloadQueryPrediction> {
         let work_items = inputs
             .iter()
-            .map(|input| ReviewPredictionWorkItem {
+            .map(|input| ReviewPredictionBorrowedWorkItem {
                 features: self.features.features_for(input),
-                state: state_maps.state_owned(input),
+                state: state_maps.state_ref(input),
             })
             .collect::<Vec<_>>();
         self.model
-            .review_many(&work_items)
+            .review_many_borrowed(&work_items)
             .into_iter()
             .zip(inputs)
             .map(|(heads, input)| {
@@ -1787,13 +1817,13 @@ insert into segments (
             .collect::<Vec<_>>();
         let work_items = answer_inputs
             .iter()
-            .map(|input| ReviewPredictionWorkItem {
+            .map(|input| ReviewPredictionBorrowedWorkItem {
                 features: self.features.features_for(input),
-                state: state_maps.state_owned(input),
+                state: state_maps.state_ref(input),
             })
             .collect::<Vec<_>>();
         self.model
-            .review_many(&work_items)
+            .review_many_borrowed(&work_items)
             .into_iter()
             .zip(inputs.iter().zip(eases))
             .map(|(heads, (input, ease))| {
@@ -1853,6 +1883,16 @@ fn same_feature_identity(left: &ReviewInput, right: &ReviewInput) -> bool {
         && left.note_id == right.note_id
         && left.deck_id == right.deck_id
         && left.preset_id == right.preset_id
+}
+
+fn check_workload_dr_range(config: &RwkvWorkloadSimulationConfig) -> io::Result<()> {
+    if config.min_dr > config.max_dr {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RWKV workload min DR must be <= max DR",
+        ));
+    }
+    Ok(())
 }
 
 fn predict_retrievability_many_after_reviews_for_identity(
@@ -2998,12 +3038,16 @@ impl<'a> Cursor<'a> {
     }
 
     fn f32_vec(&mut self) -> io::Result<Vec<f32>> {
-        let len = self.u32()? as usize;
-        let mut values = Vec::with_capacity(len);
-        for _ in 0..len {
-            values.push(self.f32()?);
-        }
-        Ok(values)
+        let byte_len = (self.u32()? as usize)
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "vector too large"))?;
+        // Bounds-check once, then convert in bulk: about 2.5x faster than
+        // decoding element by element on the state-restore path.
+        Ok(self
+            .bytes(byte_len)?
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect())
     }
 
     fn skip_f32_vec(&mut self) -> io::Result<()> {
@@ -3104,6 +3148,16 @@ impl SrsModel {
         items
             .par_iter()
             .map(|item| self.review_features(&item.features, item.state.as_ref()))
+            .collect()
+    }
+
+    fn review_many_borrowed(
+        &self,
+        items: &[ReviewPredictionBorrowedWorkItem<'_>],
+    ) -> Vec<ReviewHeads> {
+        items
+            .par_iter()
+            .map(|item| self.review_features(&item.features, item.state))
             .collect()
     }
 
@@ -3507,6 +3561,59 @@ impl ReviewStateMaps {
         })
     }
 
+    /// Deserializes only the snapshot states that `inputs` can read or
+    /// advance, plus the global state.
+    fn from_snapshot_for_inputs(
+        snapshot: &RwkvWorkloadSimulationSnapshot,
+        inputs: &[RwkvWorkloadSimulationInput],
+    ) -> io::Result<Self> {
+        let ids = StreamIds::for_workload_inputs(inputs);
+        Ok(Self {
+            card: deserialize_state_map_subset(&snapshot.card_states, &ids.card)?,
+            note: deserialize_state_map_subset(&snapshot.note_states, &ids.note)?,
+            deck: deserialize_state_map_subset(&snapshot.deck_states, &ids.deck)?,
+            preset: deserialize_state_map_subset(&snapshot.preset_states, &ids.preset)?,
+            global: deserialize_module_state(snapshot.global_state.as_deref())?,
+            ..Default::default()
+        })
+    }
+
+    /// Copies the states that `inputs` can read or advance, plus the global
+    /// state.
+    fn subset_for_inputs(&self, inputs: &[RwkvWorkloadSimulationInput]) -> Self {
+        let ids = StreamIds::for_workload_inputs(inputs);
+        Self {
+            card: cloned_state_map_subset(&self.card, &ids.card),
+            note: cloned_state_map_subset(&self.note, &ids.note),
+            deck: cloned_state_map_subset(&self.deck, &ids.deck),
+            preset: cloned_state_map_subset(&self.preset, &ids.preset),
+            global: self.global.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Copies the states without their checkpoint dirty-tracking.
+    fn clone_states(&self) -> Self {
+        Self {
+            card: self.card.clone(),
+            note: self.note.clone(),
+            deck: self.deck.clone(),
+            preset: self.preset.clone(),
+            global: self.global.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Approximate memory used by the states.
+    fn state_len(&self) -> usize {
+        [&self.card, &self.note, &self.deck, &self.preset]
+            .into_iter()
+            .flat_map(HashMap::values)
+            .chain(&self.global)
+            .map(serialized_module_state_len)
+            .sum()
+    }
+
     fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
         SrsStateRef {
             card: self.card.get(&input.card_id),
@@ -3776,6 +3883,54 @@ fn branched_optional_module_state(
     }
 }
 
+/// Identities of the card, note, deck and preset streams used by some inputs.
+#[derive(Default)]
+struct StreamIds {
+    card: HashSet<i64>,
+    note: HashSet<i64>,
+    deck: HashSet<i64>,
+    preset: HashSet<i64>,
+}
+
+impl StreamIds {
+    fn for_workload_inputs(inputs: &[RwkvWorkloadSimulationInput]) -> Self {
+        let mut ids = Self::default();
+        for input in inputs {
+            let input = &input.review_input;
+            ids.card.insert(input.card_id);
+            ids.note.extend(input.note_id);
+            ids.deck.extend(input.deck_id);
+            ids.preset.extend(input.preset_id);
+        }
+        ids
+    }
+}
+
+fn deserialize_state_map_subset(
+    states: &[(i64, Vec<u8>)],
+    ids: &HashSet<i64>,
+) -> io::Result<HashMap<i64, ModuleState>> {
+    let mut map = HashMap::with_capacity(ids.len());
+    for (key, state) in states {
+        if !ids.contains(key) {
+            continue;
+        }
+        if let Some(state) = deserialize_module_state(Some(state.as_slice()))? {
+            map.insert(*key, state);
+        }
+    }
+    Ok(map)
+}
+
+fn cloned_state_map_subset(
+    states: &HashMap<i64, ModuleState>,
+    ids: &HashSet<i64>,
+) -> HashMap<i64, ModuleState> {
+    ids.iter()
+        .filter_map(|id| Some((*id, states.get(id)?.clone())))
+        .collect()
+}
+
 fn deserialize_state_map(states: &[(i64, Vec<u8>)]) -> io::Result<HashMap<i64, ModuleState>> {
     let mut map = HashMap::with_capacity(states.len());
     for (key, state) in states {
@@ -3797,7 +3952,7 @@ fn serialize_state_map(states: &HashMap<i64, ModuleState>) -> Vec<(i64, Vec<u8>)
 }
 
 fn serialize_module_state(state: &ModuleState) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(serialized_module_state_len(state));
     out.extend_from_slice(b"ARWKVMODSTATE1");
     write_u32(&mut out, state.layers.len() as u32);
     for layer in &state.layers {
@@ -4182,6 +4337,8 @@ order by chunk_index
 struct StateCacheDeltaChunkReader<'conn> {
     blob: Blob<'conn>,
     remaining_chunk_ids: std::vec::IntoIter<i64>,
+    /// Length of the chunks before the open one, for stream positions.
+    previous_chunks_len: u64,
 }
 
 impl<'conn> StateCacheDeltaChunkReader<'conn> {
@@ -4202,7 +4359,20 @@ impl<'conn> StateCacheDeltaChunkReader<'conn> {
         Ok(Self {
             blob,
             remaining_chunk_ids,
+            previous_chunks_len: 0,
         })
+    }
+
+    /// Moves to the start of the next chunk; false when none is left.
+    fn next_chunk(&mut self) -> io::Result<bool> {
+        let Some(next_chunk_id) = self.remaining_chunk_ids.next() else {
+            return Ok(false);
+        };
+        self.previous_chunks_len += self.blob.len() as u64;
+        self.blob
+            .reopen(next_chunk_id)
+            .map_err(state_cache_store_error)?;
+        Ok(true)
     }
 }
 
@@ -4212,17 +4382,41 @@ impl io::Read for StateCacheDeltaChunkReader<'_> {
         while read < buf.len() {
             let chunk_read = io::Read::read(&mut self.blob, &mut buf[read..])?;
             if chunk_read == 0 {
-                let Some(next_chunk_id) = self.remaining_chunk_ids.next() else {
+                if !self.next_chunk()? {
                     break;
-                };
-                self.blob
-                    .reopen(next_chunk_id)
-                    .map_err(state_cache_store_error)?;
+                }
             } else {
                 read += chunk_read;
             }
         }
         Ok(read)
+    }
+}
+
+/// Forward seeks only, which is all that skipping shadowed entries needs.
+impl io::Seek for StateCacheDeltaChunkReader<'_> {
+    fn seek(&mut self, position: io::SeekFrom) -> io::Result<u64> {
+        let io::SeekFrom::Current(mut offset @ 0..) = position else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "RWKV state delta reader only seeks forward",
+            ));
+        };
+        loop {
+            let chunk_position = self.blob.stream_position()?;
+            let chunk_remaining = self.blob.len() as u64 - chunk_position;
+            if offset as u64 <= chunk_remaining {
+                let chunk_position = self.blob.seek(io::SeekFrom::Current(offset))?;
+                return Ok(self.previous_chunks_len + chunk_position);
+            }
+            offset -= chunk_remaining as i64;
+            if !self.next_chunk()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "RWKV state delta ended early",
+                ));
+            }
+        }
     }
 }
 
@@ -4270,9 +4464,15 @@ fn read_state_cache_maps(
     let mut seen_deck = HashSet::new();
     let mut seen_preset = HashSet::new();
     let mut seen_global = false;
+    let mut state_bytes = Vec::new();
     for segment_id in segment_chain {
         let chunk_ids = state_cache_delta_chunk_ids(connection, *segment_id)?;
-        let mut state_delta = StateCacheDeltaChunkReader::new(connection, chunk_ids)?;
+        // SQLite streams large blob reads close to disk speed, while small
+        // reads make a cold restore several times slower.
+        let mut state_delta = io::BufReader::with_capacity(
+            STATE_CACHE_READ_BUFFER_BYTES,
+            StateCacheDeltaChunkReader::new(connection, chunk_ids)?,
+        );
         let mut magic = vec![0; STATE_CACHE_DELTA_MAGIC.len()];
         io::Read::read_exact(&mut state_delta, &mut magic)?;
         if magic != STATE_CACHE_DELTA_MAGIC {
@@ -4281,10 +4481,14 @@ fn read_state_cache_maps(
                 "invalid RWKV state-cache delta header",
             ));
         }
-        read_state_cache_map_delta(&mut state_delta, &mut result.card, &mut seen_card)?;
-        read_state_cache_map_delta(&mut state_delta, &mut result.note, &mut seen_note)?;
-        read_state_cache_map_delta(&mut state_delta, &mut result.deck, &mut seen_deck)?;
-        read_state_cache_map_delta(&mut state_delta, &mut result.preset, &mut seen_preset)?;
+        for (states, seen) in [
+            (&mut result.card, &mut seen_card),
+            (&mut result.note, &mut seen_note),
+            (&mut result.deck, &mut seen_deck),
+            (&mut result.preset, &mut seen_preset),
+        ] {
+            read_state_cache_map_delta(&mut state_delta, states, seen, &mut state_bytes)?;
+        }
         match read_state_cache_u8(&mut state_delta)? {
             0 => {}
             1 => {
@@ -4294,14 +4498,13 @@ fn read_state_cache_maps(
                 }
             }
             2 => {
-                let size = read_state_cache_u32(&mut state_delta)? as usize;
+                let size = read_state_cache_u32(&mut state_delta)?;
                 if seen_global {
-                    skip_state_cache_bytes(&mut state_delta, size)?;
+                    io::Seek::seek_relative(&mut state_delta, size.into())?;
                 } else {
                     seen_global = true;
-                    let mut state = vec![0; size];
-                    io::Read::read_exact(&mut state_delta, &mut state)?;
-                    result.global = deserialize_module_state(Some(&state))?;
+                    result.global =
+                        read_state_cache_module_state(&mut state_delta, size, &mut state_bytes)?;
                 }
             }
             _ => return Err(invalid_state_cache_delta_marker()),
@@ -4318,9 +4521,10 @@ fn read_state_cache_maps(
 }
 
 fn read_state_cache_map_delta(
-    input: &mut impl io::Read,
+    input: &mut (impl io::Read + io::Seek),
     states: &mut HashMap<i64, ModuleState>,
     seen: &mut HashSet<i64>,
+    state_bytes: &mut Vec<u8>,
 ) -> io::Result<()> {
     for _ in 0..read_state_cache_u32(input)? {
         let identity = read_state_cache_i64(input)?;
@@ -4329,21 +4533,30 @@ fn read_state_cache_map_delta(
                 seen.insert(identity);
             }
             1 => {
-                let size = read_state_cache_u32(input)? as usize;
+                let size = read_state_cache_u32(input)?;
                 if seen.insert(identity) {
-                    let mut state = vec![0; size];
-                    io::Read::read_exact(input, &mut state)?;
-                    if let Some(state) = deserialize_module_state(Some(&state))? {
+                    if let Some(state) = read_state_cache_module_state(input, size, state_bytes)? {
                         states.insert(identity, state);
                     }
                 } else {
-                    skip_state_cache_bytes(input, size)?;
+                    // A newer segment already provided this state.
+                    input.seek_relative(size.into())?;
                 }
             }
             _ => return Err(invalid_state_cache_delta_marker()),
         }
     }
     Ok(())
+}
+
+fn read_state_cache_module_state(
+    input: &mut impl io::Read,
+    size: u32,
+    state_bytes: &mut Vec<u8>,
+) -> io::Result<Option<ModuleState>> {
+    state_bytes.resize(size as usize, 0);
+    io::Read::read_exact(input, state_bytes)?;
+    deserialize_module_state(Some(state_bytes))
 }
 
 fn read_state_cache_u8(input: &mut impl io::Read) -> io::Result<u8> {
@@ -4362,16 +4575,6 @@ fn read_state_cache_i64(input: &mut impl io::Read) -> io::Result<i64> {
     let mut value = [0; 8];
     io::Read::read_exact(input, &mut value)?;
     Ok(i64::from_le_bytes(value))
-}
-
-fn skip_state_cache_bytes(input: &mut impl io::Read, mut size: usize) -> io::Result<()> {
-    let mut buffer = [0; 8192];
-    while size > 0 {
-        let read_size = size.min(buffer.len());
-        io::Read::read_exact(input, &mut buffer[..read_size])?;
-        size -= read_size;
-    }
-    Ok(())
 }
 
 fn invalid_state_cache_delta_marker() -> io::Error {
@@ -4496,8 +4699,13 @@ fn read_i64_map(cursor: &mut Cursor<'_>) -> io::Result<HashMap<i64, i64>> {
 
 fn write_f32_slice(out: &mut Vec<u8>, values: &[f32]) {
     write_u32(out, values.len() as u32);
-    for value in values {
-        out.extend_from_slice(&value.to_le_bytes());
+    let start = out.len();
+    out.resize(start + std::mem::size_of_val(values), 0);
+    for (bytes, value) in out[start..]
+        .chunks_exact_mut(std::mem::size_of::<f32>())
+        .zip(values)
+    {
+        bytes.copy_from_slice(&value.to_le_bytes());
     }
 }
 
@@ -9005,6 +9213,52 @@ order by e.id, e.cid
     }
 
     #[test]
+    fn state_delta_chunk_reader_seeks_across_chunks() {
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let path = temporary_dir.path().join("state.sqlite3");
+        let mut connection = open_state_cache_store(&path, "generation", false).unwrap();
+        let data: Vec<u8> = (0..3 * STATE_CACHE_DELTA_CHUNK_BYTES + 123)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute(
+                "insert into segments values (1, null, 0, 0, '', '', x'', x'', x'', x'')",
+                [],
+            )
+            .unwrap();
+        let chunk_ids = insert_state_cache_delta_chunks(&transaction, 1, data.len()).unwrap();
+        let mut writer =
+            StateCacheDeltaChunkWriter::new(&transaction, chunk_ids, data.len()).unwrap();
+        io::Write::write_all(&mut writer, &data).unwrap();
+        writer.finish().unwrap();
+        transaction.commit().unwrap();
+
+        let chunk_ids = state_cache_delta_chunk_ids(&connection, 1).unwrap();
+        assert_eq!(chunk_ids.len(), 4);
+        let mut reader = io::BufReader::with_capacity(
+            1000,
+            StateCacheDeltaChunkReader::new(&connection, chunk_ids).unwrap(),
+        );
+        let mut position = 0;
+        for (skip, read) in [
+            (0, 10),
+            (5, 3_000),
+            (STATE_CACHE_DELTA_CHUNK_BYTES, 7),
+            (2 * STATE_CACHE_DELTA_CHUNK_BYTES - 20_000, 500),
+        ] {
+            io::Seek::seek_relative(&mut reader, skip as i64).unwrap();
+            position += skip;
+            let mut bytes = vec![0; read];
+            io::Read::read_exact(&mut reader, &mut bytes).unwrap();
+            assert_eq!(bytes, data[position..position + read], "at {position}");
+            position += read;
+        }
+        let remaining = data.len() - position;
+        assert!(io::Seek::seek_relative(&mut reader, remaining as i64 + 1).is_err());
+    }
+
+    #[test]
     fn same_card_multi_answer_prediction_matches_individual_branches() {
         let Some(weights) = embedded_weights_path() else {
             eprintln!("skipping: embedded RWKV weights not found");
@@ -9625,6 +9879,157 @@ order by e.id, e.cid
         assert!(states.deck.is_empty());
         assert!(states.preset.is_empty());
         assert!(states.global.is_none());
+    }
+
+    #[test]
+    fn workload_simulation_matches_full_state_sequential_reference() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        inference
+            .warm_up_reviews(bulk_parity_reviews(60), false)
+            .unwrap();
+        // A few of the 23 reviewed cards plus a new one, so the simulation must
+        // ignore the other streams.
+        let inputs = [(100, 2), (103, 2), (107, 2), (111, 2), (118, 2), (999, 0)]
+            .into_iter()
+            .map(|(card_id, card_type)| RwkvWorkloadSimulationInput {
+                review_input: ReviewInput {
+                    card_id,
+                    note_id: Some(1000 + card_id / 2),
+                    deck_id: Some(2000 + card_id % 3),
+                    preset_id: Some(3000 + card_id % 2),
+                    is_query: true,
+                    ease: None,
+                    duration_millis: None,
+                    card_type: Some(card_type),
+                    day_offset: Some(7310),
+                    current_elapsed_days: Some(card_id % 9),
+                    current_elapsed_seconds: Some((card_id % 9) * 86_400 + 300),
+                    target_retentions: [None; 4],
+                    enforce_grade_order: true,
+                },
+                interval_days: Some(card_id % 9 + 1),
+                ease_factor: Some(2500),
+                reps: Some(3),
+                lapses: Some(0),
+            })
+            .collect::<Vec<_>>();
+        let config = || RwkvWorkloadSimulationConfig {
+            min_dr: 70,
+            max_dr: 95,
+            target_dr_step: 5,
+            days_to_simulate: 20,
+            review_limit: 4,
+            new_limit: 1,
+            new_cards_ignore_review_limit: false,
+            max_interval: 36_500,
+            review_order: ReviewCardOrder::RetrievabilityAscending,
+            suspend_after_lapses: None,
+            state_update_interval: 3,
+            review_model: RwkvWorkloadReviewModel {
+                grade_seconds: [12.0, 9.0, 7.0, 5.0],
+                bucket_probabilities: vec![],
+            },
+        };
+
+        // Reference: every target replays on a full copy of the resident
+        // state, one target at a time.
+        let full_state = inference.warm_up_states.clone_states();
+        let mut reviewless_worker =
+            inference.workload_worker(inference.features.clone(), inference.curves.clone());
+        let introduced_inputs = inputs[..5].to_vec();
+        let (reviewless_end_memorized, reviewless_end_weighted_memorized) = reviewless_worker
+            .simulation_memorized_for_inputs(
+                &introduced_inputs,
+                &full_state,
+                S90_TARGET_RETENTION,
+                20,
+            )
+            .unwrap();
+        let reference_config = config();
+        let mut points = target_drs(70, 95, 5)
+            .into_iter()
+            .map(|dr| {
+                let mut worker =
+                    inference.workload_worker(inference.features.clone(), inference.curves.clone());
+                let mut state = full_state.clone_states();
+                let point = worker
+                    .simulate_workload_for_target(
+                        &inputs,
+                        &mut state,
+                        RwkvWorkloadTargetConfig {
+                            dr,
+                            days_to_simulate: 20,
+                            review_limit: 4,
+                            new_limit: 1,
+                            new_cards_ignore_review_limit: false,
+                            max_interval: 36_500,
+                            review_order: ReviewCardOrder::RetrievabilityAscending,
+                            suspend_after_lapses: None,
+                            state_update_interval: 3,
+                            review_model: &reference_config.review_model,
+                        },
+                    )
+                    .unwrap();
+                (dr, point)
+            })
+            .collect::<Vec<_>>();
+        enforce_monotonic_workload_review_counts(&mut points);
+        let reference = RwkvWorkloadSimulationOutput {
+            reviewless_end_memorized,
+            reviewless_end_weighted_memorized,
+            points,
+        };
+
+        let warm_up_snapshot = inference.warm_up_snapshot();
+        let snapshot = RwkvWorkloadSimulationSnapshot {
+            card_states: warm_up_snapshot.card_states,
+            note_states: warm_up_snapshot.note_states,
+            deck_states: warm_up_snapshot.deck_states,
+            preset_states: warm_up_snapshot.preset_states,
+            global_state: warm_up_snapshot.global_state,
+            runtime_state: Some(inference.cache_state()),
+        };
+        let mut progress_steps = Vec::new();
+        let from_snapshot = inference
+            .simulate_workload(inputs.clone(), snapshot, config(), &mut |current, total| {
+                progress_steps.push((current, total));
+                Ok(())
+            })
+            .unwrap();
+        let from_warm_up = inference
+            .simulate_workload_from_warm_up(inputs, config(), &mut |_, _| Ok(()))
+            .unwrap();
+
+        let output_bits = |output: &RwkvWorkloadSimulationOutput| {
+            let mut bits = vec![
+                output.reviewless_end_memorized.to_bits(),
+                output.reviewless_end_weighted_memorized.to_bits(),
+            ];
+            for (dr, point) in &output.points {
+                bits.extend([
+                    *dr,
+                    point.memorized.to_bits(),
+                    point.weighted_memorized.to_bits(),
+                    point.cost.to_bits(),
+                    point.review_count,
+                ]);
+            }
+            bits
+        };
+        assert!(reference
+            .points
+            .iter()
+            .any(|(_, point)| point.review_count > 0));
+        assert_eq!(output_bits(&from_snapshot), output_bits(&reference));
+        assert_eq!(output_bits(&from_warm_up), output_bits(&reference));
+        assert_eq!(
+            progress_steps,
+            (0..=7).map(|step| (step, 7)).collect::<Vec<_>>()
+        );
     }
 
     #[test]

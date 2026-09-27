@@ -592,11 +592,8 @@ impl RwkvInference {
         bucket_probabilities: &Bound<'_, PyAny>,
         progress: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<RwkvWorkloadOutput> {
-        let mut parsed_inputs = Vec::new();
-        for input in inputs.try_iter()? {
-            parsed_inputs.push(parse_rwkv_workload_simulation_input(&input?)?);
-        }
-        let config = rwkv::RwkvWorkloadSimulationConfig {
+        let parsed_inputs = parse_rwkv_workload_simulation_inputs(inputs)?;
+        let config = rwkv_workload_simulation_config(
             min_dr,
             max_dr,
             target_dr_step,
@@ -605,54 +602,74 @@ impl RwkvInference {
             new_limit,
             new_cards_ignore_review_limit,
             max_interval,
-            review_order: review_order
-                .try_into()
-                .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
+            review_order,
             suspend_after_lapses,
             state_update_interval,
-            review_model: rwkv::RwkvWorkloadReviewModel {
-                grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
-                bucket_probabilities: parse_rwkv_workload_bucket_probabilities(
-                    bucket_probabilities,
-                )?,
-            },
-        };
+            grade_seconds,
+            bucket_probabilities,
+        )?;
         let snapshot = parse_rwkv_workload_snapshot(snapshot)?;
         let progress = progress.map(|callback| callback.clone().unbind());
         let mut progress_callback = |current: u32, total: u32| {
-            if let Some(callback) = &progress {
-                Python::attach(|py| callback.call1(py, (current, total)))
-                    .map(|_| ())
-                    .map_err(|err| {
-                        std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
-                    })?;
-            }
-            Ok(())
+            report_rwkv_workload_progress(progress.as_ref(), current, total)
         };
 
         py.detach(|| {
             self.inner
                 .simulate_workload(parsed_inputs, snapshot, config, &mut progress_callback)
         })
-        .map(|output| {
-            (
-                output.reviewless_end_memorized,
-                output.reviewless_end_weighted_memorized,
-                output
-                    .points
-                    .into_iter()
-                    .map(|(dr, point)| {
-                        (
-                            dr,
-                            point.memorized,
-                            point.weighted_memorized,
-                            point.cost,
-                            point.review_count,
-                        )
-                    })
-                    .collect(),
-            )
+        .map(rwkv_workload_output)
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    /// Like `simulate_workload`, but reads the resident warmed state instead of
+    /// a serialized snapshot. The resident state is left unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn simulate_workload_from_warm_up(
+        &self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+        min_dr: u32,
+        max_dr: u32,
+        target_dr_step: u32,
+        days_to_simulate: u32,
+        review_limit: u32,
+        new_limit: u32,
+        new_cards_ignore_review_limit: bool,
+        max_interval: u32,
+        review_order: i32,
+        suspend_after_lapses: Option<u32>,
+        state_update_interval: u32,
+        grade_seconds: &Bound<'_, PyAny>,
+        bucket_probabilities: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<RwkvWorkloadOutput> {
+        let parsed_inputs = parse_rwkv_workload_simulation_inputs(inputs)?;
+        let config = rwkv_workload_simulation_config(
+            min_dr,
+            max_dr,
+            target_dr_step,
+            days_to_simulate,
+            review_limit,
+            new_limit,
+            new_cards_ignore_review_limit,
+            max_interval,
+            review_order,
+            suspend_after_lapses,
+            state_update_interval,
+            grade_seconds,
+            bucket_probabilities,
+        )?;
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback = |current: u32, total: u32| {
+            report_rwkv_workload_progress(progress.as_ref(), current, total)
+        };
+
+        py.detach(|| {
+            self.inner
+                .simulate_workload_from_warm_up(parsed_inputs, config, &mut progress_callback)
         })
+        .map(rwkv_workload_output)
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
@@ -998,6 +1015,86 @@ fn parse_rwkv_workload_simulation_input(
         reps: tuple.get_item(18)?.extract()?,
         lapses: tuple.get_item(19)?.extract()?,
     })
+}
+
+fn parse_rwkv_workload_simulation_inputs(
+    inputs: &Bound<'_, PyAny>,
+) -> PyResult<Vec<rwkv::RwkvWorkloadSimulationInput>> {
+    let mut parsed_inputs = Vec::new();
+    for input in inputs.try_iter()? {
+        parsed_inputs.push(parse_rwkv_workload_simulation_input(&input?)?);
+    }
+    Ok(parsed_inputs)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rwkv_workload_simulation_config(
+    min_dr: u32,
+    max_dr: u32,
+    target_dr_step: u32,
+    days_to_simulate: u32,
+    review_limit: u32,
+    new_limit: u32,
+    new_cards_ignore_review_limit: bool,
+    max_interval: u32,
+    review_order: i32,
+    suspend_after_lapses: Option<u32>,
+    state_update_interval: u32,
+    grade_seconds: &Bound<'_, PyAny>,
+    bucket_probabilities: &Bound<'_, PyAny>,
+) -> PyResult<rwkv::RwkvWorkloadSimulationConfig> {
+    Ok(rwkv::RwkvWorkloadSimulationConfig {
+        min_dr,
+        max_dr,
+        target_dr_step,
+        days_to_simulate,
+        review_limit,
+        new_limit,
+        new_cards_ignore_review_limit,
+        max_interval,
+        review_order: review_order
+            .try_into()
+            .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
+        suspend_after_lapses,
+        state_update_interval,
+        review_model: rwkv::RwkvWorkloadReviewModel {
+            grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
+            bucket_probabilities: parse_rwkv_workload_bucket_probabilities(bucket_probabilities)?,
+        },
+    })
+}
+
+fn report_rwkv_workload_progress(
+    progress: Option<&Py<PyAny>>,
+    current: u32,
+    total: u32,
+) -> std::io::Result<()> {
+    if let Some(callback) = progress {
+        Python::attach(|py| callback.call1(py, (current, total)))
+            .map(|_| ())
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+    }
+    Ok(())
+}
+
+fn rwkv_workload_output(output: rwkv::RwkvWorkloadSimulationOutput) -> RwkvWorkloadOutput {
+    (
+        output.reviewless_end_memorized,
+        output.reviewless_end_weighted_memorized,
+        output
+            .points
+            .into_iter()
+            .map(|(dr, point)| {
+                (
+                    dr,
+                    point.memorized,
+                    point.weighted_memorized,
+                    point.cost,
+                    point.review_count,
+                )
+            })
+            .collect(),
+    )
 }
 
 fn parse_rwkv_workload_snapshot(

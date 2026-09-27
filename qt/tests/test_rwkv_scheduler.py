@@ -1791,8 +1791,10 @@ def test_rwkv_workload_review_order_uses_shared_request_order() -> None:
     ) < rwkv_scheduler._rwkv_simulation_review_sort_key(short, short_prediction, 7, 0.9)
 
 
+@pytest.mark.parametrize("resident", [False, True])
 def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
     monkeypatch: pytest.MonkeyPatch,
+    resident: bool,
 ) -> None:
     review = _rwkv_review_input(card_id=1, note_id=10)
     input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
@@ -1836,7 +1838,11 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
         def cached_review_input_predictions(self, inputs: object) -> object:
             raise AssertionError("fast path should not use Python prediction batches")
 
+        def supports_resident_workload_simulation(self) -> bool:
+            return resident
+
         def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
+            assert not resident, "resident simulation must not serialize the state"
             return snapshot
 
         def restore_cache_snapshot(self, restored: RwkvBackendCacheSnapshot) -> None:
@@ -1959,7 +1965,7 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
     assert backend.calls == [
         {
             "inputs": [(1, review, 64)],
-            "snapshot": snapshot,
+            "snapshot": None if resident else snapshot,
             "min_dr": 30,
             "max_dr": 99,
             "target_dr_step": 1,
@@ -6967,6 +6973,255 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
         assert connection.execute(
             "select segment_id from segment_state_chunks order by segment_id"
         ).fetchall() == [(1,), (2,)]
+
+
+@pytest.mark.parametrize("recovered_from_checkpoint", [False, True])
+def test_rwkv_restore_writes_store_segment_only_when_recovery_adopts_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recovered_from_checkpoint: bool,
+) -> None:
+    stored_history = _rwkv_checkpoint_test_history(2)
+    current_history = _rwkv_checkpoint_test_history(4)
+    pending_history = rwkv_scheduler._rwkv_validated_history_suffix(
+        current_history,
+        stored_history,
+    )
+    store_path = tmp_path / "rwkv-state-cache" / "state.sqlite3"
+    store_path.parent.mkdir()
+    store_path.write_bytes(b"store")
+
+    class Runtime:
+        resident_warm_up_state = True
+
+        def __init__(self) -> None:
+            self.restored: list[tuple[Path, str, int]] = []
+            self.checkpoint_writes: list[tuple[object, ...]] = []
+            self.replayed: list[int] = []
+
+        def review(self, **_kwargs: object) -> RwkvReviewTransition:
+            raise AssertionError("bulk warm-up expected")
+
+        def restore_warm_up_state_checkpoint(
+            self,
+            path: Path,
+            generation: str,
+            segment_id: int,
+        ) -> None:
+            self.restored.append((path, generation, segment_id))
+
+        def write_warm_up_state_checkpoint(self, *args: object) -> int:
+            self.checkpoint_writes.append(args)
+            return 3
+
+        def warm_up_reviews(
+            self,
+            reviews: Sequence[RwkvReviewInput],
+            *,
+            review_ids: Sequence[int] | None = None,
+            prediction_recorder: object | None = None,
+            progress: object | None = None,
+            snapshot_after_reviews: Sequence[int] = (),
+            snapshot_recorder: Any = None,
+            return_snapshot: bool = True,
+        ) -> None:
+            del review_ids, prediction_recorder, progress, return_snapshot
+            self.replayed.append(len(reviews))
+            for endpoint in snapshot_after_reviews:
+                snapshot_recorder.write_runtime_checkpoint(
+                    endpoint,
+                    self.write_warm_up_state_checkpoint,
+                )
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(cast(Any, runtime))
+    stored = rwkv_scheduler.RwkvStoredStateCache(
+        metadata={"snapshotReviewId": stored_history.last_review_id},
+        snapshot=None,
+        history=replace(stored_history, reviews=[], review_ids=[]),
+        pending_history=pending_history,
+        recovered_from_checkpoint=recovered_from_checkpoint,
+        state_store_path=store_path,
+        state_store_generation="generation",
+        state_store_segment_id=2,
+    )
+    appended: list[int] = []
+    saved: list[int | None] = []
+    cleaned: list[tuple[Path | None, str | None, int | None]] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache",
+        lambda *_args, **_kwargs: stored,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_uses_current_model_key",
+        lambda _metadata: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_base",
+        lambda _reviewer: {},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_append_rwkv_state_cache_deltas",
+        lambda _reviewer, history, **_kwargs: appended.append(history.review_count),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_save_reviewer_backend_cache",
+        lambda _reviewer, _history, **kwargs: saved.append(
+            kwargs["write_context"].state_store_head_segment_id
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_remove_unreachable_rwkv_state_cache_segments",
+        lambda path, generation, segment_id, **_kwargs: cleaned.append(
+            (path, generation, segment_id)
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, _history: None,
+    )
+
+    identity = rwkv_scheduler._restore_reviewer_backend_cache(
+        _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[]),
+        backend=cast(Any, backend),
+        is_current=lambda: True,
+    )
+
+    assert identity is not None
+    assert runtime.restored == [(store_path, "generation", 2)]
+    assert runtime.replayed == [2]
+    if recovered_from_checkpoint:
+        assert len(runtime.checkpoint_writes) == 1
+        # Delta child of the restored segment, adopted by the save below.
+        assert runtime.checkpoint_writes[0][2] == 2
+        assert runtime.checkpoint_writes[0][-2:] == (False, True)
+        assert saved == [3]
+        assert appended == []
+        assert cleaned == []
+    else:
+        assert runtime.checkpoint_writes == []
+        assert saved == []
+        assert appended == [current_history.review_count]
+        assert cleaned == [(store_path, "generation", 2)]
+
+
+def _rwkv_test_state_store(path: Path, segments: dict[int, int | None]) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("pragma page_size = 4096")
+        connection.executescript(
+            f"""
+            pragma user_version = {rwkv_scheduler._RWKV_STATE_CACHE_STORE_SCHEMA_VERSION};
+            create table store_metadata (
+              key text primary key,
+              value text not null
+            );
+            create table segments (
+              id integer primary key,
+              parent_id integer
+            );
+            create table segment_state_chunks (
+              id integer primary key,
+              segment_id integer not null,
+              chunk_index integer not null,
+              state_delta blob not null
+            );
+            insert into store_metadata values ('generation', 'generation');
+            """
+        )
+        for segment_id, parent_id in segments.items():
+            connection.execute(
+                "insert into segments values (?, ?)",
+                (segment_id, parent_id),
+            )
+            connection.execute(
+                "insert into segment_state_chunks "
+                "(segment_id, chunk_index, state_delta) values (?, 0, ?)",
+                (segment_id, bytes([segment_id]) * 200_000),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_rwkv_unreachable_store_segments_are_removed_and_compacted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "state.sqlite3"
+    # Segments 3-5 are siblings of the manifest head (2) that nothing adopted.
+    _rwkv_test_state_store(store_path, {1: None, 2: 1, 3: 2, 4: 2, 5: 2})
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_RWKV_STATE_CACHE_COMPACT_MIN_FREE_BYTES",
+        1,
+    )
+    size_before = store_path.stat().st_size
+    progress_labels: list[str] = []
+
+    rwkv_scheduler._remove_unreachable_rwkv_state_cache_segments(
+        store_path,
+        "generation",
+        2,
+        progress=lambda label, _value, _maximum: progress_labels.append(label),
+    )
+
+    assert store_path.stat().st_size < size_before * 0.5
+    assert progress_labels == ["Compacting RWKV state cache..."]
+    assert not (tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_STORE_COMPACT_FILE).exists()
+    assert rwkv_scheduler._rwkv_state_cache_store_segment_chain(
+        store_path,
+        "generation",
+        2,
+    ) == [2, 1]
+    with sqlite3.connect(store_path) as connection:
+        assert connection.execute("pragma page_size").fetchone() == (4096,)
+        assert connection.execute("pragma freelist_count").fetchone() == (0,)
+        assert connection.execute(
+            "select segment_id, state_delta from segment_state_chunks order by id"
+        ).fetchall() == [
+            (1, b"\x01" * 200_000),
+            (2, b"\x02" * 200_000),
+        ]
+
+    compacted_mtime = store_path.stat().st_mtime_ns
+    rwkv_scheduler._remove_unreachable_rwkv_state_cache_segments(
+        store_path,
+        "generation",
+        2,
+        progress=lambda label, _value, _maximum: progress_labels.append(label),
+    )
+    assert store_path.stat().st_mtime_ns == compacted_mtime
+    assert progress_labels == ["Compacting RWKV state cache..."]
+
+
+def test_rwkv_unreachable_store_segment_removal_is_best_effort(
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "state.sqlite3"
+    _rwkv_test_state_store(store_path, {1: None, 2: 1, 3: 2})
+
+    # A generation mismatch must leave the store untouched without raising.
+    rwkv_scheduler._remove_unreachable_rwkv_state_cache_segments(
+        store_path,
+        "other-generation",
+        2,
+    )
+    rwkv_scheduler._remove_unreachable_rwkv_state_cache_segments(None, None, None)
+
+    with sqlite3.connect(store_path) as connection:
+        assert connection.execute("select id from segments order by id").fetchall() == [
+            (1,),
+            (2,),
+            (3,),
+        ]
 
 
 def test_rwkv_state_cache_connection_always_closes(
@@ -16752,6 +17007,92 @@ def test_srs_benchmark_backend_batches_predictions() -> None:
         pytest.approx(0.20),
     ]
     assert [[row["card_id"] for row in rows] for rows in process.rows] == [[1, 2]]
+
+
+@pytest.mark.parametrize("resident", [False, True])
+def test_embedded_rust_runtime_workload_bridge_sends_only_needed_state(
+    resident: bool,
+) -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime, _workload_input_row
+
+    class Process:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def simulate_workload(self, *args: object) -> object:
+            self.calls.append(("snapshot", args))
+            return (1.0, 2.0, [])
+
+        def simulate_workload_from_warm_up(self, *args: object) -> object:
+            self.calls.append(("resident", args))
+            return (1.0, 2.0, [])
+
+    process = Process()
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = process
+    review = _rwkv_review_input(card_id=1, note_id=10)
+    snapshot = RwkvBackendCacheSnapshot(
+        card_states={1: b"card-1", 2: b"card-2"},
+        note_states={10: b"note-10", 20: b"note-20"},
+        deck_states={100: b"deck-100", 200: b"deck-200"},
+        preset_states={1000: b"preset-1000", 2000: b"preset-2000"},
+        global_state=b"global",
+        runtime_state=b"runtime",
+    )
+
+    output = runtime.simulate_workload(
+        inputs=[(1, review, 64)],
+        snapshot=None if resident else snapshot,
+        min_dr=30,
+        max_dr=99,
+        target_dr_step=1,
+        days_to_simulate=12,
+        scheduling=rwkv_scheduler._RwkvWorkloadScheduling(
+            review_limit=34,
+            new_limit=7,
+            new_cards_ignore_review_limit=True,
+            max_interval=456,
+            review_order=3,
+            suspend_after_lapses=9,
+        ),
+        state_update_interval=10,
+        review_model=SimpleNamespace(
+            grade_seconds=(1.0, 2.0, 3.0, 4.0),
+            bucket_probabilities={3: (0.1, 0.2, 0.3, 0.4)},
+        ),
+    )
+
+    assert output == (1.0, 2.0, [])
+    assert runtime.supports_resident_workload_simulation()
+    settings = (
+        30,
+        99,
+        1,
+        12,
+        34,
+        7,
+        True,
+        456,
+        3,
+        9,
+        10,
+        (1.0, 2.0, 3.0, 4.0),
+        [(3, 0.1, 0.2, 0.3, 0.4)],
+        None,
+    )
+    rows = [_workload_input_row(review)]
+    if resident:
+        assert process.calls == [("resident", (rows, *settings))]
+    else:
+        filtered_snapshot = (
+            [(1, b"card-1")],
+            [(10, b"note-10")],
+            [(100, b"deck-100")],
+            [(1000, b"preset-1000")],
+            b"global",
+            b"runtime",
+        )
+        assert process.calls == [("snapshot", (rows, filtered_snapshot, *settings))]
 
 
 def test_embedded_rust_runtime_batches_bridge_predictions() -> None:

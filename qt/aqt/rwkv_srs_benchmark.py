@@ -1033,11 +1033,14 @@ class _RustRwkvRuntime:
             for answer_outputs in outputs
         ]
 
+    def supports_resident_workload_simulation(self) -> bool:
+        return callable(getattr(self._process, "simulate_workload_from_warm_up", None))
+
     def simulate_workload(
         self,
         *,
         inputs: Sequence[tuple[int, RwkvReviewInput, int]],
-        snapshot: RwkvBackendCacheSnapshot,
+        snapshot: RwkvBackendCacheSnapshot | None,
         min_dr: int,
         max_dr: int,
         target_dr_step: int,
@@ -1047,12 +1050,26 @@ class _RustRwkvRuntime:
         review_model: object,
         progress: Callable[[int, int], None] | None = None,
     ) -> object:
-        simulate_workload = getattr(self._process, "simulate_workload", None)
+        """Simulate from `snapshot`, or from the resident state when it is None."""
+        simulate_workload = getattr(
+            self._process,
+            "simulate_workload_from_warm_up"
+            if snapshot is None
+            else "simulate_workload",
+            None,
+        )
         if not callable(simulate_workload):
             raise ValueError("RWKV Rust runtime does not support workload simulation")
 
         build_start = time.monotonic()
-        rows = [_workload_input_row(review_input) for _, review_input, _ in inputs]
+        review_inputs = [review_input for _, review_input, _ in inputs]
+        rows = [_workload_input_row(review_input) for review_input in review_inputs]
+        # The simulation only reads the inputs' own streams and the global state.
+        snapshot_args = (
+            ()
+            if snapshot is None
+            else (_workload_snapshot_for_review_inputs(snapshot, review_inputs),)
+        )
         grade_seconds = tuple(getattr(review_model, "grade_seconds"))
         bucket_probabilities = _workload_bucket_probabilities(review_model)
         build_elapsed_ms = (time.monotonic() - build_start) * 1000
@@ -1072,7 +1089,7 @@ class _RustRwkvRuntime:
         with self._locked_process():
             output = simulate_workload(
                 rows,
-                _workload_snapshot(snapshot),
+                *snapshot_args,
                 int(min_dr),
                 int(max_dr),
                 int(target_dr_step),

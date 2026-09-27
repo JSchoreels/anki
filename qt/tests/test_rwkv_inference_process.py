@@ -750,6 +750,26 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         curves = _rwkv_curves_from_cache(runtime.cache_state())
 
     snapshot = runtime.warm_up_snapshot()
+    workload_inputs = [(*query_input, 4, 2500, 5, 1)]
+    workload_settings = (
+        70,
+        90,
+        10,
+        5,
+        10,
+        0,
+        False,
+        36500,
+        0,
+        None,
+        1,
+        (8.0, 8.0, 8.0, 8.0),
+        [],
+        None,
+    )
+    assert runtime.simulate_workload_from_warm_up(
+        workload_inputs, *workload_settings
+    ) == runtime.simulate_workload(workload_inputs, snapshot, *workload_settings)
     answer_inputs = []
     for ease in (1, 2, 3, 4):
         answer_input = list(query_input)
