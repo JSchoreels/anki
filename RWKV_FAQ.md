@@ -26,6 +26,12 @@ Last reviewed: 2026-09-27.
 - [6. Review deletion, state, and rebuilds](#6-review-deletion-state-and-rebuilds)
 - [7. Performance, compatibility, and implementation caveats](#7-performance-compatibility-and-implementation-caveats)
 - [8. Code-based answers to previously open questions](#8-code-based-answers-to-previously-open-questions)
+  - [How much and how quickly do manually graded cards from a large filtered-deck backlog affect RWKV scheduling?](#how-much-and-how-quickly-do-manually-graded-cards-from-a-large-filtered-deck-backlog-affect-rwkv-scheduling)
+  - [Why did disabling “Skip learning/relearning queues with FSRS/RWKV” for one preset appear to affect other presets as well?](#why-did-disabling-skip-learningrelearning-queues-with-fsrsrwkv-for-one-preset-appear-to-affect-other-presets-as-well)
+  - [Does the first answer on a new card contribute to the calibration graph in the same way as a later review?](#does-the-first-answer-on-a-new-card-contribute-to-the-calibration-graph-in-the-same-way-as-a-later-review)
+  - [How should learning/relearning steps be interpreted when reading the calibration graph?](#how-should-learningrelearning-steps-be-interpreted-when-reading-the-calibration-graph)
+  - [Can an explicit daily cap, such as 300 reviews, be met by adapting intervals or desired retention rather than merely limiting the queue?](#can-an-explicit-daily-cap-such-as-300-reviews-be-met-by-adapting-intervals-or-desired-retention-rather-than-merely-limiting-the-queue)
+  - [Should auto-burying be enabled or disabled when using RWKV-Instant?](#should-auto-burying-be-enabled-or-disabled-when-using-rwkv-instant)
 
 ## Terminology
 
