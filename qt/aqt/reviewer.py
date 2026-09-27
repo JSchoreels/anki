@@ -2246,7 +2246,9 @@ timeboxReps = 0;
 
         assert isinstance(self.mw.col.sched, V3Scheduler)
         current_before_hooks = self._v3.states.current.SerializeToString()
-        current_before_hooks_debug = repr(self._v3.states.current)
+        current_before_hooks_debug = with_collapsed_whitespace(
+            repr(self._v3.states.current)
+        )
         self._v3.states = aqt.rwkv_scheduler.update_reviewer_scheduling_states(
             self._v3.states, self, self.card
         )
@@ -2255,10 +2257,10 @@ timeboxReps = 0;
         )
         if self._v3.states.current.SerializeToString() != current_before_hooks:
             logger.warning(
-                "reviewer_will_update_scheduling_states changed current state for card %s: %s -> %r",
+                "reviewer_will_update_scheduling_states changed current state for card %s: %s -> %s",
                 self.card.id,
                 current_before_hooks_debug,
-                self._v3.states.current,
+                with_collapsed_whitespace(repr(self._v3.states.current)),
             )
         labels = self.mw.col.sched.describe_next_states(self._v3.states)
 
