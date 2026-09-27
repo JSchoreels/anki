@@ -175,6 +175,33 @@ recurrent-state cache rebuild. Historical `elapsed_days` likewise follows the
 training data's difference between Anki scheduler-day offsets;
 `elapsed_seconds` remains the wall-clock difference between answers.
 
+### Deleted Cards' Reviews
+
+Canonical RWKV history includes only reviews of cards that still exist: the
+history query joins the review log to `cards` for each review's note and deck,
+and the preset is resolved from that deck. Anki keeps a deleted card's review
+log rows, but not its note, deck, or preset, and graves record only ids.
+
+Including those reviews was evaluated on 2026-09-26 and rejected. On one
+collection (223k retained reviews; 48k reviews from 3.8k deleted cards), the
+full history was replayed three times on a backup copy: existing cards only;
+plus the 1,384 deleted cards whose note and deck were recovered from older
+backups; and plus every deleted card, approximating unrecoverable ones as their
+own note in the Default deck. All variants were scored on the same reviews of
+existing cards. For reviews at least one day after the card's previous review,
+log loss changed by +0.00% and +0.01% (card-clustered 95% intervals include
+zero), and UM+ was marginally worse. First-review predictions became 1.3–1.5%
+worse, and same-day steps improved by at most 0.14%. Persisting deleted cards'
+identities so their reviews could stay in the history is therefore not worth
+its cost, and deletions keep excluding them; see the resident-state rule above
+for how a deletion is reconciled until the next canonical restore.
+
+To repeat the evaluation, replay a collection copy with
+`warm_up_rwkv_state(mw, force_rebuild=True, record_retrievability_cache=True)`
+while wrapping `_historical_rwkv_review_rows` to merge the deleted cards'
+review-log rows with recovered `(note, deck)` identities, then compare the
+recorded `search_stats_rwkv_review_retrievability` predictions per `revlog_id`.
+
 ### Review Type Contract
 
 Anki's raw revlog kinds and the answered-event states consumed by RWKV are
