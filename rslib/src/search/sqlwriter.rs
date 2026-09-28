@@ -85,6 +85,42 @@ impl SqlWriter<'_> {
         Ok((self.sql, self.args))
     }
 
+    /// Builds one query over the card id filter table that returns each card
+    /// id with the index of the first node in `nodes` it matches, or null if
+    /// it matches none. SQLite stops evaluating a CASE at its first true
+    /// branch, so later nodes only run for cards earlier nodes did not match.
+    pub(super) fn build_first_match_query(
+        mut self,
+        nodes: &[&Node],
+    ) -> Result<(String, Vec<String>)> {
+        let filter_table = self
+            .card_id_filter_table
+            .or_invalid("first-match queries need a card id filter table")?;
+        require!(!nodes.is_empty(), "first-match queries need a search");
+        self.table = nodes.iter().fold(RequiredTable::Cards, |table, node| {
+            table.combine(node.required_table())
+        });
+        self.sql.push_str("select c.id, case");
+        for (index, node) in nodes.iter().enumerate() {
+            self.sql.push_str(" when (");
+            self.write_node_to_sql(&cheap_terms_first(node))?;
+            write!(self.sql, ") then {index}").unwrap();
+        }
+        match self.table {
+            RequiredTable::Cards => write!(
+                self.sql,
+                " end from {filter_table} sc cross join cards c where sc.cid=c.id"
+            ),
+            _ => write!(
+                self.sql,
+                " end from {filter_table} sc cross join cards c cross join notes n \
+                 where sc.cid=c.id and c.nid=n.id"
+            ),
+        }
+        .unwrap();
+        Ok((self.sql, self.args))
+    }
+
     fn write_table_sql(&mut self) {
         if let Some(filter_table) = self.card_id_filter_table {
             let sql = match self.table {
@@ -1108,6 +1144,51 @@ struct UnqualifiedRegexSearchContext {
     fields_to_search: Vec<u32>,
 }
 
+/// Returns an equivalent search whose AND-only groups list terms that read
+/// note text after the other terms, keeping the relative order within each
+/// kind. SQL evaluates AND chains left to right and stops at the first false
+/// term, so cheap card, deck, notetype and tag checks can then skip field
+/// matching; reordering AND terms does not change which cards match. Groups
+/// containing OR are left in place, as their order also encodes precedence.
+fn cheap_terms_first(node: &Node) -> Node {
+    match node {
+        Node::Group(nodes) => reorder_and_terms(nodes.iter().map(cheap_terms_first).collect()),
+        Node::Not(inner) => Node::Not(Box::new(cheap_terms_first(inner))),
+        _ => node.clone(),
+    }
+}
+
+fn reorder_and_terms(nodes: Vec<Node>) -> Node {
+    if nodes.iter().any(|node| matches!(node, Node::Or)) {
+        return Node::Group(nodes);
+    }
+    let (expensive, cheap): (Vec<Node>, Vec<Node>) = nodes
+        .into_iter()
+        .filter(|node| !matches!(node, Node::And))
+        .partition(reads_note_text);
+    Node::Group(Itertools::intersperse(cheap.into_iter().chain(expensive), Node::And).collect())
+}
+
+/// True if matching the node compares search text against note fields.
+fn reads_note_text(node: &Node) -> bool {
+    match node {
+        Node::And | Node::Or => false,
+        Node::Not(inner) => reads_note_text(inner),
+        Node::Group(nodes) => nodes.iter().any(reads_note_text),
+        Node::Search(search) => matches!(
+            search,
+            SearchNode::UnqualifiedText(_)
+                | SearchNode::SingleField { .. }
+                | SearchNode::NumericField { .. }
+                | SearchNode::NumericFieldRange { .. }
+                | SearchNode::Regex(_)
+                | SearchNode::NoCombining(_)
+                | SearchNode::StripClozes(_)
+                | SearchNode::WordBoundary(_)
+        ),
+    }
+}
+
 impl Node {
     fn required_table(&self) -> RequiredTable {
         match self {
@@ -1575,6 +1656,39 @@ c.odue != 0 then c.odue else c.due end) != {days}) or (c.queue in (1,4) and
             Node::Group(parse("test nid:1").unwrap()).required_table(),
             RequiredTable::Notes
         );
+    }
+
+    #[test]
+    fn first_match_query_checks_cheap_and_terms_before_note_text() -> Result<()> {
+        let mut col = Collection::new();
+        let searches = [
+            Node::Group(parse("re:abc tag:foo")?),
+            Node::Group(parse("re:abc or tag:foo")?),
+        ];
+        let nodes: Vec<&Node> = searches.iter().collect();
+
+        let (sql, args) = SqlWriter::new(&mut col, ReturnItemType::Cards)
+            .with_card_id_filter_table("filter")
+            .build_first_match_query(&nodes)?;
+
+        assert_eq!(
+            sql,
+            "select c.id, case \
+             when ((n.tags regexp ? and n.flds regexp ?2)) then 0 \
+             when ((n.flds regexp ?3 or n.tags regexp ?)) then 1 \
+             end from filter sc cross join cards c cross join notes n \
+             where sc.cid=c.id and c.nid=n.id"
+        );
+        assert_eq!(
+            args,
+            vec![
+                "(?i).* foo(::| ).*".to_string(),
+                "(?i)abc".to_string(),
+                "(?i)abc".to_string(),
+                "(?i).* foo(::| ).*".to_string(),
+            ]
+        );
+        Ok(())
     }
 
     #[allow(clippy::single_range_in_vec_init)]

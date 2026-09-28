@@ -152,17 +152,26 @@ without rebuilding every rule for every card after each review.
 
 The shared multi-card resolver selects its strategy automatically. Small card
 sets use the card-scoped resolver, avoiding the fixed setup cost of a temporary
-search table. Larger sets use batch resolution: each add-on overlay rule is
-searched once and intersected with the requested cards through a temporary
-card-id table, preserving first-match rule order. Later rules with an identical
+search table. Larger sets use batch resolution: the unresolved card ids are
+loaded into a temporary card-id table with a single insert, and one scan of
+that table returns each card's first matching add-on overlay rule. The rules
+become the ordered branches of one SQL `CASE` expression, so SQLite stops at a
+card's first matching rule and later rules only examine cards that earlier
+rules did not match. Within each rule, AND-joined terms that compare text
+against note fields (field, unqualified, and regex searches) run after cheaper
+deck, tag, card-state, and similar terms, so the deck part of a rule such as
+`Front:re:... deck:Vocabulary` filters cards before any field is matched;
+groups containing OR keep their written order. Later rules with an identical
 search string are skipped, because any card they could match would already have
-been consumed by the earlier identical rule. When a rule uses `firstgrade:`, the
-first grades for the card-id table are materialized once and reused across
-rules. Cards not matched by the overlay are cached as non-matches and resolved
-from in-memory deck and deck-config maps for that request, instead of reading
-each card's deck config separately. This shared selection applies to stats,
-search, reviewer refreshes, and other callers without requiring them to choose a
-resolution strategy.
+been taken by the earlier identical rule. Overlays with more than 256 distinct
+rule searches fall back to one search per rule, removing matched cards from the
+table between rules, which keeps each SQL statement small. When a rule uses
+`firstgrade:`, the first grades for the card-id table are materialized once and
+reused across rules. Cards not matched by the overlay are cached as non-matches
+and resolved from in-memory deck and deck-config maps for that request, instead
+of reading each card's deck config separately. This shared selection applies to
+stats, search, reviewer refreshes, and other callers without requiring them to
+choose a resolution strategy.
 
 Field-qualified regular expressions inspect only the requested fields. The
 SQLite search function splits the borrowed note-field bytes before validating
@@ -173,6 +182,28 @@ matching pass fell from about 290 ms to 185 ms; every rule's matching card ids
 and the complete RWKV history fingerprint were unchanged. This improves the
 first resolution after opening a collection or invalidating its card matches;
 later resolutions still reuse the existing per-card cache.
+
+The single-scan batch resolution then halved that pass again. In the opt-in
+release benchmark on a copy of the same collection (31,665 cards, 11 rules),
+it fell from about 230 ms (38 ms of per-id inserts plus 192 ms of per-rule
+searches and deletes) to about 110 ms (7 ms table setup plus a 106 ms scan).
+The resolved card-to-preset map was byte-identical to the previous
+implementation's, and matched per-card resolution for every card. To repeat
+the measurement on a copied collection database:
+
+```sh
+ANKI_FSRS_PRESET_BENCH_COLLECTION=/path/to/copied/collection.anki2 \
+  cargo test --release -p anki --lib fsrs_preset_overlay_batch_benchmark \
+  -- --ignored --nocapture
+```
+
+`ANKI_FSRS_PRESET_BENCH_VERIFY=1` additionally compares every card with the
+per-card resolver, `ANKI_FSRS_PRESET_BENCH_TRACE=1` prints the resolver's
+per-rule debug timings, and `ANKI_FSRS_PRESET_BENCH_DUMP=<file>` writes the
+resolved map for comparisons across builds. Most of that scan was the plain
+`Front:_` rule, which matched a `LIKE` pattern against the whole note. Plain
+field searches now match only the named fields, which brought the same pass to
+about 70 ms with the same resolved map.
 
 Large batches derive the built-in preset once per home deck and share immutable
 preset data across matching cards, including add-on overlay matches. Home-deck

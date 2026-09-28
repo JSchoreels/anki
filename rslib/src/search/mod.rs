@@ -740,6 +740,33 @@ impl Collection {
         })
     }
 
+    /// Returns each card in the FSRS preset search table that matches any of
+    /// `nodes`, with the index of the first node it matches.
+    pub(crate) fn first_matching_searches_in_fsrs_preset_search_table(
+        &mut self,
+        nodes: &[&Node],
+        use_first_grade_table: bool,
+    ) -> Result<Vec<(CardId, usize)>> {
+        let use_rwkv_due = nodes.iter().any(|node| has_rwkv_due_state(node));
+        self.with_search_auxiliary_tables(false, use_rwkv_due, None, |col| {
+            let mut writer = SqlWriter::new(col, ReturnItemType::Cards)
+                .with_card_id_filter_table("fsrs_preset_search_cids");
+            if use_first_grade_table {
+                writer = writer.with_first_grade_table("fsrs_preset_first_grades");
+            }
+            let (sql, args) = writer.build_first_match_query(nodes)?;
+            let mut stmt = col.storage.db.prepare(&sql)?;
+            let mut rows = stmt.query(params_from_iter(args.iter()))?;
+            let mut matches = Vec::new();
+            while let Some(row) = rows.next()? {
+                if let Some(index) = row.get::<_, Option<usize>>(1)? {
+                    matches.push((row.get(0)?, index));
+                }
+            }
+            Ok(matches)
+        })
+    }
+
     pub(crate) fn all_cards_for_search(&mut self, search: impl TryIntoSearch) -> Result<Vec<Card>> {
         let guard = self.search_cards_into_table(search, SortMode::NoOrder)?;
         guard.col.storage.all_searched_cards()

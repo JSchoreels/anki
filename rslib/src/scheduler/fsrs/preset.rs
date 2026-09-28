@@ -31,6 +31,9 @@ use crate::search::TryIntoSearch;
 pub(crate) const FSRS_PRESET_OVERLAY_CONFIG_KEY: &str = "fsrsPresetOverlay";
 const OUTDATED_FSRS7_PREVIEW_PARAM_COUNT: usize = 35;
 const FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS: usize = 128;
+/// Larger rule sets fall back to one search per rule, which keeps each
+/// statement well within SQLite's parameter and statement-size limits.
+const FSRS_PRESET_ONE_SCAN_MAX_RULES: usize = 256;
 
 /// Preset routing needs identity and home deck, not the full card state.
 #[derive(Debug, Clone, Copy)]
@@ -615,81 +618,40 @@ impl Collection {
             "checked cached FSRS preset overlay card matches"
         );
 
+        let mut cache_updates = Vec::new();
         if !unresolved.is_empty() {
             let table_start = Instant::now();
             let unresolved_cards: Vec<CardId> = unresolved.iter().copied().collect();
             self.storage.setup_fsrs_preset_search_cards_table()?;
-            self.storage
-                .set_fsrs_preset_search_table_to_card_ids(&unresolved_cards)?;
-            tracing::debug!(
-                cards = unresolved_cards.len(),
-                elapsed_ms = table_start.elapsed().as_secs_f64() * 1000.0,
-                "built FSRS preset unresolved card table"
-            );
+            let matches = self
+                .storage
+                .set_fsrs_preset_search_table_to_card_ids(&unresolved_cards)
+                .and_then(|()| {
+                    tracing::debug!(
+                        cards = unresolved_cards.len(),
+                        elapsed_ms = table_start.elapsed().as_secs_f64() * 1000.0,
+                        "built FSRS preset unresolved card table"
+                    );
+                    self.first_matching_fsrs_preset_rules_in_search_table(
+                        &rules,
+                        uses_first_grade,
+                        unresolved_cards.len(),
+                    )
+                });
             if uses_first_grade {
-                let first_grade_start = Instant::now();
-                self.storage.setup_fsrs_preset_first_grades_table()?;
-                tracing::debug!(
-                    cards = unresolved_cards.len(),
-                    elapsed_ms = first_grade_start.elapsed().as_secs_f64() * 1000.0,
-                    "built FSRS preset first-grade table"
-                );
+                self.storage.clear_fsrs_preset_first_grades_table()?;
+            }
+            self.storage.clear_fsrs_preset_search_cards_table()?;
+            for (card_id, rule_index) in matches? {
+                let rule = &rules[rule_index];
+                let preset = presets
+                    .get(&rule.preset_id)
+                    .or_invalid("FSRS preset rule references an unknown preset")?;
+                unresolved.remove(&card_id);
+                presets_by_card.insert(card_id, preset.clone());
+                cache_updates.push((card_id, rule.preset_id.clone()));
             }
         }
-
-        let mut cache_updates = Vec::new();
-        let mut evaluated_rule_searches = HashSet::new();
-        for (rule_index, rule) in rules.into_iter().enumerate() {
-            if unresolved.is_empty() {
-                break;
-            }
-            let rule_uses_regex = node_uses_regex(&rule.node);
-            let rule_search = rule.search;
-            let rule_preset_id = rule.preset_id;
-            if !evaluated_rule_searches.insert(rule_search.clone()) {
-                tracing::debug!(
-                    rule_index,
-                    preset_id = rule_preset_id,
-                    search = rule_search,
-                    uses_regex = rule_uses_regex,
-                    matched = 0,
-                    remaining = unresolved.len(),
-                    "skipped duplicate FSRS preset overlay rule search for card batch"
-                );
-                continue;
-            }
-            let preset = presets
-                .get(&rule_preset_id)
-                .or_invalid("FSRS preset rule references an unknown preset")?
-                .clone();
-            let mut matched_card_ids = Vec::new();
-            let rule_start = Instant::now();
-            for card_id in
-                self.search_cards_in_fsrs_preset_search_table(rule.node, uses_first_grade)?
-            {
-                if unresolved.remove(&card_id) {
-                    presets_by_card.insert(card_id, preset.clone());
-                    cache_updates.push((card_id, rule_preset_id.clone()));
-                    matched_card_ids.push(card_id);
-                }
-            }
-            self.storage
-                .remove_fsrs_preset_search_table_card_ids(&matched_card_ids)?;
-            tracing::debug!(
-                rule_index,
-                preset_id = rule_preset_id,
-                search = rule_search,
-                uses_regex = rule_uses_regex,
-                matched = matched_card_ids.len(),
-                remaining = unresolved.len(),
-                elapsed_ms = rule_start.elapsed().as_secs_f64() * 1000.0,
-                "resolved FSRS preset overlay rule for card batch"
-            );
-        }
-        if uses_first_grade {
-            self.storage.clear_fsrs_preset_first_grades_table()?;
-        }
-        self.storage.clear_fsrs_preset_search_cards_table()?;
 
         if let Some(cache) = self.state.fsrs_preset_overlay_cache.as_mut() {
             cache.card_to_preset.extend(cache_updates);
@@ -702,6 +664,113 @@ impl Collection {
             "resolved FSRS preset overlay rules for card batch"
         );
         Ok(presets_by_card)
+    }
+
+    /// Returns each card in the FSRS preset search table that matches a rule,
+    /// with the index of the first rule it matches.
+    fn first_matching_fsrs_preset_rules_in_search_table(
+        &mut self,
+        rules: &[ResolvedFsrsPresetRule],
+        uses_first_grade: bool,
+        unresolved: usize,
+    ) -> Result<Vec<(CardId, usize)>> {
+        if uses_first_grade {
+            let first_grade_start = Instant::now();
+            self.storage.setup_fsrs_preset_first_grades_table()?;
+            tracing::debug!(
+                cards = unresolved,
+                elapsed_ms = first_grade_start.elapsed().as_secs_f64() * 1000.0,
+                "built FSRS preset first-grade table"
+            );
+        }
+
+        // A repeated search can only match cards its first occurrence took.
+        let mut seen_searches = HashSet::new();
+        let mut rule_indices = Vec::new();
+        for (rule_index, rule) in rules.iter().enumerate() {
+            if seen_searches.insert(rule.search.as_str()) {
+                rule_indices.push(rule_index);
+            } else {
+                tracing::debug!(
+                    rule_index,
+                    preset_id = rule.preset_id,
+                    search = rule.search,
+                    uses_regex = node_uses_regex(&rule.node),
+                    "skipped duplicate FSRS preset overlay rule search for card batch"
+                );
+            }
+        }
+
+        if rule_indices.len() > FSRS_PRESET_ONE_SCAN_MAX_RULES {
+            return self.first_matching_fsrs_preset_rules_one_by_one(
+                rules,
+                &rule_indices,
+                uses_first_grade,
+                unresolved,
+            );
+        }
+
+        let start = Instant::now();
+        let nodes: Vec<&Node> = rule_indices
+            .iter()
+            .map(|&rule_index| &rules[rule_index].node)
+            .collect();
+        let mut matches =
+            self.first_matching_searches_in_fsrs_preset_search_table(&nodes, uses_first_grade)?;
+        let mut matched_per_rule = vec![0; rules.len()];
+        for (_, index) in &mut matches {
+            *index = rule_indices[*index];
+            matched_per_rule[*index] += 1;
+        }
+        tracing::debug!(
+            rules = rule_indices.len(),
+            cards = unresolved,
+            matched = matches.len(),
+            remaining = unresolved - matches.len(),
+            ?matched_per_rule,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "resolved FSRS preset overlay rules for card batch in one scan"
+        );
+        Ok(matches)
+    }
+
+    /// Runs one search per rule, removing matched cards from the search table
+    /// so later rules only see cards earlier rules did not match.
+    fn first_matching_fsrs_preset_rules_one_by_one(
+        &mut self,
+        rules: &[ResolvedFsrsPresetRule],
+        rule_indices: &[usize],
+        uses_first_grade: bool,
+        unresolved: usize,
+    ) -> Result<Vec<(CardId, usize)>> {
+        let mut matches = Vec::new();
+        for &rule_index in rule_indices {
+            if matches.len() == unresolved {
+                break;
+            }
+            let rule = &rules[rule_index];
+            let rule_start = Instant::now();
+            let matched_card_ids =
+                self.search_cards_in_fsrs_preset_search_table(rule.node.clone(), uses_first_grade)?;
+            self.storage
+                .remove_fsrs_preset_search_table_card_ids(&matched_card_ids)?;
+            matches.extend(
+                matched_card_ids
+                    .iter()
+                    .map(|&card_id| (card_id, rule_index)),
+            );
+            tracing::debug!(
+                rule_index,
+                preset_id = rule.preset_id,
+                search = rule.search,
+                uses_regex = node_uses_regex(&rule.node),
+                matched = matched_card_ids.len(),
+                remaining = unresolved - matches.len(),
+                elapsed_ms = rule_start.elapsed().as_secs_f64() * 1000.0,
+                "resolved FSRS preset overlay rule for card batch"
+            );
+        }
+        Ok(matches)
     }
 
     pub(crate) fn validate_fsrs_preset_overlay_json(&mut self, value: &[u8]) -> Result<()> {
@@ -806,12 +875,14 @@ pub(crate) fn tagged_test_overlay(tag: &str) -> FsrsPresetOverlay {
 #[cfg(test)]
 mod test {
     use fsrs::FSRS6_DEFAULT_PARAMETERS;
+    use itertools::Itertools;
 
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::DeckConfigId;
+    use crate::revlog::RevlogEntry;
     use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
     use crate::tests::NoteAdder;
 
@@ -1638,6 +1709,459 @@ mod test {
         col.fsrs_preset_for_card(&card)?;
         col.undo()?;
         assert!(col.state.fsrs_preset_overlay_cache.is_none());
+        Ok(())
+    }
+
+    /// Sets an overlay with one add-on preset per distinct preset id in
+    /// `rules`, given as `(search, preset_id)` pairs in priority order.
+    fn set_test_overlay_rules(col: &mut Collection, rules: &[(&str, &str)]) -> Result<()> {
+        let preset_ids: Vec<&str> = rules.iter().map(|(_, id)| *id).unique().collect();
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: preset_ids
+                    .into_iter()
+                    .map(|id| AddonFsrsPreset {
+                        id: id.into(),
+                        name: id.into(),
+                        fsrs_version: AddonFsrsVersion::Six,
+                        params: vec![1.0; 21],
+                        desired_retention: 0.81,
+                        historical_retention: 0.71,
+                        ..Default::default()
+                    })
+                    .collect(),
+                rules: rules
+                    .iter()
+                    .map(|(search, preset_id)| FsrsPresetRule {
+                        search: (*search).into(),
+                        preset_id: (*preset_id).into(),
+                    })
+                    .collect(),
+                simulator_rules: Vec::new(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Enough extra cards that resolving every card takes the batch path.
+    fn add_batch_filler_notes(col: &mut Collection) {
+        for _ in 0..FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS {
+            NoteAdder::basic(col).fields(&["filler", ""]).add(col);
+        }
+    }
+
+    /// Resolves every card in one batch, returning the add-on preset of each
+    /// note's first card, or None when it falls back to its deck preset.
+    fn batch_addon_presets(col: &mut Collection, notes: &[&Note]) -> Result<Vec<Option<String>>> {
+        let cards = col.all_cards_for_search("")?;
+        assert!(cards.len() > FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS);
+        let presets = col.fsrs_presets_for_cards(&cards)?;
+        notes
+            .iter()
+            .map(|note| {
+                let card_id = col.storage.card_ids_of_notes(&[note.id])?[0];
+                Ok(match &presets[&card_id].id {
+                    FsrsPresetId::Addon(id) => Some(id.clone()),
+                    FsrsPresetId::DeckConfig(_) => None,
+                })
+            })
+            .collect()
+    }
+
+    fn addon(id: &str) -> Option<String> {
+        Some(id.to_string())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_batch_uses_first_rule_when_card_matches_several() -> Result<()> {
+        let mut col = Collection::new();
+        add_batch_filler_notes(&mut col);
+        let both = NoteAdder::basic(&mut col).add(&mut col);
+        let later_only = NoteAdder::basic(&mut col).add(&mut col);
+        col.add_tags_to_notes(&[both.id], "early later")?;
+        col.add_tags_to_notes(&[later_only.id], "later")?;
+        set_test_overlay_rules(
+            &mut col,
+            &[
+                ("tag:early", "addon:test:early"),
+                ("tag:later", "addon:test:later"),
+            ],
+        )?;
+
+        let presets = batch_addon_presets(&mut col, &[&both, &later_only])?;
+
+        assert_eq!(
+            presets,
+            vec![addon("addon:test:early"), addon("addon:test:later")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_batch_matches_field_regexes_across_notetypes() -> Result<()> {
+        let mut col = Collection::new();
+        add_batch_filler_notes(&mut col);
+        // Front is the first field of Basic, but the second field here.
+        let mut swapped = Notetype {
+            name: "Swapped".into(),
+            ..Default::default()
+        };
+        swapped.add_field("Back");
+        swapped.add_field("Front");
+        swapped.add_template("Card 1", "{{Front}}", "{{Back}}");
+        col.add_notetype(&mut swapped, false)?;
+        let target = col.get_or_create_normal_deck("Target")?.id;
+        let add = |col: &mut Collection, notetype: &Notetype, fields: &[&str], deck| {
+            NoteAdder::new(notetype).fields(fields).deck(deck).add(col)
+        };
+        let basic = col.basic_notetype();
+        let basic_front = add(&mut col, &basic, &["ab", ""], target);
+        let basic_other_front = add(&mut col, &basic, &["abc", ""], target);
+        let basic_other_deck = add(&mut col, &basic, &["ab", ""], DeckId(1));
+        let swapped_front = add(&mut col, &swapped, &["zz", "ab"], target);
+        let swapped_back_only = add(&mut col, &swapped, &["ab", "zz"], target);
+        let excluded = add(&mut col, &basic, &["ab", "skip"], target);
+        // The field terms come first, so the resolver must still combine them
+        // with the deck term rather than matching any deck.
+        set_test_overlay_rules(
+            &mut col,
+            &[
+                (
+                    "Front:re:^ab$ -Back:re:skip deck:Target",
+                    "addon:test:front-ab",
+                ),
+                ("deck:Target", "addon:test:target"),
+            ],
+        )?;
+
+        let presets = batch_addon_presets(
+            &mut col,
+            &[
+                &basic_front,
+                &basic_other_front,
+                &basic_other_deck,
+                &swapped_front,
+                &swapped_back_only,
+                &excluded,
+            ],
+        )?;
+
+        assert_eq!(
+            presets,
+            vec![
+                addon("addon:test:front-ab"),
+                addon("addon:test:target"),
+                None,
+                addon("addon:test:front-ab"),
+                addon("addon:test:target"),
+                addon("addon:test:target"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_batch_routes_cards_by_first_grade() -> Result<()> {
+        let mut col = Collection::new();
+        add_batch_filler_notes(&mut col);
+        let first_again = NoteAdder::basic(&mut col).add(&mut col);
+        let first_good = NoteAdder::basic(&mut col).add(&mut col);
+        // A manual reschedule before the first answer does not count.
+        for (note, id, button_chosen) in [
+            (&first_again, 1_000, 1),
+            (&first_again, 2_000, 3),
+            (&first_good, 500, 0),
+            (&first_good, 1_500, 3),
+        ] {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: RevlogId(id),
+                    cid: col.storage.card_ids_of_notes(&[note.id])?[0],
+                    button_chosen,
+                    ..Default::default()
+                },
+                false,
+            )?;
+        }
+        set_test_overlay_rules(
+            &mut col,
+            &[
+                ("firstgrade:1", "addon:test:again"),
+                ("firstgrade:3", "addon:test:good"),
+            ],
+        )?;
+
+        let presets = batch_addon_presets(&mut col, &[&first_again, &first_good])?;
+
+        assert_eq!(
+            presets,
+            vec![addon("addon:test:again"), addon("addon:test:good")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_preset_overlay_batch_keeps_first_match_for_large_rule_sets() -> Result<()> {
+        let mut col = Collection::new();
+        add_batch_filler_notes(&mut col);
+        let last = FSRS_PRESET_ONE_SCAN_MAX_RULES;
+        let early_and_last = NoteAdder::basic(&mut col).add(&mut col);
+        let last_only = NoteAdder::basic(&mut col).add(&mut col);
+        col.add_tags_to_notes(&[early_and_last.id], &format!("t3 t{last}"))?;
+        col.add_tags_to_notes(&[last_only.id], &format!("t{last}"))?;
+        let searches: Vec<String> = (0..=last).map(|i| format!("tag:t{i}")).collect();
+        let rules: Vec<(&str, &str)> = searches
+            .iter()
+            .enumerate()
+            .map(|(i, search)| {
+                let preset_id = if i % 2 == 0 {
+                    "addon:test:even"
+                } else {
+                    "addon:test:odd"
+                };
+                (search.as_str(), preset_id)
+            })
+            .collect();
+        set_test_overlay_rules(&mut col, &rules)?;
+
+        let presets = batch_addon_presets(&mut col, &[&early_and_last, &last_only])?;
+
+        assert_eq!(
+            presets,
+            vec![addon("addon:test:odd"), addon("addon:test:even")]
+        );
+        Ok(())
+    }
+
+    /// Reports min as well as median, as the min is less sensitive to other
+    /// load on the machine.
+    fn min_median_ms(mut samples: Vec<f64>) -> String {
+        samples.sort_by(f64::total_cmp);
+        format!(
+            "min={:.3},median={:.3}",
+            samples[0],
+            samples[samples.len() / 2]
+        )
+    }
+
+    fn elapsed_ms(start: Instant) -> f64 {
+        start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Opt-in timing of batch overlay resolution against a copy of a real
+    /// collection, e.g.
+    /// `ANKI_FSRS_PRESET_BENCH_COLLECTION=/private/tmp/x/collection.anki2
+    /// cargo test --release -p anki --lib fsrs_preset_overlay_batch_benchmark
+    /// -- --ignored --nocapture`. The collection is copied before opening.
+    /// `ANKI_FSRS_PRESET_BENCH_VERIFY=1` also compares every card against the
+    /// per-card resolution path, and `ANKI_FSRS_PRESET_BENCH_DUMP=<file>`
+    /// writes the resolved `card_id preset_id` map for comparisons across
+    /// builds.
+    #[test]
+    #[ignore]
+    fn fsrs_preset_overlay_batch_benchmark() -> Result<()> {
+        let Ok(source) = std::env::var("ANKI_FSRS_PRESET_BENCH_COLLECTION") else {
+            println!("set ANKI_FSRS_PRESET_BENCH_COLLECTION to run this benchmark");
+            return Ok(());
+        };
+        let repeats = std::env::var("ANKI_FSRS_PRESET_BENCH_REPEATS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(7);
+        let tempdir = tempfile::tempdir()?;
+        let col_path = tempdir.path().join("bench.anki2");
+        std::fs::copy(source, &col_path)?;
+        let mut col = crate::collection::CollectionBuilder::new(&col_path).build()?;
+        let cards: Vec<FsrsPresetCard> = col
+            .storage
+            .db
+            .prepare("select id, case when odid != 0 then odid else did end from cards")?
+            .query_map([], |row| {
+                Ok(FsrsPresetCard {
+                    id: row.get(0)?,
+                    home_deck_id: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        let rules = col.fsrs_preset_overlay_cache()?.rules.clone();
+        let uses_first_grade = rules.iter().any(|rule| node_uses_first_grade(&rule.node));
+        // Hash order, as the resolver passes unresolved ids.
+        let card_ids: Vec<CardId> = cards
+            .iter()
+            .map(|card| card.id)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let all_rule_indices: Vec<usize> = (0..rules.len()).collect();
+        println!(
+            "cards={} rules={} uses_first_grade={uses_first_grade} repeats={repeats}",
+            cards.len(),
+            rules.len()
+        );
+
+        let mut setup_ms = Vec::new();
+        let mut one_scan_ms = Vec::new();
+        let mut one_by_one_ms = Vec::new();
+        let mut one_scan = Vec::new();
+        let mut one_by_one = Vec::new();
+        let mut per_row_setup_ms = Vec::new();
+        for _ in 0..repeats {
+            for use_one_scan in [true, false] {
+                let start = Instant::now();
+                col.storage.setup_fsrs_preset_search_cards_table()?;
+                if use_one_scan {
+                    col.storage
+                        .set_fsrs_preset_search_table_to_card_ids(&card_ids)?;
+                    setup_ms.push(elapsed_ms(start));
+                } else {
+                    // The previous one-insert-per-id table setup.
+                    let mut stmt = col
+                        .storage
+                        .db
+                        .prepare_cached("insert into fsrs_preset_search_cids values (?)")?;
+                    for card_id in &card_ids {
+                        stmt.execute([card_id])?;
+                    }
+                    per_row_setup_ms.push(elapsed_ms(start));
+                }
+                let start = Instant::now();
+                if use_one_scan {
+                    one_scan = col.first_matching_fsrs_preset_rules_in_search_table(
+                        &rules,
+                        uses_first_grade,
+                        card_ids.len(),
+                    )?;
+                    one_scan_ms.push(elapsed_ms(start));
+                } else {
+                    one_by_one = col.first_matching_fsrs_preset_rules_one_by_one(
+                        &rules,
+                        &all_rule_indices,
+                        uses_first_grade,
+                        card_ids.len(),
+                    )?;
+                    one_by_one_ms.push(elapsed_ms(start));
+                }
+                col.storage.clear_fsrs_preset_first_grades_table()?;
+                col.storage.clear_fsrs_preset_search_cards_table()?;
+            }
+        }
+        if std::env::var("ANKI_FSRS_PRESET_BENCH_TRACE").is_ok() {
+            // Print the resolver's own debug events for one more round.
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_test_writer()
+                .finish();
+            tracing::subscriber::with_default(subscriber, || -> Result<()> {
+                for rule_indices in [&all_rule_indices[..], &[]] {
+                    col.storage.setup_fsrs_preset_search_cards_table()?;
+                    col.storage
+                        .set_fsrs_preset_search_table_to_card_ids(&card_ids)?;
+                    if rule_indices.is_empty() {
+                        col.first_matching_fsrs_preset_rules_in_search_table(
+                            &rules,
+                            uses_first_grade,
+                            card_ids.len(),
+                        )?;
+                    } else {
+                        col.first_matching_fsrs_preset_rules_one_by_one(
+                            &rules,
+                            rule_indices,
+                            uses_first_grade,
+                            card_ids.len(),
+                        )?;
+                    }
+                    col.storage.clear_fsrs_preset_first_grades_table()?;
+                    col.storage.clear_fsrs_preset_search_cards_table()?;
+                }
+                Ok(())
+            })?;
+        }
+        println!("phase,setup_table_json,{}", min_median_ms(setup_ms));
+        println!(
+            "phase,setup_table_per_row,{}",
+            min_median_ms(per_row_setup_ms)
+        );
+        println!("phase,rules_one_scan,{}", min_median_ms(one_scan_ms));
+        println!(
+            "phase,rules_one_by_one_incl_deletes,{}",
+            min_median_ms(one_by_one_ms)
+        );
+        one_scan.sort_unstable();
+        one_by_one.sort_unstable();
+        assert_eq!(one_scan, one_by_one);
+        let mut matched_per_rule = vec![0; rules.len()];
+        for (_, rule_index) in &one_scan {
+            matched_per_rule[*rule_index] += 1;
+        }
+        for (index, rule) in rules.iter().enumerate() {
+            println!(
+                "rule,{index},matched={},{}",
+                matched_per_rule[index], rule.search
+            );
+        }
+
+        // End to end, starting from an empty card-match cache each time.
+        let mut end_to_end_ms = Vec::new();
+        let mut presets_by_card = HashMap::new();
+        for _ in 0..repeats {
+            col.clear_fsrs_preset_overlay_card_matches();
+            let start = Instant::now();
+            presets_by_card = col.fsrs_overlay_presets_for_cards(&cards)?;
+            end_to_end_ms.push(elapsed_ms(start));
+        }
+        println!("phase,end_to_end,{}", min_median_ms(end_to_end_ms));
+        let mut resolved: Vec<(CardId, Option<String>)> = cards
+            .iter()
+            .map(|card| {
+                let preset = presets_by_card
+                    .get(&card.id)
+                    .map(|preset| match &preset.id {
+                        FsrsPresetId::Addon(id) => id.clone(),
+                        FsrsPresetId::DeckConfig(id) => format!("deck-config:{id}"),
+                    });
+                (card.id, preset)
+            })
+            .collect();
+        resolved.sort_unstable();
+        println!(
+            "overlay_matches={} without_preset={}",
+            presets_by_card.len(),
+            cards.len() - presets_by_card.len()
+        );
+
+        if let Ok(path) = std::env::var("ANKI_FSRS_PRESET_BENCH_DUMP") {
+            let text: String = resolved
+                .iter()
+                .map(|(card_id, preset)| {
+                    format!("{card_id} {}\n", preset.as_deref().unwrap_or("-"))
+                })
+                .collect();
+            std::fs::write(path, text)?;
+        }
+        if std::env::var("ANKI_FSRS_PRESET_BENCH_VERIFY").is_ok() {
+            let start = Instant::now();
+            col.clear_fsrs_preset_overlay_card_matches();
+            let mut mismatches = 0;
+            for card in &cards {
+                let direct = match col.fsrs_preset_for_card_input(*card)?.id {
+                    FsrsPresetId::Addon(id) => Some(id),
+                    FsrsPresetId::DeckConfig(_) => None,
+                };
+                let batch = resolved
+                    .binary_search_by_key(&card.id, |(card_id, _)| *card_id)
+                    .map(|index| resolved[index].1.clone())
+                    .unwrap();
+                if direct != batch {
+                    mismatches += 1;
+                }
+            }
+            println!(
+                "verify,per_card_direct_path,mismatches={mismatches},elapsed_ms={:.0}",
+                elapsed_ms(start)
+            );
+            assert_eq!(mismatches, 0);
+        }
         Ok(())
     }
 }

@@ -1070,13 +1070,19 @@ CREATE TEMPORARY TABLE fsrs_preset_search_cids (cid integer PRIMARY KEY NOT NULL
         Ok(())
     }
 
+    /// Inserts the ids in one statement and in key order, which is several
+    /// times faster than one insert per id for startup-sized batches.
     pub(crate) fn set_fsrs_preset_search_table_to_card_ids(&self, cards: &[CardId]) -> Result<()> {
-        let mut stmt = self
-            .db
-            .prepare_cached("insert into fsrs_preset_search_cids values (?)")?;
-        for cid in cards {
-            stmt.execute([cid])?;
-        }
+        let mut sorted = cards.to_vec();
+        sorted.sort_unstable();
+        let mut json = String::with_capacity(sorted.len() * 14 + 2);
+        json.push('[');
+        super::write_comma_separated_ids(&mut json, sorted);
+        json.push(']');
+        self.db.execute(
+            "insert into fsrs_preset_search_cids select value from json_each(?)",
+            [json],
+        )?;
         Ok(())
     }
 
