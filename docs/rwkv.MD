@@ -1120,13 +1120,20 @@ reference also matched exactly, including ordering.
 The same 2026-09-28 investigation tested resolving each query row's time-mixer
 state once for all eight mixes. Thirty alternating measurements were initially
 about 1.4% faster by paired median, but a repeat was unchanged (77.71ms original
-versus 77.70ms fused), so the experiment was not retained. With the fused
+versus 77.70ms fused), so fusion on its own is neutral. With the fused
 traversal, 64-row and 256-row GEMM batches were each about 5% slower than the
 original 128-row path. All tested variants stayed within `1e-6` prediction error
 with no rank changes. Keep the 128-row batch until a repeatable end-to-end
-improvement is demonstrated; the four-row batch normalization optimization is
-already present. These are local Apple Silicon measurements, with background
-load checked separately, not a claim about other platforms.
+improvement is demonstrated. These are local Apple Silicon measurements, with
+background load checked separately, not a claim about other platforms.
+A later change on the same day did keep the fused time-shift mix
+(`time_shift_mix_row`), as part of the aarch64 query kernels in
+`rslib/src/rwkv/query_kernels.rs`. Its gain comes mainly from the NEON
+recurrence step (`single_timestep_query_fast_into`), the NEON
+`Norm::apply_batch`, and single-pass head normalization and bonus/gate kernels.
+Together they scored the 8,900-card deck about 12-14% faster in paired runs
+(for example 92.9ms to 81.5ms), with bit-identical predictions. Its
+batch/thread sweep again found 128 rows on all ten workers fastest (71ms).
 Separate worker-count runs measured the original path at approximately 117ms
 with four Rayon workers, 78ms with eight, and 71ms with twelve. The measured
 workload therefore still gained some throughput beyond eight workers; these
