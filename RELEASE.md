@@ -60,6 +60,9 @@ repeated here unless they materially affect a fork feature.
   Field searches now ignore case for all letters, like regular expression
   searches, so `Front:école` also finds `École`; previously only a-z were
   matched regardless of case.
+- Prepare RWKV review history faster when rebuilding the state cache. On a
+  223,000-review collection, preparation took 1.4s instead of 3.1s, with
+  identical replay inputs and history identity.
 - Resolve FSRS preset rules faster at RWKV startup when rules search specific
   note fields. On a 223,000-review collection, the first preset-matching pass
   took about 185ms instead of 290ms, with identical matches and history checks.

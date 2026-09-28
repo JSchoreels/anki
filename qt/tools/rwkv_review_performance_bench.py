@@ -122,7 +122,10 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
     try:
         print("Building canonical history...", flush=True)
         history = measure(
-            "history_build", lambda: scheduler._historical_rwkv_review_inputs(reviewer)
+            "history_build",
+            lambda: scheduler._historical_rwkv_review_inputs(
+                reviewer, prepare_recovery_checkpoint=args.compare_history
+            ),
         )
         identity = scheduler._RwkvHistoryPrefixIdentity(
             history.last_review_id, history.review_count, history.history_hash
@@ -141,10 +144,39 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
         for _ in range(args.history_rounds - 1):
             history = measure(
                 "history_build",
-                lambda: scheduler._historical_rwkv_review_inputs(reviewer),
+                lambda: scheduler._historical_rwkv_review_inputs(
+                    reviewer, prepare_recovery_checkpoint=args.compare_history
+                ),
             )
             if history.history_hash != identity.history_hash:
                 raise ValueError("Python history identity changed between rounds")
+
+        if args.compare_history:
+            for _ in range(args.history_rounds):
+                # Explicit prefix maps select Python's existing replay path.
+                # Empty maps still rebuild the full history for a like-for-like
+                # comparison with the default native path.
+                python_history = measure(
+                    "python_history_build",
+                    lambda: scheduler._historical_rwkv_review_inputs(
+                        reviewer,
+                        previous_review_id_by_card={},
+                        previous_interval_days_by_card={},
+                        review_count_by_card={},
+                        prepare_recovery_checkpoint=True,
+                    ),
+                )
+                if python_history != history:
+                    raise ValueError(
+                        "Native and Python replay inputs or metadata differ"
+                    )
+                # These maps are excluded from the dataclass's normal equality.
+                if (
+                    python_history.prepared_checkpoint_histories
+                    != history.prepared_checkpoint_histories
+                ):
+                    raise ValueError("Native and Python recovery checkpoints differ")
+            del python_history
 
         if args.profile_history:
             profiler = cProfile.Profile()
@@ -213,6 +245,7 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
             "resident_warmup", lambda: runtime.warm_up_reviews_in_place(history.reviews)
         )
         review_count = history.review_count
+        checkpoint_prefix_counts = sorted(history.prepared_checkpoint_histories)
         del history
         gc.collect()
 
@@ -325,6 +358,8 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
             "prediction_reference_max_abs_delta": reference_max_delta,
             "prediction_reference_rank_changes": reference_rank_changes,
             "history_identity_parity": "exact",
+            "history_inputs_parity": "exact" if args.compare_history else None,
+            "history_checkpoint_prefix_counts": checkpoint_prefix_counts,
             "history_hash": identity.history_hash,
             "dynamic_dr_provider_loaded": args.dynamic_dr_addon is not None,
             "dynamic_dr_target_hash": dynamic_dr_target_hash,
@@ -347,6 +382,11 @@ def main() -> None:
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--history-rounds", type=int, default=3)
     parser.add_argument("--profile-history", type=Path)
+    parser.add_argument(
+        "--compare-history",
+        action="store_true",
+        help="Compare replay inputs, metadata, and recovery checkpoints with the Python builder.",
+    )
     parser.add_argument("--dynamic-dr-addon", type=Path)
     parser.add_argument("--dynamic-dr-config", type=Path)
     parser.add_argument("--profile-dynamic-dr", type=Path)

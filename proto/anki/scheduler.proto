@@ -150,6 +150,8 @@ service SchedulerService {
   // persisted state cache.
   rpc RwkvHistoricalReviewFingerprint(RwkvHistoricalReviewFingerprintRequest)
       returns (RwkvHistoricalReviewFingerprintResponse);
+  rpc RwkvHistoricalReviewInputs(RwkvHistoricalReviewInputsRequest)
+      returns (RwkvHistoricalReviewInputsResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -782,6 +784,45 @@ message RwkvHistoricalReviewFingerprintResponse {
   // it matches the first review_count reviews and every later review is
   // newer, so only those later reviews need replaying.
   bool history_prefix_is_valid = 7;
+}
+
+// Full collection replay preparation. Incremental and deck-scoped replay use
+// their existing desktop path.
+message RwkvHistoricalReviewInputsRequest {
+  RwkvHistoricalReviewFingerprintRequest history = 1;
+  map<int64, int64> preserved_learning_start_cutoffs = 2;
+  optional bool first_review_uses_creation = 3;
+  optional int64 recovery_checkpoint_max_age_millis = 4;
+}
+
+message RwkvHistoricalReviewMetadata {
+  RwkvHistoricalReviewIdentity identity = 1;
+  map<int64, int64> previous_review_id_by_card = 2;
+  map<int64, int64> previous_interval_days_by_card = 3;
+  map<int64, uint32> review_count_by_card = 4;
+}
+
+message RwkvHistoricalReviewInputsResponse {
+  message Review {
+    int64 review_id = 1;
+    int64 card_id = 2;
+    int64 note_id = 3;
+    int64 deck_id = 4;
+    int64 preset_id = 5;
+    int64 ease = 6;
+    int64 duration_millis = 7;
+    int64 review_kind = 8;
+    int64 interval_days = 9;
+    int64 ease_factor = 10;
+    int64 card_type = 11;
+    int64 day_offset = 12;
+    int64 elapsed_days = 13;
+    int64 elapsed_seconds = 14;
+  }
+  repeated Review reviews = 1;
+  RwkvHistoricalReviewMetadata metadata = 2;
+  RwkvHistoricalReviewMetadata recovery_checkpoint = 3;
+  repeated int64 active_ignored_review_ids = 4;
 }
 
 message FuzzDeltaRequest {

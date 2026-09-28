@@ -1106,6 +1106,13 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
         Collection::rwkv_historical_review_fingerprint(self, input)
     }
+
+    fn rwkv_historical_review_inputs(
+        &mut self,
+        input: anki_proto::scheduler::RwkvHistoricalReviewInputsRequest,
+    ) -> Result<anki_proto::scheduler::RwkvHistoricalReviewInputsResponse> {
+        Collection::rwkv_historical_review_inputs(self, input)
+    }
 }
 
 fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: bool) -> bool {

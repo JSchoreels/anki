@@ -35,7 +35,16 @@ use crate::search::SortMode;
 use crate::search::StateKind;
 use crate::storage::RwkvHistoricalReviewRow;
 
+mod history;
+
 const RWKV_HISTORY_HASH_DOMAIN: &[u8] = b"anki-rwkv-state-cache-history-v1\0";
+
+#[derive(Default)]
+struct RwkvHistoricalReplayOptions {
+    preserved_learning_start_cutoffs: HashMap<i64, i64>,
+    first_review_uses_creation: Option<bool>,
+    recovery_checkpoint_max_age_millis: Option<i64>,
+}
 
 pub(crate) struct RwkvReviewRescheduleItem {
     pub(crate) card_id: CardId,
@@ -50,6 +59,19 @@ impl Collection {
         &mut self,
         input: RwkvHistoricalReviewFingerprintRequest,
     ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+        self.visit_rwkv_historical_reviews(input, Default::default(), |_, _, _| {})
+    }
+
+    /// Share canonical replay semantics between cache validation and rebuilds.
+    /// The visitor receives each retained review after hashing it, so
+    /// checkpoint metadata and its identity describe exactly the same
+    /// chronological prefix.
+    fn visit_rwkv_historical_reviews(
+        &mut self,
+        input: RwkvHistoricalReviewFingerprintRequest,
+        options: RwkvHistoricalReplayOptions,
+        mut visit: impl FnMut(RwkvHistoricalFingerprintReview, [u8; 32], bool),
+    ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
         let started = std::time::Instant::now();
         let mut ignored_review_ids = input
             .ignored_review_ids
@@ -58,10 +80,19 @@ impl Collection {
             .collect::<Vec<_>>();
         ignored_review_ids.sort_unstable();
         ignored_review_ids.dedup();
-        let (rows, active_ignored_review_ids) = self
-            .storage
-            .rwkv_historical_review_rows(&ignored_review_ids)?;
+        let (rows, active_ignored_review_ids) =
+            self.storage.rwkv_historical_review_rows_with_cutoffs(
+                &ignored_review_ids,
+                &options.preserved_learning_start_cutoffs,
+            )?;
         let queried_review_count = rows.len() as u64;
+        let checkpoint_review_count = options.recovery_checkpoint_max_age_millis.and_then(|age| {
+            let cutoff = rows.last()?.review_id - age;
+            // Match the desktop checkpoint: retain at least one review in the
+            // prefix, and leave at least one review for recovery replay.
+            let count = rows.partition_point(|row| row.review_id <= cutoff).max(1);
+            (count < rows.len()).then_some(count)
+        });
         let timing = self.timing_today()?;
 
         let card_ids = rows
@@ -116,12 +147,14 @@ impl Collection {
                     ((row.review_id - previous_review_id) / 1000).max(0),
                 )
             } else if row.is_learning_start
-                && rwkv_first_review_uses_card_creation(
-                    row.deck_id,
-                    &decks_by_id,
-                    &configs_by_id,
-                    &input.first_review_uses_creation_by_config_id,
-                )
+                && options.first_review_uses_creation.unwrap_or_else(|| {
+                    rwkv_first_review_uses_card_creation(
+                        row.deck_id,
+                        &decks_by_id,
+                        &configs_by_id,
+                        &input.first_review_uses_creation_by_config_id,
+                    )
+                })
             {
                 let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
                 (elapsed_seconds / 86_400, elapsed_seconds)
@@ -141,15 +174,18 @@ impl Collection {
             previous_interval_days_by_card.insert(card_id, row.interval_days);
             review_count_by_card.insert(card_id, review_count_so_far + 1);
             last_review_id = last_review_id.max(row.review_id);
-            history_hash = rwkv_history_hash_after_review(
+            let review = RwkvHistoricalFingerprintReview {
+                row,
+                stable_preset_id,
+                day_offset,
+                elapsed_days,
+                elapsed_seconds,
+            };
+            history_hash = rwkv_history_hash_after_review(history_hash, &review);
+            visit(
+                review,
                 history_hash,
-                &RwkvHistoricalFingerprintReview {
-                    row,
-                    stable_preset_id,
-                    day_offset,
-                    elapsed_days,
-                    elapsed_seconds,
-                },
+                Some(index + 1) == checkpoint_review_count,
             );
             if Some(index as u64 + 1) == expected_prefix_len {
                 prefix_matches_expected =

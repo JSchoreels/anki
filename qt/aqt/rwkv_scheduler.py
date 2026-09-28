@@ -18016,18 +18016,7 @@ def _replay_rwkv_cache_reviews(
         warm_up(reviews)
 
 
-def _rwkv_historical_review_fingerprint(
-    reviewer: object,
-    *,
-    ignored_review_ids: Sequence[int] = (),
-    expected_identity: _RwkvHistoryPrefixIdentity | None = None,
-) -> _RwkvHistoricalReviewFingerprint | None:
-    col = _collection(reviewer)
-    backend = getattr(col, "_backend", None)
-    fingerprint = getattr(backend, "rwkv_historical_review_fingerprint", None)
-    if not callable(fingerprint):
-        return None
-
+def _rwkv_history_stable_preset_ids(reviewer: object) -> dict[str, int]:
     stable_preset_ids: dict[str, int] = {}
     overlay = _fsrs_preset_overlay_config(reviewer)
     if overlay is not None:
@@ -18043,24 +18032,41 @@ def _rwkv_historical_review_fingerprint(
                 )
                 if isinstance(preset_id, str) and preset_id:
                     stable_preset_ids[preset_id] = _stable_preset_id(preset_id)
+    return stable_preset_ids
+
+
+def _rwkv_first_review_uses_creation_by_config_id(reviewer: object) -> dict[int, bool]:
+    # Both native validation and preparation need Python's effective policy,
+    # including legacy settings absent from Rust's structured deck config.
+    return {
+        config_id: uses_creation
+        for config_id, uses_creation in _rwkv_first_review_elapsed_config_key(reviewer)
+        if isinstance(config_id, int) and isinstance(uses_creation, bool)
+    }
+
+
+def _rwkv_historical_review_fingerprint(
+    reviewer: object,
+    *,
+    ignored_review_ids: Sequence[int] = (),
+    expected_identity: _RwkvHistoryPrefixIdentity | None = None,
+) -> _RwkvHistoricalReviewFingerprint | None:
+    col = _collection(reviewer)
+    backend = getattr(col, "_backend", None)
+    fingerprint = getattr(backend, "rwkv_historical_review_fingerprint", None)
+    if not callable(fingerprint):
+        return None
 
     start = time.monotonic()
     try:
-        first_review_uses_creation_by_config_id = {
-            config_id: uses_creation
-            for config_id, uses_creation in _rwkv_first_review_elapsed_config_key(
-                reviewer
-            )
-            if isinstance(config_id, int) and isinstance(uses_creation, bool)
-        }
         response = fingerprint(
             ignored_review_ids=ignored_review_ids,
             dynamic_preset_replay=(
                 _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
             ),
-            stable_preset_ids=stable_preset_ids,
+            stable_preset_ids=_rwkv_history_stable_preset_ids(reviewer),
             first_review_uses_creation_by_config_id=(
-                first_review_uses_creation_by_config_id
+                _rwkv_first_review_uses_creation_by_config_id(reviewer)
             ),
             expected_identity=(
                 scheduler_pb2.RwkvHistoricalReviewIdentity(
@@ -18168,6 +18174,36 @@ def _historical_rwkv_review_inputs(
         previous_history_hash
     ):
         raise ValueError("invalid previous RWKV history identity")
+
+    # Full collection rebuilds share Rust's canonical fingerprint traversal.
+    # Keep scoped/suffix replay here: it consumes caller-supplied prefix maps.
+    if all(
+        value is None
+        for value in (
+            after_review_id,
+            deck_id,
+            previous_review_id_by_card,
+            previous_interval_days_by_card,
+            review_count_by_card,
+            previous_history_hash,
+        )
+    ):
+        backend = getattr(_collection(reviewer), "_backend", None)
+        build_history = getattr(backend, "rwkv_historical_review_inputs", None)
+        if callable(build_history):
+            from aqt.rwkv_history import full_review_inputs
+
+            native_history = full_review_inputs(
+                reviewer,
+                build_history,
+                replay_key=replay_key,
+                first_review_elapsed_source=first_review_elapsed_source,
+                ignored_review_ids=ignored_review_ids,
+                prepare_recovery_checkpoint=prepare_recovery_checkpoint,
+                progress=progress,
+            )
+            if native_history is not None:
+                return native_history
     history_hash = (
         previous_history_hash
         if previous_history_hash is not None
@@ -18244,26 +18280,13 @@ def _historical_rwkv_review_inputs(
             _rwkv_preserved_learning_start_cutoffs(reviewer)
         ),
     )
-    recovery_cutoff_review_id: int | None = None
-    if prepare_recovery_checkpoint:
-        for raw_row_index in range(len(raw_rows) - 1, -1, -1):
-            row = raw_rows[raw_row_index]
-            if (
-                _benchmark_retained_historical_review_state(
-                    raw_row_index,
-                    row,
-                    retained_start_by_card,
-                )
-                is None
-                or len(row) < 9
-                or not isinstance(row[0], int)
-                or (after_review_id is not None and row[0] <= after_review_id)
-            ):
-                continue
-            recovery_cutoff_review_id = (
-                row[0] - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-            )
-            break
+    recovery_cutoff_review_id = (
+        _historical_rwkv_recovery_cutoff(
+            raw_rows, retained_start_by_card, after_review_id
+        )
+        if prepare_recovery_checkpoint
+        else None
+    )
 
     def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
         for index, row in enumerate(raw_rows):
@@ -18536,6 +18559,27 @@ def _historical_rwkv_review_inputs(
         ignored_review_ids=active_ignored_review_ids,
         prepared_checkpoint_histories=prepared_checkpoint_histories,
     )
+
+
+def _historical_rwkv_recovery_cutoff(
+    rows: Sequence[Sequence[object]],
+    retained_start_by_card: Mapping[int, tuple[int, bool]],
+    after_review_id: int | None,
+) -> int | None:
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if (
+            _benchmark_retained_historical_review_state(
+                index, row, retained_start_by_card
+            )
+            is None
+            or len(row) < 9
+            or not isinstance(row[0], int)
+            or (after_review_id is not None and row[0] <= after_review_id)
+        ):
+            continue
+        return row[0] - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+    return None
 
 
 def _historical_rwkv_replay_rows(

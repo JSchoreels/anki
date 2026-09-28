@@ -587,9 +587,18 @@ impl SqliteStorage {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn rwkv_historical_review_rows(
         &self,
         ignored_review_ids: &[RevlogId],
+    ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
+        self.rwkv_historical_review_rows_with_cutoffs(ignored_review_ids, &HashMap::new())
+    }
+
+    pub(crate) fn rwkv_historical_review_rows_with_cutoffs(
+        &self,
+        ignored_review_ids: &[RevlogId],
+        preserved_learning_start_cutoffs: &HashMap<i64, i64>,
     ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
         let (ignored_clause, active_ignored_review_ids) = if ignored_review_ids.is_empty() {
             (String::new(), Vec::new())
@@ -652,7 +661,7 @@ order by r.id"
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        retain_rwkv_rows_from_latest_learning_start(&mut rows);
+        retain_rwkv_rows_from_latest_learning_start(&mut rows, preserved_learning_start_cutoffs);
 
         Ok((rows, active_ignored_review_ids))
     }
@@ -761,8 +770,12 @@ order by r.id"
 /// Drops each card's reviews before its latest learning start, where a
 /// learning start is a learning review not preceded by another learning
 /// review. Cards without one keep their full history. `rows` must be in
-/// review id order.
-fn retain_rwkv_rows_from_latest_learning_start(rows: &mut Vec<RwkvHistoricalReviewRow>) {
+/// review id order. A preserved cutoff prevents later learning sequences from
+/// replacing that card's replay start; those later reviews are still replayed.
+fn retain_rwkv_rows_from_latest_learning_start(
+    rows: &mut Vec<RwkvHistoricalReviewRow>,
+    preserved_learning_start_cutoffs: &HashMap<i64, i64>,
+) {
     struct CardReplayStart {
         previous_kind: i64,
         latest_learning_start: Option<i64>,
@@ -770,17 +783,21 @@ fn retain_rwkv_rows_from_latest_learning_start(rows: &mut Vec<RwkvHistoricalRevi
     }
     let mut starts: HashMap<i64, CardReplayStart> = HashMap::new();
     for row in rows.iter() {
+        let may_start_learning = row.review_kind == 0
+            && !preserved_learning_start_cutoffs
+                .get(&row.card_id)
+                .is_some_and(|cutoff| row.review_id > *cutoff);
         match starts.entry(row.card_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(CardReplayStart {
                     previous_kind: row.review_kind,
-                    latest_learning_start: (row.review_kind == 0).then_some(row.review_id),
+                    latest_learning_start: may_start_learning.then_some(row.review_id),
                     first_review_id: row.review_id,
                 });
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let start = entry.get_mut();
-                if row.review_kind == 0 && start.previous_kind != 0 {
+                if may_start_learning && start.previous_kind != 0 {
                     start.latest_learning_start = Some(row.review_id);
                 }
                 start.previous_kind = row.review_kind;
@@ -790,7 +807,7 @@ fn retain_rwkv_rows_from_latest_learning_start(rows: &mut Vec<RwkvHistoricalRevi
     rows.retain_mut(|row| {
         let start = &starts[&row.card_id];
         let start_id = start.latest_learning_start.unwrap_or(start.first_review_id);
-        row.is_learning_start = row.review_id == start_id && row.review_kind == 0;
+        row.is_learning_start = Some(row.review_id) == start.latest_learning_start;
         row.review_id >= start_id
     });
 }
@@ -1401,6 +1418,63 @@ mod tests {
             }
         }
         Ok(review_times)
+    }
+
+    #[test]
+    fn rwkv_historical_rows_preserve_learning_start_at_cutoff() {
+        for (cutoff, expected_ids, expected_starts) in [
+            (None, vec![3, 5, 6, 7, 8], vec![3, 5]),
+            (Some((1, 2)), vec![2, 3, 4, 5, 6, 7, 8], vec![2, 3]),
+            (Some((1, 5)), vec![3, 5, 6, 7, 8], vec![3, 5]),
+            (Some((1, 0)), vec![1, 2, 3, 4, 5, 6, 7, 8], vec![3]),
+            // A card whose first review is a preserved learning review keeps
+            // its history without marking that review as a learning start.
+            (Some((2, 0)), vec![3, 5, 6, 7, 8], vec![5]),
+        ] {
+            let mut rows = [
+                (1, 1, 1),
+                (2, 1, 0),
+                (3, 2, 0),
+                (4, 1, 1),
+                (5, 1, 0),
+                (6, 2, 1),
+                (7, 1, 0),
+                (8, 1, 1),
+            ]
+            .into_iter()
+            .map(
+                |(review_id, card_id, review_kind)| RwkvHistoricalReviewRow {
+                    review_id,
+                    card_id,
+                    review_kind,
+                    note_id: card_id,
+                    deck_id: 1,
+                    ease: 3,
+                    duration_millis: 1_000,
+                    interval_days: 1,
+                    ease_factor: 2_500,
+                    is_learning_start: false,
+                },
+            )
+            .collect::<Vec<_>>();
+            let cutoffs = cutoff.into_iter().collect();
+
+            retain_rwkv_rows_from_latest_learning_start(&mut rows, &cutoffs);
+
+            assert_eq!(
+                rows.iter().map(|row| row.review_id).collect::<Vec<_>>(),
+                expected_ids,
+                "cutoff: {cutoff:?}"
+            );
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.is_learning_start)
+                    .map(|row| row.review_id)
+                    .collect::<Vec<_>>(),
+                expected_starts,
+                "cutoff: {cutoff:?}"
+            );
+        }
     }
 
     /// The window-function query `rwkv_historical_review_rows` used before the

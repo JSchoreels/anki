@@ -1050,6 +1050,18 @@ no valid cache exists, Anki replays historical revlog answer rows for existing
 cards in chronological order and then writes a fresh local cache snapshot.
 UI-time prediction hooks only use that warmed state after it is ready.
 
+Full collection history preparation shares the Rust fingerprint traversal:
+history filtering, elapsed times, preset routing, per-card replay metadata,
+history hashing, and the recovery checkpoint are computed together in Rust.
+The desktop converts the returned review rows to its existing replay inputs.
+Explicit first-review elapsed overrides, ignored review ids, and preserved
+learning-start cutoffs retain the same semantics. Deck-scoped and incremental
+replay continue to use the desktop builder and its caller-supplied prefix maps.
+If the native preparation call fails, a warning records the error and the desktop
+builder retries the full history. An interrupted call is re-raised, not retried;
+progress callbacks, which can cancel preparation, run before and after it.
+This changes neither the persisted cache format nor the model's replay math.
+
 Historical replay in the embedded Rust runtime uses a bulk sequence-mode path.
 Pointwise work (norms, lerp mixes, projections, loras, heads) runs in parallel
 across reviews, while recurrent-state updates stay sequential within each card,
@@ -1095,6 +1107,15 @@ prediction parity and reports payload creation, native bridge calls, prediction
 object creation, and memo lookup/install/clear costs separately. Use an optimized
 build for native throughput comparisons. `--profile-history PATH` writes a
 separate Python profile; its instrumented timings are not throughput measurements.
+Use `--compare-history` to also time the Python replay builder and compare every
+review input, all final per-card metadata, and recovery checkpoint metadata with
+the native full-history result. This enables checkpoint preparation in both
+builders; the output reports the compared checkpoint prefix lengths.
+
+On 2026-09-28, preparation of 223,463 canonical reviews from a copied backup
+took a median 1.40s through the native builder versus 3.06s through Python.
+Every replay input and final metadata field matched. The 8,900-card prediction
+reference also matched exactly, including ordering.
 
 For native arithmetic comparisons, use `--prediction-output PATH` on the
 baseline build, then `--prediction-reference PATH` on later builds. The reference
