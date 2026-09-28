@@ -95,6 +95,9 @@ repeated here unless they materially affect a fork feature.
   of 250 cards took 65s instead of 80s, with identical results, and scoring
   an 8,900-card deck's RWKV review queue took 78ms instead of 97ms, with
   retrievabilities within 0.0000002 and an unchanged card order.
+- Rescore the RWKV review queue faster after each answer on Apple Silicon,
+  with identical scores and card order; scoring an 8,900-card deck took about
+  82ms instead of 93ms.
 - Recompute RWKV calibration data with less overhead and memory. The current
   RWKV state is now set aside during the replay instead of being copied; on a
   223,000-review collection, this took 0.1s instead of 1.2s, used 1.3 GB less

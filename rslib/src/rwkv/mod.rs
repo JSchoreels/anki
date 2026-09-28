@@ -31,6 +31,8 @@ mod bulk;
 mod collection_benchmark;
 #[cfg(target_os = "macos")]
 mod matmul;
+#[cfg(target_arch = "aarch64")]
+mod query_kernels;
 #[cfg(test)]
 mod query_math_bench;
 
@@ -5765,22 +5767,17 @@ impl TimeMixer {
         debug_assert_eq!(v0.len(), rows * D_MODEL);
 
         self.layer_norm.apply_batch(input, rows, &mut scratch.x);
-        for (mix_id, mixed) in scratch.mixed.iter_mut().enumerate() {
+        for mixed in &mut scratch.mixed {
             mixed.resize(rows * D_MODEL, 0.0);
-            let lerp_weights = &self.rkvdag_lerp[mix_id * D_MODEL..(mix_id + 1) * D_MODEL];
-            mixed
-                .chunks_mut(D_MODEL)
-                .enumerate()
-                .for_each(|(row, mixed)| {
-                    let x = &scratch.x[row * D_MODEL..(row + 1) * D_MODEL];
-                    let x_shift = items[row]
-                        .layer_state(module_id, layer_id)
-                        .and_then(|state| state.time.as_ref())
-                        .map_or(x, |state| state.x_shift.as_slice());
-                    for channel in 0..D_MODEL {
-                        mixed[channel] = lerp(x[channel], x_shift[channel], lerp_weights[channel]);
-                    }
-                });
+        }
+        // Resolve each row's shift state once for all eight mixes.
+        for (row, item) in items.iter().enumerate() {
+            let x = &scratch.x[row * D_MODEL..(row + 1) * D_MODEL];
+            let x_shift = item
+                .layer_state(module_id, layer_id)
+                .and_then(|state| state.time.as_ref())
+                .map_or(x, |state| state.x_shift.as_slice());
+            time_shift_mix_row(x, x_shift, &self.rkvdag_lerp, &mut scratch.mixed, row);
         }
 
         self.w_r
@@ -5843,21 +5840,13 @@ impl TimeMixer {
         scratch
             .k
             .chunks_mut(D_MODEL)
-            .enumerate()
-            .for_each(|(row, k)| {
-                normalize_heads_in_place(k);
-                let scales = &scratch.k_scale[row * HEADS..(row + 1) * HEADS];
-                scale_heads_in_place(k, scales);
-            });
+            .zip(scratch.k_scale.chunks(HEADS))
+            .for_each(|(k, scales)| normalize_scale_heads_in_place(k, scales));
         scratch
             .v
             .chunks_mut(D_MODEL)
-            .enumerate()
-            .for_each(|(row, v)| {
-                normalize_heads_in_place(v);
-                let scales = &scratch.v_scale[row * HEADS..(row + 1) * HEADS];
-                scale_heads_in_place(v, scales);
-            });
+            .zip(scratch.v_scale.chunks(HEADS))
+            .for_each(|(v, scales)| normalize_scale_heads_in_place(v, scales));
 
         scratch.k_deformed.resize(rows * D_MODEL, 0.0);
         scratch.k_deformed.copy_from_slice(&scratch.k);
@@ -5897,22 +5886,15 @@ impl TimeMixer {
             .chunks_mut(D_MODEL)
             .enumerate()
             .for_each(|(row, output)| {
-                let base = row * D_MODEL;
-                for head in 0..HEADS {
-                    let head_base = head * HEAD_SIZE;
-                    let mut bonus_scale = 0.0;
-                    for index in 0..HEAD_SIZE {
-                        let channel = base + head_base + index;
-                        bonus_scale +=
-                            scratch.r[channel] * self.bonus[head_base + index] * scratch.k[channel];
-                    }
-                    for index in 0..HEAD_SIZE {
-                        let local_channel = head_base + index;
-                        let channel = base + local_channel;
-                        output[local_channel] = scratch.g[channel]
-                            * (output[local_channel] + bonus_scale * scratch.v[channel]);
-                    }
-                }
+                let range = row * D_MODEL..(row + 1) * D_MODEL;
+                bonus_gate_in_place(
+                    output,
+                    &scratch.r[range.clone()],
+                    &self.bonus,
+                    &scratch.k[range.clone()],
+                    &scratch.v[range.clone()],
+                    &scratch.g[range],
+                );
             });
 
         self.w_o.apply_batch(&scratch.temp, rows, out);
@@ -7196,12 +7178,53 @@ impl Norm {
 
     #[cfg(any(target_os = "macos", test))]
     fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
-        debug_assert_eq!(input.len(), rows * self.dim);
+        assert_eq!(input.len(), rows * self.dim);
         out.resize(rows * self.dim, 0.0);
         // Accumulate independent rows together, keeping each row's reduction
         // order unchanged so SIMD does not change normalization results.
         const LANES: usize = 4;
         let group_size = self.dim / self.groups;
+
+        #[cfg(target_arch = "aarch64")]
+        if group_size % 4 == 0 && group_size * self.groups == self.dim {
+            assert!(self.weight.len() == self.dim && self.bias.len() == self.dim);
+            let mut row = 0;
+            // SAFETY: aarch64 guarantees NEON support. Each call reads and
+            // writes the `4 * BLOCKS` complete rows starting at `row`, which
+            // lie within the lengths checked above.
+            unsafe {
+                while row + 16 <= rows {
+                    query_kernels::norm_rows_neon::<4>(
+                        input.as_ptr().add(row * self.dim),
+                        out.as_mut_ptr().add(row * self.dim),
+                        self.dim,
+                        self.groups,
+                        self.eps,
+                        &self.weight,
+                        &self.bias,
+                    );
+                    row += 16;
+                }
+                while row + 4 <= rows {
+                    query_kernels::norm_rows_neon::<1>(
+                        input.as_ptr().add(row * self.dim),
+                        out.as_mut_ptr().add(row * self.dim),
+                        self.dim,
+                        self.groups,
+                        self.eps,
+                        &self.weight,
+                        &self.bias,
+                    );
+                    row += 4;
+                }
+            }
+            out[row * self.dim..]
+                .chunks_mut(self.dim)
+                .zip(input[row * self.dim..].chunks(self.dim))
+                .for_each(|(output, input)| self.apply_into(input, output));
+            return;
+        }
+
         let mut inputs = input.chunks_exact(self.dim * LANES);
         let mut outputs = out.chunks_exact_mut(self.dim * LANES);
         for (input, output) in inputs.by_ref().zip(outputs.by_ref()) {
@@ -7476,11 +7499,40 @@ fn single_timestep_query_fast_into(
     state: Option<&[f32]>,
     out: &mut [f32],
 ) {
-    debug_assert_eq!(out.len(), D_MODEL);
-    debug_assert!(
+    assert!(
+        [r, k, v, w, a, k_deformed]
+            .iter()
+            .all(|values| values.len() == D_MODEL)
+            && out.len() == D_MODEL
+    );
+    assert!(
         state.is_none() || state.is_some_and(|state| state.len() == HEADS * HEAD_SIZE * HEAD_SIZE)
     );
 
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: aarch64 guarantees NEON support, and every slice length was
+    // checked above; the kernel only reads and writes within those lengths.
+    unsafe {
+        query_kernels::single_timestep_query_fast_neon(r, k, v, w, a, k_deformed, state, out);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    single_timestep_query_fast_scalar(r, k, v, w, a, k_deformed, state, out);
+}
+
+/// Portable reference for `single_timestep_query_fast_into()`.
+#[cfg(any(not(target_arch = "aarch64"), test))]
+#[allow(clippy::too_many_arguments)]
+fn single_timestep_query_fast_scalar(
+    r: &[f32],
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    k_deformed: &[f32],
+    state: Option<&[f32]>,
+    out: &mut [f32],
+) {
     for head in 0..HEADS {
         let head_base = head * HEAD_SIZE;
         let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
@@ -7531,7 +7583,99 @@ fn normalize_heads_in_place(values: &mut [f32]) {
     }
 }
 
+/// Writes row `row` of all eight time-mix inputs,
+/// `mixed[mix] = lerp(x, x_shift, lerp_weights[mix])`, in one pass. Sharing
+/// `x_shift - x` between the mixes keeps `lerp()`'s exact arithmetic.
 #[cfg(any(target_os = "macos", test))]
+fn time_shift_mix_row(
+    x: &[f32],
+    x_shift: &[f32],
+    lerp_weights: &[f32],
+    mixed: &mut [Vec<f32>; 8],
+    row: usize,
+) {
+    assert!(x.len() == D_MODEL && x_shift.len() == D_MODEL);
+    assert_eq!(lerp_weights.len(), mixed.len() * D_MODEL);
+    let mut shift_delta = [0.0; D_MODEL];
+    for channel in 0..D_MODEL {
+        shift_delta[channel] = x_shift[channel] - x[channel];
+    }
+    for (mixed, weights) in mixed.iter_mut().zip(lerp_weights.chunks_exact(D_MODEL)) {
+        let mixed = &mut mixed[row * D_MODEL..(row + 1) * D_MODEL];
+        for channel in 0..D_MODEL {
+            mixed[channel] = x[channel] + weights[channel] * shift_delta[channel];
+        }
+    }
+}
+
+/// `normalize_heads_in_place()` followed by `scale_heads_in_place()`.
+#[cfg(any(target_os = "macos", test))]
+fn normalize_scale_heads_in_place(values: &mut [f32], scales: &[f32]) {
+    assert!(values.len() == D_MODEL && scales.len() == HEADS);
+
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: aarch64 guarantees NEON support, and both lengths were checked
+    // above; the kernel only accesses elements within them.
+    unsafe {
+        query_kernels::normalize_scale_heads_neon(values, scales);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        normalize_heads_in_place(values);
+        scale_heads_in_place(values, scales);
+    }
+}
+
+/// Adds the per-head bonus to the group-normed recurrence output and applies
+/// the output gate: `output = g * (output + sum_head(r * bonus * k) * v)`.
+#[cfg(any(target_os = "macos", test))]
+fn bonus_gate_in_place(
+    output: &mut [f32],
+    r: &[f32],
+    bonus: &[f32],
+    k: &[f32],
+    v: &[f32],
+    g: &[f32],
+) {
+    assert!([&*output, r, bonus, k, v, g]
+        .iter()
+        .all(|values| values.len() == D_MODEL));
+
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: aarch64 guarantees NEON support, and every length was checked
+    // above; the kernel only accesses elements within them.
+    unsafe {
+        query_kernels::bonus_gate_neon(output, r, bonus, k, v, g);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    bonus_gate_scalar(output, r, bonus, k, v, g);
+}
+
+/// Portable reference for `bonus_gate_in_place()`.
+#[cfg(any(all(target_os = "macos", not(target_arch = "aarch64")), test))]
+fn bonus_gate_scalar(
+    output: &mut [f32],
+    r: &[f32],
+    bonus: &[f32],
+    k: &[f32],
+    v: &[f32],
+    g: &[f32],
+) {
+    for head in 0..HEADS {
+        let head_base = head * HEAD_SIZE;
+        let mut bonus_scale = 0.0;
+        for channel in head_base..head_base + HEAD_SIZE {
+            bonus_scale += r[channel] * bonus[channel] * k[channel];
+        }
+        for channel in head_base..head_base + HEAD_SIZE {
+            output[channel] = g[channel] * (output[channel] + bonus_scale * v[channel]);
+        }
+    }
+}
+
+#[cfg(any(all(target_os = "macos", not(target_arch = "aarch64")), test))]
 fn scale_heads_in_place(values: &mut [f32], scales: &[f32]) {
     debug_assert_eq!(values.len(), D_MODEL);
     debug_assert_eq!(scales.len(), HEADS);
@@ -10203,6 +10347,110 @@ order by e.id, e.cid
         });
         check("tanh", query_tanh_batch_in_place, &f32::tanh);
         check("decay", query_decay_batch_in_place, &query_decay);
+    }
+
+    /// Deterministic values spanning signs, zeros and several magnitudes, so
+    /// vectorized reductions cannot hide a reordering behind uniform inputs.
+    fn varied_values(len: usize, seed: u32) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                let phase = (index as u32)
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(seed);
+                let magnitude = [1e-6, 0.03, 0.7, 5.0, 300.0][(phase >> 7) as usize % 5];
+                match phase % 29 {
+                    0 => 0.0,
+                    1 => -0.0,
+                    _ => ((phase % 997) as f32 / 498.5 - 1.0) * magnitude,
+                }
+            })
+            .collect()
+    }
+
+    fn bits(values: &[f32]) -> Vec<u32> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    #[test]
+    fn query_timestep_kernel_matches_scalar_bits() {
+        let [r, k, v, w, a, k_deformed] =
+            std::array::from_fn(|seed| varied_values(D_MODEL, seed as u32 + 1));
+        let w = w
+            .iter()
+            .map(|value| value.abs().min(1.0))
+            .collect::<Vec<_>>();
+        let state = varied_values(HEADS * HEAD_SIZE * HEAD_SIZE, 17);
+
+        for state in [None, Some(state.as_slice())] {
+            let mut expected = [0.0; D_MODEL];
+            single_timestep_query_fast_scalar(
+                &r,
+                &k,
+                &v,
+                &w,
+                &a,
+                &k_deformed,
+                state,
+                &mut expected,
+            );
+            let mut actual = [0.0; D_MODEL];
+            single_timestep_query_fast_into(&r, &k, &v, &w, &a, &k_deformed, state, &mut actual);
+
+            assert_eq!(bits(&actual), bits(&expected), "state: {}", state.is_some());
+        }
+    }
+
+    #[test]
+    fn fused_head_normalization_matches_separate_passes_bits() {
+        let mut zero_head = varied_values(D_MODEL, 3);
+        zero_head[HEAD_SIZE..2 * HEAD_SIZE].fill(0.0);
+        for values in [varied_values(D_MODEL, 5), zero_head] {
+            let scales = [0.25, -1.5, 1.0, 3e-3];
+            let mut expected = values.clone();
+            normalize_heads_in_place(&mut expected);
+            scale_heads_in_place(&mut expected, &scales);
+            let mut actual = values;
+            normalize_scale_heads_in_place(&mut actual, &scales);
+
+            assert_eq!(bits(&actual), bits(&expected));
+        }
+    }
+
+    #[test]
+    fn fused_time_shift_mix_matches_per_mix_lerp_bits() {
+        let lerp_weights = varied_values(8 * D_MODEL, 60);
+        let x = varied_values(D_MODEL, 61);
+        let x_shift = varied_values(D_MODEL, 62);
+        // A row without time state uses its own input as the shift.
+        for (row, x_shift) in [(0, &x_shift), (2, &x)] {
+            let mut mixed: [Vec<f32>; 8] = std::array::from_fn(|_| vec![7.0; 3 * D_MODEL]);
+            time_shift_mix_row(&x, x_shift, &lerp_weights, &mut mixed, row);
+
+            for (mix, (mixed, weights)) in
+                mixed.iter().zip(lerp_weights.chunks(D_MODEL)).enumerate()
+            {
+                let expected = (0..D_MODEL)
+                    .map(|channel| lerp(x[channel], x_shift[channel], weights[channel]))
+                    .collect::<Vec<_>>();
+                let rows = mixed.chunks(D_MODEL).collect::<Vec<_>>();
+                assert_eq!(bits(rows[row]), bits(&expected), "mix {mix} row {row}");
+                for other in (0..3).filter(|other| *other != row) {
+                    assert!(rows[other].iter().all(|value| *value == 7.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bonus_gate_kernel_matches_scalar_bits() {
+        let [output, r, bonus, k, v, g] =
+            std::array::from_fn(|seed| varied_values(D_MODEL, seed as u32 + 40));
+        let mut expected = output.clone();
+        bonus_gate_scalar(&mut expected, &r, &bonus, &k, &v, &g);
+        let mut actual = output;
+        bonus_gate_in_place(&mut actual, &r, &bonus, &k, &v, &g);
+
+        assert_eq!(bits(&actual), bits(&expected));
     }
 
     #[test]
