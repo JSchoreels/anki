@@ -43,6 +43,7 @@ fn build_sveltekit(build: &mut Build) -> Result<()> {
         SveltekitBuild {
             output_folder: inputs!["sveltekit"],
             deps: inputs![
+                ".version",
                 "ts/tsconfig.json",
                 glob!["ts/**", "ts/.svelte-kit/**"],
                 ":ts:lib"

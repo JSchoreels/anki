@@ -24,6 +24,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Restore deck options and other web pages that could open blank after a build
+  ran alongside the web checks.
 - Include parent RWKV daily review minimums in subdeck counts when parent
   limits apply, so the deck list reflects the reviews available after opening
   a subdeck.

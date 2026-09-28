@@ -1,5 +1,6 @@
 import adapter from "@sveltejs/adapter-static";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import preprocess from "svelte-preprocess";
 import { fileURLToPath } from "url";
@@ -14,6 +15,9 @@ const config = {
     preprocess: [vitePreprocess(), preprocess()],
 
     kit: {
+        // Builds and svelte-check both generate server options in .svelte-kit.
+        // Use the same version so the HTML and client agree on the payload name.
+        version: { name: readFileSync(join(tsFolder, "../.version"), "utf8").trim() },
         adapter: adapter(
             { pages: "../out/sveltekit", fallback: "index.html", precompress: false },
         ),
