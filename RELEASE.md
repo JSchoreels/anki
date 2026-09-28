@@ -48,6 +48,9 @@ repeated here unless they materially affect a fork feature.
 
 ### Improved
 
+- Resolve FSRS preset rules faster at RWKV startup when rules search specific
+  note fields. On a 223,000-review collection, the first preset-matching pass
+  took about 185ms instead of 290ms, with identical matches and history checks.
 - Show ordinary statistics while the RWKV model is warming up, then refresh
   the RWKV graphs when scores become available.
 - Load the saved RWKV state faster at startup; restoring a 1.3 GB state took

@@ -338,6 +338,15 @@ Checkpoint construction and recovery validation derive all requested history
 prefixes in one chronological pass, and repeated model-identity checks reuse
 the content hash until the model file changes.
 
+The modification-marker shortcut is deliberately conservative. A changed
+add-on setting can force a fingerprint even if the resulting history is
+identical; setting an already identical config value does not advance the
+marker. Startup hooks run before the restore and may also change notes, cards,
+or preset routing, so their writes cannot all be ignored. In particular, the
+current preset overlay affects historical card identities even when dynamic
+preset replay is disabled. Skipping validation after startup writes would
+require proving that those writes preserved the replay inputs.
+
 Developers can compare the canonical Python builder with the Rust fingerprint
 on an explicit copied collection database. The command refuses an omitted path;
 never pass a live profile database:

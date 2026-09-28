@@ -164,6 +164,16 @@ each card's deck config separately. This shared selection applies to stats,
 search, reviewer refreshes, and other callers without requiring them to choose a
 resolution strategy.
 
+Field-qualified regular expressions inspect only the requested fields. The
+SQLite search function splits the borrowed note-field bytes before validating
+the selected fields' UTF-8 and stops after the last requested field, so a
+nonmatching `Front:` rule does not scan large HTML fields later in the note.
+On a copied 223,463-review collection with 11 overlay rules, the initial preset
+matching pass fell from about 290 ms to 185 ms; every rule's matching card ids
+and the complete RWKV history fingerprint were unchanged. This improves the
+first resolution after opening a collection or invalidating its card matches;
+later resolutions still reuse the existing per-card cache.
+
 Large batches derive the built-in preset once per home deck and share immutable
 preset data across matching cards, including add-on overlay matches. Home-deck
 grouping preserves desired-retention overrides on decks sharing a deck config.

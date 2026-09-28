@@ -17,6 +17,8 @@ use regex::Regex;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::params;
 use rusqlite::trace::TraceEvent;
+use rusqlite::types::FromSqlError;
+use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use serde_json::Value;
 use unicase::UniCase;
@@ -222,20 +224,29 @@ fn add_regexp_fields_function(db: &Connection) -> rusqlite::Result<()> {
                 .get_or_create_aux(0, |vr| -> std::result::Result<_, BoxError> {
                     Ok(Regex::new(vr.as_str()?)?)
                 })?;
-            let fields = ctx.get_raw(1).as_str()?;
             if ctx.len() == 2 {
+                let fields = ctx.get_raw(1).as_str()?;
                 return Ok(fields.split('\x1f').any(|field| re.is_match(field)));
             }
 
-            for (idx, field) in fields.split('\x1f').enumerate() {
-                for arg_idx in 2..ctx.len() {
-                    let selected_idx: usize = ctx.get(arg_idx)?;
-                    if selected_idx == idx && re.is_match(field) {
-                        return Ok(true);
-                    }
+            let ValueRef::Text(fields) = ctx.get_raw(1) else {
+                return Err(FromSqlError::InvalidType.into());
+            };
+            let indices = (2..ctx.len())
+                .map(|arg_idx| ctx.get::<usize>(arg_idx))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let last_index = *indices.iter().max().unwrap();
+            // Split the borrowed bytes before validating UTF-8, so matching
+            // Front does not scan large HTML fields later in the note.
+            for (idx, field) in fields
+                .split(|&byte| byte == b'\x1f')
+                .take(last_index.saturating_add(1))
+                .enumerate()
+            {
+                if indices.contains(&idx) && re.is_match(ValueRef::Text(field).as_str()?) {
+                    return Ok(true);
                 }
             }
-
             Ok(false)
         },
     )
@@ -718,6 +729,31 @@ mod test {
     use super::*;
     use crate::scheduler::answering::test::v3_test_collection;
     use crate::storage::card::ReviewOrderSubclause;
+
+    #[test]
+    fn regexp_fields_matches_only_selected_fields() -> rusqlite::Result<()> {
+        let db = Connection::open_in_memory()?;
+        add_regexp_fields_function(&db)?;
+        let fields = "猫\x1f\x1fかな\x1fカナ\x1fignored";
+        for (pattern, indices, expected) in [
+            ("^かな$", "", true),
+            ("^かな$", ", 0", false),
+            ("^かな$", ", 2", true),
+            ("^$", ", 1", true),
+            ("^かな$", ", 3, 2, 0, 2", true),
+            ("^ignored$", ", 0, 2", false),
+            ("^ignored$", ", 4", true),
+            ("^$", ", 5", false),
+        ] {
+            let matched: bool = db.query_row(
+                &format!("select regexp_fields(?1, ?2{indices})"),
+                [pattern, fields],
+                |row| row.get(0),
+            )?;
+            assert_eq!(matched, expected, "pattern={pattern}, indices={indices}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn missing_memory_state_falls_back_to_sm2() -> Result<()> {
