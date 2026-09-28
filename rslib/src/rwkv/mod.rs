@@ -625,9 +625,11 @@ struct RwkvWorkloadTargetConfig<'a> {
     review_model: &'a RwkvWorkloadReviewModel,
 }
 
-struct RwkvWorkloadTargetSweep {
+struct RwkvWorkloadTargetSweep<'a> {
     inputs: Vec<RwkvWorkloadSimulationInput>,
-    base_state: ReviewStateMaps,
+    base_state: &'a ReviewStateMaps,
+    /// Upper bound of the states one target can copy from `base_state`.
+    target_state_len: usize,
     target_drs: Vec<u32>,
     days_to_simulate: i64,
     review_limit: usize,
@@ -829,17 +831,18 @@ impl RwkvInference {
             ));
         };
         let mut worker = self.worker_from_cache_state(runtime_state)?;
-        let mut state_maps = ReviewStateMaps::from_serialized(
+        let state_maps = ReviewStateMaps::from_serialized(
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
             &snapshot.preset_states,
             snapshot.global_state.as_deref(),
         )?;
-        worker.apply_simulation_answer(&answer, &mut state_maps)?;
+        let mut states = SimulationStates::new(&state_maps);
+        worker.apply_simulation_answer(&answer, &mut states)?;
 
         Ok(worker
-            .workload_query_predictions_for_inputs(&query_inputs, &state_maps)
+            .workload_query_predictions_for_inputs(&query_inputs, &states)
             .into_iter()
             .map(|prediction| prediction.retrievability)
             .collect())
@@ -1512,7 +1515,8 @@ insert into segments (
         };
         let base_features = read_runtime_feature_state(&runtime_state)?;
         let base_state = ReviewStateMaps::from_snapshot_for_inputs(&snapshot, &inputs)?;
-        self.simulate_workload_with_state(inputs, base_features, base_state, config, progress)
+        drop(snapshot);
+        self.simulate_workload_with_state(inputs, base_features, &base_state, config, progress)
     }
 
     /// Simulates from the resident warmed state instead of a serialized
@@ -1524,24 +1528,23 @@ insert into segments (
         progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
     ) -> io::Result<RwkvWorkloadSimulationOutput> {
         check_workload_dr_range(&config)?;
-        let base_state = self.warm_up_states.subset_for_inputs(&inputs);
         self.simulate_workload_with_state(
             inputs,
             self.features.clone(),
-            base_state,
+            &self.warm_up_states,
             config,
             progress,
         )
     }
 
-    /// `base_state` only needs the card, note, deck and preset streams of
-    /// `inputs` plus the global stream: nothing else can influence or be
-    /// advanced by the simulation.
+    /// The simulation only reads the card, note, deck and preset streams of
+    /// `inputs` plus the global stream from `base_state`, and never changes
+    /// it: each target copies a stream when it first advances it.
     fn simulate_workload_with_state(
         &self,
         inputs: Vec<RwkvWorkloadSimulationInput>,
         base_features: FeatureState,
-        base_state: ReviewStateMaps,
+        base_state: &ReviewStateMaps,
         config: RwkvWorkloadSimulationConfig,
         progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
     ) -> io::Result<RwkvWorkloadSimulationOutput> {
@@ -1551,25 +1554,28 @@ insert into segments (
         progress(0, total_steps)?;
         // Simulation workers never read recall curves, so they start without
         // copies of them.
-        let mut reviewless_worker = self.workload_worker(base_features.clone(), HashMap::new());
-        let introduced_inputs = inputs
-            .iter()
-            .filter(|input| input.review_input.card_type != Some(CardType::New as i64))
-            .cloned()
-            .collect::<Vec<_>>();
-        let (reviewless_end_memorized, reviewless_end_weighted_memorized) = reviewless_worker
-            .simulation_memorized_for_inputs(
+        let (reviewless_end_memorized, reviewless_end_weighted_memorized) = {
+            let mut reviewless_worker = self.workload_worker(base_features.clone(), HashMap::new());
+            let introduced_inputs = inputs
+                .iter()
+                .filter(|input| input.review_input.card_type != Some(CardType::New as i64))
+                .cloned()
+                .collect::<Vec<_>>();
+            reviewless_worker.simulation_memorized_for_inputs(
                 &introduced_inputs,
-                &base_state,
+                &SimulationStates::new(base_state),
                 S90_TARGET_RETENTION,
                 config.days_to_simulate as i64,
-            )?;
+            )?
+        };
         progress(1, total_steps)?;
 
+        let target_state_len = base_state.state_len_for(&StreamIds::for_workload_inputs(&inputs));
         let mut points = self.simulate_workload_targets(
             RwkvWorkloadTargetSweep {
                 inputs,
                 base_state,
+                target_state_len,
                 target_drs,
                 days_to_simulate: config.days_to_simulate as i64,
                 review_limit: config.review_limit as usize,
@@ -1596,12 +1602,13 @@ insert into segments (
 
     fn simulate_workload_targets(
         &self,
-        sweep: RwkvWorkloadTargetSweep,
+        sweep: RwkvWorkloadTargetSweep<'_>,
         progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
     ) -> io::Result<Vec<(u32, RwkvWorkloadSimulationPoint)>> {
         let RwkvWorkloadTargetSweep {
             inputs,
             base_state,
+            target_state_len,
             target_drs,
             days_to_simulate,
             review_limit,
@@ -1618,10 +1625,10 @@ insert into segments (
 
         let simulate_target = |dr: u32| {
             let mut worker = self.workload_worker(base_features.clone(), HashMap::new());
-            let mut state_maps = base_state.clone_states();
+            let mut states = SimulationStates::new(base_state);
             worker.simulate_workload_for_target(
                 &inputs,
-                &mut state_maps,
+                &mut states,
                 RwkvWorkloadTargetConfig {
                     dr,
                     days_to_simulate,
@@ -1636,13 +1643,13 @@ insert into segments (
                 },
             )
         };
-        // Every target advances its own copy of the inputs' streams. Sampled
-        // inputs make those copies small, so run several targets at once while
-        // bounding the memory of the concurrent copies.
-        let concurrent_targets = (WORKLOAD_TARGET_STATE_BUDGET_BYTES
-            / base_state.state_len().max(1))
-        .clamp(1, rayon::current_num_threads())
-        .min(target_drs.len().max(1));
+        // Every target copies the streams it advances, at most all of the
+        // inputs' streams. Sampled inputs make those copies small, so run
+        // several targets at once while bounding the memory of the concurrent
+        // copies.
+        let concurrent_targets = (WORKLOAD_TARGET_STATE_BUDGET_BYTES / target_state_len.max(1))
+            .clamp(1, rayon::current_num_threads())
+            .min(target_drs.len().max(1));
         // Higher targets review more often and take longest, so start them
         // first, and let each worker pull the next target as soon as it is
         // free instead of waiting for the slowest target of a fixed batch.
@@ -1716,7 +1723,7 @@ insert into segments (
     fn simulate_workload_for_target(
         &mut self,
         inputs: &[RwkvWorkloadSimulationInput],
-        state_maps: &mut ReviewStateMaps,
+        states: &mut SimulationStates<'_>,
         config: RwkvWorkloadTargetConfig<'_>,
     ) -> io::Result<RwkvWorkloadSimulationPoint> {
         let target_retention = config.dr as f32 / 100.0;
@@ -1724,7 +1731,7 @@ insert into segments (
             .iter()
             .map(|input| simulation_query_input(input, target_retention, 0))
             .collect();
-        let predictions = self.workload_query_predictions_for_inputs(&query_inputs, state_maps);
+        let predictions = self.workload_query_predictions_for_inputs(&query_inputs, states);
         let mut cards = inputs
             .iter()
             .zip(predictions.iter())
@@ -1746,7 +1753,7 @@ insert into segments (
                 .map(|index| simulation_query_input_for_card(&cards[*index], target_retention, day))
                 .collect::<Vec<_>>();
             let order_predictions =
-                self.workload_query_predictions_for_inputs(&order_inputs, state_maps);
+                self.workload_query_predictions_for_inputs(&order_inputs, states);
             let prediction_by_index = due_review_indexes
                 .iter()
                 .copied()
@@ -1795,8 +1802,7 @@ insert into segments (
                         simulation_query_input_for_card(&cards[*index], target_retention, day)
                     })
                     .collect::<Vec<_>>();
-                let predictions =
-                    self.workload_query_predictions_for_inputs(&query_inputs, state_maps);
+                let predictions = self.workload_query_predictions_for_inputs(&query_inputs, states);
                 let eases = chunk_indexes
                     .iter()
                     .zip(&predictions)
@@ -1815,7 +1821,7 @@ insert into segments (
                     })
                     .collect::<Vec<_>>();
                 let intervals =
-                    self.selected_answer_intervals_for_inputs(&query_inputs, state_maps, &eases);
+                    self.selected_answer_intervals_for_inputs(&query_inputs, states, &eases);
 
                 for ((position, index), ease) in chunk_indexes.iter().enumerate().zip(&eases) {
                     let grade_seconds = config.review_model.grade_seconds[(*ease - 1) as usize];
@@ -1834,7 +1840,7 @@ insert into segments (
                         .unwrap_or(1)
                         .clamp(1, config.max_interval);
                     if review_count % config.state_update_interval == 0 {
-                        self.apply_simulation_answer(&answer_input, state_maps)?;
+                        self.apply_simulation_answer(&answer_input, states)?;
                     }
 
                     cards[*index].last_review_day = day;
@@ -1862,7 +1868,7 @@ insert into segments (
 
         let (memorized, weighted_memorized) = self.simulation_memorized_for_cards(
             &cards,
-            state_maps,
+            states,
             target_retention,
             config.days_to_simulate,
         )?;
@@ -1877,34 +1883,32 @@ insert into segments (
     fn workload_query_predictions_for_inputs(
         &mut self,
         inputs: &[ReviewInput],
-        state_maps: &ReviewStateMaps,
+        states: &SimulationStates<'_>,
     ) -> Vec<RwkvWorkloadQueryPrediction> {
         let work_items = inputs
             .iter()
             .map(|input| ReviewPredictionBorrowedWorkItem {
                 features: self.features.features_for(input),
-                state: state_maps.state_ref(input),
+                state: states.state_ref(input),
             })
             .collect::<Vec<_>>();
-        self.model
-            .review_many_borrowed(&work_items)
-            .into_iter()
-            .zip(inputs)
-            .map(|(heads, input)| {
-                let (current_interval, current_s90) = self.current_intervals(input, &heads);
+        let this = &*self;
+        this.model
+            .review_many_borrowed(&work_items, |index, heads| {
+                let (current_interval, current_s90) =
+                    this.current_intervals(&inputs[index], &heads);
                 RwkvWorkloadQueryPrediction {
                     retrievability: heads.retrievability,
                     current_interval,
                     current_s90,
                 }
             })
-            .collect()
     }
 
     fn selected_answer_intervals_for_inputs(
         &mut self,
         inputs: &[ReviewInput],
-        state_maps: &ReviewStateMaps,
+        states: &SimulationStates<'_>,
         eases: &[u8],
     ) -> Vec<Option<u32>> {
         debug_assert_eq!(inputs.len(), eases.len());
@@ -1917,37 +1921,34 @@ insert into segments (
             .iter()
             .map(|input| ReviewPredictionBorrowedWorkItem {
                 features: self.features.features_for(input),
-                state: state_maps.state_ref(input),
+                state: states.state_ref(input),
             })
             .collect::<Vec<_>>();
+        let (default_retention, max_interval_days) =
+            (self.target_retention, self.max_interval_days);
         self.model
-            .review_many_borrowed(&work_items)
-            .into_iter()
-            .zip(inputs.iter().zip(eases))
-            .map(|(heads, (input, ease))| {
-                let target_retention =
-                    input.target_retentions[(*ease - 1) as usize].unwrap_or(self.target_retention);
-                interval_for_curve(&heads.curve, target_retention, self.max_interval_days)
+            .review_many_borrowed(&work_items, |index, heads| {
+                let target_retention = inputs[index].target_retentions[(eases[index] - 1) as usize]
+                    .unwrap_or(default_retention);
+                interval_for_curve(&heads.curve, target_retention, max_interval_days)
             })
-            .collect()
     }
 
     fn apply_simulation_answer(
         &mut self,
         input: &ReviewInput,
-        state_maps: &mut ReviewStateMaps,
+        states: &mut SimulationStates<'_>,
     ) -> io::Result<()> {
-        let heads = self.review_heads_for_state(input, state_maps.state_ref(input))?;
+        let heads = self.review_heads_for_state(input, states.state_ref(input))?;
         self.features.store_review(input);
-        self.curves.insert(input.card_id, heads.curve.clone());
-        state_maps.store(input, heads.next_state);
+        states.store(input, heads.next_state);
         Ok(())
     }
 
     fn simulation_memorized_for_inputs(
         &mut self,
         inputs: &[RwkvWorkloadSimulationInput],
-        state_maps: &ReviewStateMaps,
+        states: &SimulationStates<'_>,
         target_retention: f32,
         day: i64,
     ) -> io::Result<(f32, f32)> {
@@ -1955,14 +1956,14 @@ insert into segments (
             .iter()
             .map(|input| simulation_query_input(input, target_retention, day))
             .collect::<Vec<_>>();
-        let predictions = self.workload_query_predictions_for_inputs(&query_inputs, state_maps);
+        let predictions = self.workload_query_predictions_for_inputs(&query_inputs, states);
         Ok(memorized_from_workload_predictions(&predictions))
     }
 
     fn simulation_memorized_for_cards(
         &mut self,
         cards: &[RwkvSimulationCard],
-        state_maps: &ReviewStateMaps,
+        states: &SimulationStates<'_>,
         target_retention: f32,
         day: i64,
     ) -> io::Result<(f32, f32)> {
@@ -1971,7 +1972,7 @@ insert into segments (
             .filter(|card| !card.is_new)
             .map(|card| simulation_query_input_for_card(card, target_retention, day))
             .collect::<Vec<_>>();
-        let predictions = self.workload_query_predictions_for_inputs(&query_inputs, state_maps);
+        let predictions = self.workload_query_predictions_for_inputs(&query_inputs, states);
         Ok(memorized_from_workload_predictions(&predictions))
     }
 }
@@ -3249,13 +3250,17 @@ impl SrsModel {
             .collect()
     }
 
-    fn review_many_borrowed(
+    /// Maps each item's heads as soon as they are computed: a batch of full
+    /// heads would hold a next state per item, hundreds of KB each.
+    fn review_many_borrowed<T: Send>(
         &self,
         items: &[ReviewPredictionBorrowedWorkItem<'_>],
-    ) -> Vec<ReviewHeads> {
+        map: impl Fn(usize, ReviewHeads) -> T + Sync,
+    ) -> Vec<T> {
         items
             .par_iter()
-            .map(|item| self.review_features(&item.features, item.state))
+            .enumerate()
+            .map(|(index, item)| map(index, self.review_features(&item.features, item.state)))
             .collect()
     }
 
@@ -3676,21 +3681,23 @@ impl ReviewStateMaps {
         })
     }
 
-    /// Copies the states that `inputs` can read or advance, plus the global
-    /// state.
-    fn subset_for_inputs(&self, inputs: &[RwkvWorkloadSimulationInput]) -> Self {
-        let ids = StreamIds::for_workload_inputs(inputs);
-        Self {
-            card: cloned_state_map_subset(&self.card, &ids.card),
-            note: cloned_state_map_subset(&self.note, &ids.note),
-            deck: cloned_state_map_subset(&self.deck, &ids.deck),
-            preset: cloned_state_map_subset(&self.preset, &ids.preset),
-            global: self.global.clone(),
-            ..Default::default()
-        }
+    /// Approximate memory used by the states of `ids`, plus the global state.
+    fn state_len_for(&self, ids: &StreamIds) -> usize {
+        [
+            (&self.card, &ids.card),
+            (&self.note, &ids.note),
+            (&self.deck, &ids.deck),
+            (&self.preset, &ids.preset),
+        ]
+        .into_iter()
+        .flat_map(|(states, ids)| ids.iter().filter_map(|id| states.get(id)))
+        .chain(&self.global)
+        .map(serialized_module_state_len)
+        .sum()
     }
 
     /// Copies the states without their checkpoint dirty-tracking.
+    #[cfg(test)]
     fn clone_states(&self) -> Self {
         Self {
             card: self.card.clone(),
@@ -3700,16 +3707,6 @@ impl ReviewStateMaps {
             global: self.global.clone(),
             ..Default::default()
         }
-    }
-
-    /// Approximate memory used by the states.
-    fn state_len(&self) -> usize {
-        [&self.card, &self.note, &self.deck, &self.preset]
-            .into_iter()
-            .flat_map(HashMap::values)
-            .chain(&self.global)
-            .map(serialized_module_state_len)
-            .sum()
     }
 
     fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
@@ -4004,6 +4001,68 @@ impl StreamIds {
     }
 }
 
+/// The review states a simulation sees: `base` until the simulation advances
+/// a stream, then its own copy of that stream. A simulation therefore holds
+/// only the streams it advanced, and never changes `base`.
+struct SimulationStates<'a> {
+    base: &'a ReviewStateMaps,
+    card: HashMap<i64, ModuleState>,
+    note: HashMap<i64, ModuleState>,
+    deck: HashMap<i64, ModuleState>,
+    preset: HashMap<i64, ModuleState>,
+    global: Option<ModuleState>,
+}
+
+impl<'a> SimulationStates<'a> {
+    fn new(base: &'a ReviewStateMaps) -> Self {
+        Self {
+            base,
+            card: HashMap::new(),
+            note: HashMap::new(),
+            deck: HashMap::new(),
+            preset: HashMap::new(),
+            global: None,
+        }
+    }
+
+    fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
+        fn lookup<'s>(
+            own: &'s HashMap<i64, ModuleState>,
+            base: &'s HashMap<i64, ModuleState>,
+            id: i64,
+        ) -> Option<&'s ModuleState> {
+            own.get(&id).or_else(|| base.get(&id))
+        }
+        SrsStateRef {
+            card: lookup(&self.card, &self.base.card, input.card_id),
+            note: input
+                .note_id
+                .and_then(|id| lookup(&self.note, &self.base.note, id)),
+            deck: input
+                .deck_id
+                .and_then(|id| lookup(&self.deck, &self.base.deck, id)),
+            preset: input
+                .preset_id
+                .and_then(|id| lookup(&self.preset, &self.base.preset, id)),
+            global: self.global.as_ref().or(self.base.global.as_ref()),
+        }
+    }
+
+    fn store(&mut self, input: &ReviewInput, state: SrsState) {
+        self.card.insert(input.card_id, state.card);
+        if let Some(note_id) = input.note_id {
+            self.note.insert(note_id, state.note);
+        }
+        if let Some(deck_id) = input.deck_id {
+            self.deck.insert(deck_id, state.deck);
+        }
+        if let Some(preset_id) = input.preset_id {
+            self.preset.insert(preset_id, state.preset);
+        }
+        self.global = Some(state.global);
+    }
+}
+
 fn deserialize_state_map_subset(
     states: &[(i64, Vec<u8>)],
     ids: &HashSet<i64>,
@@ -4018,15 +4077,6 @@ fn deserialize_state_map_subset(
         }
     }
     Ok(map)
-}
-
-fn cloned_state_map_subset(
-    states: &HashMap<i64, ModuleState>,
-    ids: &HashSet<i64>,
-) -> HashMap<i64, ModuleState> {
-    ids.iter()
-        .filter_map(|id| Some((*id, states.get(id)?.clone())))
-        .collect()
 }
 
 fn deserialize_state_map(states: &[(i64, Vec<u8>)]) -> io::Result<HashMap<i64, ModuleState>> {
@@ -9044,6 +9094,12 @@ order by e.id, e.cid
         println!("collection_reviews={}", reviews.len());
         println!("warmup_ms={warmup_ms:.3}");
         println!("sim_cards={}", inputs.len());
+        println!(
+            "sim_state_bytes={}",
+            inference
+                .warm_up_states
+                .state_len_for(&StreamIds::for_workload_inputs(&inputs))
+        );
         for round in 0..rounds {
             let started = std::time::Instant::now();
             let output = inference
@@ -10697,7 +10753,7 @@ order by e.id, e.cid
             },
         };
 
-        // Reference: every target replays on a full copy of the resident
+        // Reference: every target replays over a full copy of the resident
         // state, one target at a time.
         let full_state = inference.warm_up_states.clone_states();
         let mut reviewless_worker =
@@ -10706,7 +10762,7 @@ order by e.id, e.cid
         let (reviewless_end_memorized, reviewless_end_weighted_memorized) = reviewless_worker
             .simulation_memorized_for_inputs(
                 &introduced_inputs,
-                &full_state,
+                &SimulationStates::new(&full_state),
                 S90_TARGET_RETENTION,
                 20,
             )
@@ -10717,7 +10773,7 @@ order by e.id, e.cid
             .map(|dr| {
                 let mut worker =
                     inference.workload_worker(inference.features.clone(), inference.curves.clone());
-                let mut state = full_state.clone_states();
+                let mut state = SimulationStates::new(&full_state);
                 let point = worker
                     .simulate_workload_for_target(
                         &inputs,

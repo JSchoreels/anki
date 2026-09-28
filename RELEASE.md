@@ -24,6 +24,10 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Use far less memory when comparing RWKV with FSRS in the deck options, which
+  simulates every card of the preset and could run out of memory on large
+  collections. Simulating 13,800 cards peaked at 2.8 GB instead of 8.3 GB,
+  with identical results; the default RWKV workload simulation also uses less.
 - Find notes where any of the fields named by a field-name wildcard matches,
   such as `word*:foo`. When the named fields were next to each other, exact
   searches found nothing and wildcard searches could match text spread across
