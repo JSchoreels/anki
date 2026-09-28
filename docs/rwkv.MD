@@ -1117,6 +1117,21 @@ took a median 1.40s through the native builder versus 3.06s through Python.
 Every replay input and final metadata field matched. The 8,900-card prediction
 reference also matched exactly, including ordering.
 
+The same 2026-09-28 investigation tested resolving each query row's time-mixer
+state once for all eight mixes. Thirty alternating measurements were initially
+about 1.4% faster by paired median, but a repeat was unchanged (77.71ms original
+versus 77.70ms fused), so the experiment was not retained. With the fused
+traversal, 64-row and 256-row GEMM batches were each about 5% slower than the
+original 128-row path. All tested variants stayed within `1e-6` prediction error
+with no rank changes. Keep the 128-row batch until a repeatable end-to-end
+improvement is demonstrated; the four-row batch normalization optimization is
+already present. These are local Apple Silicon measurements, with background
+load checked separately, not a claim about other platforms.
+Separate worker-count runs measured the original path at approximately 117ms
+with four Rayon workers, 78ms with eight, and 71ms with twelve. The measured
+workload therefore still gained some throughput beyond eight workers; these
+timings alone do not identify Accelerate/matrix-coprocessor contention.
+
 For native arithmetic comparisons, use `--prediction-output PATH` on the
 baseline build, then `--prediction-reference PATH` on later builds. The reference
 contains exact query inputs and predictions. Later runs reuse those inputs,
