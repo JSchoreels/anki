@@ -24,6 +24,10 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Find notes where any of the fields named by a field-name wildcard matches,
+  such as `word*:foo`. When the named fields were next to each other, exact
+  searches found nothing and wildcard searches could match text spread across
+  two fields.
 - Restore deck options and other web pages that could open blank after a build
   ran alongside the web checks.
 - Include parent RWKV daily review minimums in subdeck counts when parent
@@ -50,6 +54,12 @@ repeated here unless they materially affect a fork feature.
 
 ### Improved
 
+- Search specific note fields faster, in the browser, filtered decks and FSRS
+  preset rules. On a 16,000-note collection with large notes, `Front:_` took
+  about 25ms instead of 85ms, and `Front:nc:*a*` took 80ms instead of 2.2s.
+  Field searches now ignore case for all letters, like regular expression
+  searches, so `Front:école` also finds `École`; previously only a-z were
+  matched regardless of case.
 - Resolve FSRS preset rules faster at RWKV startup when rules search specific
   note fields. On a 223,000-review collection, the first preset-matching pass
   took about 185ms instead of 290ms, with identical matches and history checks.

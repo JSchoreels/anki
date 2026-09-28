@@ -1991,4 +1991,130 @@ mod test {
         )?;
         Ok(())
     }
+
+    /// Adds notes with labelled field contents. The Vocab notetype places Front
+    /// third and has two adjacent Word fields for field-name wildcards.
+    fn field_search_collection() -> Result<(Collection, HashMap<NoteId, &'static str>)> {
+        let mut col = Collection::new();
+        let basic = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut vocab = Notetype {
+            name: "Vocab".into(),
+            ..Default::default()
+        };
+        for field in ["Word1", "Word2", "Front", "Back"] {
+            vocab.add_field(field);
+        }
+        vocab.add_template("Card 1", "{{Front}}", "{{Back}}");
+        col.add_notetype(&mut vocab, false)?;
+
+        let mut labels = HashMap::new();
+        let mut add = |nt: &Notetype, label: &'static str, fields: &[&str]| -> Result<()> {
+            let mut note = nt.new_note();
+            for (idx, text) in fields.iter().enumerate() {
+                note.set_field(idx, *text)?;
+            }
+            col.add_note(&mut note, DeckId(1))?;
+            labels.insert(note.id, label);
+            Ok(())
+        };
+        for (label, front) in [
+            ("cat", "cat"),
+            ("CAT", "CAT"),
+            ("cut", "cut"),
+            ("c*t", "c*t"),
+            ("a_b", "a_b"),
+            ("a.b", "a.b"),
+            ("axb", "axb"),
+            ("a\\nb", "a\nb"),
+            ("100%", "100%"),
+            ("猫", "猫"),
+            ("猫犬", "猫犬"),
+            ("École", "École"),
+            ("Français", "Français"),
+        ] {
+            add(&basic, label, &[front, "dog"])?;
+        }
+        add(&basic, "cat in back", &["", "cat"])?;
+        add(&vocab, "vocab cat", &["x", "y", "cat", ""])?;
+        add(&vocab, "vocab word2 foo", &["", "foo", "", ""])?;
+        add(&vocab, "vocab foo split", &["fo", "o", "", ""])?;
+        Ok((col, labels))
+    }
+
+    fn matching_labels(
+        col: &mut Collection,
+        labels: &HashMap<NoteId, &'static str>,
+        search: &str,
+    ) -> Result<Vec<&'static str>> {
+        let mut matched: Vec<_> = col
+            .search_notes(search, SortMode::NoOrder)?
+            .into_iter()
+            .map(|nid| labels[&nid])
+            .collect();
+        matched.sort_unstable();
+        Ok(matched)
+    }
+
+    #[test]
+    fn field_search_matches_whole_named_field_with_wildcards() -> Result<()> {
+        let (mut col, labels) = field_search_collection()?;
+        for (search, expected) in [
+            ("front:cat", vec!["CAT", "cat", "vocab cat"]),
+            ("front:c*t", vec!["CAT", "c*t", "cat", "cut", "vocab cat"]),
+            ("front:c_t", vec!["CAT", "c*t", "cat", "cut", "vocab cat"]),
+            (r"front:c\*t", vec!["c*t"]),
+            (r"front:a\_b", vec!["a_b"]),
+            ("front:a_b", vec!["a.b", "a\\nb", "a_b", "axb"]),
+            ("front:a.b", vec!["a.b"]),
+            ("front:100%", vec!["100%"]),
+            ("front:_", vec!["猫"]),
+            (
+                "front:",
+                vec!["cat in back", "vocab foo split", "vocab word2 foo"],
+            ),
+            ("back:cat", vec!["cat in back"]),
+        ] {
+            assert_eq!(
+                matching_labels(&mut col, &labels, search)?,
+                expected,
+                "{search}"
+            );
+        }
+        let nonempty = matching_labels(&mut col, &labels, "front:_*")?;
+        assert_eq!(nonempty.len(), labels.len() - 3);
+        assert!(!nonempty.contains(&"cat in back"));
+        Ok(())
+    }
+
+    #[test]
+    fn field_name_wildcard_matches_each_selected_field_separately() -> Result<()> {
+        let (mut col, labels) = field_search_collection()?;
+        assert_eq!(
+            matching_labels(&mut col, &labels, "word*:foo")?,
+            vec!["vocab word2 foo"]
+        );
+        assert_eq!(
+            matching_labels(&mut col, &labels, "word*:fo*o")?,
+            vec!["vocab word2 foo"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn field_search_ignores_case_beyond_ascii() -> Result<()> {
+        let (mut col, labels) = field_search_collection()?;
+        assert_eq!(
+            matching_labels(&mut col, &labels, "front:école")?,
+            vec!["École"]
+        );
+        assert_eq!(
+            matching_labels(&mut col, &labels, "front:nc:francais")?,
+            vec!["Français"]
+        );
+        assert_eq!(
+            matching_labels(&mut col, &labels, "front:nc:ÉCOLE")?,
+            vec!["École"]
+        );
+        Ok(())
+    }
 }
