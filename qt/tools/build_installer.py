@@ -80,6 +80,13 @@ def prune_webengine_locales(out_dir: Path) -> None:
             pak.unlink()
 
 
+def remove_visualstudio_debug_info(out_dir: Path, portable: bool = False) -> None:
+    src_dir = get_briefcase_sources_path(out_dir, portable=portable)
+    formal_name = PORTABLE_FORMAL_NAME if portable else "Anki"
+    (src_dir / f"{formal_name}.pdb").unlink(missing_ok=True)
+    (src_dir / f"{formal_name}.exe.metagen").unlink(missing_ok=True)
+
+
 def get_briefcase_template_path() -> Path:
     if sys.platform == "win32":
         return installer_dir / "windows-template"
@@ -92,6 +99,8 @@ def get_briefcase_template_path() -> Path:
 def get_briefcase_output_format() -> list[str]:
     if sys.platform == "linux":
         return ["linux", "zip"]
+    elif sys.platform == "win32":
+        return ["windows", "visualstudio"]
     # Use default format for platform
     return []
 
@@ -103,7 +112,15 @@ def get_briefcase_sources_path(out_dir: Path, portable: bool = False) -> Path:
     """
     path: Path
     if sys.platform == "win32":
-        path = out_dir / "build" / "anki" / "windows" / "app" / "src"
+        path = (
+            out_dir
+            / "build"
+            / "anki"
+            / "windows"
+            / "visualstudio"
+            / ("ARM64" if platform.machine() == "ARM64" else "x64")
+            / "Release"
+        )
     elif sys.platform == "darwin":
         formal_name = PORTABLE_FORMAL_NAME if portable else "Anki"
         path = (
@@ -139,7 +156,9 @@ def get_support_hash_args() -> list[str]:
     return config_args
 
 
-def get_briefcase_config_args(args: argparse.Namespace) -> list[str]:
+def get_briefcase_config_args(
+    args: argparse.Namespace, constraints_path: Path | None = None
+) -> list[str]:
     version = args.version
     if aqt_wheel := getattr(args, "aqt_wheel", None):
         aqt_wheel = normalize_wheel_path(args.aqt_wheel)
@@ -170,6 +189,14 @@ def get_briefcase_config_args(args: argparse.Namespace) -> list[str]:
         config_args.extend(
             ["-C", "requires=[" + ",".join(f'"{dep}"' for dep in requires) + "]"]
         )
+    if constraints_path:
+        constraints = normalize_wheel_path(constraints_path)
+        config_args.extend(
+            [
+                "-C",
+                f'requirement_installer_args=["--constraints","{constraints}"]',
+            ]
+        )
     config_args.extend(["-C", f'template="{template_path.absolute().as_posix()}"'])
     config_args.extend(get_support_hash_args())
     if sys.platform == "win32":
@@ -186,6 +213,36 @@ def get_uv_binary() -> Path:
         return Path(uv_path)
     name = "uv.exe" if sys.platform == "win32" else "uv"
     return Path("out/extracted/uv") / name
+
+
+def export_constraints(out_dir: Path) -> Path:
+    """Export the locked versions of the app's transitive dependencies."""
+
+    constraints_path = out_dir / "constraints.txt"
+    subprocess.check_call(
+        [
+            str(get_uv_binary()),
+            "export",
+            "--frozen",
+            "--quiet",
+            "--package",
+            "aqt",
+            "--package",
+            "anki",
+            "--extra",
+            "qt",
+            "--extra",
+            "audio",
+            "--no-dev",
+            "--no-hashes",
+            "--no-emit-workspace",
+            "--no-header",
+            "--no-annotate",
+            "--output-file",
+            str(constraints_path),
+        ]
+    )
+    return constraints_path
 
 
 def get_briefcase_environ() -> dict[str, str]:
@@ -287,7 +344,8 @@ def build(args: argparse.Namespace) -> None:
     version = args.version
     output_dir = get_output_dir(args)
     shutil.copytree(app_dir, output_dir, dirs_exist_ok=True)
-    config_args = get_briefcase_config_args(args)
+    constraints_path = export_constraints(output_dir)
+    config_args = get_briefcase_config_args(args, constraints_path)
     shutil.copy("LICENSE", output_dir / "LICENSE")
     (output_dir / "CHANGELOG").write_text(
         "Please see https://apps.ankiweb.net/", encoding="utf-8"
@@ -310,6 +368,7 @@ def build(args: argparse.Namespace) -> None:
         env=get_briefcase_environ(),
     )
     prune_webengine_locales(output_dir)
+    remove_visualstudio_debug_info(output_dir, portable=args.portable)
     repair_macos_anki_audio_layout(output_dir, portable=args.portable)
     if args.portable:
         resources = get_briefcase_sources_path(output_dir, portable=True)

@@ -316,8 +316,16 @@ impl Collection {
         desired_retention_override: Option<f32>,
     ) -> Result<SchedulingStates> {
         let card = self.storage.get_card(cid)?.or_not_found(cid)?;
-        let note_id = card.note_id;
+        self.get_scheduling_states_inner(card, desired_retention_override)
+            .map(|r| r.0)
+    }
 
+    pub(crate) fn get_scheduling_states_inner(
+        &mut self,
+        card: Card,
+        desired_retention_override: Option<f32>,
+    ) -> Result<(SchedulingStates, Card)> {
+        let note_id = card.note_id;
         let ctx = self.card_state_updater(card, desired_retention_override)?;
         let current = ctx.current_card_state();
 
@@ -328,7 +336,7 @@ impl Collection {
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
             ctx.fsrs_preset.dynamic_desired_retention.is_some();
-        Ok(states)
+        Ok((states, ctx.into_card()))
     }
 
     fn review_load_balancer_ctx(
@@ -613,7 +621,7 @@ impl Collection {
         )
     }
 
-    fn fsrs_enabled(&self) -> bool {
+    pub fn fsrs_enabled(&self) -> bool {
         self.state
             .card_queues
             .as_ref()
@@ -1873,6 +1881,36 @@ pub(crate) mod test {
         assert_eq!(queued.card.id, card.id);
         assert_eq!(queued.card.ctype, CardType::Review);
         assert_eq!(queued.card.queue, CardQueue::Review);
+        Ok(())
+    }
+
+    #[test]
+    fn get_scheduling_states_inner_fills_missing_fsrs_fields_on_returned_card() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        // Graduate without FSRS so the stored card has no decay/dr.
+        // This could happen if the card is moved between decks in an earlier version.
+        col.answer_easy();
+        let card_id = col.get_first_card().id;
+        let mut stored = col.storage.get_card(card_id)?.unwrap();
+        stored.memory_state = None;
+        col.storage.update_card(&stored)?;
+
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.clear_study_queues();
+
+        let input = col.storage.get_card(card_id)?.unwrap();
+        assert!(input.memory_state.is_none());
+
+        let (_, returned) = col.get_scheduling_states_inner(input, None)?;
+        assert!(returned.memory_state.is_some());
+
+        let stored = col.storage.get_card(card_id)?.unwrap();
+        assert!(stored.memory_state.is_none());
+
         Ok(())
     }
 

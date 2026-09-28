@@ -19,6 +19,7 @@ from tools.build_installer import (
     _find_fcitx_file,
     build,
     bundle_fcitx,
+    export_constraints,
     get_artifact_version,
     get_briefcase_config_args,
     get_briefcase_environ,
@@ -35,6 +36,7 @@ from tools.build_installer import (
     normalize_wheel_path,
     package,
     package_portable_archive,
+    remove_visualstudio_debug_info,
     repair_macos_anki_audio_layout,
 )
 
@@ -118,7 +120,7 @@ def test_template_path(monkeypatch, platform: str, template: str) -> None:
 @pytest.mark.parametrize(
     "platform, root",
     [
-        ("win32", "src"),
+        ("win32", "Release"),
         ("darwin", "Resources"),
         ("linux", "anki"),
     ],
@@ -127,6 +129,27 @@ def test_sources_path(monkeypatch, tmp_path: Path, platform: str, root: str) -> 
     monkeypatch.setattr("sys.platform", platform)
     sources_path = get_briefcase_sources_path(tmp_path)
     assert sources_path.name == root
+
+
+@pytest.mark.parametrize("machine, arch", [("AMD64", "x64"), ("ARM64", "ARM64")])
+@pytest.mark.parametrize("portable", [False, True])
+def test_windows_package_excludes_debug_files(
+    monkeypatch, tmp_path: Path, machine: str, arch: str, portable: bool
+) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr("platform.machine", lambda: machine)
+    sources = (
+        tmp_path / "build" / "anki" / "windows" / "visualstudio" / arch / "Release"
+    )
+    assert get_briefcase_sources_path(tmp_path, portable=portable) == sources
+    sources.mkdir(parents=True)
+    name = PORTABLE_FORMAL_NAME if portable else "Anki"
+    for suffix in [".exe", ".pdb", ".exe.metagen"]:
+        (sources / f"{name}{suffix}").touch()
+
+    remove_visualstudio_debug_info(tmp_path, portable=portable)
+
+    assert sorted(path.name for path in sources.iterdir()) == [f"{name}.exe"]
 
 
 def test_portable_sources_path(monkeypatch, tmp_path: Path) -> None:
@@ -145,7 +168,8 @@ def test_portable_sources_path(monkeypatch, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "platform, output_format", [("linux", ["linux", "zip"]), ("win32", [])]
+    "platform, output_format",
+    [("linux", ["linux", "zip"]), ("win32", ["windows", "visualstudio"])],
 )
 def test_output_format(monkeypatch, platform: str, output_format: list[str]) -> None:
     monkeypatch.setattr("sys.platform", platform)
@@ -161,6 +185,40 @@ def test_briefcase_config(out_dir: Path, cmd_args: argparse.Namespace) -> None:
     )
     assert any(s.startswith("template=") for s in config)
     assert any(s.startswith('support_package_hash="sha256:') for s in config)
+    assert not any(s.startswith("requirement_installer_args=") for s in config)
+
+
+def test_briefcase_config_constraints(
+    out_dir: Path, cmd_args: argparse.Namespace
+) -> None:
+    constraints_path = out_dir / "constraints.txt"
+    config = get_briefcase_config_args(cmd_args, constraints_path)
+    assert (
+        f'requirement_installer_args=["--constraints","{normalize_wheel_path(constraints_path)}"]'
+        in config
+    )
+
+
+def test_export_constraints_command(mocker, monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("UV_BINARY", "uv-bin")
+    check_call = mocker.patch("tools.build_installer.subprocess.check_call")
+    assert export_constraints(tmp_path) == tmp_path / "constraints.txt"
+    cmd = check_call.call_args.args[0]
+    assert cmd[:3] == ["uv-bin", "export", "--frozen"]
+    assert cmd[-2:] == ["--output-file", str(tmp_path / "constraints.txt")]
+    assert "--no-emit-workspace" in cmd
+    for package in ("aqt", "anki"):
+        assert package in cmd[cmd.index("--package") :]
+
+
+def test_export_constraints_pins_lockfile(tmp_path: Path) -> None:
+    lines = export_constraints(tmp_path).read_text(encoding="utf-8").splitlines()
+    assert lines
+    for line in lines:
+        assert "==" in line and not line.startswith(("-e", "#"))
+    names = {line.split("==")[0] for line in lines}
+    assert {"flask", "protobuf", "pyqt6"} <= names
+    assert not {"anki", "aqt"} & names
 
 
 @pytest.mark.parametrize(
@@ -605,3 +663,18 @@ def test_linux_zip_format_supports_uv() -> None:
     from briefcase_plugins.platforms.linux.zip import LinuxZipMixin
 
     assert "uv" in LinuxZipMixin.supported_env_managers
+
+
+def test_linux_zip_package_root_dir_includes_version(tmp_path: Path) -> None:
+    from briefcase_plugins.platforms.linux.zip import LinuxZipMixin
+
+    app = MagicMock()
+    app.app_name = "anki"
+    app.version = "25.09"
+
+    mixin = LinuxZipMixin()
+    root_folder_name = mixin.root_folder_name(app)
+
+    assert app.app_name in root_folder_name
+    assert app.version in root_folder_name
+    assert "--" not in root_folder_name

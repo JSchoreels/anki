@@ -28,6 +28,7 @@ impl Collection {
 
         let (average_secs, total_secs) = average_and_total_secs_strings(&revlog);
         let timing = self.timing_today()?;
+        let fsrs_enabled = self.fsrs_enabled();
 
         let last_review_time = if let Some(last_review_time) = card.last_review_time {
             last_review_time
@@ -53,8 +54,11 @@ impl Collection {
                 .get_deck(card.original_deck_id)?
                 .or_not_found(card.original_deck_id)?
         };
-        if card.ctype != CardType::New && card.memory_state.is_none() {
-            self.compute_and_update_memory_state(&mut card)?;
+        if fsrs_enabled && card.ctype != CardType::New && card.memory_state.is_none() {
+            let computed = self.compute_memory_state(card.id)?;
+            card.memory_state = computed.state.map(Into::into);
+            card.desired_retention = Some(computed.desired_retention);
+            card.decay = Some(computed.decay);
         }
 
         let fsrs_preset = self.fsrs_preset_for_card(&card)?;
@@ -335,6 +339,65 @@ mod test {
     }
 
     #[test]
+    fn stats_preserve_pending_review_with_missing_memory_state() -> Result<()> {
+        use crate::scheduler::answering::CardAnswer;
+        use crate::scheduler::answering::Rating;
+
+        for fsrs_enabled in [false, true] {
+            for skip_scheduling_states in [false, true] {
+                let (mut col, cid) = test_collection()?;
+                set_selected_fsrs7_params(&mut col, fsrs7_params_for_retrievability_test())?;
+                col.answer_easy();
+                let mut stored = col.storage.get_card(cid)?.unwrap();
+                stored.clear_fsrs_data();
+                stored.due = col.timing_today()?.days_elapsed as i32;
+                col.storage.update_card(&stored)?;
+                col.set_config_bool(BoolKey::Fsrs, fsrs_enabled, false)?;
+                col.clear_study_queues();
+
+                let queued = col.get_queued_cards(1, false, skip_scheduling_states)?;
+                let queued = queued.cards.first().unwrap();
+                assert_eq!(queued.card.id, cid);
+                assert_eq!(queued.states.is_none(), skip_scheduling_states);
+                assert_eq!(
+                    queued.card.memory_state.is_some(),
+                    fsrs_enabled && !skip_scheduling_states
+                );
+                let states = match queued.states.clone() {
+                    Some(states) => states,
+                    None => {
+                        col.get_scheduling_states_with_desired_retention_override(cid, Some(0.95))?
+                    }
+                };
+
+                let report = col.card_stats(cid)?;
+                assert_eq!(report.memory_state.is_some(), fsrs_enabled);
+                assert_eq!(report.fsrs_retrievability.is_some(), fsrs_enabled);
+                assert_eq!(col.storage.get_card(cid)?.unwrap(), stored);
+
+                col.answer_card(&mut CardAnswer {
+                    card_id: cid,
+                    current_state: states.current,
+                    new_state: states.good,
+                    rating: Rating::Good,
+                    answered_at: TimestampMillis::now(),
+                    milliseconds_taken: 0,
+                    custom_data: None,
+                    desired_retention_override: skip_scheduling_states.then_some(0.95),
+                    rwkv_s90: None,
+                    rwkv_retrievability: None,
+                    rwkv_review_kind: None,
+                    from_queue: true,
+                })?;
+                let answered = col.storage.get_card(cid)?.unwrap();
+                assert_eq!(answered.reps, stored.reps + 1);
+                assert_eq!(answered.memory_state.is_some(), fsrs_enabled);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stats_calculate_memory_state_if_not_present() -> Result<()> {
         let (mut col, cid) = test_collection()?;
 
@@ -348,7 +411,7 @@ mod test {
         let mut card = col.storage.get_card(cid)?.unwrap();
         assert!(card.memory_state.is_some());
 
-        card.memory_state = None;
+        card.clear_fsrs_data();
         col.storage.update_card(&card)?;
 
         let card = col.storage.get_card(cid)?.unwrap();
@@ -358,7 +421,36 @@ mod test {
         let card = col.storage.get_card(cid)?.unwrap();
 
         assert!(report.memory_state.is_some());
-        assert!(card.memory_state.is_some());
+        // Don't modify the card. See https://github.com/ankitects/anki/issues/5635
+        assert!(card.memory_state.is_none());
+
+        // Toggle FSRS off
+        let deck_configs = col.get_deck_configs_for_update(DeckId(1))?;
+        col.update_deck_configs(UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: deck_configs
+                .all_config
+                .into_iter()
+                .map(|config| config.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: String::new(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: false,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
+            review_fuzz_config: Default::default(),
+            fsrs_reschedule: false,
+            fsrs_health_check: true,
+        })?;
+
+        // Dont report memory_state while SM2 is enabled
+        let report = col.card_stats(cid)?;
+        assert!(report.memory_state.is_none());
 
         Ok(())
     }

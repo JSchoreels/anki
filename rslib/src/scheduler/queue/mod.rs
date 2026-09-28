@@ -165,11 +165,11 @@ impl Collection {
                     entry.mtime()
                 );
 
-                let next_states = if skip_scheduling_states {
-                    None
+                let (next_states, card) = if skip_scheduling_states {
+                    (None, card)
                 } else {
-                    // fixme: pass in card instead of id
-                    Some(self.get_scheduling_states(card.id)?)
+                    let (states, card) = self.get_scheduling_states_inner(card, None)?;
+                    (Some(states), card)
                 };
 
                 Ok(QueuedCard {

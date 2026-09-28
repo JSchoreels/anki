@@ -31,7 +31,10 @@ impl BuildAction for BuildCommand {
         );
         build.add_inputs("aqt_wheel", inputs![":wheels:aqt"]);
         build.add_inputs("anki_wheel", inputs![":wheels:anki"]);
-        build.add_inputs("", inputs![":installer:template", glob!["qt/installer/**"]]);
+        build.add_inputs(
+            "",
+            inputs![":installer:template", glob!["qt/installer/**"], "uv.lock"],
+        );
         build.add_output_stamp(if self.portable {
             "portable/briefcase.build.stamp"
         } else {

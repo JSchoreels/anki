@@ -19,3 +19,13 @@ flags. Queue construction loads them from collection config; changes to either
 key, removal, and undo refresh the cached value without discarding a preserved
 queue. Scheduling-state requests without an active queue read collection config
 directly.
+
+When scheduling states are requested with a queued card, the returned card and
+answer states come from the same calculation. Missing FSRS memory fields are
+filled on that returned card without saving it. Requests that skip scheduling
+states still return the stored card unchanged for the desired-retention hook.
+
+Card Info reconstructs missing memory state only when FSRS is enabled, using the
+card's effective preset. The reconstructed state, desired retention, and decay
+are used for the report without being saved to the card, so opening Card Info
+does not invalidate the pending review answer.
