@@ -9958,6 +9958,38 @@ def test_rwkv_calibration_recompute_stashes_resident_state_in_runtime(
     assert backend.cache_snapshot() == before
 
 
+def test_rwkv_calibration_recompute_restores_stashed_state_when_replay_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    runtime = _FailingReplayStashingRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    before = backend.cache_snapshot()
+    runtime.fail_replays = True
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is False
+
+    assert runtime.stash_count == 1
+    assert runtime.stashed is None
+    assert backend.has_resident_state() is True
+    assert backend.cache_snapshot() == before
+
+
 def test_rwkv_calibration_recompute_uses_fsrs_validation_folds(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -10447,6 +10479,21 @@ def test_stateful_backend_keeps_undo_history_across_state_stash() -> None:
     assert backend.has_resident_state() is True
     assert backend.cache_snapshot() == answered
     assert backend.answer_undone(1, 2) == 1
+    assert backend.cache_snapshot() == before
+
+
+def test_stateful_backend_stash_puts_state_back_when_reset_fails() -> None:
+    runtime = _FailingResetStashingRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    backend.warm_up([_warm_up_review_input(card_id=1, note_id=10, ease=2)])
+    before = backend.cache_snapshot()
+    runtime.fail_resets = True
+
+    with pytest.raises(RuntimeError, match="reset failed"):
+        backend.stash_cache_snapshot()
+
+    assert runtime.stashed is None
+    assert backend.has_resident_state() is True
     assert backend.cache_snapshot() == before
 
 
@@ -18668,6 +18715,44 @@ class _StashingResidentCacheRuntime(_ResidentCacheRuntime):
             self.global_state,
         ) = cast(Any, self.stashed)
         self.stashed = None
+
+
+class _FailingReplayStashingRuntime(_StashingResidentCacheRuntime):
+    fail_replays = False
+
+    def warm_up_reviews(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        *,
+        review_ids: Sequence[int] | None = None,
+        prediction_recorder: object | None = None,
+        progress: object | None = None,
+        snapshot_after_reviews: Sequence[int] = (),
+        snapshot_recorder: object | None = None,
+        return_snapshot: bool = True,
+    ) -> RwkvBackendCacheSnapshot | None:
+        if self.fail_replays:
+            # Leave partial replay state behind, as a real failure would.
+            self.card_states[999] = b"partial-replay"
+            raise RuntimeError("replay failed")
+        return super().warm_up_reviews(
+            reviews,
+            review_ids=review_ids,
+            prediction_recorder=prediction_recorder,
+            progress=progress,
+            snapshot_after_reviews=snapshot_after_reviews,
+            snapshot_recorder=snapshot_recorder,
+            return_snapshot=return_snapshot,
+        )
+
+
+class _FailingResetStashingRuntime(_StashingResidentCacheRuntime):
+    fail_resets = False
+
+    def reset_warm_up_state(self) -> None:
+        if self.fail_resets:
+            raise RuntimeError("reset failed")
+        super().reset_warm_up_state()
 
 
 def _set_or_remove_test_state(

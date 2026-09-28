@@ -470,6 +470,16 @@ struct StashedWarmUpState {
     warm_up_states: ReviewStateMaps,
 }
 
+/// Frees a replaced resident state off the caller's thread. A full
+/// collection's state is a few hundred thousand allocations, and freeing
+/// them took about 90ms that the caller would otherwise wait for.
+fn drop_in_background<T: Send + 'static>(value: T) {
+    // If the thread can't start, the closure and `value` are dropped here.
+    let _ = std::thread::Builder::new()
+        .name("rwkv-state-drop".into())
+        .spawn(move || drop(value));
+}
+
 struct StateCacheStoreWriter {
     path: PathBuf,
     generation: String,
@@ -1312,9 +1322,12 @@ insert into segments (
             .stashed_warm_up_state
             .take()
             .ok_or_else(|| io::Error::other("no stashed RWKV resident state"))?;
-        self.features = stashed.features;
-        self.curves = stashed.curves;
-        self.warm_up_states = stashed.warm_up_states;
+        let replaced = StashedWarmUpState {
+            features: mem::replace(&mut self.features, stashed.features),
+            curves: mem::replace(&mut self.curves, stashed.curves),
+            warm_up_states: mem::replace(&mut self.warm_up_states, stashed.warm_up_states),
+        };
+        drop_in_background(replaced);
         Ok(())
     }
 
@@ -9626,6 +9639,61 @@ order by e.id, e.cid
                 .unwrap(),
             pending_delta_len
         );
+    }
+
+    #[test]
+    fn stash_round_trip_keeps_later_predictions_bit_identical_after_temporary_replay() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(120);
+        let (history, later) = reviews.split_at(60);
+        let queries = later
+            .iter()
+            .map(|review| ReviewInput {
+                is_query: true,
+                ease: None,
+                duration_millis: None,
+                ..review.clone()
+            })
+            .collect::<Vec<_>>();
+        let mut untouched = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let mut stashed = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        untouched.warm_up_reviews(history.to_vec(), false).unwrap();
+        stashed.warm_up_reviews(history.to_vec(), false).unwrap();
+
+        stashed.stash_warm_up_state().unwrap();
+        stashed.reset_warm_up_state();
+        stashed.warm_up_reviews(reviews.clone(), true).unwrap();
+        stashed.restore_stashed_warm_up_state().unwrap();
+
+        let bits = |predictions: Vec<f32>| {
+            predictions
+                .into_iter()
+                .map(f32::to_bits)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(
+                stashed
+                    .predict_retrievability_many_from_warm_up(queries.clone())
+                    .unwrap()
+            ),
+            bits(
+                untouched
+                    .predict_retrievability_many_from_warm_up(queries)
+                    .unwrap()
+            ),
+        );
+        // Continuing from the restored state must match continuing from a
+        // state that was never stashed: features, curves and states included.
+        assert_prediction_parity(
+            &untouched.warm_up_reviews(later.to_vec(), true).unwrap(),
+            &stashed.warm_up_reviews(later.to_vec(), true).unwrap(),
+        );
+        assert_warm_up_parity(&untouched, &stashed);
+        assert_eq!(stashed.cache_state(), untouched.cache_state());
     }
 
     #[test]

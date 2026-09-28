@@ -529,16 +529,14 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    fn restore_warm_up_snapshot(&mut self, snapshot: &Bound<'_, PyAny>) -> PyResult<()> {
-        let snapshot = parse_rwkv_workload_snapshot(snapshot)?;
-        self.inner
-            .restore_warm_up_snapshot(rwkv::RwkvWarmUpSnapshot {
-                card_states: snapshot.card_states,
-                note_states: snapshot.note_states,
-                deck_states: snapshot.deck_states,
-                preset_states: snapshot.preset_states,
-                global_state: snapshot.global_state,
-            })
+    fn restore_warm_up_snapshot(
+        &mut self,
+        py: Python<'_>,
+        snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        // Copying the bytes out needs the GIL; decoding them does not.
+        let snapshot = parse_rwkv_warm_up_snapshot(snapshot)?;
+        py.detach(|| self.inner.restore_warm_up_snapshot(snapshot))
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
@@ -683,7 +681,6 @@ impl RwkvInference {
     }
 
     fn restore_stashed_warm_up_state(&mut self, py: Python<'_>) -> PyResult<()> {
-        // Restoring drops the replay's state, which can take a while.
         py.detach(|| self.inner.restore_stashed_warm_up_state())
             .map_err(|err| PyException::new_err(err.to_string()))
     }
@@ -699,12 +696,13 @@ impl RwkvInference {
     }
 
     fn cache_state(&self, py: Python<'_>) -> Py<PyBytes> {
-        PyBytes::new(py, &self.inner.cache_state()).unbind()
+        let state = py.detach(|| self.inner.cache_state());
+        PyBytes::new(py, &state).unbind()
     }
 
-    fn restore_cache_state(&mut self, state: &Bound<'_, PyBytes>) -> PyResult<()> {
-        self.inner
-            .restore_cache_state(state.as_bytes())
+    fn restore_cache_state(&mut self, py: Python<'_>, state: &Bound<'_, PyBytes>) -> PyResult<()> {
+        let state = state.as_bytes().to_vec();
+        py.detach(|| self.inner.restore_cache_state(&state))
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 }
@@ -1125,6 +1123,25 @@ fn parse_rwkv_workload_snapshot(
         preset_states: parse_serialized_state_map(&tuple.get_item(3)?)?,
         global_state: optional_bytes(&tuple.get_item(4)?)?,
         runtime_state: optional_bytes(&tuple.get_item(5)?)?,
+    })
+}
+
+/// Like `parse_rwkv_workload_snapshot()`, without copying the runtime state
+/// that a warm-up snapshot restore ignores.
+fn parse_rwkv_warm_up_snapshot(snapshot: &Bound<'_, PyAny>) -> PyResult<rwkv::RwkvWarmUpSnapshot> {
+    let tuple = snapshot.cast::<PyTuple>()?;
+    if tuple.len() != 6 {
+        return Err(PyException::new_err(
+            "RWKV workload snapshot must contain 6 fields",
+        ));
+    }
+
+    Ok(rwkv::RwkvWarmUpSnapshot {
+        card_states: parse_serialized_state_map(&tuple.get_item(0)?)?,
+        note_states: parse_serialized_state_map(&tuple.get_item(1)?)?,
+        deck_states: parse_serialized_state_map(&tuple.get_item(2)?)?,
+        preset_states: parse_serialized_state_map(&tuple.get_item(3)?)?,
+        global_state: optional_bytes(&tuple.get_item(4)?)?,
     })
 }
 

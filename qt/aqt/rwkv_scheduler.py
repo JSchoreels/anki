@@ -1322,13 +1322,19 @@ class RwkvStatefulReviewerBackend:
         """
         if not self.supports_cache_snapshot_stash():
             raise TypeError("RWKV resident runtime stash is unavailable")
-        cast(Any, self._runtime).stash_warm_up_state()
         stashed = RwkvStashedCacheSnapshot(
             resident_state_populated=self._resident_state_populated,
             undo_frames=tuple(self._undo_frames),
             redo_frames=tuple(self._redo_frames),
         )
-        self.reset_cache_snapshot()
+        cast(Any, self._runtime).stash_warm_up_state()
+        try:
+            self.reset_cache_snapshot()
+        except BaseException:
+            # The caller never receives the stash, so nothing else would put
+            # the state back, and the runtime would refuse every later stash.
+            self.restore_stashed_cache_snapshot(stashed)
+            raise
         return stashed
 
     def restore_stashed_cache_snapshot(
