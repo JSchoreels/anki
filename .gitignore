@@ -21,6 +21,7 @@ ts/.svelte-kit
 .claude/settings.local.json
 .local/
 .claude/user.md
+.claude/worktrees/
 .venv
 docs/_build/
 docs/autoapi/
