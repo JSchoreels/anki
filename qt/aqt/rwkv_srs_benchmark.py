@@ -673,6 +673,19 @@ class _RustRwkvRuntime:
             with self._locked_process():
                 reset()
 
+    def supports_warm_up_state_stash(self) -> bool:
+        return callable(
+            getattr(self._process, "stash_warm_up_state", None)
+        ) and callable(getattr(self._process, "restore_stashed_warm_up_state", None))
+
+    def stash_warm_up_state(self) -> None:
+        with self._locked_process():
+            self._process.stash_warm_up_state()
+
+    def restore_stashed_warm_up_state(self) -> None:
+        with self._locked_process():
+            self._process.restore_stashed_warm_up_state()
+
     def predict_many(
         self,
         requests: Sequence[RwkvReviewPredictionRequest],

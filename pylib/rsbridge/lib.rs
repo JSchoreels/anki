@@ -677,6 +677,17 @@ impl RwkvInference {
         self.inner.reset_warm_up_state();
     }
 
+    fn stash_warm_up_state(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.inner.stash_warm_up_state())
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    fn restore_stashed_warm_up_state(&mut self, py: Python<'_>) -> PyResult<()> {
+        // Restoring drops the replay's state, which can take a while.
+        py.detach(|| self.inner.restore_stashed_warm_up_state())
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn state_for_card(&self, card_id: i64) -> RwkvInferenceState {
         RwkvInferenceState {
             inner: self.inner.state_for_card(card_id),

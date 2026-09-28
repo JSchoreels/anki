@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -454,9 +455,17 @@ pub struct RwkvInference {
     features: FeatureState,
     curves: HashMap<i64, ReviewCurve>,
     warm_up_states: ReviewStateMaps,
+    stashed_warm_up_state: Option<StashedWarmUpState>,
     state_cache_store: Option<StateCacheStoreWriter>,
     target_retention: f32,
     max_interval_days: u32,
+}
+
+/// Resident state moved aside while a temporary replay uses the runtime.
+struct StashedWarmUpState {
+    features: FeatureState,
+    curves: HashMap<i64, ReviewCurve>,
+    warm_up_states: ReviewStateMaps,
 }
 
 struct StateCacheStoreWriter {
@@ -628,6 +637,7 @@ impl RwkvInference {
             features: FeatureState::default(),
             curves: HashMap::new(),
             warm_up_states: ReviewStateMaps::default(),
+            stashed_warm_up_state: None,
             state_cache_store: None,
             target_retention,
             max_interval_days,
@@ -1277,6 +1287,35 @@ insert into segments (
             .restore_serialized(card_id, note_id, deck_id, preset_id, &state)
     }
 
+    /// Moves the resident state and feature caches aside without
+    /// serializing them, leaving the runtime empty for a temporary replay.
+    /// `restore_stashed_warm_up_state()` puts them back unchanged, including
+    /// the changes that the next delta checkpoint still has to save.
+    pub fn stash_warm_up_state(&mut self) -> io::Result<()> {
+        if self.stashed_warm_up_state.is_some() {
+            return Err(io::Error::other("RWKV resident state is already stashed"));
+        }
+        self.stashed_warm_up_state = Some(StashedWarmUpState {
+            features: mem::take(&mut self.features),
+            curves: mem::take(&mut self.curves),
+            warm_up_states: mem::take(&mut self.warm_up_states),
+        });
+        Ok(())
+    }
+
+    /// Replaces the current state with the one saved by
+    /// `stash_warm_up_state()`.
+    pub fn restore_stashed_warm_up_state(&mut self) -> io::Result<()> {
+        let stashed = self
+            .stashed_warm_up_state
+            .take()
+            .ok_or_else(|| io::Error::other("no stashed RWKV resident state"))?;
+        self.features = stashed.features;
+        self.curves = stashed.curves;
+        self.warm_up_states = stashed.warm_up_states;
+        Ok(())
+    }
+
     pub fn reset_warm_up_state(&mut self) {
         self.state_cache_store = None;
         self.warm_up_states = ReviewStateMaps::default();
@@ -1652,6 +1691,7 @@ insert into segments (
             features,
             curves,
             warm_up_states: ReviewStateMaps::default(),
+            stashed_warm_up_state: None,
             state_cache_store: None,
             target_retention: self.target_retention,
             max_interval_days: self.max_interval_days,
@@ -9385,6 +9425,63 @@ order by e.id, e.cid
                 "runtime cache size diverged (record={record_predictions})"
             );
         }
+    }
+
+    #[test]
+    fn stashed_warm_up_state_restores_resident_state_and_pending_delta() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(40);
+        let mut inference = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let empty_cache_state = inference.cache_state();
+        inference
+            .warm_up_reviews_sequential(reviews[..24].to_vec(), false)
+            .unwrap();
+        let cache_state = inference.cache_state();
+        let snapshot = inference.warm_up_snapshot();
+        let pending_delta_len = inference
+            .warm_up_states
+            .checkpoint_delta_len(false)
+            .unwrap();
+        assert!(!snapshot.card_states.is_empty());
+        assert!(
+            pending_delta_len
+                > ReviewStateMaps::default()
+                    .checkpoint_delta_len(false)
+                    .unwrap()
+        );
+
+        inference.stash_warm_up_state().unwrap();
+        assert!(inference.stash_warm_up_state().is_err());
+        assert_eq!(inference.cache_state(), empty_cache_state);
+        assert!(inference.warm_up_snapshot().card_states.is_empty());
+        assert!(inference.warm_up_snapshot().global_state.is_none());
+
+        inference.reset_warm_up_state();
+        inference
+            .warm_up_reviews_sequential(reviews[8..].to_vec(), true)
+            .unwrap();
+        inference.restore_stashed_warm_up_state().unwrap();
+        assert!(inference.restore_stashed_warm_up_state().is_err());
+
+        let restored = inference.warm_up_snapshot();
+        assert_eq!(inference.cache_state(), cache_state);
+        assert_eq!(restored.card_states, snapshot.card_states);
+        assert_eq!(restored.note_states, snapshot.note_states);
+        assert_eq!(restored.deck_states, snapshot.deck_states);
+        assert_eq!(restored.preset_states, snapshot.preset_states);
+        assert_eq!(restored.global_state, snapshot.global_state);
+        // Unlike a serialized snapshot restore, the stash keeps the changes
+        // that the next delta checkpoint still has to write.
+        assert_eq!(
+            inference
+                .warm_up_states
+                .checkpoint_delta_len(false)
+                .unwrap(),
+            pending_delta_len
+        );
     }
 
     #[test]

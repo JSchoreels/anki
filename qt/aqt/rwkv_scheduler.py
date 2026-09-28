@@ -625,6 +625,16 @@ class RwkvBackendCacheSnapshot:
 
 
 @dataclass(frozen=True)
+class RwkvStashedCacheSnapshot:
+    """Marks resident state that the runtime has moved aside, unserialized."""
+
+    resident_state_populated: bool
+    # The stash restores the state bit for bit, so its undo history stays valid.
+    undo_frames: tuple[RwkvReviewRollbackEntry, ...] = ()
+    redo_frames: tuple[RwkvReviewRollbackEntry, ...] = ()
+
+
+@dataclass(frozen=True)
 class RwkvHistoricalReviewInputs:
     reviews: list[RwkvReviewInput]
     review_ids: list[int]
@@ -1295,6 +1305,43 @@ class RwkvStatefulReviewerBackend:
         reset_warm_up_state = getattr(self._runtime, "reset_warm_up_state", None)
         if callable(reset_warm_up_state):
             reset_warm_up_state()
+
+    def supports_cache_snapshot_stash(self) -> bool:
+        supports = getattr(self._runtime, "supports_warm_up_state_stash", None)
+        return (
+            self._runtime_owns_warm_up_state()
+            and callable(supports)
+            and supports() is True
+        )
+
+    def stash_cache_snapshot(self) -> RwkvStashedCacheSnapshot:
+        """Move the resident state aside and reset, without serializing it.
+
+        This replaces `cache_snapshot()` + `reset_cache_snapshot()` for
+        temporary replays; `restore_stashed_cache_snapshot()` undoes it.
+        """
+        if not self.supports_cache_snapshot_stash():
+            raise TypeError("RWKV resident runtime stash is unavailable")
+        cast(Any, self._runtime).stash_warm_up_state()
+        stashed = RwkvStashedCacheSnapshot(
+            resident_state_populated=self._resident_state_populated,
+            undo_frames=tuple(self._undo_frames),
+            redo_frames=tuple(self._redo_frames),
+        )
+        self.reset_cache_snapshot()
+        return stashed
+
+    def restore_stashed_cache_snapshot(
+        self,
+        stashed: RwkvStashedCacheSnapshot,
+    ) -> None:
+        cast(Any, self._runtime).restore_stashed_warm_up_state()
+        self._clear_python_state_cache()
+        self._resident_state_populated = stashed.resident_state_populated
+        self._advance_state_generation()
+        self._undo_frames[:] = stashed.undo_frames
+        self._redo_frames[:] = stashed.redo_frames
+        self._clear_prediction_cache("state cache restored")
 
     def warm_up(
         self,
@@ -10300,6 +10347,29 @@ def warm_up_rwkv_state(
     )
 
 
+def _rwkv_temporary_replay_snapshot_callables(
+    backend: object,
+    cache_snapshot: Callable[[], Any],
+    restore_cache_snapshot: Callable[[Any], object],
+) -> tuple[Callable[[], Any], Callable[[Any], object]]:
+    """Prefer moving resident state aside in the runtime over serializing it.
+
+    A replay that resets the state only needs the original back afterwards, so
+    the runtime can keep it instead of copying every state through Python.
+    """
+    supports_stash = getattr(backend, "supports_cache_snapshot_stash", None)
+    stash = getattr(backend, "stash_cache_snapshot", None)
+    restore_stashed = getattr(backend, "restore_stashed_cache_snapshot", None)
+    if (
+        callable(supports_stash)
+        and supports_stash()
+        and callable(stash)
+        and callable(restore_stashed)
+    ):
+        return stash, restore_stashed
+    return cache_snapshot, restore_cache_snapshot
+
+
 def recompute_rwkv_calibration_data(
     mw: object,
     *,
@@ -10327,6 +10397,11 @@ def recompute_rwkv_calibration_data(
         )
         return False
 
+    cache_snapshot, restore_cache_snapshot = _rwkv_temporary_replay_snapshot_callables(
+        backend,
+        cache_snapshot,
+        restore_cache_snapshot,
+    )
     reviewer = SimpleNamespace(mw=mw)
     start = time.monotonic()
     try:
@@ -10575,6 +10650,11 @@ def compare_rwkv_first_review_elapsed_metrics(
             "RWKV backend does not support comparison replay."
         )
 
+    cache_snapshot, restore_cache_snapshot = _rwkv_temporary_replay_snapshot_callables(
+        backend,
+        cache_snapshot,
+        restore_cache_snapshot,
+    )
     reviewer = SimpleNamespace(mw=mw)
     start = time.monotonic()
     try:

@@ -80,6 +80,12 @@ repeated here unless they materially affect a fork feature.
   of 250 cards took 65s instead of 80s, with identical results, and scoring
   an 8,900-card deck's RWKV review queue took 78ms instead of 97ms, with
   retrievabilities within 0.0000002 and an unchanged card order.
+- Recompute RWKV calibration data with less overhead and memory. The current
+  RWKV state is now set aside during the replay instead of being copied; on a
+  223,000-review collection, this took 0.1s instead of 1.2s, used 1.3 GB less
+  memory at its peak, and no longer froze Anki for up to 0.4s while the state
+  was put back. Undoing an answer given before the recompute rolls back its
+  RWKV state directly again.
 
 ## [26.09b3+fsrs7.build.91](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.91) — 2026-09-21
 

@@ -9923,6 +9923,41 @@ def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
     assert runtime.reviewed == []
 
 
+def test_rwkv_calibration_recompute_stashes_resident_state_in_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    runtime = _StashingResidentCacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    before = backend.cache_snapshot()
+    snapshot_count = runtime.snapshot_count
+    replay_count = len(runtime.return_snapshot_flags)
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    assert len(runtime.return_snapshot_flags) == replay_count + 1
+    assert runtime.stash_count == 1
+    assert runtime.stashed is None
+    assert runtime.snapshot_count == snapshot_count
+    assert backend.has_resident_state() is True
+    assert backend.cache_snapshot() == before
+
+
 def test_rwkv_calibration_recompute_uses_fsrs_validation_folds(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -10386,6 +10421,33 @@ def test_stateful_backend_answer_and_undo_restore_resident_runtime_state() -> No
     assert backend.answer_undone(1, 2) == 1
     assert backend.cache_snapshot() == before
     assert backend._card_states == {}
+
+
+def test_stateful_backend_keeps_undo_history_across_state_stash() -> None:
+    runtime = _StashingResidentCacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    reviewer = _rwkv_reviewer()
+    counter = _UndoCounter(reviewer)
+    backend.warm_up([_warm_up_review_input(card_id=1, note_id=10, ease=2)])
+    before = backend.cache_snapshot()
+    counter.set(1)
+    backend.review_answered(
+        reviewer=reviewer,
+        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        ease=3,
+    )
+    answered = backend.cache_snapshot()
+
+    stashed = backend.stash_cache_snapshot()
+    assert backend.has_resident_state() is False
+    assert backend.answer_undone(1, 2) is None
+    backend.warm_up([_warm_up_review_input(card_id=2, note_id=20, ease=4)])
+    backend.restore_stashed_cache_snapshot(stashed)
+
+    assert backend.has_resident_state() is True
+    assert backend.cache_snapshot() == answered
+    assert backend.answer_undone(1, 2) == 1
+    assert backend.cache_snapshot() == before
 
 
 def test_warmup_capable_backend_records_review_retrievability_cache(tmp_path) -> None:
@@ -18564,6 +18626,48 @@ class _ResidentCacheRuntime:
 
     def restore_cache_state(self, state: bytes) -> None:
         assert state == b"runtime"
+
+
+class _StashingResidentCacheRuntime(_ResidentCacheRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stashed: tuple[object, ...] | None = None
+        self.stash_count = 0
+        self.snapshot_count = 0
+
+    def warm_up_snapshot(self) -> RwkvBackendCacheSnapshot:
+        self.snapshot_count += 1
+        return super().warm_up_snapshot()
+
+    def supports_warm_up_state_stash(self) -> bool:
+        return True
+
+    def stash_warm_up_state(self) -> None:
+        assert self.stashed is None
+        self.stash_count += 1
+        self.stashed = (
+            self.card_states,
+            self.note_states,
+            self.deck_states,
+            self.preset_states,
+            self.global_state,
+        )
+        self.card_states = {}
+        self.note_states = {}
+        self.deck_states = {}
+        self.preset_states = {}
+        self.global_state = None
+
+    def restore_stashed_warm_up_state(self) -> None:
+        assert self.stashed is not None
+        (
+            self.card_states,
+            self.note_states,
+            self.deck_states,
+            self.preset_states,
+            self.global_state,
+        ) = cast(Any, self.stashed)
+        self.stashed = None
 
 
 def _set_or_remove_test_state(
