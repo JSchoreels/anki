@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,9 @@ import pytest
 import aqt.reviewer as reviewer_module
 import aqt.rwkv_scheduler
 from anki import cards_pb2
-from anki.collection import OpChanges
+from anki.collection import Collection, OpChanges
+from anki.consts import QUEUE_TYPE_NEW, QUEUE_TYPE_REV
+from anki.deck_config_pb2 import DeckConfig
 from aqt.reviewer import RefreshNeeded, Reviewer, SchedulingStates
 
 
@@ -1656,6 +1659,58 @@ def test_after_answering_without_rwkv_queue_order_fetches_next_immediately(
     reviewer._after_answering(3)
 
     assert calls == ["prepare", "next"]
+
+
+def test_after_answering_preserves_mixed_fsrs_queue_with_rwkv_disabled(
+    tmp_path: Path,
+) -> None:
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        col.set_config("fsrs", True)
+        deck_id = col.decks.get_current_id()
+        config = col.decks.config_dict_for_deck_id(deck_id)
+        config.update(
+            fsrsVersion=DeckConfig.Config.FSRS_VERSION_SEVEN,
+            newMix=DeckConfig.Config.REVIEW_MIX_MIX_WITH_REVIEWS,
+            rwkvReviewEnabled=False,
+            rwkvReviewInstantOrderEnabled=False,
+        )
+        col.decks.update_config(config)
+        notetype = col.models.current()
+        assert notetype is not None
+        for index in range(8):
+            note = col.new_note(notetype)
+            note.fields[0] = str(index)
+            col.add_note(note, deck_id)
+            if index >= 6:
+                col.sched.set_due_date([note.cards()[0].id], "0")
+
+        reviewer = Reviewer.__new__(Reviewer)
+        reviewer.mw = SimpleNamespace(col=col)
+        reviewer._answeredIds = []
+        reviewer.check_timebox = lambda: False
+        reviewer.nextCard = lambda: setattr(reviewer, "card", col.sched.getCard())
+        reviewer.nextCard()
+        shown_queues: list[int] = []
+        for _ in range(8):
+            assert reviewer.card is not None
+            shown_queues.append(reviewer.card.queue)
+            col.sched.answerCard(reviewer.card, 4)
+            reviewer._after_answering(4)
+
+        assert shown_queues == [
+            QUEUE_TYPE_NEW,
+            QUEUE_TYPE_NEW,
+            QUEUE_TYPE_REV,
+            QUEUE_TYPE_NEW,
+            QUEUE_TYPE_NEW,
+            QUEUE_TYPE_REV,
+            QUEUE_TYPE_NEW,
+            QUEUE_TYPE_NEW,
+        ]
+        assert reviewer.card is None
+    finally:
+        col.close()
 
 
 def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:

@@ -3280,6 +3280,84 @@ mod test {
     }
 
     #[test]
+    fn rwkv_empty_score_updates_preserve_new_review_mix() -> Result<()> {
+        for with_card_info_score in [false, true] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, true)?;
+            let deck = col.get_or_create_normal_deck("Default")?;
+            col.set_current_deck(deck.id)?;
+            col.update_default_deck_config(|config| {
+                config.fsrs_version = FsrsVersion::Seven as i32;
+                config.new_mix = ReviewMix::MixWithReviews as i32;
+                config.rwkv_review_enabled = false;
+                config.rwkv_review_instant_order_enabled = false;
+            });
+            for _ in 0..6 {
+                CardAdder::new().add(&mut col);
+            }
+            for _ in 0..2 {
+                CardAdder::new().due_dates(["0"]).add(&mut col);
+            }
+            if with_card_info_score {
+                let card_id = col.get_next_card()?.unwrap().card.id;
+                col.set_rwkv_card_info_score(card_id, Some(0.5))?;
+            }
+
+            let mut shown_queues = vec![];
+            for _ in 0..8 {
+                col.set_rwkv_review_queue_scores(deck.id, HashMap::new())?;
+                shown_queues.push(col.get_next_card()?.unwrap().card.queue);
+                col.answer_easy();
+            }
+
+            assert_eq!(
+                shown_queues,
+                vec![
+                    CardQueue::New,
+                    CardQueue::New,
+                    CardQueue::Review,
+                    CardQueue::New,
+                    CardQueue::New,
+                    CardQueue::Review,
+                    CardQueue::New,
+                    CardQueue::New,
+                ],
+                "Card Info score installed: {with_card_info_score}"
+            );
+            assert!(col.get_next_card()?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_score_clear_rebuilds_review_queue_from_normal_due_dates() -> Result<()> {
+        for clear_from_other_deck in [false, true] {
+            let mut col = Collection::new();
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_current_deck(deck.id)?;
+            col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+            let other_deck = col.get_or_create_normal_deck("Other")?;
+            let due = CardAdder::new().due_dates(["0"]).add(&mut col)[0].id;
+            let future = CardAdder::new().due_dates(["7"]).add(&mut col)[0].id;
+            col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(due, 0.2), (future, 0.1)]))?;
+            assert_eq!(col.queued_card_ids(10)?, vec![future, due]);
+
+            col.set_rwkv_review_queue_scores(
+                if clear_from_other_deck {
+                    other_deck.id
+                } else {
+                    deck.id
+                },
+                HashMap::new(),
+            )?;
+
+            assert_eq!(col.queued_card_ids(10)?, vec![due]);
+            assert_eq!(col.counts(), [0, 0, 1]);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn rwkv_score_update_rebuilds_review_queue_with_new_scores() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;

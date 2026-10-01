@@ -661,7 +661,16 @@ impl Collection {
         scores: HashMap<CardId, RwkvReviewQueueScoreEntry>,
     ) -> Result<()> {
         let days_elapsed = self.timing_today()?.days_elapsed;
-        self.state.card_queues = None;
+        // Retain progress through the new/review mix when there is no map to clear.
+        if !scores.is_empty()
+            || self
+                .state
+                .rwkv_retrievability_scores
+                .as_ref()
+                .is_some_and(|scores| scores.review_queue_scores.is_some())
+        {
+            self.state.card_queues = None;
+        }
         self.clear_rwkv_deck_count_scores();
         self.rwkv_retrievability_scores_mut(days_elapsed)
             .set_review_queue_scores(deck_id, scores);

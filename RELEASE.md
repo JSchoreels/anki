@@ -24,6 +24,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
+  of repeatedly restarting the queue and showing long runs of new cards.
 - Keep FSRS evaluation RMSE and model-comparison metrics identical across
   repeated runs with the same inputs.
 - Use far less memory when comparing RWKV with FSRS in the deck options, which

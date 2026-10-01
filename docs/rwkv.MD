@@ -453,6 +453,12 @@ descendants, but a map prepared for an unrelated deck is ignored. Deck-count
 adjustments likewise ignore scored cards that no longer belong to the declared
 deck tree.
 
+Installing RWKV queue scores or clearing an existing queue score map invalidates
+the study queue. An empty update with no installed queue score map retains the
+queue, including progress through the new/review mix. Queue preparation still
+clears the count-only cache. This also applies when RWKV-Instant ordering is
+disabled.
+
 When a review-time queue refresh runs after the next question is displayed,
 the reviewer temporarily shows an ellipsis for the review due count. After the
 new RWKV score map is installed, the footer is updated asynchronously from a
