@@ -24,6 +24,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Keep FSRS evaluation RMSE and model-comparison metrics identical across
+  repeated runs with the same inputs.
 - Use far less memory when comparing RWKV with FSRS in the deck options, which
   simulates every card of the preset and could run out of memory on large
   collections. Simulating 13,800 cards peaked at 2.8 GB instead of 8.3 GB,
@@ -58,6 +60,11 @@ repeated here unless they materially affect a fork feature.
 
 ### Improved
 
+- Update FSRS-7 optimization to use the training settings from its accuracy
+  benchmarks and start from the default parameters. With fewer than 64 training
+  targets, it no longer fits initial stabilities separately. Existing parameters
+  are still kept when they predict better. FSRS-7 optimization also uses a faster
+  kernel on x86.
 - Search specific note fields faster, in the browser, filtered decks and FSRS
   preset rules. On a 16,000-note collection with large notes, `Front:_` took
   about 25ms instead of 85ms, and `Front:nc:*a*` took 80ms instead of 2.2s.

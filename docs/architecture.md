@@ -292,9 +292,10 @@ FSRS training-item extraction is model-family-aware:
 - FSRS-7 includes same-day (`delta_t == 0`) follow-up targets during
   optimization/evaluation item generation.
 - Revlog-derived training items keep an aligned card-id vector after sorting by
-  review id. Final FSRS-7 uses the standard tensor optimizer path in `fsrs-rs`;
-  the previous windowed analytic optimizer is not used because it was tied to
-  the old single-stability parameter layout.
+  review id. Final FSRS-7 uses the native windowed analytic optimizer in
+  `fsrs-rs`. ARM with NEON uses its existing native kernel; other targets use
+  an eight-card f32 kernel with a second thread when more than one CPU is
+  available. Gradient groups are accumulated in a fixed order.
 - Optimize progress now reports:
     - total training targets,
     - long-term targets (`delta_t >= 1`),
@@ -343,11 +344,23 @@ Runtime parameter lookup uses the selected version first; if that array is not
 usable (`17/19/21/34` length with finite values), it falls back to best
 available parameters for compatibility with existing collections.
 
-FSRS optimization follows the training objective implemented in `fsrs-rs`. Anki
-does not apply the legacy raw-logloss post-filter to optimizer output, because
-optimized parameters are selected by the regularized training objective, which
-can include L2 and, when enabled, schedule penalty terms depending on the model
-family. FSRS-7 scheduling penalties are disabled by default.
+FSRS optimization follows the training objective implemented in `fsrs-rs`,
+which includes L2 and, when enabled, scheduling penalties. FSRS-7 scheduling
+penalties are disabled by default. After optimization, Anki compares the current
+and computed FSRS-7 parameters on the same training targets and keeps the current
+parameters if their log loss is no worse. Existing parameters from older model
+families are preserved when there are fewer than 64 targets; with enough targets,
+the computed parameters are accepted without a cross-family log-loss comparison.
+Anki passes no custom training configuration, so FSRS-7 uses the library's
+model defaults: 9 epochs, learning rate 0.0118, and L2 weight 0.3333, with
+recency weights and scheduling penalties aligned with `srs-benchmark`.
+FSRS-7 starts from the bundled default parameters without pre-training initial
+stabilities. The library returns those defaults for fewer than 64 training
+targets, or only first long-term review targets, before Anki applies its
+parameter comparison. Anki preserves the current parameters without calling the
+optimizer when there are no targets. FSRS-6 retains its existing training behavior.
+Evaluation RMSE bins and universal model-comparison metrics are summed in
+sorted bin order, making repeated results identical for the same inputs.
 FSRS-7 optimization reads/writes `fsrs_params_7`.
 When optimizer output length does not match the selected preset's current
 parameter-family length (for example selected FSRS-6 vs optimizer returning
