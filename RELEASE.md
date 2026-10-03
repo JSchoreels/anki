@@ -24,6 +24,9 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Restore FSRS-7 memory state after AnkiWeb sync removes its internal stability
+  fields, including cards already affected. Recovery preserves existing due
+  dates and intervals and does not queue repair-only changes for upload.
 - Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
   of repeatedly restarting the queue and showing long runs of new cards.
 - Show the final text after editing a card while its answer is displayed; the
