@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+## 26.09.3+fsrs7 — 2026-10-03
+
+Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94).
+
 ### Fixed
 
 - Respect “Allow same day review for (re)learning steps” in RWKV-Instant, so
@@ -32,11 +36,18 @@ repeated here unless they materially affect a fork feature.
   rescheduling filtered decks and Grade Now. Again on a review card's first
   answer of a scheduler day still counts; later answers that day do not, even
   after an earlier successful answer.
-- Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
-  of repeatedly restarting the queue and showing long runs of new cards.
 - Show the final text after editing a card while its answer is displayed; the
   reviewer could keep an earlier, half-typed version (such as furigana with an
   empty reading) until the next card.
+
+## [26.09.3+fsrs7.build.94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94) — 2026-10-01
+
+Current application version: `26.09.3+fsrs7`
+
+### Fixed
+
+- Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
+  of repeatedly restarting the queue and showing long runs of new cards.
 - Keep FSRS evaluation RMSE and model-comparison metrics identical across
   repeated runs with the same inputs.
 - Use far less memory when comparing RWKV with FSRS in the deck options, which
