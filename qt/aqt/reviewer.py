@@ -416,7 +416,9 @@ class Reviewer:
     def _redraw_current_card(self) -> None:
         self.card.load()
         if self.state == "answer":
-            self._showAnswer()
+            # Supersede any answer render still in flight: the show-answer
+            # guard would drop this redraw and leave stale note text visible.
+            self._render_answer()
         else:
             self._showQuestion()
 
@@ -994,6 +996,9 @@ class Reviewer:
                 self._question_update_id,
             )
             return
+        self._render_answer()
+
+    def _render_answer(self) -> None:
         self._begin_qa_transition()
         self.state = "answer"
         c = self.card

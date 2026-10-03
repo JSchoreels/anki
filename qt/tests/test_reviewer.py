@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
@@ -318,6 +319,48 @@ def test_show_answer_ignored_until_current_question_rendered(monkeypatch) -> Non
         "_setQAInteractionEnabled(false);",
         '_showAnswer("back", null, "answer:2:123");',
     ]
+
+
+def test_note_edit_redraws_answer_while_previous_redraw_is_rendering(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    stored_back = ["散歩[]"]
+
+    class Card:
+        id = 123
+
+        def load(self) -> None:
+            self.back = stored_back[0]
+
+        def answer(self) -> str:
+            return self.back
+
+        def autoplay(self) -> bool:
+            return False
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace(state="review", fade_in_webview=lambda: None)
+    reviewer.web = SimpleNamespace(eval=lambda script: calls.append(script))
+    reviewer.card = Card()
+    reviewer.state = "answer"
+    reviewer._v3 = object()
+    reviewer._qa_update_id = 1
+    reviewer._refresh_needed = None
+    reviewer._mungeQA = lambda text: text
+    monkeypatch.setattr(reviewer_module.av_player, "play_tags", lambda sounds: None)
+
+    # Returning focus redraws from the note saved while typing...
+    reviewer._refresh_needed = RefreshNeeded.NOTE_TEXT
+    reviewer.refresh_if_needed()
+    # ...and the editor's final save lands before that answer has painted.
+    stored_back[0] = "散歩[さんぽ]"
+    reviewer.op_executed(OpChanges(note_text=True), handler=None, focused=True)
+
+    assert (
+        calls[-1] == f'_showAnswer({json.dumps("散歩[さんぽ]")}, null, "answer:3:123");'
+    )
+    assert reviewer._answer_update_id == 3
 
 
 def test_typed_answer_waits_for_current_question_rendered() -> None:

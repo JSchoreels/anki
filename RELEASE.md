@@ -26,6 +26,9 @@ repeated here unless they materially affect a fork feature.
 
 - Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
   of repeatedly restarting the queue and showing long runs of new cards.
+- Show the final text after editing a card while its answer is displayed; the
+  reviewer could keep an earlier, half-typed version (such as furigana with an
+  empty reading) until the next card.
 - Keep FSRS evaluation RMSE and model-comparison metrics identical across
   repeated runs with the same inputs.
 - Use far less memory when comparing RWKV with FSRS in the deck options, which
