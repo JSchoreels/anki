@@ -562,6 +562,7 @@ impl crate::services::SchedulerService for Collection {
                 maximum_review_interval: config.inner.maximum_review_interval,
                 fsrs_minimum_interval_secs: config.inner.fsrs_minimum_interval_secs,
                 leech_threshold: config.inner.leech_threshold,
+                count_review_lapse: true,
                 leech_only_if_young: config.inner.leech_only_if_young,
                 fsrs_again_s90,
                 load_balancer_ctx: None,

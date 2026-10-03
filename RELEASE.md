@@ -24,6 +24,14 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Respect “Allow same day review for (re)learning steps” in RWKV-Instant, so
+  disabling it prevents cards from repeating that day even when learning queues
+  are skipped.
+- Prevent repeated same-day reviews from adding lapses or triggering leech
+  handling across schedulers, with or without queue skipping, including
+  rescheduling filtered decks and Grade Now. Again on a review card's first
+  answer of a scheduler day still counts; later answers that day do not, even
+  after an earlier successful answer.
 - Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
   of repeatedly restarting the queue and showing long runs of new cards.
 - Show the final text after editing a card while its answer is displayed; the

@@ -232,6 +232,21 @@ ordering, not a maximum. Same-day-review exemptions and the option that lets
 new cards ignore the review limit can also make the final count differ from a
 simple cap.
 
+### Can RWKV-Instant repeat a card when same-day reviews are disabled?
+
+With FSRS enabled, turning off **Allow same day review for (re)learning steps**
+prevents RWKV-Instant from showing a card already answered that scheduler day.
+This also applies when **Skip learning/relearning queues with FSRS/RWKV** is
+enabled. The RWKV same-day setting and repeat-spacing guards must also permit
+a repeat before it can appear.
+
+Same-day Again answers do not add another lapse or trigger leech handling,
+regardless of queue skipping or scheduler. This also covers rescheduling filtered
+decks and **Grade Now**. A review card's first answer of a scheduler day still
+adds a lapse when answered Again; later answers that day do not, even after an
+earlier successful answer. All answers remain in review history and update the
+model.
+
 ### Does RWKV override standard sibling burying?
 
 No. The fork uses Anki's normal bury settings: `bury_new`, `bury_reviews`, and

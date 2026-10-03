@@ -159,10 +159,11 @@ impl ReviewState {
     }
 
     fn answer_again(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let lapses = self.lapses + 1;
+        let lapses = self.lapses + u32::from(ctx.count_review_lapse);
         let (scheduled_days, fuzz_delta_days, memory_state) = self.failing_review_interval(ctx);
         let stored_scheduled_days = scheduled_days.round().max(1.0) as u32;
-        let leeched = leech_threshold_met(lapses, ctx.leech_threshold)
+        let leeched = ctx.count_review_lapse
+            && leech_threshold_met(lapses, ctx.leech_threshold)
             && leech_young_enough(stored_scheduled_days, ctx);
         let again_review = ReviewState {
             scheduled_days: stored_scheduled_days,
@@ -396,6 +397,20 @@ mod test {
     use super::*;
     use crate::scheduler::states::steps::LearningSteps;
     use crate::scheduler::states::NormalState;
+
+    #[test]
+    fn again_does_not_retrigger_leech_without_new_lapse() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.count_review_lapse = false;
+        let states = ReviewState {
+            lapses: 8,
+            ..Default::default()
+        }
+        .next_states(&ctx);
+
+        assert_eq!(states.again.review_state().unwrap().lapses, 8);
+        assert!(!states.again.leeched());
+    }
 
     #[test]
     fn leech_threshold() {

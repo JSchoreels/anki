@@ -103,6 +103,7 @@ struct CardStateUpdater {
     dynamic_desired_retentions: Option<[f32; 4]>,
     fsrs_short_term_with_steps: bool,
     fsrs_learning_queues_disabled: bool,
+    count_review_lapse: bool,
     fsrs_allow_short_term: bool,
 }
 
@@ -146,6 +147,7 @@ impl CardStateUpdater {
             maximum_review_interval: self.config.inner.maximum_review_interval,
             fsrs_minimum_interval_secs: self.config.inner.fsrs_minimum_interval_secs,
             leech_threshold: self.config.inner.leech_threshold,
+            count_review_lapse: self.count_review_lapse,
             leech_only_if_young: self.config.inner.leech_only_if_young,
             fsrs_again_s90,
             load_balancer_ctx: load_balancer_ctx
@@ -666,6 +668,13 @@ impl Collection {
 
         let desired_retention = desired_retention_override.unwrap_or(fsrs_preset.desired_retention);
         let fsrs_enabled = self.fsrs_enabled();
+        let last_review_time = if card.last_review_time.is_some() {
+            card.last_review_time
+        } else {
+            self.storage.time_of_last_review(card.id)?
+        };
+        let count_review_lapse =
+            !last_review_time.is_some_and(|last_review_time| timing.is_today(last_review_time));
         let mut elapsed_days_for_log = None;
         let mut fsrs_review_retrievability = None;
         let mut dynamic_desired_retention = None::<DynamicDesiredRetentionStates>;
@@ -688,11 +697,6 @@ impl Collection {
                 )?;
                 card.set_memory_state(&fsrs, params, item, fsrs_preset.historical_retention)?;
             }
-            let last_review_time = if card.last_review_time.is_some() {
-                card.last_review_time
-            } else {
-                self.storage.time_of_last_review(card.id)?
-            };
             let days_elapsed = last_review_time
                 .map(|last_review_time| {
                     fsrs_elapsed_days(
@@ -825,6 +829,7 @@ impl Collection {
             dynamic_desired_retentions,
             fsrs_short_term_with_steps,
             fsrs_learning_queues_disabled,
+            count_review_lapse,
             fsrs_allow_short_term,
         })
     }
@@ -1277,6 +1282,207 @@ pub(crate) mod test {
 
         let deck = col.get_deck(DeckId(1))?.unwrap();
         assert_eq!(deck.common.review_studied, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn review_does_not_count_same_day_lapses() -> Result<()> {
+        for (fsrs_enabled, skip_queues, reviewed_today, stored_review_time, expected_lapses) in [
+            (true, true, true, true, 7),
+            (true, true, true, false, 7),
+            (true, true, false, true, 8),
+            (true, false, true, true, 7),
+            (true, false, false, true, 8),
+            (false, true, true, true, 7),
+            (false, false, true, true, 7),
+            (false, false, true, false, 7),
+            (false, false, false, true, 8),
+            (false, false, false, false, 8),
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, fsrs_enabled, false)?;
+            col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, skip_queues, false)?;
+            col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.leech_threshold = 8;
+                config.leech_action = LeechAction::Suspend as i32;
+            });
+            let card_id = add_due_review_card(
+                &mut col,
+                1,
+                7,
+                Some(FsrsMemoryState {
+                    stability: 1.0,
+                    stability_internal: 1.0,
+                    stability_fast: None,
+                    difficulty: 5.0,
+                }),
+            )?;
+            let timing = col.timing_today()?;
+            let mut card = col.storage.get_card(card_id)?.unwrap();
+            let last_review_time = if reviewed_today {
+                timing.now
+            } else {
+                timing.next_day_at.adding_secs(-86_401)
+            };
+            card.last_review_time = stored_review_time.then_some(last_review_time);
+            col.storage.update_card(&card)?;
+            if !stored_review_time {
+                col.storage.add_revlog_entry(
+                    &crate::revlog::RevlogEntry {
+                        id: last_review_time.as_millis().into(),
+                        cid: card_id,
+                        button_chosen: 1,
+                        interval: 1,
+                        ease_factor: 2500,
+                        review_kind: RevlogReviewKind::Review,
+                        ..Default::default()
+                    },
+                    true,
+                )?;
+            }
+            let states = col.get_scheduling_states(card_id)?;
+            assert_eq!(states.again.review_state().unwrap().lapses, expected_lapses);
+            assert_eq!(states.again.leeched(), expected_lapses == 8);
+
+            col.answer_card(&mut CardAnswer {
+                card_id,
+                current_state: states.current,
+                new_state: states.again,
+                rating: Rating::Again,
+                answered_at: TimestampMillis::now(),
+                milliseconds_taken: 0,
+                custom_data: None,
+                desired_retention_override: None,
+                rwkv_s90: None,
+                rwkv_retrievability: None,
+                rwkv_review_kind: None,
+                from_queue: false,
+            })?;
+
+            let card = col.storage.get_card(card_id)?.unwrap();
+            assert_eq!(card.lapses, expected_lapses);
+            assert_eq!(card.queue == CardQueue::Suspended, expected_lapses == 8);
+            let note = col.storage.get_note(card.note_id)?.unwrap();
+            assert_eq!(
+                note.tags.iter().any(|tag| tag == LEECH_TAG),
+                expected_lapses == 8
+            );
+            assert_eq!(
+                col.storage.get_revlog_entries_for_card(card_id)?.len(),
+                if stored_review_time { 1 } else { 2 }
+            );
+            col.undo()?;
+            assert_eq!(col.storage.get_card(card_id)?.unwrap().lapses, 7);
+            col.redo()?;
+            assert_eq!(
+                col.storage.get_card(card_id)?.unwrap().lapses,
+                expected_lapses
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn grade_now_does_not_count_same_day_lapse_after_successful_review() -> Result<()> {
+        for fsrs_enabled in [false, true] {
+            for filtered in [false, true] {
+                let mut col = Collection::new();
+                col.set_config_bool(BoolKey::Fsrs, fsrs_enabled, false)?;
+                col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, false, false)?;
+                col.update_default_deck_config(|config| {
+                    config.leech_threshold = 8;
+                    config.leech_action = LeechAction::Suspend as i32;
+                });
+                let card_id = add_due_review_card(&mut col, 10, 7, None)?;
+                col.grade_now(anki_proto::scheduler::GradeNowRequest {
+                    card_ids: vec![card_id.into()],
+                    rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+                    card_options: vec![],
+                })?;
+
+                if filtered {
+                    let mut deck = Deck::new_filtered();
+                    deck.filtered_mut()?.search_terms[0].search = format!("cid:{card_id}");
+                    col.add_or_update_deck(&mut deck)?;
+                    assert_eq!(col.rebuild_filtered_deck(deck.id)?.output, 1);
+                    assert!(matches!(
+                        col.get_scheduling_states(card_id)?.current,
+                        CardState::Filtered(FilteredState::Rescheduling(_))
+                    ));
+                }
+
+                col.grade_now(anki_proto::scheduler::GradeNowRequest {
+                    card_ids: vec![card_id.into()],
+                    rating: anki_proto::scheduler::card_answer::Rating::Again as i32,
+                    card_options: vec![],
+                })?;
+
+                let card = col.storage.get_card(card_id)?.unwrap();
+                assert_eq!(card.lapses, 7);
+                assert_ne!(card.queue, CardQueue::Suspended);
+                let note = col.storage.get_note(card.note_id)?.unwrap();
+                assert!(!note.tags.iter().any(|tag| tag == LEECH_TAG));
+                assert_eq!(col.storage.get_revlog_entries_for_card(card_id)?.len(), 2);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_instant_failure_obeys_same_day_and_lapse_settings() -> Result<()> {
+        for allow_same_day in [false, true] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, true, false)?;
+            col.set_config_bool(
+                BoolKey::FsrsShortTermWithStepsEnabled,
+                allow_same_day,
+                false,
+            )?;
+            col.update_default_deck_config(|config| {
+                config.rwkv_review_instant_order_enabled = true;
+                config.rwkv_review_allow_same_day_review = true;
+                config.rwkv_review_min_intervening_reviews = 0;
+                config.rwkv_review_min_elapsed_secs = 0;
+                config.leech_threshold = 2;
+                config.leech_action = LeechAction::Suspend as i32;
+            });
+            let card_id = add_due_review_card(
+                &mut col,
+                1,
+                0,
+                Some(FsrsMemoryState {
+                    stability: 1.0,
+                    stability_internal: 1.0,
+                    stability_fast: None,
+                    difficulty: 5.0,
+                }),
+            )?;
+            col.set_rwkv_review_queue_scores(
+                DeckId(1),
+                std::collections::HashMap::from([(card_id, 0.1)]),
+            )?;
+            assert_eq!(col.answer_again().card_id, card_id);
+            let card = col.storage.get_card(card_id)?.unwrap();
+            assert_eq!(card.queue, CardQueue::Review);
+            assert_eq!(card.lapses, 1);
+            assert!(card.due > col.timing_today()?.days_elapsed as i32);
+
+            col.set_rwkv_review_queue_scores(
+                DeckId(1),
+                std::collections::HashMap::from([(card_id, 0.1)]),
+            )?;
+            if allow_same_day {
+                assert_eq!(col.answer_again().card_id, card_id);
+                let card = col.storage.get_card(card_id)?.unwrap();
+                assert_eq!(card.queue, CardQueue::Review);
+                assert_eq!(card.lapses, 1);
+                assert_eq!(col.storage.get_revlog_entries_for_card(card_id)?.len(), 2);
+            } else {
+                assert!(col.get_next_card()?.is_none());
+            }
+        }
         Ok(())
     }
 
@@ -1977,7 +2183,7 @@ pub(crate) mod test {
         assert_eq!(card.interval, 4);
         assert_eq!(card.ease_factor, 2650);
 
-        // lapsing it
+        // Same-day failure after graduation enters relearning without adding a lapse.
         col.storage.db.execute_batch("update cards set due=0")?;
         col.clear_study_queues();
         let mut post_answer = col.answer_again();
@@ -1992,7 +2198,7 @@ pub(crate) mod test {
         assert_eq!(card.ctype, CardType::Relearn);
         assert_eq!(card.interval, 1);
         assert_eq!(card.ease_factor, 2450);
-        assert_eq!(card.lapses, 1);
+        assert_eq!(card.lapses, 0);
 
         // failed in relearning
         col.storage.db.execute_batch("update cards set due=0")?;
@@ -2006,7 +2212,7 @@ pub(crate) mod test {
         assert_eq!(post_answer.new_state, current);
         let card = col.storage.get_card(post_answer.card_id)?.unwrap();
         assert_eq!(card.queue, CardQueue::Learn);
-        assert_eq!(card.lapses, 1);
+        assert_eq!(card.lapses, 0);
 
         // re-graduating
         col.storage.db.execute_batch("update cards set due=0")?;

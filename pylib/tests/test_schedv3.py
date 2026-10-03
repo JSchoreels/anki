@@ -337,6 +337,8 @@ def test_reviews():
     c.reps = 3
     c.lapses = 1
     c.ivl = 100
+    # Each copied scenario starts before today's reviews instead of using their revlog.
+    c.last_review_time = col.sched.day_cutoff - (c.ivl + 8) * 86400 - 1
     c.start_timer()
     c.flush()
     # save it for later use as well

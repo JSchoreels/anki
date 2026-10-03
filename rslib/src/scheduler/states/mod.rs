@@ -115,6 +115,8 @@ pub(crate) struct StateContext<'a> {
     pub maximum_review_interval: u32,
     pub fsrs_minimum_interval_secs: u32,
     pub leech_threshold: u32,
+    /// Only a review card's first answer of the scheduler day can add a lapse.
+    pub count_review_lapse: bool,
     pub leech_only_if_young: bool,
     pub fsrs_again_s90: Option<f32>,
     pub load_balancer_ctx: Option<LoadBalancerContext<'a>>,
@@ -164,6 +166,7 @@ impl StateContext<'_> {
             maximum_review_interval: 36500,
             fsrs_minimum_interval_secs: 1,
             leech_threshold: 8,
+            count_review_lapse: true,
             leech_only_if_young: false,
             fsrs_again_s90: None,
             load_balancer_ctx: None,

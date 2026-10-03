@@ -130,12 +130,13 @@ mod test {
         let sibling = col.storage.get_card(sibling_cid)?.unwrap();
         assert_eq!(sibling.queue, CardQueue::SchedBuried);
 
-        // make it due now, with 7 lapses. we use the storage layer directly,
-        // bypassing undo
+        // Make it due now with 7 lapses and a review from before today, so the
+        // next failure counts. We use the storage layer directly, bypassing undo.
         let mut card = col.storage.get_card(cid)?.unwrap();
         assert_eq!(card.ctype, CardType::Review);
         card.lapses = 7;
         card.due = 0;
+        card.last_review_time = Some(col.timing_today()?.next_day_at.adding_secs(-86_401));
         col.storage.update_card(&card)?;
 
         // fail it, which should cause it to be marked as a leech

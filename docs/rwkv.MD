@@ -408,12 +408,27 @@ RWKV ordering path or the normal due fallback until a later prediction puts them
 back below target. When
 `rwkv_review_allow_same_day_review` is disabled, scored review cards that were
 already answered during the current scheduler day are also withheld until the
-next day. When same-day RWKV re-review is enabled,
+next day. With FSRS enabled, turning off **Allow same day review for
+(re)learning steps** also withholds these cards, even when **Skip
+learning/relearning queues with FSRS/RWKV** is enabled. This restriction applies
+to queue selection, deck counts, daily minimums, and `is:rwkv:due` searches.
+When both same-day settings permit RWKV re-review,
 `rwkv_review_min_intervening_reviews` can require a number of other answered
 reviews in the selected deck tree before the same card is admitted again, and
 `rwkv_review_min_elapsed_secs` can require that many seconds since the card's
 stored last review time. If both values are nonzero, both guards must be
 satisfied.
+
+Answering Again on a card already answered during the current scheduler day
+does not increase its lapse count or trigger leech tagging or suspension.
+This applies regardless of queue skipping or scheduler, including rescheduling
+filtered decks and **Grade Now**. A review card's first answer of a scheduler day
+still adds a lapse when answered Again; subsequent answers that day do not, even
+if the first answer was successful. Learning and relearning answers continue to
+preserve the existing lapse count.
+Each answer is still recorded and updates the scheduling model. The day boundary
+uses Anki's configured rollover time, including when the last answer time must
+be recovered from the revlog.
 
 RWKV-selected cards also honor the general **Same-day reviews ignore review
 limit** daily-limits option. When enabled, an eligible scored card already

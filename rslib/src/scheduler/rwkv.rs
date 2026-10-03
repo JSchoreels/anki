@@ -693,6 +693,7 @@ fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
 pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) target_retention: f32,
     pub(crate) reviewed_today: bool,
+    pub(crate) same_day_review_allowed: bool,
     pub(crate) elapsed_secs_since_last_review: Option<u32>,
     pub(crate) current_deck_id: DeckId,
     pub(crate) source_deck_id: DeckId,
@@ -709,6 +710,8 @@ pub(crate) fn rwkv_review_candidate_metadata(
     let mut metadata = HashMap::with_capacity(cards.len());
     let mut partial_by_card = HashMap::new();
     let mut without_card_target = Vec::new();
+    let same_day_review_allowed = !col.get_config_bool(BoolKey::Fsrs)
+        || col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
 
     for card in cards {
         if card.queue != CardQueue::Review {
@@ -725,7 +728,10 @@ pub(crate) fn rwkv_review_candidate_metadata(
             fsrs_due_today: card.due <= timing.days_elapsed as i32,
         };
         if let Some(desired_retention) = card_desired_retention(&card) {
-            metadata.insert(card.id, partial.with_target_retention(desired_retention));
+            metadata.insert(
+                card.id,
+                partial.with_target_retention(desired_retention, same_day_review_allowed),
+            );
         } else {
             partial_by_card.insert(card.id, partial);
             without_card_target.push(card);
@@ -736,7 +742,7 @@ pub(crate) fn rwkv_review_candidate_metadata(
         if let Some(partial) = partial_by_card.remove(&card_id) {
             metadata.insert(
                 card_id,
-                partial.with_target_retention(preset.desired_retention),
+                partial.with_target_retention(preset.desired_retention, same_day_review_allowed),
             );
         }
     }
@@ -841,7 +847,8 @@ fn rwkv_review_score_eligibility_inner(
 
     if !score.is_finite()
         || score_above_target
-        || (!allow_same_day_review && metadata.reviewed_today)
+        || (metadata.reviewed_today
+            && (!allow_same_day_review || !metadata.same_day_review_allowed))
     {
         return RwkvReviewScoreEligibility::Blocked;
     }
@@ -882,10 +889,15 @@ struct RwkvReviewCandidatePartial {
 }
 
 impl RwkvReviewCandidatePartial {
-    fn with_target_retention(self, target_retention: f32) -> RwkvReviewCandidateMetadata {
+    fn with_target_retention(
+        self,
+        target_retention: f32,
+        same_day_review_allowed: bool,
+    ) -> RwkvReviewCandidateMetadata {
         RwkvReviewCandidateMetadata {
             target_retention,
             reviewed_today: self.reviewed_today,
+            same_day_review_allowed,
             elapsed_secs_since_last_review: self.elapsed_secs_since_last_review,
             current_deck_id: self.current_deck_id,
             source_deck_id: self.source_deck_id,
@@ -1131,10 +1143,8 @@ fn valid_card_desired_retention(desired_retention: f32) -> bool {
 }
 
 pub(crate) fn card_reviewed_today(card: &Card, timing: SchedTimingToday) -> bool {
-    card.last_review_time.is_some_and(|last_review_time| {
-        let today_start = timing.next_day_at.0.saturating_sub(86_400);
-        last_review_time.0 >= today_start && last_review_time.0 < timing.next_day_at.0
-    })
+    card.last_review_time
+        .is_some_and(|last_review_time| timing.is_today(last_review_time))
 }
 
 fn rwkv_rescheduled_memory_state(card: &Card, s90: f32) -> FsrsMemoryState {
