@@ -24,6 +24,9 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Recover RWKV state after changing a deck or its preset during a session,
+  including while reviewing. Open Card Info windows refresh when RWKV becomes
+  ready and immediately reflect whether the card's current preset enables it.
 - Preserve “Mix with reviews” ordering when RWKV ordering is disabled, instead
   of repeatedly restarting the queue and showing long runs of new cards.
 - Keep FSRS evaluation RMSE and model-comparison metrics identical across

@@ -714,6 +714,12 @@ hooks = [
         """,
     ),
     Hook(
+        name="rwkv_state_did_prepare",
+        args=["mw: aqt.AnkiQt"],
+        doc="""Called on the main thread after RWKV state has been restored or
+        rebuilt, so open diagnostics can refresh their predictions.""",
+    ),
+    Hook(
         name="focus_did_change",
         args=[
             "new: QWidget | None",

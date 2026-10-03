@@ -8,6 +8,8 @@ import sys
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import pytest
+
 import aqt.errors
 import aqt.main
 import aqt.rwkv_scheduler
@@ -102,12 +104,17 @@ def test_non_queue_preset_mutation_invalidates_rwkv_before_screen_refresh(
         "fsrs_preset_resolution_did_change",
         lambda _owner: calls.append("rwkv preset"),
     )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "request_rwkv_state_cache_recovery",
+        lambda _owner, **_kwargs: calls.append("rwkv recovery"),
+    )
     changes = OpChanges()
     changes.deck_config = True
 
     mw.on_operation_did_execute(changes, handler=object())
 
-    assert calls == ["rwkv preset", "screen"]
+    assert calls == ["rwkv preset", "rwkv recovery", "screen"]
 
 
 def test_note_content_mutation_preserves_unchanged_rwkv_state_before_refresh(
@@ -135,6 +142,37 @@ def test_note_content_mutation_preserves_unchanged_rwkv_state_before_refresh(
     mw.on_operation_did_execute(changes, handler=initiator)
 
     assert calls == ["rwkv content", "screen"]
+
+
+@pytest.mark.parametrize("changed", ["deck", "deck_config"])
+def test_deck_or_preset_change_requests_rwkv_recovery_after_invalidation(
+    monkeypatch, changed: str
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.state = "review"
+    mw.reviewer = SimpleNamespace(
+        op_executed=lambda *_args: calls.append("screen") or False
+    )
+    monkeypatch.setattr(aqt.main, "current_window", lambda: mw)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "study_queues_did_change",
+        lambda *_args: calls.append("invalidate"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "request_rwkv_state_cache_recovery",
+        lambda _mw, *, reason, allow_during_review: calls.append(
+            "recover during review" if allow_during_review else "recover"
+        ),
+    )
+    changes = OpChanges(study_queues=True)
+    setattr(changes, changed, True)
+
+    mw.on_operation_did_execute(changes, handler=object())
+
+    assert calls == ["invalidate", "recover during review", "screen"]
 
 
 def test_startup_sync_can_defer_rwkv_refresh(

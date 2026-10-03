@@ -7696,6 +7696,10 @@ def current_reviewer_diagnostics(
     if prediction is None:
         return None
 
+    prediction = replace(
+        prediction,
+        review_enabled=rwkv_review_active(reviewer, card),
+    )
     return RwkvReviewerDiagnostics(
         retrievability=prediction.retrievability,
         retrievability_source=_retrievability_source(prediction, fallback_source),
@@ -11367,10 +11371,12 @@ def request_rwkv_state_cache_recovery(
     mw: object,
     *,
     reason: str,
+    allow_during_review: bool = False,
 ) -> bool:
     """Schedule one visible canonical recovery when resident RWKV state is cold."""
 
     reviewer = SimpleNamespace(mw=mw)
+    collection = _collection(reviewer)
     if not _rwkv_collection_config_state(reviewer).review_enabled:
         return False
     if not configure_reviewer_backend_from_environment():
@@ -11397,11 +11403,29 @@ def request_rwkv_state_cache_recovery(
     _set_rwkv_state_cache_recovery_scheduled(mw, True)
     logger.info("RWKV state recovery scheduled: reason=%s", reason)
 
+    def refresh_review(ready: bool) -> None:
+        if (
+            ready
+            and getattr(mw, "state", None) == "review"
+            and _collection(reviewer) is collection
+        ):
+            getattr(mw, "reviewer").op_executed(
+                collection_pb2.OpChanges(study_queues=True),
+                None,
+                focused=True,
+            )
+
     def start_recovery() -> None:
         _set_rwkv_state_cache_recovery_scheduled(mw, False)
-        if getattr(mw, "state", None) not in ("deckBrowser", "overview"):
+        allowed_states: tuple[str, ...] = ("deckBrowser", "overview")
+        if allow_during_review:
+            allowed_states += ("review",)
+        if (
+            _collection(reviewer) is not collection
+            or getattr(mw, "state", None) not in allowed_states
+        ):
             logger.debug(
-                "RWKV state recovery cancelled outside count view: reason=%s state=%s",
+                "RWKV state recovery cancelled outside its collection or view: reason=%s state=%s",
                 reason,
                 getattr(mw, "state", None),
             )
@@ -11411,6 +11435,11 @@ def request_rwkv_state_cache_recovery(
             return
         if _rwkv_resident_state_ready(mw):
             _refresh_active_rwkv_count_view(mw)
+            from aqt import gui_hooks
+
+            gui_hooks.rwkv_state_did_prepare(cast(Any, mw))
+            if allow_during_review:
+                refresh_review(True)
             return
 
         logger.info("RWKV state recovery starting: reason=%s", reason)
@@ -11418,6 +11447,7 @@ def request_rwkv_state_cache_recovery(
             build_rwkv_state_cache_with_progress(
                 mw,
                 recovery_reason=reason,
+                on_done=refresh_review if allow_during_review else None,
             )
         except Exception:
             _set_rwkv_state_cache_recovery_failed(mw, True)
@@ -11453,6 +11483,10 @@ def _notify_rwkv_state_cache_completion(mw: object, ready: bool) -> bool:
             callback(ready)
         except Exception:
             logger.exception("RWKV state cache completion callback failed")
+    if ready:
+        from aqt import gui_hooks
+
+        gui_hooks.rwkv_state_did_prepare(cast(Any, mw))
     return bool(callbacks)
 
 
