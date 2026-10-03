@@ -1340,18 +1340,24 @@ impl NewCardSorting {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashSet;
     use std::path::Path;
 
     use anki_i18n::I18n;
+    use rusqlite::named_params;
     use rusqlite::params;
 
     use crate::card::Card;
     use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::collection::Collection;
+    use crate::decks::Deck;
+    use crate::decks::DeckId;
+    use crate::decks::NativeDeckName;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogId;
     use crate::revlog::RevlogReviewKind;
+    use crate::storage::deck::test::add_cards_around_cutoffs;
     use crate::storage::SqliteStorage;
     use crate::timestamp::TimestampSecs;
     use crate::types::Usn;
@@ -1573,5 +1579,102 @@ mod test {
 
         let revlog_card = col.storage.get_card(revlog_card.id).unwrap().unwrap();
         assert_eq!(revlog_card.last_review_time, Some(TimestampSecs(2)));
+    }
+
+    type Congrats = (bool, bool, bool, bool, u32, u32);
+
+    /// The congrats info exactly as the original one-pass query computed it,
+    /// for the decks in active_decks.
+    fn reference_congrats(storage: &SqliteStorage, today: u32) -> Congrats {
+        storage
+            .db
+            .query_row(
+                "SELECT coalesce(sum(queue IN (:review_queue, :day_learn_queue)
+                     AND due <= :today), 0),
+                   coalesce(sum(queue = :new_queue), 0),
+                   coalesce(sum(queue = :sched_buried_queue), 0),
+                   coalesce(sum(queue = :user_buried_queue), 0),
+                   coalesce(sum(queue = :learn_queue), 0),
+                   max(0, coalesce(min(CASE WHEN queue = :learn_queue THEN due
+                     ELSE NULL END), 0))
+                 FROM cards WHERE did IN (SELECT id FROM active_decks)",
+                named_params! {
+                    ":review_queue": CardQueue::Review as i8,
+                    ":day_learn_queue": CardQueue::DayLearn as i8,
+                    ":new_queue": CardQueue::New as i8,
+                    ":user_buried_queue": CardQueue::UserBuried as i8,
+                    ":sched_buried_queue": CardQueue::SchedBuried as i8,
+                    ":learn_queue": CardQueue::Learn as i8,
+                    ":today": today,
+                },
+                |row| {
+                    Ok((
+                        row.get::<_, u32>(0)? > 0,
+                        row.get::<_, u32>(1)? > 0,
+                        row.get::<_, u32>(2)? > 0,
+                        row.get::<_, u32>(3)? > 0,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn congrats_info_matches_the_one_pass_query() {
+        const TODAY: u32 = 100;
+        const LEARN_CUTOFF: u32 = 1_700_000_000;
+        let mut col = Collection::new();
+        let mut decks = vec![col.storage.get_deck(DeckId(1)).unwrap().unwrap()];
+        for name in ["A", "A::B", "A::B::C", "D", "E"] {
+            decks.push(col.get_or_create_normal_deck(name).unwrap());
+        }
+        let mut filtered = Deck::new_filtered();
+        filtered.name = NativeDeckName::from_native_str("F");
+        col.add_or_update_deck(&mut filtered).unwrap();
+        decks.push(filtered);
+        // "E" keeps no cards; "D" gets a learning card due before 1970
+        let with_cards: Vec<_> = decks
+            .iter()
+            .filter(|deck| deck.name.as_native_str() != "E")
+            .map(|deck| deck.id)
+            .collect();
+        let mut card = Card {
+            deck_id: decks[4].id,
+            queue: CardQueue::Learn,
+            due: -5,
+            ..Default::default()
+        };
+        col.storage.add_card(&mut card).unwrap();
+
+        let mut seen = HashSet::new();
+        for (seed, count) in [(0, 0), (1, 6), (2, 30), (3, 3000)] {
+            add_cards_around_cutoffs(&mut col, &with_cards, TODAY, LEARN_CUTOFF, seed, count);
+            for deck in &decks {
+                let info = col.storage.congrats_info(deck, TODAY).unwrap();
+                let got = (
+                    info.review_remaining,
+                    info.new_remaining,
+                    info.have_sched_buried,
+                    info.have_user_buried,
+                    info.learn_count,
+                    info.next_learn_due,
+                );
+                // congrats_info() filled active_decks for this deck
+                assert_eq!(
+                    got,
+                    reference_congrats(&col.storage, TODAY),
+                    "{}",
+                    deck.name
+                );
+                seen.insert(got);
+            }
+        }
+        // both answers of every yes/no question were checked
+        for flag in 0..4 {
+            let flags: HashSet<bool> = seen.iter().map(|c| [c.0, c.1, c.2, c.3][flag]).collect();
+            assert_eq!(flags.len(), 2, "flag {flag}");
+        }
     }
 }

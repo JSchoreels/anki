@@ -2927,6 +2927,10 @@ def apply_reviewer_redo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
         return
 
     _invalidate_reviewer_transient_scores_after_redo(reviewer, valid_card_ids)
+    if getattr(getattr(reviewer, "card", None), "id", None) in valid_card_ids:
+        # Redo answered the visible card again, so allow the queue refresh
+        # to move on instead of preserving it as an undo-restored card.
+        setattr(reviewer, "_rwkv_undo_restored_card_active", False)
     queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
     if isinstance(queue, list):
         for card_id in valid_card_ids:

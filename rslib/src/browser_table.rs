@@ -596,17 +596,19 @@ impl RowContext {
                 CardType::Review | CardType::Relearn => (),
             }
         }
-        let intervals: Vec<u32> = self
+        let intervals: Vec<u64> = self
             .cards
             .iter()
             .filter(|c| matches!(c.ctype, CardType::Review | CardType::Relearn))
-            .map(|c| c.interval)
+            .map(|c| c.interval as u64)
             .collect();
         if intervals.is_empty() {
             "".into()
         } else {
+            // u64: the seconds overflow u32 past 49,710 days (spec
+            // ui.browser-interval-average)
             time_span(
-                (intervals.iter().sum::<u32>() * 86400 / (intervals.len() as u32)) as f32,
+                (intervals.iter().sum::<u64>() * 86400 / (intervals.len() as u64)) as f32,
                 &self.tr,
                 false,
             )
@@ -770,6 +772,36 @@ mod tests {
         let actual = ctx.get_cell_text(Column::Retrievability)?;
         let expected = fsrs_current_retrievability_for_state(&params, state, elapsed_days)?;
         assert_eq!(actual, format!("{:.0}%", expected * 100.0));
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.browser-interval-average: the average does not
+    // overflow when the intervals add up to more than 49,710 days.
+    #[test]
+    fn interval_cell_averages_long_intervals_without_overflow() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col
+            .get_notetype_by_name("Basic (and reversed card)")?
+            .unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "front")?;
+        note.set_field(1, "back")?;
+        col.add_note(&mut note, DeckId(1))?;
+        for (cid, interval) in col
+            .search_cards("", SortMode::NoOrder)?
+            .into_iter()
+            .zip([30_000, 32_000])
+        {
+            let mut card = col.storage.get_card(cid)?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = interval;
+            col.storage.update_card(&card)?;
+        }
+
+        let ctx = RowContext::new(&mut col, note.id.0, true, false)?;
+        let expected = time_span(31_000.0 * 86_400.0, &ctx.tr, false);
+        assert_eq!(ctx.get_cell_text(Column::Interval)?, expected);
         Ok(())
     }
 

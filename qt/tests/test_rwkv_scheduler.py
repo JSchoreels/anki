@@ -20152,3 +20152,27 @@ def _filtered_preview_state() -> SchedulingState:
     state = SchedulingState()
     state.filtered.preview.scheduled_secs = 180
     return state
+
+
+def test_redo_of_the_undo_restored_card_on_screen_lets_it_leave() -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.card = SimpleNamespace(id=2)
+    reviewer._rwkv_undo_restored_card_active = True
+
+    rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
+
+    assert reviewer._rwkv_undo_restored_card_active is False
+
+
+def test_redo_of_another_card_keeps_the_undo_restored_card_on_screen() -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.card = SimpleNamespace(id=5)
+    reviewer._rwkv_undo_restored_card_active = True
+
+    rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
+
+    assert reviewer._rwkv_undo_restored_card_active is True

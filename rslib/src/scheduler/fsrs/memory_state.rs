@@ -11,6 +11,7 @@ use fsrs::FSRS5_DEFAULT_DECAY;
 use fsrs::FSRS6_DEFAULT_DECAY;
 use itertools::Either;
 use itertools::Itertools;
+use rayon::prelude::*;
 
 use super::legacy_fsrs_params;
 use super::rescheduler::Rescheduler;
@@ -702,26 +703,43 @@ impl Collection {
             starting_states.push(item.starting_state);
         }
 
-        // fsrs.memory_state_batch is O(nm) where n is the number of cards and m is the
-        // max review count between all items. Therefore we want to pass batches
-        // to fsrs.memory_state_batch where the review count is relatively even.
+        // Keep cards with similar history lengths together, retaining the
+        // established batching and card update order.
         let mut p = permutation::sort_unstable_by_key(&fsrs_items, |item| item.reviews.len());
         p.apply_slice_in_place(&mut to_update);
         p.apply_slice_in_place(&mut fsrs_items);
         p.apply_slice_in_place(&mut starting_states);
 
-        for ((to_update, fsrs_items), starting_states) in to_update
+        // Compute independent batches in parallel, then write cards in the
+        // established sorted order so rescheduling, progress and undo stay
+        // deterministic.
+        let memory_states: Vec<Vec<FsrsMemoryState>> = fsrs_items
             .chunk_into_vecs(FSRS_BATCH_SIZE)
-            .zip_eq(fsrs_items.chunk_into_vecs(FSRS_BATCH_SIZE))
             .zip_eq(starting_states.chunk_into_vecs(FSRS_BATCH_SIZE))
+            .collect_vec()
+            .into_par_iter()
+            .map(|(items, states)| -> Result<Vec<FsrsMemoryState>> {
+                Ok(fsrs
+                    .memory_state_batch(items, states)?
+                    .into_iter()
+                    .map(|state| fsrs_memory_state_for_fsrs(fsrs, state))
+                    .collect())
+            })
+            .collect::<Result<_>>()?;
+        for (to_update, memory_states) in to_update
+            .chunk_into_vecs(FSRS_BATCH_SIZE)
+            .zip_eq(memory_states)
         {
-            let memory_states = fsrs.memory_state_batch(fsrs_items, starting_states)?;
-
+            let mut cards: HashMap<CardId, Card> = self
+                .all_cards_for_ids(&to_update, false)?
+                .into_iter()
+                .map(|card| (card.id, card))
+                .collect();
             for (card_id, memory_state) in to_update.into_iter().zip_eq(memory_states) {
-                let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+                let mut card = cards.remove(&card_id).or_not_found(card_id)?;
                 let original = card.clone();
                 set_decay_and_desired_retention(&mut card);
-                card.memory_state = Some(fsrs_memory_state_for_fsrs(fsrs, memory_state));
+                card.memory_state = Some(memory_state);
                 maybe_reschedule_card(&mut card, self, fsrs)?;
                 self.update_card_inner(&mut card, original, usn)?;
                 on_updated_card()?;
@@ -2406,6 +2424,139 @@ mod tests {
 
     mod update_memory_state {
         use super::*;
+
+        #[test]
+        fn parallel_batches_preserve_states_callbacks_and_undo() -> Result<()> {
+            use fsrs::FSRSReview;
+
+            for params in [
+                fsrs::FSRS6_DEFAULT_PARAMETERS.as_slice(),
+                DEFAULT_PARAMETERS.as_slice(),
+            ] {
+                let mut col = Collection::new();
+                let fsrs = FSRS::new(params)?;
+                let mut items = Vec::new();
+                let mut originals = HashMap::new();
+                for i in 0..2005 {
+                    let mut card = Card {
+                        due: i,
+                        ..Default::default()
+                    };
+                    col.storage.add_card(&mut card)?;
+                    originals.insert(card.id, card.clone());
+                    let item = FSRSItem {
+                        reviews: (0..1 + i % 11)
+                            .map(|review| FSRSReview {
+                                rating: 1 + (review % 4) as u32,
+                                delta_t: if review == 0 { 0.0 } else { review as f32 },
+                            })
+                            .collect(),
+                    };
+                    let starting_state = (i % 2 == 0).then_some(MemoryState {
+                        stability: 5.0,
+                        difficulty: 4.0,
+                        stability_fast: 5.0,
+                    });
+                    items.push((
+                        card.id,
+                        FsrsItemForMemoryState {
+                            item,
+                            starting_state,
+                            filtered_revlogs: Vec::new(),
+                        },
+                    ));
+                }
+                // The serial baseline uses the same sorted 1000-card batches.
+                let mut ordered_items = items.clone();
+                let mut order =
+                    permutation::sort_unstable_by_key(&items, |(_, item)| item.item.reviews.len());
+                order.apply_slice_in_place(&mut ordered_items);
+                let mut expected = HashMap::new();
+                for batch in ordered_items.chunks(1000) {
+                    let states = fsrs.memory_state_batch(
+                        batch.iter().map(|(_, item)| item.item.clone()).collect(),
+                        batch.iter().map(|(_, item)| item.starting_state).collect(),
+                    )?;
+                    for ((cid, _), state) in batch.iter().zip(states) {
+                        // Compare the exact persisted state, including the
+                        // existing card-data precision limits.
+                        let mut card = originals[cid].clone();
+                        card.memory_state = Some(fsrs_memory_state_for_fsrs(&fsrs, state));
+                        col.storage.update_card(&card)?;
+                        expected.insert(
+                            *cid,
+                            col.storage.get_card(*cid)?.unwrap().memory_state.unwrap(),
+                        );
+                        col.storage.update_card(&originals[cid])?;
+                    }
+                }
+                let expected_order: Vec<_> = ordered_items.iter().map(|(cid, _)| *cid).collect();
+                let mut callback_order = Vec::new();
+                let mut progress = 0;
+                col.transact(Op::UpdateDeckConfig, |col| {
+                    col.update_memory_state_for_cards_with_items(
+                        items,
+                        &fsrs,
+                        |card| card.desired_retention = Some(0.91),
+                        |card, _, _| {
+                            callback_order.push(card.id);
+                            Ok(())
+                        },
+                        Usn(0),
+                        || {
+                            progress += 1;
+                            Ok(())
+                        },
+                    )
+                })?;
+                assert_eq!(callback_order, expected_order);
+                assert_eq!(progress, expected.len());
+                for (cid, state) in &expected {
+                    let card = col.storage.get_card(*cid)?.unwrap();
+                    assert_eq!(card.memory_state, Some(*state));
+                    assert_eq!(card.due, originals[cid].due);
+                }
+                col.undo()?;
+                for cid in expected.keys() {
+                    let card = col.storage.get_card(*cid)?.unwrap();
+                    assert_eq!(card.memory_state, None);
+                    assert_eq!(card.desired_retention, None);
+                }
+                col.redo()?;
+                for (cid, state) in &expected {
+                    assert_eq!(
+                        col.storage.get_card(*cid)?.unwrap().memory_state,
+                        Some(*state)
+                    );
+                }
+                // An interrupted update must roll back earlier batches too.
+                let mut updates = 0;
+                let result = col.transact(Op::UpdateDeckConfig, |col| {
+                    col.update_memory_state_for_cards_with_items(
+                        ordered_items,
+                        &fsrs,
+                        |card| card.desired_retention = Some(0.5),
+                        |_, _, _| Ok(()),
+                        Usn(0),
+                        || {
+                            updates += 1;
+                            if updates == 1001 {
+                                Err(AnkiError::Interrupted)
+                            } else {
+                                Ok(())
+                            }
+                        },
+                    )
+                });
+                assert!(matches!(result, Err(AnkiError::Interrupted)));
+                for (cid, state) in &expected {
+                    let card = col.storage.get_card(*cid)?.unwrap();
+                    assert_eq!(card.memory_state, Some(*state));
+                    assert_eq!(card.desired_retention, Some(0.91));
+                }
+            }
+            Ok(())
+        }
 
         #[test]
         fn no_req_clears_fsrs_data() -> Result<()> {

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
+from itertools import compress, count, repeat
+from operator import eq
 from typing import Any
 
 import aqt
@@ -131,6 +133,29 @@ class DataModel(QAbstractTableModel):
         """Get row if it is cached, regardless of staleness."""
         return self._rows.get(self.get_item(index))
 
+    def count_enabled_cells(self, selection: QItemSelection) -> int:
+        """The same number as `len(selection.indexes())`: the cells of the
+        selection whose `flags()` are enabled and selectable. Qt calls
+        `flags()` in Python for every cell to get it, which takes seconds for
+        a large selection; this reads the row cache once instead."""
+        # Add-ons may override flags() to disable additional cells.
+        if getattr(self.flags, "__func__", None) is not _DEFAULT_FLAGS:
+            return len(selection.indexes())
+        disabled = {item for item, row in self._rows.items() if row.is_disabled}
+        cells = 0
+        for i in range(len(selection)):
+            selection_range = selection[i]
+            if not selection_range.isValid():
+                continue
+            top, bottom = selection_range.top(), selection_range.bottom()
+            enabled = bottom - top + 1
+            if disabled:
+                enabled -= sum(
+                    map(disabled.__contains__, self._items[top : bottom + 1])
+                )
+            cells += enabled * selection_range.width()
+        return cells
+
     # Reset
 
     def mark_cache_stale(self) -> None:
@@ -200,17 +225,17 @@ class DataModel(QAbstractTableModel):
     # Get row numbers from items
 
     def get_item_row(self, item: ItemId) -> int | None:
-        for row, i in enumerate(self._items):
-            if i == item:
-                return row
-        return None
+        # compress/map avoid a Python loop over the protobuf search result.
+        return next(compress(count(), map(eq, self._items, repeat(item))), None)
 
     def get_item_rows(self, items: Sequence[ItemId]) -> list[int]:
-        rows = []
-        for row, i in enumerate(self._items):
-            if i in items:
-                rows.append(row)
-        return rows
+        # Set membership keeps large selection restoration linear.
+        wanted = set(items)
+        return list(compress(count(), map(wanted.__contains__, self._items)))
+
+    def get_item_row_among(self, item: ItemId, rows: Sequence[int]) -> int | None:
+        """Find the first row of an item known to be among these selected rows."""
+        return next((row for row in rows if self._items[row] == item), None)
 
     def get_card_row(self, card_id: CardId) -> int | None:
         return self.get_item_row(self._state.get_item_from_card_id(card_id))
@@ -353,9 +378,14 @@ class DataModel(QAbstractTableModel):
         return self.len_columns()
 
     def data(self, index: QModelIndex = QModelIndex(), role: int = 0) -> Any:
+        # Qt calls this about nine times per cell for every repaint: compare
+        # with plain ints and return precomputed flags (a Python enum `|`
+        # costs microseconds)
         if not index.isValid():
             return QVariant()
-        if role == Qt.ItemDataRole.FontRole:
+        if role == _DISPLAY_ROLE:
+            return self.get_cell(index).text
+        if role == _FONT_ROLE:
             if not self.column_at(index).uses_cell_font:
                 return QVariant()
             qfont = QFont()
@@ -363,14 +393,11 @@ class DataModel(QAbstractTableModel):
             qfont.setFamily(row.font_name)
             qfont.setPixelSize(row.font_size)
             return qfont
-        elif role == Qt.ItemDataRole.TextAlignmentRole:
-            align: Qt.AlignmentFlag | int = Qt.AlignmentFlag.AlignVCenter
+        if role == _ALIGNMENT_ROLE:
             if self.column_at(index).alignment == Columns.ALIGNMENT_CENTER:
-                align |= Qt.AlignmentFlag.AlignHCenter
-            return getattr(align, "value", align)
-        elif role == Qt.ItemDataRole.DisplayRole:
-            return self.get_cell(index).text
-        elif role == Qt.ItemDataRole.ToolTipRole and self._want_tooltips:
+                return _ALIGN_CENTER
+            return _ALIGN_START
+        if role == _TOOLTIP_ROLE and self._want_tooltips:
             return self.get_cell(index).text
         return QVariant()
 
@@ -388,8 +415,19 @@ class DataModel(QAbstractTableModel):
         # shortcut for large selections (Ctrl+A) to avoid fetching large numbers of rows at once
         if row := self.get_cached_row(index):
             if row.is_disabled:
-                return Qt.ItemFlag(Qt.ItemFlag.NoItemFlags)
-        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                return _NO_FLAGS
+        return _ENABLED_FLAGS
+
+
+_DEFAULT_FLAGS = DataModel.flags
+_DISPLAY_ROLE = Qt.ItemDataRole.DisplayRole.value
+_FONT_ROLE = Qt.ItemDataRole.FontRole.value
+_ALIGNMENT_ROLE = Qt.ItemDataRole.TextAlignmentRole.value
+_TOOLTIP_ROLE = Qt.ItemDataRole.ToolTipRole.value
+_ALIGN_START = Qt.AlignmentFlag.AlignVCenter.value
+_ALIGN_CENTER = (Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter).value
+_NO_FLAGS = Qt.ItemFlag(Qt.ItemFlag.NoItemFlags)
+_ENABLED_FLAGS = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
 
 
 def addon_column_fillin(key: str) -> Column:

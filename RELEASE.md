@@ -22,6 +22,28 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Improved
+
+- Restore and count large Browser selections faster, and reduce work while
+  painting the table or filtering the sidebar.
+- Speed up Empty Cards scans, deck counts and the finished study screen, while
+  preserving same-day review limit exemptions. Reduce repeated reads during
+  Check Database.
+- Save FSRS preset changes faster when memory states need to be recomputed,
+  while preserving FSRS-6/7 results, rescheduling order and undo.
+- Reuse built-in scripts, styles and images within the webview session cache.
+  Development builds still reload rebuilt assets.
+- Reduce command-response delays in the Windows mpv audio transport.
+
+### Fixed
+
+- Advance from an undo-restored RWKV card after redoing its answer.
+- Notify add-ons once when the scheduler day changes, including while reviewing.
+- Avoid errors when delayed geometry updates or notifications refer to a closed
+  window.
+- Display the correct average interval in notes mode when long card intervals
+  would overflow the previous calculation.
+
 ## 26.09.3+fsrs7 — 2026-10-03
 
 Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94).

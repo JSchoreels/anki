@@ -2983,3 +2983,43 @@ def test_answer_card_updates_rwkv_state_used_by_other_card(
         reviewer, card_b
     ) == pytest.approx(0.60)
     assert reviewer._answeredIds == [1]
+
+
+def test_redo_of_the_undo_restored_card_shows_the_next_card(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the redone card must not stay on screen")
+
+    def prepare_then_next(*args: object, **kwargs: object) -> None:
+        assert kwargs == {"fade_after": True, "show_next_card": True}
+        calls.append("prepare")
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "_invalidate_reviewer_transient_scores_after_redo",
+        lambda reviewer, card_ids: None,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=456, load=lambda: None)
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._rwkv_undo_restored_card_active = True
+    reviewer.nextCard = fail
+    reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
+    reviewer.mw = SimpleNamespace(fade_in_webview=fail)
+
+    aqt.rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [456])
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=True)
+
+    assert calls == ["prepare"]
+    assert reviewer._refresh_needed is None
+    assert dirty is False
