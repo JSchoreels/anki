@@ -24,6 +24,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Show the due-review total before daily limits beside the green count in the
+  reviewer, matching the deck list's `157 (/959)` display.
 - Recover RWKV state after changing a deck or its preset during a session,
   including while reviewing. Open Card Info windows refresh when RWKV becomes
   ready and immediately reflect whether the card's current preset enables it.

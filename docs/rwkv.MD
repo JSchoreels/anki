@@ -533,7 +533,12 @@ and intervening review history. Parent counts are evaluated independently of
 their children's displayed counts: a parent requiring six intervening reviews
 can show zero while a child requiring two shows one. The uncapped review total
 used by daily-limit labels follows the same scope, so different repeat
-eligibility is not presented as a daily-limit restriction. The currently
+eligibility is not presented as a daily-limit restriction. The reviewer's bottom
+bar shows the same uncapped total in grey beside the green review count when
+the total is larger, for example `157 (/959)`. It includes the selected deck's
+subdecks and updates after answers and RWKV queue refreshes. While the review
+count is pending, the total label is hidden until fresh counts are available.
+The currently
 selected scope is processed first. While a scope is pending, its review due count and the
 review due counts of its descendants display an ellipsis instead of the stored
 FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
