@@ -84,6 +84,7 @@ dependencies = [
  "id_tree",
  "inflections",
  "itertools 0.14.0",
+ "libc",
  "nom",
  "num_cpus",
  "num_enum",

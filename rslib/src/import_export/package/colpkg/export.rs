@@ -364,6 +364,27 @@ mod test {
 
             let mut data = vec![0; 64 * 1024];
             rand::rngs::StdRng::seed_from_u64(5728).fill_bytes(&mut data);
+            let mut original_limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut original_limit) },
+                0
+            );
+            // Restore the soft limit before the process exits so coverage output
+            // is not truncated by the backup write-failure simulation.
+            let restore_limit = scopeguard::guard(original_limit, |limit| {
+                assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
+            });
+            let write_limit = libc::rlimit {
+                rlim_cur: 512,
+                rlim_max: restore_limit.rlim_max,
+            };
+            assert_eq!(
+                unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &write_limit) },
+                0
+            );
             let error = export_colpkg_from_data(
                 Path::new(&backup_dir).join(NAME),
                 &data,
@@ -384,7 +405,7 @@ mod test {
             // Isolate RLIMIT_FSIZE in a subprocess. Ignoring SIGXFSZ makes the
             // write return an error, exercising cleanup rather than killing the test.
             let output = std::process::Command::new("sh")
-                .args(["-c", "ulimit -f 1 && trap '' XFSZ && exec \"$@\"", "--"])
+                .args(["-c", "trap '' XFSZ && exec \"$@\"", "--"])
                 .arg(std::env::current_exe().unwrap())
                 .args(["--exact", "import_export::package::colpkg::export::test::interrupted_backup_preserves_destination", "--nocapture"])
                 .env(ENV, dir.path())
