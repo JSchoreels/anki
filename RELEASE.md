@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+## 26.09.3+fsrs7 — 2026-10-04
+
+Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94),
+including the fixes prepared in draft build 95.
+
 ### Improved
 
 - Restore and count large Browser selections faster, and reduce work while
@@ -37,6 +42,17 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Respect “Allow same day review for (re)learning steps” in RWKV-Instant, so
+  disabling it prevents cards from repeating that day even when learning queues
+  are skipped.
+- Prevent repeated same-day reviews from adding lapses or triggering leech
+  handling across schedulers, with or without queue skipping, including
+  rescheduling filtered decks and Grade Now. Again on a review card's first
+  answer of a scheduler day still counts; later answers that day do not, even
+  after an earlier successful answer.
+- Show the final text after editing a card while its answer is displayed; the
+  reviewer could keep an earlier, half-typed version (such as furigana with an
+  empty reading) until the next card.
 - Finish shutdown quietly when a development launcher's console output pipe closes,
   and avoid an unnecessary warning when stopping the local web server.
 - Protect automatic backups from interrupted writes and filename collisions,
