@@ -99,6 +99,8 @@ function setRemainingCounts(
     newCount: number,
     learningCount: number,
     reviewCount: number,
+    reviewLimit = "",
+    reviewLimitTitle = "",
 ): void {
     const counts = new Map([
         ["new", newCount],
@@ -113,6 +115,11 @@ function setRemainingCounts(
             const target = container.querySelector("u") ?? container;
             target.textContent = String(count);
         }
+    }
+    const limit = document.querySelector<HTMLElement>("#ansbut .review-limit");
+    if (limit) {
+        limit.textContent = reviewLimit;
+        limit.title = reviewLimitTitle;
     }
 }
 

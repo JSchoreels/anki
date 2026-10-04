@@ -9604,6 +9604,150 @@ def test_rwkv_state_cache_recovery_is_coalesced_until_scheduled_start(
     assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
 
 
+@pytest.mark.parametrize("allow_during_review", [False, True])
+def test_rwkv_state_cache_recovery_refreshes_review_only_when_requested(
+    monkeypatch: pytest.MonkeyPatch, allow_during_review: bool
+) -> None:
+    timers: list[Callable[[], None]] = []
+    builds: list[str] = []
+    refreshed: list[bool] = []
+    mw = SimpleNamespace(
+        state="review",
+        col=object(),
+        reviewer=SimpleNamespace(
+            op_executed=lambda changes, _handler, *, focused: refreshed.append(
+                changes.study_queues and focused
+            )
+        ),
+        progress=SimpleNamespace(
+            single_shot=lambda _delay, callback: timers.append(callback)
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "configure_reviewer_backend_from_environment",
+        lambda: True,
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: False)
+
+    def build(_mw, *, recovery_reason, on_done) -> None:
+        builds.append(recovery_reason)
+        on_done(True)
+
+    monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
+
+    assert rwkv_scheduler.request_rwkv_state_cache_recovery(
+        mw,
+        reason="preset change",
+        allow_during_review=allow_during_review,
+    )
+    timers.pop()()
+
+    assert builds == (["preset change"] if allow_during_review else [])
+    assert refreshed == ([True] if allow_during_review else [])
+
+
+def test_rwkv_state_cache_recovery_does_not_run_in_another_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timers: list[Callable[[], None]] = []
+    mw = SimpleNamespace(
+        state="overview",
+        col=object(),
+        progress=SimpleNamespace(
+            single_shot=lambda _delay, callback: timers.append(callback)
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: False)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "build_rwkv_state_cache_with_progress",
+        lambda *_args, **_kwargs: pytest.fail("recovered a different collection"),
+    )
+
+    assert rwkv_scheduler.request_rwkv_state_cache_recovery(mw, reason="preset change")
+    mw.col = object()
+    timers.pop()()
+
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+
+
+def test_preset_switch_recovers_rwkv_card_info_during_review_without_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    overrides: dict[str, object] = {"rwkvReviewEnabled": False}
+    rows = [
+        ((40 * 86_400 + 100) * 1000, 1, 10, 100, 2, 1234, 0, 3, 2500),
+        ((41 * 86_400 + 3700) * 1000, 1, 10, 100, 3, 2345, 1, 5, 2400),
+    ]
+    reviewer = _rwkv_cache_reviewer(
+        profile_folder=tmp_path, rows=rows, deck_config_overrides=overrides
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *_args, **_kwargs: None)
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+    overrides.update(id=2000, rwkvReviewEnabled=True)
+    reviewer.mw.col.fsrs_preset_for_card = lambda _card_id: SimpleNamespace(id="2000")
+    reviewer.mw.state = "review"
+    refreshed: list[bool] = []
+    reviewer.op_executed = lambda changes, _handler, *, focused: refreshed.append(
+        changes.study_queues and focused
+    )
+    reviewer.mw.reviewer = reviewer
+    _attach_progress_taskman(reviewer.mw)
+    rwkv_scheduler.study_queues_did_change(
+        reviewer.mw, None, collection_pb2.OpChanges(deck_config=True, study_queues=True)
+    )
+    assert (
+        dict(
+            rwkv_card_info_rows(
+                reviewer=reviewer,
+                card=card,
+                fallback_source="FSRS",
+                include_after_review=False,
+            )
+        )["RWKV computed R"]
+        == "Unavailable"
+    )
+
+    assert rwkv_scheduler.request_rwkv_state_cache_recovery(
+        reviewer.mw, reason="preset change", allow_during_review=True
+    )
+
+    assert (
+        dict(
+            rwkv_card_info_rows(
+                reviewer=reviewer,
+                card=card,
+                fallback_source="FSRS",
+                include_after_review=False,
+            )
+        )["Retrievability source"]
+        == "RWKV"
+    )
+    assert refreshed == [True]
+    assert runtime.answered_inputs[-1].identity.preset_id == 2000
+
+
 def test_rwkv_state_cache_recovery_uses_explicit_progress_label(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11503,6 +11647,28 @@ def test_reviewer_rwkv_disabled_keeps_intervals_but_reports_diagnostics() -> Non
         ("RWKV computed R", "45%"),
         ("Retrievability source", "FSRS (RWKV disabled)"),
     ]
+
+
+def test_card_info_reports_disabled_after_preset_switch_with_old_prediction() -> None:
+    reviewer = _rwkv_reviewer(rwkv_review_enabled=False)
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    setattr(
+        reviewer,
+        rwkv_scheduler._REVIEWER_PREDICTION_ATTR,
+        RwkvReviewerPrediction(
+            card_id=1,
+            retrievability=0.67,
+            review_enabled=True,
+            interval_override_used=True,
+        ),
+    )
+
+    assert dict(
+        rwkv_card_info_rows(reviewer=reviewer, card=card, fallback_source="FSRS")
+    ) == {
+        "RWKV computed R": "67%",
+        "Retrievability source": "FSRS (RWKV disabled)",
+    }
 
 
 def test_rwkv_review_enabled_reads_legacy_fsrs_other_key() -> None:

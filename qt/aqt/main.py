@@ -1017,6 +1017,15 @@ class AnkiQt(QMainWindow):
 
             rwkv_scheduler.collection_content_did_change(self, handler)
 
+        if changes.deck or changes.deck_config:
+            from aqt import rwkv_scheduler
+
+            rwkv_scheduler.request_rwkv_state_cache_recovery(
+                self,
+                reason="deck or preset change",
+                allow_during_review=True,
+            )
+
         focused = current_window() == self
         if self.state == "review":
             dirty = self.reviewer.op_executed(changes, handler, focused)

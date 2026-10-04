@@ -27,6 +27,63 @@ def scheduling_states_with_review_current() -> SchedulingStates:
     return states
 
 
+@pytest.mark.parametrize("review_limit", [2, 5])
+def test_remaining_counts_include_selected_deck_uncapped_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, review_limit: int
+) -> None:
+    monkeypatch.setattr(
+        reviewer_module.tr,
+        "decks_review_limit_tooltip",
+        lambda *, total, count: f'{total} due; limit allows {count} "reviews".',
+    )
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        parent = col.decks.id("All")
+        child = col.decks.id("All::Child")
+        other = col.decks.id("Other")
+        config = col.decks.get_config(1)
+        config["rev"]["perDay"] = review_limit
+        col.decks.update_config(config)
+        today = col.sched._timing_today().days_elapsed
+        for deck_id in [parent, parent, child, child, child, other]:
+            note = col.new_note(col.models.current())
+            note.fields[0] = str(col.card_count())
+            col.add_note(note, deck_id)
+            card = note.cards()[0]
+            card.type = card.queue = QUEUE_TYPE_REV
+            card.due = today
+            card.ivl = 1
+            col.update_card(card)
+        col.decks.select(parent)
+
+        reviewer = Reviewer.__new__(Reviewer)
+        reviewer.mw = SimpleNamespace(col=col)
+        queued = col.sched.get_queued_cards()
+        reviewer._v3 = reviewer_module.V3CardInfo.from_queue(queued)
+        remaining = reviewer._remaining()
+
+        assert f"<u>{review_limit}</u>" in remaining
+        assert (" (/5)" in remaining) == (review_limit == 2)
+        if review_limit == 2:
+            assert 'title="5 due; limit allows 2 &quot;reviews&quot;."' in remaining
+        card = col.get_card(queued.cards[0].card.id)
+        card.start_timer()
+        col.sched.answer_card(
+            col.sched.build_answer(card=card, states=queued.cards[0].states, rating=3)
+        )
+        reviewer._v3 = reviewer_module.V3CardInfo.from_queue(
+            col.sched.get_queued_cards()
+        )
+
+        assert f"<u>{review_limit - 1}</u>" in reviewer._remaining()
+        assert (" (/4)" in reviewer._remaining()) == (review_limit == 2)
+
+        col.conf["dueCounts"] = False
+        assert reviewer._remaining() == ""
+    finally:
+        col.close()
+
+
 def test_timebox_elapsed_secs_uses_collection_start_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1337,6 +1394,11 @@ def test_rwkv_queue_refresh_coalesces_overlapping_requests(monkeypatch) -> None:
 def test_after_answering_interval_refresh_prefetches_during_next_question(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        reviewer_module.tr,
+        "decks_review_limit_tooltip",
+        lambda *, total, count: f"{total} due; limit allows {count} reviews.",
+    )
     calls: list[str] = []
     bottom_scripts: list[str] = []
     work = object()
@@ -1366,6 +1428,10 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         return True
 
     class Scheduler:
+        def deck_due_tree(self, deck_id: int) -> object:
+            assert deck_id == 123
+            return SimpleNamespace(review_uncapped_including_children=20)
+
         def rebuild_queued_cards_preserving_current_card(
             self,
             current_card_id: int,
@@ -1400,6 +1466,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         col=SimpleNamespace(
             conf={"dueCounts": True},
             sched=Scheduler(),
+            decks=SimpleNamespace(get_current_id=lambda: 123),
         ),
         taskman=Taskman(),
         update_undo_actions=lambda: calls.append("undo"),
@@ -1469,6 +1536,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
     assert calls == ["intervening:222", "next:333"]
     assert reviewer._answeredIds == [111, 222]
     assert "<u>…</u>" in reviewer._remaining()
+    assert " (/20)" not in reviewer._remaining()
 
     reviewer._run_after_question_shown_callbacks()
 
@@ -1489,8 +1557,9 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
     assert "<span class=new-count>5</span>" in reviewer._remaining()
     assert "<span class=learn-count>4</span>" in reviewer._remaining()
     assert "<u>7</u>" in reviewer._remaining()
+    assert " (/20)" in reviewer._remaining()
     assert len(bottom_scripts) == 1
-    assert "setRemainingCounts(5, 4, 7)" in bottom_scripts[0]
+    assert 'setRemainingCounts(5, 4, 7, " (/20)",' in bottom_scripts[0]
 
 
 def test_deferred_rwkv_count_update_ignores_stale_card_generation() -> None:
@@ -1537,6 +1606,13 @@ def test_failed_deferred_rwkv_count_refresh_restores_queued_count() -> None:
     reviewer._review_card_generation = 5
     reviewer._rwkv_remaining_count_override = (5, None)
     reviewer._v3 = SimpleNamespace(queued_cards=queued_cards)
+    reviewer.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            conf={"dueCounts": True},
+            decks=SimpleNamespace(get_current_id=lambda: 123),
+            sched=SimpleNamespace(deck_due_tree=lambda _deck_id: None),
+        )
+    )
     reviewer.bottom = SimpleNamespace(
         web=SimpleNamespace(eval=lambda script: scripts.append(script))
     )
@@ -1548,7 +1624,7 @@ def test_failed_deferred_rwkv_count_refresh_restores_queued_count() -> None:
     )
 
     assert reviewer._rwkv_remaining_count_override is None
-    assert scripts == ["setRemainingCounts(1, 2, 9);"]
+    assert scripts == ['setRemainingCounts(1, 2, 9, "", "");']
 
 
 def test_after_answering_rwkv_new_gather_refreshes_before_next_card(
@@ -2523,6 +2599,9 @@ def test_next_card_restores_rwkv_undone_card_before_normal_queue() -> None:
     class Scheduler:
         rebuilt = False
 
+        def deck_due_tree(self, _deck_id: int) -> object:
+            return SimpleNamespace(review_uncapped_including_children=17)
+
         def rebuild_queued_cards_preserving_current_card(self, card_id: int) -> object:
             assert card_id == restored_card.id
             self.rebuilt = True
@@ -2560,6 +2639,7 @@ def test_next_card_restores_rwkv_undone_card_before_normal_queue() -> None:
         col=SimpleNamespace(
             sched=scheduler,
             conf={"dueCounts": True},
+            decks=SimpleNamespace(get_current_id=lambda: 1),
         ),
         progress=progress,
         moveToState=lambda state: calls.append(f"state:{state}"),

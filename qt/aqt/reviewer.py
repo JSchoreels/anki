@@ -13,6 +13,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
+from html import escape
 from typing import Any, Literal, Match, Union, cast
 
 import aqt
@@ -1586,8 +1587,10 @@ class Reviewer:
                 queued.learning_count,
                 queued.review_count,
             )
+        review_limit, review_limit_title = self._review_limit_label(counts[2])
         self.bottom.web.eval(
-            f"setRemainingCounts({counts[0]}, {counts[1]}, {counts[2]});"
+            f"setRemainingCounts({counts[0]}, {counts[1]}, {counts[2]}, "
+            f"{json.dumps(review_limit)}, {json.dumps(review_limit_title)});"
         )
 
     def _run_after_next_question_shown(self, callback: Callable[[], None]) -> None:
@@ -2210,13 +2213,26 @@ timeboxReps = 0;
                 counts[2] = "…"
             else:
                 counts[:] = count_override[1]
+        review_limit, review_limit_title = self._review_limit_label(counts[2])
         counts[idx] = f"<u>{counts[idx]}</u>"
 
         return f"""
 <span class=new-count>{counts[0]}</span> +
 <span class=learn-count>{counts[1]}</span> +
-<span class=review-count>{counts[2]}</span>
+<span class=review-count>{counts[2]}</span><span class=review-limit title="{escape(review_limit_title, quote=True)}">{review_limit}</span>
 """
+
+    def _review_limit_label(self, review_count: int | str) -> tuple[str, str]:
+        if not self.mw.col.conf["dueCounts"] or not isinstance(review_count, int):
+            return "", ""
+        deck = self.mw.col.sched.deck_due_tree(self.mw.col.decks.get_current_id())
+        if deck is None or deck.review_uncapped_including_children <= review_count:
+            return "", ""
+        total = deck.review_uncapped_including_children
+        return (
+            f" (/{total})",
+            tr.decks_review_limit_tooltip(total=total, count=review_count),
+        )
 
     def _defaultEase(self) -> Literal[2, 3]:
         return 3

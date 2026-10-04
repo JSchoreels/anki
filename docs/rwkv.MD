@@ -548,7 +548,12 @@ and intervening review history. Parent counts are evaluated independently of
 their children's displayed counts: a parent requiring six intervening reviews
 can show zero while a child requiring two shows one. The uncapped review total
 used by daily-limit labels follows the same scope, so different repeat
-eligibility is not presented as a daily-limit restriction. The currently
+eligibility is not presented as a daily-limit restriction. The reviewer's bottom
+bar shows the same uncapped total in grey beside the green review count when
+the total is larger, for example `157 (/959)`. It includes the selected deck's
+subdecks and updates after answers and RWKV queue refreshes. While the review
+count is pending, the total label is hidden until fresh counts are available.
+The currently
 selected scope is processed first. While a scope is pending, its review due count and the
 review due counts of its descendants display an ellipsis instead of the stored
 FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
@@ -901,6 +906,24 @@ the UI thread, but Anki blocks review/deck interaction until the cache build
 finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
 to the cache, elapsed time, and estimated time remaining.
+
+RWKV switches apply to each card's own deck preset, including the original deck
+of a filtered card. Enabling RWKV on a parent does not override a different
+subdeck preset. Saving deck or preset changes invalidates dependent predictions
+and schedules the same state recovery used by the overview, even during review.
+Recovery restores a compatible saved state or replays history when the preset
+routing or replay settings changed. The reviewer refreshes its queue after
+recovery without requiring an application restart. Concurrent recovery requests
+are coalesced, and a scheduled request is discarded if its collection has closed
+or changed.
+
+Open Card Info windows refresh after deck/preset setting changes and after a
+successful state load or build. Their retrievability-source label uses the
+current preset enablement even if an earlier diagnostic prediction remains
+available. The desktop `rwkv_state_did_prepare(mw)` GUI hook reports successful
+state preparation on the main thread; Card Info subscribes only while its window
+is open. An enabled card can still show RWKV as unavailable while recovery is in
+progress or after recovery fails.
 Before publication, Anki explicitly closes both the state-store writer and its
 cache-validation database readers. On Windows, publishing the rebuilt cache also
 retries transient file-sharing failures caused by another process briefly holding

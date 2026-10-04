@@ -13,8 +13,10 @@ from google.protobuf.json_format import MessageToDict
 
 import aqt
 from anki.cards import Card, CardId
+from anki.collection import OpChanges
 from anki.errors import NotFoundError
 from anki.lang import without_unicode_isolation
+from aqt import gui_hooks
 from aqt.qt import *
 from aqt.utils import (
     disable_help_button,
@@ -183,6 +185,8 @@ class CardInfoManager:
                 self.geometry_key,
                 self.window_title,
             )
+            gui_hooks.operation_did_execute.append(self._on_operation_did_execute)
+            gui_hooks.rwkv_state_did_prepare.append(self._on_rwkv_state_did_prepare)
 
     def set_card(self, card: Card | None) -> None:
         self._card = card
@@ -194,7 +198,23 @@ class CardInfoManager:
             self._dialog.reject()
 
     def _on_close(self) -> None:
+        gui_hooks.operation_did_execute.remove(self._on_operation_did_execute)
+        gui_hooks.rwkv_state_did_prepare.remove(self._on_rwkv_state_did_prepare)
         self._dialog = None
+
+    def _on_operation_did_execute(
+        self, changes: OpChanges, _handler: object | None
+    ) -> None:
+        if changes.deck or changes.deck_config or changes.config:
+            self._refresh()
+
+    def _on_rwkv_state_did_prepare(self, mw: aqt.AnkiQt) -> None:
+        if mw is self.mw:
+            self._refresh()
+
+    def _refresh(self) -> None:
+        if self._dialog and self._card:
+            self._dialog.update_card(self._card.id)
 
 
 class BrowserCardInfo(CardInfoManager):
