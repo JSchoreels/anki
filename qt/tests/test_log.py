@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import subprocess
 import sys
 from pathlib import Path
@@ -54,7 +55,22 @@ sys.stderr.write("cleanup completed\\n")
     assert diagnostics == "cleanup completed\n"
 
 
-def test_console_logging_reports_other_output_errors(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "error_number",
+    [
+        errno.EIO,
+        errno.EACCES,
+        pytest.param(
+            errno.EINVAL,
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows uses EINVAL for a closed pipe"
+            ),
+        ),
+    ],
+)
+def test_console_logging_reports_other_output_errors(
+    tmp_path: Path, error_number: int
+) -> None:
     script = """
 import logging
 import sys
@@ -62,7 +78,7 @@ from aqt.log import setup_logging
 
 class FailingOutput:
     def write(self, message):
-        raise OSError("unexpected output failure")
+        raise OSError(int(sys.argv[2]), "unexpected output failure")
 
     def flush(self):
         pass
@@ -72,7 +88,7 @@ setup_logging(sys.argv[1], level=logging.INFO)
 logging.warning("closing server")
 """
     process = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)],
+        [sys.executable, "-c", script, str(tmp_path), str(error_number)],
         capture_output=True,
         text=True,
         timeout=30,

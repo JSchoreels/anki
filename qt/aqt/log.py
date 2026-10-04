@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import sys
@@ -25,8 +26,14 @@ FORMATTER = logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
 
 class ConsoleHandler(logging.StreamHandler):
     def handleError(self, record: logging.LogRecord) -> None:
-        if isinstance(sys.exc_info()[1], BrokenPipeError):
+        error = sys.exc_info()[1]
+        if isinstance(error, BrokenPipeError) or (
+            sys.platform == "win32"
+            and isinstance(error, OSError)
+            and error.errno == errno.EINVAL
+        ):
             # The launcher can exit before Anki finishes handling Ctrl+C.
+            # Windows reports a closed output pipe as EINVAL.
             # Redirect the descriptor so later prints and the final flush also work.
             with open(os.devnull, "w") as devnull:
                 os.dup2(devnull.fileno(), self.stream.fileno())

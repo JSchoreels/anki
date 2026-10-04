@@ -53,8 +53,9 @@ including the fixes prepared in draft build 95.
 - Show the final text after editing a card while its answer is displayed; the
   reviewer could keep an earlier, half-typed version (such as furigana with an
   empty reading) until the next card.
-- Finish shutdown quietly when a development launcher's console output pipe closes,
-  and avoid an unnecessary warning when stopping the local web server.
+- Finish shutdown quietly when a development launcher's console output pipe
+  closes, including on Windows, and avoid an unnecessary warning when stopping
+  the local web server.
 - Protect automatic backups from interrupted writes and filename collisions,
   allow retry after a failed backup, and prevent corrupt backups from displacing
   valid daily, weekly, or monthly backups or delaying the next backup.
