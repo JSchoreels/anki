@@ -44,6 +44,15 @@ elapsed yet:
 After backups are two days old, Anki will start removing some of the older ones.
 You can control how many daily, weekly and monthly backups you'd like to keep.
 
+Before removing older backups, Anki checks which archives can count toward
+these limits. Only usable archives can delay the next backup. Unreadable or
+corrupt archives are left in place and do not displace valid backups. A failed
+backup can be retried without making another change to the collection.
+
+New backup archives become available only after they are completed and checked.
+If two backups would use the same filename, Anki reports an error and preserves
+the existing file; the backup can be retried later.
+
 <Info>
     Backups created with 2.1.50 will not be importable into older Anki versions.
 </Info>

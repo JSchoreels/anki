@@ -14,6 +14,7 @@ use anki_proto::import_export::MediaEntries;
 pub(crate) use apkg::NoteMeta;
 pub(crate) use colpkg::export::export_colpkg_from_data;
 pub use colpkg::import::import_colpkg;
+pub(crate) use colpkg::import::validate_colpkg;
 pub use media::MediaIter;
 pub use media::MediaIterEntry;
 pub use media::MediaIterError;

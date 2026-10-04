@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Fixed
+
+- Protect automatic backups from interrupted writes and filename collisions,
+  allow retry after a failed backup, and prevent corrupt backups from displacing
+  valid daily, weekly, or monthly backups or delaying the next backup.
+
 ## 26.09.3+fsrs7 — 2026-10-03
 
 Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94).
