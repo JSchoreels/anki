@@ -474,12 +474,79 @@ mod test {
 
     use super::*;
     use crate::card::FsrsMemoryState;
+    use crate::deckconfig::FsrsVersion;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::params::tests::revlog;
     use crate::scheduler::fsrs::preset::tagged_test_overlay;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
     use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
     use crate::tests::NoteAdder;
+
+    #[test]
+    fn fsrs6_sync_preserves_the_winning_state_and_schedule_without_repair_uploads() -> Result<()> {
+        for locally_newer in [false, true] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| config.fsrs_version = FsrsVersion::Six as i32);
+            NoteAdder::basic(&mut col).add(&mut col);
+            let mut local = col.get_first_card();
+            local.ctype = CardType::Review;
+            local.queue = CardQueue::Review;
+            local.due = 123;
+            local.interval = 30;
+            local.usn = Usn(-1);
+            local.mtime = TimestampSecs(if locally_newer { 30 } else { 10 });
+            local.memory_state = Some(FsrsMemoryState {
+                stability: 20.0,
+                stability_internal: 20.0,
+                difficulty: 6.0,
+                stability_fast: None,
+            });
+            col.storage.update_card(&local)?;
+
+            let mut remote_card = local.clone();
+            remote_card.mtime = TimestampSecs(20);
+            remote_card.usn = Usn(7);
+            remote_card.due = 140;
+            remote_card.interval = 47;
+            remote_card.memory_state = Some(FsrsMemoryState {
+                stability: 35.0,
+                stability_internal: 35.0,
+                difficulty: 5.0,
+                stability_fast: None,
+            });
+            let mut remote: CardEntry = remote_card.clone().into();
+            remote.data = json!({"s":35.0,"d":5.0}).to_string();
+            let expected = if locally_newer {
+                local.clone()
+            } else {
+                remote_card
+            };
+            col.apply_chunk(
+                Chunk {
+                    cards: vec![remote],
+                    done: true,
+                    ..Default::default()
+                },
+                Usn(-1),
+            )?;
+
+            assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0);
+            assert_eq!(col.storage.get_card(local.id)?.unwrap(), expected);
+            let pending = col
+                .storage
+                .objects_pending_sync::<CardId>("cards", Usn(-1))?;
+            assert_eq!(
+                pending,
+                if locally_newer {
+                    vec![local.id]
+                } else {
+                    vec![]
+                }
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn stripped_fsrs_state_is_recovered_after_later_revlog_chunks_without_uploads() -> Result<()> {
