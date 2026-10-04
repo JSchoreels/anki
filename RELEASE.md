@@ -22,88 +22,60 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-## 26.09.3+fsrs7 — 2026-10-04
+## [26.09.3+fsrs7.build.96](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.96) — 2026-10-04
 
-Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94),
-including the fixes prepared in draft build 95.
+Based on [Anki 26.09.3](https://github.com/ankitects/anki/releases/tag/26.09.3).
+Changes since the last normal release,
+[build 92](https://github.com/JSchoreels/anki/releases/tag/26.09b3%2Bfsrs7.build.92),
+including prerelease 94 and the unpublished drafts.
 
 ### Improved
 
-- Restore and count large Browser selections faster, and reduce work while
-  painting the table or filtering the sidebar.
-- Speed up Empty Cards scans, deck counts and the finished study screen, while
-  preserving same-day review limit exemptions. Reduce repeated reads during
-  Check Database.
-- Save FSRS preset changes faster when memory states need to be recomputed,
-  while preserving FSRS-6/7 results, rescheduling order and undo.
-- Reuse built-in scripts, styles and images within the webview session cache.
-  Development builds still reload rebuilt assets.
-- Reduce command-response delays in the Windows mpv audio transport.
+- Faster Browser selections, table painting, sidebar filtering and field
+  searches; faster Empty Cards scans, deck counts and finished study screens.
+  Built-in web assets are reused within each session.
+- Faster RWKV startup, history preparation, sync refresh and preset-rule matching,
+  plus faster model steps and review scoring on Apple Silicon.
+- Lower memory use for RWKV/FSRS workload comparisons, RWKV simulations and
+  calibration; calibration also avoids a pause when restoring the resident state.
+- Updated FSRS-7 optimization with faster x86 training and repeatable evaluation,
+  while retaining better existing parameters. FSRS preset saves recompute memory
+  states faster.
+- Reduce Windows mpv command-response delays.
 
 ### Fixed
 
-- Respect “Allow same day review for (re)learning steps” in RWKV-Instant, so
-  disabling it prevents cards from repeating that day even when learning queues
-  are skipped.
-- Prevent repeated same-day reviews from adding lapses or triggering leech
-  handling across schedulers, with or without queue skipping, including
-  rescheduling filtered decks and Grade Now. Again on a review card's first
-  answer of a scheduler day still counts; later answers that day do not, even
-  after an earlier successful answer.
-- Show the final text after editing a card while its answer is displayed; the
-  reviewer could keep an earlier, half-typed version (such as furigana with an
-  empty reading) until the next card.
-- Finish shutdown quietly when a development launcher's console output pipe
-  closes, including on Windows, and avoid an unnecessary warning when stopping
-  the local web server.
-- Protect automatic backups from interrupted writes and filename collisions,
-  allow retry after a failed backup, and prevent corrupt backups from displacing
-  valid daily, weekly, or monthly backups or delaying the next backup.
-- Show the due-review total before daily limits beside the green count in the
-  reviewer, matching the deck list's `157 (/959)` display.
-- Recover RWKV state after changing a deck or its preset during a session,
-  including while reviewing. Open Card Info windows refresh when RWKV becomes
-  ready and immediately reflect whether the card's current preset enables it.
-- Restore FSRS-7 memory state after AnkiWeb sync removes its internal stability
-  fields, including cards already affected. Recovery preserves existing due
-  dates and intervals and does not queue repair-only changes for upload.
-- Wait for concurrent RWKV calculations when creating or rebuilding filtered
-  decks, instead of reporting that retrievability scores could not be prepared.
-- Advance from an undo-restored RWKV card after redoing its answer.
-- Notify add-ons once when the scheduler day changes, including while reviewing.
-- Avoid errors when delayed geometry updates or notifications refer to a closed
-  window.
-- Display the correct average interval in notes mode when long card intervals
-  would overflow the previous calculation.
+- RWKV-Instant respects the same-day review setting even when learning queues
+  are skipped. Repeated same-day answers no longer add lapses or trigger leeches
+  across schedulers, including filtered decks and Grade Now; Again on the day's
+  first review answer still counts.
+- Preserve new/review mixing with RWKV disabled, and show the reviewer’s due
+  total before daily limits alongside the limited count.
+- Recover FSRS-7 memory state stripped by AnkiWeb sync, preserving due dates and
+  intervals without uploading repair-only changes.
+- Retain RWKV state when sync brings older reviews, refresh post-sync deck counts
+  and preset assignments, and recover after deck/preset changes. Card Info
+  reflects the current preset and refreshes when RWKV becomes ready.
+- Wait for concurrent RWKV scoring in filtered decks; preserve undo after
+  calibration and advance an undo-restored card on redo.
+- Prevent interrupted writes, filename collisions and corrupt files from
+  displacing valid automatic backups; retry failed backups.
+- Correct field-name wildcard searches and match non-ASCII letters regardless
+  of case.
+- Refresh edited answers correctly, prevent blank web pages and errors from
+  callbacks to closed windows, and shut down quietly.
+- Correct average intervals in notes mode and notify add-ons once at scheduler
+  day rollover.
 
-### Benchmark results
+Performance depends on the collection and hardware. The
+[benchmarks](docs/clanki-improvements-benchmark.MD) found no clear overall
+Check Database speedup; Windows audio timings use a simulated transport.
 
-The [Clanki improvement benchmarks](docs/clanki-improvements-benchmark.MD)
-record the before/after results for each improvement, workloads, correctness
-checks and measurement limits. The [raw results](docs/clanki-improvements-benchmark.json)
-retain sample timings and quartiles for future release notes.
+All 12 installer and portable downloads are available for macOS, Windows and
+Linux, on ARM64 and x64. This build is unsigned.
 
-Browser measurements isolate the changed operations. Full Check Database
-showed no clear overall speedup, and the Windows audio results use a simulated
-transport. Keep these qualifications when using the results in a changelog.
-
-## 26.09.3+fsrs7 — 2026-10-03
-
-Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94).
-
-### Fixed
-
-- Respect “Allow same day review for (re)learning steps” in RWKV-Instant, so
-  disabling it prevents cards from repeating that day even when learning queues
-  are skipped.
-- Prevent repeated same-day reviews from adding lapses or triggering leech
-  handling across schedulers, with or without queue skipping, including
-  rescheduling filtered decks and Grade Now. Again on a review card's first
-  answer of a scheduler day still counts; later answers that day do not, even
-  after an earlier successful answer.
-- Show the final text after editing a card while its answer is displayed; the
-  reviewer could keep an earlier, half-typed version (such as furigana with an
-  empty reading) until the next card.
+[Full commit comparison](https://github.com/JSchoreels/anki/compare/26.09b3%2Bfsrs7.build.92...5bd75435436f9badb38ef9ef6433bdd6ec3d8601)
+· Source: `5bd75435436f`.
 
 ## [26.09.3+fsrs7.build.94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94) — 2026-10-01
 
