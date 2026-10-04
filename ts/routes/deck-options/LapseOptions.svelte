@@ -124,7 +124,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <Item>
                 <SwitchRow
                     bind:value={$fsrsShortTermWithStepsEnabled}
-                    defaultValue={false}
+                    defaultValue={true}
                 >
                     <SettingTitle>
                         <GlobalLabel

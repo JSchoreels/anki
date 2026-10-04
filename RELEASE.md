@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Default “Allow same day review for (re)learning steps” to on, including the
+  reset control in Deck Options. Explicitly saved off choices remain off. Document
+  that queue skipping bypasses manual steps while retaining their saved values.
+
 - Make “Allow same day review for (re)learning steps” control FSRS-7 and
   RWKV-Curve short-term scheduling too. With it off, empty or exhausted steps
   schedule generated intervals as reviews of at least one day; explicitly

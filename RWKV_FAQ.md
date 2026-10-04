@@ -240,12 +240,21 @@ This also applies when **Skip learning/relearning queues with FSRS/RWKV** is
 enabled. The RWKV same-day setting and repeat-spacing guards must also permit
 a repeat before it can appear.
 
-**Allow same day review for (re)learning steps** defaults to off. It also controls
-generated short-term learning/relearning intervals for FSRS-7 and RWKV-Curve.
+**Allow same day review for (re)learning steps** defaults to on. An explicitly
+saved off choice is preserved. It also controls generated short-term
+learning/relearning intervals for FSRS-7 and RWKV-Curve.
 With empty steps, or after the final configured step, turning it off schedules
 generated intervals as review states of at least one day. Configured steps still
 apply while learning/relearning queues are enabled; **Skip learning/relearning
 queues with FSRS/RWKV** bypasses those steps as well.
+
+If you want manual steps such as `1m 10m` for learning or `10m` for relearning to
+run, leave **Skip learning/relearning queues with FSRS/RWKV** off (its default).
+Turning it on with FSRS active bypasses these delays for new, learning, review,
+and relearning cards; answers schedule Review states directly. The configured
+step lists are kept. Turning it off makes them available again, but cards already
+graduated to Review are not automatically moved back into learning. With FSRS
+disabled, SM2 still follows its configured steps regardless of this bypass.
 
 Same-day Again answers do not add another lapse or trigger leech handling,
 regardless of queue skipping or scheduler. This also covers rescheduling filtered

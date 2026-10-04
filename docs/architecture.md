@@ -224,9 +224,10 @@ retrievability properties (`prop:r`, `prop:rwkv:r`, or
 selected FSRS preset.
 
 Deck options also expose the global FSRS short-term toggle backed by
-`BoolKey::FsrsShortTermWithStepsEnabled`, which defaults to disabled. It controls
-generated short-term intervals for all FSRS versions and RWKV-Curve. FSRS-7 and
-RWKV-Curve keep an unrounded interval below 12 hours in the intraday
+`BoolKey::FsrsShortTermWithStepsEnabled`, which defaults to enabled. A stored
+disabled choice is preserved; the default applies when the key is absent. It
+controls generated short-term intervals for all FSRS versions and RWKV-Curve.
+FSRS-7 and RWKV-Curve keep an unrounded interval below 12 hours in the intraday
 learning/relearning queue only when this toggle is enabled and learning queues
 are enabled. Otherwise, generated intervals use day-based review states with a
 minimum of one day, including when configured steps are empty or exhausted.
@@ -241,6 +242,12 @@ Deck options also expose a global FSRS learning-queue bypass backed by
 with FSRS active, answering cards schedules review states directly instead of
 writing learning/relearning queue states, including configured steps and FSRS
 short-term intervals below half a day.
+
+Keep the learning-queue bypass disabled when configured learning/relearning step
+delays should run. Enabling it skips those delays without deleting the preset's
+step lists. Turning it off makes the saved steps available again; cards already
+graduated to Review are not moved back into learning automatically. The bypass
+has no effect on SM2 when FSRS is disabled.
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review

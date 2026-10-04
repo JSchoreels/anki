@@ -21,6 +21,13 @@ Configured learning/relearning steps still take precedence while learning queues
 are enabled. Intervals at or above 12 hours use normal whole-day fuzz and
 answer-button ordering.
 
+**Allow same day review for (re)learning steps** defaults to on; explicitly saved
+off choices are preserved. **Skip learning/relearning queues with FSRS/RWKV**
+defaults to off. Leave queue skipping off to use manual learning/relearning
+delays. Turning it on bypasses the delays without deleting the saved step lists;
+cards already graduated to Review do not automatically return to learning when
+it is turned off again.
+
 ## Settings And Storage
 
 Desktop-only RWKV review settings are stored in deck config `other` under the
