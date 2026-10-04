@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from aqt.mediasrv import (
     BundledFileRequest,
     LegacyPage,
     LocalFileRequest,
+    MediaServer,
     PageContext,
     UnsafePathException,
     _editor_content_security_policy,
@@ -56,6 +58,37 @@ NEXT_S90_UNAVAILABLE_ROWS = [
         "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
     ),
 ]
+
+
+def test_media_server_shutdown_closes_listener_and_client_buffers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from waitress import create_server
+    from waitress.buffers import ReadOnlyFileBasedBuffer
+    from waitress.channel import HTTPChannel
+
+    media_server = MediaServer(mock.Mock())
+    media_server.server = create_server(lambda env, start: [], host="127.0.0.1", port=0)
+    server = media_server.server
+    client_socket, peer_socket = socket.socketpair()
+    output = tempfile.TemporaryFile()
+    try:
+        channel = HTTPChannel(
+            server, client_socket, ("127.0.0.1", 0), server.adj, map=server._map
+        )
+        channel.outbufs.append(ReadOnlyFileBasedBuffer(output))
+
+        media_server.shutdown()
+
+        assert not server._map
+        assert not channel.connected
+        assert output.closed
+        assert "unhandled close event" not in caplog.text
+    finally:
+        media_server.shutdown()
+        client_socket.close()
+        peer_socket.close()
+        output.close()
 
 
 def test_rwkv_raw_backend_mutation_scopes() -> None:

@@ -250,6 +250,8 @@ class MediaServer(threading.Thread):
 
     def shutdown(self) -> None:
         self.is_shutdown = True
+        # Close the listener and its trigger without generating a close-event warning.
+        self.server.close()
         sockets = list(self.server._map.values())  # type: ignore
         for socket in sockets:
             socket.handle_close()

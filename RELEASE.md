@@ -37,6 +37,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Finish shutdown quietly when a development launcher's console output pipe closes,
+  and avoid an unnecessary warning when stopping the local web server.
 - Protect automatic backups from interrupted writes and filename collisions,
   allow retry after a failed backup, and prevent corrupt backups from displacing
   valid daily, weekly, or monthly backups or delaying the next backup.

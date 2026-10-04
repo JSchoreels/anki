@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -20,6 +21,17 @@ ADDON_LOGGER_PREFIX = "addon."
 
 # Formatter used for all loggers
 FORMATTER = logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
+
+
+class ConsoleHandler(logging.StreamHandler):
+    def handleError(self, record: logging.LogRecord) -> None:
+        if isinstance(sys.exc_info()[1], BrokenPipeError):
+            # The launcher can exit before Anki finishes handling Ctrl+C.
+            # Redirect the descriptor so later prints and the final flush also work.
+            with open(os.devnull, "w") as devnull:
+                os.dup2(devnull.fileno(), self.stream.fileno())
+        else:
+            super().handleError(record)
 
 
 class AnkiLoggerManager(logging.Manager):
@@ -92,7 +104,7 @@ def setup_logging(path: Path | str, **kwargs) -> None:
     )
     logging.Logger.manager = logger_manager
 
-    stdout_handler = logging.StreamHandler(stream=sys.stdout)
+    stdout_handler = ConsoleHandler(stream=sys.stdout)
     stdout_handler.setFormatter(FORMATTER)
     logging.basicConfig(handlers=[stdout_handler], force=True, **kwargs)
     logging.captureWarnings(True)
