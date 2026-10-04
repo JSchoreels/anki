@@ -6161,6 +6161,32 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     owns_prepare = False
     prepare_status = RwkvStatsPreparationStatus.FAILED
     prediction_access = ExitStack()
+    phase = "warmup"
+
+    def stopped(
+        reason: str,
+        status: RwkvStatsPreparationStatus = RwkvStatsPreparationStatus.FAILED,
+    ) -> RwkvStatsPreparationStatus:
+        if warm_up_if_needed and status in {
+            RwkvStatsPreparationStatus.PENDING,
+            RwkvStatsPreparationStatus.FAILED,
+        }:
+            logger.warning(
+                "RWKV filtered-deck scoring stopped: reason=%s phase=%s status=%s "
+                "search=%r backend=%s warmup_pending=%s expected_generation=%s "
+                "current_generation=%s elapsed_ms=%.1f",
+                reason,
+                phase,
+                status.value,
+                search,
+                type(_reviewer_backend).__name__,
+                _reviewer_backend_warmup_pending(reviewer),
+                state_token.state_generation if state_token is not None else None,
+                _reviewer_backend_state_generation(),
+                (time.monotonic() - start) * 1000,
+            )
+        return status
+
     try:
         logger.debug("RWKV stats preparation started: search=%r", search)
         warmup_start = time.monotonic()
@@ -6184,6 +6210,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             and (wait_for_warmup or needs_scores)
             and _reviewer_backend_warmup_pending(reviewer)
         ):
+            phase = "warmup_wait"
             warmed_up = _wait_for_reviewer_backend_warmup(
                 reviewer,
                 timeout_secs=(
@@ -6206,12 +6233,14 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 search,
             )
             if warm_up_if_needed and _reviewer_backend is not None:
-                return RwkvStatsPreparationStatus.FAILED
-            return (
+                return stopped("warmup_not_ready")
+            return stopped(
+                "warmup_not_ready",
                 RwkvStatsPreparationStatus.PENDING
                 if _reviewer_backend_warmup_pending(reviewer)
-                else RwkvStatsPreparationStatus.UNAVAILABLE
+                else RwkvStatsPreparationStatus.UNAVAILABLE,
             )
+        phase = "state_capture"
         state_token = _capture_reviewer_backend_prediction_state_token(reviewer)
         if state_token is None:
             logger.debug(
@@ -6219,7 +6248,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 "backend state unavailable search=%r",
                 search,
             )
-            return RwkvStatsPreparationStatus.FAILED
+            return stopped("state_unavailable")
         prepare_key = _rwkv_stats_prepare_key(
             reviewer,
             search,
@@ -6233,6 +6262,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         if prepare_key is not None:
             prepare_future, owns_prepare = _begin_rwkv_stats_prepare(prepare_key)
             if not owns_prepare:
+                phase = "shared_preparation"
                 wait_start = time.monotonic()
                 logger.debug(
                     "RWKV stats preparation waiting for in-flight result: search=%r",
@@ -6249,9 +6279,10 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 return (
                     prepare_status
                     if _reviewer_backend_prediction_state_token_is_current(state_token)
-                    else RwkvStatsPreparationStatus.FAILED
+                    else stopped("state_changed")
                 )
         if warm_up_if_needed:
+            phase = "backend_access"
             # Claim access after coalescing: an existing owner may need this
             # lock to finish. Keep it through scoring and publication so a
             # competing reader cannot turn a filtered rebuild into PENDING.
@@ -6266,6 +6297,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             )
             if backend is None:
                 _raise_reviewer_backend_prediction_unavailable(state_token)
+        phase = "search_scoring"
         search_score_start = time.monotonic()
         search_score_result = _rwkv_stats_graph_scores_for_search(
             reviewer=reviewer,
@@ -6279,6 +6311,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         if search_score_result is not None:
             scores = search_score_result.scores
             input_build = search_score_result.input_build
+            phase = "publication"
             set_start = time.monotonic()
             if not _set_rwkv_stats_graph_scores_if_current(
                 reviewer,
@@ -6302,12 +6335,12 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                         "deferred RWKV stats scores while backend was busy: search=%r",
                         search,
                     )
-                    return prepare_status
+                    return stopped("backend_busy", prepare_status)
                 logger.debug(
                     "discarded RWKV stats scores after state change: search=%r",
                     search,
                 )
-                return RwkvStatsPreparationStatus.FAILED
+                return stopped("state_changed")
             set_elapsed_ms = (time.monotonic() - set_start) * 1000
             logger.debug(
                 "prepared RWKV stats retrievability scores from backend search: "
@@ -6328,7 +6361,8 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 "discarded RWKV stats search fallback after state change: search=%r",
                 search,
             )
-            return RwkvStatsPreparationStatus.FAILED
+            return stopped("state_changed")
+        phase = "candidate_search"
         card_ids_start = time.monotonic()
         card_ids = _stats_graph_card_ids(reviewer, search)
         card_ids_elapsed_ms = (time.monotonic() - card_ids_start) * 1000
@@ -6338,6 +6372,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             len(card_ids),
             card_ids_elapsed_ms,
         )
+        phase = "fallback_scoring"
         score_start = time.monotonic()
         scores = _rwkv_stats_graph_scores(
             reviewer=reviewer,
@@ -6346,6 +6381,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             state_token=state_token,
         )
         score_elapsed_ms = (time.monotonic() - score_start) * 1000
+        phase = "publication"
         set_start = time.monotonic()
         if not _set_rwkv_stats_graph_scores_if_current(
             reviewer,
@@ -6359,12 +6395,12 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                     "deferred RWKV stats scores while backend was busy: search=%r",
                     search,
                 )
-                return prepare_status
+                return stopped("backend_busy", prepare_status)
             logger.debug(
                 "discarded RWKV stats scores after state change: search=%r",
                 search,
             )
-            return RwkvStatsPreparationStatus.FAILED
+            return stopped("state_changed")
         set_elapsed_ms = (time.monotonic() - set_start) * 1000
         logger.debug(
             "prepared RWKV stats retrievability scores: search=%r candidates=%s scored=%s "
@@ -6384,12 +6420,16 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     except _ReviewerBackendPredictionBusy:
         prepare_status = RwkvStatsPreparationStatus.PENDING
         logger.debug("RWKV stats retrievability scoring deferred: backend busy")
-        return prepare_status
+        return stopped("backend_busy", prepare_status)
     except _ReviewerBackendPredictionAborted:
         logger.debug("RWKV stats retrievability scoring aborted: backend stale")
-        return RwkvStatsPreparationStatus.FAILED
+        return stopped("state_changed")
     except Exception:
-        logger.exception("RWKV stats retrievability scoring failed")
+        logger.exception(
+            "RWKV stats retrievability scoring failed: phase=%s search=%r",
+            phase,
+            search,
+        )
         if state_token is None:
             if _rwkv_stats_prepare_generation_is_current(prepare_generation):
                 _set_rwkv_stats_graph_scores(reviewer, search, [])
@@ -6400,7 +6440,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 [],
                 state_token=state_token,
             )
-        return RwkvStatsPreparationStatus.FAILED
+        return stopped("exception")
     finally:
         try:
             prediction_access.close()
@@ -6451,8 +6491,11 @@ def prepare_filtered_deck_retrievability_scores(
             joiner="OR",
         )
     except Exception:
-        logger.debug(
-            "failed to build RWKV filtered-deck candidate search", exc_info=True
+        logger.warning(
+            "RWKV filtered-deck scoring stopped: reason=candidate_search_failed "
+            "phase=candidate_search status=failed searches=%r",
+            [term.search for term in terms],
+            exc_info=True,
         )
         return RwkvStatsPreparationStatus.FAILED
 

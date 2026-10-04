@@ -15068,6 +15068,7 @@ def rwkv_filtered_deck_context(
 @pytest.mark.parametrize("outcome", ["ready", "prediction_error", "state_advance"])
 def test_filtered_deck_waits_for_busy_backend_before_mutating(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     rwkv_filtered_deck_context: tuple[SimpleNamespace, FilteredDeckConfig],
     operation: str,
     outcome: str,
@@ -15100,7 +15101,7 @@ def test_filtered_deck_waits_for_busy_backend_before_mutating(
 
     reviewer, config = rwkv_filtered_deck_context
     col = reviewer.mw.col
-    deck = FilteredDeckForUpdate(id=200, config=config)
+    deck = FilteredDeckForUpdate(id=200, name="Anatomie 🩺", config=config)
     col.sched.get_or_create_filtered_deck = lambda **kwargs: deck
     mutations: list[int] = []
 
@@ -15170,6 +15171,10 @@ def test_filtered_deck_waits_for_busy_backend_before_mutating(
     assert not filtered.is_alive()
     if outcome == "ready":
         assert errors == []
+        assert not any(
+            record.message.startswith("RWKV filtered-deck preparation failed")
+            for record in caplog.records
+        )
         assert mutations == [200]
         assert results == [
             collection_pb2.OpChangesWithCount(count=1)
@@ -15187,6 +15192,112 @@ def test_filtered_deck_waits_for_busy_backend_before_mutating(
         assert len(errors) == 1
         assert isinstance(errors[0], RuntimeError)
         assert str(errors[0]) == "RWKV filtered-deck preparation failed"
+        message = next(
+            record.message
+            for record in caplog.records
+            if record.message.startswith("RWKV filtered-deck preparation failed")
+        )
+        assert (
+            f"operation={'rebuild' if operation == 'rebuild' else 'add_or_update'}"
+            in message
+        )
+        assert "deck_id=200" in message
+        assert "deck_name='Anatomie 🩺'" in message
+        assert "status=failed" in message
+        assert "'search': 'deck:current'" in message
+        assert "'order': 'RETRIEVABILITY_ASCENDING'" in message
+        reason = "exception" if outcome == "prediction_error" else "state_changed"
+        assert any(
+            record.message.startswith("RWKV filtered-deck scoring stopped")
+            and f"reason={reason}" in record.message
+            for record in caplog.records
+        )
+        if outcome == "prediction_error":
+            record = next(
+                record
+                for record in caplog.records
+                if record.message.startswith("RWKV stats retrievability scoring failed")
+            )
+            assert "phase=fallback_scoring" in record.message
+            assert record.exc_info is not None
+            assert str(record.exc_info[1]) == "prediction failed"
+
+
+def test_filtered_deck_warmup_failure_logs_both_filters(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    rwkv_filtered_deck_context: tuple[SimpleNamespace, FilteredDeckConfig],
+) -> None:
+    from anki.scheduler import FilteredDeckForUpdate
+    from aqt.operations import scheduling
+
+    reviewer, config = rwkv_filtered_deck_context
+    config.search_terms.add(
+        search="tag:inactive", limit=0, order=FilteredDeckConfig.SearchTerm.RANDOM
+    )
+    config.reschedule = True
+    deck = FilteredDeckForUpdate(id=200, name="Anatomie", config=config)
+    set_reviewer_backend(object())  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_filtered_deck",
+        lambda reviewer: False,
+    )
+
+    with pytest.raises(RuntimeError, match="RWKV filtered-deck preparation failed"):
+        scheduling._prepare_filtered_deck_retrievability_scores(
+            reviewer.mw.col, deck, operation="rebuild"
+        )
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        "reason=warmup_not_ready phase=warmup status=failed" in message
+        for message in messages
+    )
+    message = next(
+        message
+        for message in messages
+        if message.startswith("RWKV filtered-deck preparation failed")
+    )
+    assert "reschedule=True" in message
+    assert (
+        "'filter': 1, 'search': 'deck:current', 'limit': 100, "
+        "'order': 'RETRIEVABILITY_ASCENDING'" in message
+    )
+    assert (
+        "'filter': 2, 'search': 'tag:inactive', 'limit': 0, 'order': 'RANDOM'"
+        in message
+    )
+
+
+def test_filtered_deck_random_filters_log_scores_not_required(
+    caplog: pytest.LogCaptureFixture,
+    rwkv_filtered_deck_context: tuple[SimpleNamespace, FilteredDeckConfig],
+) -> None:
+    from anki.scheduler import FilteredDeckForUpdate
+    from aqt.operations import scheduling
+
+    reviewer, config = rwkv_filtered_deck_context
+    config.search_terms[
+        0
+    ].search = '"deck:Medizin 🩺::Ankiphil - Vorklinik::Anatomie" is:due prop:due>-7'
+    config.search_terms[0].order = FilteredDeckConfig.SearchTerm.RANDOM
+    config.search_terms.add(
+        search="(is:due OR is:new) tag:#Ankiphil_Vorklinik_v6.0::#Fächer::Anatomie::Blut",
+        limit=100,
+        order=FilteredDeckConfig.SearchTerm.RANDOM,
+    )
+    deck = FilteredDeckForUpdate(id=200, name="Anatomie", config=config)
+
+    with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+        scheduling._prepare_filtered_deck_retrievability_scores(
+            reviewer.mw.col, deck, operation="rebuild"
+        )
+
+    assert any("status=not_required" in record.message for record in caplog.records)
+    assert not any(
+        record.levelname in {"WARNING", "ERROR"} for record in caplog.records
+    )
 
 
 def test_filtered_deck_prepares_scores_when_concurrent_stats_are_deferred(

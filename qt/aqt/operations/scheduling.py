@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 from typing import TypeVar
@@ -408,7 +409,7 @@ def _rebuild_filtered_deck(
     deck_id: DeckId,
 ) -> OpChangesWithCount:
     deck = col.sched.get_or_create_filtered_deck(deck_id=deck_id)
-    _prepare_filtered_deck_retrievability_scores(col, deck.config)
+    _prepare_filtered_deck_retrievability_scores(col, deck, operation="rebuild")
     return _run_preserving_rwkv_state(
         col,
         lambda: col.sched.rebuild_filtered_deck(deck_id),
@@ -420,7 +421,7 @@ def _add_or_update_filtered_deck(
     col: Collection,
     deck: FilteredDeckForUpdate,
 ) -> OpChangesWithId:
-    _prepare_filtered_deck_retrievability_scores(col, deck.config)
+    _prepare_filtered_deck_retrievability_scores(col, deck, operation="add_or_update")
     return _run_preserving_rwkv_state(
         col,
         lambda: col.sched.add_or_update_filtered_deck(deck),
@@ -430,24 +431,68 @@ def _add_or_update_filtered_deck(
 
 def _prepare_filtered_deck_retrievability_scores(
     col: Collection,
-    config: FilteredDeckConfig,
+    deck: FilteredDeckForUpdate,
+    *,
+    operation: str,
 ) -> None:
     from aqt import rwkv_scheduler
 
+    order_names = {
+        value: name for name, value in FilteredDeckConfig.SearchTerm.Order.items()
+    }
+    filters = [
+        {
+            "filter": index,
+            "search": term.search,
+            "limit": term.limit,
+            "order": order_names.get(term.order, term.order),
+        }
+        for index, term in enumerate(deck.config.search_terms[:2], start=1)
+    ]
+    logger = rwkv_scheduler.logger
+    log_context = (
+        f"operation={operation} deck_id={deck.id} deck_name={deck.name!r} "
+        f"reschedule={deck.config.reschedule} filters={filters!r}"
+    )
+    logger.debug(
+        "RWKV filtered-deck preparation started: %s",
+        log_context,
+    )
+    start = time.monotonic()
     mw = aqt.mw
     if mw is not None and mw.col is col:
         reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
     else:
         reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
-    status = rwkv_scheduler.prepare_filtered_deck_retrievability_scores(
-        reviewer,
-        config,
-    )
+    try:
+        status = rwkv_scheduler.prepare_filtered_deck_retrievability_scores(
+            reviewer,
+            deck.config,
+        )
+    except Exception:
+        logger.exception(
+            "RWKV filtered-deck preparation raised: %s elapsed_ms=%.1f",
+            log_context,
+            (time.monotonic() - start) * 1000,
+        )
+        raise
     if status in {
         rwkv_scheduler.RwkvStatsPreparationStatus.PENDING,
         rwkv_scheduler.RwkvStatsPreparationStatus.FAILED,
     }:
+        logger.warning(
+            "RWKV filtered-deck preparation failed: %s status=%s elapsed_ms=%.1f",
+            log_context,
+            status.value,
+            (time.monotonic() - start) * 1000,
+        )
         raise RuntimeError(tr.qt_misc_rwkv_filtered_deck_preparation_failed())
+    logger.debug(
+        "RWKV filtered-deck preparation finished: %s status=%s elapsed_ms=%.1f",
+        log_context,
+        status.value if status is not None else "not_required",
+        (time.monotonic() - start) * 1000,
+    )
 
 
 def unbury_deck(

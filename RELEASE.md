@@ -22,6 +22,9 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Log the failing deck, both filters, and the preparation failure reason when
+  RWKV scoring prevents a filtered-deck rebuild, making reports easier to diagnose.
+
 - Default “Allow same day review for (re)learning steps” to on, including the
   reset control in Deck Options. Explicitly saved off choices remain off. Document
   that queue skipping bypasses manual steps while retaining their saved values.

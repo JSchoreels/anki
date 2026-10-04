@@ -639,6 +639,22 @@ with one another, separately from nonblocking Stats preparations that may
 return pending. If the captured RWKV state changes while waiting or a prediction
 fails, the operation still aborts before creating or rebuilding the filtered deck.
 
+Failed filtered-deck preparation logs warnings through `aqt.rwkv_scheduler` in
+the normal application log output. `RWKV filtered-deck preparation failed`
+identifies the operation, deck id/name, rescheduling setting, and both configured
+filters with their queries, limits, and order names, including zero-limit filters.
+The accompanying `RWKV filtered-deck scoring stopped` warning identifies the
+reason. Score preparation failures also record the phase, status, backend type,
+warm-up pending flag, expected/current model state generations, and elapsed time.
+Candidate search construction failures record the searches and traceback.
+Reasons distinguish `backend_busy`,
+`state_changed`, `state_unavailable`, `warmup_not_ready`, and
+`candidate_search_failed`; unexpected errors retain their traceback and scoring
+phase. A state change is not attributed to sync unless separate evidence identifies
+it. Debug logs also show preparation start/completion, with `not_required` when
+the filters do not need RWKV scores. Include these messages together when reporting
+a rebuild failure so the effective deck settings can be compared with the reason.
+
 Card Info refreshes its score through the RWKV review-candidate prediction path
 each time it renders instead of reusing a score installed by Card Info, review
 queue ordering, or stats graphs. It then installs the refreshed card-specific
