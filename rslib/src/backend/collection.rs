@@ -123,3 +123,100 @@ impl Backend {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use anki_proto::collection::CreateBackupRequest;
+
+    use super::*;
+
+    fn retry_after_failure(wait_for_completion: bool, force: bool, consume_by_next_request: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::new(I18n::template_only(), false);
+        *backend.col.lock().unwrap() = Some(
+            CollectionBuilder::new(dir.path().join("collection.anki2"))
+                .build()
+                .unwrap(),
+        );
+        let backups = dir.path().join("backups");
+        std::fs::write(&backups, b"not a directory").unwrap();
+        let request = CreateBackupRequest {
+            backup_folder: backups.to_str().unwrap().into(),
+            force: true,
+            wait_for_completion,
+        };
+        let result = backend.create_backup(request.clone());
+        let error = if wait_for_completion {
+            result.unwrap_err()
+        } else {
+            assert!(result.unwrap().val);
+            if consume_by_next_request {
+                backend.create_backup(request.clone()).unwrap_err()
+            } else {
+                backend.await_backup_completion().unwrap_err()
+            }
+        };
+        assert!(matches!(error, AnkiError::FileIoError { .. }));
+        backend.await_backup_completion().unwrap();
+        std::fs::remove_file(&backups).unwrap();
+        std::fs::create_dir(&backups).unwrap();
+
+        let request = CreateBackupRequest { force, ..request };
+        assert!(backend.create_backup(request.clone()).unwrap().val);
+        backend.await_backup_completion().unwrap();
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
+        assert!(!backend.create_backup(request).unwrap().val);
+    }
+
+    #[test]
+    fn failed_backups_allow_retry() {
+        for wait in [false, true] {
+            for force in [false, true] {
+                retry_after_failure(wait, force, false);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_backup_consumed_by_next_request_allows_retry() {
+        retry_after_failure(false, true, true);
+    }
+
+    #[test]
+    fn backup_completion_does_not_mark_reopened_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::new(I18n::template_only(), false);
+        *backend.col.lock().unwrap() = Some(
+            CollectionBuilder::new(dir.path().join("collection.anki2"))
+                .build()
+                .unwrap(),
+        );
+        let backups = dir.path().join("backups");
+        std::fs::create_dir(&backups).unwrap();
+        assert!(
+            backend
+                .create_backup(CreateBackupRequest {
+                    backup_folder: backups.to_str().unwrap().into(),
+                    force: true,
+                    wait_for_completion: false,
+                })
+                .unwrap()
+                .val
+        );
+        backend.close_collection(Default::default()).unwrap();
+        *backend.col.lock().unwrap() = Some(
+            CollectionBuilder::new(dir.path().join("collection.anki2"))
+                .build()
+                .unwrap(),
+        );
+        backend.await_backup_completion().unwrap();
+        assert!(backend
+            .col
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .changed_since_last_backup()
+            .unwrap());
+    }
+}

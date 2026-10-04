@@ -43,13 +43,9 @@ impl Collection {
         Ok(self
             .state
             .last_backup_modified
+            .lock()
+            .unwrap()
             .map(|last_backup| last_backup != stamps.collection_change)
             .unwrap_or(true))
-    }
-
-    pub(crate) fn update_last_backup_timestamp(&mut self) -> Result<()> {
-        self.state.last_backup_modified =
-            Some(self.storage.get_collection_timestamps()?.collection_change);
-        Ok(())
     }
 }

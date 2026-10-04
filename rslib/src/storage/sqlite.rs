@@ -121,6 +121,35 @@ fn attach_retrievability_cache_db(db: &Connection, collection_path: Option<&Path
 }
 
 impl SqliteStorage {
+    /// Validate an extracted backup without creating sidecars or upgrading it.
+    pub(crate) fn check_backup_file(path: &Path) -> Result<()> {
+        let mut uri = reqwest::Url::from_file_path(path)
+            .ok()
+            .or_invalid("invalid backup path")?;
+        uri.query_pairs_mut()
+            .append_pair("mode", "ro")
+            .append_pair("immutable", "1");
+        let db = Connection::open_with_flags(
+            uri.as_str(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        db.create_collation("unicase", unicase_compare)?;
+        let (create, version) = schema_version(&db)?;
+        require!(
+            !create
+                && (SCHEMA_MIN_VERSION..=SCHEMA_MAX_VERSION).contains(&version)
+                && !matches!(version, 12 | 13),
+            "invalid backup collection schema"
+        );
+        for table in ["cards", "notes", "revlog"] {
+            db.prepare(&format!("select id from {table}"))?;
+        }
+        let result =
+            db.pragma_query_value(None, "integrity_check", |row| row.get::<_, String>(0))?;
+        require!(result == "ok", "corrupt backup: {result}");
+        Ok(())
+    }
+
     /// This is provided as an escape hatch for when you need to do something
     /// not directly supported by this library. Please exercise caution when
     /// using it.

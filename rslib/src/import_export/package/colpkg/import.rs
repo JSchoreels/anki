@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use anki_io::atomic_rename;
 use anki_io::create_dir_all;
+use anki_io::new_tempfile;
 use anki_io::new_tempfile_in_parent_of;
 use anki_io::open_file;
 use anki_io::FileIoSnafu;
@@ -27,6 +28,23 @@ use crate::import_export::ImportProgress;
 use crate::media::MediaManager;
 use crate::prelude::*;
 use crate::progress::ThrottlingProgressHandler;
+use crate::storage::SqliteStorage;
+
+/// Check an archive before it can suppress or displace another backup. The
+/// collection is extracted to a disposable file and opened read-only, without
+/// applying migrations or modifying the archive.
+pub(crate) fn validate_colpkg(path: &Path) -> Result<()> {
+    let mut archive = ZipArchive::new(open_file(path)?)?;
+    let meta = Meta::from_archive(&mut archive)?;
+    let mut collection = new_tempfile()?;
+    copy_collection(&mut archive, &mut collection, &meta)?;
+    SqliteStorage::check_backup_file(collection.path())?;
+    for entry in extract_media_entries(&meta, &mut archive)? {
+        let mut file = entry.fetch_file(&mut archive)?;
+        meta.copy(&mut file, &mut io::sink())?;
+    }
+    Ok(())
+}
 
 pub fn import_colpkg(
     colpkg_path: &str,

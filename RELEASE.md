@@ -24,6 +24,9 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Protect automatic backups from interrupted writes and filename collisions,
+  allow retry after a failed backup, and prevent corrupt backups from displacing
+  valid daily, weekly, or monthly backups or delaying the next backup.
 - Show the due-review total before daily limits beside the green count in the
   reviewer, matching the deck list's `157 (/959)` display.
 - Recover RWKV state after changing a deck or its preset during a session,
