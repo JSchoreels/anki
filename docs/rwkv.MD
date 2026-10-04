@@ -14,8 +14,12 @@ RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
 the predicted curve. Curve crossings are refined on the curve itself rather
 than treated as straight lines between search points. Live answer scheduling
 then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
-intraday seconds without fuzz, while intervals at or above 12 hours use normal
-whole-day fuzz and answer-button ordering.
+intraday seconds without fuzz only when **Allow same day review for
+(re)learning steps** is enabled and learning queues are enabled. Otherwise,
+generated intervals use day-based review states with a minimum of one day.
+Configured learning/relearning steps still take precedence while learning queues
+are enabled. Intervals at or above 12 hours use normal whole-day fuzz and
+answer-button ordering.
 
 ## Settings And Storage
 

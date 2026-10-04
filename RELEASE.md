@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Make “Allow same day review for (re)learning steps” control FSRS-7 and
+  RWKV-Curve short-term scheduling too. With it off, empty or exhausted steps
+  schedule generated intervals as reviews of at least one day; explicitly
+  configured learning/relearning steps still apply.
+
 ## [26.09.3+fsrs7.build.96](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.96) — 2026-10-04
 
 Based on [Anki 26.09.3](https://github.com/ankitects/anki/releases/tag/26.09.3).

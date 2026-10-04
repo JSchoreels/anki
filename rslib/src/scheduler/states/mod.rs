@@ -146,8 +146,8 @@ impl StateContext<'_> {
     }
 
     pub(crate) fn fsrs_uses_short_term_learning_queue(&self) -> bool {
-        (self.fsrs_fractional_intervals
-            || self.fsrs_allow_short_term && self.fsrs_short_term_with_steps_enabled)
+        (self.fsrs_fractional_intervals || self.fsrs_allow_short_term)
+            && self.fsrs_short_term_with_steps_enabled
             && self.fsrs_uses_learning_queues()
     }
 

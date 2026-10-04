@@ -1995,6 +1995,82 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn fractional_scheduling_obeys_same_day_setting_with_empty_steps() -> Result<()> {
+        for allow_same_day in [false, true] {
+            for skip_learning_queues in [false, true] {
+                let mut col = Collection::new();
+                col.set_config_bool(BoolKey::Fsrs, true, false)?;
+                col.set_config_bool(
+                    BoolKey::FsrsShortTermWithStepsEnabled,
+                    allow_same_day,
+                    false,
+                )?;
+                col.set_config_bool(
+                    BoolKey::FsrsLearningQueuesDisabled,
+                    skip_learning_queues,
+                    false,
+                )?;
+                col.update_default_deck_config(|config| {
+                    config.fsrs_version = FsrsVersion::Seven as i32;
+                    config.learn_steps = vec![];
+                    config.relearn_steps = vec![];
+                });
+                NoteAdder::basic(&mut col).add(&mut col);
+                let mut card = col.get_first_card();
+                for card_type in [
+                    CardType::New,
+                    CardType::Learn,
+                    CardType::Review,
+                    CardType::Relearn,
+                ] {
+                    card.ctype = card_type;
+                    card.queue = match card_type {
+                        CardType::New => CardQueue::New,
+                        CardType::Review => CardQueue::Review,
+                        _ => CardQueue::Learn,
+                    };
+                    card.remaining_steps = 0;
+                    card.interval = 1;
+                    card.last_review_time = Some(TimestampSecs::now().adding_secs(-60));
+                    card.memory_state = Some(FsrsMemoryState {
+                        stability: 1.0,
+                        stability_internal: 1.0,
+                        stability_fast: Some(1.0),
+                        difficulty: 5.0,
+                    });
+                    col.storage.update_card(&card)?;
+                    // RWKV-Curve supplies unrounded intervals through this same path.
+                    let states = col.scheduling_states_with_intervals(
+                        card.id,
+                        [Some(0.1), Some(0.2), Some(0.3), Some(0.4)],
+                    )?;
+                    for state in [states.again, states.hard, states.good, states.easy] {
+                        if allow_same_day && !skip_learning_queues {
+                            let learning = match state {
+                                CardState::Normal(NormalState::Learning(learning)) => learning,
+                                CardState::Normal(NormalState::Relearning(relearning)) => {
+                                    relearning.learning
+                                }
+                                _ => panic!("expected a short-term state: {state:?}"),
+                            };
+                            assert!(learning.scheduled_secs > 0);
+                            assert!(learning.scheduled_secs < 43_200);
+                        } else {
+                            let CardState::Normal(NormalState::Review(review)) = state else {
+                                panic!(
+                                    "expected Review for {card_type:?}, same-day={allow_same_day}, skip={skip_learning_queues}: {state:?}"
+                                );
+                            };
+                            assert!(review.scheduled_days >= 1);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn fsrs_learning_queue_bypass_keeps_rwkv_relearning_answer_in_review_queue() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;

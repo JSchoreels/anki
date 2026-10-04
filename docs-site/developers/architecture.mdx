@@ -218,12 +218,17 @@ retrievability properties (`prop:r`, `prop:rwkv:r`, or
 selected FSRS preset.
 
 Deck options also expose the global FSRS short-term toggle backed by
-`BoolKey::FsrsShortTermWithStepsEnabled`. It controls the legacy FSRS
-short-term path. FSRS-7 always keeps an unrounded interval below 12 hours in
-the intraday learning/relearning queue, unless learning queues are disabled.
+`BoolKey::FsrsShortTermWithStepsEnabled`, which defaults to disabled. It controls
+generated short-term intervals for all FSRS versions and RWKV-Curve. FSRS-7 and
+RWKV-Curve keep an unrounded interval below 12 hours in the intraday
+learning/relearning queue only when this toggle is enabled and learning queues
+are enabled. Otherwise, generated intervals use day-based review states with a
+minimum of one day, including when configured steps are empty or exhausted.
 Intervals of 12 hours or more are fuzzed into whole days, with day-based answer
 buttons kept in strict order where the maximum interval permits it. Configured
-learning and relearning steps still take precedence.
+learning and relearning steps still take precedence while learning queues are
+enabled, regardless of the short-term toggle. Fractional elapsed-time and memory
+state calculations remain independent of the toggle.
 
 Deck options also expose a global FSRS learning-queue bypass backed by
 `BoolKey::FsrsLearningQueuesDisabled`. It defaults to disabled. When enabled

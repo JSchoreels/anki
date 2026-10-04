@@ -240,6 +240,13 @@ This also applies when **Skip learning/relearning queues with FSRS/RWKV** is
 enabled. The RWKV same-day setting and repeat-spacing guards must also permit
 a repeat before it can appear.
 
+**Allow same day review for (re)learning steps** defaults to off. It also controls
+generated short-term learning/relearning intervals for FSRS-7 and RWKV-Curve.
+With empty steps, or after the final configured step, turning it off schedules
+generated intervals as review states of at least one day. Configured steps still
+apply while learning/relearning queues are enabled; **Skip learning/relearning
+queues with FSRS/RWKV** bypasses those steps as well.
+
 Same-day Again answers do not add another lapse or trigger leech handling,
 regardless of queue skipping or scheduler. This also covers rescheduling filtered
 decks and **Grade Now**. A review card's first answer of a scheduler day still

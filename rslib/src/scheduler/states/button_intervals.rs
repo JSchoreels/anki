@@ -8,8 +8,9 @@ use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
 
-/// Intervals below 12 hours use the intraday queue. Intervals at or above
-/// this boundary are stored in whole days.
+/// When same-day reviews and learning queues are enabled, intervals below
+/// 12 hours use the intraday queue. Intervals at or above this boundary are
+/// stored in whole days.
 pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +97,7 @@ mod test {
     fn ctx() -> StateContext<'static> {
         let mut ctx = StateContext::defaults_for_testing();
         ctx.fsrs_fractional_intervals = true;
+        ctx.fsrs_short_term_with_steps_enabled = true;
         ctx.fuzz_factor = None;
         ctx
     }
@@ -197,6 +199,24 @@ mod test {
             button_intervals(&ctx, all(0.2, 0.3, 0.4, 0.6), DayRule::Graduating),
             [days(1), days(2), days(3), days(4)]
         );
+    }
+
+    #[test]
+    fn disabled_same_day_reviews_round_fractional_intervals_up() {
+        let mut ctx = ctx();
+        ctx.fsrs_short_term_with_steps_enabled = false;
+        for rule in [
+            DayRule::Graduating,
+            DayRule::Review {
+                previous_interval: 1,
+            },
+        ] {
+            assert_eq!(
+                button_intervals(&ctx, all(0.1, 0.2, 0.3, 0.4), rule),
+                [days(1), days(2), days(3), days(4)],
+                "{rule:?}"
+            );
+        }
     }
 
     #[test]
