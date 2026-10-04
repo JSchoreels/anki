@@ -17,6 +17,7 @@ use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
+use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::fsrs_elapsed_days;
@@ -1038,7 +1039,12 @@ impl Collection {
         if card_ids.is_empty() {
             return Ok(0);
         }
-        self.transact_no_undo(|col| col.repair_foreign_fsrs_memory_states_inner(card_ids))
+        // Derived state recovery must not advance the collection modification
+        // time or queue cards for upload when opening the collection.
+        self.transact(Op::SkipUndo, |col| {
+            col.repair_foreign_fsrs_memory_states_inner(card_ids)
+        })
+        .map(|out| out.output)
     }
 
     /// Repair a known set of imported/synced cards. Expects a transaction.
@@ -1055,15 +1061,20 @@ impl Collection {
         let mut groups = HashMap::<_, (_, Vec<Card>)>::new();
         for card in cards {
             let preset = presets_by_card.get(&card.id).or_not_found(card.id)?.clone();
+            if preset.fsrs_version != FsrsVersion::Seven {
+                continue;
+            }
             groups
                 .entry((preset.id.clone(), preset.desired_retention.to_bits()))
                 .or_insert_with(|| (preset, Vec::new()))
                 .1
                 .push(card);
         }
+        if groups.is_empty() {
+            return Ok(0);
+        }
 
         let timing = self.timing_today()?;
-        let usn = self.usn()?;
         let mut repaired = 0;
         for (_preset_id, (preset, cards)) in groups {
             let fsrs = FSRS::new(&preset.params)?;
@@ -1083,7 +1094,6 @@ impl Collection {
             let decay = get_decay_from_params(&preset.params);
 
             for mut card in cards {
-                let original = card.clone();
                 let Some(stored) = card.memory_state else {
                     continue;
                 };
@@ -1102,16 +1112,22 @@ impl Collection {
                 };
 
                 card.memory_state = Some(memory_state);
-                card.desired_retention = Some(preset.desired_retention);
+                card.desired_retention
+                    .get_or_insert(preset.desired_retention);
                 card.decay = Some(decay);
                 if items.contains_key(&card.id) {
                     card.last_review_time = self.storage.time_of_last_review(card.id)?;
                 }
-                self.update_card_inner(&mut card, original, usn)?;
+                // AnkiWeb may strip the traces again. Keep this reconstruction
+                // local so two clients do not keep uploading each other's repairs.
+                self.storage.update_card_data(&card)?;
                 repaired += 1;
             }
         }
 
+        if repaired > 0 {
+            self.clear_study_queues();
+        }
         Ok(repaired)
     }
 }
@@ -1827,11 +1843,21 @@ mod tests {
         card.queue = CardQueue::Review;
         card.interval = 30;
         card.due = 123;
+        card.mtime = TimestampSecs(1_700_000_000);
+        card.usn = Usn(12);
+        card.reps = 17;
+        card.lapses = 3;
+        card.custom_data = r#"{"addon":1}"#.into();
         col.storage.update_card(&card)?;
         col.storage.db.execute(
-            r#"update cards set data = '{"s":20.0,"d":6.0}' where id = ?"#,
+            r#"update cards set data = '{"s":20.0,"d":6.0,"dr":0.85,"cd":"{\"addon\":1}"}' where id = ?"#,
             [card.id],
         )?;
+        // Initialize scheduler configuration before measuring repair-only changes.
+        col.timing_today()?;
+        col.storage.set_schema_modified_time(TimestampMillis(1))?;
+        col.storage.set_modified_time(TimestampMillis(2))?;
+        col.storage.set_last_sync(TimestampMillis(2))?;
 
         assert_eq!(
             col.storage.card_ids_with_foreign_fsrs_state()?,
@@ -1846,9 +1872,136 @@ mod tests {
         assert_eq!(state.difficulty, 6.0);
         assert_eq!(repaired.interval, 30);
         assert_eq!(repaired.due, 123);
+        assert_eq!(repaired.mtime, TimestampSecs(1_700_000_000));
+        assert_eq!(repaired.usn, Usn(12));
+        assert_eq!(repaired.reps, 17);
+        assert_eq!(repaired.lapses, 3);
+        assert_eq!(repaired.custom_data, r#"{"addon":1}"#);
+        assert_eq!(repaired.desired_retention, Some(0.85));
+        assert_eq!(
+            col.storage.get_collection_timestamps()?.collection_change,
+            TimestampMillis(2)
+        );
+        assert_eq!(
+            col.sync_status_offline()?,
+            anki_proto::sync::sync_status_response::Required::NoChanges
+        );
         let s90 = fsrs.interval_at_retrievability(state.into(), 0.9);
         assert!((s90 - 20.0).abs() < 0.01, "{s90}");
         assert!(col.storage.card_ids_with_foreign_fsrs_state()?.is_empty());
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_fsrs_state_is_repaired_when_internal_stability_was_filled_on_save() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        // Reading and saving a stripped incoming card fills s_int from s.
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 20.0,
+            stability_internal: 20.0,
+            stability_fast: None,
+            difficulty: 6.0,
+        });
+        col.storage.update_card(&card)?;
+
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 1);
+
+        let repaired = col.storage.get_card(card.id)?.unwrap();
+        let state = repaired.memory_state.unwrap();
+        assert!(state.stability_fast.is_some());
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        assert!((fsrs.interval_at_retrievability(state.into(), 0.9) - 20.0).abs() < 0.01);
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_fsrs_state_repair_leaves_older_models_untouched() -> Result<()> {
+        for version in [FsrsVersion::Six, FsrsVersion::Five, FsrsVersion::Four] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| config.fsrs_version = version as i32);
+            NoteAdder::basic(&mut col).add(&mut col);
+            let card = col.get_first_card();
+            col.storage.db.execute(
+                r#"update cards set data = '{"s":20.0,"d":6.0}' where id = ?"#,
+                [card.id],
+            )?;
+            let original = col.storage.get_card(card.id)?.unwrap();
+
+            assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0, "{version:?}");
+
+            assert_eq!(col.storage.get_card(card.id)?.unwrap(), original);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_fsrs_state_repair_uses_the_overlay_model() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| config.fsrs_version = FsrsVersion::Six as i32);
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:seven".into(),
+                    name: "FSRS7".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: vec![],
+                    desired_retention: 0.9,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "".into(),
+                    preset_id: "addon:test:seven".into(),
+                }],
+                ..Default::default()
+            },
+        )?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.get_first_card();
+        col.storage.db.execute(
+            r#"update cards set data = '{"s":20.0,"s_int":20.0,"d":6.0}' where id = ?"#,
+            [card.id],
+        )?;
+
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 1);
+
+        assert!(col
+            .storage
+            .get_card(card.id)?
+            .unwrap()
+            .memory_state
+            .unwrap()
+            .stability_fast
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_fsrs_state_repair_leaves_cards_untouched_when_fsrs_is_disabled() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, false, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.get_first_card();
+        col.storage.db.execute(
+            r#"update cards set data = '{"s":20.0,"d":6.0}' where id = ?"#,
+            [card.id],
+        )?;
+        let original = col.storage.get_card(card.id)?.unwrap();
+
+        assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0);
+
+        assert_eq!(col.storage.get_card(card.id)?.unwrap(), original);
         Ok(())
     }
 
@@ -1882,6 +2035,7 @@ mod tests {
             "actual {actual:?}, expected {expected:?}"
         );
         assert!((actual.stability_internal - expected.stability_internal).abs() < 1e-4);
+        assert!((actual.stability_fast.unwrap() - expected.stability_fast.unwrap()).abs() < 1e-4);
         assert!((actual.difficulty - expected.difficulty).abs() < 1e-4);
         assert_eq!(
             repaired.last_review_time,

@@ -1,0 +1,62 @@
+[
+    {
+        "variant": "baseline",
+        "synthetic_warmup_ms": 2000,
+        "first_graphs_ms": 2738.9774170005694,
+        "retry_delay_ms": 2000,
+        "first_pending": false,
+        "ready_ms": 2738.980707999872,
+        "ordinary_histograms_equal": true,
+        "round": 1
+    },
+    {
+        "variant": "return_pending",
+        "synthetic_warmup_ms": 2000,
+        "first_graphs_ms": 666.6195420002623,
+        "retry_delay_ms": 2000,
+        "first_pending": true,
+        "ready_ms": 2944.9286669987487,
+        "ordinary_histograms_equal": true,
+        "round": 1
+    },
+    {
+        "variant": "return_pending",
+        "synthetic_warmup_ms": 2000,
+        "first_graphs_ms": 705.9620410000207,
+        "retry_delay_ms": 2000,
+        "first_pending": true,
+        "ready_ms": 3003.823540999292,
+        "ordinary_histograms_equal": true,
+        "round": 2
+    },
+    {
+        "variant": "baseline",
+        "synthetic_warmup_ms": 2000,
+        "first_graphs_ms": 2736.757457998465,
+        "retry_delay_ms": 2000,
+        "first_pending": false,
+        "ready_ms": 2736.760249998042,
+        "ordinary_histograms_equal": true,
+        "round": 2
+    },
+    {
+        "variant": "baseline",
+        "synthetic_warmup_ms": 2000,
+        "first_graphs_ms": 2730.9284589973686,
+        "retry_delay_ms": 2000,
+        "first_pending": false,
+        "ready_ms": 2730.930999998236,
+        "ordinary_histograms_equal": true,
+        "round": 3
+    },
+    {
+        "variant": "return_pending",
+        "synthetic_warmup_ms": 2000,
+        "first_graphs_ms": 654.7992910018365,
+        "retry_delay_ms": 2000,
+        "first_pending": true,
+        "ready_ms": 2964.220458001364,
+        "ordinary_histograms_equal": true,
+        "round": 3
+    }
+]

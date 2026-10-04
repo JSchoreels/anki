@@ -28,7 +28,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1064,6 +1064,7 @@ RwkvStatsPrepareKey = tuple[
     int,
     int,
     str,
+    bool,
     bool,
     bool,
     bool,
@@ -6127,7 +6128,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
 ) -> RwkvStatsPreparationStatus:
-    """Prepare transient RWKV scores for cards matched by a stats graph search."""
+    """Prepare transient RWKV scores, waiting for backend access for filtered decks."""
 
     prepare_instant_due = prepare_instant_due or _search_uses_rwkv_instant_due(search)
     prepare_curve_due = prepare_curve_due or _search_uses_rwkv_curve_due(search)
@@ -6155,6 +6156,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     state_token: _ReviewerBackendPredictionStateToken | None = None
     owns_prepare = False
     prepare_status = RwkvStatsPreparationStatus.FAILED
+    prediction_access = ExitStack()
     try:
         logger.debug("RWKV stats preparation started: search=%r", search)
         warmup_start = time.monotonic()
@@ -6221,6 +6223,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_instant_due=prepare_instant_due,
             prepare_curve_due=prepare_curve_due,
             prepare_curve_retrievability=prepare_curve_retrievability,
+            wait_for_backend=warm_up_if_needed,
         )
         prepare_generation = state_token.state_generation
         if prepare_key is not None:
@@ -6244,6 +6247,21 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                     if _reviewer_backend_prediction_state_token_is_current(state_token)
                     else RwkvStatsPreparationStatus.FAILED
                 )
+        if warm_up_if_needed:
+            # Claim access after coalescing: an existing owner may need this
+            # lock to finish. Keep it through scoring and publication so a
+            # competing reader cannot turn a filtered rebuild into PENDING.
+            logger.debug(
+                "RWKV filtered-deck scoring waiting for backend: search=%r", search
+            )
+            backend = prediction_access.enter_context(
+                _try_reviewer_backend_prediction_access(
+                    expected_state_token=state_token,
+                    wait_for_access=True,
+                )
+            )
+            if backend is None:
+                _raise_reviewer_backend_prediction_unavailable(state_token)
         search_score_start = time.monotonic()
         search_score_result = _rwkv_stats_graph_scores_for_search(
             reviewer=reviewer,
@@ -6380,12 +6398,15 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             )
         return RwkvStatsPreparationStatus.FAILED
     finally:
-        if owns_prepare and prepare_key is not None and prepare_future is not None:
-            _finish_rwkv_stats_prepare(
-                prepare_key,
-                prepare_future,
-                prepare_status,
-            )
+        try:
+            prediction_access.close()
+        finally:
+            if owns_prepare and prepare_key is not None and prepare_future is not None:
+                _finish_rwkv_stats_prepare(
+                    prepare_key,
+                    prepare_future,
+                    prepare_status,
+                )
 
 
 def prepare_filtered_deck_retrievability_scores(
@@ -6656,6 +6677,7 @@ def _rwkv_stats_prepare_key(
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    wait_for_backend: bool = False,
 ) -> RwkvStatsPrepareKey | None:
     warmup_key = _reviewer_backend_warmup_key(reviewer)
     timing = _timing_today(reviewer)
@@ -6714,6 +6736,7 @@ def _rwkv_stats_prepare_key(
         prepare_instant_due,
         prepare_curve_due,
         prepare_curve_retrievability,
+        wait_for_backend,
     )
 
 

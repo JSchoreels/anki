@@ -616,6 +616,13 @@ fresh applicable prediction do not match either predicate. Candidate discovery
 temporarily broadens the RWKV-dependent predicates so future cards that the
 model considers due are not omitted before scoring.
 
+Filtered-deck preparation waits on its collection worker for concurrent RWKV
+predictions to release the resident backend, then holds that access through
+scoring and score publication. Blocking filtered-deck preparations share work
+with one another, separately from nonblocking Stats preparations that may
+return pending. If the captured RWKV state changes while waiting or a prediction
+fails, the operation still aborts before creating or rebuilding the filtered deck.
+
 Card Info refreshes its score through the RWKV review-candidate prediction path
 each time it renders instead of reusing a score installed by Card Info, review
 queue ordering, or stats graphs. It then installs the refreshed card-specific

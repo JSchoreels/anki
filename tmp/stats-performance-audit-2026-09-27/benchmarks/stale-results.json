@@ -1,0 +1,14 @@
+[
+    {
+        "variant": "baseline",
+        "races": 100,
+        "staleFinalResults": 100,
+        "appliedResults": 200
+    },
+    {
+        "variant": "generation_guard",
+        "races": 100,
+        "staleFinalResults": 0,
+        "appliedResults": 100
+    }
+]
