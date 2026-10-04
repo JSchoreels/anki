@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14861,6 +14862,361 @@ def test_filtered_deck_retrievability_warms_cold_rwkv_backend(
     assert warmups == [reviewer]
 
 
+@pytest.fixture
+def rwkv_filtered_deck_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[SimpleNamespace, FilteredDeckConfig]:
+    import aqt
+    from aqt.operations import scheduling
+
+    reviewer = _rwkv_queue_reviewer(
+        rpc=_RwkvQueueScoreRpc(), review_order=0, card_count=1
+    )
+    col = reviewer.mw.col
+    col.find_cards = lambda search, order=False: [1]
+    col.build_search_string = lambda *searches, joiner: " OR ".join(searches)
+    config = FilteredDeckConfig(
+        search_terms=[
+            FilteredDeckConfig.SearchTerm(
+                search="deck:current",
+                limit=100,
+                order=FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
+            )
+        ]
+    )
+    monkeypatch.setattr(aqt, "mw", None)
+    monkeypatch.setattr(
+        scheduling,
+        "_run_preserving_rwkv_state",
+        lambda col, mutation, **kwargs: mutation(),
+    )
+    monkeypatch.setattr(
+        scheduling.tr,
+        "qt_misc_rwkv_filtered_deck_preparation_failed",
+        lambda: "RWKV filtered-deck preparation failed",
+    )
+    return reviewer, config
+
+
+@pytest.mark.parametrize("operation", ["rebuild", "update"])
+@pytest.mark.parametrize("outcome", ["ready", "prediction_error", "state_advance"])
+def test_filtered_deck_waits_for_busy_backend_before_mutating(
+    monkeypatch: pytest.MonkeyPatch,
+    rwkv_filtered_deck_context: tuple[SimpleNamespace, FilteredDeckConfig],
+    operation: str,
+    outcome: str,
+) -> None:
+    from anki.scheduler import FilteredDeckForUpdate
+    from aqt.operations import scheduling
+
+    class Backend:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.generation = 7
+            self.predict_calls = 0
+
+        def predict_reviews(
+            self, candidates: list[RwkvReviewCandidate]
+        ) -> list[RwkvReviewPrediction]:
+            self.predict_calls += 1
+            if self.predict_calls == 1:
+                self.started.set()
+                assert self.release.wait(timeout=5)
+                if outcome == "state_advance":
+                    self.generation += 1
+            elif outcome == "prediction_error":
+                raise RuntimeError("prediction failed")
+            return [RwkvReviewPrediction(retrievability=0.64) for _ in candidates]
+
+        def state_generation(self) -> int:
+            return self.generation
+
+    reviewer, config = rwkv_filtered_deck_context
+    col = reviewer.mw.col
+    deck = FilteredDeckForUpdate(id=200, config=config)
+    col.sched.get_or_create_filtered_deck = lambda **kwargs: deck
+    mutations: list[int] = []
+
+    def rebuild(deck_id: int) -> collection_pb2.OpChangesWithCount:
+        mutations.append(deck_id)
+        return collection_pb2.OpChangesWithCount(count=1)
+
+    def update(deck: FilteredDeckForUpdate) -> collection_pb2.OpChangesWithId:
+        mutations.append(deck.id)
+        return collection_pb2.OpChangesWithId(id=deck.id)
+
+    col.sched.rebuild_filtered_deck = rebuild
+    col.sched.add_or_update_filtered_deck = update
+    backend = Backend()
+    set_reviewer_backend(backend)
+    attempted = threading.Event()
+    errors: list[Exception] = []
+    results: list[object] = []
+    original_access = rwkv_scheduler._try_reviewer_backend_prediction_access
+
+    @contextmanager
+    def observe_nonblocking_access(**kwargs: Any) -> Iterator[object]:
+        # Observe the busy result before releasing the competing prediction.
+        with original_access(**kwargs) as active_backend:
+            attempted.set()
+            yield active_backend
+
+    def access(**kwargs: Any) -> Any:
+        if threading.current_thread() is filtered:
+            if not kwargs.get("wait_for_access"):
+                return observe_nonblocking_access(**kwargs)
+            attempted.set()
+        return original_access(**kwargs)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_try_reviewer_backend_prediction_access", access
+    )
+
+    def prepare_background() -> None:
+        prepare_stats_retrievability_scores(reviewer, "deck:background")
+
+    def prepare_filtered() -> None:
+        try:
+            results.append(
+                scheduling._rebuild_filtered_deck(col, DeckId(200))
+                if operation == "rebuild"
+                else scheduling._add_or_update_filtered_deck(col, deck)
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    background = threading.Thread(target=prepare_background)
+    filtered = threading.Thread(target=prepare_filtered)
+    try:
+        background.start()
+        assert backend.started.wait(timeout=5)
+        filtered.start()
+        assert attempted.wait(timeout=5)
+        assert mutations == []
+    finally:
+        backend.release.set()
+        background.join(timeout=5)
+        if filtered.ident is not None:
+            filtered.join(timeout=5)
+
+    assert not background.is_alive()
+    assert not filtered.is_alive()
+    if outcome == "ready":
+        assert errors == []
+        assert mutations == [200]
+        assert results == [
+            collection_pb2.OpChangesWithCount(count=1)
+            if operation == "rebuild"
+            else collection_pb2.OpChangesWithId(id=200)
+        ]
+        call = col._backend.stats_calls[-1]
+        assert call["search"] == "deck:current"
+        assert [score.retrievability for score in call["scores"]] == [
+            pytest.approx(0.64)
+        ]
+    else:
+        assert mutations == []
+        assert results == []
+        assert len(errors) == 1
+        assert isinstance(errors[0], RuntimeError)
+        assert str(errors[0]) == "RWKV filtered-deck preparation failed"
+
+
+def test_filtered_deck_prepares_scores_when_concurrent_stats_are_deferred(
+    monkeypatch: pytest.MonkeyPatch,
+    rwkv_filtered_deck_context: tuple[SimpleNamespace, FilteredDeckConfig],
+) -> None:
+    class Backend:
+        def predict_reviews(
+            self, candidates: list[RwkvReviewCandidate]
+        ) -> list[RwkvReviewPrediction]:
+            return [RwkvReviewPrediction(retrievability=0.64) for _ in candidates]
+
+    reviewer, config = rwkv_filtered_deck_context
+    backend = Backend()
+    set_reviewer_backend(backend)
+    deferred = threading.Event()
+    release = threading.Event()
+    filtered_started = threading.Event()
+    statuses: dict[str, rwkv_scheduler.RwkvStatsPreparationStatus | None] = {}
+    original_finish = rwkv_scheduler._finish_rwkv_stats_prepare
+    original_begin = rwkv_scheduler._begin_rwkv_stats_prepare
+
+    def finish(*args: Any) -> None:
+        if threading.current_thread() is stats:
+            deferred.set()
+            assert release.wait(timeout=5)
+        original_finish(*args)
+
+    def begin(key: rwkv_scheduler.RwkvStatsPrepareKey) -> Any:
+        result = original_begin(key)
+        if threading.current_thread() is filtered:
+            filtered_started.set()
+        return result
+
+    monkeypatch.setattr(rwkv_scheduler, "_finish_rwkv_stats_prepare", finish)
+    monkeypatch.setattr(rwkv_scheduler, "_begin_rwkv_stats_prepare", begin)
+
+    def prepare_stats() -> None:
+        statuses["stats"] = prepare_stats_retrievability_scores(
+            reviewer, "deck:current"
+        )
+
+    def prepare_filtered() -> None:
+        statuses["filtered"] = prepare_filtered_deck_retrievability_scores(
+            reviewer, config
+        )
+
+    stats = threading.Thread(target=prepare_stats)
+    filtered = threading.Thread(target=prepare_filtered)
+    try:
+        with rwkv_scheduler._try_reviewer_backend_prediction_access(
+            expected_backend=backend,
+        ) as active_backend:
+            assert active_backend is backend
+            stats.start()
+            assert deferred.wait(timeout=5)
+            filtered.start()
+            assert filtered_started.wait(timeout=5)
+    finally:
+        release.set()
+        stats.join(timeout=5)
+        if filtered.ident is not None:
+            filtered.join(timeout=5)
+
+    assert not stats.is_alive()
+    assert not filtered.is_alive()
+    assert statuses == {
+        "stats": rwkv_scheduler.RwkvStatsPreparationStatus.PENDING,
+        "filtered": rwkv_scheduler.RwkvStatsPreparationStatus.READY,
+    }
+    call = reviewer.mw.col._backend.stats_calls[-1]
+    assert [score.retrievability for score in call["scores"]] == [pytest.approx(0.64)]
+
+
+def test_filtered_deck_rebuild_waits_through_qt_background_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+    rwkv_filtered_deck_context: tuple[SimpleNamespace, FilteredDeckConfig],
+) -> None:
+    import aqt
+    from anki.scheduler import FilteredDeckForUpdate
+    from aqt import operations
+    from aqt.operations import scheduling
+    from aqt.qt import QCoreApplication, QEventLoop, QTimer
+    from aqt.taskman import TaskManager
+
+    class Backend:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.predict_calls = 0
+
+        def predict_reviews(
+            self, candidates: list[RwkvReviewCandidate]
+        ) -> list[RwkvReviewPrediction]:
+            self.predict_calls += 1
+            if self.predict_calls == 1:
+                self.started.set()
+                assert self.release.wait(timeout=5)
+            return [RwkvReviewPrediction(retrievability=0.64) for _ in candidates]
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    reviewer, config = rwkv_filtered_deck_context
+    mw = reviewer.mw
+    mw.reviewer = reviewer
+    mw.weakref = lambda: mw
+    progress_events: list[str] = []
+    background_events: list[str] = []
+    mw.progress = SimpleNamespace(
+        start=lambda **kwargs: progress_events.append("started"),
+        finish=lambda: progress_events.append("finished"),
+    )
+    mw._increase_background_ops = lambda: background_events.append("started")
+    mw._decrease_background_ops = lambda: background_events.append("finished")
+    taskman = TaskManager(mw)
+    mw.taskman = taskman
+    monkeypatch.setattr(aqt, "mw", mw)
+    monkeypatch.setattr(operations, "on_op_finished", lambda *args: None)
+    deck = FilteredDeckForUpdate(id=200, config=config)
+    mw.col.sched.get_or_create_filtered_deck = lambda **kwargs: deck
+    worker_threads: list[bool] = []
+
+    def rebuild(deck_id: int) -> collection_pb2.OpChangesWithCount:
+        assert deck_id == 200
+        worker_threads.append(threading.current_thread() is not threading.main_thread())
+        return collection_pb2.OpChangesWithCount(count=1)
+
+    mw.col.sched.rebuild_filtered_deck = rebuild
+    backend = Backend()
+    set_reviewer_backend(backend)
+    loop = QEventLoop()
+    waiting: list[tuple[bool, list[bool], list[str]]] = []
+    original_access = rwkv_scheduler._try_reviewer_backend_prediction_access
+
+    def observe_waiting() -> None:
+        waiting.append(
+            (
+                threading.current_thread() is threading.main_thread(),
+                list(worker_threads),
+                list(background_events),
+            )
+        )
+        backend.release.set()
+
+    def access(**kwargs: Any) -> Any:
+        if kwargs.get("wait_for_access"):
+            taskman.run_on_main(observe_waiting)
+        return original_access(**kwargs)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_try_reviewer_backend_prediction_access", access
+    )
+    results: list[int] = []
+    errors: list[Exception] = []
+
+    def success(result: collection_pb2.OpChangesWithCount) -> None:
+        assert threading.current_thread() is threading.main_thread()
+        results.append(result.count)
+        loop.quit()
+
+    def failure(error: Exception) -> None:
+        errors.append(error)
+        loop.quit()
+
+    timeout = QTimer()
+    timeout.setSingleShot(True)
+    timeout.timeout.connect(loop.quit)
+    timeout.start(5_000)
+    holder = taskman.run_in_background(
+        lambda: prepare_stats_retrievability_scores(reviewer, "deck:background"),
+        uses_collection=False,
+    )
+    try:
+        assert backend.started.wait(timeout=5)
+        scheduling.rebuild_filtered_deck(parent=mw, deck_id=DeckId(200)).success(
+            success
+        ).failure(failure).run_in_background()
+        loop.exec()
+        assert errors == []
+        assert waiting == [(True, [], ["started"])]
+        assert results == [1]
+        assert worker_threads == [True]
+        assert background_events == ["started", "finished"]
+        assert progress_events == ["started", "finished"]
+        # Stats can defer publication while the filtered operation holds access.
+        assert holder.result(timeout=5) in {
+            rwkv_scheduler.RwkvStatsPreparationStatus.READY,
+            rwkv_scheduler.RwkvStatsPreparationStatus.PENDING,
+        }
+    finally:
+        timeout.stop()
+        backend.release.set()
+        taskman._collection_executor.shutdown()
+        taskman._no_collection_executor.shutdown()
+        app.processEvents()
+
+
 def test_filtered_deck_curve_due_uses_current_curve_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -16191,6 +16547,7 @@ def test_prepare_stats_waits_only_when_requested_or_search_needs_scores(
     assert rpc.stats_calls[0]["scores"] == []
 
 
+@pytest.mark.parametrize("warm_up_if_needed", [False, True])
 @pytest.mark.parametrize(
     ("outcome", "expected_status"),
     [
@@ -16203,6 +16560,7 @@ def test_prepare_stats_retrievability_scores_shares_in_flight_status(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
     expected_status: rwkv_scheduler.RwkvStatsPreparationStatus,
+    warm_up_if_needed: bool,
 ) -> None:
     class Backend:
         def __init__(self) -> None:
@@ -16288,7 +16646,11 @@ def test_prepare_stats_retrievability_scores_shares_in_flight_status(
 
     def prepare() -> None:
         try:
-            statuses.append(prepare_stats_retrievability_scores(reviewer, "rated:7"))
+            statuses.append(
+                prepare_stats_retrievability_scores(
+                    reviewer, "rated:7", warm_up_if_needed=warm_up_if_needed
+                )
+            )
         except BaseException as exc:
             errors.append(exc)
 

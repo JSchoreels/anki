@@ -1,0 +1,202 @@
+[
+    {
+        "callback_dispatch_ms": 18.679541997698834,
+        "script_injections": 55,
+        "injected_characters": 109952205,
+        "per_load": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+        ],
+        "final_connections": 10,
+        "round": 1,
+        "variant": "baseline"
+    },
+    {
+        "callback_dispatch_ms": 9.725165997224394,
+        "script_injections": 10,
+        "injected_characters": 19991310,
+        "per_load": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+        ],
+        "final_connections": 1,
+        "round": 1,
+        "variant": "single_callback"
+    },
+    {
+        "callback_dispatch_ms": 11.400708001019666,
+        "script_injections": 10,
+        "injected_characters": 19991310,
+        "per_load": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+        ],
+        "final_connections": 1,
+        "round": 2,
+        "variant": "single_callback"
+    },
+    {
+        "callback_dispatch_ms": 17.38570900124614,
+        "script_injections": 55,
+        "injected_characters": 109952205,
+        "per_load": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+        ],
+        "final_connections": 10,
+        "round": 2,
+        "variant": "baseline"
+    },
+    {
+        "callback_dispatch_ms": 16.690249998646323,
+        "script_injections": 55,
+        "injected_characters": 109952205,
+        "per_load": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+        ],
+        "final_connections": 10,
+        "round": 3,
+        "variant": "baseline"
+    },
+    {
+        "callback_dispatch_ms": 16.13658299902454,
+        "script_injections": 10,
+        "injected_characters": 19991310,
+        "per_load": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+        ],
+        "final_connections": 1,
+        "round": 3,
+        "variant": "single_callback"
+    },
+    {
+        "callback_dispatch_ms": 25.031417000718648,
+        "script_injections": 10,
+        "injected_characters": 19991310,
+        "per_load": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+        ],
+        "final_connections": 1,
+        "round": 4,
+        "variant": "single_callback"
+    },
+    {
+        "callback_dispatch_ms": 25.573458002327243,
+        "script_injections": 55,
+        "injected_characters": 109952205,
+        "per_load": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+        ],
+        "final_connections": 10,
+        "round": 4,
+        "variant": "baseline"
+    },
+    {
+        "callback_dispatch_ms": 24.852041999110952,
+        "script_injections": 55,
+        "injected_characters": 109952205,
+        "per_load": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+        ],
+        "final_connections": 10,
+        "round": 5,
+        "variant": "baseline"
+    },
+    {
+        "callback_dispatch_ms": 14.491833997453796,
+        "script_injections": 10,
+        "injected_characters": 19991310,
+        "per_load": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+        ],
+        "final_connections": 1,
+        "round": 5,
+        "variant": "single_callback"
+    }
+]

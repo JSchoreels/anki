@@ -1,0 +1,138 @@
+{
+    "baseline_bytes": 16488760,
+    "compact_bytes": 266061,
+    "rows": [
+        {
+            "variant": "baseline",
+            "round": 1,
+            "ms": 24.300000000745058,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 1,
+            "ms": 6.5,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 2,
+            "ms": 5.699999999254942,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 2,
+            "ms": 22.699999999254942,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 3,
+            "ms": 23,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 3,
+            "ms": 6.199999999254942,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 4,
+            "ms": 5.699999999254942,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 4,
+            "ms": 22.900000002235174,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 5,
+            "ms": 24.199999999254942,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 5,
+            "ms": 5.600000001490116,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 6,
+            "ms": 5.600000001490116,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 6,
+            "ms": 22.5,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 7,
+            "ms": 23.400000002235174,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 7,
+            "ms": 5.599999997764826,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 8,
+            "ms": 5.5,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 8,
+            "ms": 21.899999998509884,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 9,
+            "ms": 25.5,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 9,
+            "ms": 5.699999999254942,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 10,
+            "ms": 5.800000000745058,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 10,
+            "ms": 23.899999998509884,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "round": 11,
+            "ms": 25.199999999254942,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "round": 11,
+            "ms": 5.800000000745058,
+            "equal": true
+        }
+    ]
+}

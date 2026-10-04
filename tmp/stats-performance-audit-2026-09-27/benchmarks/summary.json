@@ -1,0 +1,126 @@
+{
+    "worker_365": {
+        "main": {
+            "wallMs": {
+                "median": 3995,
+                "min": 3926.300000000745,
+                "max": 4033.800000000745
+            },
+            "maxHeartbeatGapMs": {
+                "median": 3995.199999999255,
+                "min": 3926.300000000745,
+                "max": 4033.800000000745
+            },
+            "ticksDuringWork": {
+                "median": 0,
+                "min": 0,
+                "max": 0
+            }
+        },
+        "worker": {
+            "wallMs": {
+                "median": 4355.10000000149,
+                "min": 4323.800000000745,
+                "max": 4359.300000000745
+            },
+            "maxHeartbeatGapMs": {
+                "median": 81,
+                "min": 78.5,
+                "max": 85.80000000074506
+            },
+            "ticksDuringWork": {
+                "median": 264,
+                "min": 262,
+                "max": 265
+            }
+        }
+    },
+    "worker_0": {
+        "main": {
+            "wallMs": {
+                "median": 8123.300000000745,
+                "min": 8118.20000000298,
+                "max": 8175.70000000298
+            },
+            "maxHeartbeatGapMs": {
+                "median": 8123.5,
+                "min": 8118.5,
+                "max": 8175.70000000298
+            },
+            "ticksDuringWork": {
+                "median": 0,
+                "min": 0,
+                "max": 0
+            }
+        },
+        "worker": {
+            "wallMs": {
+                "median": 8770.89999999851,
+                "min": 8671.60000000149,
+                "max": 8821.800000000745
+            },
+            "maxHeartbeatGapMs": {
+                "median": 212.20000000298023,
+                "min": 158.5,
+                "max": 241.69999999925494
+            },
+            "ticksDuringWork": {
+                "median": 529,
+                "min": 528,
+                "max": 534
+            }
+        }
+    },
+    "presets_cold": {
+        "baseline": {
+            "median_ms": 17287.614584001858,
+            "range_ms": [
+                16695.565624995652,
+                17888.381124997977
+            ],
+            "bytes": 16488760
+        },
+        "batch_prewarm_compact": {
+            "median_ms": 786.4131660026032,
+            "range_ms": [
+                768.5644170051091,
+                827.4674159983988
+            ],
+            "bytes": 266061
+        }
+    },
+    "presets_warm": {
+        "baseline": {
+            "median_ms": 314.6950409973215,
+            "range_ms": [
+                300.24404199866694,
+                353.3857500005979
+            ],
+            "bytes": 16488760
+        },
+        "compact": {
+            "median_ms": 322.81087600131286,
+            "range_ms": [
+                321.3339169997198,
+                351.4603759977035
+            ],
+            "bytes": 266061
+        }
+    },
+    "graphs_False": {
+        "baseline": 932.078541998635,
+        "reuse_cards": 668.4722499994677
+    },
+    "graphs_True": {
+        "baseline": 1651.0348330011766,
+        "reuse_cards": 1165.3535000004922
+    },
+    "browser_presets": {
+        "flatBytes": 16428404,
+        "compactBytes": 265991,
+        "unique": 13,
+        "flatMedianMs": 23.699999999254942,
+        "compactMedianMs": 6.199999999254942
+    },
+    "browser_histogram_ms": 1.4000000022351742
+}

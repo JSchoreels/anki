@@ -575,6 +575,31 @@ mod test {
     }
 
     #[test]
+    fn check_database_repairs_fsrs_state_when_only_fast_stability_is_missing() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = crate::card::CardType::Review;
+        card.queue = crate::card::CardQueue::Review;
+        card.interval = 30;
+        card.due = 123;
+        col.storage.update_card(&card)?;
+        col.storage.db.execute(
+            r#"update cards set data = '{"s":20.0,"s_int":20.0,"d":6.0}' where id = ?"#,
+            [card.id],
+        )?;
+
+        let output = col.check_database()?;
+
+        assert_eq!(output.card_properties_invalid, 1);
+        let repaired = col.storage.get_card(card.id)?.unwrap();
+        assert!(repaired.memory_state.unwrap().stability_fast.is_some());
+        assert_eq!((repaired.due, repaired.interval), (123, 30));
+        Ok(())
+    }
+
+    #[test]
     fn repairs_zero_fsrs_stability_in_card_data() -> Result<()> {
         let mut col = Collection::new();
         let nt = col.get_notetype_by_name("Basic")?.unwrap();

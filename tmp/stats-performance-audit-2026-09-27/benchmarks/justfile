@@ -1,0 +1,38 @@
+set working-directory := "/Users/jschoreels/workspace/anki"
+
+default:
+    @just --justfile {{justfile()}} --list
+
+# Run serially so timed benchmarks do not compete with one another.
+all:
+    just --justfile {{justfile()}} browser
+    just --justfile {{justfile()}} backend
+    just --justfile {{justfile()}} lifecycle
+    just --justfile {{justfile()}} stale
+    just --justfile {{justfile()}} pending
+    just --justfile {{justfile()}} payload
+
+# Three alternating pairs per history range; full result equivalence.
+browser:
+    rtk proxy node {{justfile_directory()}}/browser.cjs
+
+# Three cold preset pairs, five warm pairs, five pairs per graph-request scenario.
+backend:
+    rtk proxy env PYTHONPATH=pylib:out/pylib out/pyenv/bin/python -u {{justfile_directory()}}/backend.py
+
+# Five pairs of ten Qt refreshes each; no real webview or profile.
+lifecycle:
+    rtk proxy out/pyenv/bin/python {{justfile_directory()}}/lifecycle.py
+
+# One hundred deliberately reordered request pairs per variant.
+stale:
+    rtk proxy node {{justfile_directory()}}/stale-responses.cjs
+
+# Synthetic two-second RWKV warm-up with real graph aggregation.
+pending:
+    rtk proxy env PYTHONPATH=pylib:out/pylib out/pyenv/bin/python -u {{justfile_directory()}}/pending.py
+
+# Eleven pairs parsing exact server payloads, including compact-map expansion.
+payload:
+    rtk proxy env PYTHONPATH=pylib:out/pylib out/pyenv/bin/python {{justfile_directory()}}/backend.py --payload-only
+    rtk proxy node {{justfile_directory()}}/payload.cjs

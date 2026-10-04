@@ -469,11 +469,137 @@ pub struct ApplyChunkRequest {
 
 #[cfg(test)]
 mod test {
+    use fsrs::FSRS;
+    use serde_json::json;
+
     use super::*;
+    use crate::card::FsrsMemoryState;
+    use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::params::tests::revlog;
     use crate::scheduler::fsrs::preset::tagged_test_overlay;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
     use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
     use crate::tests::NoteAdder;
+
+    #[test]
+    fn stripped_fsrs_state_is_recovered_after_later_revlog_chunks_without_uploads() -> Result<()> {
+        // Each client receives the same server-shaped data, repeatedly.
+        for mut col in [Collection::new(), Collection::new()] {
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            NoteAdder::basic(&mut col).add(&mut col);
+            let mut card = col.get_first_card();
+            card.usn = Usn(7);
+            card.mtime = TimestampSecs(1_700_000_000);
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.due = 123;
+            card.interval = 30;
+            card.reps = 3;
+            card.lapses = 1;
+            col.storage.update_card(&card)?;
+            let mut entries = vec![
+                revlog(RevlogReviewKind::Learning, 0),
+                revlog(RevlogReviewKind::Review, 0),
+                revlog(RevlogReviewKind::Relearning, 0),
+            ];
+            for (entry, offset) in
+                entries
+                    .iter_mut()
+                    .zip([0, 10 * 86_400_000, 10 * 86_400_000 + 300_000])
+            {
+                entry.id = RevlogId(1_700_000_000_000 + offset);
+                entry.cid = card.id;
+                entry.usn = Usn(7);
+                col.storage.add_revlog_entry(entry, false)?;
+            }
+            let expected: FsrsMemoryState =
+                col.compute_memory_state(card.id)?.state.unwrap().into();
+            col.storage.db.execute("delete from revlog", [])?;
+            let fsrs = FSRS::new(&col.fsrs_preset_for_card(&card)?.params)?;
+
+            for _ in 0..2 {
+                let mut incoming: CardEntry = card.clone().into();
+                incoming.data =
+                    json!({"s": expected.stability, "d": expected.difficulty}).to_string();
+                col.apply_chunk(
+                    Chunk {
+                        cards: vec![incoming],
+                        ..Default::default()
+                    },
+                    Usn(-1),
+                )?;
+                let incomplete = col
+                    .storage
+                    .get_card(card.id)?
+                    .unwrap()
+                    .memory_state
+                    .unwrap();
+                assert_eq!(incomplete.stability_internal, incomplete.stability);
+                assert_eq!(incomplete.stability_fast, None);
+
+                col.apply_chunk(
+                    Chunk {
+                        revlog: entries.clone(),
+                        done: true,
+                        ..Default::default()
+                    },
+                    Usn(-1),
+                )?;
+                let candidates = col.storage.card_ids_with_foreign_fsrs_state()?;
+                assert_eq!(col.repair_foreign_fsrs_memory_states_inner(candidates)?, 1);
+
+                let repaired = col.storage.get_card(card.id)?.unwrap();
+                let state = repaired.memory_state.unwrap();
+                assert!((state.stability_internal - expected.stability_internal).abs() < 1e-4);
+                assert!(
+                    (state.stability_fast.unwrap() - expected.stability_fast.unwrap()).abs() < 1e-4
+                );
+                assert!((state.difficulty - expected.difficulty).abs() < 1e-3);
+                for elapsed in [0.0, 0.5, 10.0, 30.0] {
+                    assert!(
+                        (fsrs.current_retrievability(state.into(), elapsed)
+                            - fsrs.current_retrievability(expected.into(), elapsed))
+                        .abs()
+                            < 1e-4
+                    );
+                }
+                assert!(
+                    (fsrs.interval_at_retrievability(state.into(), 0.85)
+                        - fsrs.interval_at_retrievability(expected.into(), 0.85))
+                    .abs()
+                        < 0.01
+                );
+                assert_eq!(repaired.mtime, card.mtime);
+                assert_eq!(repaired.usn, Usn(7));
+                assert_eq!(
+                    (
+                        repaired.due,
+                        repaired.interval,
+                        repaired.reps,
+                        repaired.lapses
+                    ),
+                    (123, 30, 3, 1)
+                );
+                assert!(col
+                    .storage
+                    .objects_pending_sync::<CardId>("cards", Usn(-1))?
+                    .is_empty());
+                assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0);
+            }
+
+            // A genuine later card change must still be uploaded.
+            col.get_and_update_card(card.id, |card| {
+                card.reps += 1;
+                Ok(())
+            })?;
+            assert_eq!(
+                col.storage
+                    .objects_pending_sync::<CardId>("cards", Usn(-1))?,
+                vec![card.id]
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn applied_remote_notes_refresh_preset_overlay_matches() -> Result<()> {

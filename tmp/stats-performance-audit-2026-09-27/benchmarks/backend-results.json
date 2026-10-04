@@ -1,0 +1,341 @@
+{
+    "input": "/private/tmp/anki-stats-audit-eqv1ucpr/collection.anki2",
+    "cards": 31665,
+    "reviewed_cards": 13925,
+    "presets": [
+        {
+            "variant": "baseline",
+            "warm": false,
+            "total_ms": 17888.383917001192,
+            "prewarm_ms": 0,
+            "resolve_ms": 17876.610874998732,
+            "encode_ms": 11.770249999244697,
+            "payload_bytes": 16488760,
+            "equal": true,
+            "cards": 13925,
+            "round": 1
+        },
+        {
+            "variant": "batch_prewarm_compact",
+            "warm": false,
+            "total_ms": 827.4725409974053,
+            "prewarm_ms": 522.4185829974886,
+            "resolve_ms": 286.4134580013342,
+            "encode_ms": 18.635374999576015,
+            "payload_bytes": 266061,
+            "equal": true,
+            "cards": 13925,
+            "round": 1
+        },
+        {
+            "variant": "batch_prewarm_compact",
+            "warm": false,
+            "total_ms": 786.4163749982254,
+            "prewarm_ms": 458.836916997825,
+            "resolve_ms": 308.78329100232804,
+            "encode_ms": 18.792958002450177,
+            "payload_bytes": 266061,
+            "equal": true,
+            "cards": 13925,
+            "round": 2
+        },
+        {
+            "variant": "baseline",
+            "warm": false,
+            "total_ms": 16695.570625000983,
+            "prewarm_ms": 0,
+            "resolve_ms": 16683.53762499828,
+            "encode_ms": 12.027999997371808,
+            "payload_bytes": 16488760,
+            "equal": true,
+            "cards": 13925,
+            "round": 2
+        },
+        {
+            "variant": "baseline",
+            "warm": false,
+            "total_ms": 17287.617000001774,
+            "prewarm_ms": 0,
+            "resolve_ms": 17276.142000002437,
+            "encode_ms": 11.472583999420749,
+            "payload_bytes": 16488760,
+            "equal": true,
+            "cards": 13925,
+            "round": 3
+        },
+        {
+            "variant": "batch_prewarm_compact",
+            "warm": false,
+            "total_ms": 768.5669170023175,
+            "prewarm_ms": 462.4436250014696,
+            "resolve_ms": 286.79029200066,
+            "encode_ms": 19.330500002979534,
+            "payload_bytes": 266061,
+            "equal": true,
+            "cards": 13925,
+            "round": 3
+        },
+        {
+            "variant": "baseline",
+            "warm": true,
+            "round": 1,
+            "total_ms": 308.3227919996716,
+            "resolve_ms": 288.3778750001511,
+            "encode_ms": 11.866166998515837,
+            "payload_bytes": 16488760,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "warm": true,
+            "round": 1,
+            "total_ms": 359.6442499983823,
+            "resolve_ms": 331.7862919975596,
+            "encode_ms": 19.67408400014392,
+            "payload_bytes": 266061,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "warm": true,
+            "round": 2,
+            "total_ms": 330.93204199758475,
+            "resolve_ms": 302.97854200034635,
+            "encode_ms": 19.831624998914776,
+            "payload_bytes": 266061,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "warm": true,
+            "round": 2,
+            "total_ms": 322.734749999654,
+            "resolve_ms": 301.80095799732953,
+            "encode_ms": 12.894082999991952,
+            "payload_bytes": 16488760,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "warm": true,
+            "round": 3,
+            "total_ms": 346.38879200065276,
+            "resolve_ms": 325.93133399859653,
+            "encode_ms": 12.351166998996632,
+            "payload_bytes": 16488760,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "warm": true,
+            "round": 3,
+            "total_ms": 331.22616699984064,
+            "resolve_ms": 302.65404199963086,
+            "encode_ms": 20.156834001682,
+            "payload_bytes": 266061,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "warm": true,
+            "round": 4,
+            "total_ms": 329.62612499977695,
+            "resolve_ms": 301.82083299951046,
+            "encode_ms": 19.513084000209346,
+            "payload_bytes": 266061,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "warm": true,
+            "round": 4,
+            "total_ms": 361.4712080016034,
+            "resolve_ms": 341.0202500017476,
+            "encode_ms": 12.365499998850282,
+            "payload_bytes": 16488760,
+            "equal": true
+        },
+        {
+            "variant": "baseline",
+            "warm": true,
+            "round": 5,
+            "total_ms": 317.6401250020717,
+            "resolve_ms": 297.21825000160607,
+            "encode_ms": 12.311041999055305,
+            "payload_bytes": 16488760,
+            "equal": true
+        },
+        {
+            "variant": "compact",
+            "warm": true,
+            "round": 5,
+            "total_ms": 358.45408299792325,
+            "resolve_ms": 331.9098749998375,
+            "encode_ms": 18.233541002700804,
+            "payload_bytes": 266061,
+            "equal": true
+        }
+    ],
+    "graphs": [
+        {
+            "variant": "baseline",
+            "force_all": false,
+            "requests": 2,
+            "backend_ms": 963.338792000286,
+            "response_bytes": 161079,
+            "round": 1
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": false,
+            "requests": 1,
+            "backend_ms": 678.0255409976235,
+            "response_bytes": 80758,
+            "round": 1
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": false,
+            "requests": 1,
+            "backend_ms": 665.1442080001289,
+            "response_bytes": 80758,
+            "round": 2
+        },
+        {
+            "variant": "baseline",
+            "force_all": false,
+            "requests": 2,
+            "backend_ms": 935.3030829988711,
+            "response_bytes": 161079,
+            "round": 2
+        },
+        {
+            "variant": "baseline",
+            "force_all": false,
+            "requests": 2,
+            "backend_ms": 932.078541998635,
+            "response_bytes": 161079,
+            "round": 3
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": false,
+            "requests": 1,
+            "backend_ms": 672.5877919998311,
+            "response_bytes": 80758,
+            "round": 3
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": false,
+            "requests": 1,
+            "backend_ms": 668.4722499994677,
+            "response_bytes": 80758,
+            "round": 4
+        },
+        {
+            "variant": "baseline",
+            "force_all": false,
+            "requests": 2,
+            "backend_ms": 923.4300409989373,
+            "response_bytes": 161079,
+            "round": 4
+        },
+        {
+            "variant": "baseline",
+            "force_all": false,
+            "requests": 2,
+            "backend_ms": 931.0495829995489,
+            "response_bytes": 161079,
+            "round": 5
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": false,
+            "requests": 1,
+            "backend_ms": 668.1004169986409,
+            "response_bytes": 80758,
+            "round": 5
+        },
+        {
+            "variant": "baseline",
+            "force_all": true,
+            "requests": 3,
+            "backend_ms": 1682.6872909987287,
+            "response_bytes": 314910,
+            "round": 1
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": true,
+            "requests": 2,
+            "backend_ms": 1209.1697089999798,
+            "response_bytes": 198402,
+            "round": 1
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": true,
+            "requests": 2,
+            "backend_ms": 1172.8050420024374,
+            "response_bytes": 198402,
+            "round": 2
+        },
+        {
+            "variant": "baseline",
+            "force_all": true,
+            "requests": 3,
+            "backend_ms": 1641.1964999970223,
+            "response_bytes": 314910,
+            "round": 2
+        },
+        {
+            "variant": "baseline",
+            "force_all": true,
+            "requests": 3,
+            "backend_ms": 1649.0674579981714,
+            "response_bytes": 314910,
+            "round": 3
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": true,
+            "requests": 2,
+            "backend_ms": 1164.4122079997032,
+            "response_bytes": 198402,
+            "round": 3
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": true,
+            "requests": 2,
+            "backend_ms": 1157.590375001746,
+            "response_bytes": 198402,
+            "round": 4
+        },
+        {
+            "variant": "baseline",
+            "force_all": true,
+            "requests": 3,
+            "backend_ms": 1652.9768330001389,
+            "response_bytes": 314910,
+            "round": 4
+        },
+        {
+            "variant": "baseline",
+            "force_all": true,
+            "requests": 3,
+            "backend_ms": 1651.0348330011766,
+            "response_bytes": 314910,
+            "round": 5
+        },
+        {
+            "variant": "reuse_cards",
+            "force_all": true,
+            "requests": 2,
+            "backend_ms": 1165.3535000004922,
+            "response_bytes": 198402,
+            "round": 5
+        }
+    ]
+}
