@@ -489,10 +489,20 @@ Current exact-vs-scalar status:
   on new FSRS writes, even when it matches `S90`. Scheduling and retrievability
   math use `s_int`; exact FSRS-7 retrievability also uses `s_fast` and `d`.
   The read fallback for legacy card data without `s_int` initially treats `s`
-  as both stability values. With FSRS enabled, collection open, normal sync,
-  scheduled `.apkg` import, and Check Database replace that incomplete state
-  from usable review history or from the complete model state whose S90 is the
-  stored `s`, without changing the card's interval or due date.
+  as both stability values. With FSRS enabled and the card's resolved preset
+  selecting FSRS-7, collection open, normal sync, scheduled `.apkg` import, and
+  Check Database repair states missing either `s_int` or `s_fast`. This includes
+  cards received from AnkiWeb whose missing `s_int` was already filled from `s`
+  during conversion and saving. Normal sync repairs after all incoming card and
+  review-log chunks have been merged.
+  Recovery replays usable review history with the current preset parameters;
+  without usable history, it infers a complete model state whose S90 is the
+  stored `s`. Changed parameters or incomplete history can prevent exact recovery
+  of the original traces. Repairs update only local card data, preserving card
+  modification times, USNs, intervals, due dates, and existing per-card desired
+  retention. Collection-open recovery also preserves the collection modification
+  time, so repair alone does not request a sync or repeatedly upload changes that
+  AnkiWeb strips again. Older FSRS models and complete FSRS-7 states are untouched.
 - FSRS-7's fast stability trace is stored in `card.data.s_fast` on new FSRS
   writes. Legacy card data without `s_fast` treats the internal slow stability
   as the fast trace fallback.

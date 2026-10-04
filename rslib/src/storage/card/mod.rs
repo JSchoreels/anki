@@ -156,13 +156,15 @@ impl super::SqliteStorage {
         self.db
             .prepare_cached(
                 r#"select id, data from cards
-where data like '%"s":%' and data not like '%"s_int":%'"#,
+where data like '%"s":%'
+and (data not like '%"s_int":%' or data not like '%"s_fast":%')"#,
             )?
             .query_and_then([], |row| -> Result<Option<CardId>> {
                 let data: CardData = row.get(1)?;
                 let is_foreign = data.fsrs_stability.is_some()
                     && data.fsrs_difficulty.is_some()
-                    && data.fsrs_stability_internal.is_none();
+                    && (data.fsrs_stability_internal.is_none()
+                        || data.fsrs_stability_fast.is_none());
                 Ok(is_foreign.then(|| row.get(0)).transpose()?)
             })?
             .filter_map(Result::transpose)
@@ -206,6 +208,18 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             CardData::from_card(card).convert_to_json()?,
             card.id,
         ])?;
+        Ok(())
+    }
+
+    /// Persist derived memory metadata without changing scheduling or sync
+    /// fields.
+    pub(crate) fn update_card_data(&self, card: &Card) -> Result<()> {
+        self.db
+            .prepare_cached("update cards set data = ? where id = ?")?
+            .execute(params![
+                CardData::from_card(card).convert_to_json()?,
+                card.id
+            ])?;
         Ok(())
     }
 
@@ -1370,6 +1384,33 @@ mod test {
         let id1 = card.id;
         storage.add_card(&mut card).unwrap();
         assert_ne!(id1, card.id);
+    }
+
+    #[test]
+    fn foreign_fsrs_state_detection_requires_state_and_missing_traces() -> crate::error::Result<()>
+    {
+        let storage = create_test_storage();
+        let mut card = Card::default();
+        storage.add_card(&mut card)?;
+        for (data, expected) in [
+            (r#"{"s":20,"d":6}"#, true),
+            (r#"{"s":20,"s_int":20,"d":6}"#, true),
+            (r#"{"s":20,"s_fast":5,"d":6}"#, true),
+            (r#"{"s":20,"s_int":15,"s_fast":5,"d":6}"#, false),
+            (r#"{"s":20}"#, false),
+            (r#"{"d":6}"#, false),
+            (r#"{}"#, false),
+        ] {
+            storage.db.execute(
+                "update cards set data = ? where id = ?",
+                params![data, card.id],
+            )?;
+
+            let ids = storage.card_ids_with_foreign_fsrs_state()?;
+
+            assert_eq!(ids, if expected { vec![card.id] } else { vec![] }, "{data}");
+        }
+        Ok(())
     }
 
     #[test]

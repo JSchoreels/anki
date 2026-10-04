@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Fixed
+
+- Restore FSRS-7 memory state after AnkiWeb sync removes its internal stability
+  fields, including cards already affected. Recovery preserves existing due
+  dates and intervals and does not queue repair-only changes for upload.
+
 ## 26.09.3+fsrs7 — 2026-10-03
 
 Changes since [build 94](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.94).
