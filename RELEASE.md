@@ -22,6 +22,19 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Improved
+
+- Restore and count large Browser selections faster, and reduce work while
+  painting the table or filtering the sidebar.
+- Speed up Empty Cards scans, deck counts and the finished study screen, while
+  preserving same-day review limit exemptions. Reduce repeated reads during
+  Check Database.
+- Save FSRS preset changes faster when memory states need to be recomputed,
+  while preserving FSRS-6/7 results, rescheduling order and undo.
+- Reuse built-in scripts, styles and images within the webview session cache.
+  Development builds still reload rebuilt assets.
+- Reduce command-response delays in the Windows mpv audio transport.
+
 ### Fixed
 
 - Protect automatic backups from interrupted writes and filename collisions,
@@ -37,6 +50,23 @@ repeated here unless they materially affect a fork feature.
   dates and intervals and does not queue repair-only changes for upload.
 - Wait for concurrent RWKV calculations when creating or rebuilding filtered
   decks, instead of reporting that retrievability scores could not be prepared.
+- Advance from an undo-restored RWKV card after redoing its answer.
+- Notify add-ons once when the scheduler day changes, including while reviewing.
+- Avoid errors when delayed geometry updates or notifications refer to a closed
+  window.
+- Display the correct average interval in notes mode when long card intervals
+  would overflow the previous calculation.
+
+### Benchmark results
+
+The [Clanki improvement benchmarks](docs/clanki-improvements-benchmark.MD)
+record the before/after results for each improvement, workloads, correctness
+checks and measurement limits. The [raw results](docs/clanki-improvements-benchmark.json)
+retain sample timings and quartiles for future release notes.
+
+Browser measurements isolate the changed operations. Full Check Database
+showed no clear overall speedup, and the Windows audio results use a simulated
+transport. Keep these qualifications when using the results in a changelog.
 
 ## 26.09.3+fsrs7 — 2026-10-03
 

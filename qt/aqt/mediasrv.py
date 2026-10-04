@@ -460,6 +460,15 @@ def _builtin_data(path: str) -> bytes:
         return f.read()
 
 
+def _cacheable_builtin_file(path: str) -> bool:
+    """Built-in scripts, styles and images stay unchanged during a session.
+
+    Web profiles are off the record, so their cache is discarded at exit.
+    Development builds must refetch assets rebuilt by web-watch.
+    """
+    return not dev_mode and path.startswith(("js/", "css/", "imgs/"))
+
+
 def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
     path = request.path
     # do we need to serve the fallback page?
@@ -471,7 +480,7 @@ def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
     try:
         data = _builtin_data(data_path)
         response = Response(data, mimetype=mimetype)
-        if immutable:
+        if immutable or _cacheable_builtin_file(path):
             response.headers["Cache-Control"] = "max-age=31536000"
         if request.sveltekit_route:
             is_index = path.endswith("index.html")

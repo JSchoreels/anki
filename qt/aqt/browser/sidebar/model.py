@@ -4,9 +4,25 @@ from __future__ import annotations
 
 import aqt
 import aqt.browser
-from aqt.browser.sidebar.item import SidebarItem
+from aqt.browser.sidebar.item import SidebarItem, SidebarItemType
 from aqt.qt import *
 from aqt.theme import theme_manager
+
+# Qt asks for the flags of every index it touches, so a sidebar refresh or a
+# keystroke in the filter box runs flags() thousands of times. The four
+# possible results are built once here instead of with enum ORs per call.
+_FLAGS_INVALID = Qt.ItemFlag.ItemIsEnabled
+_FLAGS_BASE = (
+    Qt.ItemFlag.ItemIsEnabled
+    | Qt.ItemFlag.ItemIsSelectable
+    | Qt.ItemFlag.ItemIsDragEnabled
+)
+_FLAGS_EDITABLE = _FLAGS_BASE | Qt.ItemFlag.ItemIsEditable
+_FLAGS_DROPPABLE = _FLAGS_BASE | Qt.ItemFlag.ItemIsDropEnabled
+_FLAGS_DROPPABLE_EDITABLE = _FLAGS_DROPPABLE | Qt.ItemFlag.ItemIsEditable
+_EDITABLE_TYPES = frozenset(
+    item_type for item_type in SidebarItemType if item_type.is_editable()
+)
 
 
 class SidebarModel(QAbstractItemModel):
@@ -109,16 +125,10 @@ class SidebarModel(QAbstractItemModel):
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         if not index.isValid():
-            return Qt.ItemFlag.ItemIsEnabled
-        flags = (
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsDragEnabled
-        )
+            return _FLAGS_INVALID
         item: SidebarItem = index.internalPointer()
-        if item.item_type in self.sidebar.valid_drop_types:
-            flags |= Qt.ItemFlag.ItemIsDropEnabled
-        if item.item_type.is_editable():
-            flags |= Qt.ItemFlag.ItemIsEditable
-
-        return flags
+        item_type = item.item_type
+        editable = item_type in _EDITABLE_TYPES
+        if item_type in self.sidebar.valid_drop_types:
+            return _FLAGS_DROPPABLE_EDITABLE if editable else _FLAGS_DROPPABLE
+        return _FLAGS_EDITABLE if editable else _FLAGS_BASE

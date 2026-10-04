@@ -638,36 +638,33 @@ class AnkiQt(QMainWindow):
             # if self.col.experiment_enabled(ExperimentFlag.TEST_FLAG):
             #     showInfo('You have the "ping" experiment enabled')
 
-        last_day_cutoff = self.col.sched.day_cutoff
-
-        def refresh_reviewer_on_day_rollover_change():
-            from aqt.reviewer import RefreshNeeded
-
-            # need to refresh?
-            nonlocal last_day_cutoff
-            current_cutoff = self.col.sched.day_cutoff
-            if self.state == "review" and last_day_cutoff != current_cutoff:
-                last_day_cutoff = self.col.sched.day_cutoff
-                self.reviewer._refresh_needed = RefreshNeeded.QUEUES
-                self.reviewer.refresh_if_needed()
-            if last_day_cutoff != current_cutoff:
-                gui_hooks.day_did_change()
-
-            # schedule another check
-            secs_until_cutoff = current_cutoff - int_time()
-            self._reviewer_refresh_timer = self.progress.timer(
-                secs_until_cutoff * 1000,
-                refresh_reviewer_on_day_rollover_change,
-                repeat=False,
-                parent=self,
-            )
-
-        refresh_reviewer_on_day_rollover_change()
+        self._last_day_cutoff = self.col.sched.day_cutoff
+        self._check_day_rollover()
         gui_hooks.profile_did_open()
 
         self.maybe_auto_sync_on_open_close(
             _onsuccess,
             refresh_rwkv_state=False,
+        )
+
+    def _check_day_rollover(self) -> None:
+        """Refresh the reviewer and notify add-ons once per day rollover."""
+        from aqt.reviewer import RefreshNeeded
+
+        current_cutoff = self.col.sched.day_cutoff
+        if self._last_day_cutoff != current_cutoff:
+            self._last_day_cutoff = current_cutoff
+            if self.state == "review":
+                self.reviewer._refresh_needed = RefreshNeeded.QUEUES
+                self.reviewer.refresh_if_needed()
+            gui_hooks.day_did_change()
+
+        secs_until_cutoff = current_cutoff - int_time()
+        self._reviewer_refresh_timer = self.progress.timer(
+            secs_until_cutoff * 1000,
+            self._check_day_rollover,
+            repeat=False,
+            parent=self,
         )
 
     def unloadProfile(self, onsuccess: Callable) -> None:

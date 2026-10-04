@@ -510,6 +510,62 @@ class TestTrustedPageCSP:
         assert _get_csp(resp) == _legacy_editor_content_security_policy(12345)
 
 
+class TestBuiltinFileCaching:
+    @pytest.mark.parametrize(
+        ("path", "development", "expected"),
+        [
+            ("js/deckbrowser.js", False, "max-age=31536000"),
+            ("css/deckbrowser.css", False, "max-age=31536000"),
+            ("imgs/anki-logo.svg", False, "max-age=31536000"),
+            ("js/deckbrowser.js", True, None),
+            ("css/deckbrowser.css", True, None),
+            ("imgs/anki-logo.svg", True, None),
+            ("deckbrowser.html", False, None),
+            ("sveltekit/index.html", False, None),
+            ("sveltekit/_app/immutable/start.js", False, "max-age=31536000"),
+            ("sveltekit/_app/immutable/start.js", True, "max-age=31536000"),
+        ],
+    )
+    def test_builtin_assets_cache_only_when_unchanged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        development: bool,
+        expected: str | None,
+    ) -> None:
+        from aqt import mediasrv
+
+        monkeypatch.setattr(mediasrv, "dev_mode", development)
+        monkeypatch.setattr(mediasrv, "_builtin_data", lambda path: b"asset")
+
+        with mediasrv.app.test_request_context():
+            response = _handle_builtin_file_request(BundledFileRequest(path))
+
+        assert response.get_data() == b"asset"
+        assert response.headers.get("Cache-Control") == expected
+        if path.endswith(".html"):
+            assert _get_csp(response) == TRUSTED_PAGE_CSP
+
+    @pytest.mark.parametrize("untrusted", [True, False])
+    def test_local_media_and_addon_assets_keep_revalidation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, untrusted: bool
+    ) -> None:
+        from aqt import mediasrv
+
+        monkeypatch.setattr(mediasrv, "dev_mode", False)
+        (tmp_path / "addon.js").write_bytes(b"asset")
+
+        with mediasrv.app.test_request_context():
+            response = _handle_local_file_request(
+                LocalFileRequest(str(tmp_path), "addon.js", untrusted=untrusted)
+            )
+
+        response.direct_passthrough = False
+        assert response.get_data() == b"asset"
+        assert response.cache_control.max_age == 0
+        assert _get_csp(response) == (UNTRUSTED_MEDIA_CSP if untrusted else None)
+
+
 class TestCardStats:
     @pytest.mark.parametrize(
         "deck_config",

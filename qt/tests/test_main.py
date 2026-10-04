@@ -620,3 +620,71 @@ def test_outdated_fsrs7_preview_warning_text_limits_preset_list() -> None:
     assert f"- Preset {OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS - 1}" in text
     assert f"- Preset {OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS}" not in text
     assert "...and 2 more" in text
+
+
+def _rollover_mw(
+    monkeypatch, state: str, cutoff: int
+) -> tuple[AnkiQt, list[str], list[int]]:
+    """A main window at the day-rollover check: `calls` records the
+    reviewer refreshes and the day_did_change calls, `timers` the delay of
+    each next check in ms."""
+    calls: list[str] = []
+    timers: list[int] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.state = state
+    mw.col = SimpleNamespace(sched=SimpleNamespace(day_cutoff=cutoff))  # type: ignore[assignment]
+
+    def refresh_if_needed() -> None:
+        calls.append(f"reviewer refresh {mw.reviewer._refresh_needed.name}")
+
+    mw.reviewer = SimpleNamespace(  # type: ignore[assignment]
+        _refresh_needed=None, refresh_if_needed=refresh_if_needed
+    )
+    mw.progress = SimpleNamespace(  # type: ignore[assignment]
+        timer=lambda ms, func, repeat, parent: timers.append(ms)
+    )
+    monkeypatch.setattr(aqt.main, "int_time", lambda: 1_000)
+    monkeypatch.setattr(
+        aqt.main.gui_hooks, "day_did_change", lambda: calls.append("day_did_change")
+    )
+    mw._last_day_cutoff = cutoff
+    return mw, calls, timers
+
+
+def test_the_day_rollover_fires_day_did_change_in_the_reviewer(monkeypatch) -> None:
+    """The check updated the remembered cutoff while reviewing, and then
+    compared the updated value to decide on the hook, so the hook never
+    fired while the reviewer was open."""
+
+    mw, calls, timers = _rollover_mw(monkeypatch, "review", cutoff=900)
+    mw.col.sched.day_cutoff = 900 + 86_400
+
+    mw._check_day_rollover()
+
+    assert calls == ["reviewer refresh QUEUES", "day_did_change"]
+    # and the next check waits for the next cutoff
+    assert timers == [(900 + 86_400 - 1_000) * 1000]
+
+
+def test_the_day_rollover_fires_day_did_change_once_outside_the_reviewer(
+    monkeypatch,
+) -> None:
+    mw, calls, timers = _rollover_mw(monkeypatch, "deckBrowser", cutoff=900)
+    mw.col.sched.day_cutoff = 900 + 86_400
+
+    mw._check_day_rollover()
+    # a check that comes again on the same day (a timer that fires early)
+    # is no second rollover
+    mw._check_day_rollover()
+
+    assert calls == ["day_did_change"]
+    assert len(timers) == 2
+
+
+def test_no_rollover_changes_nothing(monkeypatch) -> None:
+    mw, calls, timers = _rollover_mw(monkeypatch, "review", cutoff=5_000)
+
+    mw._check_day_rollover()
+
+    assert calls == []
+    assert timers == [4_000_000]

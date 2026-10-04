@@ -238,6 +238,23 @@ fsrs-queue-profile:
 fsrs-queue-sample:
     cargo test -p anki --release --lib fsrs_queue_sampling -- --ignored --nocapture
 
+# Benchmark Browser operations in an explicitly selected built checkout.
+clanki-gui-bench *args:
+    {{ python }} qt/tools/clanki_gui_bench.py {{ args }}
+
+# Benchmark backend operations on an explicitly supplied backup copy.
+clanki-collection-bench *args:
+    {{ python }} qt/tools/clanki_collection_bench.py {{ args }}
+
+# Check web caching and simulate the Windows mpv transport.
+clanki-asset-audio-bench *args:
+    {{ python }} qt/tools/clanki_asset_audio_bench.py {{ args }}
+
+# Run selected Python tests against the current generated backend and Qt files.
+test-py-target *args:
+    {{ ninja }} pylib qt
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;qt;out/qt'; $env:QT_QPA_PLATFORM='offscreen'; " } else { "PYTHONPATH=pylib:out/pylib:qt:out/qt QT_QPA_PLATFORM=offscreen " } }}{{ python }} -m pytest {{ args }}
+
 # Remove build outputs from out/ (pass keep-env to keep node_modules/pyenv); macOS/Linux
 clean *args:
     ./tools/clean {{ args }}

@@ -8,6 +8,7 @@ import subprocess
 import wave
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -133,6 +134,94 @@ def test_mpv_binary_runs():
     cmd, env = _resolved_mpv_command(["mpv"])
     result = subprocess.run(cmd + ["--version"], env=env, capture_output=True)
     assert result.returncode == 0, result.stderr.decode()
+
+
+def test_windows_mpv_wakes_for_commands_and_routes_replies(monkeypatch) -> None:
+    from aqt import mpv
+
+    class FakePipeError(Exception):
+        pass
+
+    class FakePlayer(mpv.MPVBase):
+        def __init__(self):
+            self.debug = False
+            self._sock = object()
+            self._prepare_thread()
+
+        def __del__(self):
+            pass
+
+    player = FakePlayer()
+    writes: list[bytes] = []
+    sleeps: list[float] = []
+    waits: list[float] = []
+    thread_id = 11
+    reads = iter(
+        [
+            None,  # idle: sending a command should wake the reader
+            None,  # command sent, reply not ready yet
+            b'{"event":"file-loaded"}\n{"error":"success",',
+            b'"data":"first reply"}\n',
+            None,  # idle again: a second caller sends another command
+            b'{"error":"property unavailable"}\n',
+            None,  # idle: stop the reader
+        ]
+    )
+
+    def read_file(sock, size):
+        assert sock is player._sock
+        chunk = next(reads)
+        if chunk is None:
+            raise FakePipeError(232)
+        return 0, chunk
+
+    def wait_for_request(timeout):
+        nonlocal thread_id
+        waits.append(timeout)
+        if len(waits) <= 2:
+            thread_id = 11 if len(waits) == 1 else 22
+            player._send_message({"command": ["get_property", "filename"]})
+            # A successful write wakes an idle pipe reader immediately.
+            assert player._request_sent.is_set()
+        else:
+            player._stop_event.set()
+        return player._request_sent.is_set()
+
+    monkeypatch.setattr(mpv, "is_win", True)
+    monkeypatch.setattr(
+        mpv, "pywintypes", SimpleNamespace(error=FakePipeError), raising=False
+    )
+    monkeypatch.setattr(
+        mpv,
+        "winerror",
+        SimpleNamespace(ERROR_NO_DATA=232, ERROR_BROKEN_PIPE=109),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mpv,
+        "win32file",
+        SimpleNamespace(
+            ReadFile=read_file, WriteFile=lambda sock, data: writes.append(data)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(player, "_thread_id", lambda: thread_id)
+    monkeypatch.setattr(player._request_sent, "wait", wait_for_request)
+    monkeypatch.setattr(mpv.time, "sleep", sleeps.append)
+
+    player._reader()
+
+    thread_id = 11
+    assert player._get_response(timeout=0) == "first reply"
+    thread_id = 22
+    with pytest.raises(mpv.MPVCommandError, match="property unavailable"):
+        player._get_response(timeout=0)
+    assert player._get_event() == {"event": "file-loaded"}
+    assert player._get_event() is None
+    assert len(writes) == 2
+    assert sleeps == [0.001]
+    assert waits == [0.1, 0.1, 0.1]
+    assert player._request_queue.empty()
 
 
 @pytest.fixture

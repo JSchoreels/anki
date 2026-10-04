@@ -76,6 +76,7 @@ from aqt.qt import (
     qtmajor,
     qtminor,
     qVersion,
+    sip,
     traceback,
 )
 from aqt.theme import theme_manager
@@ -298,7 +299,7 @@ def showInfo(
 ) -> int:
     "Show a small info window with an OK button."
     parent_widget: QWidget
-    if parent is None:
+    if parent is None or sip.isdeleted(parent):
         parent_widget = aqt.mw.app.activeWindow() or aqt.mw
     else:
         parent_widget = parent
@@ -789,6 +790,8 @@ def restoreGeom(
 
 
 def ensureWidgetInScreenBoundaries(widget: QWidget) -> None:
+    if sip.isdeleted(widget):
+        return
     window = widget.window()
     assert window is not None
     handle = window.windowHandle()
@@ -1072,6 +1075,8 @@ def tooltip(
             self.hide()
 
     closeTooltip()
+    if parent is not None and sip.isdeleted(parent):
+        parent = None
     aw = parent or aqt.mw.app.activeWindow() or aqt.mw
     lab = CustomLabel(
         f"""<table cellpadding=10>

@@ -1,0 +1,1142 @@
+{
+    "baseline_commit": "47466a3f7a3f91a37f088f8b978bad4ce2a12993",
+    "clanki_reference": "20a4e77a9119c71cc4a8d51c2febe09c2f75e426",
+    "date": "2026-10-04",
+    "hardware": "Apple M1 Max, 64 GiB RAM",
+    "profile": "release",
+    "workload": {
+        "cards": 31665,
+        "notes": 16209,
+        "preset_cards": 11740,
+        "cards_with_memory_state": 10172
+    },
+    "results": {
+        "gui": {
+            "browser_selected_row_lookup": {
+                "workload": "20,000 list-backed rows; 5,000 selected IDs",
+                "before": {
+                    "name": "browser_selected_row_lookup",
+                    "workload": "20,000 list-backed rows; 5,000 selected IDs",
+                    "samples": 21,
+                    "median_ms": 358.99658396374434,
+                    "p25_ms": 351.53179202461615,
+                    "p75_ms": 385.16429194714874,
+                    "min_ms": 346.1261659977026,
+                    "max_ms": 522.0572910038754,
+                    "result_checksum": "70f26524e00efff75eaaa5aaa392e618742bb614f9f3b02bb2859f78c4bf26e9"
+                },
+                "after": {
+                    "name": "browser_selected_row_lookup",
+                    "workload": "20,000 list-backed rows; 5,000 selected IDs",
+                    "samples": 21,
+                    "median_ms": 0.4955829936079681,
+                    "p25_ms": 0.4948750138282776,
+                    "p75_ms": 0.49574999138712883,
+                    "min_ms": 0.4742500022985041,
+                    "max_ms": 0.5126670002937317,
+                    "result_checksum": "70f26524e00efff75eaaa5aaa392e618742bb614f9f3b02bb2859f78c4bf26e9"
+                },
+                "checksums_match": true
+            },
+            "browser_selection_restoration": {
+                "workload": "20,000 rows; 5,000 selected; current ID selected",
+                "before": {
+                    "name": "browser_selection_restoration",
+                    "workload": "20,000 rows; 5,000 selected; current ID selected",
+                    "samples": 21,
+                    "median_ms": 364.49687503045425,
+                    "p25_ms": 360.7289170031436,
+                    "p75_ms": 376.2138750171289,
+                    "min_ms": 353.72266703052446,
+                    "max_ms": 419.25904201343656,
+                    "result_checksum": "6206d80b213d420d7daa7aa4d46736e820d03a26962c76372b4ddd670264ee57"
+                },
+                "after": {
+                    "name": "browser_selection_restoration",
+                    "workload": "20,000 rows; 5,000 selected; current ID selected",
+                    "samples": 21,
+                    "median_ms": 0.7401250186376274,
+                    "p25_ms": 0.7214579964056611,
+                    "p75_ms": 0.7588749867863953,
+                    "min_ms": 0.7083330419845879,
+                    "max_ms": 2.6572910137474537,
+                    "result_checksum": "6206d80b213d420d7daa7aa4d46736e820d03a26962c76372b4ddd670264ee57"
+                },
+                "checksums_match": true
+            },
+            "browser_ctrl_selection_count": {
+                "workload": "5,000 rows x 8 columns; two cached deleted rows",
+                "before": {
+                    "name": "browser_ctrl_selection_count",
+                    "workload": "5,000 rows x 8 columns; two cached deleted rows",
+                    "samples": 21,
+                    "median_ms": 125.38808298995718,
+                    "p25_ms": 113.27020800672472,
+                    "p75_ms": 136.8736670119688,
+                    "min_ms": 103.37433300446719,
+                    "max_ms": 189.62408299557865,
+                    "result_checksum": "f3907a096c7c4b68d7516e9f321ff07c8c86a29fb0f6c86976040cdb5ddc1a67"
+                },
+                "after": {
+                    "name": "browser_ctrl_selection_count",
+                    "workload": "5,000 rows x 8 columns; two cached deleted rows",
+                    "samples": 21,
+                    "median_ms": 0.09000004502013326,
+                    "p25_ms": 0.0862079905346036,
+                    "p75_ms": 0.09120797039940953,
+                    "min_ms": 0.08304201764985919,
+                    "max_ms": 0.11791597353294492,
+                    "result_checksum": "f3907a096c7c4b68d7516e9f321ff07c8c86a29fb0f6c86976040cdb5ddc1a67"
+                },
+                "checksums_match": true
+            },
+            "browser_table_metadata": {
+                "workload": "41 cached rows x 8 columns; 5 roles and flags per cell; no painting",
+                "before": {
+                    "name": "browser_table_metadata",
+                    "workload": "41 cached rows x 8 columns; 5 roles and flags per cell; no painting",
+                    "samples": 21,
+                    "median_ms": 1.7859169747680426,
+                    "p25_ms": 1.7814579769037664,
+                    "p75_ms": 2.508582954760641,
+                    "min_ms": 1.7783749499358237,
+                    "max_ms": 7.433708000462502,
+                    "result_checksum": "b0bea5897cff99219b05e4ebbb696157448e8fd1e8af257c833f3871bb82b4f1"
+                },
+                "after": {
+                    "name": "browser_table_metadata",
+                    "workload": "41 cached rows x 8 columns; 5 roles and flags per cell; no painting",
+                    "samples": 21,
+                    "median_ms": 1.2874999665655196,
+                    "p25_ms": 1.2800000258721411,
+                    "p75_ms": 1.3301250291988254,
+                    "min_ms": 1.2696670019067824,
+                    "max_ms": 5.1293750293552876,
+                    "result_checksum": "b0bea5897cff99219b05e4ebbb696157448e8fd1e8af257c833f3871bb82b4f1"
+                },
+                "checksums_match": true
+            },
+            "browser_table_delegate_paint": {
+                "workload": "41 cached rows x 8 columns; QImage offscreen paint plus pixel SHA256",
+                "before": {
+                    "name": "browser_table_delegate_paint",
+                    "workload": "41 cached rows x 8 columns; QImage offscreen paint plus pixel SHA256",
+                    "samples": 21,
+                    "median_ms": 24.57758301170543,
+                    "p25_ms": 22.65545795671642,
+                    "p75_ms": 28.076249989680946,
+                    "min_ms": 22.073667030781507,
+                    "max_ms": 45.93620798550546,
+                    "result_checksum": "3ff89dbb2c2e031fd68b077456b7f912466864bc229c056cfe9632eea146a298"
+                },
+                "after": {
+                    "name": "browser_table_delegate_paint",
+                    "workload": "41 cached rows x 8 columns; QImage offscreen paint plus pixel SHA256",
+                    "samples": 21,
+                    "median_ms": 20.60970797901973,
+                    "p25_ms": 20.4970829654485,
+                    "p75_ms": 20.94550000037998,
+                    "min_ms": 20.062334020622075,
+                    "max_ms": 21.336582954972982,
+                    "result_checksum": "3ff89dbb2c2e031fd68b077456b7f912466864bc229c056cfe9632eea146a298"
+                },
+                "checksums_match": true
+            },
+            "browser_sidebar_flags": {
+                "workload": "1,400 sidebar items; editable/droppable decks and section roots",
+                "before": {
+                    "name": "browser_sidebar_flags",
+                    "workload": "1,400 sidebar items; editable/droppable decks and section roots",
+                    "samples": 21,
+                    "median_ms": 3.1646250281482935,
+                    "p25_ms": 3.1555829918943346,
+                    "p75_ms": 4.292707948479801,
+                    "min_ms": 3.1393750105053186,
+                    "max_ms": 6.689416011795402,
+                    "result_checksum": "a46bf63ff3dfff51e6c54c3c7b48446d4371e868654b423ce9795e295282f4f5"
+                },
+                "after": {
+                    "name": "browser_sidebar_flags",
+                    "workload": "1,400 sidebar items; editable/droppable decks and section roots",
+                    "samples": 21,
+                    "median_ms": 0.5595830152742565,
+                    "p25_ms": 0.5520419799722731,
+                    "p75_ms": 0.565042020753026,
+                    "min_ms": 0.5317499744705856,
+                    "max_ms": 0.6015830440446734,
+                    "result_checksum": "a46bf63ff3dfff51e6c54c3c7b48446d4371e868654b423ce9795e295282f4f5"
+                },
+                "checksums_match": true
+            },
+            "browser_sidebar_section_roots": {
+                "workload": "1,400 item type section-root checks",
+                "before": {
+                    "name": "browser_sidebar_section_roots",
+                    "workload": "1,400 item type section-root checks",
+                    "samples": 21,
+                    "median_ms": 4.7658749972470105,
+                    "p25_ms": 4.74233302520588,
+                    "p75_ms": 5.713249964173883,
+                    "min_ms": 4.72662498941645,
+                    "max_ms": 10.40116703370586,
+                    "result_checksum": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451"
+                },
+                "after": {
+                    "name": "browser_sidebar_section_roots",
+                    "workload": "1,400 item type section-root checks",
+                    "samples": 21,
+                    "median_ms": 0.1194999786093831,
+                    "p25_ms": 0.11924997670575976,
+                    "p75_ms": 0.11970900231972337,
+                    "min_ms": 0.11916598305106163,
+                    "max_ms": 0.12020801659673452,
+                    "result_checksum": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451"
+                },
+                "checksums_match": true
+            },
+            "browser_sidebar_filter_expansion": {
+                "workload": "1,400 items; filter, collapse, expand and select first match in real hidden QTreeView",
+                "before": {
+                    "name": "browser_sidebar_filter_expansion",
+                    "workload": "1,400 items; filter, collapse, expand and select first match in real hidden QTreeView",
+                    "samples": 21,
+                    "median_ms": 10.377707949373871,
+                    "p25_ms": 10.06208301987499,
+                    "p75_ms": 12.37833296181634,
+                    "min_ms": 9.886625048238784,
+                    "max_ms": 25.53491696016863,
+                    "result_checksum": "a17628ec159b9713b5577fa7c97f2023bd54b2fecf301c9574861b037e6c5096"
+                },
+                "after": {
+                    "name": "browser_sidebar_filter_expansion",
+                    "workload": "1,400 items; filter, collapse, expand and select first match in real hidden QTreeView",
+                    "samples": 21,
+                    "median_ms": 4.83004201669246,
+                    "p25_ms": 3.72887501725927,
+                    "p75_ms": 5.5622090003453195,
+                    "min_ms": 3.6522919544950128,
+                    "max_ms": 5.809666006825864,
+                    "result_checksum": "a17628ec159b9713b5577fa7c97f2023bd54b2fecf301c9574861b037e6c5096"
+                },
+                "checksums_match": true
+            }
+        },
+        "collection": {
+            "deck_due_tree": {
+                "before": {
+                    "samples_ms": [
+                        30.47487500589341,
+                        9.918499970808625,
+                        9.987541998270899,
+                        10.282874980475754,
+                        10.163834027480334,
+                        10.099000006448478,
+                        10.025958996266127
+                    ],
+                    "median_ms": 10.099000006448478,
+                    "q1_ms": 10.006750497268513,
+                    "q3_ms": 10.223354503978044,
+                    "invariants": {
+                        "output_checksum": "15e81f09722a779b6f9bcebd67e729bf72f60a7e1111fc84eff0a9b0598a7856",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992
+                    }
+                },
+                "after": {
+                    "samples_ms": [
+                        9.882166981697083,
+                        2.351041999645531,
+                        2.274541009683162,
+                        2.2913339780643582,
+                        2.293249999638647,
+                        2.5315419770777225,
+                        2.2854169947095215
+                    ],
+                    "median_ms": 2.293249999638647,
+                    "q1_ms": 2.28837548638694,
+                    "q3_ms": 2.441291988361627,
+                    "invariants": {
+                        "output_checksum": "15e81f09722a779b6f9bcebd67e729bf72f60a7e1111fc84eff0a9b0598a7856",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992
+                    }
+                },
+                "invariants_match": true
+            },
+            "congratulations_info": {
+                "before": {
+                    "samples_ms": [
+                        5.897250026464462,
+                        1.9200419774278998,
+                        1.9467499805614352,
+                        1.9403329933993518,
+                        1.9982079975306988,
+                        1.9567920244298875,
+                        1.9647919689305127
+                    ],
+                    "median_ms": 1.9567920244298875,
+                    "q1_ms": 1.9435414869803935,
+                    "q3_ms": 1.9814999832306057,
+                    "invariants": {
+                        "output_checksum": "36b243dc26bcb789720719e97780b3d20a22ff33dfa986d03734818debd79d8b",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992
+                    },
+                    "secs_until_next_learn_per_sample": [
+                        86400,
+                        86400,
+                        86400,
+                        86400,
+                        86400,
+                        86400,
+                        86400
+                    ]
+                },
+                "after": {
+                    "samples_ms": [
+                        0.7636669906787574,
+                        0.21620799088850617,
+                        0.20641699666157365,
+                        0.20891701569780707,
+                        0.20008301362395287,
+                        0.232374994084239,
+                        0.2227500081062317
+                    ],
+                    "median_ms": 0.21620799088850617,
+                    "q1_ms": 0.20766700617969036,
+                    "q3_ms": 0.22756250109523535,
+                    "invariants": {
+                        "output_checksum": "36b243dc26bcb789720719e97780b3d20a22ff33dfa986d03734818debd79d8b",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992
+                    },
+                    "secs_until_next_learn_per_sample": [
+                        86400,
+                        86400,
+                        86400,
+                        86400,
+                        86400,
+                        86400,
+                        86400
+                    ]
+                },
+                "invariants_match": true
+            },
+            "empty_cards": {
+                "before": {
+                    "samples_ms": [
+                        273.657874960918,
+                        217.1809999854304,
+                        219.06354097882286,
+                        217.29770803358406,
+                        227.192250022199,
+                        286.0613749944605,
+                        240.1759580243379
+                    ],
+                    "median_ms": 227.192250022199,
+                    "q1_ms": 218.18062450620346,
+                    "q3_ms": 256.91691649262793,
+                    "invariants": {
+                        "output_checksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992
+                    }
+                },
+                "after": {
+                    "samples_ms": [
+                        226.71091696247458,
+                        212.18429203145206,
+                        205.75654204003513,
+                        203.22387502528727,
+                        200.97362500382587,
+                        198.76579096307978,
+                        199.68675001291558
+                    ],
+                    "median_ms": 203.22387502528727,
+                    "q1_ms": 200.33018750837073,
+                    "q3_ms": 208.9704170357436,
+                    "invariants": {
+                        "output_checksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992
+                    }
+                },
+                "invariants_match": true
+            },
+            "check_database": {
+                "before": {
+                    "samples_ms": [
+                        6639.255166985095,
+                        5088.374000042677,
+                        5228.497707983479,
+                        5037.387999997009,
+                        5254.241917049512,
+                        5887.586374999955,
+                        6931.319625000469
+                    ],
+                    "median_ms": 5254.241917049512,
+                    "q1_ms": 5158.435854013078,
+                    "q3_ms": 6263.420770992525,
+                    "invariants": {
+                        "output_checksum": "0b83b0aba6f82db43e785aee98fc96b9d0844b3614f79bfdcbb72f5096e7b5e8",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992,
+                        "report": [
+                            "Found \u206892\u2069 new cards with a due number >= 1,000,000 - consider repositioning them in the Browse screen."
+                        ]
+                    }
+                },
+                "after": {
+                    "samples_ms": [
+                        7041.901124990545,
+                        5319.429791998118,
+                        4787.645125004929,
+                        5323.871999979019,
+                        4872.015708009712,
+                        4999.4019999867305,
+                        5666.704542003572
+                    ],
+                    "median_ms": 5319.429791998118,
+                    "q1_ms": 4935.7088539982215,
+                    "q3_ms": 5495.288270991296,
+                    "invariants": {
+                        "output_checksum": "0b83b0aba6f82db43e785aee98fc96b9d0844b3614f79bfdcbb72f5096e7b5e8",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992,
+                        "report": [
+                            "Found \u206892\u2069 new cards with a due number >= 1,000,000 - consider repositioning them in the Browse screen."
+                        ]
+                    }
+                },
+                "invariants_match": true
+            },
+            "preset_save": {
+                "before": {
+                    "samples_ms": [
+                        377.7970829978585,
+                        348.2702089822851,
+                        319.8822080157697,
+                        306.6365830018185,
+                        269.540874985978,
+                        260.86620904970914,
+                        287.3874580254778
+                    ],
+                    "median_ms": 306.6365830018185,
+                    "q1_ms": 278.4641665057279,
+                    "q3_ms": 334.0762084990274,
+                    "invariants": {
+                        "output_checksum": "d7df37442456351fd31ef74bd6e2342b5cfe39f12fbb41420afd2ce1ce1e2174",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992,
+                        "scheduling": {
+                            "checksum": "1eb641344a733e5fc923163907c6a1b99c1c36342301a78532f969dce4539eea",
+                            "interval_checksum": "bc2ee1ada278d209d0ed6f5ded90bb2e6b7eca3e5e7ae0ba68b84cbfb76eacfd",
+                            "cards": 11740,
+                            "with_memory": 10172
+                        }
+                    }
+                },
+                "after": {
+                    "samples_ms": [
+                        280.83779104053974,
+                        293.6037089675665,
+                        246.00433302111924,
+                        230.3942089783959,
+                        284.5930000185035,
+                        262.3730000341311,
+                        222.0446250285022
+                    ],
+                    "median_ms": 262.3730000341311,
+                    "q1_ms": 238.19927099975757,
+                    "q3_ms": 282.71539552952163,
+                    "invariants": {
+                        "output_checksum": "d7df37442456351fd31ef74bd6e2342b5cfe39f12fbb41420afd2ce1ce1e2174",
+                        "counts": {
+                            "cards": 31665,
+                            "notes": 16209
+                        },
+                        "scheduler_day": 992,
+                        "scheduling": {
+                            "checksum": "1eb641344a733e5fc923163907c6a1b99c1c36342301a78532f969dce4539eea",
+                            "interval_checksum": "bc2ee1ada278d209d0ed6f5ded90bb2e6b7eca3e5e7ae0ba68b84cbfb76eacfd",
+                            "cards": 11740,
+                            "with_memory": 10172
+                        }
+                    }
+                },
+                "invariants_match": true
+            }
+        },
+        "assets": {
+            "web_assets": {
+                "before": {
+                    "verified_response_headers": {
+                        "js/vendor/jquery.min.js": {
+                            "cache_control": null,
+                            "bytes": 87533
+                        },
+                        "js/vendor/jquery-ui.min.js": {
+                            "cache_control": null,
+                            "bytes": 254963
+                        },
+                        "js/vendor/plot.js": {
+                            "cache_control": null,
+                            "bytes": 67619
+                        },
+                        "css/deckbrowser.css": {
+                            "cache_control": null,
+                            "bytes": 12457
+                        },
+                        "css/webview.css": {
+                            "cache_control": null,
+                            "bytes": 12590
+                        },
+                        "imgs/anki-logo-thin.png": {
+                            "cache_control": null,
+                            "bytes": 6261
+                        }
+                    },
+                    "kind": "actual offscreen QWebEngine page loads with a shared session profile",
+                    "profile_off_the_record": true,
+                    "cold_load_ms": 1231.2277090386488,
+                    "warm_page_load": {
+                        "samples_ms": [
+                            13310.16620900482,
+                            33.073625003453344,
+                            37.31708397390321,
+                            27.34979201341048,
+                            23.223457974381745,
+                            20.29141696402803,
+                            20.826832973398268,
+                            18.49904196569696,
+                            24.548874993342906,
+                            30.719832982867956,
+                            23.29937496688217,
+                            24.79916700394824,
+                            20.220624981448054,
+                            23.400874983053654,
+                            28.349332977086306,
+                            29.94362497702241,
+                            22.237124969251454,
+                            22.377583023626357,
+                            22.632750042248517,
+                            18.748958013020456,
+                            18.801749974954873
+                        ],
+                        "median_ms": 23.29937496688217,
+                        "q1_ms": 20.826832973398268,
+                        "q3_ms": 28.349332977086306
+                    },
+                    "warm_server_requests_per_sample": [
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 1,
+                            "js/vendor/jquery-ui.min.js": 1,
+                            "js/vendor/plot.js": 1,
+                            "css/deckbrowser.css": 1,
+                            "css/webview.css": 1,
+                            "imgs/anki-logo-thin.png": 1
+                        }
+                    ],
+                    "warm_transferred_bytes_per_sample": [
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423,
+                        441423
+                    ],
+                    "total_server_requests": {
+                        "js/vendor/jquery.min.js": 22,
+                        "js/vendor/jquery-ui.min.js": 22,
+                        "js/vendor/plot.js": 22,
+                        "css/deckbrowser.css": 22,
+                        "css/webview.css": 22,
+                        "imgs/anki-logo-thin.png": 22
+                    }
+                },
+                "after": {
+                    "verified_response_headers": {
+                        "js/vendor/jquery.min.js": {
+                            "cache_control": "max-age=31536000",
+                            "bytes": 87533
+                        },
+                        "js/vendor/jquery-ui.min.js": {
+                            "cache_control": "max-age=31536000",
+                            "bytes": 254963
+                        },
+                        "js/vendor/plot.js": {
+                            "cache_control": "max-age=31536000",
+                            "bytes": 67619
+                        },
+                        "css/deckbrowser.css": {
+                            "cache_control": "max-age=31536000",
+                            "bytes": 12457
+                        },
+                        "css/webview.css": {
+                            "cache_control": "max-age=31536000",
+                            "bytes": 12590
+                        },
+                        "imgs/anki-logo-thin.png": {
+                            "cache_control": "max-age=31536000",
+                            "bytes": 6261
+                        }
+                    },
+                    "kind": "actual offscreen QWebEngine page loads with a shared session profile",
+                    "profile_off_the_record": true,
+                    "cold_load_ms": 398.4175410005264,
+                    "warm_page_load": {
+                        "samples_ms": [
+                            16.59695798298344,
+                            11.72716694418341,
+                            11.713207990396768,
+                            11.649625026620924,
+                            11.61908294307068,
+                            11.785499984398484,
+                            11.678709008265287,
+                            55.32620899612084,
+                            11.492499965243042,
+                            11.324333027005196,
+                            11.66962500428781,
+                            11.22883299831301,
+                            11.263374995905906,
+                            11.503499990794808,
+                            11.835457989946008,
+                            11.661041993647814,
+                            11.676458001602441,
+                            11.410040955524892,
+                            11.641666002105922,
+                            11.99575001373887,
+                            11.550082999747247
+                        ],
+                        "median_ms": 11.661041993647814,
+                        "q1_ms": 11.503499990794808,
+                        "q3_ms": 11.72716694418341
+                    },
+                    "warm_server_requests_per_sample": [
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        },
+                        {
+                            "js/vendor/jquery.min.js": 0,
+                            "js/vendor/jquery-ui.min.js": 0,
+                            "js/vendor/plot.js": 0,
+                            "css/deckbrowser.css": 0,
+                            "css/webview.css": 0,
+                            "imgs/anki-logo-thin.png": 0
+                        }
+                    ],
+                    "warm_transferred_bytes_per_sample": [
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ],
+                    "total_server_requests": {
+                        "js/vendor/jquery.min.js": 1,
+                        "js/vendor/jquery-ui.min.js": 1,
+                        "js/vendor/plot.js": 1,
+                        "css/deckbrowser.css": 1,
+                        "css/webview.css": 1,
+                        "imgs/anki-logo-thin.png": 1
+                    }
+                }
+            },
+            "windows_mpv_simulation": {
+                "before": {
+                    "kind": "Windows pipe polling simulated on the current host; no native Windows/mpv timing",
+                    "reply_ready_after_ms": 10,
+                    "idle_request_offsets_ms": [
+                        2.3809523809523814,
+                        7.142857142857143,
+                        11.904761904761903,
+                        16.66666666666667,
+                        21.428571428571427,
+                        26.19047619047619,
+                        30.952380952380953,
+                        35.714285714285715,
+                        40.47619047619048,
+                        45.23809523809524,
+                        50.0,
+                        54.761904761904766,
+                        59.52380952380952,
+                        64.28571428571429,
+                        69.04761904761905,
+                        73.80952380952381,
+                        78.57142857142858,
+                        83.33333333333333,
+                        88.0952380952381,
+                        92.85714285714286,
+                        97.61904761904763
+                    ],
+                    "command_latency": {
+                        "samples_ms": [
+                            103.32833300344646,
+                            91.36433299863711,
+                            74.97554097790271,
+                            92.45308395475149,
+                            78.64370802417397,
+                            73.02958401851356,
+                            78.18037498509511,
+                            63.83637501858175,
+                            55.65429199486971,
+                            52.30991600546986,
+                            43.09904098045081,
+                            43.32100000465289,
+                            42.390999966301024,
+                            31.17358300369233,
+                            32.54533401923254,
+                            31.89370798645541,
+                            20.130583026912063,
+                            17.456375004258007,
+                            114.51987503096461,
+                            106.13954201107845,
+                            103.81250001955777
+                        ],
+                        "median_ms": 63.83637501858175,
+                        "q1_ms": 42.390999966301024,
+                        "q3_ms": 91.36433299863711
+                    },
+                    "commands": 21,
+                    "pipe_reads": 67,
+                    "empty_pipe_reads": 46,
+                    "response_routing": "all command replies matched their requesting caller"
+                },
+                "after": {
+                    "kind": "Windows pipe polling simulated on the current host; no native Windows/mpv timing",
+                    "reply_ready_after_ms": 10,
+                    "idle_request_offsets_ms": [
+                        2.3809523809523814,
+                        7.142857142857143,
+                        11.904761904761903,
+                        16.66666666666667,
+                        21.428571428571427,
+                        26.19047619047619,
+                        30.952380952380953,
+                        35.714285714285715,
+                        40.47619047619048,
+                        45.23809523809524,
+                        50.0,
+                        54.761904761904766,
+                        59.52380952380952,
+                        64.28571428571429,
+                        69.04761904761905,
+                        73.80952380952381,
+                        78.57142857142858,
+                        83.33333333333333,
+                        88.0952380952381,
+                        92.85714285714286,
+                        97.61904761904763
+                    ],
+                    "command_latency": {
+                        "samples_ms": [
+                            10.415124997962266,
+                            10.117124998942018,
+                            10.179250035434961,
+                            10.161374986637384,
+                            11.270749964751303,
+                            10.321916954126209,
+                            11.06279098894447,
+                            10.975000041071326,
+                            10.3228340158239,
+                            10.822709009516984,
+                            12.38754199584946,
+                            11.583417013753206,
+                            11.493249970953912,
+                            10.21645899163559,
+                            10.23033302044496,
+                            10.932250006590039,
+                            10.667041002307087,
+                            10.631375014781952,
+                            10.79591695452109,
+                            10.764500009827316,
+                            10.470249981153756
+                        ],
+                        "median_ms": 10.667041002307087,
+                        "q1_ms": 10.321916954126209,
+                        "q3_ms": 10.975000041071326
+                    },
+                    "commands": 21,
+                    "pipe_reads": 212,
+                    "empty_pipe_reads": 191,
+                    "response_routing": "all command replies matched their requesting caller"
+                }
+            }
+        }
+    }
+}
