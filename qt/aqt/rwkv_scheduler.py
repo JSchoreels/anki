@@ -10556,6 +10556,12 @@ def recompute_rwkv_calibration_data(
                 operation.require_current()
             finally:
                 writer.flush()
+            _prune_superseded_rwkv_calibration_rows(
+                reviewer,
+                history,
+                sample_role_by_review_id,
+                fold_index_by_review_id,
+            )
             logger.debug(
                 "RWKV calibration data recomputed: reviews=%s elapsed_ms=%.1f",
                 len(history.reviews),
@@ -10568,6 +10574,46 @@ def recompute_rwkv_calibration_data(
     except Exception:
         logger.exception("RWKV calibration data recompute failed")
         return False
+
+
+def _prune_superseded_rwkv_calibration_rows(
+    reviewer: object,
+    history: RwkvHistoricalReviewInputs,
+    sample_role_by_review_id: Mapping[int, str],
+    fold_index_by_review_id: Mapping[int, int],
+) -> None:
+    """Delete calibration rows that the completed recompute replaced.
+
+    Earlier runs leave rows under roles and folds the current FSRS alignment no
+    longer assigns, plus legacy `rwkv_calibration_train` rows. Answer-time and
+    state-cache rows are other sources and stay untouched.
+    """
+
+    backend = getattr(_collection(reviewer), "_backend", None)
+    prune = getattr(backend, "prune_rwkv_review_retrievability_cache_rows", None)
+    if not callable(prune):
+        return
+    keep = [
+        scheduler_pb2.PruneRwkvReviewRetrievabilityCacheRowsRequest.Key(
+            revlog_id=review_id,
+            sample_role=sample_role_by_review_id.get(
+                review_id, _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT
+            ),
+            fold_index=fold_index_by_review_id.get(review_id, -1),
+        )
+        for review_id in history.review_ids
+    ]
+    try:
+        deleted = prune(
+            source="rwkv_calibration_recompute",
+            keep=keep,
+            superseded_sources=["rwkv_calibration_train"],
+        )
+    except Exception:
+        # The new rows are complete; stale ones only cost space until next run.
+        logger.exception("failed to prune superseded RWKV calibration rows")
+        return
+    logger.debug("pruned superseded RWKV calibration rows: deleted=%s", deleted)
 
 
 def rwkv_calibration_data_available(mw: object) -> bool:

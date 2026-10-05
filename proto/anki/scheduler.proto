@@ -152,6 +152,10 @@ service SchedulerService {
       returns (RwkvHistoricalReviewFingerprintResponse);
   rpc RwkvHistoricalReviewInputs(RwkvHistoricalReviewInputsRequest)
       returns (RwkvHistoricalReviewInputsResponse);
+  // Deletes calibration rows that a completed RWKV calibration recompute
+  // superseded.
+  rpc PruneRwkvReviewRetrievabilityCacheRows(
+      PruneRwkvReviewRetrievabilityCacheRowsRequest) returns (generic.UInt32);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -1002,6 +1006,20 @@ message RwkvReviewRetrievabilityCacheRowsRequest {
   }
   string source = 1;
   repeated Row rows = 2;
+}
+
+message PruneRwkvReviewRetrievabilityCacheRowsRequest {
+  message Key {
+    int64 revlog_id = 1;
+    string sample_role = 2;
+    int32 fold_index = 3;
+  }
+  // The completed run's source; its rows outside `keep` are deleted.
+  string source = 1;
+  // Rows the completed run wrote.
+  repeated Key keep = 2;
+  // Sources whose rows the run replaces entirely.
+  repeated string superseded_sources = 3;
 }
 
 message RwkvReviewRescheduleRequest {

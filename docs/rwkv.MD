@@ -981,7 +981,11 @@ available, RWKV copies the active FSRS `validation_fold` review ids and fold
 indices into its `test_fold` rows. Other historical RWKV rows are written as
 `final_fit`, so comparison graphs evaluate both models on the same reviews.
 If FSRS validation data is unavailable, RWKV retains the chronological 70%
-train / 30% test split as a standalone fallback. The operation restores the
+train / 30% test split as a standalone fallback. Because the cache only
+rewrites rows whose prediction changed, a completed recompute then deletes its
+own source's rows outside the (review, role, fold) keys it just assigned, plus
+all legacy `rwkv_calibration_train` rows; answer-time `rwkv_review` and
+`rwkv_state_cache_build` rows are kept. The operation restores the
 active RWKV backend state afterward. Calibration graph consumers should ignore
 `final_fit` rows and use only `test_fold` plus future `post_optimization` rows.
 Add-ons that need these rows can call

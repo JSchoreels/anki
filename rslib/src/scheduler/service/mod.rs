@@ -31,6 +31,7 @@ use anki_proto::scheduler::FsrsPresetIdsForCardsResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
+use anki_proto::scheduler::PruneRwkvReviewRetrievabilityCacheRowsRequest;
 use anki_proto::scheduler::RwkvAnsweredCardQueueScorePatchRequest;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
 use anki_proto::scheduler::RwkvHistoricalReviewFingerprintRequest;
@@ -1034,6 +1035,37 @@ impl crate::services::SchedulerService for Collection {
             .storage
             .set_rwkv_review_retrievability_predictions(&rows, &input.source)?;
         Ok(generic::UInt32 { val: count as u32 })
+    }
+
+    fn prune_rwkv_review_retrievability_cache_rows(
+        &mut self,
+        input: PruneRwkvReviewRetrievabilityCacheRowsRequest,
+    ) -> Result<generic::UInt32> {
+        require!(
+            !input.source.is_empty()
+                && input
+                    .superseded_sources
+                    .iter()
+                    .all(|source| !source.is_empty() && *source != input.source),
+            "invalid RWKV retrievability source"
+        );
+        let mut keep = Vec::with_capacity(input.keep.len());
+        for key in input.keep {
+            require!(key.revlog_id > 0, "invalid RWKV review id");
+            let Some(sample_role) = RwkvReviewRetrievabilitySampleRole::from_str(&key.sample_role)
+            else {
+                invalid_input!("invalid RWKV retrievability sample role");
+            };
+            keep.push((RevlogId(key.revlog_id), sample_role, key.fold_index));
+        }
+        let deleted = self.storage.prune_rwkv_review_retrievability_rows(
+            &input.source,
+            &keep,
+            &input.superseded_sources,
+        )?;
+        Ok(generic::UInt32 {
+            val: deleted as u32,
+        })
     }
 
     fn apply_rwkv_review_reschedule(

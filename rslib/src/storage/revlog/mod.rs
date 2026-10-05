@@ -466,6 +466,73 @@ impl SqliteStorage {
         .map(|_| ())
     }
 
+    /// Deletes rows of `source` whose (revlog id, role, fold) is not in `keep`,
+    /// and every row of `superseded_sources`. A recompute only rewrites rows
+    /// whose prediction changed, so rows from earlier runs survive under roles
+    /// the latest run no longer assigns, and readers taking the newest row
+    /// could pick one of them.
+    pub(crate) fn prune_rwkv_review_retrievability_rows(
+        &self,
+        source: &str,
+        keep: &[(RevlogId, RwkvReviewRetrievabilitySampleRole, i32)],
+        superseded_sources: &[String],
+    ) -> Result<usize> {
+        // An empty run never supersedes existing calibration data.
+        if keep.is_empty() {
+            return Ok(0);
+        }
+
+        self.ensure_rwkv_review_retrievability_cache_schema()?;
+
+        self.with_retrievability_cache_write_batch(|| {
+            self.db.execute_batch(
+                "
+                CREATE TEMP TABLE IF NOT EXISTS rwkv_calibration_keep (
+                    revlog_id INTEGER NOT NULL,
+                    sample_role TEXT NOT NULL,
+                    fold_index INTEGER NOT NULL,
+                    PRIMARY KEY (revlog_id, sample_role, fold_index)
+                ) WITHOUT ROWID;
+                DELETE FROM temp.rwkv_calibration_keep;
+                ",
+            )?;
+            let mut insert = self.db.prepare_cached(
+                "INSERT OR IGNORE INTO temp.rwkv_calibration_keep VALUES (?, ?, ?)",
+            )?;
+            for (revlog_id, sample_role, fold_index) in keep {
+                insert.execute(params![revlog_id, sample_role.as_str(), fold_index])?;
+            }
+
+            let table =
+                Self::qualified_retrievability_cache_table(RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+            let mut deleted = self.db.execute(
+                &format!(
+                    "
+                    DELETE FROM {table}
+                    WHERE source = ?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM temp.rwkv_calibration_keep keep
+                        WHERE keep.revlog_id = {table}.revlog_id
+                          AND keep.sample_role = {table}.sample_role
+                          AND keep.fold_index = {table}.fold_index
+                      )
+                    "
+                ),
+                [source],
+            )?;
+            if !superseded_sources.is_empty() {
+                let placeholders = vec!["?"; superseded_sources.len()].join(", ");
+                deleted += self.db.execute(
+                    &format!("DELETE FROM {table} WHERE source IN ({placeholders})"),
+                    rusqlite::params_from_iter(superseded_sources),
+                )?;
+            }
+            self.db
+                .execute_batch("DROP TABLE temp.rwkv_calibration_keep;")?;
+            Ok(deleted)
+        })
+    }
+
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {
         self.db
             .prepare(include_str!("fix_props.sql"))?
@@ -1198,6 +1265,90 @@ mod tests {
         )?;
         assert!((changed_prediction - 0.75).abs() < 1e-6);
         assert_ne!(changed_updated_at, 123);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_retrievability_prune_keeps_only_latest_run_keys() -> Result<()> {
+        use RwkvReviewRetrievabilitySampleRole::*;
+        let (col, _tempdir, _col_path) = temp_collection("rwkv-cache-prune")?;
+        let row = |revlog_id, sample_role, fold_index| RwkvReviewRetrievabilityCacheRow {
+            revlog_id: RevlogId(revlog_id),
+            prediction: 0.5,
+            sample_role,
+            fold_index,
+        };
+        let storage = &col.storage;
+        // Review 1 was test fold 2 in an earlier run and test fold 3 now; review
+        // 2 left the validation folds; review 3 no longer exists in history.
+        storage.set_rwkv_review_retrievability_predictions(
+            &[
+                row(1, TestFold, 2),
+                row(1, TestFold, 3),
+                row(2, TestFold, 1),
+            ],
+            "rwkv_calibration_recompute",
+        )?;
+        storage.set_rwkv_review_retrievability_predictions(
+            &[row(2, FinalFit, -1), row(3, FinalFit, -1)],
+            "rwkv_calibration_recompute",
+        )?;
+        storage.set_rwkv_review_retrievability_predictions(
+            &[row(2, FinalFit, -1)],
+            "rwkv_calibration_train",
+        )?;
+        storage.set_rwkv_review_retrievability_predictions(
+            &[row(1, PostOptimization, -1)],
+            "rwkv_review",
+        )?;
+        storage.set_rwkv_review_retrievability_predictions(
+            &[row(1, FinalFit, -1)],
+            "rwkv_state_cache_build",
+        )?;
+        let superseded = vec!["rwkv_calibration_train".to_string()];
+        let remaining = || -> Result<Vec<(i64, String, i32, String)>> {
+            let mut stmt = storage.db.prepare(&format!(
+                "SELECT revlog_id, sample_role, fold_index, source
+                 FROM {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                 ORDER BY revlog_id, source, sample_role, fold_index"
+            ))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        };
+
+        // An empty run supersedes nothing.
+        assert_eq!(
+            storage.prune_rwkv_review_retrievability_rows(
+                "rwkv_calibration_recompute",
+                &[],
+                &superseded
+            )?,
+            0
+        );
+        assert_eq!(remaining()?.len(), 8);
+
+        let deleted = storage.prune_rwkv_review_retrievability_rows(
+            "rwkv_calibration_recompute",
+            &[(RevlogId(1), TestFold, 3), (RevlogId(2), FinalFit, -1)],
+            &superseded,
+        )?;
+        assert_eq!(deleted, 4);
+        let as_owned = |id: i64, role: &str, fold: i32, source: &str| {
+            (id, role.to_string(), fold, source.to_string())
+        };
+        assert_eq!(
+            remaining()?,
+            vec![
+                as_owned(1, "test_fold", 3, "rwkv_calibration_recompute"),
+                as_owned(1, "post_optimization", -1, "rwkv_review"),
+                as_owned(1, "final_fit", -1, "rwkv_state_cache_build"),
+                as_owned(2, "final_fit", -1, "rwkv_calibration_recompute"),
+            ]
+        );
         Ok(())
     }
 

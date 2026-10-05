@@ -22,6 +22,13 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Fixed
+
+- Recomputing RWKV calibration data now removes the predictions it replaces.
+  Earlier recomputes left rows under fold assignments that FSRS no longer uses,
+  plus leftover training rows from older builds, so calibration graphs could
+  pick an outdated value and read a cache several times larger than needed.
+
 ## [26.09.3+fsrs7.build.97](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.97) — 2026-10-06
 
 Based on [Anki 26.09.3](https://github.com/ankitects/anki/releases/tag/26.09.3).

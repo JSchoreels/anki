@@ -10180,6 +10180,48 @@ def test_rwkv_calibration_recompute_uses_fsrs_validation_folds(
     }
 
 
+def test_rwkv_calibration_recompute_prunes_superseded_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    deleted_review, legacy_review, answered_review = 7, 8, 9
+    reviewer.mw.col.rwkv_retrievability_rows[:] = [
+        (deleted_review, 0.4, "rwkv_calibration_recompute", 0, "test_fold", 1),
+        (legacy_review, 0.5, "rwkv_calibration_train", 0, "final_fit", -1),
+        (answered_review, 0.6, "rwkv_review", 0, "post_optimization", -1),
+    ]
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    remaining = {
+        review_id: source
+        for review_id, _prediction, source, _updated_at, _role, _fold in (
+            reviewer.mw.col.rwkv_retrievability_rows
+        )
+    }
+    assert remaining == {
+        answered_review: "rwkv_review",
+        first_review: "rwkv_calibration_recompute",
+        second_review: "rwkv_calibration_recompute",
+    }
+
+
 def test_rwkv_calibration_fold_roles_fall_back_to_chronological_split(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -19903,6 +19945,30 @@ def _rwkv_cache_reviewer(
             rwkv_retrievability_rows[:] = [
                 existing[review_id] for review_id in sorted(existing)
             ]
+
+        def prune_rwkv_review_retrievability_cache_rows(
+            self,
+            *,
+            source: str,
+            keep: Sequence[object],
+            superseded_sources: Sequence[str],
+        ) -> int:
+            kept = {
+                (
+                    getattr(key, "revlog_id"),
+                    getattr(key, "sample_role"),
+                    getattr(key, "fold_index"),
+                )
+                for key in keep
+            }
+            before = len(rwkv_retrievability_rows)
+            rwkv_retrievability_rows[:] = [
+                row
+                for row in rwkv_retrievability_rows
+                if row[2] not in superseded_sources
+                and (row[2] != source or (row[0], row[4], row[5]) in kept)
+            ]
+            return before - len(rwkv_retrievability_rows)
 
     class Scheduler:
         def _timing_today(self) -> SimpleNamespace:
