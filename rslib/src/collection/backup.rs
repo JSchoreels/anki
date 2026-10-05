@@ -18,6 +18,7 @@ use itertools::Itertools;
 use tracing::error;
 use tracing::warn;
 
+use crate::import_export::package::check_colpkg_header;
 use crate::import_export::package::export_colpkg_from_data;
 use crate::import_export::package::validate_colpkg;
 use crate::prelude::*;
@@ -84,7 +85,9 @@ fn has_recent_backup(backup_folder: &Path, recent_mins: u32) -> Result<bool> {
                 .and_then(|time| now.duration_since(time).ok())
                 .is_some_and(|duration| duration.as_secs() < recent_secs)
         })
-        .any(|backup| backup.is_usable()))
+        // Runs with the collection locked on every periodic check, so only the
+        // header is read; archives were fully validated when they were written.
+        .any(|backup| backup.has_usable_header()))
 }
 
 fn backup_inner<P: AsRef<Path>>(
@@ -176,8 +179,17 @@ impl Backup {
             })
     }
 
+    /// Full check, required before a backup may displace older ones.
     fn is_usable(&self) -> bool {
-        match validate_colpkg(&self.path) {
+        self.passes(validate_colpkg)
+    }
+
+    fn has_usable_header(&self) -> bool {
+        self.passes(check_colpkg_header)
+    }
+
+    fn passes(&self, check: fn(&Path) -> Result<()>) -> bool {
+        match check(&self.path) {
             Ok(()) => true,
             Err(error) => {
                 warn!(path = ?self.path, ?error, "ignoring unreadable backup");
@@ -296,17 +308,21 @@ mod test {
             .unwrap();
     }
 
-    fn create_invalid_collection_backup(path: &Path) {
+    fn create_legacy_backup(path: &Path, collection: &[u8]) {
         use std::io::Write;
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
         zip.start_file("collection.anki2", zip::write::SimpleFileOptions::default())
             .unwrap();
-        zip.write_all(b"not a SQLite collection").unwrap();
+        zip.write_all(collection).unwrap();
         zip.start_file("media", zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(b"{}").unwrap();
         zip.finish().unwrap();
+    }
+
+    fn create_invalid_collection_backup(path: &Path) {
+        create_legacy_backup(path, b"not a SQLite collection");
     }
 
     #[test]
@@ -388,6 +404,20 @@ mod test {
         create_backup(&path);
         assert!(has_recent_backup(dir.path(), 30).unwrap());
         assert!(!has_recent_backup(dir.path(), 0).unwrap());
+    }
+
+    #[test]
+    fn recent_backup_check_does_not_read_collection_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(Local::now().format(BACKUP_FORMAT_STRING).to_string());
+        let mut collection = b"SQLite format 3\0".to_vec();
+        collection.resize(4096, 0xff);
+        create_legacy_backup(&path, &collection);
+        // Full validation is left to backup creation and thinning.
+        assert!(validate_colpkg(&path).is_err());
+        assert!(has_recent_backup(dir.path(), 30).unwrap());
     }
 
     #[test]

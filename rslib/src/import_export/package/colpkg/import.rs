@@ -3,6 +3,7 @@
 
 use std::fs::File;
 use std::io;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -43,6 +44,31 @@ pub(crate) fn validate_colpkg(path: &Path) -> Result<()> {
         let mut file = entry.fetch_file(&mut archive)?;
         meta.copy(&mut file, &mut io::sink())?;
     }
+    Ok(())
+}
+
+/// Cheap check that an archive is a complete zip whose collection starts with a
+/// SQLite header. Unlike [validate_colpkg], it does not read the collection
+/// body, so it is fast enough to run while the collection is locked.
+pub(crate) fn check_colpkg_header(path: &Path) -> Result<()> {
+    let mut archive = ZipArchive::new(open_file(path)?)?;
+    let meta = Meta::from_archive(&mut archive)?;
+    let mut file =
+        archive
+            .by_name(meta.collection_filename())
+            .map_err(|_| AnkiError::ImportError {
+                source: ImportError::Corrupt,
+            })?;
+    let mut header = [0; 16];
+    if meta.zstd_compressed() {
+        zstd::stream::read::Decoder::new(file)?.read_exact(&mut header)?;
+    } else {
+        file.read_exact(&mut header)?;
+    }
+    require!(
+        &header == b"SQLite format 3\0",
+        "invalid backup collection header"
+    );
     Ok(())
 }
 

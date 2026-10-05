@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Fix Anki freezing and showing “Creating backup…” every few minutes while
+  reviewing. The periodic check for a recent backup no longer re-verifies the
+  whole backup; backups are still fully verified when written and before older
+  ones are removed.
+
 - Log the failing deck, both filters, and the preparation failure reason when
   RWKV scoring prevents a filtered-deck rebuild, making reports easier to diagnose.
 
