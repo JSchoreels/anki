@@ -22,22 +22,37 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- Fix Anki freezing and showing “Creating backup…” every few minutes while
-  reviewing. The periodic check for a recent backup no longer re-verifies the
-  whole backup; backups are still fully verified when written and before older
-  ones are removed.
+## [26.09.3+fsrs7.build.97](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.97) — 2026-10-06
 
-- Log the failing deck, both filters, and the preparation failure reason when
-  RWKV scoring prevents a filtered-deck rebuild, making reports easier to diagnose.
+Based on [Anki 26.09.3](https://github.com/ankitects/anki/releases/tag/26.09.3).
+Changes since [build 96](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.96).
 
-- Default “Allow same day review for (re)learning steps” to on, including the
-  reset control in Deck Options. Explicitly saved off choices remain off. Document
-  that queue skipping bypasses manual steps while retaining their saved values.
+### Fixed
 
-- Make “Allow same day review for (re)learning steps” control FSRS-7 and
-  RWKV-Curve short-term scheduling too. With it off, empty or exhausted steps
+- Anki no longer freezes and shows “Creating backup…” every few minutes while
+  reviewing. Build 96 re-verified the latest backup on every 5-minute check;
+  backups are now fully verified only when written and before older ones are
+  removed, and are still created at the configured interval.
+
+### Changed
+
+- “Allow same day review for (re)learning steps” now also controls FSRS-7 and
+  RWKV-Curve short-term scheduling. With it off, empty or exhausted steps
   schedule generated intervals as reviews of at least one day; explicitly
   configured learning/relearning steps still apply.
+- The option now defaults to on, including the reset control in Deck Options.
+  Choices explicitly saved as off remain off. The manual notes that queue
+  skipping bypasses manual steps while keeping their saved values.
+
+### Diagnostics
+
+- When RWKV scoring prevents a filtered-deck rebuild, the log names the deck,
+  both filters and the reason, making reports easier to diagnose.
+
+All 12 installer and portable downloads are available for macOS, Windows and
+Linux, on ARM64 and x64. This build is unsigned.
+
+[Full commit comparison](https://github.com/JSchoreels/anki/compare/26.09.3%2Bfsrs7.build.96...26.09.3%2Bfsrs7.build.97)
 
 ## [26.09.3+fsrs7.build.96](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.96) — 2026-10-04
 
