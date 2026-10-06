@@ -242,6 +242,9 @@ _reviewer_backend_warmup_states: dict[
     RwkvResidentStateIdentity | None,
 ] = {}
 _reviewer_backend_warmup_generations: dict[tuple[int, int], int] = {}
+_reviewer_backend_revalidation_candidates: dict[
+    tuple[int, int], tuple[int, RwkvResidentStateIdentity]
+] = {}
 _reviewer_backend_warmup_pending_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_cold_fallback_generations: dict[tuple[int, int], int] = {}
 _rwkv_memorised_history_identity_cache: dict[
@@ -2774,6 +2777,7 @@ def _record_collection_undo_or_redo_with_backend(
         handler_name = "answer_redone" if redo else "answer_undone"
         handler = getattr(backend, handler_name, None)
         if callable(handler):
+            _drop_reviewer_backend_revalidation_candidates(backend)
             restored = handler(counter, next_counter)
             if card_id := _valid_card_id(restored):
                 restored_card_ids = [card_id]
@@ -3395,6 +3399,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
         | _reviewer_backend_warmup_generations.keys()
         | _reviewer_backend_warmup_pending_generations.keys()
         | _reviewer_backend_cold_fallback_generations.keys()
+        | _reviewer_backend_revalidation_candidates.keys()
         | _rwkv_memorised_history_identity_cache.keys()
     )
     for key in keys:
@@ -3402,6 +3407,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
             _reviewer_backend_warmup_generations.get(key, 0) + 1
         )
     _reviewer_backend_warmup_states.clear()
+    _reviewer_backend_revalidation_candidates.clear()
     _reviewer_backend_warmup_pending_generations.clear()
     _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_memorised_history_identity_cache.clear()
@@ -3745,6 +3751,8 @@ def _finish_reviewer_backend_temporary_operation(
 ) -> None:
     discard_queue_scores = False
     with _reviewer_backend_state_lock:
+        if not restored:
+            _drop_reviewer_backend_revalidation_candidates(operation.backend)
         col = _collection(operation.reviewer)
         current = (
             _reviewer_backend is operation.backend
@@ -4648,6 +4656,7 @@ def record_grade_now_answers(
                 "review_inputs_answered",
                 None,
             )
+            _drop_reviewer_backend_revalidation_candidates(mutation_context.backend)
             if callable(review_inputs_answered):
                 review_inputs_answered(reviewer, review_inputs)
             else:
@@ -5078,6 +5087,7 @@ def record_reviewer_answer(
                 )
                 logger.debug("RWKV answer update deferred: %s", recovery_reason)
                 return
+            _drop_reviewer_backend_revalidation_candidates(backend)
             backend.review_answered(
                 reviewer=reviewer,
                 card=card,
@@ -9514,6 +9524,7 @@ def _invalidate_reviewer_backend_state(
     *,
     reason: str,
     preserve_cold_fallback: bool = False,
+    keep_revalidation_candidate: bool = False,
     expected_mutation_context: _ReviewerBackendMutationContext | None = None,
 ) -> None:
     invalidated = False
@@ -9544,16 +9555,28 @@ def _invalidate_reviewer_backend_state(
                 _reviewer_backend_cold_fallback_generations.get(key)
                 == previous_generation
             )
-            _reviewer_backend_warmup_states.pop(key, None)
+            identity = _reviewer_backend_warmup_states.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
             generation = previous_generation + 1
             _reviewer_backend_warmup_generations[key] = generation
+            candidate = _reviewer_backend_revalidation_candidates.get(key)
+            if keep_revalidation_candidate and identity is not None:
+                _reviewer_backend_revalidation_candidates[key] = (generation, identity)
+            elif keep_revalidation_candidate and not was_warm and candidate is not None:
+                _reviewer_backend_revalidation_candidates[key] = (
+                    generation,
+                    candidate[1],
+                )
+            else:
+                _reviewer_backend_revalidation_candidates.pop(key, None)
             if preserve_cold_fallback and cold_fallback:
                 _reviewer_backend_cold_fallback_generations[key] = generation
             else:
                 _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_collection_mutation_undo_entries.clear()
             _rwkv_collection_mutation_redo_entries.clear()
+        elif key is not None:
+            _reviewer_backend_revalidation_candidates.pop(key, None)
     try:
         _clear_rwkv_review_queue_scores(reviewer)
     except Exception:
@@ -9584,6 +9607,7 @@ def _publish_reviewer_backend_state(
         backend_changed = current_backend_id != key[0]
         if current_generation == expected_generation and not backend_changed:
             _reviewer_backend_warmup_states[key] = identity
+            _reviewer_backend_revalidation_candidates.pop(key, None)
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache[key] = (
                 current_generation,
@@ -9625,6 +9649,7 @@ def _mark_reviewer_backend_identity_unknown(
         )
         if key in _reviewer_backend_warmup_states:
             _reviewer_backend_warmup_states[key] = None
+        _reviewer_backend_revalidation_candidates.pop(key, None)
         _rwkv_memorised_history_identity_cache.pop(key, None)
         generation = previous_generation + 1
         _reviewer_backend_warmup_generations[key] = generation
@@ -9654,12 +9679,14 @@ def _invalidate_reviewer_backend_states(
                 | _reviewer_backend_warmup_generations.keys()
                 | _reviewer_backend_warmup_pending_generations.keys()
                 | _reviewer_backend_cold_fallback_generations.keys()
+                | _reviewer_backend_revalidation_candidates.keys()
                 | _rwkv_memorised_history_identity_cache.keys()
             )
             if key[0] == backend_id
         ]
         for key in matching_keys:
             _reviewer_backend_warmup_states.pop(key, None)
+            _reviewer_backend_revalidation_candidates.pop(key, None)
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
             _reviewer_backend_warmup_generations[key] = (
@@ -9689,6 +9716,7 @@ def _mark_reviewer_backend_identities_unknown(
                 | _reviewer_backend_warmup_generations.keys()
                 | _reviewer_backend_warmup_pending_generations.keys()
                 | _reviewer_backend_cold_fallback_generations.keys()
+                | _reviewer_backend_revalidation_candidates.keys()
                 | _rwkv_memorised_history_identity_cache.keys()
             )
             if key[0] == backend_id
@@ -9696,6 +9724,7 @@ def _mark_reviewer_backend_identities_unknown(
         for key in matching_keys:
             if key in _reviewer_backend_warmup_states:
                 _reviewer_backend_warmup_states[key] = None
+            _reviewer_backend_revalidation_candidates.pop(key, None)
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
             _reviewer_backend_warmup_generations[key] = (
@@ -9719,6 +9748,7 @@ def _begin_forced_reviewer_backend_warmup_with_execution_locked(
         if _reviewer_backend is not backend:
             return _ReviewerBackendWarmupStart(None, False)
         _reviewer_backend_warmup_states.pop(key, None)
+        _reviewer_backend_revalidation_candidates.pop(key, None)
         _reviewer_backend_cold_fallback_generations.pop(key, None)
         _rwkv_memorised_history_identity_cache.pop(key, None)
         generation = _reviewer_backend_warmup_generations.get(key, 0) + 1
@@ -9817,7 +9847,85 @@ def _begin_reviewer_backend_warmup(
             _reviewer_backend_execution_lock.release()
 
 
-def _warm_up_reviewer_backend(
+def _drop_reviewer_backend_revalidation_candidates(backend: object) -> None:
+    with _reviewer_backend_state_lock:
+        for key in list(_reviewer_backend_revalidation_candidates):
+            if key[0] == id(backend):
+                _reviewer_backend_revalidation_candidates.pop(key, None)
+
+
+def _revalidate_resident_reviewer_backend_state(
+    reviewer: object,
+    key: tuple[int, int],
+    warmup_generation: int,
+) -> RwkvResidentStateIdentity | None:
+    with _reviewer_backend_state_lock:
+        candidate = _reviewer_backend_revalidation_candidates.get(key)
+    if candidate is None:
+        return None
+
+    try:
+        generation, identity = candidate
+        if generation != warmup_generation:
+            raise ValueError("candidate generation changed")
+        if _rwkv_preserved_learning_start_cutoffs(reviewer):
+            raise ValueError("preserved learning start cutoffs")
+        metadata = _read_rwkv_state_cache_metadata(reviewer)
+        if not metadata or not _rwkv_state_cache_metadata_compatible(
+            reviewer,
+            metadata,
+            dynamic_preset_replay_enabled=None,
+        ):
+            raise ValueError("cache metadata incompatible or missing")
+        if (
+            metadata.get("lastReviewId") != identity.last_review_id
+            or metadata.get("reviewCount") != identity.review_count
+            or metadata.get("historyHash") != identity.history_hash
+            or metadata.get("replayKey") != identity.replay_key
+        ):
+            raise ValueError("cache metadata identity changed")
+        if (
+            _rwkv_replay_semantics_key(
+                reviewer,
+                first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+            )
+            != identity.replay_key
+        ):
+            raise ValueError("replay semantics changed")
+        expected_identity = _RwkvHistoryPrefixIdentity(
+            identity.last_review_id,
+            identity.review_count,
+            identity.history_hash,
+        )
+        fingerprint = _rwkv_historical_review_fingerprint(
+            reviewer,
+            ignored_review_ids=_rwkv_state_cache_ignored_review_ids(metadata),
+            expected_identity=expected_identity,
+        )
+        if (
+            fingerprint is None
+            or not fingerprint.history_is_valid
+            or fingerprint.identity != expected_identity
+        ):
+            raise ValueError("history fingerprint does not match exactly")
+        with _reviewer_backend_state_lock:
+            if (
+                _reviewer_backend_revalidation_candidates.get(key) != candidate
+                or _reviewer_backend_warmup_generations.get(key, 0) != generation
+            ):
+                raise ValueError("candidate invalidated during validation")
+        return identity
+    except Exception as error:
+        with _reviewer_backend_state_lock:
+            # A newer invalidation may have re-armed the candidate for the
+            # same resident state; leave that one for its own check.
+            if _reviewer_backend_revalidation_candidates.get(key) == candidate:
+                _reviewer_backend_revalidation_candidates.pop(key, None)
+        logger.debug("RWKV resident state revalidation skipped: reason=%s", error)
+        return None
+
+
+def _warm_up_reviewer_backend(  # noqa: PLR0911
     reviewer: object,
     *,
     force_rebuild: bool = False,
@@ -9827,15 +9935,20 @@ def _warm_up_reviewer_backend(
     additional_ignored_review_ids: Sequence[int] = (),
     on_cache_persistence_error: Callable[[Exception], None] | None = None,
     discard_resident_state: bool = False,
+    revalidate_only: bool = False,
 ) -> bool:
+    if revalidate_only and (
+        force_rebuild or discard_resident_state or additional_ignored_review_ids
+    ):
+        return False
     context = _reviewer_backend_warmup_context(reviewer)
     if context is None:
-        return True
+        return not revalidate_only
     backend, key = context
 
     warm_up = getattr(backend, "warm_up", None)
     if not callable(warm_up):
-        return True
+        return not revalidate_only
 
     warmup_start = _begin_reviewer_backend_warmup(
         reviewer,
@@ -9862,7 +9975,38 @@ def _warm_up_reviewer_backend(
         )
 
     start = time.monotonic()
+    revalidated = False
     try:
+        if (
+            not force_rebuild
+            and not discard_resident_state
+            and not additional_ignored_review_ids
+        ):
+            identity = _revalidate_resident_reviewer_backend_state(
+                reviewer, key, warmup_generation
+            )
+            if identity is not None:
+                if not is_current():
+                    with _reviewer_backend_state_lock:
+                        _reviewer_backend_revalidation_candidates.pop(key, None)
+                    raise _ReviewerBackendWarmupInvalidated
+                if _publish_reviewer_backend_state(
+                    key, identity, expected_generation=warmup_generation
+                ):
+                    revalidated = True
+                    logger.debug(
+                        "RWKV resident state revalidated in place: elapsed_ms=%.1f",
+                        (time.monotonic() - start) * 1000,
+                    )
+                    return True
+                with _reviewer_backend_state_lock:
+                    _reviewer_backend_revalidation_candidates.pop(key, None)
+                logger.debug(
+                    "RWKV resident state revalidation skipped: reason=publication superseded"
+                )
+        if revalidate_only:
+            return False
+        _drop_reviewer_backend_revalidation_candidates(backend)
         logger.debug("RWKV historical warm-up started")
         _report_rwkv_state_cache_progress(
             progress,
@@ -10020,6 +10164,8 @@ def _warm_up_reviewer_backend(
         finally:
             try:
                 _finish_reviewer_backend_warmup(key, warmup_generation)
+                if revalidated:
+                    _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
             finally:
                 _reviewer_backend_execution_lock.release()
 
@@ -11719,6 +11865,84 @@ def load_rwkv_state_cache_with_progress(
             raise
 
     _run_on_main(mw, start_load)
+
+
+def revalidate_rwkv_state_after_legacy_reset(mw: object) -> None:
+    """Coalesce legacy resets into one silent check of the retained state."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    collection = _collection(reviewer)
+    key = _reviewer_backend_warmup_key(reviewer)
+
+    def can_revalidate() -> bool:
+        if (
+            key is None
+            or _collection(reviewer) is not collection
+            or _reviewer_backend_warmup_key(reviewer) != key
+            or not _rwkv_collection_config_state(reviewer).review_enabled
+            or rwkv_state_cache_loading(mw)
+        ):
+            return False
+        with _reviewer_backend_state_lock:
+            return key in _reviewer_backend_revalidation_candidates
+
+    if not can_revalidate() or getattr(
+        mw, "_rwkv_legacy_reset_revalidation_scheduled", False
+    ):
+        return
+
+    progress = getattr(mw, "progress", None)
+    single_shot = getattr(progress, "single_shot", None)
+    run_in_background = getattr(getattr(mw, "taskman", None), "run_in_background", None)
+    if not callable(single_shot) or not callable(run_in_background):
+        return
+    setattr(mw, "_rwkv_legacy_reset_revalidation_scheduled", True)
+
+    def revalidate() -> bool:
+        return can_revalidate() and _warm_up_reviewer_backend(
+            reviewer, revalidate_only=True
+        )
+
+    def done(future: Future[bool]) -> None:
+        setattr(mw, "_rwkv_legacy_reset_revalidation_scheduled", False)
+        try:
+            ready = future.result()
+        except Exception:
+            logger.debug("RWKV legacy reset revalidation failed", exc_info=True)
+            return
+        logger.debug("RWKV legacy reset revalidation finished: ready=%s", ready)
+        if not ready:
+            # Another reset during the check re-armed a newer candidate.
+            revalidate_rwkv_state_after_legacy_reset(mw)
+            return
+        if (
+            _collection(reviewer) is not collection
+            or _reviewer_backend_warmup_key(reviewer) != key
+            or not _rwkv_resident_state_ready(mw)
+        ):
+            return
+        _refresh_active_rwkv_count_view(mw)
+        from aqt import gui_hooks
+
+        gui_hooks.rwkv_state_did_prepare(cast(Any, mw))
+        if getattr(mw, "state", None) == "review":
+            getattr(mw, "reviewer").op_executed(
+                collection_pb2.OpChanges(study_queues=True), None, focused=True
+            )
+
+    def start_revalidation() -> None:
+        if not can_revalidate():
+            setattr(mw, "_rwkv_legacy_reset_revalidation_scheduled", False)
+            return
+        try:
+            run_in_background(revalidate, done, uses_collection=True)
+        except Exception:
+            setattr(mw, "_rwkv_legacy_reset_revalidation_scheduled", False)
+            logger.debug(
+                "failed to start RWKV legacy reset revalidation", exc_info=True
+            )
+
+    single_shot(500, start_revalidation, requires_collection=False)
 
 
 def refresh_rwkv_state_after_sync(
@@ -14449,6 +14673,7 @@ def _restore_reviewer_backend_cache(
     if not callable(restore_snapshot) or not callable(warm_up):
         return None
 
+    _drop_reviewer_backend_revalidation_candidates(backend)
     stored = _read_rwkv_state_cache(
         reviewer,
         backend=backend,
@@ -16108,6 +16333,7 @@ class _SpeculativeRwkvStateStoreRestore:
             backend,
             (cache_dir / _RWKV_STATE_CACHE_STORE_FILE, store_generation, segment_id),
         )
+        _drop_reviewer_backend_revalidation_candidates(backend)
         restore._thread.start()
         return restore
 
@@ -20094,6 +20320,7 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
     _invalidate_reviewer_backend_state(
         reviewer,
         reason="collection routing mutation",
+        keep_revalidation_candidate=True,
     )
     _invalidate_resolved_preset_id_cache(reviewer)
 
@@ -20247,6 +20474,7 @@ def study_queues_did_change(
         _invalidate_reviewer_backend_state(
             transient_reviewer,
             reason="study queue mutation",
+            keep_revalidation_candidate=True,
         )
     with _reviewer_backend_state_lock:
         _rwkv_study_queue_generation += 1

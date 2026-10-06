@@ -201,9 +201,18 @@ def test_legacy_reset_invalidates_rwkv_without_requesting_recovery(
         lambda *_args, **_kwargs: calls.append("recover"),
     )
 
+    def revalidate(window: AnkiQt) -> None:
+        assert window is mw
+        assert not window._legacy_reset_in_progress
+        calls.append("revalidate")
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "revalidate_rwkv_state_after_legacy_reset", revalidate
+    )
+
     mw._synthesize_op_did_execute_from_reset()
 
-    assert calls == ["invalidate", "screen"]
+    assert calls == ["invalidate", "screen", "revalidate"]
     assert not mw._legacy_reset_in_progress
 
 

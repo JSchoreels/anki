@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import pytest
 
+import anki.collection  # Initialize collection before the cards/decks import cycle.
 from anki import cards_pb2, collection_pb2, scheduler_pb2
 from anki.decks import DeckId, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
@@ -105,6 +106,9 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_warmup_generations = dict(
         rwkv_scheduler._reviewer_backend_warmup_generations
     )
+    previous_revalidation_candidates = dict(
+        rwkv_scheduler._reviewer_backend_revalidation_candidates
+    )
     previous_pending_generations = dict(
         rwkv_scheduler._reviewer_backend_warmup_pending_generations
     )
@@ -142,6 +146,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_model_cache_signature = rwkv_scheduler._rwkv_model_cache_signature
     previous_model_cache_value = rwkv_scheduler._rwkv_model_cache_value
     rwkv_scheduler._reviewer_backend_warmup_states.clear()
+    rwkv_scheduler._reviewer_backend_revalidation_candidates.clear()
     rwkv_scheduler._reviewer_backend_assignment_generation = 0
     rwkv_scheduler._reviewer_backend_warmup_generations.clear()
     rwkv_scheduler._reviewer_backend_warmup_pending_generations.clear()
@@ -179,6 +184,10 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         )
         rwkv_scheduler._reviewer_backend_warmup_states.clear()
         rwkv_scheduler._reviewer_backend_warmup_states.update(previous_warmup_states)
+        rwkv_scheduler._reviewer_backend_revalidation_candidates.clear()
+        rwkv_scheduler._reviewer_backend_revalidation_candidates.update(
+            previous_revalidation_candidates
+        )
         rwkv_scheduler._reviewer_backend_warmup_generations.clear()
         rwkv_scheduler._reviewer_backend_warmup_generations.update(
             previous_warmup_generations
@@ -463,9 +472,8 @@ def test_study_queue_change_invalidates_cached_and_async_rwkv_work() -> None:
     set_reviewer_backend(resident_backend)
     warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert warmup_key is not None
-    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
-        _rwkv_resident_identity()
-    )
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
     context = rwkv_scheduler._rwkv_review_queue_context(reviewer, 100)
     cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
         reviewer=reviewer,
@@ -519,6 +527,10 @@ def test_study_queue_change_invalidates_cached_and_async_rwkv_work() -> None:
     assert rwkv_scheduler._rwkv_score_prewarm_in_flight == set()
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
     assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
+    assert rwkv_scheduler._reviewer_backend_revalidation_candidates[warmup_key] == (
+        1,
+        resident_identity,
+    )
     assert rpc.calls[-1] == {"deck_id": 100, "scores": []}
     assert rpc.deck_count_clears == 1
     assert not rwkv_scheduler.install_reviewer_queue_order_async_result(
@@ -631,6 +643,497 @@ def test_preset_resolution_change_invalidates_resident_rwkv_state() -> None:
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
     assert warmup_key not in rwkv_scheduler._rwkv_memorised_history_identity_cache
     assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
+    assert rwkv_scheduler._reviewer_backend_revalidation_candidates[warmup_key] == (
+        1,
+        resident_identity,
+    )
+
+
+@pytest.mark.parametrize("known_identity", [False, True])
+@pytest.mark.parametrize("keep_candidate", [False, True])
+def test_invalidation_only_retains_known_resident_identity(
+    known_identity: bool, keep_candidate: bool
+) -> None:
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[key] = (
+        identity if known_identity else None
+    )
+    rwkv_scheduler._reviewer_backend_revalidation_candidates[key] = (0, identity)
+
+    rwkv_scheduler._invalidate_reviewer_backend_state(
+        reviewer, reason="test mutation", keep_revalidation_candidate=keep_candidate
+    )
+
+    if known_identity and keep_candidate:
+        assert rwkv_scheduler._reviewer_backend_revalidation_candidates[key] == (
+            1,
+            identity,
+        )
+    else:
+        assert key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+
+
+@pytest.fixture
+def resident_revalidation(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    identity = _rwkv_resident_identity()
+    assert rwkv_scheduler._publish_reviewer_backend_state(
+        key, identity, expected_generation=0
+    )
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None)
+    metadata = {
+        "lastReviewId": identity.last_review_id,
+        "reviewCount": identity.review_count,
+        "historyHash": identity.history_hash,
+        "replayKey": identity.replay_key,
+        "ignoredReviewIds": [100],
+    }
+    fingerprint_identity = rwkv_scheduler._RwkvHistoryPrefixIdentity(
+        identity.last_review_id, identity.review_count, identity.history_hash
+    )
+    state = SimpleNamespace(
+        backend=backend,
+        reviewer=reviewer,
+        key=key,
+        identity=identity,
+        metadata=metadata,
+        replay_key=identity.replay_key,
+        compatible=True,
+        cutoffs={},
+        fingerprint=rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+            fingerprint_identity, (100,), 2, True
+        ),
+        refreshed_markers=[],
+    )
+
+    def compatible(
+        _reviewer: object, _metadata: object, *, dynamic_preset_replay_enabled: object
+    ) -> bool:
+        assert dynamic_preset_replay_enabled is None
+        return state.compatible
+
+    def fingerprint(
+        _reviewer: object, *, ignored_review_ids: object, expected_identity: object
+    ) -> object:
+        assert ignored_review_ids == (100,)
+        assert expected_identity == fingerprint_identity
+        return state.fingerprint
+
+    def replay_key(_reviewer: object, *, first_review_elapsed_source: object) -> str:
+        assert (
+            first_review_elapsed_source
+            == rwkv_scheduler.RwkvFirstReviewElapsedSource.DECK_CONFIG
+        )
+        return state.replay_key
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_metadata",
+        lambda _reviewer: state.metadata,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_state_cache_metadata_compatible", compatible
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_preserved_learning_start_cutoffs",
+        lambda _reviewer: state.cutoffs,
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_replay_semantics_key", replay_key)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_historical_review_fingerprint", fingerprint
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, identity: state.refreshed_markers.append(identity),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_restore_reviewer_backend_cache",
+        lambda *_args, **_kwargs: pytest.fail("unexpected state cache restore"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache",
+        lambda *_args, **_kwargs: pytest.fail("unexpected state store read"),
+    )
+    return state
+
+
+@pytest.mark.parametrize("revalidate_only", [False, True])
+def test_warmup_reuses_exact_resident_state_after_repeated_invalidations(
+    resident_revalidation: SimpleNamespace, revalidate_only: bool
+) -> None:
+    state = resident_revalidation
+    rwkv_scheduler.fsrs_preset_resolution_did_change(state.reviewer.mw)
+    rwkv_scheduler.study_queues_did_change(state.reviewer.mw, None)
+    assert rwkv_scheduler._reviewer_backend_revalidation_candidates[state.key] == (
+        3,
+        state.identity,
+    )
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(
+        state.reviewer, revalidate_only=revalidate_only
+    )
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[state.key] == state.identity
+    assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
+    assert state.refreshed_markers == [state.identity]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "fingerprint-invalid",
+        "prefix-only",
+        "fingerprint-identity",
+        "fingerprint-missing",
+        "exception",
+        "replay-key",
+        "lastReviewId",
+        "reviewCount",
+        "historyHash",
+        "replayKey",
+        "metadata-missing",
+        "metadata-incompatible",
+        "learning-cutoffs",
+        "generation",
+        "invalidation",
+        "unknown-identity",
+    ],
+)
+@pytest.mark.parametrize("revalidate_only", [False, True])
+def test_warmup_rejects_changed_resident_state(
+    resident_revalidation: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    revalidate_only: bool,
+) -> None:
+    state = resident_revalidation
+    if failure in ("fingerprint-invalid", "prefix-only"):
+        state.fingerprint = state.fingerprint._replace(
+            history_is_valid=False, history_prefix_is_valid=failure == "prefix-only"
+        )
+    elif failure == "fingerprint-identity":
+        state.fingerprint = state.fingerprint._replace(
+            identity=state.fingerprint.identity._replace(review_count=3)
+        )
+    elif failure == "fingerprint-missing":
+        state.fingerprint = None
+    elif failure == "exception":
+
+        def fingerprint(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("fingerprint unavailable")
+
+        monkeypatch.setattr(
+            rwkv_scheduler, "_rwkv_historical_review_fingerprint", fingerprint
+        )
+    elif failure == "replay-key":
+        state.replay_key = "changed-replay"
+    elif failure in ("lastReviewId", "reviewCount", "historyHash", "replayKey"):
+        state.metadata[failure] = "changed"
+    elif failure == "metadata-missing":
+        state.metadata = {}
+    elif failure == "metadata-incompatible":
+        state.compatible = False
+    elif failure == "learning-cutoffs":
+        state.cutoffs = {1: 100}
+    elif failure == "generation":
+        rwkv_scheduler._reviewer_backend_warmup_generations[state.key] += 1
+    elif failure == "invalidation":
+        rwkv_scheduler._invalidate_reviewer_backend_state(
+            state.reviewer, reason="new mutation"
+        )
+    else:
+        rwkv_scheduler._mark_reviewer_backend_identity_unknown(
+            state.reviewer, reason="answer"
+        )
+    restored_identity = replace(state.identity, review_count=3)
+    restores: list[object] = []
+
+    def restore(
+        _reviewer: object, **_kwargs: object
+    ) -> rwkv_scheduler.RwkvResidentStateIdentity:
+        assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+        restores.append(_reviewer)
+        return restored_identity
+
+    monkeypatch.setattr(rwkv_scheduler, "_restore_reviewer_backend_cache", restore)
+    assert rwkv_scheduler._warm_up_reviewer_backend(
+        state.reviewer, revalidate_only=revalidate_only
+    ) is (not revalidate_only)
+    assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+    assert restores == ([] if revalidate_only else [state.reviewer])
+    assert rwkv_scheduler._reviewer_backend_warmup_states.get(state.key) == (
+        None if revalidate_only else restored_identity
+    )
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
+
+
+def test_warmup_does_not_publish_candidate_invalidated_during_fingerprint(
+    resident_revalidation: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = resident_revalidation
+
+    def fingerprint(*_args: object, **_kwargs: object) -> object:
+        rwkv_scheduler._invalidate_reviewer_backend_state(
+            state.reviewer, reason="concurrent mutation"
+        )
+        return state.fingerprint
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_historical_review_fingerprint", fingerprint
+    )
+    assert not rwkv_scheduler._warm_up_reviewer_backend(
+        state.reviewer, revalidate_only=True
+    )
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+
+
+def test_stale_revalidation_keeps_candidate_rearmed_by_newer_reset(
+    resident_revalidation: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = resident_revalidation
+    fingerprints: list[object] = []
+
+    def fingerprint(*_args: object, **_kwargs: object) -> object:
+        if not fingerprints:
+            rwkv_scheduler.study_queues_did_change(state.reviewer.mw, None)
+        fingerprints.append(state.fingerprint)
+        return state.fingerprint
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_historical_review_fingerprint", fingerprint
+    )
+    assert not rwkv_scheduler._warm_up_reviewer_backend(
+        state.reviewer, revalidate_only=True
+    )
+    assert state.key in rwkv_scheduler._reviewer_backend_revalidation_candidates
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(
+        state.reviewer, revalidate_only=True
+    )
+    assert rwkv_scheduler._reviewer_backend_warmup_states[state.key] == state.identity
+    assert len(fingerprints) == 2
+
+
+@pytest.mark.parametrize(
+    "action", ["invalidate-all", "unknown-all", "profile-open", "backend-replaced"]
+)
+def test_backend_bookkeeping_drops_revalidation_candidates(
+    resident_revalidation: SimpleNamespace, action: str
+) -> None:
+    state = resident_revalidation
+    if action == "invalidate-all":
+        rwkv_scheduler._invalidate_reviewer_backend_states(
+            state.backend, reason="mutation"
+        )
+    elif action == "unknown-all":
+        rwkv_scheduler._mark_reviewer_backend_identities_unknown(
+            state.backend, reason="answer"
+        )
+    elif action == "profile-open":
+        rwkv_scheduler._invalidate_reviewer_backend_runtime_state_for_profile_open()
+    else:
+        set_reviewer_backend(state.backend)
+    assert rwkv_scheduler._reviewer_backend_revalidation_candidates == {}
+
+
+@pytest.mark.parametrize("restore_fails", [False, True])
+def test_temporary_replay_retains_candidate_only_when_original_state_restored(
+    resident_revalidation: SimpleNamespace, restore_fails: bool
+) -> None:
+    state = resident_revalidation
+    original = state.backend.cache_snapshot()
+
+    def restore(snapshot: RwkvBackendCacheSnapshot) -> None:
+        if restore_fails:
+            raise RuntimeError("restore failed")
+        state.backend.restore_cache_snapshot(snapshot)
+
+    def replay() -> None:
+        with rwkv_scheduler._temporary_reviewer_backend_operation(
+            state.reviewer,
+            state.backend,
+            cache_snapshot=state.backend.cache_snapshot,
+            restore_cache_snapshot=restore,
+        ) as operation:
+            assert operation is not None
+            state.backend.reset_cache_snapshot()
+
+    if restore_fails:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            replay()
+        assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+    else:
+        replay()
+        assert state.backend.cache_snapshot() == original
+        assert rwkv_scheduler._reviewer_backend_revalidation_candidates[state.key] == (
+            1,
+            state.identity,
+        )
+
+
+@pytest.mark.parametrize("view", ["deckBrowser", "review"])
+def test_legacy_reset_revalidation_coalesces_and_refreshes_after_success(
+    resident_revalidation: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, view: str
+) -> None:
+    state = resident_revalidation
+    mw = state.reviewer.mw
+    mw.state = view
+    scheduled: list[Callable[[], None]] = []
+    tasks: list[tuple[Callable[[], bool], Callable[[Future[bool]], None]]] = []
+    calls: list[str] = []
+
+    def single_shot(
+        ms: int, callback: Callable[[], None], *, requires_collection: bool
+    ) -> None:
+        assert ms == 500
+        assert not requires_collection
+        scheduled.append(callback)
+
+    def run_in_background(
+        task: Callable[[], bool],
+        done: Callable[[Future[bool]], None],
+        *,
+        uses_collection: bool,
+    ) -> None:
+        assert uses_collection
+        tasks.append((task, done))
+
+    def refresh_review(
+        changes: collection_pb2.OpChanges, initiator: object, *, focused: bool
+    ) -> None:
+        assert changes.study_queues and initiator is None and focused
+        calls.append("review")
+
+    mw.progress = SimpleNamespace(single_shot=single_shot)
+    mw.taskman = SimpleNamespace(run_in_background=run_in_background)
+    mw.onRefreshTimer = lambda: calls.append("counts")
+    mw.reviewer = SimpleNamespace(op_executed=refresh_review)
+    from aqt import gui_hooks
+
+    monkeypatch.setattr(
+        gui_hooks, "rwkv_state_did_prepare", lambda window: calls.append("prepared")
+    )
+    for _ in range(3):
+        rwkv_scheduler.revalidate_rwkv_state_after_legacy_reset(mw)
+    assert len(scheduled) == 1
+    assert not getattr(mw, "_rwkv_state_cache_loading", False)
+    scheduled[0]()
+    assert len(tasks) == 1
+    rwkv_scheduler.revalidate_rwkv_state_after_legacy_reset(mw)
+    assert len(scheduled) == 1
+    task, done = tasks[0]
+    future: Future[bool] = Future()
+    future.set_result(task())
+    assert calls == []
+    done(future)
+
+    assert calls == (
+        ["counts", "prepared"] if view == "deckBrowser" else ["prepared", "review"]
+    )
+    assert not mw._rwkv_legacy_reset_revalidation_scheduled
+    assert not getattr(mw, "_rwkv_state_cache_loading", False)
+    assert rwkv_scheduler._reviewer_backend_warmup_states[state.key] == state.identity
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["no-candidate", "disabled", "loading", "no-backend", "collection-changed"],
+)
+@pytest.mark.parametrize("after_scheduling", [False, True])
+def test_legacy_reset_revalidation_skips_when_preconditions_change(
+    resident_revalidation: SimpleNamespace,
+    condition: str,
+    after_scheduling: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = resident_revalidation
+    mw = state.reviewer.mw
+    scheduled: list[Callable[[], None]] = []
+    mw.progress = SimpleNamespace(
+        single_shot=lambda _ms, callback, **_kwargs: scheduled.append(callback)
+    )
+    mw.taskman = SimpleNamespace(
+        run_in_background=lambda *_args, **_kwargs: pytest.fail(
+            "unexpected background task"
+        )
+    )
+    if after_scheduling:
+        rwkv_scheduler.revalidate_rwkv_state_after_legacy_reset(mw)
+        assert len(scheduled) == 1
+    if condition == "no-candidate":
+        rwkv_scheduler._reviewer_backend_revalidation_candidates.clear()
+    elif condition == "disabled":
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_rwkv_collection_config_state",
+            lambda _reviewer: rwkv_scheduler._RwkvCollectionConfigState(False, False),
+        )
+    elif condition == "loading":
+        mw._rwkv_state_cache_loading = True
+    elif condition == "no-backend":
+        set_reviewer_backend(None)
+    else:
+        mw.col = SimpleNamespace(db=SimpleNamespace())
+    if after_scheduling:
+        scheduled[0]()
+        assert not mw._rwkv_legacy_reset_revalidation_scheduled
+    else:
+        rwkv_scheduler.revalidate_rwkv_state_after_legacy_reset(mw)
+        assert scheduled == []
+
+
+def test_legacy_reset_revalidation_failure_leaves_normal_recovery_available(
+    resident_revalidation: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = resident_revalidation
+    state.fingerprint = None
+    mw = state.reviewer.mw
+    mw.state = "overview"
+    scheduled: list[Callable[[], None]] = []
+    mw.progress = SimpleNamespace(
+        single_shot=lambda _ms, callback, **_kwargs: scheduled.append(callback)
+    )
+    mw.onRefreshTimer = lambda: pytest.fail("unexpected refresh")
+
+    def run_in_background(
+        task: Callable[[], bool],
+        done: Callable[[Future[bool]], None],
+        *,
+        uses_collection: bool,
+    ) -> None:
+        future: Future[bool] = Future()
+        future.set_result(task())
+        done(future)
+
+    mw.taskman = SimpleNamespace(run_in_background=run_in_background)
+    from aqt import gui_hooks
+
+    monkeypatch.setattr(
+        gui_hooks,
+        "rwkv_state_did_prepare",
+        lambda _mw: pytest.fail("unexpected prepare notification"),
+    )
+    rwkv_scheduler.revalidate_rwkv_state_after_legacy_reset(mw)
+    scheduled[0]()
+    assert not mw._rwkv_legacy_reset_revalidation_scheduled
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_states
 
 
 @pytest.mark.parametrize(
@@ -14334,6 +14837,9 @@ def test_deck_browser_count_prepare_failure_after_cancellation_is_ignored(
 def test_selecting_deck_cancels_counts_and_defers_overview_until_after_hooks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
     from aqt.deckbrowser import DeckBrowser
 
     events: list[str] = []

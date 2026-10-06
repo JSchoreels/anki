@@ -1002,6 +1002,9 @@ class AnkiQt(QMainWindow):
             gui_hooks.operation_did_execute(op, None)
         finally:
             self._legacy_reset_in_progress = False
+        from aqt import rwkv_scheduler
+
+        rwkv_scheduler.revalidate_rwkv_state_after_legacy_reset(self)
 
     def on_operation_did_execute(
         self, changes: OpChanges, handler: object | None
