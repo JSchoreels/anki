@@ -22,6 +22,17 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### Changed
+
+- Refreshing RWKV calibration data after FSRS parameters change no longer
+  replays your whole review history when RWKV already has a prediction for
+  every review: it only reassigns the new FSRS validation folds (about 6 s
+  instead of 21 s on a 224,000-review collection). After a full recompute, each
+  answer also stores RWKV's prediction for that review, so the data stays
+  complete as you study. A rebuilt or recovered RWKV state, synced reviews
+  that RWKV has not seen yet, or a different RWKV model still use the full
+  recompute.
+
 ### Fixed
 
 - Adding cards through add-ons such as AnkiConnect (e.g. Yomitan mining) no

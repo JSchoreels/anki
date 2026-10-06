@@ -999,6 +999,24 @@ these temporary operations invalidates it and leaves state unready for replay
 from canonical history instead of letting the temporary snapshot erase the
 answer.
 
+A replay's pre-answer prediction depends only on the model, the replay
+semantics, and the reviews before it, never on the role it is stored under:
+two full recomputes, and a state build that records predictions, agree bit for
+bit. A completed recompute therefore records its **calibration epoch** in
+`calibration-epoch-v1.json` next to the state cache: the collection, model,
+replay semantics, store generation, snapshot segment, and snapshot history
+hash. While that lineage is unchanged, each live answer stores its pre-answer
+query as an `rwkv_calibration_recompute` `final_fit` row before the answer
+updates the state. Live queries use the per-review path and match the bulk
+replay within about 1e-7. When FSRS folds change,
+`ensure_rwkv_calibration_data()` first checks that every answer in the current
+history has such a row, then only writes the rows whose role or fold changed
+and prunes the rest, instead of replaying. A rebuild (new store generation), a
+recovery (new segment), ignored synced reviews, a model or replay-semantics
+change, or any answer without a recorded prediction falls back to the full
+recompute, which starts a new epoch. On a 224,000-review copy the relabel took
+6.5 s versus 21.3 s for the replay, with identical keys.
+
 ## Inference Runtime
 
 Desktop RWKV inference uses Anki's embedded Rust inference-only runner and

@@ -178,6 +178,19 @@ _RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD = "test_fold"
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_POST_OPTIMIZATION = "post_optimization"
 _RWKV_CALIBRATION_METRIC_EPSILON = 1e-6
 _RWKV_CALIBRATION_TRAIN_FRACTION = 0.70
+_RWKV_CALIBRATION_RECOMPUTE_SOURCE = "rwkv_calibration_recompute"
+# State-cache lineage a complete set of calibration predictions was made on.
+_RWKV_CALIBRATION_EPOCH_FILE = "calibration-epoch-v1.json"
+_RWKV_CALIBRATION_EPOCH_KEYS = (
+    "collection",
+    "model",
+    "replayKey",
+    "presetReplaySemantics",
+    "dynamicPresetReplay",
+    "storeGeneration",
+    "snapshotSegmentId",
+    "snapshotHistoryHash",
+)
 _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
@@ -2375,6 +2388,50 @@ class RwkvStatefulReviewerBackend:
             reviewer,
             frame,
         )
+
+    def answered_review_retrievability(
+        self,
+        *,
+        reviewer: object,
+        card: object,
+        ease: int,
+    ) -> float | None:
+        """Pre-answer retrievability, queried as historical replay records it.
+
+        Call before `review_answered()` applies the same answer.
+        """
+
+        identity = rwkv_review_identity(reviewer, card)
+        if identity is None:
+            return None
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=identity,
+            ease=ease,
+        )
+        if review_input.ease is None:
+            return None
+        state = self._review_state_snapshot(identity, review_input)
+        transition = self._runtime.review(
+            review_input=replace(
+                review_input,
+                is_query=True,
+                ease=None,
+                duration_millis=None,
+            ),
+            card_state=state.card_state,
+            note_state=state.note_state,
+            deck_state=state.deck_state,
+            preset_state=state.preset_state,
+            global_state=state.global_state,
+        )
+        retrievability = getattr(
+            getattr(transition, "prediction", None),
+            "retrievability",
+            None,
+        )
+        return float(retrievability) if _valid_probability(retrievability) else None
 
     def review_input_answered(self, review_input: RwkvReviewInput) -> None:
         if review_input.ease is None:
@@ -5088,6 +5145,12 @@ def record_reviewer_answer(
                 logger.debug("RWKV answer update deferred: %s", recovery_reason)
                 return
             _drop_reviewer_backend_revalidation_candidates(backend)
+            calibration_prediction = _rwkv_answer_calibration_prediction(
+                reviewer,
+                backend,
+                card,
+                ease,
+            )
             backend.review_answered(
                 reviewer=reviewer,
                 card=card,
@@ -5099,6 +5162,12 @@ def record_reviewer_answer(
             ):
                 logger.debug("RWKV answer bookkeeping skipped: backend context changed")
                 return
+            if calibration_prediction is not None:
+                _record_rwkv_answer_calibration_prediction(
+                    reviewer,
+                    card,
+                    calibration_prediction,
+                )
             _mark_reviewer_backend_identity_unknown(
                 reviewer,
                 reason="review answered",
@@ -10677,7 +10746,7 @@ def recompute_rwkv_calibration_data(
             )
             writer = _RwkvReviewRetrievabilityCacheWriter(
                 reviewer,
-                source="rwkv_calibration_recompute",
+                source=_RWKV_CALIBRATION_RECOMPUTE_SOURCE,
                 sample_role_by_review_id=sample_role_by_review_id,
                 fold_index_by_review_id=fold_index_by_review_id,
             )
@@ -10708,6 +10777,7 @@ def recompute_rwkv_calibration_data(
                 sample_role_by_review_id,
                 fold_index_by_review_id,
             )
+            _write_rwkv_calibration_epoch(reviewer, history)
             logger.debug(
                 "RWKV calibration data recomputed: reviews=%s elapsed_ms=%.1f",
                 len(history.reviews),
@@ -10751,7 +10821,7 @@ def _prune_superseded_rwkv_calibration_rows(
     ]
     try:
         deleted = prune(
-            source="rwkv_calibration_recompute",
+            source=_RWKV_CALIBRATION_RECOMPUTE_SOURCE,
             keep=keep,
             superseded_sources=["rwkv_calibration_train"],
         )
@@ -10762,12 +10832,208 @@ def _prune_superseded_rwkv_calibration_rows(
     logger.debug("pruned superseded RWKV calibration rows: deleted=%s", deleted)
 
 
+def _rwkv_calibration_epoch_from_metadata(
+    metadata: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Lineage fields that calibration predictions made on this state share.
+
+    A rebuild changes the store generation and a recovery writes a new segment;
+    both can change what every later answer would predict. Ignored reviews make
+    the state differ from the full history a recompute replays.
+    """
+
+    if metadata is None or _rwkv_state_cache_ignored_review_ids(metadata):
+        return None
+    epoch = {key: metadata.get(key) for key in _RWKV_CALIBRATION_EPOCH_KEYS}
+    if (
+        not isinstance(epoch["storeGeneration"], str)
+        or _int_value(epoch["snapshotSegmentId"]) is None
+        or not _rwkv_state_cache_model_usable(epoch["model"])
+    ):
+        return None
+    return epoch
+
+
+def _write_rwkv_calibration_epoch(
+    reviewer: object,
+    history: RwkvHistoricalReviewInputs,
+) -> None:
+    """Record the lineage a completed recompute matches.
+
+    Later answers on that lineage add their predictions to the same rows, and
+    a change of FSRS folds can then relabel them instead of replaying history.
+    """
+
+    cache_dir = _rwkv_state_cache_dir(reviewer)
+    if cache_dir is None:
+        return
+    path = cache_dir / _RWKV_CALIBRATION_EPOCH_FILE
+    metadata = _read_rwkv_state_cache_metadata(reviewer)
+    epoch = _rwkv_calibration_epoch_from_metadata(metadata)
+    try:
+        if epoch is None or not _rwkv_state_cache_metadata_usable(
+            reviewer,
+            metadata,
+            current_history=history,
+        ):
+            path.unlink(missing_ok=True)
+            return
+        _atomic_write(path, json.dumps(epoch, sort_keys=True).encode("utf8"))
+    except Exception:
+        logger.exception("failed to record RWKV calibration epoch")
+
+
+def _rwkv_calibration_epoch_current(reviewer: object) -> bool:
+    cache_dir = _rwkv_state_cache_dir(reviewer)
+    if cache_dir is None:
+        return False
+    try:
+        stored = json.loads(
+            (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).read_text(encoding="utf8")
+        )
+    except FileNotFoundError:
+        return False
+    except Exception:
+        logger.debug("failed to read RWKV calibration epoch", exc_info=True)
+        return False
+    current = _rwkv_calibration_epoch_from_metadata(
+        _read_rwkv_state_cache_metadata(reviewer)
+    )
+    return current is not None and stored == current
+
+
+def _rwkv_answer_calibration_prediction(
+    reviewer: object,
+    backend: object,
+    card: object,
+    ease: int,
+) -> float | None:
+    """Pre-answer prediction for an answer about to update the current epoch."""
+
+    predict = getattr(backend, "answered_review_retrievability", None)
+    if not callable(predict):
+        return None
+    try:
+        if not _rwkv_calibration_epoch_current(reviewer):
+            return None
+        return cast(float | None, predict(reviewer=reviewer, card=card, ease=ease))
+    except Exception:
+        logger.debug("RWKV answer calibration prediction failed", exc_info=True)
+        return None
+
+
+def _record_rwkv_answer_calibration_prediction(
+    reviewer: object,
+    card: object,
+    prediction: float,
+) -> None:
+    # A missing row only makes the next calibration refresh replay history, so
+    # recording must never fail the state update that already happened.
+    card_id = _card_id(card)
+    scalar = getattr(getattr(_collection(reviewer), "db", None), "scalar", None)
+    if card_id is None or not callable(scalar):
+        return
+    try:
+        review_id = scalar("select max(id) from revlog where cid = ?", card_id)
+        if not isinstance(review_id, int) or isinstance(review_id, bool):
+            return
+        writer = _RwkvReviewRetrievabilityCacheWriter(
+            reviewer,
+            source=_RWKV_CALIBRATION_RECOMPUTE_SOURCE,
+        )
+        writer.record(review_id, prediction)
+        writer.flush()
+    except Exception:
+        logger.exception("failed to record RWKV answer calibration prediction")
+
+
+def _realign_rwkv_calibration_data(
+    reviewer: object,
+    history: RwkvHistoricalReviewInputs,
+) -> bool:
+    """Assign the active FSRS folds to existing calibration predictions.
+
+    A prediction does not depend on its role, so when every historical answer
+    already has one from the current epoch, only the roles need rewriting.
+    """
+
+    try:
+        all_rows = getattr(getattr(_collection(reviewer), "db", None), "all", None)
+        if not callable(all_rows) or not _rwkv_calibration_epoch_current(reviewer):
+            return False
+        rows = all_rows(
+            f"""
+select revlog_id, prediction, sample_role, fold_index
+from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+where source = ?
+  and prediction between 0 and 1
+""",
+            _RWKV_CALIBRATION_RECOMPUTE_SOURCE,
+        )
+        predictions = {row[0]: row[1] for row in rows}
+        existing_keys = {(row[0], row[2], row[3]) for row in rows}
+        answered = [
+            review_id
+            for review_id, review_input in zip(
+                history.review_ids,
+                history.reviews,
+                strict=True,
+            )
+            if review_input.ease is not None
+        ]
+        if any(review_id not in predictions for review_id in answered):
+            return False
+
+        sample_role_by_review_id, fold_index_by_review_id = (
+            _rwkv_calibration_fold_role_maps(reviewer, history)
+        )
+        writer = _RwkvReviewRetrievabilityCacheWriter(
+            reviewer,
+            source=_RWKV_CALIBRATION_RECOMPUTE_SOURCE,
+            sample_role_by_review_id=sample_role_by_review_id,
+            fold_index_by_review_id=fold_index_by_review_id,
+        )
+        for review_id in answered:
+            key = (
+                review_id,
+                sample_role_by_review_id.get(
+                    review_id, _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT
+                ),
+                fold_index_by_review_id.get(review_id, -1),
+            )
+            if key not in existing_keys:
+                writer.record(review_id, predictions[review_id])
+        writer.flush()
+        _prune_superseded_rwkv_calibration_rows(
+            reviewer,
+            history,
+            sample_role_by_review_id,
+            fold_index_by_review_id,
+        )
+    except Exception:
+        logger.exception("RWKV calibration relabel failed")
+        return False
+    # Also confirms the state lineage still matches the current history.
+    return _rwkv_calibration_data_available(reviewer, history=history)
+
+
 def rwkv_calibration_data_available(mw: object) -> bool:
     """Return whether current, role-aware historical RWKV predictions exist."""
 
-    reviewer = SimpleNamespace(mw=mw)
+    return _rwkv_calibration_data_available(SimpleNamespace(mw=mw))
+
+
+def _rwkv_calibration_data_available(
+    reviewer: object,
+    *,
+    history: RwkvHistoricalReviewInputs | None = None,
+) -> bool:
     metadata = _read_rwkv_state_cache_metadata(reviewer)
-    if metadata is None or not _rwkv_state_cache_metadata_usable(reviewer, metadata):
+    if metadata is None or not _rwkv_state_cache_metadata_usable(
+        reviewer,
+        metadata,
+        current_history=history,
+    ):
         return False
 
     last_review_id = _int_value(metadata.get("lastReviewId"))
@@ -10818,11 +11084,20 @@ def ensure_rwkv_calibration_data(
     """Generate role-aware historical RWKV predictions when they are missing.
 
     This synchronous API is intended for add-ons running in a background task.
-    Existing complete data is a fast no-op. The active reviewer state is
+    Existing complete data is a fast no-op, and changed FSRS folds only relabel
+    predictions that already exist. Otherwise the active reviewer state is
     snapshotted and restored by `recompute_rwkv_calibration_data()`.
     """
 
-    if rwkv_calibration_data_available(mw):
+    reviewer = SimpleNamespace(mw=mw)
+    try:
+        history = _historical_rwkv_review_inputs(reviewer)
+    except Exception:
+        logger.debug("RWKV calibration history unavailable", exc_info=True)
+        return recompute_rwkv_calibration_data(mw, progress=progress)
+    if _rwkv_calibration_data_available(reviewer, history=history):
+        return True
+    if _realign_rwkv_calibration_data(reviewer, history):
         return True
     return recompute_rwkv_calibration_data(mw, progress=progress)
 

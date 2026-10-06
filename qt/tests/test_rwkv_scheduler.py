@@ -10725,6 +10725,202 @@ def test_rwkv_calibration_recompute_prunes_superseded_rows(
     }
 
 
+def test_rwkv_calibration_epoch_follows_state_cache_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_usable",
+        lambda *_args, **_kwargs: True,
+    )
+    cache_dir = tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR
+    cache_dir.mkdir()
+    metadata: dict[str, object] = {
+        "collection": {"created": 1},
+        "model": {"model": "test"},
+        "replayKey": "replay",
+        "presetReplaySemantics": 3,
+        "dynamicPresetReplay": False,
+        "storeGeneration": "generation-1",
+        "snapshotSegmentId": 2,
+        "snapshotHistoryHash": "a" * 64,
+        "lastReviewId": 5,
+    }
+
+    def write_metadata(**changes: object) -> None:
+        (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE).write_text(
+            json.dumps({**metadata, **changes})
+        )
+
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)))
+    )
+    write_metadata()
+    rwkv_scheduler._write_rwkv_calibration_epoch(reviewer, cast(Any, None))
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is True
+
+    # New answers extend the delta log without changing the lineage.
+    write_metadata(lastReviewId=9)
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is True
+    # A recovery writes a new segment and a rebuild a new store.
+    write_metadata(snapshotSegmentId=3)
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is False
+    write_metadata(storeGeneration="generation-2")
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is False
+    # Ignored reviews make the state differ from the full replayed history.
+    write_metadata(ignoredReviewIds=[4])
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is False
+    rwkv_scheduler._write_rwkv_calibration_epoch(reviewer, cast(Any, None))
+    assert not (cache_dir / rwkv_scheduler._RWKV_CALIBRATION_EPOCH_FILE).exists()
+
+
+def test_rwkv_calibration_realign_relabels_existing_predictions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        (1, 0.5, "final_fit", -1),
+        (2, 0.25, "final_fit", -1),
+        (3, 0.75, "test_fold", 1),
+    ]
+    written: list[tuple[object, ...]] = []
+    pruned: list[list[tuple[object, ...]]] = []
+
+    class Backend:
+        def set_rwkv_review_retrievability_cache_rows(
+            self, *, source: str, rows: Sequence[Any]
+        ) -> None:
+            written.extend(
+                (source, row.revlog_id, row.prediction, row.sample_role, row.fold_index)
+                for row in rows
+            )
+
+        def prune_rwkv_review_retrievability_cache_rows(
+            self,
+            *,
+            source: str,
+            keep: Sequence[Any],
+            superseded_sources: Sequence[str],
+        ) -> int:
+            pruned.append(
+                sorted((key.revlog_id, key.sample_role, key.fold_index) for key in keep)
+            )
+            return 0
+
+    collection = SimpleNamespace(
+        _backend=Backend(),
+        db=SimpleNamespace(all=lambda _sql, *_args: list(rows)),
+    )
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=collection))
+    answer = SimpleNamespace(ease=3)
+    history = SimpleNamespace(review_ids=[1, 2, 3], reviews=[answer, answer, answer])
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_calibration_epoch_current", lambda _reviewer: True
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_calibration_data_available",
+        lambda _reviewer, *, history: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_calibration_fold_role_maps",
+        lambda _reviewer, _history: (
+            {1: "test_fold", 2: "final_fit", 3: "test_fold"},
+            {1: 0, 3: 1},
+        ),
+    )
+
+    assert rwkv_scheduler._realign_rwkv_calibration_data(reviewer, cast(Any, history))
+    # Only review 1 changed role; its prediction is reused, not replayed.
+    assert written == [("rwkv_calibration_recompute", 1, 0.5, "test_fold", 0)]
+    assert pruned == [[(1, "test_fold", 0), (2, "final_fit", -1), (3, "test_fold", 1)]]
+
+    written.clear()
+    pruned.clear()
+    history.review_ids.append(4)
+    history.reviews.append(answer)
+    # An answer without a prediction needs the full recompute instead.
+    assert not rwkv_scheduler._realign_rwkv_calibration_data(
+        reviewer, cast(Any, history)
+    )
+    assert written == []
+    assert pruned == []
+
+
+def test_rwkv_answered_review_retrievability_queries_pre_answer_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    review_input = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=False,
+        ease=3,
+        duration_millis=4000,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "rwkv_review_identity",
+        lambda _reviewer, _card: review_input.identity,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "rwkv_review_input", lambda **_kwargs: review_input
+    )
+
+    assert backend.answered_review_retrievability(
+        reviewer=object(), card=object(), ease=3
+    ) == pytest.approx(0.45)
+    # Querying never applies the answer to the recurrent state.
+    assert runtime.reviewed == []
+
+
+def test_rwkv_answer_calibration_prediction_records_only_in_current_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    written: list[tuple[str, int, float]] = []
+
+    class Backend:
+        def set_rwkv_review_retrievability_cache_rows(
+            self, *, source: str, rows: Sequence[Any]
+        ) -> None:
+            written.extend((source, row.revlog_id, row.prediction) for row in rows)
+
+    collection = SimpleNamespace(
+        _backend=Backend(),
+        db=SimpleNamespace(scalar=lambda _sql, card_id: 70 + card_id),
+    )
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=collection))
+    card = SimpleNamespace(id=7)
+    predictor = SimpleNamespace(
+        answered_review_retrievability=lambda **_kwargs: 0.5,
+    )
+    epoch_current = [False]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_calibration_epoch_current",
+        lambda _reviewer: epoch_current[0],
+    )
+
+    assert (
+        rwkv_scheduler._rwkv_answer_calibration_prediction(reviewer, predictor, card, 3)
+        is None
+    )
+    epoch_current[0] = True
+    prediction = rwkv_scheduler._rwkv_answer_calibration_prediction(
+        reviewer, predictor, card, 3
+    )
+    assert prediction == 0.5
+    rwkv_scheduler._record_rwkv_answer_calibration_prediction(reviewer, card, 0.5)
+    # The answer's own revlog row, under the recompute source.
+    assert written == [("rwkv_calibration_recompute", 77, 0.5)]
+
+
 def test_rwkv_calibration_fold_roles_fall_back_to_chronological_split(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
