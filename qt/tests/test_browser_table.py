@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,12 +15,115 @@ from aqt.browser.table import CellRow
 from aqt.browser.table.model import DataModel
 from aqt.browser.table.table import Table
 from aqt.qt import (
+    QAbstractItemView,
     QAbstractTableModel,
+    QApplication,
     QItemSelection,
+    QItemSelectionModel,
     QItemSelectionRange,
     QModelIndex,
+    QPixmap,
     Qt,
+    QTableView,
+    QWidget,
+    sip,
 )
+
+
+@pytest.fixture(scope="module")
+def app() -> Any:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return QApplication.instance() or QApplication([])
+
+
+def make_table_view(model: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    model._state.column_label = lambda _column: "Column"
+    model._state.column_key_at = lambda section: f"c{section}"
+    model.columns = {key: SimpleNamespace() for key in model._state.active_columns}
+    monkeypatch.setattr(
+        table_module,
+        "KeyboardModifiersPressed",
+        lambda: SimpleNamespace(shift=False, control=False),
+    )
+    table = cast(Any, Table.__new__(Table))
+    table.browser = cast(Any, QWidget())
+    table.browser.on_all_or_selected_rows_changed = lambda: None
+    table.browser.on_current_row_changed = lambda: None
+    table._model = model
+    table._len_selection = 0
+    table._selected_rows = None
+    table._view = QTableView(table.browser)
+    table._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table._view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    # Font preferences are unrelated to selection and normally need a collection.
+    monkeypatch.setattr(Table, "_update_font", lambda _self: None)
+    table._setup_view()
+    return table
+
+
+def test_header_repaint_does_not_scan_selected_rows(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = make_model(2_000, 4, [])
+    table = make_table_view(model, monkeypatch)
+    try:
+        table._view.selectAll()
+        header = table._horizontal_header()
+        header.setHighlightSections(False)
+        header.resize(640, 30)
+        visits = 0
+        cached_row = model.get_cached_row
+
+        def counted_cached_row(index: QModelIndex) -> Any:
+            nonlocal visits
+            visits += 1
+            return cached_row(index)
+
+        monkeypatch.setattr(model, "get_cached_row", counted_cached_row)
+        header.render(QPixmap(header.size()))
+        assert visits < model.rowCount(), "header paint scanned the selected rows"
+        assert table.len_selection() == 2_000
+        assert table._selection_model().isSelected(model.index(1_999, 0))
+    finally:
+        sip.delete(table.browser)
+
+
+def test_menu_selection_counts_rows_without_enumerating_the_selection(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = make_model(50, 4, [7, 8])
+    table = make_table_view(model, monkeypatch)
+    try:
+        enumerations = 0
+        selected_rows = table._selection_model().selectedRows
+
+        def counted_selected_rows() -> Any:
+            nonlocal enumerations
+            enumerations += 1
+            return selected_rows()
+
+        monkeypatch.setattr(
+            table._selection_model(), "selectedRows", counted_selected_rows
+        )
+        # Menu actions run without Ctrl/Shift being held.
+        table._view.selectAll()
+        assert table.len_selection() == 48
+        table._selection_model().select(
+            QItemSelection(model.index(0, 0), model.index(49, 3)),
+            QItemSelectionModel.SelectionFlag.Toggle,
+        )
+        assert table.len_selection() == 0
+        table._selection_model().select(
+            model.index(3, 0),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        assert table.len_selection() == 1
+        table._view.clearSelection()
+        assert table.len_selection() == 0
+        assert enumerations == 0, "selection counting enumerated the selected rows"
+    finally:
+        sip.delete(table.browser)
 
 
 def make_model(rows: int, columns: int, disabled: list[int]) -> Any:

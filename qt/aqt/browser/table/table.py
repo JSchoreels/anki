@@ -340,6 +340,11 @@ class Table:
         assert self._view is not None
         self._view.setSortingEnabled(True)
         self._view.setModel(self._model)
+        # QHeaderView otherwise checks every selected row's flags on each paint.
+        # Keep the header's selection empty while the table retains its selection.
+        self._horizontal_header().setSelectionModel(
+            QItemSelectionModel(self._model, self._view)
+        )
         self._view.selectionModel()
         self._view.setItemDelegate(StatusDelegate(self.browser, self._model))
         selection_model = self._selection_model()
@@ -393,20 +398,10 @@ class Table:
     def _on_selection_changed(
         self, selected: QItemSelection, deselected: QItemSelection
     ) -> None:
-        # `selection.indexes()` calls `flags()` for all the selection's indexes,
-        # whereas `selectedRows()` calls it for the indexes of the resulting selection.
-        # Both may be slow, so we try to optimise.
-        if KeyboardModifiersPressed().shift or KeyboardModifiersPressed().control:
-            # Current selection is modified. The number of added/removed rows is
-            # usually smaller than the number of rows in the resulting selection.
-            # (Ctrl+A is the exception, so the cells are counted from the ranges.)
-            self._len_selection += (
-                self._model.count_enabled_cells(selected)
-                - self._model.count_enabled_cells(deselected)
-            ) // self._model.len_columns()
-        else:
-            # New selection is created. Usually a single row or none at all.
-            self._len_selection = len(self._selection_model().selectedRows())
+        self._len_selection += (
+            self._model.count_enabled_cells(selected)
+            - self._model.count_enabled_cells(deselected)
+        ) // self._model.len_columns()
         self._selected_rows = None
         self.browser.on_all_or_selected_rows_changed()
 

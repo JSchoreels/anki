@@ -24,6 +24,19 @@ repeated here unless they materially affect a fork feature.
 
 ### Changed
 
+- Large Browser selections repaint faster, including when resizing columns.
+  **Edit > Select All** and **Invert Selection** now use the same fast selection
+  counting as keyboard selection. Backported from Anki
+  [#5768](https://github.com/ankitects/anki/pull/5768) and
+  [#5771](https://github.com/ankitects/anki/pull/5771).
+- Full collection downloads stream to a temporary file instead of keeping the
+  whole download in memory, reducing memory use for large collections. The
+  downloaded collection is still checked before replacing the local file
+  ([Anki #5717](https://github.com/ankitects/anki/pull/5717)).
+- Media sync recognizes unchanged files added locally or downloaded from
+  AnkiWeb without hashing them again. Files recorded with older scan timestamps
+  are checked once and then use the same fast path
+  ([Anki #5654](https://github.com/ankitects/anki/pull/5654), still open upstream).
 - Refreshing RWKV calibration data after FSRS parameters change no longer
   replays your whole review history when RWKV already has a prediction for
   every review: it only reassigns the new FSRS validation folds (about 6 s
