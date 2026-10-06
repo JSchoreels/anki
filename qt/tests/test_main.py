@@ -175,6 +175,38 @@ def test_deck_or_preset_change_requests_rwkv_recovery_after_invalidation(
     assert calls == ["invalidate", "recover during review", "screen"]
 
 
+def test_legacy_reset_invalidates_rwkv_without_requesting_recovery(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.state = "deckBrowser"
+    mw.deckBrowser = SimpleNamespace(
+        op_executed=lambda *_args: calls.append("screen") or False
+    )
+    mw.toolbar = SimpleNamespace(update_sync_status=lambda: None)
+    mw.col = SimpleNamespace(models=SimpleNamespace(_clear_cache=lambda: None))
+    monkeypatch.setattr(aqt.main, "current_window", lambda: mw)
+    monkeypatch.setattr(
+        aqt.main.gui_hooks, "operation_did_execute", mw.on_operation_did_execute
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "study_queues_did_change",
+        lambda *_args: calls.append("invalidate"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "request_rwkv_state_cache_recovery",
+        lambda *_args, **_kwargs: calls.append("recover"),
+    )
+
+    mw._synthesize_op_did_execute_from_reset()
+
+    assert calls == ["invalidate", "screen"]
+    assert not mw._legacy_reset_in_progress
+
+
 def test_startup_sync_can_defer_rwkv_refresh(
     monkeypatch,
 ) -> None:

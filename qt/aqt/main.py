@@ -265,6 +265,8 @@ class AnkiQt(QMainWindow):
     pm: ProfileManagerType
     web: MainWebView
     bottomWeb: BottomWebView
+    # True while legacy reset() fans out its everything-changed notification.
+    _legacy_reset_in_progress = False
 
     def __init__(
         self,
@@ -995,7 +997,11 @@ class AnkiQt(QMainWindow):
         for field in op.DESCRIPTOR.fields:
             if field.name != "kind":
                 setattr(op, field.name, True)
-        gui_hooks.operation_did_execute(op, None)
+        self._legacy_reset_in_progress = True
+        try:
+            gui_hooks.operation_did_execute(op, None)
+        finally:
+            self._legacy_reset_in_progress = False
 
     def on_operation_did_execute(
         self, changes: OpChanges, handler: object | None
@@ -1014,7 +1020,10 @@ class AnkiQt(QMainWindow):
 
             rwkv_scheduler.collection_content_did_change(self, handler)
 
-        if changes.deck or changes.deck_config:
+        # A legacy reset() flags every change, including deck and preset ones,
+        # even when an add-on only added a note. Leave recovery to the overview
+        # or reviewer instead of popping a progress dialog on each add-on call.
+        if (changes.deck or changes.deck_config) and not self._legacy_reset_in_progress:
             from aqt import rwkv_scheduler
 
             rwkv_scheduler.request_rwkv_state_cache_recovery(

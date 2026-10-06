@@ -24,6 +24,10 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Adding cards through add-ons such as AnkiConnect (e.g. Yomitan mining) no
+  longer pops up an RWKV progress window and a “RWKV review state recovered”
+  tooltip after every card, even while Anki is in the background. RWKV state
+  is still recovered when you next open a deck's overview or review.
 - Recomputing RWKV calibration data now removes the predictions it replaces.
   Earlier recomputes left rows under fold assignments that FSRS no longer uses,
   plus leftover training rows from older builds, so calibration graphs could
