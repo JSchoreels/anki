@@ -5,6 +5,7 @@ import { OpChanges } from "@generated/anki/collection_pb";
 import {
     DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate,
+    GetRetentionWorkloadResponse,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 
@@ -33,6 +34,9 @@ test("scheduler selectors save the review and Instant due-date models", async ({
     const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
     const dueDates = page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true });
     const fsrs = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
+    const schedulerCard = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
+    const fsrsCard = page.getByRole("heading", { name: "FSRS", exact: true }).locator("../..");
+    const rwkvCard = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
     await expect(model.getByRole("radio", { name: "FSRS-7", exact: true })).toBeChecked();
     await expect(fsrs).not.toBeChecked();
     await model.getByRole("radio", { name: "FSRS-7", exact: true }).focus();
@@ -83,6 +87,15 @@ test("scheduler selectors save the review and Instant due-date models", async ({
         }
         await expect(page.getByRole("button", { name: "Optimize Current Preset", exact: true }))
             .toHaveCount(curve ? 0 : 1);
+        await expect(fsrsCard).toHaveCount(curve ? 0 : 1);
+        await expect(rwkvCard).toHaveCount(curve || instant ? 1 : 0);
+        await expect(schedulerCard.getByRole("button", { name: "Optimize Current Preset", exact: true }))
+            .toHaveCount(0);
+        await expect(schedulerCard.locator(".interval-preview-table")).toHaveCount(0);
+        if (!curve) {
+            await expect(fsrsCard.getByRole("button", { name: "Optimize Current Preset", exact: true }))
+                .toBeVisible();
+        }
         await expect(page.getByRole("checkbox", { name: /^Use RWKV-(Curve|Instant)\b/ })).toHaveCount(0);
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect.poll(() => [
@@ -92,6 +105,63 @@ test("scheduler selectors save the review and Instant due-date models", async ({
             saved?.configs.at(-1)?.config?.rwkvReviewInstantOrderEnabled,
         ]).toEqual([true, version, curve, instant]);
     }
+});
+
+test("shared retention updates the separate FSRS card and survives model changes", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        data.currentDeck!.limits!.desiredRetention = undefined;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.fsrsVersion = DeckConfig_Config_FsrsVersion.SEVEN;
+        config.rwkvReviewEnabled = false;
+        config.rwkvReviewInstantOrderEnabled = false;
+        config.desiredRetention = 0.85;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    // Keep workload simulation out of this UI binding test; interval previews use the real backend.
+    await page.route("**/_anki/getRetentionWorkload", async (route) => {
+        const response = new GetRetentionWorkloadResponse({ costs: Array(100).fill(1) });
+        await route.fulfill({ body: Buffer.from(response.toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const schedulerCard = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
+    const fsrsCard = page.getByRole("heading", { name: "FSRS", exact: true }).locator("../..");
+    const retention = schedulerCard.getByRole("spinbutton");
+    const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
+    await expect(retention).toHaveValue("85");
+    await retention.fill("90");
+    await retention.press("Tab");
+    await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (90.00%)", exact: true }))
+        .toBeVisible();
+    await model.getByRole("radio", { name: "RWKV-Curve", exact: true }).check();
+    await expect(fsrsCard).toHaveCount(0);
+    await expect(retention).toHaveValue("90");
+    await model.getByRole("radio", { name: "RWKV-Instant", exact: true }).check();
+    await page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true })
+        .getByRole("radio", { name: "FSRS-6", exact: true }).check();
+    await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (90.00%)", exact: true }))
+        .toBeVisible();
+    await expect(retention).toHaveValue("90");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.desiredRetention).toBeCloseTo(0.9);
+    await schedulerCard.getByRole("button", { name: "This deck", exact: true }).click();
+    await retention.fill("92");
+    await retention.press("Tab");
+    await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (92.00%)", exact: true }))
+        .toBeVisible();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.desiredRetention).toBeCloseTo(0.85);
+    await expect.poll(() => saved?.limits?.desiredRetention).toBeCloseTo(0.92);
 });
 
 test("current scheduler buttons preserve older saved models until explicitly changed", async ({ page }) => {

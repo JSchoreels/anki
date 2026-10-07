@@ -25,6 +25,10 @@ selectors change the current preset, not the models selected on other presets.
 
 When Curve writes due dates, Deck Options shows desired retention and RWKV
 controls while hiding the FSRS-only interval preview and optimization controls.
+Scheduler keeps the global switch, model selectors, and shared desired retention.
+FSRS previews, optimization, and advanced settings appear in a separate FSRS card
+styled like the RWKV card. Instant with an FSRS fallback shows both model cards;
+Instant with a Curve fallback shows only the RWKV card.
 Synced RWKV-Curve due dates can guide the next mobile session, but mobile
 clients do not load the RWKV backend and continue to schedule answers with
 FSRS/SM2. Choosing a model affects future answers; use the existing explicit

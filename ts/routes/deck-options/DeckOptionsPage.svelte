@@ -110,13 +110,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <DisplayOrder {state} api={displayOrder} />
             </Row>
 
-            <Row class="row-columns">
-                <FsrsOptionsOuter
-                    {state}
-                    api={{}}
-                    bind:this={fsrsOptionsOuterComponent}
-                />
-            </Row>
+            <FsrsOptionsOuter {state} api={{}} bind:this={fsrsOptionsOuterComponent} />
 
             <Row class="row-columns">
                 <RwkvOptions {state} {onPresetChange} />
