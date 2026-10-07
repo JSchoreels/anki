@@ -178,7 +178,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </a>
         </p>
 
-        <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
+        <div class="rwkv-mode-heading">
+            <h2>RWKV-Instant</h2>
+            <span class="rwkv-mode-badge">{tr.deckConfigRwkvRecommended()}</span>
+            <span class="rwkv-mode-subtitle">{tr.deckConfigRwkvInstantSubtitle()}</span>
+        </div>
         <p class="rwkv-description">{tr.deckConfigRwkvInstantDescription()}</p>
 
         <SwitchRow
@@ -273,7 +277,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/if}
         {/if}
 
-        <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
+        <div class="rwkv-mode-heading rwkv-mode-divider">
+            <h2>RWKV-Curve</h2>
+            <span class="rwkv-mode-subtitle">{tr.deckConfigRwkvCurveSubtitle()}</span>
+        </div>
         <p class="rwkv-description">{tr.deckConfigRwkvCurveDescription()}</p>
 
         <Item>
@@ -369,6 +376,44 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 />
 
 <style>
+    .rwkv-mode-heading {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.375rem 0.625rem;
+        margin: 1.25rem 0 0.375rem;
+    }
+
+    .rwkv-mode-heading h2 {
+        color: var(--fg);
+        font-size: 1.0625rem;
+        font-weight: 600;
+        line-height: 1.4;
+        margin: 0;
+    }
+
+    .rwkv-mode-subtitle {
+        color: var(--fg-subtle);
+        font-size: 0.8125rem;
+    }
+
+    .rwkv-mode-badge {
+        background: var(--canvas-inset);
+        border: 1px solid var(--border-subtle);
+        border-radius: 1rem;
+        color: var(--fg-link);
+        font-size: 0.6875rem;
+        font-weight: 500;
+        line-height: 1.4;
+        padding: 0.125rem 0.5rem;
+    }
+
+    .rwkv-mode-divider {
+        border-top: 1px solid var(--border-subtle);
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+    }
+
     .rwkv-description {
         color: var(--fg-subtle);
         font-size: 0.875rem;

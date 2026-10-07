@@ -335,6 +335,9 @@ deck-config-rwkv-description =
     adapts to your reviews on the fly, so the due count can fluctuate considerably
     during a session. Setting a daily review limit is recommended.
 deck-config-rwkv-read-more = Read more about RWKV
+deck-config-rwkv-recommended = Recommended
+deck-config-rwkv-instant-subtitle = Review queue
+deck-config-rwkv-curve-subtitle = Answer intervals
 deck-config-rwkv-instant-description =
     Instant replaces FSRS and Curve for review selection; scheduled due dates
     are ignored.
