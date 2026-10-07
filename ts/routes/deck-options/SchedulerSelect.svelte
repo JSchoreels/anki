@@ -3,6 +3,8 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
+    import * as tr from "@generated/ftl";
+
     import Col from "$lib/components/Col.svelte";
     import ConfigInput from "$lib/components/ConfigInput.svelte";
     import type { Choice } from "$lib/components/EnumSelector.svelte";
@@ -11,6 +13,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     type T = $$Generic;
     export let id: string;
     export let title: string;
+    export let recommended: string;
     export let value: T;
     export let choices: Choice<T>[];
     export let onChange: (value: T) => void;
@@ -18,7 +21,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <Row --cols={13}>
     <Col --col-size={5} breakpoint="md">
-        <span id={`${id}-label`}>{title}</span>
+        <div>
+            <span id={`${id}-label`}>{title}</span>
+            <p class="scheduler-recommendation" id={`${id}-recommendation`}>
+                <span class="recommendation-star" aria-hidden="true">★</span>
+                {tr.deckConfigSchedulerRecommended({ scheduler: recommended })}
+            </p>
+        </div>
     </Col>
     <Col --col-size={8} breakpoint="md">
         <ConfigInput>
@@ -26,6 +35,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 class="scheduler-choices"
                 role="radiogroup"
                 aria-labelledby={`${id}-label`}
+                aria-describedby={`${id}-recommendation`}
             >
                 {#each choices as choice}
                     <label class:active={choice.value === value}>
@@ -45,6 +55,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </Row>
 
 <style>
+    .scheduler-recommendation {
+        margin: 0.125rem 0 0;
+        color: var(--fg-subtle);
+        font-size: 0.75rem;
+    }
+
+    .recommendation-star {
+        color: var(--border-focus);
+        margin-inline-end: 0.125rem;
+    }
+
     .scheduler-choices {
         display: flex;
         flex-wrap: wrap;

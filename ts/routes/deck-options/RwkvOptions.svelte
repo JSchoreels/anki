@@ -157,13 +157,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }}
         />
         <DynamicallySlottable slotHost={Item} api={{}}>
-            <p class="rwkv-description">
-                {tr.deckConfigRwkvDescription()}
-                <a href="https://github.com/JSchoreels/anki/blob/main/RWKV_FAQ.md">
-                    {tr.deckConfigRwkvReadMore()}
-                </a>
-            </p>
-
             {#if $config.rwkvReviewInstantOrderEnabled}
                 <div class="rwkv-mode-heading">
                     <h2>RWKV-Instant</h2>

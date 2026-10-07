@@ -127,8 +127,10 @@ test("shared retention updates the separate FSRS card and survives model changes
         await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
     });
 
+    let workloadRequests = 0;
     // Keep workload simulation out of this UI binding test; interval previews use the real backend.
     await page.route("**/_anki/getRetentionWorkload", async (route) => {
+        workloadRequests++;
         const response = new GetRetentionWorkloadResponse({ costs: Array(100).fill(1) });
         await route.fulfill({ body: Buffer.from(response.toBinary()) });
     });
@@ -143,6 +145,10 @@ test("shared retention updates the separate FSRS card and survives model changes
     await retention.press("Tab");
     await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (90.00%)", exact: true }))
         .toBeVisible();
+    await expect(fsrsCard.getByText("Approximate workload: 1.00x (vs initial DR: 85%).", { exact: true }))
+        .toBeVisible();
+    await expect(fsrsCard.getByText("FSRS interval-based workload only.", { exact: true })).toBeVisible();
+    const requestsBeforeInstant = workloadRequests;
     await model.getByRole("radio", { name: "RWKV-Curve", exact: true }).check();
     await expect(fsrsCard).toHaveCount(0);
     await expect(retention).toHaveValue("90");
@@ -153,6 +159,8 @@ test("shared retention updates the separate FSRS card and survives model changes
         .toBeVisible();
     await expect(retention).toHaveValue("90");
     await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(fsrsCard.getByText(/Approximate workload:/)).toHaveCount(0);
+    await expect(fsrsCard.getByText("FSRS interval-based workload only.", { exact: true })).toHaveCount(0);
     await expect.poll(() => saved?.configs.at(-1)?.config?.desiredRetention).toBeCloseTo(0.9);
     await schedulerCard.getByRole("button", { name: "This deck", exact: true }).click();
     await retention.fill("92");
@@ -162,6 +170,7 @@ test("shared retention updates the separate FSRS card and survives model changes
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => saved?.configs.at(-1)?.config?.desiredRetention).toBeCloseTo(0.85);
     await expect.poll(() => saved?.limits?.desiredRetention).toBeCloseTo(0.92);
+    expect(workloadRequests).toBe(requestsBeforeInstant);
 });
 
 test("current scheduler buttons preserve older saved models until explicitly changed", async ({ page }) => {

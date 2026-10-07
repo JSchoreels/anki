@@ -262,6 +262,17 @@ The selectors reuse `fsrs_version`, `rwkv_review_enabled`, and
 Opening the panel does not rewrite those fields. Existing FSRS-4.5 and FSRS-5
 choices remain saved until a current model is explicitly selected.
 
+The Scheduler panel introduces FSRS and RWKV above the selectors, with links to
+their documentation and benchmark. Blue stars recommend RWKV-Instant for review
+selection and FSRS-7 for Instant's fallback due-date calculation. These are
+guidance labels; opening the panel does not apply the recommendations.
+
+When FSRS selects reviews, retention edits show a compact workload estimate
+relative to the initial desired retention. It estimates FSRS interval-based
+workload only. The estimate and its calculation are hidden when FSRS is only
+RWKV-Instant's fallback, because Instant selects reviews independently of those
+intervals.
+
 The visible Machine Learning Based scheduling switch remains collection-wide.
 Selecting a model enables it; other presets retain their own selected models.
 Per-preset SM2/FSRS coexistence is not introduced by these UI selectors.

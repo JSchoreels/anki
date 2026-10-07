@@ -395,6 +395,12 @@ deck-config-scheduler-enable-fsrs = Machine Learning Based scheduling
 deck-config-scheduler-disabled = Machine learning scheduling is disabled for this collection. Selecting a model enables it; RWKV settings remain independent.
 deck-config-scheduler-due-dates = Fallback : Due-Date Calculator
 deck-config-scheduler-due-dates-description = Writes due dates for mobile sync and statistics. Instant selects reviews independently of these dates.
+deck-config-scheduler-recommended = Recommended: { $scheduler }
+deck-config-fsrs-description =
+    FSRS uses your review history to predict retrievability and schedule reviews
+    at your desired retention. FSRS-7 provides more accurate predictions than
+    FSRS-6 on average.
+deck-config-fsrs-read-more = Read more about FSRS
 deck-config-rwkv-review-allow-same-day-review = Allow a card to repeat on the same day
 deck-config-rwkv-review-allow-same-day-review-tooltip =
     When a card's estimated chance of recall is at or below your Desired
@@ -625,8 +631,8 @@ deck-config-compute-optimal-weights-tooltip2 =
     optimizing the parameters.
 
 deck-config-please-save-your-changes-first = Please save your changes first.
-deck-config-workload-factor-change = Approximate workload: {$factor}x
-    (compared to {$previousDR}% desired retention)
+deck-config-workload-factor-change = Approximate workload: {$factor}x (vs initial DR: {$previousDR}%).
+deck-config-workload-factor-note = FSRS interval-based workload only.
 deck-config-workload-factor-unchanged = The higher your desired retention, the more frequently cards will be shown to you.
 deck-config-desired-retention-too-low = Your desired retention is very low, which can lead to very long intervals.
 deck-config-desired-retention-too-high = Your desired retention is very high, which can lead to very short intervals.

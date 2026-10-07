@@ -418,8 +418,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: desiredRetentionWarning = getRetentionLongShortWarning(roundedRetention);
 
     let desiredRetentionChangeInfo = "";
-    let desiredRetentionChangeClass = "alert-info two-line";
-    $: if (showDesiredRetentionTooltip) {
+    let desiredRetentionChangeClass = "alert-info";
+    $: if (
+        showDesiredRetentionTooltip &&
+        !$config.rwkvReviewEnabled &&
+        !$config.rwkvReviewInstantOrderEnabled
+    ) {
         getRetentionChangeInfo(roundedRetention, selectedFsrsParams($config));
     }
 
@@ -581,7 +585,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function getRetentionChangeInfo(retention: number, params: number[]) {
         if (+startingDesiredRetention == roundedRetention) {
             desiredRetentionChangeInfo = tr.deckConfigWorkloadFactorUnchanged();
-            desiredRetentionChangeClass = "alert-info two-line";
+            desiredRetentionChangeClass = "alert-info";
             return;
         }
         const diagnostics = fsrsParamDiagnostics(params);
@@ -589,7 +593,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             lastParams = [...params];
             retentionWorkloadInfo = undefined;
             desiredRetentionChangeInfo = fsrsParamDiagnosticDetails(diagnostics);
-            desiredRetentionChangeClass = "alert-warning two-line";
+            desiredRetentionChangeClass = "alert-warning";
             return;
         }
         if (
@@ -618,11 +622,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 factor: factor.toFixed(2),
                 previousDr: previous.toString(),
             });
-            desiredRetentionChangeClass = "alert-info two-line";
+            desiredRetentionChangeClass = "alert-info";
         } catch (err) {
             retentionWorkloadInfo = undefined;
             desiredRetentionChangeInfo = errorMessage(err);
-            desiredRetentionChangeClass = "alert-warning two-line";
+            desiredRetentionChangeClass = "alert-warning";
             console.warn("failed to load FSRS retention workload", err);
         }
     }
@@ -1453,10 +1457,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 fsrs={$fsrs}
                 bind:this={fsrsHelp}
             />
-            <Warning
-                warning={desiredRetentionChangeInfo}
-                className={desiredRetentionChangeClass}
-            />
+            {#if !$config.rwkvReviewInstantOrderEnabled}
+                <Warning
+                    warning={desiredRetentionChangeInfo}
+                    className={desiredRetentionChangeClass}
+                />
+                {#if desiredRetentionChangeInfo}
+                    <p class="workload-note">
+                        {tr.deckConfigWorkloadFactorNote()}
+                    </p>
+                {/if}
+            {/if}
             {#if newCardIntervals}
                 <div class="interval-preview ms-1 me-1">
                     <div class="interval-preview-title">
@@ -2058,13 +2069,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         color: var(--fg-light-green, #12b76a);
     }
 
-    :global(.two-line) {
-        white-space: pre-wrap;
-        min-height: calc(2ch + 30px);
-        box-sizing: content-box;
-        display: flex;
-        align-content: center;
-        flex-wrap: wrap;
+    .workload-note {
+        color: var(--fg-subtle);
+        font-size: 0.8rem;
+        font-style: italic;
+        margin: 0.375rem 0 0.75rem;
     }
 
     .optimization-popup-backdrop {
