@@ -377,6 +377,18 @@ impl QueueBuilder {
     pub(super) fn build(mut self, learn_ahead_secs: i64) -> CardQueues {
         self.sort_new();
 
+        let rwkv_learning_repeat_guards = self
+            .context
+            .sort_options
+            .uses_rwkv_review_order()
+            .then_some(super::rwkv::RwkvLearningRepeatGuards {
+                min_intervening_reviews: self
+                    .context
+                    .sort_options
+                    .rwkv_review_min_intervening_reviews,
+                min_elapsed_secs: self.context.sort_options.rwkv_review_min_elapsed_secs,
+            });
+
         // intraday learning and total learn count
         let intraday_learning = sort_learning(self.learning);
         let now = TimestampSecs::now();
@@ -440,6 +452,8 @@ impl QueueBuilder {
             shown_top_card: None,
             non_news_sorted_by_retrievability: shared_r_sort,
             deferred_rwkv_reviews: self.deferred_rwkv_reviews,
+            rwkv_learning_repeat_guards,
+            blocked_rwkv_learning_cards: HashSet::new(),
         }
     }
 }

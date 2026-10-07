@@ -19,9 +19,14 @@ pub(crate) enum MainQueueEntryKind {
 }
 
 impl CardQueues {
-    /// Remove the head of the main queue, and update counts.
+    /// Remove the first eligible main entry, and update counts. Withheld
+    /// learning cards stay queued until their repeat minimums are met.
     pub(super) fn pop_main(&mut self) -> Option<MainQueueEntry> {
-        self.main.pop_front().inspect(|head| {
+        let position = self
+            .main
+            .iter()
+            .position(|entry| !self.rwkv_blocks_learning_card(entry.id))?;
+        self.main.remove(position).inspect(|head| {
             match head.kind {
                 MainQueueEntryKind::New => self.counts.new -= 1,
                 MainQueueEntryKind::Review => self.counts.review -= 1,

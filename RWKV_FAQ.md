@@ -271,7 +271,8 @@ model.
 FSRS-7 and RWKV-Curve decide answer intervals, while RWKV-Instant independently
 decides whether a review card can enter the queue. They share **Allow same day
 review for (re)learning steps**, which is shown when FSRS or Instant is enabled.
-The decision tree shows both paths:
+The decision tree shows both paths. When Instant is enabled, its spacing
+minimums also apply to learning/relearning selection, including Learn ahead:
 
 ```mermaid
 flowchart TD
@@ -280,12 +281,17 @@ flowchart TD
     A -->|FSRS-7 / RWKV-Curve| B{"Skip learning/relearning queues On?"}
     B -->|Yes| C["Schedule directly as Review<br/>Minimum interval: 1 day"]
     B -->|No| D{"Does a configured learning/relearning<br/>step apply to this answer?"}
-    D -->|Yes| E["Use the configured step delay<br/>RWKV repeat-spacing guards do not apply"]
+    D -->|Yes| E["Use the configured step delay"]
     D -->|No| F{"Allow same day review for<br/>(re)learning steps On?"}
     F -->|No| C
     F -->|Yes| G{"Generated interval below 12 hours?"}
-    G -->|Yes| H["Use learning/relearning queue<br/>with the generated delay<br/>RWKV repeat-spacing guards do not apply"]
+    G -->|Yes| H["Use learning/relearning queue<br/>with the generated delay"]
     G -->|No| C
+
+    E --> Q{"RWKV-Instant enabled?"}
+    H --> Q
+    Q -->|No| P
+    Q -->|Yes| L
 
     A -->|RWKV-Instant| I{"Allow same day review for<br/>(re)learning steps On?"}
     I -->|No| J["Same-day RWKV review repeat blocked"]
@@ -293,14 +299,18 @@ flowchart TD
     L -->|No| M["Wait for enough other answers"]
     L -->|Yes| N{"Minimum seconds elapsed<br/>since this card's last answer?"}
     N -->|No| O["Wait for enough elapsed time"]
-    N -->|Yes| P["Same-day repeat eligible<br/>Other queue conditions still apply"]
+    N -->|Yes| P["Card eligible for selection<br/>Other queue conditions still apply"]
 ```
 
 The **Same-Day Repeats** row sets minimum other reviews and elapsed seconds
 between repeats. Both must be satisfied; a value of `0`
 removes that minimum. Their defaults are **5 other answers** and **30 seconds**.
 For example, values of **3** and **90** require both three other answers and
-90 elapsed seconds before RWKV-Instant can repeat the card.
+90 elapsed seconds before the card can repeat while RWKV-Instant is enabled.
+This includes learning/relearning cards, even when a step is already due or
+Learn ahead would offer it early. Waiting preserves the card's saved interval
+and learning steps. Learning cards continue to follow those intervals; Instant's
+recall threshold is not added to their selection rules.
 
 **Allow same day review for (re)learning steps** defaults to on and is the sole
 same-day repeat switch for Instant. Its saved off choice is preserved; the

@@ -605,7 +605,7 @@ impl Collection {
         Ok(card.last_review_time)
     }
 
-    fn populate_rwkv_last_review_times(&self, cards: &mut [Card]) -> Result<()> {
+    pub(crate) fn populate_rwkv_last_review_times(&self, cards: &mut [Card]) -> Result<()> {
         let missing_card_ids: Vec<_> = cards
             .iter()
             .filter(|card| card.last_review_time.is_none())
@@ -836,11 +836,24 @@ fn rwkv_review_score_eligibility_inner(
         return RwkvReviewScoreEligibility::Blocked;
     }
 
+    rwkv_repeat_spacing_eligibility(
+        metadata.elapsed_secs_since_last_review,
+        min_intervening_reviews,
+        min_elapsed_secs,
+        intervening_reviews,
+    )
+}
+
+pub(crate) fn rwkv_repeat_spacing_eligibility(
+    elapsed_secs_since_last_review: Option<u32>,
+    min_intervening_reviews: u32,
+    min_elapsed_secs: u32,
+    intervening_reviews: Option<u32>,
+) -> RwkvReviewScoreEligibility {
     let required_intervening_reviews =
         (!rwkv_review_intervening_reviews_elapsed(intervening_reviews, min_intervening_reviews))
             .then_some(min_intervening_reviews);
-    let remaining_elapsed_secs = metadata
-        .elapsed_secs_since_last_review
+    let remaining_elapsed_secs = elapsed_secs_since_last_review
         .filter(|elapsed_secs| *elapsed_secs < min_elapsed_secs)
         .map(|elapsed_secs| min_elapsed_secs - elapsed_secs);
     if required_intervening_reviews.is_some() || remaining_elapsed_secs.is_some() {

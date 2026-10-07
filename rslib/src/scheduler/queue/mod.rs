@@ -5,9 +5,11 @@ mod builder;
 mod entry;
 mod learning;
 mod main;
+mod rwkv;
 pub(crate) mod undo;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use anki_proto::scheduler::SchedulingContext;
@@ -21,6 +23,7 @@ pub(crate) use learning::LearningQueueEntry;
 pub(crate) use main::MainQueueEntry;
 pub(crate) use main::MainQueueEntryKind;
 
+use self::rwkv::RwkvLearningRepeatGuards;
 use self::undo::QueueUpdate;
 use super::states::SchedulingStates;
 use super::timing::SchedTimingToday;
@@ -44,6 +47,8 @@ pub(crate) struct CardQueues {
     shown_top_card: Option<CardId>,
     non_news_sorted_by_retrievability: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
+    rwkv_learning_repeat_guards: Option<RwkvLearningRepeatGuards>,
+    blocked_rwkv_learning_cards: HashSet<CardId>,
     pub(crate) load_balancer: Option<LoadBalancer>,
     pub(crate) fsrs_enabled: bool,
     pub(crate) fsrs_short_term_with_steps: bool,
@@ -268,7 +273,12 @@ impl CardQueues {
             .into_iter()
             .flat_map(|_| self.intraday_ahead_iter().map(Into::into));
         intraday_now
-            .chain(self.main.iter().map(Into::into))
+            .chain(
+                self.main
+                    .iter()
+                    .filter(|entry| !self.rwkv_blocks_learning_card(entry.id))
+                    .map(Into::into),
+            )
             .chain(intraday_ahead)
     }
 
@@ -283,16 +293,26 @@ impl CardQueues {
             self.counts.learning = self.counts.learning.saturating_sub(1);
             self.shown_top_card = None;
             Ok(entry.into())
-        } else if self.main.front().filter(|e| e.id == id).is_some() {
+        } else if self
+            .main
+            .iter()
+            .find(|entry| !self.rwkv_blocks_learning_card(entry.id))
+            .is_some_and(|entry| entry.id == id)
+        {
+            let entry = self.pop_main().unwrap();
             self.shown_top_card = None;
-            Ok(self.pop_main().unwrap().into())
+            Ok(entry.into())
         } else {
             invalid_input!("not at top of queue")
         }
     }
 
     fn push_undo_entry(&mut self, entry: QueueEntry) {
-        self.shown_top_card = None;
+        // Undo restores the last answered card, including a learning card
+        // preserved through a queue rebuild before its repeat minimums elapsed.
+        self.shown_top_card = (self.rwkv_learning_repeat_guards.is_some()
+            && entry.kind() == QueueEntryKind::Learning)
+            .then_some(entry.card_id());
         match entry {
             QueueEntry::IntradayLearning(entry) => self.push_intraday_learning(entry),
             QueueEntry::Main(entry) => self.push_main(entry),
@@ -307,7 +327,16 @@ impl CardQueues {
             // we discard the returned undo information in this case
             self.update_learning_cutoff_and_count();
         }
-        self.counts
+        Counts {
+            learning: if self.blocked_rwkv_learning_cards.is_empty() {
+                self.counts.learning
+            } else {
+                self.counts
+                    .learning
+                    .saturating_sub(self.blocked_rwkv_learning_count())
+            },
+            ..self.counts
+        }
     }
 
     fn is_stale(&self, current_day: u32) -> bool {
@@ -335,9 +364,10 @@ impl Collection {
             .storage
             .get_card(current_card_id)?
             .or_not_found(current_card_id)?;
-        let mut queues = self.build_queues_with_current_card(deck.id, Some(&card))?;
-        let counts = queues.counts();
+        let queues = self.build_queues_with_current_card(deck.id, Some(&card))?;
         self.state.card_queues = Some(queues);
+        self.refresh_rwkv_learning_repeat_guards(&deck)?;
+        let counts = self.state.card_queues.as_mut().unwrap().counts();
         Ok(QueuedCards {
             cards: vec![],
             new_count: counts.new,
@@ -405,6 +435,7 @@ impl Collection {
             self.state.card_queues = Some(self.build_queues(deck.id)?);
         }
 
+        self.refresh_rwkv_learning_repeat_guards(&deck)?;
         Ok(self.state.card_queues.as_mut().unwrap())
     }
 

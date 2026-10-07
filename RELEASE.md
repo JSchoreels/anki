@@ -33,6 +33,7 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **RWKV repeat spacing also protects learning cards.** With Instant enabled, learning and relearning repeats respect both the minimum other reviews and minimum elapsed seconds, including already-due steps and cards offered through Learn ahead. Cards become available once both minimums are met, while their saved intervals and learning steps are preserved.
 - **Compact RWKV repeat spacing.** Set the minimum other reviews and elapsed seconds in one row, with units shown inside the fields. Instant now follows the shared same-day review switch; the separate RWKV switch is removed, and old preset values no longer silently block repeats.
 - **Clearer RWKV introduction.** Deck Options briefly explains Curve and Instant, clarifies how they use due dates, recommends a daily review limit, links to the RWKV FAQ, and places Instant before Curve with clearer section headings.
 - **Simpler RWKV settings.** The answer-order option spells out Again ≤ Hard ≤ Good ≤ Easy, and queue guidance recommends Ascending Retrievability or Random. Creation-time predictions for new cards stay enabled without a toggle. The exit-refresh switch is hidden while preserving its saved behavior, and Dynamic Preset support moves to a global RWKV support option in the add-on.
@@ -48,6 +49,7 @@ repeated here unless they materially affect a fork feature.
 
 ### Technical details
 
+- **RWKV learning selection:** the learning and review paths share the repeat-spacing calculation. Learning eligibility reads current answer times and recent answers in the selected deck tree on selection, filters reviewer counts consistently, and preserves undo/redo queue snapshots. Learning eligibility continues to use its configured or generated interval without adding Instant's recall threshold.
 - **RWKV configuration:** creation-time prediction ignores the retired deck-option flag in desktop and native query paths. The synced `rwkvDynamicPresetReplay` collection boolean overrides legacy deck-preset replay flags; until it is explicitly saved in the add-on, the old choice remains effective. Existing cache identities detect changes in effective replay behavior.
 - **UI scaling:** backported [Anki #5686](https://github.com/ankitects/anki/pull/5686), fixing [#5676](https://github.com/ankitects/anki/issues/5676). The saved scale factor is applied before Qt creates the application, with a startup regression test.
 - **Browser:** backported Anki [#5768](https://github.com/ankitects/anki/pull/5768) and [#5771](https://github.com/ankitects/anki/pull/5771). The column header uses an empty selection model to avoid scanning selected rows when painting. Menu actions count changed selection ranges, while preserving the fork's fallback for add-ons overriding model flags.

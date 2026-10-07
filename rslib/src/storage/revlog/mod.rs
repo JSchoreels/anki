@@ -620,6 +620,36 @@ impl SqliteStorage {
         Ok(review_times)
     }
 
+    /// Counts since the most recent answer for cards still inside the repeat
+    /// spacing window. Other cards have already met the requested minimum.
+    pub(crate) fn recent_rwkv_intervening_reviews(
+        &self,
+        deck_ids: &[DeckId],
+        minimum_reviews: u32,
+    ) -> Result<HashMap<CardId, u32>> {
+        let mut counts = HashMap::new();
+        if minimum_reviews == 0 {
+            return Ok(counts);
+        }
+        let mut ids = String::new();
+        ids_to_string(&mut ids, deck_ids);
+        let sql = format!(
+            "select r.cid from revlog r join cards c on c.id = r.cid \
+             where r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5) \
+             and not (r.type = 3 and r.factor = 0) \
+             and (case when c.odid != 0 then c.odid else c.did end) in {ids} \
+             order by r.id desc limit ?"
+        );
+        let mut stmt = self.db.prepare(&sql)?;
+        let mut rows = stmt.query([minimum_reviews])?;
+        let mut count = 0;
+        while let Some(row) = rows.next()? {
+            counts.entry(row.get(0)?).or_insert(count);
+            count += 1;
+        }
+        Ok(counts)
+    }
+
     /// Cards with a genuine answer in the half-open timestamp range.
     pub(crate) fn card_ids_reviewed_between(
         &self,

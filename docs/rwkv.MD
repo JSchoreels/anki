@@ -447,6 +447,18 @@ reviews in the selected deck tree before the same card is admitted again, and
 stored last review time. Both guards must be satisfied; setting either value
 to `0` removes that minimum.
 
+While RWKV-Instant is enabled for the selected deck, these same spacing guards
+also apply to learning and relearning cards in that deck tree. They are checked
+when selecting cards, including already-due steps and cards pulled forward by
+Learn ahead, and the reviewer learning count excludes withheld cards. Each
+selection reads the latest answer time and recent answered reviews, so answers,
+undo, redo, and elapsed time update eligibility without changing stored due
+times or step lists. These guards do not apply Instant's recall threshold to
+learning cards: their configured or generated intervals still determine when
+they are due or fall inside the Learn ahead window. Disabling Instant preserves
+normal learning selection. An already displayed card, or a card explicitly
+restored by Undo, remains answerable.
+
 Answering Again on a card already answered during the current scheduler day
 does not increase its lapse count or trigger leech tagging or suspension.
 This applies regardless of queue skipping or scheduler, including rescheduling
