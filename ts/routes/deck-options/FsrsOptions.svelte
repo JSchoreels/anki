@@ -232,25 +232,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             auxData.set(updated);
         }
     }
-    const fsrsVersionChoices = [
-        {
-            value: DeckConfig_Config_FsrsVersion.SEVEN,
-            label: "FSRS-7",
-        },
-        {
-            value: DeckConfig_Config_FsrsVersion.SIX,
-            label: "FSRS-6",
-        },
-        {
-            value: DeckConfig_Config_FsrsVersion.FIVE,
-            label: "FSRS-5",
-        },
-        {
-            value: DeckConfig_Config_FsrsVersion.FOUR,
-            label: "FSRS-4.5",
-        },
-    ];
-
     function selectedFsrsParams(config: DeckConfig_Config): number[] {
         switch (config.fsrsVersion) {
             case DeckConfig_Config_FsrsVersion.SIX:
@@ -572,6 +553,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     ): Promise<void> {
         const request = ++newCardIntervalRequest;
         newCardIntervalsError = "";
+        if ($config.rwkvReviewEnabled) {
+            newCardIntervals = undefined;
+            return;
+        }
         const diagnostics = fsrsParamDiagnostics(params);
         if (!diagnostics.valid) {
             newCardIntervals = undefined;
@@ -1497,279 +1482,288 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SpinBoxFloatRow>
     </Item>
 </DynamicallySlottable>
-<Warning warning={desiredRetentionChangeInfo} className={desiredRetentionChangeClass} />
 <Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
 
-{#if newCardIntervals}
-    <div class="interval-preview ms-1 me-1">
-        <div class="interval-preview-title">
-            {tr.deckConfigNewCardIntervals()}
-        </div>
-        <table class="interval-preview-table">
-            <thead>
-                <tr>
-                    <th></th>
-                    <th>
-                        {tr.deckConfigCurrentDr()}
-                        ({(startingDesiredRetentionValue * 100).toFixed(2)}%)
-                    </th>
-                    <th>
-                        {tr.deckConfigSelectedDr()}
-                        ({(effectiveDesiredRetention * 100).toFixed(2)}%)
-                    </th>
-                </tr>
-            </thead>
-            <tbody>
-                {#each intervalColumns as column, index}
-                    <tr class={intervalRowClasses[index]}>
-                        <th>{column}</th>
-                        <td>{newCardIntervals[0][index]}</td>
-                        <td>{newCardIntervals[1][index]}</td>
+{#if !$config.rwkvReviewEnabled}
+    <Warning
+        warning={desiredRetentionChangeInfo}
+        className={desiredRetentionChangeClass}
+    />
+    {#if newCardIntervals}
+        <div class="interval-preview ms-1 me-1">
+            <div class="interval-preview-title">
+                {tr.deckConfigNewCardIntervals()}
+            </div>
+            <table class="interval-preview-table">
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th>
+                            {tr.deckConfigCurrentDr()}
+                            ({(startingDesiredRetentionValue * 100).toFixed(2)}%)
+                        </th>
+                        <th>
+                            {tr.deckConfigSelectedDr()}
+                            ({(effectiveDesiredRetention * 100).toFixed(2)}%)
+                        </th>
                     </tr>
-                {/each}
-            </tbody>
-        </table>
-    </div>
-{/if}
+                </thead>
+                <tbody>
+                    {#each intervalColumns as column, index}
+                        <tr class={intervalRowClasses[index]}>
+                            <th>{column}</th>
+                            <td>{newCardIntervals[0][index]}</td>
+                            <td>{newCardIntervals[1][index]}</td>
+                        </tr>
+                    {/each}
+                </tbody>
+            </table>
+        </div>
+    {/if}
 
-<Warning warning={newCardIntervalsError} className={"alert-warning"} />
-<Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
+    <Warning warning={newCardIntervalsError} className={"alert-warning"} />
+    <Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
 
-<div class="ms-1 me-1">
-    <button
-        class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
-        disabled={!computingParams && computing}
-        on:click={() => computeParams()}
-    >
-        {#if computingParams}
-            {tr.actionsCancel()}
-        {:else}
-            {tr.deckConfigOptimizeButton()}
-        {/if}
-    </button>
-    <button class="btn btn-primary" on:click={() => computeAllParams()}>
-        {tr.deckConfigSaveAndOptimize()}
-    </button>
-    <div>
-        {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
-            {computeParamsProgressString}
-            {#if computeParamsProgressPct !== undefined}
-                <div
-                    class="progress fsrs-progress"
-                    role="progressbar"
-                    aria-valuenow={computeParamsProgressPct}
-                    aria-valuemin="0"
-                    aria-valuemax="100"
-                >
-                    <div
-                        class="progress-bar"
-                        style={`width: ${computeParamsProgressPct}%`}
-                    ></div>
-                </div>
-            {/if}
-        {:else if totalReviews !== undefined}
-            {tr.statisticsReviews({ reviews: totalReviews })}
-        {/if}
-    </div>
-</div>
-
-<details class="fsrs-advanced m-1">
-    <summary>{tr.deckConfigAdvancedSettings()}</summary>
-
-    <div>
+    <div class="ms-1 me-1">
         <button
-            class="btn btn-outline-primary"
-            on:click={() => {
-                simulateFsrsRequest.reviewLimit = 9999;
-                showSimulatorModal(workloadModal);
-            }}
+            class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
+            disabled={!computingParams && computing}
+            on:click={() => computeParams()}
         >
-            {tr.deckConfigFsrsDesiredRetentionHelpMeDecideExperimental()}
-        </button>
-    </div>
-
-    <Warning warning={lastOptimizationWarning} className="alert-warning" />
-
-    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
-        <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>
-            <SettingTitle>Include same-day reviews in FSRS-7</SettingTitle>
-        </SwitchRow>
-        <SwitchRow bind:value={enableSchedulingPenaltiesInFsrs7} defaultValue={false}>
-            <SettingTitle>Use scheduling penalties in FSRS-7 optimization</SettingTitle>
-        </SwitchRow>
-        <button
-            class="btn {checkingSameDayDecision
-                ? 'btn-warning'
-                : 'btn-outline-primary'}"
-            disabled={!checkingSameDayDecision && computing}
-            on:click={() => checkSameDayDecision()}
-        >
-            {#if checkingSameDayDecision}
+            {#if computingParams}
                 {tr.actionsCancel()}
             {:else}
-                Same-day reviews: Help Me Decide
+                {tr.deckConfigOptimizeButton()}
             {/if}
         </button>
-    {/if}
-
-    <div class="mb-3">
-        <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
-        <select bind:value={$config.fsrsVersion} class="form-select">
-            {#each fsrsVersionChoices as choice}
-                <option value={choice.value}>{choice.label}</option>
-            {/each}
-        </select>
+        <button class="btn btn-primary" on:click={() => computeAllParams()}>
+            {tr.deckConfigSaveAndOptimize()}
+        </button>
+        <div>
+            {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
+                {computeParamsProgressString}
+                {#if computeParamsProgressPct !== undefined}
+                    <div
+                        class="progress fsrs-progress"
+                        role="progressbar"
+                        aria-valuenow={computeParamsProgressPct}
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                    >
+                        <div
+                            class="progress-bar"
+                            style={`width: ${computeParamsProgressPct}%`}
+                        ></div>
+                    </div>
+                {/if}
+            {:else if totalReviews !== undefined}
+                {tr.statisticsReviews({ reviews: totalReviews })}
+            {/if}
+        </div>
     </div>
 
-    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
-        <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>
-            <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                {tr.deckConfigWeights()}
-            </SettingTitle>
-        </ParamsInputRow>
-    {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FIVE}
-        <ParamsInputRow bind:value={$config.fsrsParams5} defaultValue={[]}>
-            <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                {tr.deckConfigWeights()}
-            </SettingTitle>
-        </ParamsInputRow>
-    {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FOUR}
-        <ParamsInputRow bind:value={$config.fsrsParams4} defaultValue={[]}>
-            <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                {tr.deckConfigWeights()}
-            </SettingTitle>
-        </ParamsInputRow>
-    {:else}
-        <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
-            <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                {tr.deckConfigWeights()}
-            </SettingTitle>
-        </ParamsInputRow>
-    {/if}
+    <details class="fsrs-advanced m-1">
+        <summary>{tr.deckConfigAdvancedSettings()}</summary>
 
-    {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
-        <SwitchRow
-            bind:value={$config.fsrsDynamicDesiredRetentionEnabled}
-            defaultValue={false}
-        >
-            <SettingTitle>Dynamic DR (ADR)</SettingTitle>
-        </SwitchRow>
+        <div>
+            <button
+                class="btn btn-outline-primary"
+                on:click={() => {
+                    simulateFsrsRequest.reviewLimit = 9999;
+                    showSimulatorModal(workloadModal);
+                }}
+            >
+                {tr.deckConfigFsrsDesiredRetentionHelpMeDecideExperimental()}
+            </button>
+        </div>
 
-        {#if $config.fsrsDynamicDesiredRetentionEnabled}
+        <Warning warning={lastOptimizationWarning} className="alert-warning" />
+
+        {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
+            <SwitchRow bind:value={includeSameDayReviewsInFsrs7} defaultValue={true}>
+                <SettingTitle>Include same-day reviews in FSRS-7</SettingTitle>
+            </SwitchRow>
             <SwitchRow
-                bind:value={$config.fsrsDynamicDesiredRetentionClamp}
+                bind:value={enableSchedulingPenaltiesInFsrs7}
                 defaultValue={false}
             >
-                <SettingTitle>Clamp Unsupported Dynamic DR Targets</SettingTitle>
+                <SettingTitle>
+                    Use scheduling penalties in FSRS-7 optimization
+                </SettingTitle>
             </SwitchRow>
-            <ParamsInputRow
-                bind:value={$config.fsrsDynamicDesiredRetentionParams}
-                defaultValue={[]}
-                validParamCounts={[0, 15]}
-                ariaLabel="Dynamic DR ADR policy parameters"
+            <button
+                class="btn {checkingSameDayDecision
+                    ? 'btn-warning'
+                    : 'btn-outline-primary'}"
+                disabled={!checkingSameDayDecision && computing}
+                on:click={() => checkSameDayDecision()}
             >
-                <SettingTitle>ADR Policy Parameters</SettingTitle>
-            </ParamsInputRow>
-            <ParamsInputRow
-                bind:value={$config.fsrsDynamicDesiredRetentionWeights}
-                defaultValue={[]}
-                validParamCounts={dynamicDesiredRetentionCalibrationCounts}
-                ariaLabel="Dynamic DR calibration weights"
-            >
-                <SettingTitle>Calibration Weights</SettingTitle>
-            </ParamsInputRow>
-            <ParamsInputRow
-                bind:value={$config.fsrsDynamicDesiredRetentionAvgDrs}
-                defaultValue={[]}
-                validParamCounts={dynamicDesiredRetentionCalibrationCounts}
-                ariaLabel="Dynamic DR calibration average desired retentions"
-            >
-                <SettingTitle>Calibration Avg ADR DRs</SettingTitle>
-            </ParamsInputRow>
-            <div class="dynamic-dr-actions">
-                <span>
-                    Weight:
-                    {dynamicDesiredRetentionWeight === null
-                        ? "n/a"
-                        : dynamicDesiredRetentionWeight.toFixed(2)}
-                </span>
-                <span>
-                    Bounds:
-                    {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMin)}
-                    -
-                    {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMax)}
-                </span>
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={!dynamicDesiredRetentionReady}
-                    on:click={() => dynamicDesiredRetentionPlotModal?.show()}
-                >
-                    Visualize DR plot
-                </button>
-            </div>
-            <Warning
-                warning={dynamicDesiredRetentionWarning}
-                className="alert-warning"
-            />
+                {#if checkingSameDayDecision}
+                    {tr.actionsCancel()}
+                {:else}
+                    Same-day reviews: Help Me Decide
+                {/if}
+            </button>
         {/if}
-    {/if}
 
-    <ParamsSearchRow bind:value={$config.paramSearch} placeholder={defaultparamSearch}>
-        <SettingTitle>Optimize Search Filter</SettingTitle>
-    </ParamsSearchRow>
-    <ParamsSearchRow
-        bind:value={evaluationSearchFilter}
-        placeholder={defaultparamSearch}
-    >
-        <SettingTitle>Evaluation Search Filter</SettingTitle>
-    </ParamsSearchRow>
-
-    <SwitchRow bind:value={$fsrsReschedule} defaultValue={false}>
-        <SettingTitle on:click={() => openHelpModal("rescheduleCardsOnChange")}>
-            <GlobalLabel title={tr.deckConfigRescheduleCardsOnChange()} />
-        </SettingTitle>
-    </SwitchRow>
-
-    {#if $fsrsReschedule}
-        <Warning warning={tr.deckConfigRescheduleCardsWarning()} />
-    {/if}
-
-    <SwitchRow bind:value={$healthCheck} defaultValue={false}>
-        <SettingTitle on:click={() => openHelpModal("healthCheck")}>
-            <GlobalLabel
-                title={tr.deckConfigSlowSuffix({ text: tr.deckConfigHealthCheck() })}
-            />
-        </SettingTitle>
-    </SwitchRow>
-
-    <button
-        class="btn {checkingHealth ? 'btn-warning' : 'btn-primary'}"
-        disabled={!checkingHealth && computing}
-        on:click={() => checkHealth()}
-    >
-        {#if checkingHealth}
-            {tr.actionsCancel()}
+        {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
+            <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>
+                <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                    {tr.deckConfigWeights()}
+                </SettingTitle>
+            </ParamsInputRow>
+        {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FIVE}
+            <ParamsInputRow bind:value={$config.fsrsParams5} defaultValue={[]}>
+                <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                    {tr.deckConfigWeights()}
+                </SettingTitle>
+            </ParamsInputRow>
+        {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FOUR}
+            <ParamsInputRow bind:value={$config.fsrsParams4} defaultValue={[]}>
+                <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                    {tr.deckConfigWeights()}
+                </SettingTitle>
+            </ParamsInputRow>
         {:else}
-            {tr.deckConfigHealthCheckButton()}
+            <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
+                <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                    {tr.deckConfigWeights()}
+                </SettingTitle>
+            </ParamsInputRow>
         {/if}
-    </button>
-    {#if state.legacyEvaluate}
-        <button
-            class="btn {checkingParams ? 'btn-warning' : 'btn-primary'}"
-            disabled={!checkingParams && computing}
-            on:click={() => checkParams()}
+
+        {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
+            <SwitchRow
+                bind:value={$config.fsrsDynamicDesiredRetentionEnabled}
+                defaultValue={false}
+            >
+                <SettingTitle>Dynamic DR (ADR)</SettingTitle>
+            </SwitchRow>
+
+            {#if $config.fsrsDynamicDesiredRetentionEnabled}
+                <SwitchRow
+                    bind:value={$config.fsrsDynamicDesiredRetentionClamp}
+                    defaultValue={false}
+                >
+                    <SettingTitle>Clamp Unsupported Dynamic DR Targets</SettingTitle>
+                </SwitchRow>
+                <ParamsInputRow
+                    bind:value={$config.fsrsDynamicDesiredRetentionParams}
+                    defaultValue={[]}
+                    validParamCounts={[0, 15]}
+                    ariaLabel="Dynamic DR ADR policy parameters"
+                >
+                    <SettingTitle>ADR Policy Parameters</SettingTitle>
+                </ParamsInputRow>
+                <ParamsInputRow
+                    bind:value={$config.fsrsDynamicDesiredRetentionWeights}
+                    defaultValue={[]}
+                    validParamCounts={dynamicDesiredRetentionCalibrationCounts}
+                    ariaLabel="Dynamic DR calibration weights"
+                >
+                    <SettingTitle>Calibration Weights</SettingTitle>
+                </ParamsInputRow>
+                <ParamsInputRow
+                    bind:value={$config.fsrsDynamicDesiredRetentionAvgDrs}
+                    defaultValue={[]}
+                    validParamCounts={dynamicDesiredRetentionCalibrationCounts}
+                    ariaLabel="Dynamic DR calibration average desired retentions"
+                >
+                    <SettingTitle>Calibration Avg ADR DRs</SettingTitle>
+                </ParamsInputRow>
+                <div class="dynamic-dr-actions">
+                    <span>
+                        Weight:
+                        {dynamicDesiredRetentionWeight === null
+                            ? "n/a"
+                            : dynamicDesiredRetentionWeight.toFixed(2)}
+                    </span>
+                    <span>
+                        Bounds:
+                        {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMin)}
+                        -
+                        {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMax)}
+                    </span>
+                    <button
+                        class="btn btn-outline-primary"
+                        disabled={!dynamicDesiredRetentionReady}
+                        on:click={() => dynamicDesiredRetentionPlotModal?.show()}
+                    >
+                        Visualize DR plot
+                    </button>
+                </div>
+                <Warning
+                    warning={dynamicDesiredRetentionWarning}
+                    className="alert-warning"
+                />
+            {/if}
+        {/if}
+
+        <ParamsSearchRow
+            bind:value={$config.paramSearch}
+            placeholder={defaultparamSearch}
         >
-            {#if checkingParams}
+            <SettingTitle>Optimize Search Filter</SettingTitle>
+        </ParamsSearchRow>
+        <ParamsSearchRow
+            bind:value={evaluationSearchFilter}
+            placeholder={defaultparamSearch}
+        >
+            <SettingTitle>Evaluation Search Filter</SettingTitle>
+        </ParamsSearchRow>
+
+        <SwitchRow bind:value={$fsrsReschedule} defaultValue={false}>
+            <SettingTitle on:click={() => openHelpModal("rescheduleCardsOnChange")}>
+                <GlobalLabel title={tr.deckConfigRescheduleCardsOnChange()} />
+            </SettingTitle>
+        </SwitchRow>
+
+        {#if $fsrsReschedule}
+            <Warning warning={tr.deckConfigRescheduleCardsWarning()} />
+        {/if}
+
+        <SwitchRow bind:value={$healthCheck} defaultValue={false}>
+            <SettingTitle on:click={() => openHelpModal("healthCheck")}>
+                <GlobalLabel
+                    title={tr.deckConfigSlowSuffix({
+                        text: tr.deckConfigHealthCheck(),
+                    })}
+                />
+            </SettingTitle>
+        </SwitchRow>
+
+        <button
+            class="btn {checkingHealth ? 'btn-warning' : 'btn-primary'}"
+            disabled={!checkingHealth && computing}
+            on:click={() => checkHealth()}
+        >
+            {#if checkingHealth}
                 {tr.actionsCancel()}
             {:else}
-                {tr.deckConfigEvaluateButton()}
+                {tr.deckConfigHealthCheckButton()}
             {/if}
         </button>
-    {/if}
-    <button class="btn btn-primary" on:click={() => showSimulatorModal(simulatorModal)}>
-        {tr.deckConfigFsrsSimulatorExperimental()}
-    </button>
-</details>
+        {#if state.legacyEvaluate}
+            <button
+                class="btn {checkingParams ? 'btn-warning' : 'btn-primary'}"
+                disabled={!checkingParams && computing}
+                on:click={() => checkParams()}
+            >
+                {#if checkingParams}
+                    {tr.actionsCancel()}
+                {:else}
+                    {tr.deckConfigEvaluateButton()}
+                {/if}
+            </button>
+        {/if}
+        <button
+            class="btn btn-primary"
+            on:click={() => showSimulatorModal(simulatorModal)}
+        >
+            {tr.deckConfigFsrsSimulatorExperimental()}
+        </button>
+    </details>
+{/if}
 
 <SimulatorModal
     bind:modal={simulatorModal}

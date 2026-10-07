@@ -251,6 +251,20 @@ the active preset name, preset index, and per-preset counts so the UI can show
 the save and update/reschedule stages in the same multi-lane progress view used
 by parameter optimization.
 
+## Scheduler Selection In Deck Options
+
+The Scheduler panel selects the preset's review model: FSRS-6, FSRS-7,
+RWKV-Curve, or RWKV-Instant. FSRS-4.5 and FSRS-5 remain under the Legacy tab.
+Instant adds a due-date selector for its FSRS or Curve companion; this controls
+stored due dates while Instant independently selects reviews. The selectors
+reuse `fsrs_version`, `rwkv_review_enabled`, and
+`rwkv_review_instant_order_enabled` and retain each model's stored parameters.
+Opening the panel or browsing the Legacy tab does not rewrite those fields.
+
+The visible Machine Learning Based scheduling switch remains collection-wide.
+Selecting a model enables it; other presets retain their own selected models.
+Per-preset SM2/FSRS coexistence is not introduced by these UI selectors.
+
 ## Fork-Owned Storage
 
 Fork-owned FSRS preset fields are stored in deck config `other` under the

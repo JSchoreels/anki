@@ -1,16 +1,33 @@
 # RWKV Review Scheduler
 
-The RWKV review scheduler is a desktop-only review-time scheduler. When **Use
-RWKV-Curve for answer intervals** is enabled, answer buttons use RWKV-Curve
-intervals and store RWKV-Curve S90 values. RWKV-Instant retrievability is
-recorded on live review answers and can separately be used for review queue
-selection when **Use RWKV-Instant to choose review cards** is enabled. To use
-RWKV-Curve without RWKV-Instant ordering, enable Curve and leave Instant
-disabled. To use FSRS intervals with RWKV-Instant queue selection, disable
-Curve and enable Instant. Instant selects review cards independently of their
-scheduled due dates. Synced RWKV-Curve due dates can guide the next mobile
-session, but mobile clients do not load the RWKV backend and continue to
-schedule answers with FSRS/SM2.
+The RWKV review scheduler is a desktop-only review-time scheduler. In Deck
+Options, **Scheduler → Review scheduler** selects FSRS-6, FSRS-7, RWKV-Curve,
+or RWKV-Instant for the preset. FSRS-4.5 and FSRS-5 remain available under
+**Legacy**. Curve uses RWKV-Curve answer intervals and stores RWKV-Curve S90
+values. Instant selects review cards independently of their scheduled due dates.
+
+With Instant selected, **Due-date scheduler** chooses FSRS-6, FSRS-7, or
+RWKV-Curve to write intervals and due dates for mobile sync and statistics.
+Older FSRS versions are available under that selector's Legacy tab as well.
+Choosing Instant keeps the preset's previous interval model as its initial
+companion. In **Review scheduler**, selecting an FSRS model disables both
+RWKV overrides; selecting Curve disables Instant. These controls reuse the
+existing FSRS version and RWKV boolean fields without a new storage format or
+clearing model parameters. They replace the separate Curve and Instant enable
+switches.
+
+**Machine Learning Based scheduling** remains a visible, collection-wide switch.
+Selecting either model selector enables it, so an FSRS due-date choice uses the
+native FSRS scheduler. Turning it off retains Anki's existing global SM2 behavior
+for native interval scheduling; RWKV settings remain independent. The model selectors
+change the current preset, not the models selected on other presets.
+
+When Curve writes due dates, Deck Options shows desired retention and RWKV
+controls while hiding the FSRS-only interval preview and optimization controls.
+Synced RWKV-Curve due dates can guide the next mobile session, but mobile
+clients do not load the RWKV backend and continue to schedule answers with
+FSRS/SM2. Choosing a model affects future answers; use the existing explicit
+reschedule controls to update stored due dates for cards already scheduled.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
 the predicted curve. Curve crossings are refined on the curve itself rather

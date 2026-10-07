@@ -2,10 +2,138 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import { OpChanges } from "@generated/anki/collection_pb";
-import { DeckConfigsForUpdate, UpdateDeckConfigsRequest } from "@generated/anki/deck_config_pb";
+import {
+    DeckConfig_Config_FsrsVersion,
+    DeckConfigsForUpdate,
+    UpdateDeckConfigsRequest,
+} from "@generated/anki/deck_config_pb";
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test("scheduler selectors save the review and Instant due-date models", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = false;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.fsrsVersion = DeckConfig_Config_FsrsVersion.SEVEN;
+        config.rwkvReviewEnabled = false;
+        config.rwkvReviewInstantOrderEnabled = false;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
+    const dueDates = page.getByRole("radiogroup", { name: "Due-date scheduler", exact: true });
+    const fsrs = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
+    await expect(model.getByRole("radio", { name: "FSRS-7", exact: true })).toBeChecked();
+    await expect(fsrs).not.toBeChecked();
+    await model.getByRole("radio", { name: "FSRS-7", exact: true }).focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect(model.getByRole("radio", { name: "FSRS-6", exact: true })).toBeChecked();
+    await expect(fsrs).toBeChecked();
+
+    for (
+        const { choice, companion, version, curve, instant } of [
+            { choice: "fsrs-6", version: DeckConfig_Config_FsrsVersion.SIX, curve: false, instant: false },
+            { choice: "fsrs-7", version: DeckConfig_Config_FsrsVersion.SEVEN, curve: false, instant: false },
+            { choice: "rwkv-curve", version: DeckConfig_Config_FsrsVersion.SEVEN, curve: true, instant: false },
+            {
+                choice: "rwkv-instant",
+                companion: "rwkv-curve",
+                version: DeckConfig_Config_FsrsVersion.SEVEN,
+                curve: true,
+                instant: true,
+            },
+            {
+                choice: "rwkv-instant",
+                companion: "fsrs-6",
+                version: DeckConfig_Config_FsrsVersion.SIX,
+                curve: false,
+                instant: true,
+            },
+            {
+                choice: "rwkv-instant",
+                companion: "fsrs-7",
+                version: DeckConfig_Config_FsrsVersion.SEVEN,
+                curve: false,
+                instant: true,
+            },
+            {
+                choice: "rwkv-instant",
+                companion: "rwkv-curve",
+                version: DeckConfig_Config_FsrsVersion.SEVEN,
+                curve: true,
+                instant: true,
+            },
+        ]
+    ) {
+        await model.locator(`input[value="${choice}"]`).check();
+        await expect(fsrs).toBeChecked();
+        await expect(dueDates).toHaveCount(instant ? 1 : 0);
+        if (companion) {
+            await dueDates.locator(`input[value="${companion}"]`).check();
+        }
+        await expect(page.getByRole("button", { name: "Optimize Current Preset", exact: true }))
+            .toHaveCount(curve ? 0 : 1);
+        await expect(page.getByRole("checkbox", { name: /^Use RWKV-(Curve|Instant)\b/ })).toHaveCount(0);
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => [
+            saved?.fsrs,
+            saved?.configs.at(-1)?.config?.fsrsVersion,
+            saved?.configs.at(-1)?.config?.rwkvReviewEnabled,
+            saved?.configs.at(-1)?.config?.rwkvReviewInstantOrderEnabled,
+        ]).toEqual([true, version, curve, instant]);
+    }
+});
+
+test("browsing Legacy leaves the selected scheduler unchanged until a model is chosen", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.fsrsVersion = DeckConfig_Config_FsrsVersion.SEVEN;
+        config.rwkvReviewEnabled = false;
+        config.rwkvReviewInstantOrderEnabled = false;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const tabs = page.getByRole("group", { name: "Review scheduler", exact: true });
+    const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
+    await tabs.getByRole("button", { name: "Legacy", exact: true }).click();
+    await expect(model.locator("label")).toHaveText(["FSRS-4.5", "FSRS-5"]);
+    await expect(model.locator("input:checked")).toHaveCount(0);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.SEVEN);
+    await model.getByRole("radio", { name: "FSRS-5", exact: true }).check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.FIVE);
+    await model.getByRole("radio", { name: "FSRS-4.5", exact: true }).check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.FOUR);
+    await tabs.getByRole("button", { name: "Modern", exact: true }).click();
+    await expect(model.locator("label")).toHaveText([
+        "FSRS-6",
+        "FSRS-7",
+        "RWKV-Curve",
+        "RWKV-Instant",
+    ]);
+});
 
 for (
     const { enteredReviews, enteredSeconds, savedReviews, savedSeconds } of [
@@ -68,15 +196,19 @@ test("RWKV-Instant exposes and saves the shared same-day switch with FSRS off", 
 
     await page.goto("/deck-options/1");
     const sameDay = page.getByRole("checkbox", { name: /^Allow same day review for \(re\)learning steps\b/ });
-    const instant = page.getByRole("checkbox", { name: /^Use RWKV-Instant to choose review cards\b/ });
+    const scheduler = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
+    const fsrs = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
     await expect(sameDay).toHaveCount(0);
-    await instant.check();
+    await scheduler.getByRole("radio", { name: "RWKV-Instant", exact: true }).check();
+    await fsrs.uncheck();
     await expect(sameDay).toBeVisible();
     await expect(sameDay).not.toBeChecked();
     await sameDay.check();
-    await instant.uncheck();
+    await scheduler.getByRole("radio", { name: "FSRS-7", exact: true }).check();
+    await fsrs.uncheck();
     await expect(sameDay).toHaveCount(0);
-    await instant.check();
+    await scheduler.getByRole("radio", { name: "RWKV-Instant", exact: true }).check();
+    await fsrs.uncheck();
     await expect(sameDay).toBeChecked();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => saved?.fsrsShortTermWithStepsEnabled).toBe(true);
@@ -124,7 +256,7 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
     await page.clock.install();
     await page.goto("/deck-options/1");
 
-    const fsrs = page.getByRole("checkbox", { name: /^FSRS\b/ });
+    const fsrs = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
     const advanced = page.locator("details.fsrs-advanced");
     const parameters = page.getByRole("button", { name: "FSRS Parameters", exact: true });
     const input = parameters.locator("textarea");

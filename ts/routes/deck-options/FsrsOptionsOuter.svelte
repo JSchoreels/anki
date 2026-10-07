@@ -19,6 +19,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
+    import SchedulerOptions from "./SchedulerOptions.svelte";
 
     export let state: DeckOptionsState;
     export let api: Record<string, never>;
@@ -31,6 +32,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     const fsrs = state.fsrs;
+    const config = state.currentConfig;
     let newlyEnabled = false;
     $: if (!$fsrs) {
         newlyEnabled = true;
@@ -38,7 +40,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = {
         fsrs: {
-            title: "FSRS",
+            title: tr.deckConfigSchedulerEnableFsrs(),
             help: tr.deckConfigFsrsTooltip(),
             url: HelpPage.DeckOptions.fsrs,
             global: true,
@@ -112,7 +114,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </SwitchRow>
         </Item>
 
-        {#if $fsrs}
+        {#if !$fsrs}
+            <p class="scheduler-disabled">{tr.deckConfigSchedulerDisabled()}</p>
+        {/if}
+
+        <SchedulerOptions {state} onSelect={() => fsrs.set(true)} />
+
+        {#if $fsrs || $config.rwkvReviewEnabled}
             <FsrsOptions
                 bind:this={fsrsOptionsComponent}
                 {state}
@@ -124,3 +132,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
     </DynamicallySlottable>
 </TitledContainer>
+
+<style>
+    .scheduler-disabled {
+        color: var(--fg-subtle);
+        font-size: 0.8rem;
+        margin: 0.375rem 0;
+    }
+</style>
