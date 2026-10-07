@@ -3,6 +3,10 @@ set windows-shell := ["pwsh", "-NoLogo", "-NoProfileLoadTime", "-Command"]
 version := `cat .version`
 python := if os() == "windows" { "python" } else { "python3" }
 
+# Extract curated notes from RELEASE.md for a release or unsigned draft build
+notes version output:
+    {{ python }} .github/scripts/release_notes.py --version "{{ version }}" --output "{{ output }}"
+
 [private]
 check-ci ref skip-ci-check:
     {{ if skip-ci-check == "true" { "echo Skipping local CI preflight" } else { python + " .github/scripts/wait_for_ci.py --repo JSchoreels/anki --commit \"" + ref + "\"" } }}

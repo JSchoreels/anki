@@ -905,12 +905,14 @@ jobs:
           fi
 
           notes_start_tag=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+          python3 .github/scripts/release_notes.py --version "$TAG_NAME" --output release-notes.md
 
           gh release create "$TAG_NAME" \
             dist/* \
             --draft \
             --target "$RELEASE_SHA" \
             --title "$RELEASE_NAME" \
+            --notes-file release-notes.md \
             --generate-notes \
             ${notes_start_tag:+--notes-start-tag "$notes_start_tag"} \
             ${prerelease_flag:+"$prerelease_flag"}

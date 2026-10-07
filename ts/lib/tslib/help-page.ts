@@ -22,8 +22,8 @@ export const HelpPage = {
         minimumInterval: "https://docs.ankiweb.net/deck-options.html#minimum-interval",
         lapses: "https://docs.ankiweb.net/deck-options.html#lapses",
         displayOrder: "https://docs.ankiweb.net/deck-options.html#display-order",
-        maximumReviewsday: "https://docs.ankiweb.net/deck-options.html#maximum-reviewsday",
-        newCardsday: "https://docs.ankiweb.net/deck-options.html#new-cardsday",
+        maximumReviewsday: "https://docs.ankiweb.net/manual/deck-options#maximum-reviews/day",
+        newCardsday: "https://docs.ankiweb.net/manual/deck-options#new-cards/day",
         limitsFromTop: "https://docs.ankiweb.net/deck-options.html#limits-start-from-top",
         dailyLimits: "https://docs.ankiweb.net/deck-options.html#daily-limits",
         audio: "https://docs.ankiweb.net/deck-options.html#audio",
@@ -31,7 +31,7 @@ export const HelpPage = {
         desiredRetention: "https://docs.ankiweb.net/deck-options.html#desired-retention",
     },
     Leeches: {
-        leeches: "https://docs.ankiweb.net/leeches.html#leeches",
+        leeches: "https://docs.ankiweb.net/manual/leeches",
         waiting: "https://docs.ankiweb.net/leeches.html#waiting",
     },
     Studying: {

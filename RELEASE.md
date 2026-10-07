@@ -19,6 +19,10 @@ repeated here unless they materially affect a fork feature.
   numbers may be recorded separately when useful.
 - Treat [`.version`](./.version) as authoritative if this file and the build
   version ever disagree.
+- The release workflow includes the matching version section (or **Unreleased**
+  for an unsigned draft build) before GitHub's generated commit list. Keep that
+  section complete for the exact release commit; an empty section blocks release
+  creation.
 
 ## Unreleased
 
@@ -48,6 +52,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Deck Options help links for daily limits and leeches now open the current
+  manual pages and sections.
 - Adding cards through add-ons such as AnkiConnect (e.g. Yomitan mining) no
   longer pops up an RWKV progress window and a “RWKV review state recovered”
   tooltip after every card, even while Anki is in the background. RWKV now
