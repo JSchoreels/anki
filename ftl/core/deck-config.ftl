@@ -328,6 +328,12 @@ deck-config-interval-modifier-tooltip =
 deck-config-hard-interval-tooltip = The multiplier applied to a review interval when answering `Hard`.
 deck-config-new-interval-tooltip = The multiplier applied to a review interval when answering `Again`.
 deck-config-minimum-interval-tooltip = The minimum interval given to a review card after answering `Again`.
+deck-config-rwkv-description =
+    RWKV is a neural network designed to improve predictions of retrievability:
+    the chance of remembering a card. It has two variants: Curve sets answer
+    intervals, while Instant selects reviews. Instant is recommended, but it
+    adapts to your reviews on the fly, so the due count can fluctuate considerably
+    during a session. Setting a daily review limit is recommended.
 deck-config-rwkv-review-enabled = Use RWKV-Curve for answer intervals
 deck-config-rwkv-review-enabled-tooltip =
     On this computer, use RWKV-Curve to calculate the next intervals shown for

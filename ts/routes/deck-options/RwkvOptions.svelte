@@ -171,43 +171,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} api={{}}>
-        <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
-
-        <Item>
-            <SwitchRow
-                bind:value={$config.rwkvReviewEnabled}
-                defaultValue={defaults.rwkvReviewEnabled}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvReview")}>
-                    {tr.deckConfigRwkvReviewEnabled()}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        <Item>
-            <SwitchRow
-                bind:value={$config.rwkvReviewEnforceGradeOrder}
-                defaultValue={defaults.rwkvReviewEnforceGradeOrder}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvEnforceGradeOrder")}>
-                    {tr.deckConfigRwkvReviewEnforceGradeOrder()}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        {#if $config.rwkvReviewEnabled}
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => rescheduleRwkvReviewCards()}
-            >
-                {#if reschedulingRwkvReviewCards}
-                    Rescheduling Cards with RWKV-Curve Intervals...
-                {:else}
-                    Reschedule Cards with RWKV-Curve Intervals
-                {/if}
-            </button>
-        {/if}
+        <p class="rwkv-description">{tr.deckConfigRwkvDescription()}</p>
 
         <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
 
@@ -303,6 +267,44 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/if}
         {/if}
 
+        <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
+
+        <Item>
+            <SwitchRow
+                bind:value={$config.rwkvReviewEnabled}
+                defaultValue={defaults.rwkvReviewEnabled}
+            >
+                <SettingTitle on:click={() => openSettingHelp("rwkvReview")}>
+                    {tr.deckConfigRwkvReviewEnabled()}
+                </SettingTitle>
+            </SwitchRow>
+        </Item>
+
+        <Item>
+            <SwitchRow
+                bind:value={$config.rwkvReviewEnforceGradeOrder}
+                defaultValue={defaults.rwkvReviewEnforceGradeOrder}
+            >
+                <SettingTitle on:click={() => openSettingHelp("rwkvEnforceGradeOrder")}>
+                    {tr.deckConfigRwkvReviewEnforceGradeOrder()}
+                </SettingTitle>
+            </SwitchRow>
+        </Item>
+
+        {#if $config.rwkvReviewEnabled}
+            <button
+                class="btn btn-outline-primary"
+                disabled={rwkvActionInProgress}
+                on:click={() => rescheduleRwkvReviewCards()}
+            >
+                {#if reschedulingRwkvReviewCards}
+                    Rescheduling Cards with RWKV-Curve Intervals...
+                {:else}
+                    Reschedule Cards with RWKV-Curve Intervals
+                {/if}
+            </button>
+        {/if}
+
         {#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
             <h2 class="rwkv-subheading">Maintenance</h2>
 
@@ -360,6 +362,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 />
 
 <style>
+    .rwkv-description {
+        color: var(--fg-subtle);
+        font-size: 0.875rem;
+        font-style: italic;
+        margin: 0.25rem 0 1rem;
+    }
+
     .rwkv-subheading {
         color: var(--fg-subtle);
         font-size: 0.875rem;
