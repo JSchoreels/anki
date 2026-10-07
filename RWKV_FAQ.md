@@ -43,6 +43,8 @@ Last reviewed: 2026-09-27.
   - [What happens when a card or preset moves?](#what-happens-when-a-card-or-preset-moves)
 - [4. Scheduling, limits, and workload](#4-scheduling-limits-and-workload)
   - [How does the fork handle daily review limits?](#how-does-the-fork-handle-daily-review-limits)
+  - [Can RWKV-Instant repeat a card when same-day reviews are disabled?](#can-rwkv-instant-repeat-a-card-when-same-day-reviews-are-disabled)
+  - [How do the same-day settings interact?](#how-do-the-same-day-settings-interact)
   - [Does RWKV override standard sibling burying?](#does-rwkv-override-standard-sibling-burying)
   - [Does RWKV guarantee fewer reviews than FSRS?](#does-rwkv-guarantee-fewer-reviews-than-fsrs)
 - [5. Calibration and prediction history](#5-calibration-and-prediction-history)
@@ -262,6 +264,53 @@ decks and **Grade Now**. A review card's first answer of a scheduler day still
 adds a lapse when answered Again; later answers that day do not, even after an
 earlier successful answer. All answers remain in review history and update the
 model.
+
+### How do the same-day settings interact?
+
+With FSRS enabled, FSRS-7 and RWKV-Curve decide answer intervals, while
+RWKV-Instant independently decides whether a review card can enter the queue.
+The decision tree shows both paths:
+
+```mermaid
+flowchart TD
+    A{"Scheduling path"}
+
+    A -->|FSRS-7 / RWKV-Curve| B{"Skip learning/relearning queues On?"}
+    B -->|Yes| C["Schedule directly as Review<br/>Minimum interval: 1 day"]
+    B -->|No| D{"Does a configured learning/relearning<br/>step apply to this answer?"}
+    D -->|Yes| E["Use the configured step delay<br/>RWKV repeat-spacing guards do not apply"]
+    D -->|No| F{"Allow same day review for<br/>(re)learning steps On?"}
+    F -->|No| C
+    F -->|Yes| G{"Generated interval below 12 hours?"}
+    G -->|Yes| H["Use learning/relearning queue<br/>with the generated delay<br/>RWKV repeat-spacing guards do not apply"]
+    G -->|No| C
+
+    A -->|RWKV-Instant| I{"Allow same day review for<br/>(re)learning steps On?"}
+    I -->|No| J["Same-day RWKV review repeat blocked"]
+    I -->|Yes| K{"Allow a card to repeat<br/>on the same day On?"}
+    K -->|No| J
+    K -->|Yes| L{"Minimum other answers reached<br/>since this card's last answer?"}
+    L -->|No| M["Wait for enough other answers"]
+    L -->|Yes| N{"Minimum seconds elapsed<br/>since this card's last answer?"}
+    N -->|No| O["Wait for enough elapsed time"]
+    N -->|Yes| P["Same-day repeat eligible<br/>Other queue conditions still apply"]
+```
+
+The spacing checks use **Minimum other reviews before a repeat** and
+**Minimum seconds before a repeat**. Both must be satisfied; a value of `0`
+removes that minimum. Their defaults are **5 other answers** and **30 seconds**.
+For example, values of **3** and **90** require both three other answers and
+90 elapsed seconds before RWKV-Instant can repeat the card.
+
+Both **Allow same day review for (re)learning steps** and
+**Allow a card to repeat on the same day** default to on. With FSRS and
+RWKV-Instant enabled, both toggles permit same-day repeats by default; the
+spacing guards and other queue conditions must still be satisfied. Explicitly
+saved off choices are preserved.
+Configured learning/relearning steps may still repeat while queues are enabled.
+Enabling **Skip learning/relearning queues with FSRS/RWKV** bypasses these
+steps; RWKV-Instant can still admit an eligible same-day repeat even when the
+card's stored review due day is in the future.
 
 ### Does RWKV override standard sibling burying?
 
