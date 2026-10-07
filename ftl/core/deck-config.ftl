@@ -393,10 +393,8 @@ deck-config-rwkv-review-refresh-on-exit-tooltip =
 deck-config-scheduler-review = Review scheduler
 deck-config-scheduler-enable-fsrs = Machine Learning Based scheduling
 deck-config-scheduler-disabled = Machine learning scheduling is disabled for this collection. Selecting a model enables it; RWKV settings remain independent.
-deck-config-scheduler-due-dates = Due-date scheduler
+deck-config-scheduler-due-dates = Fallback : Due-Date Calculator
 deck-config-scheduler-due-dates-description = Writes due dates for mobile sync and statistics. Instant selects reviews independently of these dates.
-deck-config-scheduler-modern = Modern
-deck-config-scheduler-legacy = Legacy
 deck-config-rwkv-review-allow-same-day-review = Allow a card to repeat on the same day
 deck-config-rwkv-review-allow-same-day-review-tooltip =
     When a card's estimated chance of recall is at or below your Desired

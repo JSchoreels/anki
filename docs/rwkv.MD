@@ -2,13 +2,14 @@
 
 The RWKV review scheduler is a desktop-only review-time scheduler. In Deck
 Options, **Scheduler → Review scheduler** selects FSRS-6, FSRS-7, RWKV-Curve,
-or RWKV-Instant for the preset. FSRS-4.5 and FSRS-5 remain available under
-**Legacy**. Curve uses RWKV-Curve answer intervals and stores RWKV-Curve S90
-values. Instant selects review cards independently of their scheduled due dates.
+or RWKV-Instant for the preset. Curve uses RWKV-Curve answer intervals and stores
+RWKV-Curve S90 values. Instant selects review cards independently of their
+scheduled due dates.
 
-With Instant selected, **Due-date scheduler** chooses FSRS-6, FSRS-7, or
-RWKV-Curve to write intervals and due dates for mobile sync and statistics.
-Older FSRS versions are available under that selector's Legacy tab as well.
+With Instant selected, **Fallback : Due-Date Calculator** chooses FSRS-6,
+FSRS-7, or RWKV-Curve to write intervals and due dates for mobile sync and
+statistics. The selectors offer only current models. Existing FSRS-4.5 and FSRS-5 choices
+remain saved until a current model is explicitly selected.
 Choosing Instant keeps the preset's previous interval model as its initial
 companion. In **Review scheduler**, selecting an FSRS model disables both
 RWKV overrides; selecting Curve disables Instant. These controls reuse the
@@ -19,8 +20,8 @@ switches.
 **Machine Learning Based scheduling** remains a visible, collection-wide switch.
 Selecting either model selector enables it, so an FSRS due-date choice uses the
 native FSRS scheduler. Turning it off retains Anki's existing global SM2 behavior
-for native interval scheduling; RWKV settings remain independent. The model selectors
-change the current preset, not the models selected on other presets.
+for native interval scheduling; RWKV settings remain independent. The model
+selectors change the current preset, not the models selected on other presets.
 
 When Curve writes due dates, Deck Options shows desired retention and RWKV
 controls while hiding the FSRS-only interval preview and optimization controls.

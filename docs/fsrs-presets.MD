@@ -254,12 +254,13 @@ by parameter optimization.
 ## Scheduler Selection In Deck Options
 
 The Scheduler panel selects the preset's review model: FSRS-6, FSRS-7,
-RWKV-Curve, or RWKV-Instant. FSRS-4.5 and FSRS-5 remain under the Legacy tab.
-Instant adds a due-date selector for its FSRS or Curve companion; this controls
-stored due dates while Instant independently selects reviews. The selectors
-reuse `fsrs_version`, `rwkv_review_enabled`, and
+RWKV-Curve, or RWKV-Instant. The selectors offer only these current models.
+Instant adds **Fallback : Due-Date Calculator** for its FSRS or Curve companion;
+this controls stored due dates while Instant independently selects reviews.
+The selectors reuse `fsrs_version`, `rwkv_review_enabled`, and
 `rwkv_review_instant_order_enabled` and retain each model's stored parameters.
-Opening the panel or browsing the Legacy tab does not rewrite those fields.
+Opening the panel does not rewrite those fields. Existing FSRS-4.5 and FSRS-5
+choices remain saved until a current model is explicitly selected.
 
 The visible Machine Learning Based scheduling switch remains collection-wide.
 Selecting a model enables it; other presets retain their own selected models.

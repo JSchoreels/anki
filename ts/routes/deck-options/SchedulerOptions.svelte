@@ -32,10 +32,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ...dueDateChoices,
         { value: "rwkv-instant", label: "RWKV-Instant" },
     ];
-    const legacyChoices: Choice<DueDateScheduler>[] = [
-        { value: "fsrs-4", label: "FSRS-4.5" },
-        { value: "fsrs-5", label: "FSRS-5" },
-    ];
 
     function selectScheduler(choice: Scheduler): void {
         config.update((current) => withScheduler(current, choice));
@@ -54,7 +50,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         title={tr.deckConfigSchedulerReview()}
         value={scheduler($config)}
         choices={schedulerChoices}
-        {legacyChoices}
         onChange={selectScheduler}
     />
 </Item>
@@ -66,7 +61,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title={tr.deckConfigSchedulerDueDates()}
             value={dueDateScheduler($config)}
             choices={dueDateChoices}
-            {legacyChoices}
             onChange={selectDueDates}
         />
         <p class="scheduler-description">

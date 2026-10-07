@@ -225,11 +225,12 @@ permanent deletion of review history.
 ### Where do I select the scheduler?
 
 In Deck Options, use **Scheduler → Review scheduler** to choose FSRS-6,
-FSRS-7, RWKV-Curve, or RWKV-Instant for the preset. Older FSRS versions remain
-under **Legacy**. Instant adds **Due-date scheduler**: choose FSRS or Curve for
-stored due dates used by mobile sync and statistics. Instant ignores those dates
-when selecting reviews. The separate Curve and Instant enable switches have
-been replaced by these selectors.
+FSRS-7, RWKV-Curve, or RWKV-Instant for the preset. Instant adds a separate
+**Fallback : Due-Date Calculator**: choose FSRS or Curve for stored due dates
+used by mobile sync and statistics. Instant ignores those dates when selecting
+reviews. The separate Curve and Instant enable switches have
+been replaced by these selectors. Older FSRS versions are no longer offered;
+existing saved choices are preserved until you explicitly select a current model.
 
 **Machine Learning Based scheduling** remains collection-wide. Choosing a model
 enables it; other presets keep their own model choices. Turning it off restores

@@ -3,8 +3,6 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
-    import * as tr from "@generated/ftl";
-
     import Col from "$lib/components/Col.svelte";
     import ConfigInput from "$lib/components/ConfigInput.svelte";
     import type { Choice } from "$lib/components/EnumSelector.svelte";
@@ -15,16 +13,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let title: string;
     export let value: T;
     export let choices: Choice<T>[];
-    export let legacyChoices: Choice<T>[];
     export let onChange: (value: T) => void;
-
-    let previousValue = value;
-    let legacy = legacyChoices.some((choice) => choice.value === value);
-    $: if (previousValue !== value) {
-        previousValue = value;
-        legacy = legacyChoices.some((choice) => choice.value === value);
-    }
-    $: visibleChoices = legacy ? legacyChoices : choices;
 </script>
 
 <Row --cols={13}>
@@ -33,28 +22,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </Col>
     <Col --col-size={8} breakpoint="md">
         <ConfigInput>
-            <div class="scheduler-tabs" role="group" aria-label={title}>
-                <button
-                    class:active={!legacy}
-                    aria-pressed={!legacy}
-                    on:click={() => (legacy = false)}
-                >
-                    {tr.deckConfigSchedulerModern()}
-                </button>
-                <button
-                    class:active={legacy}
-                    aria-pressed={legacy}
-                    on:click={() => (legacy = true)}
-                >
-                    {tr.deckConfigSchedulerLegacy()}
-                </button>
-            </div>
             <div
                 class="scheduler-choices"
                 role="radiogroup"
                 aria-labelledby={`${id}-label`}
             >
-                {#each visibleChoices as choice}
+                {#each choices as choice}
                     <label class:active={choice.value === value}>
                         <input
                             type="radio"
@@ -72,32 +45,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </Row>
 
 <style>
-    .scheduler-tabs {
-        display: flex;
-        justify-content: space-around;
-        margin-bottom: 0.375rem;
-    }
-
-    .scheduler-tabs button {
-        background: transparent;
-        border: 0;
-        border-bottom: 3px solid transparent;
-        border-radius: 0;
-        box-shadow: none;
-        color: var(--fg-subtle);
-        font-size: 0.8rem;
-        padding: 0.125rem 0.375rem;
-    }
-
-    .scheduler-tabs button:hover,
-    .scheduler-tabs button.active {
-        color: var(--fg);
-    }
-
-    .scheduler-tabs button.active {
-        border-bottom-color: var(--border-focus);
-    }
-
     .scheduler-choices {
         display: flex;
         flex-wrap: wrap;
