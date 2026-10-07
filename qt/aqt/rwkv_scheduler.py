@@ -737,6 +737,7 @@ class RwkvCollectionMutationReconciliation:
 @dataclass(frozen=True)
 class _RwkvReconciledCollectionChange:
     collection_mod: int | None
+    card_ids: tuple[int, ...] = ()
     removed_card_ids: tuple[int, ...] = ()
 
 
@@ -3107,20 +3108,18 @@ def _reconciled_collection_change_owner(reviewer: object) -> object:
 def _mark_collection_change_reconciled(
     reviewer: object,
     *,
+    card_ids: tuple[int, ...] = (),
     removed_card_ids: tuple[int, ...] = (),
 ) -> None:
     pending = _RwkvReconciledCollectionChange(
         _rwkv_collection_modified(reviewer),
+        card_ids=card_ids,
         removed_card_ids=removed_card_ids,
     )
     owner = _reconciled_collection_change_owner(reviewer)
     setattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
     if owner is not reviewer:
         setattr(reviewer, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
-
-
-def _consume_reconciled_collection_change(reviewer: object) -> bool:
-    return _take_reconciled_collection_change(reviewer) is not None
 
 
 def _take_reconciled_collection_change(
@@ -4299,6 +4298,7 @@ def record_collection_mutation_reconciliation(
         _save_collection_mutation_rollback_entry(reconciliation)
         _mark_collection_change_reconciled(
             reviewer,
+            card_ids=reconciliation.card_ids,
             removed_card_ids=_removed_card_ids(reviewer, reconciliation.card_ids),
         )
         logger.debug(
@@ -20401,9 +20401,11 @@ def collection_content_did_change(mw: object, initiator: object | None) -> None:
     """Refresh content-dependent inputs without discarding unchanged RWKV state."""
 
     reviewer = SimpleNamespace(mw=mw)
-    if _consume_reconciled_collection_change(reviewer):
+    reconciled_change = _take_reconciled_collection_change(reviewer)
+    if reconciled_change is not None:
         _preserve_reconciled_non_queue_collection_change(
             reviewer,
+            reconciled_change,
             reason="collection content mutation",
         )
         return
@@ -20579,9 +20581,11 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
     """Discard resident state and preset assignments after collection changes."""
 
     reviewer = SimpleNamespace(mw=mw)
-    if _consume_reconciled_collection_change(reviewer):
+    reconciled_change = _take_reconciled_collection_change(reviewer)
+    if reconciled_change is not None:
         _preserve_reconciled_non_queue_collection_change(
             reviewer,
+            reconciled_change,
             reason="collection routing mutation",
         )
         return
@@ -20661,12 +20665,14 @@ def _prune_removed_cards_from_review_queue_scores(
 
 def _preserve_reconciled_non_queue_collection_change(
     reviewer: object,
+    reconciled_change: _RwkvReconciledCollectionChange,
     *,
     reason: str,
 ) -> None:
     mw = getattr(reviewer, "mw", None)
     generation = _invalidate_rwkv_review_input_caches(mw)
-    _invalidate_resolved_preset_id_cache(reviewer)
+    if not reconciled_change.card_ids:
+        _invalidate_resolved_preset_id_cache(reviewer)
     _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
     logger.debug(
         "RWKV resident state retained after reconciled %s: generation=%s",

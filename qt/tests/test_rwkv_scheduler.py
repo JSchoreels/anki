@@ -1206,6 +1206,69 @@ def test_editor_change_keeps_resident_state_for_undo_restored_card(
     assert rwkv_scheduler._dynamic_desired_retention_generation == 1
 
 
+def test_successive_editor_changes_keep_reconciled_resident_state() -> None:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.get_config = lambda _key: {
+        "rules": [{"search": "Front:foo", "preset_id": "1000"}]
+    }
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            if "from cards" in sql:
+                assert args == (10,)
+                return [1]
+            assert "from revlog" in sql
+            assert args == ()
+            return [1]
+
+    reviewer.mw.col.db = DB()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    warmup_generation = rwkv_scheduler._reviewer_backend_warmup_generations.get(
+        warmup_key, 0
+    )
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = {1: "1000"}
+    editor_initiator = SimpleNamespace(nid=10, card=SimpleNamespace(id=1))
+
+    rwkv_scheduler._mark_collection_change_reconciled(reviewer, card_ids=(1,))
+    rwkv_scheduler.collection_content_did_change(reviewer.mw, editor_initiator)
+    rwkv_scheduler.collection_content_did_change(reviewer.mw, editor_initiator)
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == (
+        resident_identity
+    )
+    assert (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0)
+        == warmup_generation
+    )
+    assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {1: "1000"}
+
+
+def test_unscoped_reconciled_content_change_clears_entire_preset_cache() -> None:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.reviewer = reviewer
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = {
+        1: "1000",
+        2: "1000",
+    }
+
+    rwkv_scheduler._mark_collection_change_reconciled(reviewer)
+    rwkv_scheduler.collection_content_did_change(
+        reviewer.mw, SimpleNamespace(nid=10, card=SimpleNamespace(id=1))
+    )
+
+    assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {}
+
+
 def test_collection_content_change_invalidates_state_when_preset_changes() -> None:
     backend = RwkvStatefulReviewerBackend(_CacheRuntime())
     set_reviewer_backend(backend)
