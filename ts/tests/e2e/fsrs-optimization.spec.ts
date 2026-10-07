@@ -50,9 +50,10 @@ for (const includeSameDayReviews of [true, false]) {
         });
 
         await page.goto("/deck-options/1");
+        await page.getByRole("radiogroup", { name: "Review scheduler", exact: true })
+            .getByRole("radio", { name: "FSRS-7", exact: true }).check();
         const advanced = page.locator("details.fsrs-advanced");
         await advanced.locator("summary").click();
-        await advanced.locator("select").selectOption({ label: "FSRS-7" });
         const parameters = page.getByRole("button", { name: "FSRS Parameters", exact: true }).locator("textarea");
         await expect(parameters).toHaveValue("");
         await page.getByRole("checkbox", { name: "Include same-day reviews in FSRS-7" }).setChecked(
