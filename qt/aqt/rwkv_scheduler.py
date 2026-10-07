@@ -3111,44 +3111,43 @@ def _mark_collection_change_reconciled(
     card_ids: tuple[int, ...] = (),
     removed_card_ids: tuple[int, ...] = (),
 ) -> None:
-    pending = _RwkvReconciledCollectionChange(
+    owner = _reconciled_collection_change_owner(reviewer)
+    change = _RwkvReconciledCollectionChange(
         _rwkv_collection_modified(reviewer),
         card_ids=card_ids,
         removed_card_ids=removed_card_ids,
     )
-    owner = _reconciled_collection_change_owner(reviewer)
-    setattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
-    if owner is not reviewer:
-        setattr(reviewer, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
+    with _reviewer_backend_state_lock:
+        pending = getattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, ())
+        pending = (*pending, change)[-64:]
+        for target in (owner, reviewer, getattr(owner, "reviewer", None)):
+            if target is not None:
+                setattr(
+                    target, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending
+                )
 
 
 def _take_reconciled_collection_change(
     reviewer: object,
 ) -> _RwkvReconciledCollectionChange | None:
     owner = _reconciled_collection_change_owner(reviewer)
-    pending = getattr(
-        owner,
-        _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR,
-        None,
-    )
-    active_reviewer = getattr(owner, "reviewer", None)
-    for target in (owner, reviewer, active_reviewer):
-        if target is not None:
-            setattr(
-                target,
-                _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR,
-                False,
-            )
-    if not isinstance(pending, _RwkvReconciledCollectionChange):
+    if not getattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, ()):
         return None
+    # Read the collection outside the lock shared with prediction access.
     current_mod = _rwkv_collection_modified(reviewer)
-    if (
-        pending.collection_mod is None
-        or current_mod is None
-        or current_mod == pending.collection_mod
-    ):
-        return pending
-    return None
+    with _reviewer_backend_state_lock:
+        pending = getattr(owner, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, ())
+        if not pending:
+            return None
+        newest_mod = pending[-1].collection_mod
+        valid = newest_mod is None or current_mod is None or current_mod == newest_mod
+        remaining = pending[1:] if valid else ()
+        for target in (owner, reviewer, getattr(owner, "reviewer", None)):
+            if target is not None:
+                setattr(
+                    target, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, remaining
+                )
+        return pending[0] if valid else None
 
 
 def _current_undo_counter(reviewer: object) -> int | None:
@@ -4383,10 +4382,7 @@ def _require_collection_mutation_reconciliation_current(
             "mutation changed canonical review membership"
         )
 
-    _invalidate_resolved_preset_id_cache(
-        reviewer,
-        card_ids=reconciliation.card_ids,
-    )
+    _refresh_resolved_fsrs_preset_ids(reviewer, reconciliation.card_ids)
     current_identities = _rwkv_identities_for_card_ids(
         reviewer,
         current_historical_card_ids,
@@ -9384,7 +9380,9 @@ def _preset_ids_for_card_ids(
     }
 
 
-def _resolved_fsrs_preset_id(reviewer: object, card_id: int) -> str | None:
+def _resolved_fsrs_preset_id(
+    reviewer: object, card_id: int, *, refresh: bool = False
+) -> str | None:
     resolved_preset_id = getattr(reviewer, "_rwkv_resolved_preset_id", None)
     if isinstance(resolved_preset_id, str) and resolved_preset_id:
         return resolved_preset_id
@@ -9393,7 +9391,7 @@ def _resolved_fsrs_preset_id(reviewer: object, card_id: int) -> str | None:
         _preset_id_cache_key(reviewer),
         {},
     )
-    if card_id in cache:
+    if not refresh and card_id in cache:
         return cache[card_id]
 
     mw = getattr(reviewer, "mw", None)
@@ -9419,12 +9417,33 @@ def _resolved_fsrs_preset_ids(
     reviewer: object,
     card_ids: Sequence[int],
 ) -> dict[int, str]:
+    return _resolve_fsrs_preset_ids(reviewer, card_ids, refresh=False)
+
+
+def _refresh_resolved_fsrs_preset_ids(
+    reviewer: object,
+    card_ids: Sequence[int],
+) -> dict[int, str]:
+    return _resolve_fsrs_preset_ids(reviewer, card_ids, refresh=True)
+
+
+def _resolve_fsrs_preset_ids(
+    reviewer: object,
+    card_ids: Sequence[int],
+    *,
+    refresh: bool = False,
+) -> dict[int, str]:
     if not card_ids:
         return {}
 
     collection_key = _preset_id_cache_key(reviewer)
     cache = _resolved_preset_id_cache.setdefault(collection_key, {})
-    resolved = {card_id: cache[card_id] for card_id in card_ids if card_id in cache}
+    # Keep validated entries visible while the backend resolves fresh assignments.
+    resolved = (
+        {}
+        if refresh
+        else {card_id: cache[card_id] for card_id in card_ids if card_id in cache}
+    )
     missing_card_ids = [card_id for card_id in card_ids if card_id not in resolved]
     if not missing_card_ids:
         logger.debug(
@@ -9449,6 +9468,10 @@ def _resolved_fsrs_preset_ids(
             batch_resolved = _fsrs_preset_ids_response_items(response)
             cache.update(batch_resolved)
             resolved.update(batch_resolved)
+            if refresh:
+                for card_id in card_ids:
+                    if card_id not in resolved:
+                        cache.pop(card_id, None)
             logger.debug(
                 "RWKV FSRS preset resolve finished: cards=%s cached=%s "
                 "missing=%s resolved=%s elapsed_ms=%.1f",
@@ -9463,10 +9486,14 @@ def _resolved_fsrs_preset_ids(
             logger.debug("failed to batch-resolve FSRS presets for RWKV review input")
 
     for card_id in missing_card_ids:
-        preset_id = _resolved_fsrs_preset_id(reviewer, card_id)
+        preset_id = _resolved_fsrs_preset_id(reviewer, card_id, refresh=refresh)
         if preset_id is not None:
             cache[card_id] = preset_id
             resolved[card_id] = preset_id
+    if refresh:
+        for card_id in card_ids:
+            if card_id not in resolved:
+                cache.pop(card_id, None)
     logger.debug(
         "RWKV FSRS preset per-card resolve finished: cards=%s cached=%s missing=%s "
         "resolved=%s elapsed_ms=%.1f",
@@ -20535,8 +20562,7 @@ def _changed_cards_keep_rwkv_preset_routing(
         return False
     previous_preset_ids = {card_id: cache[card_id] for card_id in historical_card_ids}
 
-    _invalidate_resolved_preset_id_cache(reviewer, card_ids=card_ids)
-    current_preset_ids = _resolved_fsrs_preset_ids(reviewer, card_ids)
+    current_preset_ids = _refresh_resolved_fsrs_preset_ids(reviewer, card_ids)
     return all(
         current_preset_ids.get(card_id) == previous_preset_id
         for card_id, previous_preset_id in previous_preset_ids.items()

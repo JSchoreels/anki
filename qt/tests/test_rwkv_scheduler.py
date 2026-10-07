@@ -1250,6 +1250,171 @@ def test_successive_editor_changes_keep_reconciled_resident_state() -> None:
     assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {1: "1000"}
 
 
+@pytest.mark.parametrize("current_mod", [2, 3], ids=["latest-save", "stale-markers"])
+def test_queued_editor_changes_check_latest_save_mod(
+    current_mod: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.get_config = lambda _key: {
+        "rules": [{"search": "Front:foo", "preset_id": "1000"}]
+    }
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            if "from cards" in sql:
+                assert args == (10,)
+                return [1]
+            assert "from revlog" in sql
+            assert args == ()
+            return [1]
+
+    reviewer.mw.col.db = DB()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    warmup_generation = rwkv_scheduler._reviewer_backend_warmup_generations.get(
+        warmup_key, 0
+    )
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = {1: "1000"}
+    editor_initiator = SimpleNamespace(nid=10, card=SimpleNamespace(id=1))
+
+    collection_mod = [1]
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_collection_modified", lambda _reviewer: collection_mod[0]
+    )
+    routing_checks: list[tuple[int, ...]] = []
+
+    def check_routing(_reviewer: object, card_ids: Sequence[int]) -> bool:
+        if current_mod == 2:
+            pytest.fail("queued editor save took the unmarked path")
+        routing_checks.append(tuple(card_ids))
+        return True
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_changed_cards_keep_rwkv_preset_routing", check_routing
+    )
+    rwkv_scheduler._mark_collection_change_reconciled(reviewer, card_ids=(1,))
+    collection_mod[0] = 2
+    rwkv_scheduler._mark_collection_change_reconciled(reviewer, card_ids=(1,))
+    collection_mod[0] = current_mod
+    rwkv_scheduler.collection_content_did_change(reviewer.mw, editor_initiator)
+    if current_mod == 2:
+        rwkv_scheduler.collection_content_did_change(reviewer.mw, editor_initiator)
+    assert routing_checks == ([] if current_mod == 2 else [(1,)])
+    for target in (reviewer, reviewer.mw):
+        assert not getattr(
+            target, rwkv_scheduler._RWKV_GRADE_NOW_RECONCILED_QUEUE_CHANGE_PENDING_ATTR
+        )
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == (
+        resident_identity
+    )
+    assert (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0)
+        == warmup_generation
+    )
+    assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {1: "1000"}
+
+
+def test_editor_change_keeps_resident_state_during_preset_refresh() -> None:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.get_config = lambda _key: {
+        "rules": [{"search": "Front:foo", "preset_id": "1000"}]
+    }
+
+    class DB:
+        def list(self, sql: str, *args: object) -> list[int]:
+            if "from cards" in sql:
+                assert args == (10,)
+                return [1]
+            assert "from revlog" in sql
+            assert args == ()
+            return [1]
+
+    reviewer.mw.col.db = DB()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    warmup_generation = rwkv_scheduler._reviewer_backend_warmup_generations.get(
+        warmup_key, 0
+    )
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = {1: "1000"}
+    editor_initiator = SimpleNamespace(nid=10, card=SimpleNamespace(id=1))
+
+    backend_calls: list[tuple[int, ...]] = []
+
+    def get_preset_ids(card_ids: Sequence[int]) -> list[SimpleNamespace]:
+        backend_calls.append(tuple(card_ids))
+        if len(backend_calls) == 1:
+            rwkv_scheduler.collection_content_did_change(reviewer.mw, editor_initiator)
+        return [SimpleNamespace(card_id=1, preset_id="1000")]
+
+    reviewer.mw.col._backend = SimpleNamespace(
+        get_fsrs_preset_ids_for_cards=get_preset_ids
+    )
+    rwkv_scheduler.collection_content_did_change(reviewer.mw, editor_initiator)
+
+    assert backend_calls == [(1,), (1,)]
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == (
+        resident_identity
+    )
+    assert (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0)
+        == warmup_generation
+    )
+    assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {1: "1000"}
+
+
+def test_reconciled_editor_markers_are_bounded_and_consumed_oldest_first() -> None:
+    reviewer = _rwkv_reviewer()
+    active_reviewer = SimpleNamespace(mw=reviewer.mw)
+    reviewer.mw.reviewer = active_reviewer
+    for card_id in range(1, 66):
+        rwkv_scheduler._mark_collection_change_reconciled(reviewer, card_ids=(card_id,))
+
+    for card_id in range(2, 66):
+        change = rwkv_scheduler._take_reconciled_collection_change(reviewer)
+        assert change is not None
+        assert change.card_ids == (card_id,)
+        attr = rwkv_scheduler._RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR
+        assert getattr(reviewer, attr) == getattr(reviewer.mw, attr)
+        assert getattr(active_reviewer, attr) == getattr(reviewer.mw, attr)
+    assert not getattr(reviewer, attr)
+
+
+@pytest.mark.parametrize("batch", [False, True], ids=["per-card", "batch"])
+def test_preset_refresh_replaces_cached_ids_and_removes_unresolved_cards(
+    batch: bool,
+) -> None:
+    reviewer = _rwkv_reviewer()
+    cache_key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    cache = {1: "1000", 2: "1000", 3: "1000"}
+    rwkv_scheduler._resolved_preset_id_cache[cache_key] = cache
+    reviewer.mw.col.fsrs_preset_for_card = lambda card_id: SimpleNamespace(
+        id="2000" if card_id == 1 else None
+    )
+    if batch:
+        reviewer.mw.col._backend = SimpleNamespace(
+            get_fsrs_preset_ids_for_cards=lambda card_ids: [
+                SimpleNamespace(card_id=1, preset_id="2000")
+            ]
+        )
+
+    assert rwkv_scheduler._refresh_resolved_fsrs_preset_ids(reviewer, (1, 2)) == {
+        1: "2000"
+    }
+    assert cache == {1: "2000", 3: "1000"}
+
+
 def test_unscoped_reconciled_content_change_clears_entire_preset_cache() -> None:
     backend = RwkvStatefulReviewerBackend(_CacheRuntime())
     set_reviewer_backend(backend)
