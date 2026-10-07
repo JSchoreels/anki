@@ -31,16 +31,33 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+Changes since [build 99](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.99).
+
 ### User facing changes
 
-- **RWKV repeat spacing also protects learning cards.** With Instant enabled, learning and relearning repeats respect both the minimum other reviews and minimum elapsed seconds, including already-due steps and cards offered through Learn ahead. Cards become available once both minimums are met, while their saved intervals and learning steps are preserved.
-- **Unified scheduler selection.** Choose FSRS-6, FSRS-7, RWKV-Curve, or RWKV-Instant with segmented buttons in the Scheduler panel. Instant adds a separate Fallback : Due-Date Calculator for mobile sync and statistics. The selectors offer current models only, and the collection-wide switch stays visible as Machine Learning Based scheduling. Curve hides FSRS-only previews and optimization controls. Existing model parameters and preset choices are retained.
-- **Matching scheduler settings cards.** FSRS previews, optimization, and advanced settings now have their own card, matching RWKV. Scheduler keeps the model selectors and shared desired retention. Instant with an FSRS fallback shows both cards.
-- **Scheduler guidance beside the choices.** Blue stars recommend RWKV-Instant for reviews and FSRS-7 for fallback due dates. The RWKV introduction moves into Scheduler alongside a short FSRS explanation, with links for both models.
-- **Clearer FSRS workload estimates.** The estimate names the initial desired retention in one sentence, with a note that it covers FSRS interval-based workload only. It is hidden when FSRS is RWKV-Instant's fallback.
-- **Compact RWKV repeat spacing.** Set the minimum other reviews and elapsed seconds in one row, with units shown inside the fields. Instant now follows the shared same-day review switch; the separate RWKV switch is removed, and old preset values no longer silently block repeats.
-- **Clearer RWKV introduction.** Deck Options briefly explains Curve and Instant, clarifies how they use due dates, recommends a daily review limit, links to the RWKV FAQ, and places Instant before Curve with clearer section headings.
-- **Simpler RWKV settings.** The answer-order option spells out Again ≤ Hard ≤ Good ≤ Easy, and queue guidance recommends Ascending Retrievability or Random. Creation-time predictions for new cards stay enabled without a toggle. The exit-refresh switch is hidden while preserving its saved behavior, and Dynamic Preset support moves to a global RWKV support option in the add-on.
+- **Choose the scheduler in one place.** Segmented buttons select FSRS-6, FSRS-7, RWKV-Curve, or RWKV-Instant for each preset. Instant adds a Fallback : Due-Date Calculator for mobile sync and statistics. The visible Machine Learning Based scheduling switch still applies to the whole collection.
+- **Clearer scheduler settings.** FSRS and RWKV controls appear in matching cards below Scheduler, with shared desired retention above them. Only the relevant model controls appear. Blue stars recommend RWKV-Instant for reviews and FSRS-7 for fallback due dates; short model descriptions explain the choices and link to further reading.
+- **Clearer FSRS workload estimates.** One line shows the estimated workload relative to the initial desired retention, with a note that it covers FSRS interval-based workload only. Instant's FSRS fallback does not show this estimate.
+- **Compact, consistent RWKV repeat spacing.** Set the minimum other reviews and elapsed seconds in one row, with units inside the fields. Instant follows the shared same-day review setting. Learning and relearning cards also respect both minimums, including already-due steps and cards offered through Learn ahead, while their saved intervals and learning steps are preserved.
+- **Simpler RWKV options.** The interval-order option spells out Again ≤ Hard ≤ Good ≤ Easy, and review-order guidance recommends Ascending Retrievability or Random. Creation-time predictions for new cards remain enabled without a toggle. The exit-refresh switch is hidden while preserving its saved behavior. Dynamic Preset support is controlled by the add-on's global RWKV support option.
+- **No pause after editing a card during RWKV reviews.** Editing fields no longer causes a roughly two-second freeze on the next answer, and the edited card keeps its RWKV intervals on the answer buttons.
+
+### Technical details
+
+- **Scheduler compatibility:** the selectors reuse the existing FSRS version and RWKV configuration fields, retain each model's parameters, and enable collection-wide machine learning scheduling when a model is selected. FSRS-4.5 and FSRS-5 are no longer offered, but older saved choices remain effective until explicitly changed. Per-preset SM2/FSRS coexistence is unchanged.
+- **RWKV learning selection:** learning and review paths share the repeat-spacing calculation. Learning eligibility reads current answer times and recent answers in the selected deck tree, filters reviewer counts consistently, and preserves undo/redo queue snapshots. Learning eligibility uses its configured or generated interval without adding Instant's recall threshold.
+- **RWKV configuration:** creation-time prediction ignores the retired deck-option flag in desktop and native query paths. The synced `rwkvDynamicPresetReplay` collection boolean overrides legacy deck-preset replay flags; until explicitly saved in the add-on, the old choice remains effective. Existing cache identities detect changes in effective replay behavior.
+- **RWKV state after editor saves:** reconciliation markers are queued per save, and edited cards' FSRS preset-cache entries are refreshed in place. Overlapping saves no longer lose a marker or expose a transient cache miss that discarded warm resident state.
+- **Verification:** `just check` and all 10 permanent Deck Options browser tests passed locally. An additional browser render checked dark and light themes, recommendation placement, the single-line workload estimate, and suppression of workload calculations when FSRS is Instant's fallback.
+- **Packaging:** the draft workflow builds unsigned installer and portable downloads for macOS, Windows, and Linux on ARM64 and x64. The application version remains `26.09.3+fsrs7`; GitHub assigns the draft a new build suffix.
+
+## [26.09.3+fsrs7.build.99](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.99) — 2026-10-07
+
+Based on [Anki 26.09.3](https://github.com/ankitects/anki/releases/tag/26.09.3).
+Changes since [build 97](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.97).
+
+### User facing changes
+
 - **Restored user interface sizing.** The User interface size preference takes effect again after restarting Anki.
 - **Faster Browser selections.** Selecting or inverting thousands of rows and resizing columns with a large selection are more responsive (Select All: ~434 ms → ~0.9 ms in a 50,000-row synthetic test).
 - **Lower memory use during full collection downloads**, especially for large collections.
@@ -49,12 +66,9 @@ repeated here unless they materially affect a fork feature.
 - **Fewer interruptions when adding cards through add-ons.** AnkiConnect and Yomitan mining no longer cause an RWKV recovery progress window and tooltip after every card, including while Anki is in the background.
 - **More reliable RWKV calibration graphs.** Recomputing calibration removes outdated cached predictions that could otherwise appear in the graphs.
 - **Correct Deck Options help links** for daily limits and leeches.
-- **No pause after editing a card during RWKV reviews.** Editing fields no longer causes a roughly two-second freeze on the next answer, and the edited card keeps its RWKV intervals on the answer buttons.
 
 ### Technical details
 
-- **RWKV learning selection:** the learning and review paths share the repeat-spacing calculation. Learning eligibility reads current answer times and recent answers in the selected deck tree on selection, filters reviewer counts consistently, and preserves undo/redo queue snapshots. Learning eligibility continues to use its configured or generated interval without adding Instant's recall threshold.
-- **RWKV configuration:** creation-time prediction ignores the retired deck-option flag in desktop and native query paths. The synced `rwkvDynamicPresetReplay` collection boolean overrides legacy deck-preset replay flags; until it is explicitly saved in the add-on, the old choice remains effective. Existing cache identities detect changes in effective replay behavior.
 - **UI scaling:** backported [Anki #5686](https://github.com/ankitects/anki/pull/5686), fixing [#5676](https://github.com/ankitects/anki/issues/5676). The saved scale factor is applied before Qt creates the application, with a startup regression test.
 - **Browser:** backported Anki [#5768](https://github.com/ankitects/anki/pull/5768) and [#5771](https://github.com/ankitects/anki/pull/5771). The column header uses an empty selection model to avoid scanning selected rows when painting. Menu actions count changed selection ranges, while preserving the fork's fallback for add-ons overriding model flags.
 - **Browser measurements:** on 50,000 synthetic rows with offscreen Qt on Apple Silicon, median Select All time fell from 434 ms to 0.91 ms, Invert Selection from 416 ms to 0.85 ms, and header painting from 90 ms to 0.59 ms. These measure individual operations, with existing Clanki improvements present before and after. See the [backport audit](https://github.com/JSchoreels/anki/blob/cd6ed9a13558d2b89d52460d6970d228b09754bd/docs/upstream-performance-backports.MD) for methodology and regression coverage.
@@ -62,8 +76,7 @@ repeated here unless they materially affect a fork feature.
 - **Media sync:** adapted [Anki #5654](https://github.com/ankitects/anki/pull/5654), open at the 2026-10-07 review. Scans, local additions, and downloads use millisecond modification timestamps. Older timestamps require one checksum scan before using the fast path; the database schema is unchanged.
 - **RWKV calibration:** complete cached predictions allow FSRS fold assignments to be refreshed without replaying review history (about 6 s instead of 21 s on a 224,000-review collection). After a full recompute, each answer stores its RWKV prediction. Rebuilt or recovered state, unseen synced reviews, or a different model still require a full recompute. Recomputes also remove superseded fold assignments and leftover training rows.
 - **RWKV state:** add-on and legacy resets check whether the resident state still matches review history and retain it when unchanged, avoiding a later disk reload and recovery notification.
-- **RWKV state after editor saves:** reconciliation markers are queued per save, and edited cards' FSRS preset-cache entries are refreshed in place instead of being dropped and re-resolved. Overlapping editor saves no longer lose a marker or expose a transient cache miss that was mistaken for a preset routing change, which discarded the warm resident state.
-- **Verification and packaging:** `just check`, the online Rust tests, and 212 permanent Browser regression tests passed locally. Remote CI passed on Linux, Windows, and macOS, including Linux browser end-to-end tests. Build 98 provides 12 unsigned installer and portable downloads across macOS, Windows, and Linux on ARM64 and x64.
+- **Verification and packaging:** `just check`, the online Rust tests, and 212 permanent Browser regression tests passed locally. Remote CI passed on Linux, Windows, and macOS, including Linux browser end-to-end tests. Build 99 provides 12 unsigned installer and portable downloads across macOS, Windows, and Linux on ARM64 and x64.
 
 ## [26.09.3+fsrs7.build.97](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.97) — 2026-10-06
 
