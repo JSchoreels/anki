@@ -596,7 +596,11 @@ mod test {
         conf.inner.review_order = ReviewCardOrder::Day as i32;
         conf.inner.rwkv_review_enabled = true;
         conf.inner.rwkv_review_instant_order_enabled = true;
-        conf.inner.rwkv_review_allow_same_day_review = allow_same_day_review;
+        col.set_config_bool(
+            BoolKey::FsrsShortTermWithStepsEnabled,
+            allow_same_day_review,
+            false,
+        )?;
         conf.inner.rwkv_review_min_intervening_reviews = 0;
         conf.inner.rwkv_review_min_elapsed_secs = 0;
         col.add_or_update_deck_config(&mut conf)?;

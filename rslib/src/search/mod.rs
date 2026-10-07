@@ -388,7 +388,6 @@ impl Collection {
                     rwkv_review_score_eligibility(
                         score.retrievability,
                         metadata,
-                        config.inner.rwkv_review_allow_same_day_review,
                         config.inner.rwkv_review_min_intervening_reviews,
                         config.inner.rwkv_review_min_elapsed_secs,
                         score.intervening_reviews,

@@ -757,7 +757,6 @@ impl Collection {
         Ok(Some(rwkv_review_score_eligibility(
             entry.retrievability,
             &metadata,
-            config.inner.rwkv_review_allow_same_day_review,
             config.inner.rwkv_review_min_intervening_reviews,
             config.inner.rwkv_review_min_elapsed_secs,
             entry.intervening_reviews,

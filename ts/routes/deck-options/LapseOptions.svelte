@@ -120,7 +120,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <Warning warning={stepsTooLargeForFsrs} />
         </Item>
 
-        {#if $fsrs}
+        {#if $fsrs || $config.rwkvReviewInstantOrderEnabled}
             <Item>
                 <SwitchRow
                     bind:value={$fsrsShortTermWithStepsEnabled}
@@ -133,7 +133,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     </SettingTitle>
                 </SwitchRow>
             </Item>
+        {/if}
 
+        {#if $fsrs}
             <Item>
                 <SwitchRow
                     bind:value={$fsrsLearningQueuesDisabled}

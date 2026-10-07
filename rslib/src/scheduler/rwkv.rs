@@ -700,8 +700,7 @@ pub(crate) fn rwkv_review_candidate_metadata(
     let mut metadata = HashMap::with_capacity(cards.len());
     let mut partial_by_card = HashMap::new();
     let mut without_card_target = Vec::new();
-    let same_day_review_allowed = !col.get_config_bool(BoolKey::Fsrs)
-        || col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
+    let same_day_review_allowed = col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
 
     for card in cards {
         if card.queue != CardQueue::Review {
@@ -754,7 +753,6 @@ pub(crate) enum RwkvReviewScoreEligibility {
 pub(crate) fn rwkv_review_score_eligibility(
     score: f32,
     metadata: &RwkvReviewCandidateMetadata,
-    allow_same_day_review: bool,
     min_intervening_reviews: u32,
     min_elapsed_secs: u32,
     intervening_reviews: Option<u32>,
@@ -763,7 +761,6 @@ pub(crate) fn rwkv_review_score_eligibility(
     rwkv_review_score_eligibility_inner(
         score,
         metadata,
-        allow_same_day_review,
         min_intervening_reviews,
         min_elapsed_secs,
         intervening_reviews,
@@ -774,7 +771,6 @@ pub(crate) fn rwkv_review_score_eligibility(
 pub(crate) fn rwkv_review_score_eligibility_ignoring_retention(
     score: f32,
     metadata: &RwkvReviewCandidateMetadata,
-    allow_same_day_review: bool,
     min_intervening_reviews: u32,
     min_elapsed_secs: u32,
     intervening_reviews: Option<u32>,
@@ -782,7 +778,6 @@ pub(crate) fn rwkv_review_score_eligibility_ignoring_retention(
     rwkv_review_score_eligibility_inner(
         score,
         metadata,
-        allow_same_day_review,
         min_intervening_reviews,
         min_elapsed_secs,
         intervening_reviews,
@@ -822,7 +817,6 @@ fn rwkv_review_target_retention(
 fn rwkv_review_score_eligibility_inner(
     score: f32,
     metadata: &RwkvReviewCandidateMetadata,
-    allow_same_day_review: bool,
     min_intervening_reviews: u32,
     min_elapsed_secs: u32,
     intervening_reviews: Option<u32>,
@@ -837,8 +831,7 @@ fn rwkv_review_score_eligibility_inner(
 
     if !score.is_finite()
         || score_above_target
-        || (metadata.reviewed_today
-            && (!allow_same_day_review || !metadata.same_day_review_allowed))
+        || (metadata.reviewed_today && !metadata.same_day_review_allowed)
     {
         return RwkvReviewScoreEligibility::Blocked;
     }

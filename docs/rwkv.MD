@@ -48,6 +48,13 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 Legacy configs may also contain `rwkv_review_batch_size`. It is retained for
 compatibility but is no longer exposed in Deck Options.
 
+RWKV-Instant uses the collection-wide **Allow same day review for (re)learning
+steps** switch as its sole same-day repeat control, even with FSRS disabled.
+Deck Options shows this switch when either FSRS or RWKV-Instant is enabled.
+The former `rwkv_review_allow_same_day_review` field is retained for storage
+compatibility but no longer affects scheduling or hides the repeat-spacing
+fields. The two spacing minimums appear in one row with units inside the fields.
+
 Deck Options hides `rwkv_review_refresh_on_exit` while retaining its saved
 behavior. Creation-time prediction is always enabled; the retained
 `rwkv_review_first_review_elapsed_from_card_creation` field no longer disables
@@ -427,19 +434,18 @@ due. A scored review card is
 considered due when its RWKV retrievability is at or below the card's current
 target retention; cards above that threshold are not admitted through either the
 RWKV ordering path or the normal due fallback until a later prediction puts them
-back below target. When
-`rwkv_review_allow_same_day_review` is disabled, scored review cards that were
-already answered during the current scheduler day are also withheld until the
-next day. With FSRS enabled, turning off **Allow same day review for
-(re)learning steps** also withholds these cards, even when **Skip
-learning/relearning queues with FSRS/RWKV** is enabled. This restriction applies
-to queue selection, deck counts, daily minimums, and `is:rwkv:due` searches.
-When both same-day settings permit RWKV re-review,
+back below target. Turning off **Allow same day review for (re)learning steps**
+withholds scored review cards already answered during the current scheduler day
+until the next day. This applies with or without FSRS and even when **Skip
+learning/relearning queues with FSRS/RWKV** is enabled. Queue selection, deck
+counts, daily minimums, and `is:rwkv:due` searches use this same rule; the legacy
+`rwkv_review_allow_same_day_review` value is ignored.
+When the shared same-day switch permits RWKV re-review,
 `rwkv_review_min_intervening_reviews` can require a number of other answered
 reviews in the selected deck tree before the same card is admitted again, and
 `rwkv_review_min_elapsed_secs` can require that many seconds since the card's
-stored last review time. If both values are nonzero, both guards must be
-satisfied.
+stored last review time. Both guards must be satisfied; setting either value
+to `0` removes that minimum.
 
 Answering Again on a card already answered during the current scheduler day
 does not increase its lapse count or trigger leech tagging or suspension.

@@ -20,6 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { HelpItem } from "$lib/components/types";
 
     import { commitEditing, type DeckOptionsState, fsrsParams } from "./lib";
+    import RwkvRepeatSpacing from "./RwkvRepeatSpacing.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
@@ -69,21 +70,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewRefreshInterval(),
             help: tr.deckConfigRwkvReviewRefreshIntervalTooltip(),
         },
-        rwkvAllowSameDayReview: {
-            title: tr.deckConfigRwkvReviewAllowSameDayReview(),
-            help: tr.deckConfigRwkvReviewAllowSameDayReviewTooltip(),
-        },
         rwkvFirstReviewElapsed: {
             title: tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation(),
             help: tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreationTooltip(),
         },
-        rwkvMinInterveningReviews: {
-            title: tr.deckConfigRwkvReviewMinInterveningReviews(),
-            help: tr.deckConfigRwkvReviewMinInterveningReviewsTooltip(),
-        },
-        rwkvMinElapsedSecs: {
-            title: tr.deckConfigRwkvReviewMinElapsedSecs(),
-            help: tr.deckConfigRwkvReviewMinElapsedSecsTooltip(),
+        rwkvRepeatSpacing: {
+            title: tr.deckConfigRwkvRepeatSpacingTitle(),
+            help: tr.deckConfigRwkvRepeatSpacingTooltip(),
         },
     };
     const settingKeys = Object.keys(settings);
@@ -235,46 +228,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             <h2 class="rwkv-subheading">Same-Day Repeats</h2>
 
-            <SwitchRow
-                bind:value={$config.rwkvReviewAllowSameDayReview}
-                defaultValue={defaults.rwkvReviewAllowSameDayReview}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
-                >
-                    {tr.deckConfigRwkvReviewAllowSameDayReview()}
-                </SettingTitle>
-            </SwitchRow>
-
-            {#if $config.rwkvReviewAllowSameDayReview}
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinInterveningReviews}
-                    defaultValue={defaults.rwkvReviewMinInterveningReviews}
-                    min={0}
-                    max={10000}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinInterveningReviews")}
-                    >
-                        {tr.deckConfigRwkvReviewMinInterveningReviews()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinElapsedSecs}
-                    defaultValue={defaults.rwkvReviewMinElapsedSecs}
-                    min={0}
-                    max={86400}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinElapsedSecs")}
-                    >
-                        {tr.deckConfigRwkvReviewMinElapsedSecs()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            {/if}
+            <RwkvRepeatSpacing
+                bind:reviews={$config.rwkvReviewMinInterveningReviews}
+                bind:seconds={$config.rwkvReviewMinElapsedSecs}
+                defaultReviews={defaults.rwkvReviewMinInterveningReviews}
+                defaultSeconds={defaults.rwkvReviewMinElapsedSecs}
+                onHelp={() => openSettingHelp("rwkvRepeatSpacing")}
+            />
         {/if}
 
         <div class="rwkv-mode-heading rwkv-mode-divider">

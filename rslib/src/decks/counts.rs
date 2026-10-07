@@ -153,7 +153,7 @@ impl Collection {
             .iter()
             .filter_map(|deck_id| counts.get(deck_id).map(|counts| (*deck_id, counts.clone())))
             .collect();
-        let Some((allow_same_day_review, min_intervening_reviews, min_elapsed_secs)) =
+        let Some((min_intervening_reviews, min_elapsed_secs)) =
             rwkv_scope_order_settings(context, score_deck_id)
         else {
             return Ok(counts);
@@ -178,7 +178,6 @@ impl Collection {
             let eligibility = rwkv_review_score_eligibility(
                 score.retrievability,
                 metadata,
-                allow_same_day_review,
                 min_intervening_reviews,
                 min_elapsed_secs,
                 score.intervening_reviews,
@@ -215,7 +214,6 @@ impl Collection {
                     rwkv_review_score_eligibility_ignoring_retention(
                         score.retrievability,
                         metadata,
-                        allow_same_day_review,
                         min_intervening_reviews,
                         min_elapsed_secs,
                         score.intervening_reviews,
@@ -293,7 +291,7 @@ impl Collection {
 fn rwkv_scope_order_settings(
     context: &RwkvReviewCountContext<'_>,
     score_deck_id: DeckId,
-) -> Option<(bool, u32, u32)> {
+) -> Option<(u32, u32)> {
     context
         .decks
         .get(&score_deck_id)
@@ -302,7 +300,6 @@ fn rwkv_scope_order_settings(
         .filter(|config| config.inner.rwkv_review_instant_order_enabled)
         .map(|config| {
             (
-                config.inner.rwkv_review_allow_same_day_review,
                 config.inner.rwkv_review_min_intervening_reviews,
                 config.inner.rwkv_review_min_elapsed_secs,
             )

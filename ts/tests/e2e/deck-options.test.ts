@@ -7,6 +7,82 @@ import { DeckConfigsForUpdate, UpdateDeckConfigsRequest } from "@generated/anki/
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
 
+for (
+    const { enteredReviews, enteredSeconds, savedReviews, savedSeconds } of [
+        { enteredReviews: "7", enteredSeconds: "120", savedReviews: 7, savedSeconds: 120 },
+        { enteredReviews: "0", enteredSeconds: "0", savedReviews: 0, savedSeconds: 0 },
+        { enteredReviews: "10001", enteredSeconds: "86401", savedReviews: 10000, savedSeconds: 86400 },
+    ]
+) {
+    test(`RWKV repeat spacing saves ${savedReviews} reviews and ${savedSeconds} seconds`, async ({ page }) => {
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+                .config!.config!;
+            config.rwkvReviewInstantOrderEnabled = true;
+            config.rwkvReviewAllowSameDayReview = false;
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+
+        await page.goto("/deck-options/1");
+        const reviews = page.getByRole("spinbutton", { name: "Minimum other reviews before a repeat", exact: true });
+        const seconds = page.getByRole("spinbutton", { name: "Minimum seconds before a repeat", exact: true });
+        await expect(page.getByRole("checkbox", { name: "Allow a card to repeat on the same day", exact: true }))
+            .toHaveCount(0);
+        await reviews.fill(enteredReviews);
+        await reviews.press("Tab");
+        await seconds.fill(enteredSeconds);
+        await seconds.press("Tab");
+        await expect(reviews).toHaveValue(String(savedReviews));
+        await expect(seconds).toHaveValue(String(savedSeconds));
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewMinInterveningReviews).toBe(savedReviews);
+        await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewMinElapsedSecs).toBe(savedSeconds);
+        await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewAllowSameDayReview).toBe(false);
+    });
+}
+
+test("RWKV-Instant exposes and saves the shared same-day switch with FSRS off", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = false;
+        data.fsrsShortTermWithStepsEnabled = false;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.rwkvReviewInstantOrderEnabled = false;
+        config.rwkvReviewAllowSameDayReview = false;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const sameDay = page.getByRole("checkbox", { name: /^Allow same day review for \(re\)learning steps\b/ });
+    const instant = page.getByRole("checkbox", { name: /^Use RWKV-Instant to choose review cards\b/ });
+    await expect(sameDay).toHaveCount(0);
+    await instant.check();
+    await expect(sameDay).toBeVisible();
+    await expect(sameDay).not.toBeChecked();
+    await sameDay.check();
+    await instant.uncheck();
+    await expect(sameDay).toHaveCount(0);
+    await instant.check();
+    await expect(sameDay).toBeChecked();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.fsrsShortTermWithStepsEnabled).toBe(true);
+    await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewAllowSameDayReview).toBe(false);
+});
+
 for (const refreshOnExit of [false, true]) {
     test(`hidden RWKV exit refresh retains saved value ${refreshOnExit}`, async ({ page }) => {
         await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {

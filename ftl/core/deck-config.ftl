@@ -395,6 +395,23 @@ deck-config-rwkv-review-allow-same-day-review-tooltip =
     When a card's estimated chance of recall is at or below your Desired
     Retention, RWKV may show it again later the same day. When this is off, a
     review card you answer will not appear again until the next day.
+# The variables become editable number fields that include their units.
+deck-config-rwkv-repeat-spacing = Minimum { $reviews-field } and { $seconds-field } between repeats
+deck-config-rwkv-repeat-spacing-title = Minimum spacing between repeats
+deck-config-rwkv-repeat-spacing-tooltip =
+    Before RWKV repeats a card, both minimums must be met: the number of other
+    reviews in the selected deck tree and the time since the card's last review.
+    Set either value to 0 to remove that minimum.
+deck-config-rwkv-repeat-reviews-unit =
+    { $count ->
+        [one] review
+       *[other] reviews
+    }
+deck-config-rwkv-repeat-seconds-unit =
+    { $count ->
+        [one] second
+       *[other] seconds
+    }
 deck-config-rwkv-review-min-intervening-reviews = Minimum other reviews before a repeat
 deck-config-rwkv-review-min-intervening-reviews-tooltip =
     How many other cards you must review before RWKV may repeat the same card. 0

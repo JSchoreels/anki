@@ -33,6 +33,7 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Compact RWKV repeat spacing.** Set the minimum other reviews and elapsed seconds in one row, with units shown inside the fields. Instant now follows the shared same-day review switch; the separate RWKV switch is removed, and old preset values no longer silently block repeats.
 - **Clearer RWKV introduction.** Deck Options briefly explains Curve and Instant, clarifies how they use due dates, recommends a daily review limit, links to the RWKV FAQ, and places Instant before Curve with clearer section headings.
 - **Simpler RWKV settings.** The answer-order option spells out Again ≤ Hard ≤ Good ≤ Easy, and queue guidance recommends Ascending Retrievability or Random. Creation-time predictions for new cards stay enabled without a toggle. The exit-refresh switch is hidden while preserving its saved behavior, and Dynamic Preset support moves to a global RWKV support option in the add-on.
 - **Restored user interface sizing.** The User interface size preference takes effect again after restarting Anki.

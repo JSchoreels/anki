@@ -236,11 +236,12 @@ simple cap.
 
 ### Can RWKV-Instant repeat a card when same-day reviews are disabled?
 
-With FSRS enabled, turning off **Allow same day review for (re)learning steps**
-prevents RWKV-Instant from showing a card already answered that scheduler day.
-This also applies when **Skip learning/relearning queues with FSRS/RWKV** is
-enabled. The RWKV same-day setting and repeat-spacing guards must also permit
-a repeat before it can appear.
+Turning off **Allow same day review for (re)learning steps** prevents
+RWKV-Instant from showing a card already answered that scheduler day, with or
+without FSRS. This also applies when **Skip learning/relearning queues with
+FSRS/RWKV** is enabled. With the switch on, both repeat-spacing minimums must
+still be met. The former RWKV-specific same-day switch has been removed; its
+saved value no longer blocks repeats.
 
 **Allow same day review for (re)learning steps** defaults to on. An explicitly
 saved off choice is preserved. It also controls generated short-term
@@ -267,8 +268,9 @@ model.
 
 ### How do the same-day settings interact?
 
-With FSRS enabled, FSRS-7 and RWKV-Curve decide answer intervals, while
-RWKV-Instant independently decides whether a review card can enter the queue.
+FSRS-7 and RWKV-Curve decide answer intervals, while RWKV-Instant independently
+decides whether a review card can enter the queue. They share **Allow same day
+review for (re)learning steps**, which is shown when FSRS or Instant is enabled.
 The decision tree shows both paths:
 
 ```mermaid
@@ -287,26 +289,23 @@ flowchart TD
 
     A -->|RWKV-Instant| I{"Allow same day review for<br/>(re)learning steps On?"}
     I -->|No| J["Same-day RWKV review repeat blocked"]
-    I -->|Yes| K{"Allow a card to repeat<br/>on the same day On?"}
-    K -->|No| J
-    K -->|Yes| L{"Minimum other answers reached<br/>since this card's last answer?"}
+    I -->|Yes| L{"Minimum other answers reached<br/>since this card's last answer?"}
     L -->|No| M["Wait for enough other answers"]
     L -->|Yes| N{"Minimum seconds elapsed<br/>since this card's last answer?"}
     N -->|No| O["Wait for enough elapsed time"]
     N -->|Yes| P["Same-day repeat eligible<br/>Other queue conditions still apply"]
 ```
 
-The spacing checks use **Minimum other reviews before a repeat** and
-**Minimum seconds before a repeat**. Both must be satisfied; a value of `0`
+The **Same-Day Repeats** row sets minimum other reviews and elapsed seconds
+between repeats. Both must be satisfied; a value of `0`
 removes that minimum. Their defaults are **5 other answers** and **30 seconds**.
 For example, values of **3** and **90** require both three other answers and
 90 elapsed seconds before RWKV-Instant can repeat the card.
 
-Both **Allow same day review for (re)learning steps** and
-**Allow a card to repeat on the same day** default to on. With FSRS and
-RWKV-Instant enabled, both toggles permit same-day repeats by default; the
-spacing guards and other queue conditions must still be satisfied. Explicitly
-saved off choices are preserved.
+**Allow same day review for (re)learning steps** defaults to on and is the sole
+same-day repeat switch for Instant. Its saved off choice is preserved; the
+former per-preset RWKV switch is ignored. The spacing guards and other queue
+conditions must still be satisfied.
 Configured learning/relearning steps may still repeat while queues are enabled.
 Enabling **Skip learning/relearning queues with FSRS/RWKV** bypasses these
 steps; RWKV-Instant can still admit an eligible same-day repeat even when the

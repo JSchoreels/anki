@@ -161,7 +161,6 @@ pub(super) struct QueueSortOptions {
     pub(super) new_review_mix: ReviewMix,
     pub(super) rwkv_review_enabled: bool,
     pub(super) rwkv_review_instant_order_enabled: bool,
-    pub(super) rwkv_review_allow_same_day_review: bool,
     pub(super) rwkv_review_min_intervening_reviews: u32,
     pub(super) rwkv_review_min_elapsed_secs: u32,
 }
@@ -511,7 +510,6 @@ fn sort_options(deck: &Deck, config_map: &HashMap<DeckConfigId, DeckConfig>) -> 
             new_review_mix: config.inner.new_mix(),
             rwkv_review_enabled: config.inner.rwkv_review_enabled,
             rwkv_review_instant_order_enabled: config.inner.rwkv_review_instant_order_enabled,
-            rwkv_review_allow_same_day_review: config.inner.rwkv_review_allow_same_day_review,
             rwkv_review_min_intervening_reviews: config.inner.rwkv_review_min_intervening_reviews,
             rwkv_review_min_elapsed_secs: config.inner.rwkv_review_min_elapsed_secs,
         })
@@ -727,7 +725,12 @@ mod test {
             conf.inner.rwkv_review_enabled = true;
             conf.inner.rwkv_review_instant_order_enabled = true;
             conf.inner.desired_retention = desired_retention;
-            conf.inner.rwkv_review_allow_same_day_review = allow_same_day_review;
+            self.set_config_bool(
+                BoolKey::FsrsShortTermWithStepsEnabled,
+                allow_same_day_review,
+                false,
+            )
+            .unwrap();
             conf.inner.rwkv_review_min_intervening_reviews = 0;
             conf.inner.rwkv_review_min_elapsed_secs = 0;
             self.add_or_update_deck_config(&mut conf).unwrap();
@@ -748,7 +751,8 @@ mod test {
             conf.inner.rwkv_review_enabled = true;
             conf.inner.rwkv_review_instant_order_enabled = true;
             conf.inner.desired_retention = desired_retention;
-            conf.inner.rwkv_review_allow_same_day_review = true;
+            self.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)
+                .unwrap();
             conf.inner.rwkv_review_min_intervening_reviews = min_intervening_reviews;
             conf.inner.rwkv_review_min_elapsed_secs = min_elapsed_secs;
             self.add_or_update_deck_config(&mut conf).unwrap();
@@ -2939,7 +2943,7 @@ mod test {
     }
 
     #[test]
-    fn rwkv_retrievability_order_excludes_same_day_reviews_by_default() -> Result<()> {
+    fn rwkv_retrievability_order_excludes_same_day_reviews_when_disabled() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_deck_rwkv_review_order_with_desired_retention(
@@ -3000,80 +3004,95 @@ mod test {
     }
 
     #[test]
-    fn rwkv_instant_respects_same_day_learning_setting() -> Result<()> {
+    fn rwkv_instant_uses_only_global_same_day_setting() -> Result<()> {
         for order in [
             ReviewCardOrder::Day,
             ReviewCardOrder::RetrievabilityAscending,
         ] {
-            for skip_learning_queues in [false, true] {
-                for allow_same_day in [false, true] {
-                    let mut col = Collection::new();
-                    col.set_config_bool(BoolKey::Fsrs, true, false)?;
-                    col.set_config_bool(
-                        BoolKey::FsrsLearningQueuesDisabled,
-                        skip_learning_queues,
-                        false,
-                    )?;
-                    col.set_config_bool(
-                        BoolKey::FsrsShortTermWithStepsEnabled,
-                        allow_same_day,
-                        false,
-                    )?;
-                    let mut deck = col.get_or_create_normal_deck("Default")?;
-                    col.set_deck_rwkv_review_order_with_options(&mut deck, order, 0.75, true);
-                    // Daily minimums must not pull a blocked repeat back into the queue.
-                    col.set_deck_rwkv_minimum_reviews(deck.id, 10);
+            for (fsrs_enabled, legacy_allow_same_day) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
+                for skip_learning_queues in [false, true] {
+                    for allow_same_day in [false, true] {
+                        let mut col = Collection::new();
+                        col.set_config_bool(BoolKey::Fsrs, fsrs_enabled, false)?;
+                        col.set_config_bool(
+                            BoolKey::FsrsLearningQueuesDisabled,
+                            skip_learning_queues,
+                            false,
+                        )?;
+                        let mut deck = col.get_or_create_normal_deck("Default")?;
+                        col.set_deck_rwkv_review_order_with_options(
+                            &mut deck,
+                            order,
+                            0.75,
+                            allow_same_day,
+                        );
+                        let mut config = col
+                            .get_deck_config(deck.config_id().unwrap(), false)?
+                            .unwrap();
+                        config.inner.rwkv_review_allow_same_day_review = legacy_allow_same_day;
+                        col.add_or_update_deck_config(&mut config)?;
+                        // Daily minimums must not pull a blocked repeat back into the queue.
+                        col.set_deck_rwkv_minimum_reviews(deck.id, 10);
 
-                    let timing = col.timing_today()?;
-                    let card_id = add_memory_state_card(
-                        &mut col,
-                        deck.id,
-                        CardQueue::Review,
-                        CardType::Review,
-                        timing.days_elapsed as i32 + 1,
-                        0,
-                        1.0,
-                    )?;
-                    let mut card = col.storage.get_card(card_id)?.unwrap();
-                    card.last_review_time = Some(timing.now);
-                    col.storage.update_card(&card)?;
-                    col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(card_id, 0.20)]))?;
-                    col.set_rwkv_stats_graph_score_entries(
-                        "".into(),
-                        HashMap::from([(
-                            card_id,
-                            crate::collection::RwkvStatsGraphScoreEntry {
-                                retrievability: 0.20,
-                                curve_retrievability: None,
-                                intervening_reviews: None,
-                                target_retention: None,
-                                curve_due: false,
-                            },
-                        )]),
-                    )?;
+                        let timing = col.timing_today()?;
+                        let card_id = add_memory_state_card(
+                            &mut col,
+                            deck.id,
+                            CardQueue::Review,
+                            CardType::Review,
+                            timing.days_elapsed as i32 + 1,
+                            0,
+                            1.0,
+                        )?;
+                        let mut card = col.storage.get_card(card_id)?.unwrap();
+                        card.last_review_time = Some(timing.now);
+                        col.storage.update_card(&card)?;
+                        col.set_rwkv_review_queue_scores(
+                            deck.id,
+                            HashMap::from([(card_id, 0.20)]),
+                        )?;
+                        col.set_rwkv_stats_graph_score_entries(
+                            "".into(),
+                            HashMap::from([(
+                                card_id,
+                                crate::collection::RwkvStatsGraphScoreEntry {
+                                    retrievability: 0.20,
+                                    curve_retrievability: None,
+                                    intervening_reviews: None,
+                                    target_retention: None,
+                                    curve_due: false,
+                                },
+                            )]),
+                        )?;
 
-                    let expected = if allow_same_day {
-                        vec![card_id]
-                    } else {
-                        vec![]
-                    };
-                    assert_eq!(col.queue_as_ids(deck.id), expected);
-                    assert_eq!(col.counts(), [0, 0, usize::from(allow_same_day)]);
-                    let tree = col.deck_tree(Some(timing.now))?;
-                    assert_eq!(tree.children[0].review_count, u32::from(allow_same_day));
-                    assert_eq!(
-                        col.search_cards("is:rwkv:due", SortMode::NoOrder)?,
-                        expected
-                    );
+                        let expected = if allow_same_day {
+                            vec![card_id]
+                        } else {
+                            vec![]
+                        };
+                        assert_eq!(col.queue_as_ids(deck.id), expected);
+                        assert_eq!(col.counts(), [0, 0, usize::from(allow_same_day)]);
+                        let tree = col.deck_tree(Some(timing.now))?;
+                        assert_eq!(tree.children[0].review_count, u32::from(allow_same_day));
+                        assert_eq!(
+                            col.search_cards("is:rwkv:due", SortMode::NoOrder)?,
+                            expected
+                        );
 
-                    col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(card_id, 0.95)]))?;
-                    assert_eq!(col.queue_as_ids(deck.id), expected);
+                        col.set_rwkv_review_queue_scores(
+                            deck.id,
+                            HashMap::from([(card_id, 0.95)]),
+                        )?;
+                        assert_eq!(col.queue_as_ids(deck.id), expected);
 
-                    // The day begins at the configured rollover, not midnight.
-                    card.last_review_time = Some(timing.next_day_at.adding_secs(-86_401));
-                    col.storage.update_card(&card)?;
-                    col.clear_study_queues();
-                    assert_eq!(col.queue_as_ids(deck.id), vec![card_id]);
+                        // The day begins at the configured rollover, not midnight.
+                        card.last_review_time = Some(timing.next_day_at.adding_secs(-86_401));
+                        col.storage.update_card(&card)?;
+                        col.clear_study_queues();
+                        assert_eq!(col.queue_as_ids(deck.id), vec![card_id]);
+                    }
                 }
             }
         }

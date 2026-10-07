@@ -165,7 +165,6 @@ impl QueueBuilder {
                 let eligibility = rwkv_review_score_eligibility(
                     score.retrievability,
                     metadata,
-                    self.context.sort_options.rwkv_review_allow_same_day_review,
                     self.context
                         .sort_options
                         .rwkv_review_min_intervening_reviews,
@@ -225,7 +224,6 @@ impl QueueBuilder {
             let eligibility = rwkv_review_score_eligibility(
                 score.retrievability,
                 metadata,
-                self.context.sort_options.rwkv_review_allow_same_day_review,
                 self.context
                     .sort_options
                     .rwkv_review_min_intervening_reviews,
@@ -323,7 +321,6 @@ impl QueueBuilder {
                 let eligibility = rwkv_review_score_eligibility_ignoring_retention(
                     score.retrievability,
                     metadata,
-                    self.context.sort_options.rwkv_review_allow_same_day_review,
                     self.context
                         .sort_options
                         .rwkv_review_min_intervening_reviews,
@@ -417,7 +414,6 @@ impl QueueBuilder {
                     rwkv_review_score_eligibility(
                         score.retrievability,
                         metadata,
-                        self.context.sort_options.rwkv_review_allow_same_day_review,
                         self.context
                             .sort_options
                             .rwkv_review_min_intervening_reviews,
@@ -432,7 +428,6 @@ impl QueueBuilder {
                 let eligibility = rwkv_review_score_eligibility_ignoring_retention(
                     score.retrievability,
                     metadata,
-                    self.context.sort_options.rwkv_review_allow_same_day_review,
                     self.context
                         .sort_options
                         .rwkv_review_min_intervening_reviews,
