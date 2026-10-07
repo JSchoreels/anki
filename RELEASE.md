@@ -13,6 +13,9 @@ repeated here unless they materially affect a fork feature.
   Describe practical outcomes in the first section. Put implementation context,
   upstream references, compatibility notes, measurements, and verification in
   the second section.
+- Include concise, verified before/after measurements where available and useful. Prefer these figures to illustrative scenarios; do not force an example onto every change or invent measurements.
+- Keep release-note paragraphs on one source line and let GitHub wrap them.
+  Use line breaks for Markdown structure, not a fixed prose width.
 - Include fixes, new behavior, compatibility changes, migrations, and notable
   performance or security changes. Omit routine formatting, CI-only changes,
   and upstream synchronization without a notable impact.
@@ -30,59 +33,23 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
-- **Faster Browser selections.** Selecting or inverting thousands of rows and
-  resizing columns with a large selection are more responsive.
-- **Lower memory use during full collection downloads**, especially for large
-  collections.
-- **Faster media scans** when files added locally or downloaded from AnkiWeb
-  have not changed.
-- **Faster RWKV calibration refreshes after FSRS parameter changes** when RWKV
-  already has predictions for the complete review history.
-- **Fewer interruptions when adding cards through add-ons.** AnkiConnect and
-  Yomitan mining no longer cause an RWKV recovery progress window and tooltip
-  after every card, including while Anki is in the background.
-- **More reliable RWKV calibration graphs.** Recomputing calibration removes
-  outdated cached predictions that could otherwise appear in the graphs.
+- **Faster Browser selections.** Selecting or inverting thousands of rows and resizing columns with a large selection are more responsive (Select All: ~434 ms → ~0.9 ms in a 50,000-row synthetic test).
+- **Lower memory use during full collection downloads**, especially for large collections.
+- **Faster media scans** when files added locally or downloaded from AnkiWeb have not changed.
+- **Faster RWKV calibration refreshes after FSRS parameter changes** when RWKV already has predictions for the complete review history (~21 s → ~6 s on a 224,000-review collection).
+- **Fewer interruptions when adding cards through add-ons.** AnkiConnect and Yomitan mining no longer cause an RWKV recovery progress window and tooltip after every card, including while Anki is in the background.
+- **More reliable RWKV calibration graphs.** Recomputing calibration removes outdated cached predictions that could otherwise appear in the graphs.
 - **Correct Deck Options help links** for daily limits and leeches.
 
 ### Technical details
 
-- **Browser:** backported Anki
-  [#5768](https://github.com/ankitects/anki/pull/5768) and
-  [#5771](https://github.com/ankitects/anki/pull/5771). The column header uses an
-  empty selection model to avoid scanning selected rows when painting. Menu
-  actions count changed selection ranges, while preserving the fork's fallback
-  for add-ons overriding model flags.
-- **Browser measurements:** on 50,000 synthetic rows with offscreen Qt on Apple
-  Silicon, median Select All time fell from 434 ms to 0.91 ms, Invert Selection
-  from 416 ms to 0.85 ms, and header painting from 90 ms to 0.59 ms. These measure
-  individual operations, with existing Clanki improvements present before and
-  after. See the
-  [backport audit](https://github.com/JSchoreels/anki/blob/cd6ed9a13558d2b89d52460d6970d228b09754bd/docs/upstream-performance-backports.MD)
-  for methodology and regression coverage.
-- **Full sync:** backported
-  [Anki #5717](https://github.com/ankitects/anki/pull/5717). Downloads stream
-  through a buffered temporary file, are flushed and checked for integrity,
-  then atomically replace the local collection.
-- **Media sync:** adapted
-  [Anki #5654](https://github.com/ankitects/anki/pull/5654), open at the
-  2026-10-07 review. Scans, local additions, and downloads use millisecond
-  modification timestamps. Older timestamps require one checksum scan before
-  using the fast path; the database schema is unchanged.
-- **RWKV calibration:** complete cached predictions allow FSRS fold assignments
-  to be refreshed without replaying review history (about 6 s instead of 21 s
-  on a 224,000-review collection). After a full recompute, each answer stores
-  its RWKV prediction. Rebuilt or recovered state, unseen synced reviews, or
-  a different model still require a full recompute. Recomputes also remove
-  superseded fold assignments and leftover training rows.
-- **RWKV state:** add-on and legacy resets check whether the resident state
-  still matches review history and retain it when unchanged, avoiding a later
-  disk reload and recovery notification.
-- **Verification and packaging:** `just check`, the online Rust tests, and
-  212 permanent Browser regression tests passed locally. Remote CI passed on
-  Linux, Windows, and macOS, including Linux browser end-to-end tests. Build 98
-  provides 12 unsigned installer and portable downloads across macOS, Windows,
-  and Linux on ARM64 and x64.
+- **Browser:** backported Anki [#5768](https://github.com/ankitects/anki/pull/5768) and [#5771](https://github.com/ankitects/anki/pull/5771). The column header uses an empty selection model to avoid scanning selected rows when painting. Menu actions count changed selection ranges, while preserving the fork's fallback for add-ons overriding model flags.
+- **Browser measurements:** on 50,000 synthetic rows with offscreen Qt on Apple Silicon, median Select All time fell from 434 ms to 0.91 ms, Invert Selection from 416 ms to 0.85 ms, and header painting from 90 ms to 0.59 ms. These measure individual operations, with existing Clanki improvements present before and after. See the [backport audit](https://github.com/JSchoreels/anki/blob/cd6ed9a13558d2b89d52460d6970d228b09754bd/docs/upstream-performance-backports.MD) for methodology and regression coverage.
+- **Full sync:** backported [Anki #5717](https://github.com/ankitects/anki/pull/5717). Downloads stream through a buffered temporary file, are flushed and checked for integrity, then atomically replace the local collection.
+- **Media sync:** adapted [Anki #5654](https://github.com/ankitects/anki/pull/5654), open at the 2026-10-07 review. Scans, local additions, and downloads use millisecond modification timestamps. Older timestamps require one checksum scan before using the fast path; the database schema is unchanged.
+- **RWKV calibration:** complete cached predictions allow FSRS fold assignments to be refreshed without replaying review history (about 6 s instead of 21 s on a 224,000-review collection). After a full recompute, each answer stores its RWKV prediction. Rebuilt or recovered state, unseen synced reviews, or a different model still require a full recompute. Recomputes also remove superseded fold assignments and leftover training rows.
+- **RWKV state:** add-on and legacy resets check whether the resident state still matches review history and retain it when unchanged, avoiding a later disk reload and recovery notification.
+- **Verification and packaging:** `just check`, the online Rust tests, and 212 permanent Browser regression tests passed locally. Remote CI passed on Linux, Windows, and macOS, including Linux browser end-to-end tests. Build 98 provides 12 unsigned installer and portable downloads across macOS, Windows, and Linux on ARM64 and x64.
 
 ## [26.09.3+fsrs7.build.97](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.97) — 2026-10-06
 
