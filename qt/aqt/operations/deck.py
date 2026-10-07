@@ -20,6 +20,7 @@ def _run_preserving_rwkv_state(
     col: Collection,
     mutation: Callable[[], _T],
     *,
+    card_ids: Sequence[int] = (),
     require_no_preset_overlay: bool = False,
 ) -> _T:
     from aqt import rwkv_scheduler
@@ -27,6 +28,7 @@ def _run_preserving_rwkv_state(
     return rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
         col,
         mutation,
+        card_ids=card_ids,
         require_no_preset_overlay=require_no_preset_overlay,
     )
 
@@ -37,7 +39,27 @@ def remove_decks(
     deck_ids: Sequence[DeckId],
     deck_name: str,
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.decks.remove(deck_ids)).success(
+    def remove_preserving_rwkv_state(col: Collection) -> OpChangesWithCount:
+        affected_deck_ids = sorted(
+            {
+                child_id
+                for deck_id in deck_ids
+                for child_id in col.decks.deck_and_child_ids(deck_id)
+            }
+        )
+        # The did search includes cards borrowed by other filtered decks too.
+        card_ids = (
+            col.find_cards(f"did:{','.join(str(did) for did in affected_deck_ids)}")
+            if affected_deck_ids
+            else []
+        )
+        return _run_preserving_rwkv_state(
+            col,
+            lambda: col.decks.remove(deck_ids),
+            card_ids=card_ids,
+        )
+
+    return CollectionOp(parent, remove_preserving_rwkv_state).success(
         lambda out: tooltip(
             tr.browsing_cards_deleted_with_deckname(
                 count=out.count,

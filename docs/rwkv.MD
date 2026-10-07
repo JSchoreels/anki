@@ -161,6 +161,12 @@ canonical history no longer includes them. The resident identity becomes
 unknown, so this state is never persisted or trusted as the cache identity, and
 the next canonical restore, normally at the next launch, rebuilds without those
 reviews. Undoing the deletion keeps the resident state.
+Deck deletion uses the same reconciliation, including subdecks and cards
+borrowed by filtered decks. Deleting an empty deck or cards without review
+history keeps the resident identity known. Deleting a filtered deck also keeps
+the state when its cards return to their original decks without changing their
+historical identities. Deletion and its undo/redo do not trigger an automatic
+recovery while that resident state remains ready.
 Broad mutations such as filtered-deck rebuilds remain
 conservative when dynamic preset routing rules make the affected identities
 ambiguous. Other collection mutations that can change replay inputs invalidate

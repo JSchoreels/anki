@@ -2020,6 +2020,139 @@ def test_removing_reviewed_card_keeps_resident_state_until_next_restore(
     assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
 
 
+@pytest.mark.parametrize(
+    "deck_kind", ["reviewed", "new", "empty", "filtered", "reviewed-in-filtered"]
+)
+def test_deck_deletion_keeps_rwkv_state_through_undo_and_redo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    deck_kind: str,
+) -> None:
+    from anki.collection import Collection
+    from anki.decks import UpdateDeckConfigs
+    from aqt.main import AnkiQt
+    from aqt.operations.deck import remove_decks
+
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        config = col.decks.get_deck_configs_for_update(DeckId(1)).all_config[0].config
+        config.config.rwkv_review_enabled = True
+        col.decks.update_deck_configs(
+            UpdateDeckConfigs(target_deck_id=1, configs=[config])
+        )
+        parent = col.decks.add_normal_deck_with_name("Removed").id
+        child = col.decks.add_normal_deck_with_name("Removed::Child").id
+
+        def add_card(deck_id: int, *, reviewed: bool) -> int:
+            notetype = col.models.current()
+            assert notetype is not None
+            note = col.new_note(notetype)
+            note.fields[0] = str(deck_id)
+            col.add_note(note, DeckId(deck_id))
+            card = note.cards()[0]
+            if reviewed:
+                card.start_timer()
+                col.sched.answerCard(card, 4)
+            return card.id
+
+        kept_card = add_card(1, reviewed=True)
+        selected_card = (
+            add_card(child, reviewed=deck_kind != "new")
+            if deck_kind != "empty"
+            else None
+        )
+        selected_decks = [DeckId(parent), DeckId(child)]
+        if deck_kind in ("filtered", "reviewed-in-filtered"):
+            assert selected_card is not None
+            filtered = col.decks.new_filtered("Temporary")
+            deck = col.decks.get(filtered)
+            deck["terms"] = [[f"cid:{selected_card}", 10, 0]]
+            col.decks.update_dict(deck)
+            assert col.sched.rebuild_filtered_deck(filtered).count == 1
+            if deck_kind == "filtered":
+                selected_decks = [filtered]
+
+        timers: list[Callable[[], None]] = []
+        mw = SimpleNamespace(
+            col=col,
+            state="deckBrowser",
+            _legacy_reset_in_progress=False,
+            deckBrowser=SimpleNamespace(op_executed=lambda *_args: False),
+            toolbar=SimpleNamespace(update_sync_status=lambda: None),
+            progress=SimpleNamespace(
+                single_shot=lambda _delay, callback: timers.append(callback)
+            ),
+        )
+        reviewer = SimpleNamespace(mw=mw)
+        mw.reviewer = reviewer
+        monkeypatch.setattr("aqt.mw", mw)
+        monkeypatch.setattr("aqt.main.current_window", lambda: mw)
+        monkeypatch.setattr(
+            rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+        )
+        runtime = _CacheRuntime()
+        backend = RwkvStatefulReviewerBackend(runtime)
+        set_reviewer_backend(backend)
+        history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        backend.review_inputs_answered(reviewer, history.reviews)
+        warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+        assert warmup_key is not None
+        resident_identity = rwkv_scheduler._resident_state_identity(history)
+        rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+        snapshot = backend.cache_snapshot()
+        loses_history = deck_kind in ("reviewed", "reviewed-in-filtered")
+
+        operation = remove_decks(
+            parent=mw, deck_ids=selected_decks, deck_name="Removed"
+        )
+        result = operation._op(col)
+        assert result.count == (
+            1 if deck_kind in ("reviewed", "new", "reviewed-in-filtered") else 0
+        )
+        AnkiQt.on_operation_did_execute(mw, result.changes, None)
+
+        def assert_resident_state_kept() -> None:
+            assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+            assert backend.cache_snapshot() == snapshot
+            assert timers == []
+            assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == (
+                None if loses_history else resident_identity
+            )
+
+        assert_resident_state_kept()
+        canonical = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        expected_cards = {kept_card}
+        if deck_kind == "filtered":
+            assert selected_card is not None
+            expected_cards.add(selected_card)
+            assert col.get_card(selected_card).did == child
+        assert {
+            review.identity.card_id for review in canonical.reviews
+        } == expected_cards
+
+        undone = col.undo()
+        record_collection_undo(undone)
+        AnkiQt.on_operation_did_execute(mw, undone.changes, None)
+        assert_resident_state_kept()
+        assert col.decks.get(selected_decks[0], default=False) is not None
+        if selected_card is not None:
+            assert col.get_card(selected_card).id == selected_card
+
+        redone = col.redo()
+        record_collection_redo(redone)
+        AnkiQt.on_operation_did_execute(mw, redone.changes, None)
+        assert_resident_state_kept()
+
+        restored_runtime = _CacheRuntime()
+        set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert {
+            review.identity.card_id for review in restored_runtime.answered_inputs
+        } == expected_cards
+    finally:
+        col.close()
+
+
 def test_live_learning_restart_requires_canonical_recovery() -> None:
     class DB:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
