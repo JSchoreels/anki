@@ -5,10 +5,12 @@ RWKV-Curve for answer intervals** is enabled, answer buttons use RWKV-Curve
 intervals and store RWKV-Curve S90 values. RWKV-Instant retrievability is
 recorded on live review answers and can separately be used for review queue
 selection when **Use RWKV-Instant to choose review cards** is enabled. To use
-RWKV-Curve without RWKV-Instant ordering, enable the first option and leave the
-second disabled. To use FSRS intervals with RWKV-Instant queue selection, leave
-the first option disabled and enable the second. Mobile clients do not load the
-RWKV backend and continue to schedule with FSRS/SM2.
+RWKV-Curve without RWKV-Instant ordering, enable Curve and leave Instant
+disabled. To use FSRS intervals with RWKV-Instant queue selection, disable
+Curve and enable Instant. Instant selects review cards independently of their
+scheduled due dates. Synced RWKV-Curve due dates can guide the next mobile
+session, but mobile clients do not load the RWKV backend and continue to
+schedule answers with FSRS/SM2.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
 the predicted curve. Curve crossings are refined on the curve itself rather

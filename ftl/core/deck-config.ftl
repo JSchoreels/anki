@@ -335,11 +335,17 @@ deck-config-rwkv-description =
     adapts to your reviews on the fly, so the due count can fluctuate considerably
     during a session. Setting a daily review limit is recommended.
 deck-config-rwkv-read-more = Read more about RWKV
+deck-config-rwkv-instant-description =
+    Instant replaces FSRS and Curve for review selection; scheduled due dates
+    are ignored.
+deck-config-rwkv-curve-description =
+    Curve replaces FSRS due dates with RWKV dates, useful for your next synced
+    mobile session. Instant ignores these dates.
 deck-config-rwkv-review-enabled = Use RWKV-Curve for answer intervals
 deck-config-rwkv-review-enabled-tooltip =
     On this computer, use RWKV-Curve to calculate the next intervals shown for
     Again, Hard, Good, and Easy. This does not enable RWKV-Instant review queue
-    ordering; that is controlled by the separate option below. Other devices
+    ordering; that is controlled separately. Other devices
     continue to use FSRS or SM-2.
 deck-config-rwkv-review-enforce-grade-order = Enforce Again ≤ Hard ≤ Good ≤ Easy intervals
 deck-config-rwkv-review-enforce-grade-order-tooltip =

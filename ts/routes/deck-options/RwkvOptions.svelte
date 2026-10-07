@@ -179,6 +179,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </p>
 
         <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
+        <p class="rwkv-description">{tr.deckConfigRwkvInstantDescription()}</p>
 
         <SwitchRow
             bind:value={$config.rwkvReviewInstantOrderEnabled}
@@ -273,6 +274,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
 
         <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
+        <p class="rwkv-description">{tr.deckConfigRwkvCurveDescription()}</p>
 
         <Item>
             <SwitchRow
