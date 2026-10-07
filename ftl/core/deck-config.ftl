@@ -334,6 +334,7 @@ deck-config-rwkv-description =
     intervals, while Instant selects reviews. Instant is recommended, but it
     adapts to your reviews on the fly, so the due count can fluctuate considerably
     during a session. Setting a daily review limit is recommended.
+deck-config-rwkv-read-more = Read more about RWKV
 deck-config-rwkv-review-enabled = Use RWKV-Curve for answer intervals
 deck-config-rwkv-review-enabled-tooltip =
     On this computer, use RWKV-Curve to calculate the next intervals shown for
