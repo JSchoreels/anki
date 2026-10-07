@@ -131,7 +131,6 @@ _DEFAULT_RWKV_REVIEW_BATCH_SIZE = 512
 _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE = 128
 _DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL = 1
 _DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS = 5
-_DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION = True
 _MIN_RWKV_REVIEW_BATCH_SIZE = 64
 _MAX_RWKV_REVIEW_BATCH_SIZE = 8192
 _AUTO_RWKV_RETRIEVABILITY_BATCH_SIZE = 2048
@@ -8268,6 +8267,15 @@ def _rwkv_collection_config_state(
         review_enabled = True
         if _rwkv_review_dynamic_preset_replay(config):
             dynamic_preset_replay_enabled = True
+
+    get_config = getattr(col, "get_config", None)
+    if callable(get_config):
+        try:
+            setting = get_config("rwkvDynamicPresetReplay")
+            if isinstance(setting, bool):
+                dynamic_preset_replay_enabled = setting
+        except Exception:
+            logger.debug("failed to read global RWKV dynamic preset replay setting")
 
     return _RwkvCollectionConfigState(
         review_enabled=review_enabled,
@@ -19928,24 +19936,10 @@ def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
 
 
 def _rwkv_review_first_review_elapsed_from_card_creation(
-    deck_config: dict[str, object],
+    _deck_config: dict[str, object],
 ) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_first_review_elapsed_from_card_creation")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewFirstReviewElapsedFromCardCreation",
-        "rwkv_review_first_review_elapsed_from_card_creation",
-    )
-    return (
-        value
-        if isinstance(value, bool)
-        else _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
-    )
+    # Retain legacy storage, but creation time is now always used for queries.
+    return True
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:

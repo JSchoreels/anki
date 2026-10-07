@@ -1,7 +1,48 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { OpChanges } from "@generated/anki/collection_pb";
+import { DeckConfigsForUpdate, UpdateDeckConfigsRequest } from "@generated/anki/deck_config_pb";
+
 import { expect, test } from "./fixtures";
+import { decodeRequestBody } from "./helpers";
+
+for (const refreshOnExit of [false, true]) {
+    test(`hidden RWKV exit refresh retains saved value ${refreshOnExit}`, async ({ page }) => {
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+                .config!.config!;
+            config.rwkvReviewEnabled = true;
+            config.rwkvReviewInstantOrderEnabled = true;
+            config.rwkvReviewRefreshOnExit = refreshOnExit;
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+
+        await page.goto("/deck-options/1");
+        await expect(page.getByRole("checkbox", { name: "Enforce Again ≤ Hard ≤ Good ≤ Easy intervals" }))
+            .toBeVisible();
+        await expect(page.getByText("Recommended: Use Ascending Retrievability or Random", { exact: true }))
+            .toBeVisible();
+        for (
+            const name of [
+                "Update the RWKV queue after reviewing",
+                "Predict R for new cards based on creation time",
+                "Dynamic Preset Addon Support",
+            ]
+        ) {
+            await expect(page.getByRole("checkbox", { name, exact: true })).toHaveCount(0);
+        }
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewRefreshOnExit).toBe(refreshOnExit);
+    });
+}
 
 test("FSRS parameter unlock timing survives mounting and unmounting", async ({ page }) => {
     await page.clock.install();

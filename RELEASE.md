@@ -33,6 +33,7 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Simpler RWKV settings.** The answer-order option spells out Again ≤ Hard ≤ Good ≤ Easy, and queue guidance recommends Ascending Retrievability or Random. Creation-time predictions for new cards stay enabled without a toggle. The exit-refresh switch is hidden while preserving its saved behavior, and Dynamic Preset support moves to a global RWKV support option in the add-on.
 - **Restored user interface sizing.** The User interface size preference takes effect again after restarting Anki.
 - **Faster Browser selections.** Selecting or inverting thousands of rows and resizing columns with a large selection are more responsive (Select All: ~434 ms → ~0.9 ms in a 50,000-row synthetic test).
 - **Lower memory use during full collection downloads**, especially for large collections.
@@ -44,6 +45,7 @@ repeated here unless they materially affect a fork feature.
 
 ### Technical details
 
+- **RWKV configuration:** creation-time prediction ignores the retired deck-option flag in desktop and native query paths. The synced `rwkvDynamicPresetReplay` collection boolean overrides legacy deck-preset replay flags; until it is explicitly saved in the add-on, the old choice remains effective. Existing cache identities detect changes in effective replay behavior.
 - **UI scaling:** backported [Anki #5686](https://github.com/ankitects/anki/pull/5686), fixing [#5676](https://github.com/ankitects/anki/issues/5676). The saved scale factor is applied before Qt creates the application, with a startup regression test.
 - **Browser:** backported Anki [#5768](https://github.com/ankitects/anki/pull/5768) and [#5771](https://github.com/ankitects/anki/pull/5771). The column header uses an empty selection model to avoid scanning selected rows when painting. Menu actions count changed selection ranges, while preserving the fork's fallback for add-ons overriding model flags.
 - **Browser measurements:** on 50,000 synthetic rows with offscreen Qt on Apple Silicon, median Select All time fell from 434 ms to 0.91 ms, Invert Selection from 416 ms to 0.85 ms, and header painting from 90 ms to 0.59 ms. These measure individual operations, with existing Clanki improvements present before and after. See the [backport audit](https://github.com/JSchoreels/anki/blob/cd6ed9a13558d2b89d52460d6970d228b09754bd/docs/upstream-performance-backports.MD) for methodology and regression coverage.

@@ -284,22 +284,37 @@ def test_queue_refresh_preserves_newer_invalidation() -> None:
     assert not rwkv_scheduler.reviewer_queue_order_refresh_required(reviewer)
 
 
-def test_rwkv_first_review_elapsed_source_reads_direct_and_nested_config() -> None:
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
-        {"rwkvReviewFirstReviewElapsedFromCardCreation": True}
-    )
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"rwkvReviewFirstReviewElapsedFromCardCreation": False},
         {
             "other": {
                 "jschoreels.rwkv": {
-                    "rwkv_review_first_review_elapsed_from_card_creation": True,
+                    "rwkv_review_first_review_elapsed_from_card_creation": False,
                 }
             }
-        }
-    )
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation({})
-    assert not rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
-        {"rwkvReviewFirstReviewElapsedFromCardCreation": False}
+        },
+    ],
+)
+def test_rwkv_first_review_always_uses_creation_time(config: dict[str, object]) -> None:
+    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(config)
+
+
+@pytest.mark.parametrize("setting", [None, False, True])
+@pytest.mark.parametrize("legacy_enabled", [False, True])
+def test_rwkv_global_dynamic_preset_replay_overrides_legacy_setting(
+    setting: bool | None, legacy_enabled: bool
+) -> None:
+    reviewer = _rwkv_reviewer(rwkv_review_dynamic_preset_replay=legacy_enabled)
+    reviewer.mw.col.get_config = lambda key: setting
+
+    state = rwkv_scheduler._rwkv_collection_config_state(reviewer)
+
+    assert state.review_enabled
+    assert state.dynamic_preset_replay_enabled == (
+        legacy_enabled if setting is None else setting
     )
 
 
@@ -5273,7 +5288,7 @@ def test_rwkv_later_learning_answer_preserves_elapsed_time() -> None:
     assert rwkv_scheduler._rwkv_state_update_input(answer) is answer
 
 
-def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
+def test_rwkv_review_input_uses_creation_time_with_legacy_flag_off() -> None:
     reviewer = _rwkv_reviewer()
     reviewer._v3.states.current.normal.new.SetInParent()
     card = _rwkv_card(
@@ -5297,8 +5312,8 @@ def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
     )
 
     assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days is None
-    assert review_input.current_elapsed_seconds is None
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 90_000
 
 
 def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
@@ -5369,7 +5384,7 @@ def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -
     assert review_input.current_elapsed_seconds == 90_000
 
 
-def test_rwkv_stats_graph_new_card_creation_elapsed_can_be_disabled() -> None:
+def test_rwkv_stats_graph_uses_creation_time_with_legacy_flag_off() -> None:
     now = 42 * 86_400 + 100
     card = rwkv_scheduler.RwkvStatsGraphCard(
         id=(now - 90_000) * 1000,
@@ -5404,8 +5419,8 @@ def test_rwkv_stats_graph_new_card_creation_elapsed_can_be_disabled() -> None:
     assert review_input is not None
     assert review_input.current_state_kind == "normal"
     assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days is None
-    assert review_input.current_elapsed_seconds is None
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 90_000
 
 
 def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
@@ -6290,7 +6305,10 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
         ],
     )
 
-    missing = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+    missing = rwkv_scheduler._historical_rwkv_review_inputs(
+        reviewer,
+        first_review_elapsed_source=rwkv_scheduler.RwkvFirstReviewElapsedSource.MISSING,
+    )
     card_creation = rwkv_scheduler._historical_rwkv_review_inputs(
         reviewer,
         first_review_elapsed_source=rwkv_scheduler.RwkvFirstReviewElapsedSource.CARD_CREATION,
@@ -8339,7 +8357,7 @@ def test_rwkv_historical_fingerprint_passes_stable_addon_preset_ids(
                     "addon:simulator",
                 )
             },
-            "first_review_uses_creation_by_config_id": {123: False, 456: True},
+            "first_review_uses_creation_by_config_id": {123: True, 456: True},
             "expected_identity": scheduler_pb2.RwkvHistoricalReviewIdentity(
                 last_review_id=2_000,
                 review_count=2,
@@ -8696,9 +8714,7 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
 ) -> None:
     first_review = (40 * 86_400 + 100) * 1000
     card_id = first_review - 3 * 86_400 * 1000
-    deck_config_overrides: dict[str, object] = {
-        "rwkvReviewFirstReviewElapsedFromCardCreation": False,
-    }
+    global_setting = False
     rows = [(first_review, card_id, 10, 100, 2, 1234, 0, 3, 2500)]
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -8710,11 +8726,13 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     reviewer = _rwkv_cache_reviewer(
         profile_folder=tmp_path,
         rows=rows,
-        deck_config_overrides=deck_config_overrides,
+    )
+    reviewer.mw.col.get_config = lambda key: (
+        global_setting if key == "rwkvDynamicPresetReplay" else None
     )
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
-    deck_config_overrides["rwkvReviewFirstReviewElapsedFromCardCreation"] = True
+    global_setting = True
     rebuilt_runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(rebuilt_runtime))
 

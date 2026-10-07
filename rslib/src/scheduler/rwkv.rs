@@ -443,7 +443,7 @@ impl Collection {
 
         for card in cards {
             let Some(state) =
-                self.rwkv_review_input_state(&card, timing, include_suspended_review, false)?
+                self.rwkv_review_input_state(&card, timing, include_suspended_review, true)?
             else {
                 continue;
             };
@@ -464,16 +464,6 @@ impl Collection {
                 disabled_config_cards += 1;
                 continue;
             }
-            let state = if config
-                .inner
-                .rwkv_review_first_review_elapsed_from_card_creation
-            {
-                self.rwkv_review_input_state(&card, timing, include_suspended_review, true)?
-                    .unwrap_or(state)
-            } else {
-                state
-            };
-
             eligible.push(RwkvReviewInputRowPartial {
                 target_retention: deck.effective_desired_retention(config),
                 batch_size: config.inner.rwkv_review_batch_size,
@@ -968,13 +958,7 @@ fn rwkv_first_review_uses_card_creation(
             requested_values_by_config_id
                 .get(&config_id.0)
                 .copied()
-                .or_else(|| {
-                    configs_by_id.get(&config_id).map(|config| {
-                        config
-                            .inner
-                            .rwkv_review_first_review_elapsed_from_card_creation
-                    })
-                })
+                .or_else(|| configs_by_id.get(&config_id).map(|_| true))
                 .unwrap_or(false)
         })
 }
@@ -1647,7 +1631,7 @@ mod test {
         let mut col = Collection::new();
         col.update_default_deck_config(|config| {
             config.rwkv_review_enabled = true;
-            config.rwkv_review_first_review_elapsed_from_card_creation = true;
+            config.rwkv_review_first_review_elapsed_from_card_creation = false;
         });
         let timing = col.timing_today()?;
         let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
@@ -1812,7 +1796,7 @@ mod test {
         let mut col = Collection::new();
         col.update_default_deck_config(|config| {
             config.rwkv_review_enabled = true;
-            config.rwkv_review_first_review_elapsed_from_card_creation = true;
+            config.rwkv_review_first_review_elapsed_from_card_creation = false;
         });
         let deck = col.get_or_create_normal_deck("Default")?;
         let timing = col.timing_today()?;

@@ -69,10 +69,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewRefreshInterval(),
             help: tr.deckConfigRwkvReviewRefreshIntervalTooltip(),
         },
-        rwkvRefreshOnExit: {
-            title: tr.deckConfigRwkvReviewRefreshOnExit(),
-            help: tr.deckConfigRwkvReviewRefreshOnExitTooltip(),
-        },
         rwkvAllowSameDayReview: {
             title: tr.deckConfigRwkvReviewAllowSameDayReview(),
             help: tr.deckConfigRwkvReviewAllowSameDayReviewTooltip(),
@@ -88,10 +84,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvMinElapsedSecs: {
             title: tr.deckConfigRwkvReviewMinElapsedSecs(),
             help: tr.deckConfigRwkvReviewMinElapsedSecsTooltip(),
-        },
-        rwkvDynamicPresetReplay: {
-            title: tr.deckConfigRwkvReviewDynamicPresetReplay(),
-            help: tr.deckConfigRwkvReviewDynamicPresetReplayTooltip(),
         },
     };
     const settingKeys = Object.keys(settings);
@@ -267,15 +259,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </SpinBoxFloatRow>
 
-            <SwitchRow
-                bind:value={$config.rwkvReviewRefreshOnExit}
-                defaultValue={defaults.rwkvReviewRefreshOnExit}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvRefreshOnExit")}>
-                    {tr.deckConfigRwkvReviewRefreshOnExit()}
-                </SettingTitle>
-            </SwitchRow>
-
             <h2 class="rwkv-subheading">Same-Day Repeats</h2>
 
             <SwitchRow
@@ -321,32 +304,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
 
         {#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
-            <h2 class="rwkv-subheading">New Cards</h2>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
-                defaultValue={defaults.rwkvReviewFirstReviewElapsedFromCardCreation}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvFirstReviewElapsed")}
-                >
-                    {tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation()}
-                </SettingTitle>
-            </SwitchRow>
-
-            <h2 class="rwkv-subheading">Card History</h2>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewDynamicPresetReplay}
-                defaultValue={defaults.rwkvReviewDynamicPresetReplay}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvDynamicPresetReplay")}
-                >
-                    {tr.deckConfigRwkvReviewDynamicPresetReplay()}
-                </SettingTitle>
-            </SwitchRow>
-
             <h2 class="rwkv-subheading">Maintenance</h2>
 
             <div class="d-flex flex-wrap gap-2">

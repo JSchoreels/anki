@@ -46,6 +46,15 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 Legacy configs may also contain `rwkv_review_batch_size`. It is retained for
 compatibility but is no longer exposed in Deck Options.
 
+Deck Options hides `rwkv_review_refresh_on_exit` while retaining its saved
+behavior. Creation-time prediction is always enabled; the retained
+`rwkv_review_first_review_elapsed_from_card_creation` field no longer disables
+it. **RWKV support** is now a global option in the Dynamic Preset Selection
+add-on. The add-on stores `rwkv_dynamic_preset_replay` locally and writes it to
+the synced collection key `rwkvDynamicPresetReplay`. An explicit boolean takes
+precedence over all deck-preset replay choices, including an explicit `false`.
+Until the add-on option is saved, the former enabled-preset choice is preserved.
+
 Development code that reads deck configs through the legacy Python
 `DeckConfigDict` API should tolerate both shapes:
 `other["jschoreels.rwkv"]` and a top-level `jschoreels.rwkv` key. The stored
@@ -496,14 +505,15 @@ suspending, or restoring cards, discard transient scores and cached inputs and
 advance a queue generation. Model work prepared before that mutation is
 rejected when it tries to install.
 
-By default, RWKV uses the time since a new card was created only when predicting
+RWKV always uses the time since a new card was created only when predicting
 retrievability before its first Learning review. The corresponding answer is
 processed with elapsed time unknown, so creation time does not enter recurrent
 state or affect later predictions. Historical calibration replay uses the same
 split: its query sees creation time, while its answer-state update does not.
 Cards whose retained history does not start with Learning do not use creation
-time. Disable `rwkv_review_first_review_elapsed_from_card_creation` to treat
-elapsed time as unknown for the initial prediction as well.
+time. The former deck-option toggle is hidden, and saved `false` values no
+longer disable creation-time prediction. Explicit elapsed-source overrides
+remain available to diagnostic replay tools.
 
 If RWKV-Curve is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a
@@ -724,7 +734,7 @@ ignored because it can make predicted retrievability increase with elapsed
 time. The interval is the first sampled downward crossing of the target; if the
 curve never reaches the target, the configured maximum interval is used.
 
-**Keep RWKV intervals in answer order** is enabled by default. It keeps
+**Enforce Again ≤ Hard ≤ Good ≤ Easy intervals** is enabled by default. It keeps
 `Again <= Hard <= Good <= Easy` for both the target-retention intervals and the
 per-grade S90 values. When neighboring RWKV predictions conflict, Anki replaces
 the conflicting estimates with their shared average until they are in order,
@@ -896,6 +906,7 @@ allows large `rwkv_review_refresh_interval` values during review while still
 refreshing a stale transient score map after the review session ends. If the
 latest review-time refresh has already installed a score map for the current
 RWKV state generation, Anki skips the redundant exit refresh.
+The option is no longer shown in Deck Options; its saved value is retained.
 
 Reviewer queue refreshes do not start an additional prediction-memo prewarm.
 The installed queue-score map already serves later queue builds, and another
@@ -1565,7 +1576,7 @@ card's retained review history. This approximates the card as staying in its
 currently resolved preset for its lifetime without repeatedly evaluating add-on
 routing rules.
 
-If `rwkv_review_dynamic_preset_replay` is enabled on any RWKV-enabled preset,
+If **RWKV support** is enabled in the Dynamic Preset Selection add-on,
 and the current FSRS preset overlay includes structured `simulator_rules`, as
 produced by the dynamic preset add-on for interval-split presets, RWKV
 re-evaluates those rules against historical replay facts for every review. In
@@ -1583,7 +1594,7 @@ rules can be applied consistently to newer revlogs after a restart. If the
 count of historical revlogs through the cached checkpoint changes, if the
 configured RWKV model content changes, or if the local cache schema changes, the
 cache is treated as stale and rebuilt from history. Changing
-`rwkv_review_dynamic_preset_replay` also makes the cache stale, because the same
+the effective global replay choice also makes the cache stale, because the same
 historical reviews may be replayed into different preset streams.
 
 ## Review Undo And Redo

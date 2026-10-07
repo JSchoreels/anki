@@ -334,14 +334,14 @@ deck-config-rwkv-review-enabled-tooltip =
     Again, Hard, Good, and Easy. This does not enable RWKV-Instant review queue
     ordering; that is controlled by the separate option below. Other devices
     continue to use FSRS or SM-2.
-deck-config-rwkv-review-enforce-grade-order = Keep RWKV intervals in answer order
+deck-config-rwkv-review-enforce-grade-order = Enforce Again ≤ Hard ≤ Good ≤ Easy intervals
 deck-config-rwkv-review-enforce-grade-order-tooltip =
     Keep Again, Hard, Good, and Easy in a sensible interval order. When RWKV's
     four predictions disagree, Anki gently balances the conflicting predictions
     before choosing the intervals. Turn this off to use the raw RWKV-Curve
     results.
 deck-config-rwkv-review-instant-order = Use RWKV-Instant to choose review cards
-deck-config-rwkv-review-instant-order-recommended = Recommended: Use Ascending Retrievability
+deck-config-rwkv-review-instant-order-recommended = Recommended: Use Ascending Retrievability or Random
 deck-config-rwkv-review-instant-order-tooltip =
     RWKV decides which review cards are ready, and your selected review sort
     order determines how those cards are shown. A card may appear before its
@@ -391,8 +391,7 @@ deck-config-rwkv-review-first-review-elapsed-from-card-creation = Predict R for 
 deck-config-rwkv-review-first-review-elapsed-from-card-creation-tooltip =
     Use the time since a new card was created when predicting R before its first
     learning review. The first answer is recorded with elapsed time unknown, so
-    creation time does not affect later predictions. When this is off, RWKV also
-    treats elapsed time as unknown for the initial prediction.
+    creation time does not affect later predictions. This is always enabled.
 deck-config-rwkv-review-dynamic-preset-replay = Dynamic Preset Addon Support
 deck-config-rwkv-review-dynamic-preset-replay-tooltip =
     RWKV always resolves each card's current add-on preset once when rebuilding
