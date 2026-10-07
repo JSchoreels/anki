@@ -267,6 +267,10 @@ their documentation and benchmark. Blue stars recommend RWKV-Instant for review
 selection and FSRS-7 for Instant's fallback due-date calculation. These are
 guidance labels; opening the panel does not apply the recommendations.
 
+Model settings cards follow the selector order: review scheduler first, then its
+fallback. Models that share a card appear together; Instant precedes Curve inside
+RWKV. Reordering cards preserves their editing state and retention baseline.
+
 When FSRS selects reviews, retention edits show a compact workload estimate
 relative to the initial desired retention. It estimates FSRS interval-based
 workload only. The estimate and its calculation are hidden when FSRS is only

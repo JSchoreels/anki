@@ -17,6 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type DeckOptionsState, ValueTab } from "./lib";
     import SchedulerHelp from "./SchedulerHelp.svelte";
     import SchedulerOptions from "./SchedulerOptions.svelte";
+    import { schedulerCardOrder } from "./scheduler-choice";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import TabbedValue from "./TabbedValue.svelte";
     import Warning from "./Warning.svelte";
@@ -63,6 +64,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ),
     ];
     let newlyEnabled = false;
+    $: modelCards = schedulerCardOrder($config);
     $: if (!$fsrs) {
         newlyEnabled = true;
     }
@@ -122,22 +124,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </TitledContainer>
 </Row>
 
-{#if $fsrs || $config.rwkvReviewEnabled}
-    <!-- The simulator's embedded controls also need a slot-host context. -->
-    <DynamicallySlottable slotHost={Item} api={{}}>
-        <FsrsOptions
-            {state}
-            {newlyEnabled}
-            {desiredRetentionTabs}
-            bind:effectiveDesiredRetention
-            bind:desiredRetentionFocused
-            bind:desiredRetentionWarning
-            bind:retentionWarningClass
-            openSchedulerHelp={(key) => schedulerHelp.open(key)}
-            {onPresetChange}
-        />
-    </DynamicallySlottable>
-{/if}
+{#each modelCards as card (card)}
+    {#if card === "rwkv"}
+        <slot name="rwkv" />
+    {:else if card === "fsrs" && ($fsrs || $config.rwkvReviewEnabled)}
+        <!-- The simulator's embedded controls also need a slot-host context. -->
+        <DynamicallySlottable slotHost={Item} api={{}}>
+            <FsrsOptions
+                {state}
+                {newlyEnabled}
+                {desiredRetentionTabs}
+                bind:effectiveDesiredRetention
+                bind:desiredRetentionFocused
+                bind:desiredRetentionWarning
+                bind:retentionWarningClass
+                openSchedulerHelp={(key) => schedulerHelp.open(key)}
+                {onPresetChange}
+            />
+        </DynamicallySlottable>
+    {/if}
+{/each}
 
 <style>
     .scheduler-disabled {

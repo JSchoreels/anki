@@ -89,6 +89,12 @@ test("scheduler selectors save the review and Instant due-date models", async ({
             .toHaveCount(curve ? 0 : 1);
         await expect(fsrsCard).toHaveCount(curve ? 0 : 1);
         await expect(rwkvCard).toHaveCount(curve || instant ? 1 : 0);
+        await expect(page.getByRole("heading", { name: /^(Scheduler|FSRS|RWKV)$/ }))
+            .toHaveText([
+                "Scheduler",
+                ...(curve || instant ? ["RWKV"] : []),
+                ...(!curve ? ["FSRS"] : []),
+            ]);
         await expect(schedulerCard.getByRole("button", { name: "Optimize Current Preset", exact: true }))
             .toHaveCount(0);
         await expect(schedulerCard.locator(".interval-preview-table")).toHaveCount(0);
@@ -170,6 +176,14 @@ test("shared retention updates the separate FSRS card and survives model changes
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => saved?.configs.at(-1)?.config?.desiredRetention).toBeCloseTo(0.85);
     await expect.poll(() => saved?.limits?.desiredRetention).toBeCloseTo(0.92);
+    expect(workloadRequests).toBe(requestsBeforeInstant);
+    await model.getByRole("radio", { name: "FSRS-7", exact: true }).check();
+    await expect(fsrsCard.getByRole("columnheader", { name: "Current DR (85.00%)", exact: true }))
+        .toBeVisible();
+    await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (92.00%)", exact: true }))
+        .toBeVisible();
+    await expect(fsrsCard.getByText("Approximate workload: 1.00x (vs initial DR: 85%).", { exact: true }))
+        .toBeVisible();
     expect(workloadRequests).toBe(requestsBeforeInstant);
 });
 
