@@ -601,7 +601,7 @@ impl QueueBuilder {
             if self
                 .add_due_card_for_retrievability_sort(candidate.card, candidate.interday_or_review)
             {
-                self.r_sorted_non_new.push(candidate.card);
+                self.push_retrievability_sorted_card(candidate.card, candidate.interday_or_review);
 
                 if candidate.counts_towards_review_limit {
                     self.limits.reserve_review(

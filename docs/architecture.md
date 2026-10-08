@@ -275,9 +275,14 @@ configured step.
 
 When FSRS review order is ascending or descending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
-into one exact-retrievability ordering. Intraday cards with a future timestamp
-remain hidden until their due time, at which point the queue is rebuilt so they
-can be inserted according to their current retrievability. The ordering key is
+and scored together. With interday learning/review order set to Mix, they stay
+in one exact-retrievability ordering. Before and After place only the admitted
+interday learning cards before or after the other due cards, preserving the
+selected sort within each group. Intraday cards retain their relative order
+with review cards, and new cards still follow New/review order. Intraday cards
+with a future timestamp remain hidden until their due time, at which point the
+queue is rebuilt so they can be inserted according to their current
+retrievability. The ordering key is
 the card's current FSRS retrievability from its selected deck preset. Relative
 Overdueness uses the same shared gather path, with the model-independent key
 `-elapsed_days / interval_at_retrievability(full_state, desired_retention)`.
@@ -288,7 +293,9 @@ mode, new-card gather order can instead use ascending or descending RWKV
 retrievability when the reviewer has installed a current-day RWKV queue score
 map; unscored new cards retain ascending-position fallback order.
 Review limits are applied after the shared retrievability sort, so filtered-deck
-positions do not decide which cards are admitted before sorting.
+positions do not decide which cards are admitted before sorting. Interday
+learning/review order changes presentation after this admission step; it does
+not change daily-limit selection or sibling burying.
 
 The Deck Options "New Card Intervals" preview passes the current unsaved values
 of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update

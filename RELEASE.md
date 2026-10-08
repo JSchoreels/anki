@@ -34,10 +34,12 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Interday learning priority works with FSRS sorting.** Show before reviews and Show after reviews now place due interday learning cards before or after the other due cards when sorting by ascending/descending retrievability or Relative Overdueness. Mix keeps the shared sorted order, and each group retains the selected sort.
 - **No immediate RWKV rebuild after deleting a deck.** Deck deletion and its undo/redo keep the current session's model state, including when deleting an empty deck or a deck containing only new cards. Removed reviews are excluded at the next canonical restore, normally after restarting Anki.
 
 ### Technical details
 
+- **FSRS queue presentation:** apply the existing interday learning/review setting after exact scoring, daily-limit admission, and sibling selection. Only interday learning cards move between priority groups; intraday eligibility, ordering within groups, and New/review order are preserved. Queue counts and preserved current cards include the interday group.
 - **RWKV deck deletion:** reuse collection mutation reconciliation with the affected deck tree's cards, including cards borrowed by filtered decks. Removed historical cards make the resident cache identity unknown, preventing that state from being persisted as canonical; deleting a filtered deck preserves state when its cards keep their historical identities.
 
 ## [26.09.3+fsrs7.build.100](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.100) — 2026-10-08
