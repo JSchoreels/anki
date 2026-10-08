@@ -43,6 +43,7 @@ use super::legacy_fsrs_params;
 use crate::card::Card;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
+use crate::progress::ThrottlingProgressHandler;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MAX;
@@ -1139,93 +1140,6 @@ impl Collection {
         output
     }
 
-    pub(crate) fn compute_fsrs_review_retrievability_calibration_cache(
-        &mut self,
-        params: &[f32],
-        context: &FsrsReviewPredictionContext,
-        include_validation_folds: bool,
-    ) -> Result<u32> {
-        self.clear_progress();
-        let (progress, done, progress_thread) = self
-            .create_fsrs_review_retrievability_progress_thread(context, include_validation_folds)?;
-        let rows = fsrs_review_retrievability_cache_rows(
-            params,
-            context,
-            include_validation_folds,
-            Some(&progress),
-        );
-        done.store(true, Ordering::Release);
-        progress_thread.join().ok();
-        let rows = rows?;
-        let stored = self
-            .storage
-            .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")?;
-        tracing::debug!(
-            predictions = stored,
-            "stored FSRS review retrievability calibration cache"
-        );
-        Ok(stored as u32)
-    }
-
-    fn create_fsrs_review_retrievability_progress_thread(
-        &self,
-        context: &FsrsReviewPredictionContext,
-        include_validation_folds: bool,
-    ) -> Result<(
-        FsrsReviewRetrievabilityProgress,
-        Arc<AtomicBool>,
-        thread::JoinHandle<()>,
-    )> {
-        let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
-        let total_validation_folds = if include_validation_folds {
-            FSRS_VALIDATION_FOLDS
-        } else {
-            0
-        };
-        let target_counts = training_target_counts_from_items(&context.items);
-        let total_iterations = calibration_progress_total(total_validation_folds);
-        anki_progress.update(false, |p| {
-            p.current_iteration = 0;
-            p.total_iterations = total_iterations as u32;
-            p.reviews = target_counts.total_targets as u32;
-            p.long_term_reviews = target_counts.long_term_targets as u32;
-            p.short_term_reviews = target_counts.short_term_targets as u32;
-            p.current_preset = 1;
-            p.total_presets = 1;
-        })?;
-
-        let progress = FsrsReviewRetrievabilityProgress {
-            training_progress: CombinedProgressState::new_shared(),
-            completed_validation_folds: Arc::new(AtomicUsize::new(0)),
-        };
-        let done = Arc::new(AtomicBool::new(false));
-        let training_progress = progress.training_progress.clone();
-        let completed_validation_folds = progress.completed_validation_folds.clone();
-        let done_for_thread = done.clone();
-        let progress_thread = thread::spawn(move || {
-            while !done_for_thread.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(100));
-                let mut guard = training_progress.lock().unwrap();
-                let current_iterations = calibration_progress_current(
-                    completed_validation_folds.load(Ordering::Acquire),
-                    total_validation_folds,
-                    &guard,
-                );
-                if anki_progress
-                    .update(false, |s| {
-                        s.current_iteration = current_iterations as u32;
-                        s.total_iterations = total_iterations as u32;
-                    })
-                    .is_err()
-                {
-                    guard.want_abort = true;
-                    return;
-                }
-            }
-        });
-        Ok((progress, done, progress_thread))
-    }
-
     pub(crate) fn prepare_compute_params(
         &mut self,
         input: PrepareComputeParamsInput<'_>,
@@ -1685,6 +1599,86 @@ fn fsrs_prediction_source_from_filtered_revlogs(
     (!targets.is_empty()).then_some(FsrsReviewPredictionSource { reviews, targets })
 }
 
+pub(crate) fn compute_fsrs_review_retrievability_calibration_rows(
+    params: &[f32],
+    context: &FsrsReviewPredictionContext,
+    include_validation_folds: bool,
+    anki_progress: ThrottlingProgressHandler<ComputeParamsProgress>,
+) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
+    let (progress, done, progress_thread) = create_fsrs_review_retrievability_progress_thread(
+        anki_progress,
+        context,
+        include_validation_folds,
+    )?;
+    let rows = fsrs_review_retrievability_cache_rows(
+        params,
+        context,
+        include_validation_folds,
+        Some(&progress),
+    );
+    done.store(true, Ordering::Release);
+    progress_thread.join().ok();
+    rows
+}
+
+fn create_fsrs_review_retrievability_progress_thread(
+    mut anki_progress: ThrottlingProgressHandler<ComputeParamsProgress>,
+    context: &FsrsReviewPredictionContext,
+    include_validation_folds: bool,
+) -> Result<(
+    FsrsReviewRetrievabilityProgress,
+    Arc<AtomicBool>,
+    thread::JoinHandle<()>,
+)> {
+    let total_validation_folds = if include_validation_folds {
+        FSRS_VALIDATION_FOLDS
+    } else {
+        0
+    };
+    let target_counts = training_target_counts_from_items(&context.items);
+    let total_iterations = calibration_progress_total(total_validation_folds);
+    anki_progress.update(false, |p| {
+        p.current_iteration = 0;
+        p.total_iterations = total_iterations as u32;
+        p.reviews = target_counts.total_targets as u32;
+        p.long_term_reviews = target_counts.long_term_targets as u32;
+        p.short_term_reviews = target_counts.short_term_targets as u32;
+        p.current_preset = 1;
+        p.total_presets = 1;
+    })?;
+
+    let progress = FsrsReviewRetrievabilityProgress {
+        training_progress: CombinedProgressState::new_shared(),
+        completed_validation_folds: Arc::new(AtomicUsize::new(0)),
+    };
+    let done = Arc::new(AtomicBool::new(false));
+    let training_progress = progress.training_progress.clone();
+    let completed_validation_folds = progress.completed_validation_folds.clone();
+    let done_for_thread = done.clone();
+    let progress_thread = thread::spawn(move || {
+        while !done_for_thread.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(100));
+            let mut guard = training_progress.lock().unwrap();
+            let current_iterations = calibration_progress_current(
+                completed_validation_folds.load(Ordering::Acquire),
+                total_validation_folds,
+                &guard,
+            );
+            if anki_progress
+                .update(false, |s| {
+                    s.current_iteration = current_iterations as u32;
+                    s.total_iterations = total_iterations as u32;
+                })
+                .is_err()
+            {
+                guard.want_abort = true;
+                return;
+            }
+        }
+    });
+    Ok((progress, done, progress_thread))
+}
+
 pub(crate) fn fsrs_review_retrievability_cache_rows(
     params: &[f32],
     context: &FsrsReviewPredictionContext,
@@ -2064,8 +2058,11 @@ pub(crate) mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::backend::Backend;
     use crate::collection::Collection;
     use crate::collection::CollectionBuilder;
+    use crate::services::BackendCollectionService;
+    use crate::services::BackendSchedulerService;
 
     const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE_FOR_BENCH: &str =
         "search_stats_fsrs_review_retrievability";
@@ -2389,6 +2386,111 @@ pub(crate) mod tests {
         assert!(validation_rows
             .iter()
             .any(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold));
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_calibration_backend_stores_same_rows_as_collection_computation() -> Result<()> {
+        for include_validation_folds in [false, true] {
+            let tempdir = tempdir()?;
+            let backend = Backend::new(I18n::template_only(), false);
+            backend.open_collection(anki_proto::collection::OpenCollectionRequest {
+                collection_path: tempdir
+                    .path()
+                    .join("collection.anki2")
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                media_folder_path: tempdir.path().join("media").to_str().unwrap().into(),
+                media_db_path: tempdir.path().join("media.db").to_str().unwrap().into(),
+            })?;
+            let context = backend.with_col(|col| {
+                crate::tests::NoteAdder::basic(col).add(col);
+                let cid = col.get_first_card().id;
+                col.storage.add_revlog_entry(
+                    &revlog_for_card(cid.0, RevlogReviewKind::Learning, 20),
+                    false,
+                )?;
+                for days_ago in (1..=12).rev() {
+                    let entry = RevlogEntry {
+                        button_chosen: if days_ago % 2 == 0 { 3 } else { 1 },
+                        ..revlog_for_card(cid.0, RevlogReviewKind::Review, days_ago)
+                    };
+                    col.storage.add_revlog_entry(&entry, false)?;
+                }
+                let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+                    search: "",
+                    ignore_revlogs_before: 0.into(),
+                    current_params: &fsrs::DEFAULT_PARAMETERS,
+                    num_of_relearning_steps: 1,
+                    include_same_day_reviews: Some(true),
+                    enable_scheduling_penalties: false,
+                    model_version_override: Some(ComputeParametersVersion::Fsrs7),
+                    dynamic_desired_retention_enabled: false,
+                    historical_retention: 0.9,
+                    desired_retention: 0.9,
+                    dynamic_desired_retention_simulator_options:
+                        DynamicDesiredRetentionSimulatorOptions::default(),
+                })?;
+                Ok(FsrsReviewPredictionContext::from_prepared(&prepared))
+            })?;
+            let expected_rows = fsrs_review_retrievability_cache_rows(
+                &fsrs::DEFAULT_PARAMETERS,
+                &context,
+                include_validation_folds,
+                None,
+            )?;
+            assert_eq!(
+                expected_rows
+                    .iter()
+                    .filter(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::FinalFit)
+                    .count(),
+                12
+            );
+            assert_eq!(
+                expected_rows.iter().any(|row| {
+                    row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold
+                }),
+                include_validation_folds
+            );
+
+            backend.set_wants_abort()?;
+            let stored = backend.compute_fsrs_review_retrievability_calibration(
+                anki_proto::scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
+                    params: fsrs::DEFAULT_PARAMETERS.to_vec(),
+                    num_of_relearning_steps: 1,
+                    include_same_day_reviews: Some(true),
+                    include_validation_folds,
+                    ..Default::default()
+                },
+            )?;
+            assert_eq!(stored.val as usize, expected_rows.len());
+            backend.with_col(|col| {
+                let count: usize = col.storage.db.query_row(
+                    "SELECT count(*) FROM search_stats_fsrs_review_retrievability",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, expected_rows.len());
+                for expected in &expected_rows {
+                    let stored: (f32, String) = col.storage.db.query_row(
+                        "SELECT prediction, source FROM search_stats_fsrs_review_retrievability
+                         WHERE revlog_id = ? AND sample_role = ? AND fold_index = ?",
+                        params![
+                            expected.revlog_id,
+                            expected.sample_role.as_str(),
+                            expected.fold_index
+                        ],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    assert_eq!(
+                        stored,
+                        (expected.prediction, "fsrs_calibration_recompute".into())
+                    );
+                }
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 

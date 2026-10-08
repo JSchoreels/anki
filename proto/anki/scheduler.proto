@@ -57,9 +57,6 @@ service SchedulerService {
       returns (ComputeFsrsParamsResponse);
   rpc ComputeFsrsParamsBatch(ComputeFsrsParamsBatchRequest)
       returns (ComputeFsrsParamsBatchResponse);
-  rpc ComputeFsrsReviewRetrievabilityCalibration(
-      ComputeFsrsReviewRetrievabilityCalibrationRequest)
-      returns (generic.UInt32);
   rpc GetOptimalRetentionParameters(GetOptimalRetentionParametersRequest)
       returns (GetOptimalRetentionParametersResponse);
   rpc ComputeOptimalRetention(SimulateFsrsReviewRequest)
@@ -161,6 +158,9 @@ service SchedulerService {
 // Implicitly includes any of the above methods that are not listed in the
 // backend service.
 service BackendSchedulerService {
+  rpc ComputeFsrsReviewRetrievabilityCalibration(
+      ComputeFsrsReviewRetrievabilityCalibrationRequest)
+      returns (generic.UInt32);
   rpc ComputeFsrsParamsFromItems(ComputeFsrsParamsFromItemsRequest)
       returns (ComputeFsrsParamsResponse);
   // Generates parameters used for FSRS's scheduler benchmarks.

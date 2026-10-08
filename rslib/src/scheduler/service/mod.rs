@@ -67,6 +67,7 @@ use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
+use crate::scheduler::fsrs::params::compute_fsrs_review_retrievability_calibration_rows;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
@@ -454,33 +455,6 @@ impl crate::services::SchedulerService for Collection {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
-    }
-
-    fn compute_fsrs_review_retrievability_calibration(
-        &mut self,
-        input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
-    ) -> Result<generic::UInt32> {
-        let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
-            search: &input.search,
-            ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
-            current_params: &input.params,
-            num_of_relearning_steps: input.num_of_relearning_steps as usize,
-            include_same_day_reviews: input.include_same_day_reviews,
-            enable_scheduling_penalties: input.enable_scheduling_penalties.unwrap_or(false),
-            model_version_override: input.fsrs_version.map(health_check_model_version),
-            dynamic_desired_retention_enabled: false,
-            historical_retention: 0.9,
-            desired_retention: 0.9,
-            dynamic_desired_retention_simulator_options:
-                DynamicDesiredRetentionSimulatorOptions::default(),
-        })?;
-        let context = FsrsReviewPredictionContext::from_prepared(&prepared);
-        let count = self.compute_fsrs_review_retrievability_calibration_cache(
-            &input.params,
-            &context,
-            input.include_validation_folds,
-        )?;
-        Ok(generic::UInt32 { val: count })
     }
 
     fn simulate_fsrs_review(
@@ -1243,6 +1217,45 @@ fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
 }
 
 impl crate::services::BackendSchedulerService for Backend {
+    fn compute_fsrs_review_retrievability_calibration(
+        &self,
+        input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
+    ) -> Result<generic::UInt32> {
+        let context = self.with_col(|col| {
+            let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+                search: &input.search,
+                ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
+                current_params: &input.params,
+                num_of_relearning_steps: input.num_of_relearning_steps as usize,
+                include_same_day_reviews: input.include_same_day_reviews,
+                enable_scheduling_penalties: input.enable_scheduling_penalties.unwrap_or(false),
+                model_version_override: input.fsrs_version.map(health_check_model_version),
+                dynamic_desired_retention_enabled: false,
+                historical_retention: 0.9,
+                desired_retention: 0.9,
+                dynamic_desired_retention_simulator_options:
+                    DynamicDesiredRetentionSimulatorOptions::default(),
+            })?;
+            Ok(FsrsReviewPredictionContext::from_prepared(&prepared))
+        })?;
+        // Creating a handler resets the shared progress and abort flag.
+        let rows = compute_fsrs_review_retrievability_calibration_rows(
+            &input.params,
+            &context,
+            input.include_validation_folds,
+            self.new_progress_handler(),
+        )?;
+        let stored = self.with_col(|col| {
+            col.storage
+                .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")
+        })?;
+        tracing::debug!(
+            predictions = stored,
+            "stored FSRS review retrievability calibration cache"
+        );
+        Ok(generic::UInt32 { val: stored as u32 })
+    }
+
     fn compute_fsrs_params_from_items(
         &self,
         req: scheduler::ComputeFsrsParamsFromItemsRequest,
