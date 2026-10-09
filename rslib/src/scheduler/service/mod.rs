@@ -5,6 +5,7 @@ mod answering;
 mod states;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anki_proto::cards;
 use anki_proto::generic;
@@ -82,6 +83,7 @@ use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
 use crate::search::SortMode;
 use crate::stats::studied_today;
+use crate::storage::FsrsReviewRetrievabilityCacheRow;
 use crate::storage::RwkvReviewRetrievabilityCacheRow;
 use crate::storage::RwkvReviewRetrievabilitySampleRole;
 
@@ -1221,8 +1223,20 @@ impl crate::services::BackendSchedulerService for Backend {
         &self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
     ) -> Result<generic::UInt32> {
-        let (context, session) = self.with_col(|col| {
-            let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+        // Reset stale progress before any work, so cancellation during input
+        // preparation survives the transition into training.
+        let mut progress = self.new_progress_handler();
+        let (revlogs, next_day_at, session) = self.with_col(|col| {
+            progress.check_cancelled()?;
+            let next_day_at = col.timing_today()?.next_day_at;
+            let revlogs = col.revlog_for_srs(&input.search)?;
+            Ok((revlogs, next_day_at, col.session_id.clone()))
+        })?;
+        progress.check_cancelled()?;
+        let context = FsrsReviewPredictionContext::from_revlogs(
+            revlogs,
+            next_day_at,
+            PrepareComputeParamsInput {
                 search: &input.search,
                 ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
                 current_params: &input.params,
@@ -1235,23 +1249,25 @@ impl crate::services::BackendSchedulerService for Backend {
                 desired_retention: 0.9,
                 dynamic_desired_retention_simulator_options:
                     DynamicDesiredRetentionSimulatorOptions::default(),
-            })?;
-            Ok((
-                FsrsReviewPredictionContext::from_prepared(&prepared),
-                col.session_id.clone(),
-            ))
-        })?;
-        // Creating a handler resets the shared progress and abort flag.
-        let rows = compute_fsrs_review_retrievability_calibration_rows(
+            },
+            &mut progress,
+        )?;
+        let (mut rows, mut progress) = compute_fsrs_review_retrievability_calibration_rows(
             &input.params,
             &context,
             input.include_validation_folds,
-            self.new_progress_handler(),
+            progress,
         )?;
-        let stored = self.with_col_in_session(&session, |col| {
-            col.storage
-                .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")
-        })?;
+        drop(context);
+        progress.check_cancelled()?;
+        // Visit cache pages in review-id order, so small transactions do not
+        // repeatedly dirty the same pages for different cards' histories.
+        rows.sort_unstable_by_key(|row| (row.revlog_id, row.fold_index));
+        // Saving derived cache rows in bounded transactions lets collection
+        // reads and cancellation run between batches. Interrupted callers must
+        // retry the job instead of treating the partial cache as complete.
+        let stored =
+            save_fsrs_calibration_rows(self, &session, &rows, || progress.check_cancelled())?;
         tracing::debug!(
             predictions = stored,
             "stored FSRS review retrievability calibration cache"
@@ -1339,6 +1355,29 @@ fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSR
     }
 }
 
+const FSRS_CALIBRATION_SAVE_BATCH_SIZE: usize = 10_000;
+
+fn save_fsrs_calibration_rows(
+    backend: &Backend,
+    session: &Arc<()>,
+    rows: &[FsrsReviewRetrievabilityCacheRow],
+    mut check_cancelled: impl FnMut() -> Result<()>,
+) -> Result<usize> {
+    check_cancelled()?;
+    backend.with_col_in_session(session, |_| Ok(()))?;
+    let mut stored = 0;
+    for chunk in rows.chunks(FSRS_CALIBRATION_SAVE_BATCH_SIZE) {
+        check_cancelled()?;
+        stored += backend.with_col_in_session(session, |col| {
+            col.storage
+                .set_fsrs_review_retrievability_predictions(chunk, "fsrs_calibration_recompute")
+        })?;
+        std::thread::yield_now();
+    }
+    check_cancelled()?;
+    Ok(stored)
+}
+
 #[cfg(test)]
 mod tests {
     use fsrs::ComputeParametersVersion;
@@ -1351,6 +1390,62 @@ mod tests {
     use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
     use crate::scheduler::fsrs::preset::FsrsPreset;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
+
+    #[test]
+    fn calibration_save_stops_between_batches_on_cancel_or_reopen() -> crate::prelude::Result<()> {
+        use anki_i18n::I18n;
+        use anki_proto::collection::OpenCollectionRequest;
+
+        use super::*;
+        use crate::services::BackendCollectionService;
+        use crate::storage::FsrsReviewRetrievabilitySampleRole;
+
+        for reopen in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let backend = Backend::new(I18n::template_only(), false);
+            let request = OpenCollectionRequest {
+                collection_path: dir.path().join("collection.anki2").to_str().unwrap().into(),
+                media_folder_path: dir.path().join("media").to_str().unwrap().into(),
+                media_db_path: dir.path().join("media.db").to_str().unwrap().into(),
+            };
+            backend.open_collection(request.clone())?;
+            let session = backend.with_col(|col| Ok(col.session_id.clone()))?;
+            let rows = (1..=FSRS_CALIBRATION_SAVE_BATCH_SIZE + 1)
+                .map(|id| FsrsReviewRetrievabilityCacheRow {
+                    revlog_id: (id as i64).into(),
+                    prediction: 0.5,
+                    sample_role: FsrsReviewRetrievabilitySampleRole::FinalFit,
+                    fold_index: -1,
+                })
+                .collect::<Vec<_>>();
+            let mut progress = backend
+                .new_progress_handler::<crate::scheduler::fsrs::params::ComputeParamsProgress>();
+            let mut checks = 0;
+            let result = save_fsrs_calibration_rows(&backend, &session, &rows, || {
+                checks += 1;
+                if checks == 3 {
+                    if reopen {
+                        backend.close_collection(Default::default())?;
+                        backend.open_collection(request.clone())?;
+                    } else {
+                        backend.set_wants_abort()?;
+                    }
+                }
+                progress.check_cancelled()
+            });
+            assert!(matches!(result, Err(AnkiError::Interrupted)));
+            backend.with_col(|col| {
+                let count: usize = col.storage.db.query_row(
+                    "SELECT count(*) FROM search_stats_fsrs_review_retrievability",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, FSRS_CALIBRATION_SAVE_BATCH_SIZE);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn new_card_interval_preview_prefers_explicit_toggle_when_provided() {

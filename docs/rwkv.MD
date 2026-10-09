@@ -1054,18 +1054,29 @@ Add-ons that need these rows can call
 `aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
 The synchronous API returns immediately when current role-aware data is
 complete; otherwise it performs the same calibration-only replay while
-snapshotting and restoring active reviewer state. Calibration replays,
+snapshotting and restoring active reviewer state. It reuses the history prepared
+for the availability check instead of keeping two complete histories alive.
+If the backend still needs configuration, the check history is released before
+preparing history under the new backend.
+Before replay, the backend generation, replay settings and native history
+fingerprint must still match; a changed history interrupts the operation for retry.
+Calibration replays,
 first-review comparisons, and workload simulations claim an exclusive
 generation-scoped backend operation. A real answer that arrives during one of
 these temporary operations invalidates it and leaves state unready for replay
 from canonical history instead of letting the temporary snapshot erase the
 answer.
 
-Historical FSRS calibration prepares its inputs under the collection lock,
-trains outside that lock, and saves only into the collection session that
-prepared the inputs. Closing and reopening a collection during training,
-including reopening the same path, interrupts the save instead of publishing
-predictions into the replacement session.
+Historical FSRS calibration reads a revlog snapshot under the collection lock,
+then converts inputs, predicts and trains outside that lock. Validation prepares
+only the current fold's training prefix, avoiding copies of all five folds at
+once. Cancellation is checked during conversion, prediction and saving as well
+as training. Cache rows are saved in transactions of at most 10,000 rows, releasing
+the collection lock between batches. Each batch checks the original collection
+session; closing and reopening the collection, including the same path, interrupts
+saving into the replacement session. Cancellation may leave completed batches in
+the local derived cache. Callers must track incomplete jobs and retry them rather
+than infer completion from the presence of validation rows.
 
 A calibration replay can temporarily spill the resident card and note states to
 `rwkv-state-cache/stash-spill.bin`, retaining the other scopes and runtime caches

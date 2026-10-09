@@ -11232,9 +11232,11 @@ def test_rwkv_state_cache_build_backfills_missing_review_cache_when_already_warm
     ]
 
 
-def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
+@pytest.mark.parametrize("configured", [False, True])
+def test_ensure_rwkv_calibration_data_releases_duplicate_history_and_restores_state(
     monkeypatch,
     tmp_path,
+    configured,
 ) -> None:
     first_review = (40 * 86_400 + 100) * 1000
     second_review = (41 * 86_400 + 3_700) * 1000
@@ -11250,26 +11252,114 @@ def test_ensure_rwkv_calibration_data_generates_once_and_restores_state(
 
     runtime = _CacheRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
-    set_reviewer_backend(backend)
+    set_reviewer_backend(backend if configured else None)
+    if not configured:
+
+        def configure():
+            if rwkv_scheduler._reviewer_backend is None:
+                set_reviewer_backend(backend)
+            return True
+
+        monkeypatch.setattr(
+            rwkv_scheduler, "configure_reviewer_backend_from_environment", configure
+        )
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
-    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    if configured:
+        assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
     before = backend.cache_snapshot()
     assert reviewer.mw.col.rwkv_retrievability_rows == []
     assert rwkv_scheduler.rwkv_calibration_data_available(reviewer.mw) is False
 
     runtime.reviewed.clear()
+    histories = []
+    original = rwkv_scheduler._historical_rwkv_review_inputs
+
+    def track_history(*args, **kwargs):
+        history = original(*args, **kwargs)
+        histories.append(weakref.ref(history))
+        assert sum(ref() is not None for ref in histories) == 1
+        return history
+
+    monkeypatch.setattr(rwkv_scheduler, "_historical_rwkv_review_inputs", track_history)
     assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
+    assert len(histories) == (1 if configured else 2)
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert backend.cache_snapshot() == before
-    assert rwkv_scheduler.rwkv_calibration_data_available(reviewer.mw) is True
+    # The availability API also requires the warmed resident-state metadata.
+    assert rwkv_scheduler.rwkv_calibration_data_available(reviewer.mw) is configured
     assert {row[4] for row in reviewer.mw.col.rwkv_retrievability_rows} == {
         rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
         rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_TEST_FOLD,
     }
 
+    if configured:
+        runtime.reviewed.clear()
+        assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
+        assert runtime.reviewed == []
+
+
+@pytest.mark.parametrize("change", ["generation", "replay", "history", "ignored"])
+def test_rwkv_calibration_rejects_history_changed_after_preparation(
+    monkeypatch,
+    tmp_path,
+    change,
+) -> None:
+    first = (40 * 86_400 + 100) * 1000
+    second = (41 * 86_400 + 3700) * 1000
+    rows = [
+        (first, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+    )
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw)
+    before = backend.cache_snapshot()
     runtime.reviewed.clear()
-    assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is True
+    original = rwkv_scheduler._historical_rwkv_review_inputs
+
+    def change_after_preparation(*args, **kwargs):
+        history = original(*args, **kwargs)
+        if change == "generation":
+            key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+            with rwkv_scheduler._reviewer_backend_state_lock:
+                rwkv_scheduler._reviewer_backend_warmup_generations[key] += 1
+        elif change == "replay":
+            monkeypatch.setattr(
+                rwkv_scheduler,
+                "_rwkv_replay_semantics_key",
+                lambda *args, **kwargs: "changed",
+            )
+        else:
+            identity = rwkv_scheduler._RwkvHistoryPrefixIdentity(
+                history.last_review_id,
+                history.review_count + (change == "history"),
+                history.history_hash,
+            )
+            fingerprint = rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+                identity,
+                (first,) if change == "ignored" else (),
+                history.review_count,
+                True,
+            )
+            monkeypatch.setattr(
+                rwkv_scheduler,
+                "_rwkv_historical_review_fingerprint",
+                lambda *args, **kwargs: fingerprint,
+            )
+        return history
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_historical_rwkv_review_inputs", change_after_preparation
+    )
+    assert rwkv_scheduler.ensure_rwkv_calibration_data(reviewer.mw) is False
     assert runtime.reviewed == []
+    assert reviewer.mw.col.rwkv_retrievability_rows == []
+    assert backend.cache_snapshot() == before
 
 
 @pytest.mark.parametrize("spill_to_file", [False, True])

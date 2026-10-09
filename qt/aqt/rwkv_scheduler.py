@@ -10838,6 +10838,16 @@ def recompute_rwkv_calibration_data(
 ) -> bool:
     """Rewrite historical RWKV calibration rows without replacing active state."""
 
+    return _recompute_rwkv_calibration_data(mw, progress=progress)
+
+
+def _recompute_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+    history: RwkvHistoricalReviewInputs | None = None,
+    history_context: tuple[RwkvReviewerBackend, tuple[int, int], int] | None = None,
+) -> bool:
     configure_reviewer_backend_from_environment()
     backend = _reviewer_backend
     if backend is None:
@@ -10866,7 +10876,6 @@ def recompute_rwkv_calibration_data(
         reviewer=reviewer,
     )
     start = time.monotonic()
-    history = None
     writer = None
     temporary = None
     _original_snapshot = None
@@ -10887,6 +10896,14 @@ def recompute_rwkv_calibration_data(
             operation, _original_snapshot = temporary
 
             operation.require_current()
+            if history is not None:
+                if history_context != (backend, operation.key, operation.generation):
+                    raise _ReviewerBackendWarmupInvalidated
+                if history.replay_key != _rwkv_replay_semantics_key(
+                    reviewer,
+                    first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+                ):
+                    raise _ReviewerBackendWarmupInvalidated
 
             def current_progress(
                 label: str,
@@ -10904,10 +10921,33 @@ def recompute_rwkv_calibration_data(
             current_progress(
                 "Loading RWKV review history...",
             )
-            history = _historical_rwkv_review_inputs(
-                reviewer,
-                progress=current_progress,
-            )
+            if history is None:
+                history = _historical_rwkv_review_inputs(
+                    reviewer,
+                    progress=current_progress,
+                )
+            else:
+                fingerprint = _rwkv_historical_review_fingerprint(
+                    reviewer,
+                    ignored_review_ids=history.ignored_review_ids,
+                    expected_identity=_RwkvHistoryPrefixIdentity(
+                        history.last_review_id,
+                        history.review_count,
+                        history.history_hash,
+                    ),
+                )
+                if fingerprint is not None and (
+                    not fingerprint.history_is_valid
+                    or fingerprint.identity
+                    != _RwkvHistoryPrefixIdentity(
+                        history.last_review_id,
+                        history.review_count,
+                        history.history_hash,
+                    )
+                    or fingerprint.active_ignored_review_ids
+                    != history.ignored_review_ids
+                ):
+                    raise _ReviewerBackendWarmupInvalidated
             operation.require_current()
             logger.debug(
                 "RWKV calibration recompute inputs prepared: reviews=%s",
@@ -11270,8 +11310,18 @@ def ensure_rwkv_calibration_data(
     """
 
     reviewer = SimpleNamespace(mw=mw)
+    context = _reviewer_backend_warmup_context(reviewer)
+    history_context = None
+    if context is not None:
+        backend, key = context
+        with _reviewer_backend_state_lock:
+            history_context = (
+                backend,
+                key,
+                _reviewer_backend_warmup_generations.get(key, 0),
+            )
     try:
-        history = _historical_rwkv_review_inputs(reviewer)
+        history = _historical_rwkv_review_inputs(reviewer, progress=progress)
     except Exception:
         logger.debug("RWKV calibration history unavailable", exc_info=True)
         return recompute_rwkv_calibration_data(mw, progress=progress)
@@ -11279,7 +11329,21 @@ def ensure_rwkv_calibration_data(
         return True
     if _realign_rwkv_calibration_data(reviewer, history):
         return True
-    return recompute_rwkv_calibration_data(mw, progress=progress)
+    if history_context is None:
+        # A cold backend must be configured by recompute. Drop this history
+        # before loading under the newly configured backend's generation.
+        del history
+        return recompute_rwkv_calibration_data(mw, progress=progress)
+    try:
+        return _recompute_rwkv_calibration_data(
+            mw,
+            progress=progress,
+            history=history,
+            history_context=history_context,
+        )
+    finally:
+        del history
+        _release_rwkv_free_memory()
 
 
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:

@@ -246,6 +246,10 @@ clanki-gui-bench *args:
 clanki-collection-bench *args:
     {{ python }} qt/tools/clanki_collection_bench.py {{ args }}
 
+# Measure SSE calibration stalls using an explicit build and a copied backup.
+sse-calibration-bench *args:
+    {{ python }} qt/tools/sse_calibration_bench.py {{ args }}
+
 # Check web caching and simulate the Windows mpv transport.
 clanki-asset-audio-bench *args:
     {{ python }} qt/tools/clanki_asset_audio_bench.py {{ args }}

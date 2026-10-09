@@ -445,6 +445,13 @@ cache for calibration-style consumers; it is not populated by ordinary FSRS
 optimization, is not card state, is not synced as part of collection sync/full
 upload, and should not be used for current retrievability ordering/search.
 
+The backend reads a revlog snapshot under the collection mutex, releases it for
+input conversion, prediction and fold training, then saves in batches of up to
+10,000 rows. Each batch checks cancellation and the original collection session.
+Interrupted jobs can leave partial derived rows; consumers must record job
+completion separately and retry interrupted generation. Fold training owns only
+one expanding training prefix at a time.
+
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
 stored scalar decay from `card.data` for legacy expressions. Built-in FSRS
 retrievability and Relative Overdueness paths bypass them and sort/filter using
