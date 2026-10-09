@@ -1061,6 +1061,21 @@ these temporary operations invalidates it and leaves state unready for replay
 from canonical history instead of letting the temporary snapshot erase the
 answer.
 
+Historical FSRS calibration prepares its inputs under the collection lock,
+trains outside that lock, and saves only into the collection session that
+prepared the inputs. Closing and reopening a collection during training,
+including reopening the same path, interrupts the save instead of publishing
+predictions into the replacement session.
+
+A calibration replay can temporarily spill the resident card and note states to
+`rwkv-state-cache/stash-spill.bin`, retaining the other scopes and runtime caches
+in a stash. A successful restore removes that temporary file. If restoring the
+stash fails, Anki discards it and its rollback frames, removes the spill file when
+possible, and leaves resident state unready. The next use restores the persistent
+state cache and replays newer revlogs through the normal recovery path. Historical
+warm-up or restore also removes an orphaned spill file left by a crash, provided
+no stash is active. Spill cleanup errors are logged and do not block recovery.
+
 A replay's pre-answer prediction depends only on the model, the replay
 semantics, and the reviews before it, never on the role it is stored under:
 two full recomputes, and a state build that records predictions, agree bit for

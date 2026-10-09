@@ -73,6 +73,7 @@ impl CollectionBuilder {
         let storage = SqliteStorage::open_or_create(&col_path, &tr, server, self.check_integrity)?;
         let col = Collection {
             storage,
+            session_id: Arc::new(()),
             col_path,
             media_folder,
             media_db,
@@ -153,6 +154,8 @@ pub struct CollectionState {
 
 pub struct Collection {
     pub storage: SqliteStorage,
+    /// Identifies this open instance, including when the same file is reopened.
+    pub(crate) session_id: Arc<()>,
     pub(crate) col_path: PathBuf,
     pub(crate) media_folder: PathBuf,
     pub(crate) media_db: PathBuf,

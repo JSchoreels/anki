@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::mem;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -47,10 +48,8 @@ const S90_TARGET_RETENTION: f32 = 0.9;
 const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 4;
 const STATE_CACHE_STORE_PAGE_SIZE: i64 = 64 * 1024;
 const STATE_CACHE_DELTA_MAGIC: &[u8] = b"ARWKVSTATEDELTA1\0";
-#[cfg(not(test))]
+const WARM_UP_STATE_SPILL_MAGIC: &[u8] = b"ARWKVSTASH1\0";
 const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024 * 1024;
-#[cfg(test)]
-const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024;
 /// Restores read state deltas through a buffer of this size. On a cold
 /// 1.3 GB store, 8 KiB reads took 1.9 s, 1 MiB 0.67 s and 16 MiB 0.41 s.
 #[cfg(not(test))]
@@ -468,6 +467,111 @@ struct StashedWarmUpState {
     features: FeatureState,
     curves: HashMap<i64, ReviewCurve>,
     warm_up_states: ReviewStateMaps,
+    spill: Option<WarmUpStateSpill>,
+}
+
+struct WarmUpStateSpill {
+    path: PathBuf,
+    counts: [usize; 2],
+    max_state_bytes: usize,
+    hash: blake3::Hash,
+}
+
+impl WarmUpStateSpill {
+    fn write(path: &Path, states: &ReviewStateMaps) -> io::Result<Self> {
+        let path = std::path::absolute(path)?;
+        let mut file = anki_io::new_tempfile_in_parent_of(&path).map_err(io::Error::other)?;
+        let mut out = io::BufWriter::new(&mut file);
+        let mut hasher = blake3::Hasher::new();
+        let mut max_state_bytes = 0;
+        io::Write::write_all(&mut out, WARM_UP_STATE_SPILL_MAGIC)?;
+        hasher.update(WARM_UP_STATE_SPILL_MAGIC);
+        let counts = [states.card.len(), states.note.len()];
+        for states in [&states.card, &states.note] {
+            write_snapshot_u32(&mut out, states.len())?;
+            hasher.update(&(states.len() as u32).to_le_bytes());
+            // Only one serialized module is held at a time. Do not build a
+            // serialized snapshot or drain the maps before publishing the file.
+            for (id, state) in states {
+                let bytes = serialize_module_state(state);
+                max_state_bytes = max_state_bytes.max(bytes.len());
+                io::Write::write_all(&mut out, &id.to_le_bytes())?;
+                hasher.update(&id.to_le_bytes());
+                write_snapshot_u32(&mut out, bytes.len())?;
+                hasher.update(&(bytes.len() as u32).to_le_bytes());
+                io::Write::write_all(&mut out, &bytes)?;
+                hasher.update(&bytes);
+            }
+        }
+        io::Write::flush(&mut out)?;
+        drop(out);
+        anki_io::atomic_rename(file, &path, false).map_err(io::Error::other)?;
+        Ok(Self {
+            path,
+            counts,
+            max_state_bytes,
+            hash: hasher.finalize(),
+        })
+    }
+
+    fn read(&self) -> io::Result<[HashMap<i64, ModuleState>; 2]> {
+        let file = anki_io::open_file(&self.path).map_err(io::Error::other)?;
+        let mut input = io::BufReader::new(file);
+        let mut hasher = blake3::Hasher::new();
+        let mut magic = vec![0; WARM_UP_STATE_SPILL_MAGIC.len()];
+        io::Read::read_exact(&mut input, &mut magic)?;
+        hasher.update(&magic);
+        if magic != WARM_UP_STATE_SPILL_MAGIC {
+            return Err(Self::invalid_data());
+        }
+        let mut maps = [HashMap::new(), HashMap::new()];
+        let mut bytes = Vec::new();
+        for (states, expected_count) in maps.iter_mut().zip(self.counts) {
+            let count = read_state_cache_u32(&mut input)?;
+            hasher.update(&count.to_le_bytes());
+            if count as usize != expected_count {
+                return Err(Self::invalid_data());
+            }
+            for _ in 0..count {
+                let id = read_state_cache_i64(&mut input)?;
+                let len = read_state_cache_u32(&mut input)?;
+                hasher.update(&id.to_le_bytes());
+                hasher.update(&len.to_le_bytes());
+                if len as usize > self.max_state_bytes
+                    || (len as usize) < b"ARWKVMODSTATE1".len() + 4
+                {
+                    return Err(Self::invalid_data());
+                }
+                bytes.resize(len as usize, 0);
+                io::Read::read_exact(&mut input, &mut bytes)?;
+                hasher.update(&bytes);
+                // Check the layer count before the snapshot decoder allocates
+                // its layer vector, even if a corrupt record has a valid length.
+                let mut cursor = Cursor::new(&bytes);
+                cursor.expect_magic(b"ARWKVMODSTATE1")?;
+                let layers = cursor.u32()? as usize;
+                if layers > (bytes.len() - cursor.offset) / 12 {
+                    return Err(Self::invalid_data());
+                }
+                let state = deserialize_module_state(Some(&bytes))?.unwrap();
+                if states.insert(id, state).is_some() {
+                    return Err(Self::invalid_data());
+                }
+            }
+        }
+        let mut trailing = [0];
+        if io::Read::read(&mut input, &mut trailing)? != 0 || hasher.finalize() != self.hash {
+            return Err(Self::invalid_data());
+        }
+        Ok(maps)
+    }
+
+    fn invalid_data() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid RWKV resident state spill",
+        )
+    }
 }
 
 /// Frees a replaced resident state off the caller's thread. A full
@@ -477,13 +581,50 @@ fn drop_in_background<T: Send + 'static>(value: T) {
     // If the thread can't start, the closure and `value` are dropped here.
     let _ = std::thread::Builder::new()
         .name("rwkv-state-drop".into())
-        .spawn(move || drop(value));
+        .spawn(move || {
+            drop(value);
+            release_free_memory_to_os();
+        });
+}
+
+/// Returns unused allocator pages after large RWKV jobs have freed their state.
+pub fn release_free_memory_to_os() {
+    let start = std::time::Instant::now();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // libc is only a dev-dependency of this crate; declare the glibc symbol
+        // directly so production builds do not need an additional dependency.
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: malloc_trim only releases unused allocator pages; zero requests
+        // no extra padding, and the allocator synchronizes concurrent access.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone visits all zones, and a zero goal releases as
+        // much unused memory as possible. Live allocations are unaffected.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+    tracing::debug!(
+        elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+        "released RWKV free memory to OS"
+    );
 }
 
 struct StateCacheStoreWriter {
     path: PathBuf,
     generation: String,
     durable: bool,
+    delta_chunk_bytes: usize,
     connection: Mutex<Connection>,
 }
 
@@ -494,6 +635,7 @@ impl StateCacheStoreWriter {
             path,
             generation: generation.to_owned(),
             durable,
+            delta_chunk_bytes: STATE_CACHE_DELTA_CHUNK_BYTES,
             connection: Mutex::new(connection),
         })
     }
@@ -1164,6 +1306,14 @@ impl RwkvInference {
                 .connection
                 .lock()
                 .map_err(|_| io::Error::other("RWKV state-cache connection lock poisoned"))?;
+            // The bundled SQLite shares an LRU pool across connections. Clean
+            // 4 KiB collection pages can otherwise be replaced by 64 KiB store
+            // pages up to the pool's combined page count, exceeding this
+            // connection's byte budget. Shrink the pool before the first write,
+            // as well as after commit, so spills recycle the store's own pages.
+            connection
+                .release_memory()
+                .map_err(state_cache_store_error)?;
             let transaction = connection.transaction().map_err(state_cache_store_error)?;
             validate_state_cache_parent(&transaction, parent_segment_id)?;
             transaction
@@ -1200,8 +1350,12 @@ insert into segments (
                 )
                 .map_err(state_cache_store_error)?;
             let segment_id = transaction.last_insert_rowid();
-            let state_delta_chunk_ids =
-                insert_state_cache_delta_chunks(&transaction, segment_id, state_delta_len)?;
+            let state_delta_chunk_ids = insert_state_cache_delta_chunks(
+                &transaction,
+                segment_id,
+                state_delta_len,
+                store.delta_chunk_bytes,
+            )?;
             {
                 let mut runtime_state = transaction
                     .blob_open(MAIN_DB, "segments", "runtime_state", segment_id, false)
@@ -1220,6 +1374,11 @@ insert into segments (
                 state_delta.finish()?;
             }
             transaction.commit().map_err(state_cache_store_error)?;
+            // The writer stays open between checkpoints. Release the clean
+            // pages left by large zeroblob inserts and incremental blob writes.
+            connection
+                .release_memory()
+                .map_err(state_cache_store_error)?;
             self.warm_up_states.mark_checkpoint_saved();
             Ok(segment_id)
         })();
@@ -1314,7 +1473,24 @@ insert into segments (
             features: mem::take(&mut self.features),
             curves: mem::take(&mut self.curves),
             warm_up_states: mem::take(&mut self.warm_up_states),
+            spill: None,
         });
+        Ok(())
+    }
+
+    /// Stashes resident state, spilling only card and note modules to disk.
+    /// Any write failure leaves the complete resident state untouched.
+    pub fn stash_warm_up_state_to_file(&mut self, path: &Path) -> io::Result<()> {
+        if self.stashed_warm_up_state.is_some() {
+            return Err(io::Error::other("RWKV resident state is already stashed"));
+        }
+        let spill = WarmUpStateSpill::write(path, &self.warm_up_states)?;
+        self.stash_warm_up_state()?;
+        let stashed = self.stashed_warm_up_state.as_mut().unwrap();
+        stashed.spill = Some(spill);
+        drop(mem::take(&mut stashed.warm_up_states.card));
+        drop(mem::take(&mut stashed.warm_up_states.note));
+        release_free_memory_to_os();
         Ok(())
     }
 
@@ -1323,15 +1499,48 @@ insert into segments (
     pub fn restore_stashed_warm_up_state(&mut self) -> io::Result<()> {
         let stashed = self
             .stashed_warm_up_state
+            .as_mut()
+            .ok_or_else(|| io::Error::other("no stashed RWKV resident state"))?;
+        if let Some(spill) = &stashed.spill {
+            // Discard the temporary replay's large maps synchronously so they
+            // do not coexist with the restored maps. On error the user's state
+            // still lives in the stash and spill file, ready for another attempt.
+            drop(mem::take(&mut self.warm_up_states.card));
+            drop(mem::take(&mut self.warm_up_states.note));
+            release_free_memory_to_os();
+            let [card, note] = spill.read()?;
+            stashed.warm_up_states.card = card;
+            stashed.warm_up_states.note = note;
+        }
+        let stashed = self
+            .stashed_warm_up_state
             .take()
             .ok_or_else(|| io::Error::other("no stashed RWKV resident state"))?;
         let replaced = StashedWarmUpState {
             features: mem::replace(&mut self.features, stashed.features),
             curves: mem::replace(&mut self.curves, stashed.curves),
             warm_up_states: mem::replace(&mut self.warm_up_states, stashed.warm_up_states),
+            spill: None,
         };
         drop_in_background(replaced);
+        if let Some(spill) = stashed.spill {
+            if let Err(error) = anki_io::remove_file(&spill.path) {
+                tracing::warn!(path = ?spill.path, %error, "failed to delete RWKV resident state spill");
+            }
+        }
         Ok(())
+    }
+
+    /// Discards a stash that will no longer be restored, freeing it off-thread.
+    pub fn discard_stashed_warm_up_state(&mut self) {
+        if let Some(stashed) = self.stashed_warm_up_state.take() {
+            if let Some(spill) = &stashed.spill {
+                if let Err(error) = anki_io::remove_file(&spill.path) {
+                    tracing::warn!(path = ?spill.path, %error, "failed to delete RWKV resident state spill");
+                }
+            }
+            drop_in_background(stashed);
+        }
     }
 
     pub fn reset_warm_up_state(&mut self) {
@@ -4282,6 +4491,12 @@ create table segment_state_chunks (
             .map_err(state_cache_store_error)?;
     }
     validate_state_cache_store(&connection, store_generation)?;
+    // Reapply the byte budget after the page size is known. SQLite's page-size
+    // change initializes the new cache capacity using the old page size.
+    // Otherwise its -2000 KiB budget retains hundreds of 64 KiB pages.
+    connection
+        .pragma_update(None, "cache_size", -2000)
+        .map_err(state_cache_store_error)?;
     Ok(connection)
 }
 
@@ -4341,12 +4556,13 @@ fn insert_state_cache_delta_chunks(
     transaction: &Transaction<'_>,
     segment_id: i64,
     state_delta_len: usize,
+    chunk_bytes: usize,
 ) -> io::Result<Vec<i64>> {
-    let mut chunk_ids = Vec::with_capacity(state_delta_len.div_ceil(STATE_CACHE_DELTA_CHUNK_BYTES));
+    let mut chunk_ids = Vec::with_capacity(state_delta_len.div_ceil(chunk_bytes));
     let mut remaining = state_delta_len;
     let mut chunk_index = 0_i64;
     while remaining > 0 {
-        let chunk_len = remaining.min(STATE_CACHE_DELTA_CHUNK_BYTES);
+        let chunk_len = remaining.min(chunk_bytes);
         transaction
             .execute(
                 r#"
@@ -9646,55 +9862,94 @@ order by e.id, e.cid
             eprintln!("skipping: embedded RWKV weights not found");
             return;
         };
-        let reviews = bulk_parity_reviews(40);
-        let mut inference = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
-        let empty_cache_state = inference.cache_state();
-        inference
-            .warm_up_reviews_sequential(reviews[..24].to_vec(), false)
-            .unwrap();
-        let cache_state = inference.cache_state();
-        let snapshot = inference.warm_up_snapshot();
-        let pending_delta_len = inference
-            .warm_up_states
-            .checkpoint_delta_len(false)
-            .unwrap();
-        assert!(!snapshot.card_states.is_empty());
-        assert!(
-            pending_delta_len
-                > ReviewStateMaps::default()
-                    .checkpoint_delta_len(false)
-                    .unwrap()
-        );
-
-        inference.stash_warm_up_state().unwrap();
-        assert!(inference.stash_warm_up_state().is_err());
-        assert_eq!(inference.cache_state(), empty_cache_state);
-        assert!(inference.warm_up_snapshot().card_states.is_empty());
-        assert!(inference.warm_up_snapshot().global_state.is_none());
-
-        inference.reset_warm_up_state();
-        inference
-            .warm_up_reviews_sequential(reviews[8..].to_vec(), true)
-            .unwrap();
-        inference.restore_stashed_warm_up_state().unwrap();
-        assert!(inference.restore_stashed_warm_up_state().is_err());
-
-        let restored = inference.warm_up_snapshot();
-        assert_eq!(inference.cache_state(), cache_state);
-        assert_eq!(restored.card_states, snapshot.card_states);
-        assert_eq!(restored.note_states, snapshot.note_states);
-        assert_eq!(restored.deck_states, snapshot.deck_states);
-        assert_eq!(restored.preset_states, snapshot.preset_states);
-        assert_eq!(restored.global_state, snapshot.global_state);
-        // Unlike a serialized snapshot restore, the stash keeps the changes
-        // that the next delta checkpoint still has to write.
-        assert_eq!(
+        for (spill_to_file, global_dirty) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stash-spill.bin");
+            let reviews = bulk_parity_reviews(40);
+            let mut inference = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+            let empty_cache_state = inference.cache_state();
             inference
+                .warm_up_reviews_sequential(reviews[..16].to_vec(), false)
+                .unwrap();
+            inference.warm_up_states.mark_checkpoint_saved();
+            inference
+                .warm_up_reviews_sequential(reviews[16..24].to_vec(), false)
+                .unwrap();
+            // Include dirty deletions as well as updated and clean entries.
+            inference.warm_up_states.dirty_card.insert(-1);
+            inference.warm_up_states.dirty_note.insert(-2);
+            inference.warm_up_states.dirty_deck.insert(-3);
+            inference.warm_up_states.dirty_preset.insert(-4);
+            inference.warm_up_states.global_dirty = global_dirty;
+            let cache_state = inference.cache_state();
+            let snapshot = inference.warm_up_snapshot();
+            let pending_delta_len = inference
                 .warm_up_states
                 .checkpoint_delta_len(false)
-                .unwrap(),
-            pending_delta_len
-        );
+                .unwrap();
+            let mut pending_delta = Vec::new();
+            inference
+                .warm_up_states
+                .write_checkpoint_delta(&mut pending_delta, false)
+                .unwrap();
+            assert!(!snapshot.card_states.is_empty());
+            assert!(
+                pending_delta_len
+                    > ReviewStateMaps::default()
+                        .checkpoint_delta_len(false)
+                        .unwrap()
+            );
+
+            if spill_to_file {
+                inference.stash_warm_up_state_to_file(&path).unwrap();
+                let stashed = inference.stashed_warm_up_state.as_ref().unwrap();
+                assert!(stashed.warm_up_states.card.is_empty());
+                assert!(stashed.warm_up_states.note.is_empty());
+                assert_eq!(stashed.warm_up_states.card.capacity(), 0);
+                assert_eq!(stashed.warm_up_states.note.capacity(), 0);
+                assert!(path.exists());
+            } else {
+                inference.stash_warm_up_state().unwrap();
+            }
+            assert!(inference.stash_warm_up_state().is_err());
+            assert!(inference.stash_warm_up_state_to_file(&path).is_err());
+            assert_eq!(inference.cache_state(), empty_cache_state);
+            assert!(inference.warm_up_snapshot().card_states.is_empty());
+            assert!(inference.warm_up_snapshot().global_state.is_none());
+
+            inference.reset_warm_up_state();
+            inference
+                .warm_up_reviews_sequential(reviews[8..].to_vec(), true)
+                .unwrap();
+            inference.restore_stashed_warm_up_state().unwrap();
+            assert!(!path.exists());
+            assert!(inference.restore_stashed_warm_up_state().is_err());
+
+            let restored = inference.warm_up_snapshot();
+            assert_eq!(inference.cache_state(), cache_state);
+            assert_eq!(restored.card_states, snapshot.card_states);
+            assert_eq!(restored.note_states, snapshot.note_states);
+            assert_eq!(restored.deck_states, snapshot.deck_states);
+            assert_eq!(restored.preset_states, snapshot.preset_states);
+            assert_eq!(restored.global_state, snapshot.global_state);
+            // Unlike a serialized snapshot restore, the stash keeps the changes
+            // that the next delta checkpoint still has to write.
+            assert_eq!(
+                inference
+                    .warm_up_states
+                    .checkpoint_delta_len(false)
+                    .unwrap(),
+                pending_delta_len
+            );
+            let mut restored_delta = Vec::new();
+            inference
+                .warm_up_states
+                .write_checkpoint_delta(&mut restored_delta, false)
+                .unwrap();
+            assert_eq!(restored_delta, pending_delta);
+        }
     }
 
     #[test]
@@ -9703,53 +9958,234 @@ order by e.id, e.cid
             eprintln!("skipping: embedded RWKV weights not found");
             return;
         };
-        let reviews = bulk_parity_reviews(120);
-        let (history, later) = reviews.split_at(60);
-        let queries = later
-            .iter()
-            .map(|review| ReviewInput {
-                is_query: true,
-                ease: None,
-                duration_millis: None,
-                ..review.clone()
-            })
-            .collect::<Vec<_>>();
-        let mut untouched = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
-        let mut stashed = RwkvInference::load(weights, 0.9, 36_500).unwrap();
-        untouched.warm_up_reviews(history.to_vec(), false).unwrap();
-        stashed.warm_up_reviews(history.to_vec(), false).unwrap();
+        for spill_to_file in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stash-spill.bin");
+            let reviews = bulk_parity_reviews(120);
+            let (history, later) = reviews.split_at(60);
+            let queries = later
+                .iter()
+                .map(|review| ReviewInput {
+                    is_query: true,
+                    ease: None,
+                    duration_millis: None,
+                    ..review.clone()
+                })
+                .collect::<Vec<_>>();
+            let mut untouched = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+            let mut stashed = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+            untouched.warm_up_reviews(history.to_vec(), false).unwrap();
+            stashed.warm_up_reviews(history.to_vec(), false).unwrap();
 
-        stashed.stash_warm_up_state().unwrap();
-        stashed.reset_warm_up_state();
-        stashed.warm_up_reviews(reviews.clone(), true).unwrap();
-        stashed.restore_stashed_warm_up_state().unwrap();
+            if spill_to_file {
+                stashed.stash_warm_up_state_to_file(&path).unwrap();
+            } else {
+                stashed.stash_warm_up_state().unwrap();
+            }
+            stashed.reset_warm_up_state();
+            stashed.warm_up_reviews(reviews.clone(), true).unwrap();
+            stashed.restore_stashed_warm_up_state().unwrap();
 
-        let bits = |predictions: Vec<f32>| {
-            predictions
-                .into_iter()
-                .map(f32::to_bits)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            bits(
-                stashed
-                    .predict_retrievability_many_from_warm_up(queries.clone())
-                    .unwrap()
-            ),
-            bits(
-                untouched
-                    .predict_retrievability_many_from_warm_up(queries)
-                    .unwrap()
-            ),
-        );
-        // Continuing from the restored state must match continuing from a
-        // state that was never stashed: features, curves and states included.
-        assert_prediction_parity(
-            &untouched.warm_up_reviews(later.to_vec(), true).unwrap(),
-            &stashed.warm_up_reviews(later.to_vec(), true).unwrap(),
-        );
-        assert_warm_up_parity(&untouched, &stashed);
-        assert_eq!(stashed.cache_state(), untouched.cache_state());
+            let bits = |predictions: Vec<f32>| {
+                predictions
+                    .into_iter()
+                    .map(f32::to_bits)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                bits(
+                    stashed
+                        .predict_retrievability_many_from_warm_up(queries.clone())
+                        .unwrap()
+                ),
+                bits(
+                    untouched
+                        .predict_retrievability_many_from_warm_up(queries)
+                        .unwrap()
+                ),
+            );
+            // Continuing from the restored state must match continuing from a
+            // state that was never stashed: features, curves and states included.
+            assert_prediction_parity(
+                &untouched.warm_up_reviews(later.to_vec(), true).unwrap(),
+                &stashed.warm_up_reviews(later.to_vec(), true).unwrap(),
+            );
+            assert_warm_up_parity(&untouched, &stashed);
+            assert_eq!(stashed.cache_state(), untouched.cache_state());
+        }
+    }
+
+    #[test]
+    fn spill_stash_restores_empty_resident_state() {
+        let weights = embedded_weights_path().expect("embedded RWKV weights");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let before = inference.cache_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stash-spill.bin");
+        inference.stash_warm_up_state_to_file(&path).unwrap();
+        inference
+            .warm_up_reviews(bulk_parity_reviews(8), true)
+            .unwrap();
+        inference.restore_stashed_warm_up_state().unwrap();
+        assert_eq!(inference.cache_state(), before);
+        assert!(inference.warm_up_snapshot().card_states.is_empty());
+        assert!(inference.warm_up_snapshot().note_states.is_empty());
+        assert!(!inference.warm_up_states.global_dirty);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn spill_restore_keeps_stash_for_retry_when_file_is_missing_truncated_or_corrupt() {
+        let weights = embedded_weights_path().expect("embedded RWKV weights");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews = bulk_parity_reviews(8);
+        inference.warm_up_reviews(reviews.clone(), false).unwrap();
+        let before = inference.cache_state();
+        let mut before_delta = Vec::new();
+        inference
+            .warm_up_states
+            .write_checkpoint_delta(&mut before_delta, true)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stash-spill.bin");
+        inference.stash_warm_up_state_to_file(&path).unwrap();
+        let valid = fs::read(&path).unwrap();
+        inference.warm_up_reviews(reviews, true).unwrap();
+
+        fs::remove_file(&path).unwrap();
+        assert!(inference.restore_stashed_warm_up_state().is_err());
+        assert!(inference.stashed_warm_up_state.is_some());
+
+        let first_length = WARM_UP_STATE_SPILL_MAGIC.len() + 4 + 8;
+        let first_state = first_length + 4;
+        let mut corrupt_length = valid.clone();
+        corrupt_length[first_length..first_state].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut corrupt_layers = valid.clone();
+        let layers_offset = first_state + b"ARWKVMODSTATE1".len();
+        corrupt_layers[layers_offset..layers_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        // A valid floating-point byte change must also fail integrity checking.
+        let mut corrupt_payload = valid.clone();
+        corrupt_payload[first_state + 22] ^= 1;
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        for bytes in [
+            valid[..1].to_vec(),
+            valid[..valid.len() / 2].to_vec(),
+            valid[..valid.len() - 1].to_vec(),
+            corrupt_length,
+            corrupt_layers,
+            corrupt_payload,
+            trailing,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            let error = inference.restore_stashed_warm_up_state().unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+            ));
+            let stashed = inference.stashed_warm_up_state.as_ref().unwrap();
+            assert!(stashed.spill.is_some());
+            assert!(stashed.warm_up_states.card.is_empty());
+            assert!(stashed.warm_up_states.note.is_empty());
+            assert!(path.exists());
+        }
+
+        fs::write(&path, valid).unwrap();
+        inference.restore_stashed_warm_up_state().unwrap();
+        assert!(!path.exists());
+        assert_eq!(inference.cache_state(), before);
+        let mut restored_delta = Vec::new();
+        inference
+            .warm_up_states
+            .write_checkpoint_delta(&mut restored_delta, true)
+            .unwrap();
+        assert_eq!(restored_delta, before_delta);
+    }
+
+    #[test]
+    fn discard_stashed_warm_up_state_allows_another_stash() {
+        let weights = embedded_weights_path().expect("embedded RWKV weights");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stash-spill.bin");
+        for spill_failure in [None, Some("corrupt"), Some("missing")] {
+            inference
+                .warm_up_reviews(bulk_parity_reviews(8), false)
+                .unwrap();
+            if let Some(failure) = spill_failure {
+                inference.stash_warm_up_state_to_file(&path).unwrap();
+                if failure == "missing" {
+                    fs::remove_file(&path).unwrap();
+                } else {
+                    fs::write(&path, b"corrupt").unwrap();
+                }
+                assert!(inference.restore_stashed_warm_up_state().is_err());
+            } else {
+                inference.stash_warm_up_state().unwrap();
+            }
+
+            inference.discard_stashed_warm_up_state();
+            assert!(inference.stashed_warm_up_state.is_none());
+            assert!(!path.exists());
+            assert!(inference.restore_stashed_warm_up_state().is_err());
+            // Discard is also safe when no stash is active.
+            inference.discard_stashed_warm_up_state();
+            inference.stash_warm_up_state_to_file(&path).unwrap();
+            inference.restore_stashed_warm_up_state().unwrap();
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn discard_stashed_warm_up_state_ignores_spill_delete_errors() {
+        let weights = embedded_weights_path().expect("embedded RWKV weights");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stash-spill.bin");
+        inference.stash_warm_up_state_to_file(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+
+        inference.discard_stashed_warm_up_state();
+
+        assert!(inference.stashed_warm_up_state.is_none());
+        inference.stash_warm_up_state().unwrap();
+        inference.restore_stashed_warm_up_state().unwrap();
+    }
+
+    #[test]
+    fn spill_write_failure_keeps_resident_state_and_allows_in_memory_stash() {
+        let weights = embedded_weights_path().expect("embedded RWKV weights");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        inference
+            .warm_up_reviews(bulk_parity_reviews(8), false)
+            .unwrap();
+        let before = inference.cache_state();
+        let mut before_delta = Vec::new();
+        inference
+            .warm_up_states
+            .write_checkpoint_delta(&mut before_delta, false)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // Fail both temporary-file creation and the final rename, after writing.
+        for path in [
+            dir.path().join("missing/stash-spill.bin"),
+            dir.path().to_owned(),
+        ] {
+            assert!(inference.stash_warm_up_state_to_file(&path).is_err());
+            assert!(inference.stashed_warm_up_state.is_none());
+            assert_eq!(inference.cache_state(), before);
+            let mut delta = Vec::new();
+            inference
+                .warm_up_states
+                .write_checkpoint_delta(&mut delta, false)
+                .unwrap();
+            assert_eq!(delta, before_delta);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+        inference.stash_warm_up_state().unwrap();
+        inference.restore_stashed_warm_up_state().unwrap();
+        assert_eq!(inference.cache_state(), before);
     }
 
     #[test]
@@ -9772,6 +10208,9 @@ order by e.id, e.cid
 
         let mut expected_final = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
         expected_final.warm_up_reviews(prefix, false).unwrap();
+        let mut store = StateCacheStoreWriter::open(store_path.clone(), generation, false).unwrap();
+        store.delta_chunk_bytes = 64 * 1024;
+        expected_final.state_cache_store = Some(store);
         let first_segment = expected_final
             .write_warm_up_state_checkpoint(
                 store_path.clone(),
@@ -9891,11 +10330,157 @@ order by e.id, e.cid
     }
 
     #[test]
+    fn full_state_checkpoint_bounds_sqlite_memory() {
+        // SQLite's memory high-water counter is process-wide. Isolate this
+        // measurement from other tests, including when the suite runs in parallel.
+        const CHILD_ENV: &str = "ANKI_RWKV_CHECKPOINT_MEMORY_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "rwkv::tests::full_state_checkpoint_bounds_sqlite_memory",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "isolated checkpoint test failed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        // Match the real warm-up: Anki's collection has a populated 40 MiB
+        // cache of 4 KiB pages when the 64 KiB state-store writer starts.
+        // SQLite's shared LRU pool must not turn that page count into hundreds
+        // of MiB of state-store pages.
+        let collection_dir = tempfile::tempdir().unwrap();
+        let collection =
+            Connection::open(collection_dir.path().join("collection.sqlite3")).unwrap();
+        collection
+            .pragma_update(None, "cache_size", -40 * 1024)
+            .unwrap();
+        collection
+            .execute_batch(
+                "create table test (id integer primary key, data blob);
+            with recursive ids(id) as (values(1) union all select id+1 from ids where id < 10000)
+            insert into test select id, zeroblob(4000) from ids;",
+            )
+            .unwrap();
+        let weights = embedded_weights_path().expect("embedded RWKV weights");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        // 200 MiB of synthetic state spans four production 64 MiB chunks.
+        inference.warm_up_states.card = (0..800)
+            .map(|id| {
+                (
+                    id,
+                    ModuleState {
+                        layers: vec![LayerState {
+                            time: None,
+                            channel_shift: Some(vec![id as f32; 64 * 1024]),
+                        }],
+                    },
+                )
+            })
+            .collect();
+        assert!(inference.warm_up_states.checkpoint_delta_len(true).unwrap() >= 200 * 1024 * 1024);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        for durable in [false, true] {
+            let path = temporary_dir
+                .path()
+                .join(format!("state-{durable}.sqlite3"));
+            for parent in [None, Some(1), Some(2)] {
+                if parent == Some(2) {
+                    // Also check a reopened store whose page size is persisted.
+                    inference.finish_warm_up_state_checkpoints().unwrap();
+                }
+                // Repopulate the collection cache between checkpoints too.
+                let bytes: i64 = collection
+                    .query_row("select sum(length(data)) from test", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(bytes, 40_000_000);
+                // SAFETY: this only resets SQLite's allocator statistics, and
+                // no other test is using SQLite in this child process.
+                unsafe { rusqlite::ffi::sqlite3_memory_highwater(1) };
+                let segment = inference
+                    .write_warm_up_state_checkpoint(
+                        path.clone(),
+                        "generation",
+                        parent,
+                        0,
+                        0,
+                        "hash",
+                        "key",
+                        b"",
+                        b"",
+                        b"",
+                        true,
+                        durable,
+                    )
+                    .unwrap();
+                // SAFETY: this reads SQLite's process-wide allocator statistics.
+                let peak = unsafe { rusqlite::ffi::sqlite3_memory_highwater(0) };
+                eprintln!("checkpoint {segment}, durable={durable}: SQLite peak {peak} bytes");
+                assert!(peak > 0, "SQLite memory statistics must be enabled");
+                assert!(peak < 64 * 1024 * 1024, "SQLite peak was {peak} bytes");
+                let store = inference.state_cache_store.as_ref().unwrap();
+                let connection = store.connection.lock().unwrap();
+                let chunk_lengths: Vec<usize> = connection
+                    .prepare(
+                        "select length(state_delta) from segment_state_chunks \
+                         where segment_id = ? order by chunk_index",
+                    )
+                    .unwrap()
+                    .query_map([segment], |row| row.get(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                assert_eq!(chunk_lengths.len(), 4);
+                assert_eq!(&chunk_lengths[..3], &[STATE_CACHE_DELTA_CHUNK_BYTES; 3]);
+                let mut used = 0;
+                let mut highwater = 0;
+                // SAFETY: the connection is open and locked, and both output
+                // pointers refer to live integers for the duration of the call.
+                let result = unsafe {
+                    rusqlite::ffi::sqlite3_db_status(
+                        connection.handle(),
+                        rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED,
+                        &mut used,
+                        &mut highwater,
+                        0,
+                    )
+                };
+                assert_eq!(result, rusqlite::ffi::SQLITE_OK);
+                eprintln!("checkpoint {segment}, durable={durable}: SQLite cache {used} bytes");
+                assert!(used < 4 * 1024 * 1024, "SQLite cache retained {used} bytes");
+            }
+            inference
+                .restore_warm_up_state_checkpoint(path, "generation", 3)
+                .unwrap();
+            assert_eq!(inference.warm_up_states.card.len(), 800);
+            for (id, state) in &inference.warm_up_states.card {
+                assert_eq!(state.layers.len(), 1);
+                let time = state.layers[0].time.as_ref().unwrap();
+                assert!(time.x_shift.is_empty());
+                assert!(time.matrix.is_empty());
+                assert_eq!(
+                    state.layers[0].channel_shift.as_ref().unwrap(),
+                    &vec![*id as f32; 64 * 1024]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn state_delta_chunk_reader_seeks_across_chunks() {
+        const CHUNK_BYTES: usize = 64 * 1024;
         let temporary_dir = tempfile::tempdir().unwrap();
         let path = temporary_dir.path().join("state.sqlite3");
         let mut connection = open_state_cache_store(&path, "generation", false).unwrap();
-        let data: Vec<u8> = (0..3 * STATE_CACHE_DELTA_CHUNK_BYTES + 123)
+        let data: Vec<u8> = (0..3 * CHUNK_BYTES + 123)
             .map(|index| (index % 251) as u8)
             .collect();
         let transaction = connection.transaction().unwrap();
@@ -9905,7 +10490,8 @@ order by e.id, e.cid
                 [],
             )
             .unwrap();
-        let chunk_ids = insert_state_cache_delta_chunks(&transaction, 1, data.len()).unwrap();
+        let chunk_ids =
+            insert_state_cache_delta_chunks(&transaction, 1, data.len(), CHUNK_BYTES).unwrap();
         let mut writer =
             StateCacheDeltaChunkWriter::new(&transaction, chunk_ids, data.len()).unwrap();
         io::Write::write_all(&mut writer, &data).unwrap();
@@ -9922,8 +10508,8 @@ order by e.id, e.cid
         for (skip, read) in [
             (0, 10),
             (5, 3_000),
-            (STATE_CACHE_DELTA_CHUNK_BYTES, 7),
-            (2 * STATE_CACHE_DELTA_CHUNK_BYTES - 20_000, 500),
+            (CHUNK_BYTES, 7),
+            (2 * CHUNK_BYTES - 20_000, 500),
         ] {
             io::Seek::seek_relative(&mut reader, skip as i64).unwrap();
             position += skip;

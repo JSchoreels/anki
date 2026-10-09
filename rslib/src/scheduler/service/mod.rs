@@ -1221,7 +1221,7 @@ impl crate::services::BackendSchedulerService for Backend {
         &self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
     ) -> Result<generic::UInt32> {
-        let context = self.with_col(|col| {
+        let (context, session) = self.with_col(|col| {
             let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
                 search: &input.search,
                 ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
@@ -1236,7 +1236,10 @@ impl crate::services::BackendSchedulerService for Backend {
                 dynamic_desired_retention_simulator_options:
                     DynamicDesiredRetentionSimulatorOptions::default(),
             })?;
-            Ok(FsrsReviewPredictionContext::from_prepared(&prepared))
+            Ok((
+                FsrsReviewPredictionContext::from_prepared(&prepared),
+                col.session_id.clone(),
+            ))
         })?;
         // Creating a handler resets the shared progress and abort flag.
         let rows = compute_fsrs_review_retrievability_calibration_rows(
@@ -1245,7 +1248,7 @@ impl crate::services::BackendSchedulerService for Backend {
             input.include_validation_folds,
             self.new_progress_handler(),
         )?;
-        let stored = self.with_col(|col| {
+        let stored = self.with_col_in_session(&session, |col| {
             col.storage
                 .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")
         })?;
