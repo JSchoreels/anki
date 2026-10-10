@@ -103,14 +103,45 @@ pub(crate) fn retrievability_cache_path(collection_path: &Path) -> PathBuf {
     if collection_path == Path::new(":memory:") {
         PathBuf::from(":memory:")
     } else {
-        collection_path.with_extension("retrievability-cache.sqlite")
+        collection_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("rwkv-state-cache")
+            .join(
+                collection_path
+                    .with_extension("retrievability-cache.sqlite")
+                    .file_name()
+                    .unwrap(),
+            )
     }
+}
+
+fn relocate_retrievability_cache(collection_path: &Path, cache_path: &Path) -> Result<()> {
+    if cache_path == Path::new(":memory:") {
+        return Ok(());
+    }
+    anki_io::create_dir_all(cache_path.parent().unwrap())?;
+    let old_path = collection_path.with_extension("retrievability-cache.sqlite");
+    if old_path.exists() && !cache_path.exists() {
+        // Checkpoint before moving: committed predictions may still be in the WAL.
+        // Switching journal mode also refuses relocation while another reader is busy.
+        let old_db = Connection::open(&old_path)?;
+        let mode: String =
+            old_db.query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))?;
+        require!(mode == "delete", "retrievability cache is busy");
+        drop(old_db);
+        std::fs::rename(&old_path, cache_path)?;
+    }
+    Ok(())
 }
 
 fn attach_retrievability_cache_db(db: &Connection, collection_path: Option<&Path>) -> Result<()> {
     let cache_path = collection_path
         .map(retrievability_cache_path)
         .unwrap_or_else(|| PathBuf::from(":memory:"));
+    if let Some(collection_path) = collection_path {
+        relocate_retrievability_cache(collection_path, &cache_path)?;
+    }
     let cache_path = cache_path.to_string_lossy();
     db.execute(
         &format!("ATTACH DATABASE ? AS {RETRIEVABILITY_CACHE_DB_SCHEMA}"),

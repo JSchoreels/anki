@@ -130,6 +130,9 @@ service SchedulerService {
   // Stores derived local RWKV review-time retrievability cache rows.
   rpc SetRwkvReviewRetrievabilityCacheRows(
       RwkvReviewRetrievabilityCacheRowsRequest) returns (generic.UInt32);
+  // Clears both local derived historical prediction tables without changing
+  // reviews.
+  rpc ClearReviewRetrievabilityCache(generic.Empty) returns (generic.Empty);
   // Applies desktop-computed RWKV reschedule intervals and S90 values.
   rpc ApplyRwkvReviewReschedule(RwkvReviewRescheduleRequest)
       returns (collection.OpChangesWithCount);
@@ -158,6 +161,10 @@ service SchedulerService {
 // Implicitly includes any of the above methods that are not listed in the
 // backend service.
 service BackendSchedulerService {
+  // Rebuilds historical FSRS predictions and validation folds for every deck
+  // preset.
+  rpc RebuildFsrsReviewRetrievabilityCache(generic.Empty)
+      returns (generic.UInt32);
   rpc ComputeFsrsReviewRetrievabilityCalibration(
       ComputeFsrsReviewRetrievabilityCalibrationRequest)
       returns (generic.UInt32);

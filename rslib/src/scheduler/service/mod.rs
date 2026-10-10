@@ -63,12 +63,15 @@ use crate::backend::Backend;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::collection::RwkvStatsGraphScoreEntry;
 use crate::config::BoolKey;
+use crate::deckconfig::fsrs7_enable_scheduling_penalties;
+use crate::deckconfig::fsrs7_optimize_include_same_day_reviews;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::params::compute_fsrs_review_retrievability_calibration_rows;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
@@ -81,7 +84,9 @@ use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
 use crate::scheduler::states::CardState;
 use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
+use crate::search::SearchNode;
 use crate::search::SortMode;
+use crate::search::TryIntoSearch;
 use crate::stats::studied_today;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
 use crate::storage::RwkvReviewRetrievabilityCacheRow;
@@ -1013,6 +1018,10 @@ impl crate::services::SchedulerService for Collection {
         Ok(generic::UInt32 { val: count as u32 })
     }
 
+    fn clear_review_retrievability_cache(&mut self) -> Result<()> {
+        self.storage.clear_review_retrievability_cache()
+    }
+
     fn prune_rwkv_review_retrievability_cache_rows(
         &mut self,
         input: PruneRwkvReviewRetrievabilityCacheRowsRequest,
@@ -1219,6 +1228,54 @@ fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
 }
 
 impl crate::services::BackendSchedulerService for Backend {
+    fn rebuild_fsrs_review_retrievability_cache(&self) -> Result<generic::UInt32> {
+        let (requests, session) = self.with_col(|col| {
+            let requests = col
+                .storage
+                .all_deck_config()?
+                .into_iter()
+                .map(|config| {
+                    Ok(
+                        scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
+                            search: SearchNode::Preset(config.name.clone())
+                                .try_into_search()?
+                                .to_string(),
+                            params: config.fsrs_params().to_vec(),
+                            ignore_revlogs_before_ms: ignore_revlogs_before_ms_from_config(
+                                &config,
+                            )?
+                            .0,
+                            num_of_relearning_steps: config.inner.relearn_steps.len() as u32,
+                            include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(
+                                &config,
+                            ),
+                            fsrs_version: Some(config.inner.fsrs_version),
+                            include_validation_folds: true,
+                            enable_scheduling_penalties: Some(fsrs7_enable_scheduling_penalties(
+                                &config,
+                            )),
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok((requests, col.session_id.clone()))
+        })?;
+        let mut count = 0;
+        for request in requests {
+            self.with_col(|col| {
+                require!(
+                    Arc::ptr_eq(&col.session_id, &session),
+                    "collection changed during cache rebuild"
+                );
+                Ok(())
+            })?;
+            count += self
+                .compute_fsrs_review_retrievability_calibration(request)?
+                .val;
+        }
+        Ok(generic::UInt32 { val: count })
+    }
+
     fn compute_fsrs_review_retrievability_calibration(
         &self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,

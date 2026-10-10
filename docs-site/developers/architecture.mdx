@@ -429,7 +429,14 @@ FSRS calibration consumers can populate a local review-time prediction cache in
 the profile-local retrievability cache database, not in the synced collection
 DB, with `ComputeFsrsReviewRetrievabilityCalibration`. The cache table is
 `search_stats_fsrs_review_retrievability`, attached to the collection
-connection from `collection.retrievability-cache.sqlite`. Rows are keyed by
+connection from `rwkv-state-cache/collection.retrievability-cache.sqlite`.
+Existing adjacent cache databases are checkpointed and moved on collection open
+when the new path is absent. The SQLite WAL/SHM sidecars remain in the same folder.
+Deck Options **Build Cache** clears both FSRS and RWKV historical tables, rebuilds
+FSRS final-fit predictions and validation folds for each deck preset with its
+current settings, then rebuilds RWKV state and aligned calibration predictions.
+This action does not modify review history or card scheduling. Interrupted jobs
+can leave partial derived rows; rerun the action to complete the rebuild. Rows are keyed by
 `revlog.id`, role, fold, and source. `final_fit` rows store the pre-answer
 predicted retrievability computed with the supplied parameter array.
 `validation_fold` rows store out-of-sample predictions from the expanding

@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Rebuild historical predictions with Build Cache.** The Deck Options action now clears and rebuilds both RWKV and FSRS retrievability caches along with RWKV state. Cache database files live inside `rwkv-state-cache`, keeping the profile folder tidy.
+
 - **Apply scheduling choices to every preset.** The Scheduler panel now has an Apply Schedule to All Presets button. Choose Scheduler, Fallback, Settings, and Retention in a dialog, with all four checked by default, then Save to persist the changes. Deck-specific retention overrides stay intact.
 - **Choose RWKV state precision in Preferences → Review.** int8 is now the default for card/note state in memory and on disk; f32 restores the original full-precision behavior, and experimental int4 uses still less memory with a larger accuracy tradeoff. On a 223,832-review backup, int8 reduced the native cache from 1,247 MB to 395 MB and fresh-load peak process memory from 1,326 MB to 528 MB, with effectively unchanged log loss. Rebuild plus save rose from 9.65 s to 10.97 s. Restart after changing the setting; the next RWKV preparation rebuilds from review history, including when returning to f32.
 - **Interday learning priority works with FSRS sorting.** Show before reviews and Show after reviews now place due interday learning cards before or after the other due cards when sorting by ascending/descending retrievability or Relative Overdueness. Mix keeps the shared sorted order, and each group retains the selected sort.
@@ -43,6 +45,8 @@ repeated here unless they materially affect a fork feature.
 - **RWKV Memorised statistics pause during heavier RWKV work.** While RWKV calibration data is recomputed or the RWKV state is rebuilt, the Memorised history build pauses and then continues from where it stopped, instead of running both at once.
 
 ### Technical details
+
+- **Historical cache maintenance:** checkpoint and relocate the adjacent retrievability SQLite database on collection open when the new location is absent. Manual cache builds clear both prediction tables, rebuild FSRS final-fit and validation-fold rows with current deck-preset settings, and replay RWKV calibration against those folds. Automatic reviewer recovery retains its state-only behavior; review history and scheduling are unchanged.
 
 - **Bulk schedule editing:** reuse the existing Deck Options save request and modified-preset tracking. Copy only selected model settings and known FSRS auxiliary options, preserving unrelated preset and add-on data. Instant's fallback can be copied independently of its review model.
 - **RWKV compact state:** use row-scaled symmetric int8/int4 matrices and f16 shift vectors for card/note modules, with f32 inference and full-precision shared scopes. Quantization happens after every answer; normal queries, batched queries, preview answers, undo, simulation, checkpoint continuation and stash spills read the packed state. The per-runtime mode enters replay/cache identity. Existing low-level three-argument inference constructors remain f32 for benchmark and API compatibility. Checkpoint schema v12 remains unchanged; module encoding v2 carries the compact precision and is validated on load. The [native benchmark](docs/rwkv-state-precision-2026-10-10.MD) reports int8 RMSE(bins) +0.0094%, versus experimental int4 log loss +0.0676% and RMSE(bins) +5.70%; fresh-process load times include validation, and process memory excludes the Anki GUI.

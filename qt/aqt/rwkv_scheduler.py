@@ -12637,10 +12637,11 @@ def build_rwkv_state_cache_with_progress(
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
+    rebuild_retrievability_cache: bool = False,
     recovery_reason: str | None = None,
     on_done: Callable[[bool], None] | None = None,
 ) -> None:
-    """Build the local RWKV state cache with a modal progress dialog."""
+    """Build local RWKV state, optionally refreshing both historical caches."""
 
     from aqt.utils import show_warning, tooltip
 
@@ -12677,6 +12678,23 @@ def build_rwkv_state_cache_with_progress(
         if force_rebuild:
             _clear_rwkv_preserved_learning_start_cutoffs(SimpleNamespace(mw=mw))
 
+        if rebuild_retrievability_cache:
+            col = _collection(SimpleNamespace(mw=mw))
+            if col is None:
+                return _RwkvStateCacheBuildResult(ready=False)
+            backend = getattr(col, "_backend")
+            _report_rwkv_state_cache_progress(
+                progress, "Clearing historical prediction caches..."
+            )
+            backend.clear_review_retrievability_cache()
+            cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+            if cache_dir is not None:
+                (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).unlink(missing_ok=True)
+            _report_rwkv_state_cache_progress(
+                progress, "Rebuilding FSRS calibration predictions..."
+            )
+            backend.rebuild_fsrs_review_retrievability_cache()
+
         def remember_persistence_error(error: Exception) -> None:
             nonlocal persistence_error
             persistence_error = error
@@ -12689,6 +12707,8 @@ def build_rwkv_state_cache_with_progress(
             progress=progress,
             on_cache_persistence_error=remember_persistence_error,
         )
+        if ready and rebuild_retrievability_cache:
+            ready = recompute_rwkv_calibration_data(mw, progress=progress)
         return _RwkvStateCacheBuildResult(
             ready=ready,
             persistence_error=persistence_error,
@@ -12727,6 +12747,8 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV review state recovered."
                 if recovery_reason is not None
+                else "RWKV state and historical prediction caches ready."
+                if rebuild_retrievability_cache
                 else "RWKV state cache ready.",
                 parent=parent,
             )
@@ -12740,6 +12762,8 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV state recovery failed."
                 if recovery_reason is not None
+                else "Cache rebuild failed. Run Build Cache again to retry."
+                if rebuild_retrievability_cache
                 else "RWKV state cache could not be built.",
                 parent=parent,
             )
@@ -12810,6 +12834,8 @@ def build_rwkv_state_cache_with_progress(
                 tooltip(
                     "RWKV state recovery failed."
                     if recovery_reason is not None
+                    else "Cache rebuild failed. Run Build Cache again to retry."
+                    if rebuild_retrievability_cache
                     else "RWKV state cache build failed.",
                     parent=parent,
                 )
@@ -12829,7 +12855,9 @@ def build_rwkv_state_cache_with_progress(
                 label=progress_label,
                 immediate=True,
                 uses_collection=True,
-                title="RWKV State Cache",
+                title="Cache Build"
+                if rebuild_retrievability_cache
+                else "RWKV State Cache",
             )
         except Exception:
             _set_rwkv_state_cache_recovery_failed(mw, True)

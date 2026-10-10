@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 RWKV_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 RWKV_CACHE_DB_FILENAME = "collection.retrievability-cache.sqlite"
+RWKV_CACHE_DIRNAME = "rwkv-state-cache"
 RWKV_CACHE_SCHEMA = "rwkv_cache"
 DAY_SECONDS = 60 * 60 * 24
 SQLITE_CHUNK_SIZE = 900
@@ -417,7 +418,10 @@ def _analysis_db_path(
     copy_dir = Path(tempfile.mkdtemp(prefix="rwkv-temporal-probe-"))
     copied_db = copy_dir / "collection.anki2"
     _copy_sqlite_db_with_sidecars(live_db, copy_dir)
-    _copy_sqlite_db_with_sidecars(profile_folder / RWKV_CACHE_DB_FILENAME, copy_dir)
+    cache_source = profile_folder / RWKV_CACHE_DIRNAME / RWKV_CACHE_DB_FILENAME
+    if not cache_source.exists():
+        cache_source = profile_folder / RWKV_CACHE_DB_FILENAME
+    _copy_sqlite_db_with_sidecars(cache_source, copy_dir)
     if not copied_db.exists():
         raise ProbeError(f"failed to copy collection: {live_db}")
     return copied_db, live_db, copy_dir
@@ -1046,7 +1050,9 @@ def _rwkv_cache_table_ref(connection: sqlite3.Connection, db_path: Path) -> str:
     if _table_columns(connection, RWKV_CACHE_TABLE):
         return _quote_identifier(RWKV_CACHE_TABLE)
 
-    cache_path = db_path.with_name(RWKV_CACHE_DB_FILENAME)
+    cache_path = db_path.parent / RWKV_CACHE_DIRNAME / RWKV_CACHE_DB_FILENAME
+    if not cache_path.exists():
+        cache_path = db_path.with_name(RWKV_CACHE_DB_FILENAME)
     if cache_path.exists():
         connection.execute(
             f"ATTACH DATABASE ? AS {_quote_identifier(RWKV_CACHE_SCHEMA)}",

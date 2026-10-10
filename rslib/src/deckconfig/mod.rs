@@ -21,6 +21,8 @@ pub(crate) use fork_fields::deck_config_inner_for_storage;
 pub(crate) use fork_fields::restore_fork_fields_from_other;
 pub use schema11::DeckConfSchema11;
 pub use schema11::NewCardOrderSchema11;
+pub(crate) use update::fsrs7_enable_scheduling_penalties;
+pub(crate) use update::fsrs7_optimize_include_same_day_reviews;
 pub use update::UpdateDeckConfigsRequest;
 
 /// Old deck config and cards table store 250% as 2500.

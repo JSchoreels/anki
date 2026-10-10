@@ -11096,6 +11096,64 @@ def test_rwkv_state_cache_build_skips_review_retrievability_cache_by_default(
     assert reviewer.mw.col.rwkv_retrievability_rows == []
 
 
+@pytest.mark.parametrize(
+    ("state_ready", "calibration_ready"), [(True, True), (True, False), (False, True)]
+)
+def test_manual_cache_build_refreshes_both_predictions_after_clearing(
+    monkeypatch,
+    tmp_path,
+    state_ready,
+    calibration_ready,
+) -> None:
+    steps: list[str] = []
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    _attach_progress_taskman(reviewer.mw)
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    epoch_path = cache_dir / rwkv_scheduler._RWKV_CALIBRATION_EPOCH_FILE
+    epoch_path.write_text("stale")
+    reviewer.mw.col._backend = SimpleNamespace(
+        clear_review_retrievability_cache=lambda: steps.append("clear"),
+        rebuild_fsrs_review_retrievability_cache=lambda: steps.append("fsrs"),
+    )
+
+    def warm_up(_mw, **kwargs):
+        assert kwargs["force_rebuild"] is True
+        assert kwargs["record_retrievability_cache"] is False
+        assert not epoch_path.exists()
+        steps.append("state")
+        return state_ready
+
+    def recompute(_mw, **_kwargs):
+        steps.append("rwkv")
+        return calibration_ready
+
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", warm_up)
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prewarm_reviewer_queue_score_cache",
+        lambda *args, **kwargs: None,
+    )
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(
+        reviewer.mw,
+        force_rebuild=True,
+        rebuild_retrievability_cache=True,
+    )
+
+    assert steps == (
+        ["clear", "fsrs", "state", "rwkv"]
+        if state_ready
+        else ["clear", "fsrs", "state"]
+    )
+    assert not rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw)
+    assert reviewer.mw._rwkv_state_cache_recovery_failed is not (
+        state_ready and calibration_ready
+    )
+
+
 def test_rwkv_state_cache_build_warns_when_only_session_state_is_ready(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -173,7 +173,7 @@ if the answer changed dynamic preset routing. Forgetting a card explicitly
 marks its next learning sequence as append-only, so the resident state keeps
 using the card's previous reviews without a collection-wide replay. The marker
 is profile-local and remains active across restarts and undo/redo. The explicit
-**Rebuild RWKV State** action in Deck Options clears these markers and applies
+**Build Cache** action in Deck Options clears these markers and applies
 the canonical latest-learning-sequence rule again. Anki's Forget operation does
 not delete the underlying review log. Append-only **Grade Now** batches apply
 their newly written review rows to the same resident state, retain grouped
@@ -1061,17 +1061,26 @@ may be prompted to rebuild after the next restart; closing Anki and renaming the
 profile-local `rwkv-state-cache` folder before rebuilding clears stale derived
 cache files without changing the collection.
 
-RWKV review state and historical calibration data are built separately. The
-manual **Rebuild RWKV State** action replays answers and persists recurrent
-state without computing
-a pre-answer prediction for every historical review. Live review answers still
+Automatic RWKV state recovery replays answers and persists recurrent state
+without computing a pre-answer prediction for every historical review. The manual
+**Build Cache** action in Deck Options clears both historical prediction tables,
+rebuilds FSRS predictions and validation folds for every deck preset using its
+current parameters, history cutoff, relearning steps, same-day optimization and
+scheduling-penalty settings, rebuilds RWKV recurrent state, then recomputes RWKV
+calibration predictions aligned to the rebuilt FSRS folds. It does not reschedule
+cards or change review history. A failed or interrupted rebuild can leave partial
+derived predictions; rerun **Build Cache** to complete it. Live review answers still
 write their pre-answer prediction with source `rwkv_review` and role
 `post_optimization`.
 
 Historical calibration predictions live in the profile-local
 `search_stats_rwkv_review_retrievability` table, attached from
-`collection.retrievability-cache.sqlite`; they are not synced. The table is a
-derived cache, separate from the profile-local recurrent state cache and the
+`rwkv-state-cache/collection.retrievability-cache.sqlite`; they are not synced.
+The database and its SQLite WAL/SHM sidecars share the recurrent cache folder.
+On collection open, Anki checkpoints and moves the old adjacent database when
+there is no database at the new location, preserving existing predictions. An
+existing database at the new location takes precedence. The table is a
+derived cache, separate from the recurrent state database and the
 short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 `fold_index`, and `source`.
 

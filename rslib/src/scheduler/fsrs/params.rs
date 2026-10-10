@@ -2607,15 +2607,19 @@ pub(crate) mod tests {
             );
 
             backend.set_wants_abort()?;
-            let stored = backend.compute_fsrs_review_retrievability_calibration(
-                anki_proto::scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
-                    params: fsrs::DEFAULT_PARAMETERS.to_vec(),
-                    num_of_relearning_steps: 1,
-                    include_same_day_reviews: Some(true),
-                    include_validation_folds,
-                    ..Default::default()
-                },
-            )?;
+            let stored = if include_validation_folds {
+                backend.rebuild_fsrs_review_retrievability_cache()?
+            } else {
+                backend.compute_fsrs_review_retrievability_calibration(
+                    anki_proto::scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
+                        params: fsrs::DEFAULT_PARAMETERS.to_vec(),
+                        num_of_relearning_steps: 1,
+                        include_same_day_reviews: Some(true),
+                        include_validation_folds,
+                        ..Default::default()
+                    },
+                )?
+            };
             assert_eq!(stored.val as usize, expected_rows.len());
             backend.with_col(|col| {
                 let count: usize = col.storage.db.query_row(
