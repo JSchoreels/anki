@@ -26,6 +26,7 @@ import { get, readable, writable } from "svelte/store";
 
 import type { DynamicSvelteComponent } from "$lib/sveltelib/dynamicComponent";
 
+import { type ScheduleCopyOptions, withCopiedSchedule, withCopiedScheduleAuxData } from "./apply-schedule";
 import { fsrsParamDiagnostics } from "./fsrs-param-diagnostics";
 
 export type DeckOptionsId = bigint;
@@ -278,6 +279,33 @@ export class DeckOptionsState {
         }
 
         return cleared;
+    }
+
+    applyScheduleToAllPresets(options: ScheduleCopyOptions): void {
+        const source = get(this.currentConfig);
+        const sourceAux = get(this.currentAuxData);
+        for (const { config } of this.configs) {
+            if (config === this.configs[this.selectedIdx].config) {
+                continue;
+            }
+            const current = config.config!;
+            const updated = withCopiedSchedule(current, source, options);
+            if (options.settings) {
+                const currentAux = bytesToObject(current.other);
+                const updatedAux = withCopiedScheduleAuxData(currentAux, sourceAux);
+                if (!isEqual(currentAux, updatedAux)) {
+                    updated.other = new TextEncoder().encode(JSON.stringify(updatedAux));
+                }
+            }
+            if (!isEqual(current, updated)) {
+                config.config = updated;
+                if (config.id) {
+                    this.modifiedConfigs.add(config.id);
+                    // Selecting this preset later must not treat the copied values as its original baseline.
+                    this.loadedPresets.add(config.id);
+                }
+            }
+        }
     }
 
     setCurrentName(name: string): void {

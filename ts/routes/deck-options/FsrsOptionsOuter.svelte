@@ -12,6 +12,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
 
+    import ApplyScheduleModal from "./ApplyScheduleModal.svelte";
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
     import { type DeckOptionsState, ValueTab } from "./lib";
@@ -120,6 +121,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     className={retentionWarningClass}
                 />
             {/if}
+            <Item>
+                <ApplyScheduleModal {state} />
+            </Item>
         </DynamicallySlottable>
     </TitledContainer>
 </Row>

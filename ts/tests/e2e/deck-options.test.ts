@@ -3,14 +3,116 @@
 
 import { OpChanges } from "@generated/anki/collection_pb";
 import {
+    DeckConfig,
+    DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate,
+    DeckConfigsForUpdate_ConfigWithExtra,
+    DeckConfigsForUpdate_CurrentDeck_Limits,
     GetRetentionWorkloadResponse,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test(
+    "apply schedule dialog defaults to every category and only saves selected categories",
+    async ({ page }, testInfo) => {
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            data.fsrs = true;
+            data.currentDeck!.configId = 1n;
+            data.currentDeck!.limits = new DeckConfigsForUpdate_CurrentDeck_Limits({ desiredRetention: 0.95 });
+            data.allConfig = [
+                new DeckConfigsForUpdate_ConfigWithExtra({
+                    config: new DeckConfig({
+                        id: 1n,
+                        name: "Source",
+                        config: new DeckConfig_Config({
+                            ...data.defaults!.config!,
+                            rwkvReviewInstantOrderEnabled: true,
+                            rwkvReviewEnabled: false,
+                            fsrsVersion: DeckConfig_Config_FsrsVersion.SIX,
+                            desiredRetention: 0.9,
+                            rwkvReviewMinElapsedSecs: 60,
+                        }),
+                    }),
+                    useCount: 1,
+                }),
+                new DeckConfigsForUpdate_ConfigWithExtra({
+                    config: new DeckConfig({
+                        id: 2n,
+                        name: "Other",
+                        config: new DeckConfig_Config({
+                            ...data.defaults!.config!,
+                            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+                            rwkvReviewInstantOrderEnabled: false,
+                            rwkvReviewEnabled: false,
+                            desiredRetention: 0.8,
+                            rwkvReviewMinElapsedSecs: 10,
+                            newPerDay: 17,
+                        }),
+                    }),
+                    useCount: 0,
+                }),
+            ];
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+        await page.goto("/deck-options/1");
+        const open = page.getByRole("button", { name: "Apply Schedule to All Presets", exact: true });
+        const dialog = page.getByRole("dialog", { name: "Apply Schedule to All Presets", exact: true });
+        const save = page.getByRole("button", { name: "Save", exact: true });
+        await open.click();
+        for (const name of ["Scheduler", "Fallback", "Settings", "Retention"]) {
+            await expect(dialog.getByRole("checkbox", { name, exact: true })).toBeChecked();
+        }
+        await dialog.screenshot({ path: testInfo.outputPath("apply-schedule-dialog.png") });
+        await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+        await save.click();
+        await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Source"]);
+
+        await open.click();
+        await expect(dialog).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+        await save.click();
+        await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Source"]);
+
+        await open.click();
+        for (const name of ["Scheduler", "Fallback", "Settings", "Retention"]) {
+            await dialog.getByRole("checkbox", { name, exact: true }).uncheck();
+        }
+        await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
+        await dialog.getByRole("checkbox", { name: "Scheduler", exact: true }).check();
+        await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await save.click();
+        await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Other", "Source"]);
+        expect(saved!.configs[0].config!.rwkvReviewInstantOrderEnabled).toBe(true);
+        expect(saved!.configs[0].config!.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.SEVEN);
+        expect(saved!.configs[0].config!.desiredRetention).toBeCloseTo(0.8);
+        expect(saved!.configs[0].config!.rwkvReviewMinElapsedSecs).toBe(10);
+
+        await open.click();
+        for (const name of ["Scheduler", "Fallback", "Settings", "Retention"]) {
+            await expect(dialog.getByRole("checkbox", { name, exact: true })).toBeChecked();
+        }
+        await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+        await save.click();
+        await expect.poll(() => saved?.configs[0].config?.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.SIX);
+        expect(saved!.configs[0].config!.desiredRetention).toBeCloseTo(0.9);
+        expect(saved!.configs[0].config!.rwkvReviewMinElapsedSecs).toBe(60);
+        expect(saved!.configs[0].config!.newPerDay).toBe(17);
+        expect(saved!.limits!.desiredRetention).toBeCloseTo(0.95);
+    },
+);
 
 test("scheduler selectors save the review and Instant due-date models", async ({ page }) => {
     await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {

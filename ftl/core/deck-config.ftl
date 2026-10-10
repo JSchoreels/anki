@@ -400,6 +400,17 @@ deck-config-scheduler-disabled = Machine learning scheduling is disabled for thi
 deck-config-scheduler-due-dates = Fallback : Due-Date Calculator
 deck-config-scheduler-due-dates-description = Writes due dates for mobile sync and statistics. Instant selects reviews independently of these dates.
 deck-config-scheduler-recommended = Recommended: { $scheduler }
+deck-config-apply-schedule-to-all-presets = Apply Schedule to All Presets
+deck-config-apply-schedule-description = Choose what to copy from the current preset. Click Save in Deck Options to save the changes.
+deck-config-copy-scheduler = Scheduler
+deck-config-copy-scheduler-description = The selected review scheduler.
+deck-config-copy-fallback = Fallback
+deck-config-copy-fallback-description = The due-date calculator for RWKV-Instant presets. Other review schedulers calculate their own due dates.
+deck-config-copy-settings = Settings
+deck-config-copy-settings-description = FSRS and RWKV preset model settings, including parameters, interval limits, optimization options, Dynamic DR, and repeat spacing.
+deck-config-copy-retention = Retention
+deck-config-copy-retention-description = The preset's desired retention. Deck-specific retention overrides remain unchanged.
+deck-config-apply-schedule = Apply
 deck-config-fsrs-description =
     FSRS uses your review history to predict retrievability and schedule reviews
     at your desired retention. FSRS-7 provides more accurate predictions than

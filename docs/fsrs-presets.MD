@@ -281,6 +281,23 @@ The visible Machine Learning Based scheduling switch remains collection-wide.
 Selecting a model enables it; other presets retain their own selected models.
 Per-preset SM2/FSRS coexistence is not introduced by these UI selectors.
 
+**Apply Schedule to All Presets** opens a dialog with four choices, all checked
+by default: **Scheduler**, **Fallback**, **Settings**, and **Retention**. Apply
+copies the selected categories from the current preset to every other preset;
+the normal Deck Options **Save** persists them. Cancel leaves presets unchanged.
+Scheduler copies the review model; selecting Instant preserves each destination's
+due-date calculator unless Fallback is also checked. Fallback copies the source's
+due-date model only to presets using Instant after the Scheduler choice is applied;
+other review models calculate their own due dates.
+
+Settings copies FSRS model parameters for all saved versions, minimum/maximum
+intervals, historical retention, review-history cutoff, optimization/evaluation
+searches, same-day optimization and scheduling-penalty choices, Dynamic DR policy
+and calibration, and RWKV grade order, minimum reviews, candidate refresh and
+repeat spacing. Retention copies the preset's desired retention, leaving
+deck-specific overrides untouched. Daily limits, learning steps, display order,
+audio, timers, add-on data, and collection-wide controls are not copied.
+
 ## Fork-Owned Storage
 
 Fork-owned FSRS preset fields are stored in deck config `other` under the
