@@ -7,7 +7,7 @@
 //!
 //! It holds the model state (the engine's warm-up states and cache state)
 //! and the identity of the review history it has absorbed. The header ties it
-//! to one backend build and one model file: anything else is ignored, and the
+//! to one state version and one model file: anything else is ignored, and the
 //! history is replayed in full as before. `offline.rs` decides when to write
 //! and read it; the history check there catches a file that no longer fits
 //! the collection.
@@ -38,10 +38,18 @@ use crate::rwkv::RwkvStateSnapshot;
 const MAGIC: &[u8] = b"KUMA3RWKVOFFLINE2\n";
 const BUFFER: usize = 1 << 20;
 
-/// What the file must have been written for: this backend build and this model
-/// file (its size and an FNV-1a hash of its bytes). The model doesn't change
-/// while the app runs, so its 11 MB are read and hashed once, not at every
-/// save and start.
+/// How a saved state was made, besides the model: the engine, the review
+/// inputs and the history walk. **Bump it with any change to those** (what
+/// `history_plan` feeds `warm_up_reviews`, the model code in `rwkv/`): a file
+/// from before is then ignored and the history replayed. It used to be the
+/// backend build hash, so every app update replayed the whole history (~10
+/// min for 3.7M reviews on a Pixel 8a) even when nothing about it changed.
+const STATE_VERSION: u32 = 1;
+
+/// What the file must have been written for: this [STATE_VERSION] and this
+/// model file (its size and an FNV-1a hash of its bytes). The model doesn't
+/// change while the app runs, so its 11 MB are read and hashed once, not at
+/// every save and start.
 pub(super) fn header(model_path: &Path) -> io::Result<String> {
     static HEADER: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
     let mut cached = HEADER.lock().unwrap();
@@ -54,8 +62,7 @@ pub(super) fn header(model_path: &Path) -> io::Result<String> {
     let mut hash = fnv::FnvHasher::default();
     hash.write(&model);
     let header = format!(
-        "{} {} {:016x}",
-        crate::version::buildhash(),
+        "state{STATE_VERSION} {} {:016x}",
         model.len(),
         hash.finish()
     );
@@ -120,7 +127,9 @@ fn read_head(input: &mut impl Read, header: &str) -> io::Result<Vec<u8>> {
         return Err(invalid("not an offline RWKV state file"));
     }
     if get_bytes(input, 4096)? != header.as_bytes() {
-        return Err(invalid("written by another build or for another model"));
+        return Err(invalid(
+            "written by another state version or for another model",
+        ));
     }
     get_bytes(input, 1 << 20)
 }
@@ -161,7 +170,7 @@ mod tests {
     /// Reads a real state file (`KUMA3_RWKV_OFFLINE_FILE`, with the model it
     /// was written for in `KUMA3_RWKV_OFFLINE_MODEL`) and writes it back: the
     /// bytes must not change. The header is taken from the file, since this
-    /// test build has another build hash.
+    /// test build may have another state version.
     #[test]
     #[ignore]
     fn offline_state_file_round_trip() {
