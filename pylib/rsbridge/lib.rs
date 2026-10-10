@@ -125,11 +125,23 @@ impl Backend {
 #[pymethods]
 impl RwkvInference {
     #[new]
-    #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500))]
-    fn new(model_path: &str, target_retention: f32, max_interval_days: u32) -> PyResult<Self> {
-        rwkv::RwkvInference::load(model_path.into(), target_retention, max_interval_days)
-            .map(|inner| Self { inner })
-            .map_err(|err| PyException::new_err(err.to_string()))
+    #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500, state_precision="f32"))]
+    fn new(
+        model_path: &str,
+        target_retention: f32,
+        max_interval_days: u32,
+        state_precision: &str,
+    ) -> PyResult<Self> {
+        let precision = rwkv::StatePrecision::parse(state_precision)
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        rwkv::RwkvInference::load_with_precision(
+            model_path.into(),
+            target_retention,
+            max_interval_days,
+            precision,
+        )
+        .map(|inner| Self { inner })
+        .map_err(|err| PyException::new_err(err.to_string()))
     }
 
     #[allow(clippy::too_many_arguments)]

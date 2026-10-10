@@ -349,13 +349,16 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
         dtype: str = "float",
         target_retention: float = 0.9,
         max_interval_days: int = 36500,
+        state_precision: str = "f32",
     ) -> None:
         del device, dtype
+        self.state_precision = state_precision
         super().__init__(
             _RustRwkvRuntime(
                 model_path=Path(model_path),
                 target_retention=target_retention,
                 max_interval_days=max_interval_days,
+                state_precision=state_precision,
             ),
         )
 
@@ -369,6 +372,7 @@ class _RustRwkvRuntime:
         model_path: Path,
         target_retention: float,
         max_interval_days: int,
+        state_precision: str = "f32",
     ) -> None:
         from anki import _rsbridge
 
@@ -377,6 +381,7 @@ class _RustRwkvRuntime:
             str(model_path),
             target_retention,
             max_interval_days,
+            state_precision,
         )
         self._process_lock = threading.RLock()
 

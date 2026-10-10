@@ -9424,6 +9424,47 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
 
 
+@pytest.mark.parametrize("next_mode", ["f32", "int4"])
+def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
+    monkeypatch, tmp_path, next_mode
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 0, 3, 2500),
+        (first_review + 86_400_000, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+    )
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    backend.state_precision = "int8"
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    backend.state_precision = next_mode
+    set_reviewer_backend(backend)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert runtime.reviewed == [(1, 2), (1, 3)]
+
+
+def test_rwkv_precision_saved_choice_waits_for_profile_reopen(monkeypatch):
+    class Backend:
+        state_precision = "int8"
+
+    monkeypatch.setattr("aqt.rwkv_srs_benchmark.EmbeddedRwkvReviewerBackend", Backend)
+    backend = Backend()
+    set_reviewer_backend(backend)
+    mw = SimpleNamespace(pm=SimpleNamespace(profile={"rwkvStatePrecision": "f32"}))
+    monkeypatch.setattr("aqt.mw", mw)
+    assert rwkv_scheduler._rwkv_state_precision() == "int8"
+    rwkv_scheduler.begin_rwkv_state_cache_startup(mw)
+    assert rwkv_scheduler._reviewer_backend is None
+    assert rwkv_scheduler._rwkv_state_precision() == "f32"
+
+
 def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     monkeypatch,
 ) -> None:
@@ -19726,6 +19767,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
+            "state_precision": "int8",
         }
     ]
 
@@ -20861,6 +20903,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
+            "state_precision": "int8",
         }
     ]
 
@@ -20933,6 +20976,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "model_path": Path("/tmp/custom-rwkv.pth"),
             "device": "mps",
             "dtype": "bfloat16",
+            "state_precision": "int8",
         }
     ]
 

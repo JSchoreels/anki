@@ -28,10 +28,14 @@ use crate::card::CardType;
 use crate::scheduler::rwkv::relative_overdueness;
 
 mod bulk;
+mod precision;
+pub use precision::StatePrecision;
 #[cfg(test)]
 mod collection_benchmark;
 #[cfg(target_os = "macos")]
 mod matmul;
+#[cfg(test)]
+mod precision_tests;
 #[cfg(target_arch = "aarch64")]
 mod query_kernels;
 #[cfg(test)]
@@ -545,14 +549,8 @@ impl WarmUpStateSpill {
                 bytes.resize(len as usize, 0);
                 io::Read::read_exact(&mut input, &mut bytes)?;
                 hasher.update(&bytes);
-                // Check the layer count before the snapshot decoder allocates
-                // its layer vector, even if a corrupt record has a valid length.
-                let mut cursor = Cursor::new(&bytes);
-                cursor.expect_magic(b"ARWKVMODSTATE1")?;
-                let layers = cursor.u32()? as usize;
-                if layers > (bytes.len() - cursor.offset) / 12 {
-                    return Err(Self::invalid_data());
-                }
+                // Both formats validate layer counts before allocating, even
+                // if a corrupt record has a valid length.
                 let state = deserialize_module_state(Some(&bytes))?.unwrap();
                 if states.insert(id, state).is_some() {
                     return Err(Self::invalid_data());
@@ -788,8 +786,25 @@ struct RwkvWorkloadTargetSweep<'a> {
 
 impl RwkvInference {
     pub fn load(path: PathBuf, target_retention: f32, max_interval_days: u32) -> io::Result<Self> {
+        Self::load_with_precision(
+            path,
+            target_retention,
+            max_interval_days,
+            StatePrecision::F32,
+        )
+    }
+
+    pub fn load_with_precision(
+        path: PathBuf,
+        target_retention: f32,
+        max_interval_days: u32,
+        precision: StatePrecision,
+    ) -> io::Result<Self> {
+        let mut model = SrsModel::load(&path)?;
+        model.modules[0].precision = precision;
+        model.modules[2].precision = precision;
         Ok(Self {
-            model: Arc::new(SrsModel::load(&path)?),
+            model: Arc::new(model),
             features: FeatureState::default(),
             curves: HashMap::new(),
             warm_up_states: ReviewStateMaps::default(),
@@ -4309,6 +4324,9 @@ fn serialize_state_map(states: &HashMap<i64, ModuleState>) -> Vec<(i64, Vec<u8>)
 }
 
 fn serialize_module_state(state: &ModuleState) -> Vec<u8> {
+    if let Some(packed) = &state.packed {
+        return packed.clone();
+    }
     let mut out = Vec::with_capacity(serialized_module_state_len(state));
     out.extend_from_slice(b"ARWKVMODSTATE1");
     write_u32(&mut out, state.layers.len() as u32);
@@ -4339,6 +4357,9 @@ fn serialize_module_state(state: &ModuleState) -> Vec<u8> {
 }
 
 fn serialized_module_state_len(state: &ModuleState) -> usize {
+    if let Some(packed) = &state.packed {
+        return packed.len();
+    }
     b"ARWKVMODSTATE1".len()
         + 4
         + state
@@ -4354,6 +4375,9 @@ fn serialized_module_state_len(state: &ModuleState) -> usize {
 }
 
 fn write_serialized_module_state(out: &mut impl io::Write, state: &ModuleState) -> io::Result<()> {
+    if let Some(packed) = &state.packed {
+        return out.write_all(packed);
+    }
     out.write_all(b"ARWKVMODSTATE1")?;
     write_snapshot_u32(out, state.layers.len())?;
     for layer in &state.layers {
@@ -4956,21 +4980,40 @@ fn deserialize_module_state(bytes: Option<&[u8]>) -> io::Result<Option<ModuleSta
     let Some(bytes) = bytes else {
         return Ok(None);
     };
+    if bytes.starts_with(precision::MAGIC) {
+        // Validate before retaining an opaque packed state. Later inference can
+        // decode it infallibly into bounded, short-lived scratch storage.
+        precision::decode(bytes)?;
+        return Ok(Some(ModuleState {
+            layers: Vec::new(),
+            packed: Some(bytes.to_vec()),
+        }));
+    }
     let mut cursor = Cursor::new(bytes);
     cursor.expect_magic(b"ARWKVMODSTATE1")?;
     let layer_count = cursor.u32()? as usize;
+    if layer_count > MODULE_LAYERS.iter().copied().max().unwrap() {
+        return Err(WarmUpStateSpill::invalid_data());
+    }
     let mut layers = Vec::with_capacity(layer_count);
     for _ in 0..layer_count {
         let x_shift = cursor.f32_vec()?;
         let matrix = cursor.f32_vec()?;
         let channel_shift = cursor.f32_vec()?;
         layers.push(LayerState {
-            time: Some(TimeState { x_shift, matrix }),
+            time: Some(TimeState {
+                x_shift,
+                matrix,
+                packed_matrix: None,
+            }),
             channel_shift: Some(channel_shift),
         });
     }
     cursor.expect_end()?;
-    Ok(Some(ModuleState { layers }))
+    Ok(Some(ModuleState {
+        layers,
+        packed: None,
+    }))
 }
 
 fn write_u32(out: &mut Vec<u8>, value: u32) {
@@ -5360,6 +5403,7 @@ fn linspace_exp(index: usize, count: usize, point_spread: f32) -> f32 {
 
 struct RwkvModule {
     layers: Vec<RwkvLayer>,
+    precision: StatePrecision,
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -5396,10 +5440,15 @@ impl RwkvModule {
         for layer_id in 0..layer_count {
             layers.push(RwkvLayer::load(weights, module_id, layer_id)?);
         }
-        Ok(Self { layers })
+        Ok(Self {
+            layers,
+            precision: StatePrecision::F32,
+        })
     }
 
     fn run(&self, input: &[f32], state: Option<&ModuleState>) -> (Vec<f32>, ModuleState) {
+        let decoded = state.map(ModuleState::decoded);
+        let state = decoded.as_deref();
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
 
@@ -5419,7 +5468,9 @@ impl RwkvModule {
             x,
             ModuleState {
                 layers: next_layers,
-            },
+                packed: None,
+            }
+            .compact(self.precision),
         );
         #[cfg(test)]
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleRun, profile_started);
@@ -5433,6 +5484,8 @@ impl RwkvModule {
         state: Option<&ModuleState>,
         scratch: &mut ModuleQueryScratch,
     ) -> [f32; D_MODEL] {
+        let decoded = state.map(ModuleState::decoded);
+        let state = decoded.as_deref();
         let ModuleQueryScratch {
             current,
             next,
@@ -5461,6 +5514,26 @@ impl RwkvModule {
         module_id: usize,
         scratch: &mut ModuleQueryBatchScratch,
     ) {
+        let decoded: Vec<_> = items
+            .iter()
+            .map(|item| item.state.module(module_id).map(ModuleState::decoded))
+            .collect();
+        let decoded_items: Vec<_> = items
+            .iter()
+            .zip(&decoded)
+            .map(|(item, state)| {
+                let mut item = *item;
+                match module_id {
+                    0 => item.state.card = state.as_deref(),
+                    1 => item.state.deck = state.as_deref(),
+                    2 => item.state.note = state.as_deref(),
+                    3 => item.state.preset = state.as_deref(),
+                    _ => item.state.global = state.as_deref(),
+                }
+                item
+            })
+            .collect();
+        let items = decoded_items.as_slice();
         let rows = items.len();
         scratch.v0.resize(rows * D_MODEL, 0.0);
         scratch.v0.fill(0.0);
@@ -5488,6 +5561,8 @@ impl RwkvModule {
 #[derive(Clone)]
 struct ModuleState {
     layers: Vec<LayerState>,
+    /// Compact states have no decoded layers; queries decode only their batch.
+    packed: Option<Vec<u8>>,
 }
 
 struct RwkvLayer {
@@ -5781,6 +5856,7 @@ impl TimeMixer {
             TimeState {
                 x_shift: x,
                 matrix: next_matrix,
+                packed_matrix: None,
             },
         );
         #[cfg(test)]
@@ -6199,6 +6275,7 @@ struct TimeMixParts {
 struct TimeState {
     x_shift: Vec<f32>,
     matrix: Vec<f32>,
+    packed_matrix: Option<precision::PackedMatrix>,
 }
 
 struct ChannelMixer {
@@ -10303,11 +10380,13 @@ order by e.id, e.cid
     #[test]
     fn streamed_module_state_matches_existing_serialization() {
         let state = ModuleState {
+            packed: None,
             layers: vec![
                 LayerState {
                     time: Some(TimeState {
                         x_shift: vec![1.0, -2.5, f32::INFINITY],
                         matrix: vec![0.0, f32::NAN, 42.25, -0.0],
+                        packed_matrix: None,
                     }),
                     channel_shift: Some(vec![3.5, -7.75]),
                 },
@@ -10378,6 +10457,7 @@ order by e.id, e.cid
                 (
                     id,
                     ModuleState {
+                        packed: None,
                         layers: vec![LayerState {
                             time: None,
                             channel_shift: Some(vec![id as f32; 64 * 1024]),
@@ -11220,10 +11300,12 @@ order by e.id, e.cid
     #[test]
     fn restore_serialized_warm_up_state_replaces_and_removes_scopes() {
         let serialized = serialize_module_state(&ModuleState {
+            packed: None,
             layers: vec![LayerState {
                 time: Some(TimeState {
                     x_shift: vec![1.0, 2.0],
                     matrix: vec![3.0, 4.0],
+                    packed_matrix: None,
                 }),
                 channel_shift: Some(vec![5.0, 6.0]),
             }],

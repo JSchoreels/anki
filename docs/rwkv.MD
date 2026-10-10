@@ -114,6 +114,33 @@ invalidates any cache checkpoint that still contains the older retained
 sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
+Preferences → Review → RWKV state selects storage precision for the whole local
+profile: `int8` (default), `f32` (the original full-precision fallback), or
+`int4` (experimental). The profile key is `rwkvStatePrecision`; an absent or
+unsupported value defaults to `int8`. This choice is local and is not synced.
+Changes take effect after restarting Anki (or reopening the profile), and the
+next state preparation rebuilds from retained review history. Precision is part
+of the replay identity, so a checkpoint from another mode cannot satisfy either
+canonical or fast startup validation. Returning to `f32` replays original
+reviews to recover full precision; it does not upcast previously truncated state.
+There is no parallel full-precision backup cache.
+
+Compact modes pack only card and note recurrent matrices: symmetric signed
+`int8` (−127…127) or packed `int4` (−7…7), with one f32 absolute-maximum scale
+per 32-element row and round-to-nearest-even codes. Both compact modes store
+time/channel shift vectors as IEEE f16 using the `half` crate. Matrices are
+quantized after each answer's f32 output is calculated, before the next answer
+reads them. Queries, preview answers, undo, workload simulation, historical
+replay, and Memorised history use the same precision. Weights, activations,
+arithmetic, feature context, recall curves, and deck/preset/global state remain
+f32. The runtime retains packed card/note modules and decodes only bounded query
+batches or active replay streams. Bulk replay preserves the last answer's exact
+integer codes and scales, so checkpoint reloads do not add another quantization.
+`int4` can noticeably change individual predictions and calibration, so it is
+offered as an explicit experimental choice.
+See the [native precision benchmark](rwkv-state-precision-2026-10-10.MD) for
+measured rebuild, checkpoint, memory, and accuracy tradeoffs.
+
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.
 Rebuilds write each historical recovery checkpoint as soon as it is captured.
@@ -339,6 +366,17 @@ history identity, compact per-card history maps, complete runtime feature state,
 and only the card, note, deck, preset, and global recurrent states changed since
 its parent. Large state deltas are streamed through ordered 64 MiB rows, avoiding
 SQLite's single-BLOB limit without assembling another full snapshot in memory.
+Full-precision modules keep the existing `ARWKVMODSTATE1` encoding. Compact
+card/note modules use `ARWKVMODSTATE2`, followed by a mode byte (8 or 4), a
+little-endian u32 layer count, and each layer's time shift, matrix, and channel
+shift. Vector lengths are little-endian u32 element counts; shifts contain f16
+bits. Each matrix row contains a little-endian f32 scale followed by 32 signed
+int8 codes or 16 bytes containing two signed two's-complement int4 codes each
+(first column in the low nibble). Decoders check layer/vector counts, scales,
+codes, finite values, truncation, and trailing bytes before retaining packed
+state. Checkpoints and stash spills preserve these bytes directly. The state
+store schema is unchanged; the new replay identity invalidates earlier caches
+once, including when choosing the historical `f32` mode.
 New stores use 64 KiB SQLite pages to reduce the page-management cost of
 streaming gigabyte-scale state blobs. A full build starts a temporary store and
 atomically promotes it after the final segment commits. The store keeps one
