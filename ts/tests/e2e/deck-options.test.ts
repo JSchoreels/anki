@@ -227,9 +227,14 @@ test("scheduler help opens model descriptions without changing the enabled state
     });
     await page.goto("/deck-options/1");
     const card = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
-    // The native webview supplies font and foreground styling; reproduce it for visual review.
+    // Include native webview styling, including macOS button shadows, for visual review.
+    await page.addStyleTag({ url: "/_anki/css/webview.css" });
+    await page.evaluate(() => document.body.classList.add("fancy", "isMac"));
     await page.addStyleTag({
-        content: "html { font-family: -apple-system, BlinkMacSystemFont, sans-serif; } body { color: var(--fg); }",
+        content: `
+            html { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+            button { box-shadow: 0px 1px 3px var(--border-subtle); }
+        `,
     });
     const enabled = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
     const model = card.getByRole("radio", { name: "RWKV-Instant", exact: true });
@@ -242,6 +247,18 @@ test("scheduler help opens model descriptions without changing the enabled state
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.evaluate(() => document.documentElement.classList.add("night-mode"));
     await card.screenshot({ path: testInfo.outputPath("scheduler-dark.png"), animations: "disabled" });
+    for (
+        const [name, label] of [
+            ["apply", "Apply Schedule to All Presets"],
+            ["help", "Help: Review scheduler"],
+        ]
+    ) {
+        const button = card.getByRole("button", { name: label, exact: true });
+        await button.hover();
+        await card.screenshot({ path: testInfo.outputPath(`scheduler-${name}-hover.png`), animations: "disabled" });
+        await button.focus();
+        await card.screenshot({ path: testInfo.outputPath(`scheduler-${name}-focus.png`), animations: "disabled" });
+    }
     await page.evaluate(() => document.documentElement.classList.remove("night-mode"));
 
     for (const title of ["Machine Learning Based scheduling", "Review scheduler", "Fallback", "Desired retention"]) {

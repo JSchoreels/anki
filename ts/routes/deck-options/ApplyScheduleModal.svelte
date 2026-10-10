@@ -84,21 +84,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </Modal>
 
 <style>
-    .apply-schedule {
+    button.apply-schedule {
         display: inline-flex;
         align-items: center;
         gap: 0.375rem;
         padding: 0.25rem 0;
+        margin: 0;
         min-height: 2rem;
-        border: 0;
-        background: transparent;
+        border-radius: 0.25rem;
         color: var(--border-focus);
         font-size: 0.75rem;
         cursor: pointer;
         text-align: start;
     }
 
-    .apply-schedule:hover {
+    button.apply-schedule,
+    button.apply-schedule:hover,
+    button.apply-schedule:active {
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    button.apply-schedule:focus-visible {
+        /* Native webview styles suppress button outlines. */
+        outline: 2px solid var(--border-focus) !important;
+        outline-offset: 2px;
+    }
+
+    button.apply-schedule:hover {
         text-decoration: underline;
     }
 
@@ -111,7 +125,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     @media (pointer: coarse) {
-        .apply-schedule {
+        button.apply-schedule {
             min-height: 44px;
         }
     }
