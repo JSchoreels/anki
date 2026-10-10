@@ -134,7 +134,7 @@ test("scheduler selectors save the review and Instant due-date models", async ({
 
     await page.goto("/deck-options/1");
     const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
-    const dueDates = page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true });
+    const dueDates = page.getByRole("radiogroup", { name: "Fallback", exact: true });
     const fsrs = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
     const schedulerCard = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
     const fsrsCard = page.getByRole("heading", { name: "FSRS", exact: true }).locator("../..");
@@ -215,6 +215,61 @@ test("scheduler selectors save the review and Instant due-date models", async ({
     }
 });
 
+test("scheduler help opens model descriptions without changing the enabled state", async ({ page }, testInfo) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const card = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
+    // The native webview supplies font and foreground styling; reproduce it for visual review.
+    await page.addStyleTag({
+        content: "html { font-family: -apple-system, BlinkMacSystemFont, sans-serif; } body { color: var(--fg); }",
+    });
+    const enabled = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
+    const model = card.getByRole("radio", { name: "RWKV-Instant", exact: true });
+    await expect(card.getByRole("link", { name: "Read more about RWKV" })).toBeHidden();
+    await card.screenshot({ path: testInfo.outputPath("scheduler-soft-outlines.png") });
+    for (const width of [736, 560]) {
+        await page.setViewportSize({ width, height: 900 });
+        await card.screenshot({ path: testInfo.outputPath(`scheduler-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.evaluate(() => document.documentElement.classList.add("night-mode"));
+    await card.screenshot({ path: testInfo.outputPath("scheduler-dark.png"), animations: "disabled" });
+    await page.evaluate(() => document.documentElement.classList.remove("night-mode"));
+
+    for (const title of ["Machine Learning Based scheduling", "Review scheduler", "Fallback", "Desired retention"]) {
+        const help = card.getByRole("button", { name: `Help: ${title}`, exact: true });
+        await help.focus();
+        await help.press("Enter");
+        const modal = page.locator(".modal.show");
+        const section = modal.locator(".carousel-item.active");
+        await expect(section.getByRole("heading", { name: title, exact: true })).toBeVisible();
+        if (title === "Review scheduler") {
+            await expect(section.getByRole("link", { name: "Read more about RWKV" })).toBeVisible();
+            await expect(section.getByRole("link", { name: "Read more about FSRS" })).toBeVisible();
+        }
+        if (title === "Fallback") {
+            await expect(
+                section.getByText(
+                    "Writes due dates for mobile sync and statistics. Instant selects reviews independently of these dates.",
+                ),
+            )
+                .toBeVisible();
+        }
+        await modal.getByRole("button", { name: "OK", exact: true }).click();
+        await expect(page.locator(".modal:visible")).toHaveCount(0);
+        await expect(enabled).toBeChecked();
+        await expect(model).toBeChecked();
+    }
+});
+
 test("shared retention updates the separate FSRS card and survives model changes", async ({ page }) => {
     await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
         const response = await route.fetch();
@@ -261,7 +316,7 @@ test("shared retention updates the separate FSRS card and survives model changes
     await expect(fsrsCard).toHaveCount(0);
     await expect(retention).toHaveValue("90");
     await model.getByRole("radio", { name: "RWKV-Instant", exact: true }).check();
-    await page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true })
+    await page.getByRole("radiogroup", { name: "Fallback", exact: true })
         .getByRole("radio", { name: "FSRS-6", exact: true }).check();
     await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (90.00%)", exact: true }))
         .toBeVisible();
@@ -310,7 +365,7 @@ test("current scheduler buttons preserve older saved models until explicitly cha
     });
 
     const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
-    const dueDates = page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true });
+    const dueDates = page.getByRole("radiogroup", { name: "Fallback", exact: true });
     for (const oldVersion of [DeckConfig_Config_FsrsVersion.FOUR, DeckConfig_Config_FsrsVersion.FIVE]) {
         for (const instantEnabled of [false, true]) {
             version = oldVersion;

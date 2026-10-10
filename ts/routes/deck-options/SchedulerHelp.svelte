@@ -13,13 +13,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let title: string;
     export let fsrs: boolean;
+    export let showBadge = true;
+
+    const modelIntroduction = [
+        tr.deckConfigRwkvDescription(),
+        `[${tr.deckConfigRwkvReadMore()}](https://github.com/JSchoreels/anki/blob/main/RWKV_FAQ.md)`,
+        tr.deckConfigFsrsDescription(),
+        `[${tr.deckConfigFsrsReadMore()}](https://github.com/open-spaced-repetition/srs-benchmark)`,
+    ].join("\n\n");
 
     const settings = {
         fsrs: {
             title: tr.deckConfigSchedulerEnableFsrs(),
-            help: tr.deckConfigFsrsTooltip(),
+            help: modelIntroduction + "\n\n" + tr.deckConfigFsrsTooltip(),
             url: HelpPage.DeckOptions.fsrs,
             global: true,
+        },
+        review: {
+            title: tr.deckConfigSchedulerReview(),
+            help: modelIntroduction,
+        },
+        dueDates: {
+            title: tr.deckConfigSchedulerDueDates(),
+            help: tr.deckConfigSchedulerDueDatesDescription(),
         },
         desiredRetention: {
             title: tr.deckConfigDesiredRetention(),
@@ -27,7 +43,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 tr.deckConfigDesiredRetentionTooltip() +
                 "\n\n" +
                 tr.deckConfigDesiredRetentionTooltip2(),
-            sched: HelpItemScheduler.FSRS,
         },
         modelParams: {
             title: tr.deckConfigWeights(),
@@ -69,6 +84,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {title}
     url={HelpPage.DeckOptions.fsrs}
     {fsrs}
+    {showBadge}
     {helpSections}
     on:mount={(e) => {
         modal = e.detail.modal;

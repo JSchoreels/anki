@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **A lighter Scheduler panel.** Compact outlined model buttons replace the filled segments, and Apply Schedule to All Presets appears as an inline header action. Desired Retention keeps its Preset / This deck selector beside the input. Question-mark buttons open the descriptions and documentation links.
+
 - **Rebuild historical predictions with Build Cache.** The Deck Options action now clears and rebuilds both RWKV and FSRS retrievability caches along with RWKV state. Cache database files live inside `rwkv-state-cache`, keeping the profile folder tidy.
 
 - **Apply scheduling choices to every preset.** The Scheduler panel now has an Apply Schedule to All Presets button. Choose Scheduler, Desired Retention, Fallback, and Settings in a dialog, with all four checked by default, then Save to persist the changes. Deck-specific retention overrides stay intact.

@@ -26,6 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let startIndex = 0;
     export let helpSections: HelpItem[];
     export let fsrs = false;
+    export let showBadge = true;
 
     let carousel: Carousel;
 
@@ -46,9 +47,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let activeIndex = startIndex;
 </script>
 
-<Badge on:click={() => modal.show()} iconSize={125} flipX={usesArabicScript()}>
-    <Icon icon={infoCircle} />
-</Badge>
+{#if showBadge}
+    <Badge on:click={() => modal.show()} iconSize={125} flipX={usesArabicScript()}>
+        <Icon icon={infoCircle} />
+    </Badge>
+{/if}
 
 <Modal bind:this={modal} dialogClass="modal-lg">
     <div slot="header" class="modal-header">

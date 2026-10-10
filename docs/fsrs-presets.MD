@@ -255,15 +255,17 @@ by parameter optimization.
 
 The Scheduler panel selects the preset's review model: FSRS-6, FSRS-7,
 RWKV-Curve, or RWKV-Instant. The selectors offer only these current models.
-Instant adds **Fallback : Due-Date Calculator** for its FSRS or Curve companion;
+Instant adds **Fallback** for its FSRS or Curve companion;
 this controls stored due dates while Instant independently selects reviews.
 The selectors reuse `fsrs_version`, `rwkv_review_enabled`, and
 `rwkv_review_instant_order_enabled` and retain each model's stored parameters.
 Opening the panel does not rewrite those fields. Existing FSRS-4.5 and FSRS-5
 choices remain saved until a current model is explicitly selected.
 
-The Scheduler panel introduces FSRS and RWKV above the selectors, with links to
-their documentation and benchmark. Blue stars recommend RWKV-Instant for review
+The Scheduler panel uses compact outlined model buttons, with a subtle blue fill
+and outline for the selected model. Question-mark help buttons next to the labels
+open the scheduling descriptions, including FSRS and RWKV documentation and
+benchmark links. Blue stars recommend RWKV-Instant for review
 selection and FSRS-7 for Instant's fallback due-date calculation. These are
 guidance labels; opening the panel does not apply the recommendations.
 
@@ -281,7 +283,12 @@ The visible Machine Learning Based scheduling switch remains collection-wide.
 Selecting a model enables it; other presets retain their own selected models.
 Per-preset SM2/FSRS coexistence is not introduced by these UI selectors.
 
-**Apply Schedule to All Presets** opens a dialog with four choices, all checked
+Desired Retention keeps its input and **Preset / This deck** scope selector on
+one row, wrapping on narrow windows. The scope selector retains the existing
+preset and deck-override behavior.
+
+**Apply Schedule to All Presets**, shown as an inline action in the Scheduler
+header, opens a dialog with four choices, all checked
 by default: **Scheduler**, **Desired Retention**, **Fallback**, and **Settings**. Apply
 copies the selected categories from the current preset to every other preset;
 the normal Deck Options **Save** persists them. Cancel leaves presets unchanged.

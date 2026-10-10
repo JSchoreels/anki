@@ -8,7 +8,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
     import Item from "$lib/components/Item.svelte";
     import Row from "$lib/components/Row.svelte";
-    import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
 
@@ -18,9 +17,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type DeckOptionsState, ValueTab } from "./lib";
     import SchedulerHelp from "./SchedulerHelp.svelte";
     import SchedulerOptions from "./SchedulerOptions.svelte";
+    import SchedulerHelpButton from "./SchedulerHelpButton.svelte";
+    import SchedulerRetention from "./SchedulerRetention.svelte";
     import { schedulerCardOrder } from "./scheduler-choice";
-    import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
-    import TabbedValue from "./TabbedValue.svelte";
     import Warning from "./Warning.svelte";
 
     export let state: DeckOptionsState;
@@ -73,18 +72,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <Row class="row-columns">
     <TitledContainer title={"Scheduler"}>
+        <ApplyScheduleModal slot="header-actions" {state} />
         <SchedulerHelp
             title={"Scheduler"}
-            slot="tooltip"
+            showBadge={false}
             fsrs={$fsrs}
             bind:this={schedulerHelp}
         />
         <DynamicallySlottable slotHost={Item} {api}>
             <Item>
                 <SwitchRow bind:value={$fsrs} defaultValue={false}>
-                    <SettingTitle on:click={() => schedulerHelp.open("fsrs")}>
+                    <span class="scheduler-setting-label">
                         <GlobalLabel title={tr.deckConfigSchedulerEnableFsrs()} />
-                    </SettingTitle>
+                        <SchedulerHelpButton
+                            title={tr.deckConfigSchedulerEnableFsrs()}
+                            on:click={() => schedulerHelp.open("fsrs")}
+                        />
+                    </span>
                 </SwitchRow>
             </Item>
 
@@ -92,38 +96,32 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <p class="scheduler-disabled">{tr.deckConfigSchedulerDisabled()}</p>
             {/if}
 
-            <SchedulerOptions {state} onSelect={() => fsrs.set(true)} />
+            <SchedulerOptions
+                {state}
+                onSelect={() => fsrs.set(true)}
+                openHelp={(key) => schedulerHelp.open(key)}
+            />
 
             {#if $fsrs || $config.rwkvReviewEnabled}
                 <Item>
-                    <SpinBoxFloatRow
+                    <SchedulerRetention
                         bind:value={effectiveDesiredRetention}
                         defaultValue={defaults.desiredRetention}
-                        min={0.1}
-                        max={0.99}
-                        percentage={true}
+                        tabs={desiredRetentionTabs}
                         bind:focused={desiredRetentionFocused}
                     >
-                        <TabbedValue
-                            slot="tabs"
-                            tabs={desiredRetentionTabs}
-                            bind:value={effectiveDesiredRetention}
-                        />
-                        <SettingTitle
+                        <span>{tr.deckConfigDesiredRetention()}</span>
+                        <SchedulerHelpButton
+                            title={tr.deckConfigDesiredRetention()}
                             on:click={() => schedulerHelp.open("desiredRetention")}
-                        >
-                            {tr.deckConfigDesiredRetention()}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
+                        />
+                    </SchedulerRetention>
                 </Item>
                 <Warning
                     warning={desiredRetentionWarning}
                     className={retentionWarningClass}
                 />
             {/if}
-            <Item>
-                <ApplyScheduleModal {state} />
-            </Item>
         </DynamicallySlottable>
     </TitledContainer>
 </Row>
@@ -150,6 +148,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 {/each}
 
 <style>
+    .scheduler-setting-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
     .scheduler-disabled {
         color: var(--fg-subtle);
         font-size: 0.8rem;

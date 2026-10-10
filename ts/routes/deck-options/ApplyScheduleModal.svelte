@@ -7,6 +7,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import CheckBox from "$lib/components/CheckBox.svelte";
     import Modal from "$lib/components/Modal.svelte";
+    import Icon from "$lib/components/Icon.svelte";
+    import { mdiCopy } from "$lib/components/icons";
 
     import { defaultScheduleCopyOptions } from "./apply-schedule";
     import { commitEditing, type DeckOptionsState } from "./lib";
@@ -23,11 +25,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<div class="m-1">
-    <button type="button" class="btn btn-primary" on:click={show}>
-        {tr.deckConfigApplyScheduleToAllPresets()}
-    </button>
-</div>
+<button type="button" class="apply-schedule" on:click={show}>
+    <span class="copy-icon" aria-hidden="true"><Icon icon={mdiCopy} /></span>
+    {tr.deckConfigApplyScheduleToAllPresets()}
+</button>
 
 <Modal
     bind:this={modal}
@@ -83,6 +84,38 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </Modal>
 
 <style>
+    .apply-schedule {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        padding: 0.25rem 0;
+        min-height: 2rem;
+        border: 0;
+        background: transparent;
+        color: var(--border-focus);
+        font-size: 0.75rem;
+        cursor: pointer;
+        text-align: start;
+    }
+
+    .apply-schedule:hover {
+        text-decoration: underline;
+    }
+
+    .copy-icon {
+        display: inline-flex;
+        width: 0.875rem;
+        height: 0.875rem;
+        fill: currentColor;
+        flex-shrink: 0;
+    }
+
+    @media (pointer: coarse) {
+        .apply-schedule {
+            min-height: 44px;
+        }
+    }
+
     .copy-option p {
         color: var(--fg-subtle);
         font-size: 0.85rem;
