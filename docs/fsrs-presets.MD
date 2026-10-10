@@ -282,7 +282,7 @@ Selecting a model enables it; other presets retain their own selected models.
 Per-preset SM2/FSRS coexistence is not introduced by these UI selectors.
 
 **Apply Schedule to All Presets** opens a dialog with four choices, all checked
-by default: **Scheduler**, **Fallback**, **Settings**, and **Retention**. Apply
+by default: **Scheduler**, **Desired Retention**, **Fallback**, and **Settings**. Apply
 copies the selected categories from the current preset to every other preset;
 the normal Deck Options **Save** persists them. Cancel leaves presets unchanged.
 Scheduler copies the review model; selecting Instant preserves each destination's
@@ -294,7 +294,7 @@ Settings copies FSRS model parameters for all saved versions, minimum/maximum
 intervals, historical retention, review-history cutoff, optimization/evaluation
 searches, same-day optimization and scheduling-penalty choices, Dynamic DR policy
 and calibration, and RWKV grade order, minimum reviews, candidate refresh and
-repeat spacing. Retention copies the preset's desired retention, leaving
+repeat spacing. Desired Retention copies the preset's desired retention, leaving
 deck-specific overrides untouched. Daily limits, learning steps, display order,
 audio, timers, add-on data, and collection-wide controls are not copied.
 

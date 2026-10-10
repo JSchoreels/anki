@@ -70,7 +70,7 @@ test(
         const dialog = page.getByRole("dialog", { name: "Apply Schedule to All Presets", exact: true });
         const save = page.getByRole("button", { name: "Save", exact: true });
         await open.click();
-        for (const name of ["Scheduler", "Fallback", "Settings", "Retention"]) {
+        for (const name of ["Scheduler", "Desired Retention", "Fallback", "Settings"]) {
             await expect(dialog.getByRole("checkbox", { name, exact: true })).toBeChecked();
         }
         await dialog.screenshot({ path: testInfo.outputPath("apply-schedule-dialog.png") });
@@ -86,7 +86,7 @@ test(
         await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Source"]);
 
         await open.click();
-        for (const name of ["Scheduler", "Fallback", "Settings", "Retention"]) {
+        for (const name of ["Scheduler", "Desired Retention", "Fallback", "Settings"]) {
             await dialog.getByRole("checkbox", { name, exact: true }).uncheck();
         }
         await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
@@ -101,7 +101,7 @@ test(
         expect(saved!.configs[0].config!.rwkvReviewMinElapsedSecs).toBe(10);
 
         await open.click();
-        for (const name of ["Scheduler", "Fallback", "Settings", "Retention"]) {
+        for (const name of ["Scheduler", "Desired Retention", "Fallback", "Settings"]) {
             await expect(dialog.getByRole("checkbox", { name, exact: true })).toBeChecked();
         }
         await dialog.getByRole("button", { name: "Apply", exact: true }).click();

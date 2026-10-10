@@ -49,6 +49,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <p>{tr.deckConfigCopySchedulerDescription()}</p>
         </div>
         <div class="copy-option">
+            <CheckBox bind:value={options.retention}>
+                {tr.deckConfigCopyRetention()}
+            </CheckBox>
+            <p>{tr.deckConfigCopyRetentionDescription()}</p>
+        </div>
+        <div class="copy-option">
             <CheckBox bind:value={options.fallback}>
                 {tr.deckConfigCopyFallback()}
             </CheckBox>
@@ -59,12 +65,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 {tr.deckConfigCopySettings()}
             </CheckBox>
             <p>{tr.deckConfigCopySettingsDescription()}</p>
-        </div>
-        <div class="copy-option">
-            <CheckBox bind:value={options.retention}>
-                {tr.deckConfigCopyRetention()}
-            </CheckBox>
-            <p>{tr.deckConfigCopyRetentionDescription()}</p>
         </div>
     </div>
     <div slot="footer" class="modal-footer">
