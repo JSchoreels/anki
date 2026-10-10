@@ -996,6 +996,10 @@ message RwkvOfflineInstantPassProgress {
   uint64 reviews_absorbed = 4;
   // Reviews this call replayed (all of them after a restart).
   uint64 reviews_replayed = 5;
+  // While not available: the background replay's progress (reviews done of
+  // total; total 0 when none is under way), for the app's progress bar.
+  uint64 replay_done = 6;
+  uint64 replay_total = 7;
 }
 
 message RwkvOfflineForecastRequest {

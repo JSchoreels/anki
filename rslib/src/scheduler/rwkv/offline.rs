@@ -24,6 +24,8 @@ use std::fmt;
 use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -90,6 +92,11 @@ fn registered_model() -> Option<PathBuf> {
     REGISTERED_MODEL.lock().unwrap().clone()
 }
 
+/// The replay under way (reviews done, of total; total 0: none), for the
+/// app's progress bar through the status call.
+static REPLAY_DONE: AtomicU64 = AtomicU64::new(0);
+static REPLAY_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 /// The runtime being built off the collection lock, and the collection path
 /// it is for (see `rwkv_offline_start_build`).
 #[allow(clippy::type_complexity)]
@@ -100,7 +107,9 @@ static BUILDING: Mutex<Option<(PathBuf, JoinHandle<Result<Box<RwkvOfflineRuntime
 struct HistoryPlan {
     /// Start from the freshly loaded model instead of the current state.
     reset: bool,
-    reviews: Vec<ReviewInput>,
+    /// In chunks of [REPLAY_CHUNK_REVIEWS], each freed once replayed: one list
+    /// held ~0.6 GB for the whole replay of a 3.7M-review history.
+    reviews: Vec<Vec<ReviewInput>>,
     /// The history identity once replayed.
     identity: RwkvHistoricalReviewIdentity,
     collection_mod: TimestampMillis,
@@ -279,19 +288,37 @@ impl RwkvOfflineRuntime {
         if plan.reset {
             self.reset()?;
         }
-        let replayed = plan.reviews.len() as u64;
-        let answered: Vec<_> = plan.reviews.iter().map(|r| CardId(r.card_id)).collect();
+        let replayed = plan.reviews.iter().map(Vec::len).sum::<usize>() as u64;
+        // only a partial replay keeps scores (below)
+        let answered: Vec<_> = if plan.reset {
+            Vec::new()
+        } else {
+            plan.reviews
+                .iter()
+                .flatten()
+                .map(|r| CardId(r.card_id))
+                .collect()
+        };
         // The identity is cleared first so a failed replay forces a rebuild.
         self.identity = None;
-        let mut reviews = plan.reviews.into_iter();
-        loop {
-            let chunk: Vec<_> = reviews.by_ref().take(REPLAY_CHUNK_REVIEWS).collect();
-            if chunk.is_empty() {
-                break;
+        REPLAY_DONE.store(0, Ordering::Relaxed);
+        REPLAY_TOTAL.store(replayed, Ordering::Relaxed);
+        let result = (|| {
+            for chunk in plan.reviews {
+                let len = chunk.len() as u64;
+                self.inference.warm_up_reviews(chunk, false)?;
+                REPLAY_DONE.fetch_add(len, Ordering::Relaxed);
+                // after every full chunk, not only at the end: on a Pixel 8a
+                // the freed states held grew the heap 0.9 GB over the last
+                // quarter of a 3.7M-review replay
+                if len == REPLAY_CHUNK_REVIEWS as u64 {
+                    release_freed_memory();
+                }
             }
-            self.inference.warm_up_reviews(chunk, false)?;
-        }
-        drop(reviews);
+            Ok::<_, AnkiError>(())
+        })();
+        REPLAY_TOTAL.store(0, Ordering::Relaxed);
+        result?;
         if replayed >= REPLAY_CHUNK_REVIEWS as u64 {
             release_freed_memory();
         }
@@ -381,9 +408,17 @@ fn history_plan(
     stamp: Option<ReplayStamp>,
 ) -> Result<Option<HistoryPlan>> {
     let expected = history.input.expected_identity.clone();
-    let mut reviews = Vec::with_capacity(history.rows.len());
+    let mut reviews: Vec<Vec<ReviewInput>> = Vec::new();
+    let mut total = 0;
     let fingerprint = history.walk(|review, _, _| {
-        reviews.push(answered_input(&super::history::historical_review(&review)))
+        if total % REPLAY_CHUNK_REVIEWS == 0 {
+            reviews.push(Vec::with_capacity(REPLAY_CHUNK_REVIEWS));
+        }
+        total += 1;
+        reviews
+            .last_mut()
+            .unwrap()
+            .push(answered_input(&super::history::historical_review(&review)))
     })?;
     if fingerprint.history_is_valid {
         return Ok(None);
@@ -392,10 +427,14 @@ fn history_plan(
         Some(identity) if fingerprint.history_prefix_is_valid => identity.review_count as usize,
         _ => 0,
     };
-    if kept > reviews.len() {
+    if kept > total {
         kept = 0;
     }
-    reviews.drain(..kept);
+    // drop the kept prefix: whole chunks, then the start of the next
+    reviews.drain(..kept / REPLAY_CHUNK_REVIEWS);
+    if let Some(first) = reviews.first_mut() {
+        first.drain(..kept % REPLAY_CHUNK_REVIEWS);
+    }
     Ok(Some(HistoryPlan {
         reset: kept == 0,
         reviews,
@@ -539,7 +578,11 @@ impl Collection {
             self.state.rwkv_offline = self.rwkv_offline_take_built();
         }
         let Some(mut runtime) = self.state.rwkv_offline.take() else {
-            return Ok(RwkvOfflineInstantPassProgress::default());
+            return Ok(RwkvOfflineInstantPassProgress {
+                replay_done: REPLAY_DONE.load(Ordering::Relaxed),
+                replay_total: REPLAY_TOTAL.load(Ordering::Relaxed),
+                ..Default::default()
+            });
         };
         let started = Instant::now();
         let rebuild = input.restart && !input.status_only;
@@ -570,6 +613,7 @@ impl Collection {
             step_micros: started.elapsed().as_micros() as u64,
             reviews_absorbed,
             reviews_replayed,
+            ..Default::default()
         })
     }
 
@@ -1076,7 +1120,7 @@ impl Collection {
         runtime.apply_history_plan(
             HistoryPlan {
                 reset: false,
-                reviews: vec![answered_input(&review)],
+                reviews: vec![vec![answered_input(&review)]],
                 identity,
                 collection_mod,
                 stamp: runtime
