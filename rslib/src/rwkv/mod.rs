@@ -277,11 +277,11 @@ fn record_rwkv_scan_step(
     });
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 const MAX_CHANNEL_MIXER_DIM: usize = 256;
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 const MAX_LORA_RANK: usize = 16;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 const RETRIEVABILITY_GEMM_BATCH_SIZE: usize = 128;
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
 const ID_SPLIT: u64 = 4;
@@ -593,7 +593,7 @@ struct ReviewPredictionQueryRef<'a> {
 }
 
 impl ReviewPredictionQueryRef<'_> {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn layer_state(&self, module_id: usize, layer_id: usize) -> Option<&LayerState> {
         self.state
             .module(module_id)
@@ -3297,7 +3297,7 @@ struct SrsModel {
     p_linear: Linear,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 struct ReviewRetrievabilityScratch {
     feature_hidden: [f32; HEAD_DIM],
     normalized_features: [f32; HEAD_DIM],
@@ -3308,7 +3308,7 @@ struct ReviewRetrievabilityScratch {
     probabilities: [f32; 4],
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 #[derive(Default)]
 struct ReviewRetrievabilityBatchScratch {
     feature_input: Vec<f32>,
@@ -3321,7 +3321,7 @@ struct ReviewRetrievabilityBatchScratch {
     logits: Vec<f32>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 impl Default for ReviewRetrievabilityScratch {
     fn default() -> Self {
         Self {
@@ -3399,18 +3399,18 @@ impl SrsModel {
     }
 
     fn review_retrievability_query_refs(&self, items: &[ReviewPredictionQueryRef<'_>]) -> Vec<f32> {
-        #[cfg(all(target_os = "macos", not(test)))]
+        #[cfg(all(any(target_os = "macos", target_arch = "aarch64"), not(test)))]
         {
             self.review_retrievability_query_refs_batched(items)
         }
 
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
         {
             self.review_retrievability_query_refs_scalar(items)
         }
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn review_retrievability_query_refs_scalar(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
@@ -3427,7 +3427,7 @@ impl SrsModel {
             .collect()
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn review_retrievability_query_refs_batched(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
@@ -3445,7 +3445,7 @@ impl SrsModel {
         retrievabilities
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn review_retrievability_query_batch(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
@@ -3611,7 +3611,7 @@ impl SrsModel {
         heads
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn review_retrievability_features(
         &self,
         features: &[f32],
@@ -3696,7 +3696,7 @@ struct SrsStateRef<'a> {
 }
 
 impl<'a> SrsStateRef<'a> {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn module(self, module_id: usize) -> Option<&'a ModuleState> {
         match module_id {
             0 => self.card,
@@ -5410,7 +5410,7 @@ struct RwkvModule {
     layers: Vec<RwkvLayer>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 struct ModuleQueryScratch {
     current: [f32; D_MODEL],
     next: [f32; D_MODEL],
@@ -5418,7 +5418,7 @@ struct ModuleQueryScratch {
     layer: LayerQueryScratch,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 #[derive(Default)]
 struct ModuleQueryBatchScratch {
     next: Vec<f32>,
@@ -5426,7 +5426,7 @@ struct ModuleQueryBatchScratch {
     layer: LayerQueryBatchScratch,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 impl Default for ModuleQueryScratch {
     fn default() -> Self {
         Self {
@@ -5474,7 +5474,7 @@ impl RwkvModule {
         output
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn run_query(
         &self,
         input: &[f32],
@@ -5501,7 +5501,7 @@ impl RwkvModule {
         *current
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn run_query_batch(
         &self,
         x: &mut Vec<f32>,
@@ -5543,14 +5543,14 @@ struct RwkvLayer {
     channel_mixer: ChannelMixer,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 struct LayerQueryScratch {
     time_output: [f32; D_MODEL],
     time: TimeMixerQueryScratch,
     channel: ChannelMixerQueryScratch,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 #[derive(Default)]
 struct LayerQueryBatchScratch {
     time_output: Vec<f32>,
@@ -5558,7 +5558,7 @@ struct LayerQueryBatchScratch {
     channel: ChannelMixerQueryBatchScratch,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 impl Default for LayerQueryScratch {
     fn default() -> Self {
         Self {
@@ -5599,7 +5599,7 @@ impl RwkvLayer {
         )
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn run_query_into(
         &self,
         input: &[f32],
@@ -5623,7 +5623,7 @@ impl RwkvLayer {
         );
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     #[allow(clippy::too_many_arguments)]
     fn run_query_batch(
         &self,
@@ -5867,7 +5867,7 @@ struct TimeMixer {
     out_group_norm: Norm,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 struct TimeMixerQueryScratch {
     x: [f32; D_MODEL],
     mixed: [[f32; D_MODEL]; 8],
@@ -5886,7 +5886,7 @@ struct TimeMixerQueryScratch {
     next_row: [f32; HEAD_SIZE],
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 #[derive(Default)]
 struct TimeMixerQueryBatchScratch {
     x: Vec<f32>,
@@ -5905,7 +5905,7 @@ struct TimeMixerQueryBatchScratch {
     lora_hidden: Vec<f32>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 impl Default for TimeMixerQueryScratch {
     fn default() -> Self {
         Self {
@@ -6143,7 +6143,7 @@ impl TimeMixer {
         out
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn run_query_into(
         &self,
         input: &[f32],
@@ -6262,7 +6262,7 @@ impl TimeMixer {
         }
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     #[allow(clippy::too_many_arguments)]
     fn run_query_batch(
         &self,
@@ -6441,7 +6441,7 @@ struct ChannelMixer {
     w_v: Linear,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 struct ChannelMixerQueryScratch {
     x: [f32; D_MODEL],
     mixed: [f32; D_MODEL],
@@ -6449,7 +6449,7 @@ struct ChannelMixerQueryScratch {
     projected: [f32; D_MODEL],
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 #[derive(Default)]
 struct ChannelMixerQueryBatchScratch {
     x: Vec<f32>,
@@ -6458,7 +6458,7 @@ struct ChannelMixerQueryBatchScratch {
     projected: Vec<f32>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 impl Default for ChannelMixerQueryScratch {
     fn default() -> Self {
         Self {
@@ -6517,7 +6517,7 @@ impl ChannelMixer {
         out
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn run_query_into(
         &self,
         input: &[f32],
@@ -6542,7 +6542,7 @@ impl ChannelMixer {
         }
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn run_query_batch(
         &self,
         input: &[f32],
@@ -6605,7 +6605,7 @@ impl LoraSimple {
         out
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn apply_sigmoid_into(&self, input: &[f32], hidden: &mut [f32], out: &mut [f32]) {
         let hidden = &mut hidden[..self.a.output];
         self.a.apply_into(input, hidden);
@@ -6613,7 +6613,7 @@ impl LoraSimple {
         sigmoid_in_place(out);
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn apply_sigmoid_batch(
         &self,
         input: &[f32],
@@ -6660,7 +6660,7 @@ impl LoraSimple {
         self.b.apply_block_into(hidden, outs, rows);
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
     fn apply_tanh_into(&self, input: &[f32], hidden: &mut [f32], out: &mut [f32]) {
         let hidden = &mut hidden[..self.a.output];
         self.a.apply_into(input, hidden);
@@ -6670,7 +6670,7 @@ impl LoraSimple {
         self.b.apply_into(hidden, out);
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn apply_tanh_batch(
         &self,
         input: &[f32],
@@ -6734,7 +6734,7 @@ impl Linear {
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
         let input_len = rows
             .checked_mul(self.input)
@@ -6758,10 +6758,12 @@ impl Linear {
             out,
         );
 
+        // kuma3: phones (aarch64) take the batched query path too; the block
+        // kernel streams each weight column once per block of rows (NEON),
+        // bit-identical to `apply_into` per row. Callers already run batches
+        // in parallel.
         #[cfg(not(target_os = "macos"))]
-        out.par_chunks_mut(self.output)
-            .zip(input.par_chunks(self.input))
-            .for_each(|(output, input)| self.apply_into(input, output));
+        self.apply_block_into(input, out, rows);
 
         #[cfg(target_os = "macos")]
         if let Some(bias) = &self.bias {
@@ -7688,7 +7690,7 @@ impl Norm {
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Norm, profile_started);
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
     fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
         assert_eq!(input.len(), rows * self.dim);
         out.resize(rows * self.dim, 0.0);
@@ -7954,7 +7956,7 @@ unsafe fn update_recurrence_head_avx2(
     }
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 #[allow(clippy::too_many_arguments)]
 fn single_timestep_query_into(
     r: &[f32],
@@ -8098,7 +8100,7 @@ fn normalize_heads_in_place(values: &mut [f32]) {
 /// Writes row `row` of all eight time-mix inputs,
 /// `mixed[mix] = lerp(x, x_shift, lerp_weights[mix])`, in one pass. Sharing
 /// `x_shift - x` between the mixes keeps `lerp()`'s exact arithmetic.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn time_shift_mix_row(
     x: &[f32],
     x_shift: &[f32],
@@ -8121,7 +8123,7 @@ fn time_shift_mix_row(
 }
 
 /// `normalize_heads_in_place()` followed by `scale_heads_in_place()`.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn normalize_scale_heads_in_place(values: &mut [f32], scales: &[f32]) {
     assert!(values.len() == D_MODEL && scales.len() == HEADS);
 
@@ -8141,7 +8143,7 @@ fn normalize_scale_heads_in_place(values: &mut [f32], scales: &[f32]) {
 
 /// Adds the per-head bonus to the group-normed recurrence output and applies
 /// the output gate: `output = g * (output + sum_head(r * bonus * k) * v)`.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn bonus_gate_in_place(
     output: &mut [f32],
     r: &[f32],
@@ -8245,11 +8247,12 @@ fn sigmoid(value: f32) -> f32 {
 }
 
 // exp(-0.5), rounded to f32.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 const QUERY_DECAY_SCALE: f32 = 0.606_530_67;
 
-/// Scalar reference for `query_decay_batch_in_place()`.
-#[cfg(test)]
+/// Scalar reference for `query_decay_batch_in_place()`, which also uses it off
+/// macOS (phones).
+#[cfg(any(all(target_arch = "aarch64", not(target_os = "macos")), test))]
 fn query_decay(value: f32) -> f32 {
     // exp(-exp(-0.5 - softplus(-x))) = exp(-exp(-0.5) * sigmoid(x)).
     // Query-only: recurrent state updates keep their original arithmetic.
@@ -8260,7 +8263,7 @@ fn query_decay(value: f32) -> f32 {
 // transcendental functions, which may differ from the scalar ones in the last
 // bit; answer rows and warm-up state updates keep the scalar functions.
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn query_sigmoid_batch_in_place(values: &mut [f32]) {
     #[cfg(target_os = "macos")]
     matmul::sigmoid_in_place(values);
@@ -8268,7 +8271,7 @@ fn query_sigmoid_batch_in_place(values: &mut [f32]) {
     sigmoid_in_place(values);
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn query_silu_batch_in_place(values: &mut [f32]) {
     #[cfg(target_os = "macos")]
     matmul::silu_in_place(values);
@@ -8276,7 +8279,7 @@ fn query_silu_batch_in_place(values: &mut [f32]) {
     silu_in_place(values);
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn query_tanh_batch_in_place(values: &mut [f32]) {
     #[cfg(target_os = "macos")]
     matmul::tanh_in_place(values);
@@ -8284,7 +8287,7 @@ fn query_tanh_batch_in_place(values: &mut [f32]) {
     values.iter_mut().for_each(|value| *value = value.tanh());
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
 fn query_decay_batch_in_place(values: &mut [f32]) {
     #[cfg(target_os = "macos")]
     matmul::scaled_sigmoid_decay_in_place(values, QUERY_DECAY_SCALE);

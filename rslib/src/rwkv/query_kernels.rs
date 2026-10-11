@@ -11,7 +11,10 @@
 //! scalar code already uses a fused multiply-add.
 
 // Only the macOS batched query path uses the row kernels outside tests.
-#![cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+#![cfg_attr(
+    not(any(target_os = "macos", target_arch = "aarch64", test)),
+    allow(dead_code)
+)]
 
 use std::arch::aarch64::*;
 
