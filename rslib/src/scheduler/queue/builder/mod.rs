@@ -215,8 +215,14 @@ impl QueueBuilder {
             timing.days_elapsed,
             new_cards_ignore_review_limit,
         );
-        for (original_deck_id, count) in col.storage.filtered_review_counts_by_original_deck()? {
-            limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+        // the reservation only lowers RWKV review minimums: without any, skip
+        // its scan of every card
+        if limits.any_rwkv_review_minimum_remaining() {
+            for (original_deck_id, count) in
+                col.storage.filtered_review_counts_by_original_deck()?
+            {
+                limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+            }
         }
         let sort_options = sort_options(&root_deck, &config_map);
         let same_day_reviews_may_ignore_limit = config_map

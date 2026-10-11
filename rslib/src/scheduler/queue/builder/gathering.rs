@@ -675,6 +675,11 @@ impl QueueBuilder {
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
+        // every order below takes nothing once the root limit is reached, so
+        // skip their query over all new cards
+        if self.limits.root_limit_reached(LimitKind::New) {
+            return Ok(());
+        }
         let salt = Self::knuth_salt(self.context.timing.days_elapsed);
         match self.context.sort_options.new_gather_priority {
             NewCardGatherPriority::Deck => {
