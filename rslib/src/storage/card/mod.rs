@@ -1074,13 +1074,17 @@ CREATE TEMPORARY TABLE fsrs_preset_search_cids (cid integer PRIMARY KEY NOT NULL
 
     /// Injects the provided card IDs into the search_cids table, for
     /// when ids have arrived outside of a search.
+    /// One statement instead of one autocommit insert per id; the ordered
+    /// table keeps the given order.
     pub(crate) fn set_search_table_to_card_ids(&self, cards: &[CardId]) -> Result<()> {
-        let mut stmt = self
-            .db
-            .prepare_cached("insert into search_cids values (?)")?;
-        for cid in cards {
-            stmt.execute([cid])?;
-        }
+        let mut json = String::with_capacity(cards.len() * 14 + 2);
+        json.push('[');
+        super::write_comma_separated_ids(&mut json, cards);
+        json.push(']');
+        self.db.execute(
+            "insert into search_cids select value from json_each(?) order by key",
+            [json],
+        )?;
         Ok(())
     }
 
