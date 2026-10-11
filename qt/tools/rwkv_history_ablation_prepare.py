@@ -10,6 +10,7 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -89,6 +90,7 @@ group by r.cid
     if not selected:
         raise ValueError("no eligible answers after a recorded Forget operation")
     variants = {}
+    retained_starts = rwkv_scheduler._benchmark_retained_historical_review_starts
     for mode, keep_previous in (("all_reviews", True), ("after_reset_only", False)):
         retained, cutoffs = reset_rows(raw, resets, keep_previous=keep_previous)
         # Use the production Python adapter for timing and preset routing, but
@@ -100,8 +102,8 @@ group by r.cid
             ),
             patch.object(
                 rwkv_scheduler,
-                "_rwkv_preserved_learning_start_cutoffs",
-                return_value=cutoffs,
+                "_benchmark_retained_historical_review_starts",
+                partial(retained_starts, preserved_learning_start_cutoffs=cutoffs),
             ),
         ):
             history = rwkv_scheduler._historical_rwkv_review_inputs(

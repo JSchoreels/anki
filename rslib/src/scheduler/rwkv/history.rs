@@ -134,11 +134,14 @@ mod tests {
                 .review_count,
             0
         );
-        let preserved = col.rwkv_historical_review_inputs(RwkvHistoricalReviewInputsRequest {
+        let legacy_request = RwkvHistoricalReviewInputsRequest {
             preserved_learning_start_cutoffs: HashMap::from([(card.id.0, start + 1)]),
             ..Default::default()
-        })?;
-        assert_eq!(preserved.reviews.len(), 2);
+        };
+        assert!(col
+            .rwkv_historical_review_inputs(legacy_request.clone())?
+            .reviews
+            .is_empty());
 
         add_review(&mut col, 3, RevlogReviewKind::Learning, 3, 2_500)?;
         // Grade Now answers may have zero factor; Set Due Date writes a
@@ -153,6 +156,10 @@ mod tests {
                 .map(|review| (review.review_id, review.card_type))
                 .collect::<Vec<_>>(),
             vec![(start + 3, 0), (start + 4, 5)]
+        );
+        assert_eq!(
+            col.rwkv_historical_review_inputs(legacy_request)?.reviews,
+            history.reviews
         );
         assert_eq!(
             col.rwkv_historical_review_fingerprint(Default::default())?

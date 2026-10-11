@@ -214,7 +214,7 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 4
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 5
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
@@ -231,7 +231,6 @@ _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
-_RWKV_PRESERVED_HISTORY_FILE = "preserved-history-v1.json"
 _RWKV_STATE_CACHE_CHECKPOINT_PREFIX = "checkpoint-v1-"
 _RWKV_STATE_CACHE_CHECKPOINT_SUFFIX = ".bin"
 _RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT12\0"
@@ -769,7 +768,6 @@ class _RwkvCollectionMutationRollbackEntry:
 
 _rwkv_collection_mutation_undo_entries: list[_RwkvCollectionMutationRollbackEntry] = []
 _rwkv_collection_mutation_redo_entries: list[_RwkvCollectionMutationRollbackEntry] = []
-_rwkv_preserved_history_cache: dict[Path, dict[int, int]] = {}
 
 
 class _RwkvPendingAnswerState(NamedTuple):
@@ -4240,74 +4238,6 @@ def run_collection_mutation_preserving_rwkv_state(
     return result
 
 
-def forgotten_cards_with_rwkv_history(
-    mw: object,
-    card_ids: Sequence[int],
-) -> int:
-    """Return how many selected cards have history retained by RWKV."""
-
-    reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
-    if not _rwkv_collection_config_state(reviewer).review_enabled:
-        return 0
-    return len(_latest_historical_review_ids(reviewer, card_ids))
-
-
-def run_forgetting_cards_preserving_rwkv_history(
-    col: object,
-    mutation: Callable[[], _T],
-    *,
-    card_ids: Sequence[int],
-) -> _T:
-    """Reset cards while keeping their existing resident RWKV history append-only."""
-
-    import aqt
-
-    mw = aqt.mw
-    reviewer = (
-        getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
-        if mw is not None and getattr(mw, "col", None) is col
-        else SimpleNamespace(mw=SimpleNamespace(col=col))
-    )
-    previous_cutoffs = _rwkv_preserved_learning_start_cutoffs(reviewer)
-    historical_cutoffs = (
-        _latest_historical_review_ids(reviewer, card_ids)
-        if _rwkv_collection_config_state(reviewer).review_enabled
-        else {}
-    )
-    if historical_cutoffs:
-        _write_rwkv_preserved_learning_start_cutoffs(
-            reviewer,
-            {
-                **historical_cutoffs,
-                **previous_cutoffs,
-            },
-        )
-        logger.info(
-            "RWKV history preserved across card reset: cards=%s",
-            len(historical_cutoffs),
-        )
-
-    try:
-        return run_collection_mutation_preserving_rwkv_state(
-            col,
-            mutation,
-            card_ids=card_ids,
-        )
-    except Exception:
-        if historical_cutoffs:
-            try:
-                _write_rwkv_preserved_learning_start_cutoffs(
-                    reviewer,
-                    previous_cutoffs,
-                )
-            except Exception:
-                logger.warning(
-                    "failed to restore RWKV reset-history markers",
-                    exc_info=True,
-                )
-        raise
-
-
 def _rwkv_operation_changes_require_reconciliation(
     changes: collection_pb2.OpChanges,
 ) -> bool:
@@ -4765,9 +4695,6 @@ def prepare_grade_now_reconciliation(
             _historical_rwkv_review_rows(
                 reviewer,
                 card_ids=valid_card_ids,
-            ),
-            preserved_learning_start_cutoffs=(
-                _rwkv_preserved_learning_start_cutoffs(reviewer)
             ),
         )
         identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
@@ -8461,11 +8388,6 @@ def rwkv_review_input(
             card,
             base_review_state=base_review_state,
         )
-    review_state = _rwkv_review_state_with_preserved_history(
-        reviewer,
-        identity.card_id,
-        review_state,
-    )
 
     if review_state in (
         int(RwkvReviewState.REVIEW),
@@ -8605,20 +8527,6 @@ def _rwkv_review_state_for_live_context(
         ):
             return int(RwkvReviewState.FILTERED)
     return base_review_state
-
-
-def _rwkv_review_state_with_preserved_history(
-    reviewer: object,
-    card_id: int | None,
-    review_state: int | None,
-) -> int | None:
-    if (
-        review_state == int(RwkvReviewState.LEARN_START)
-        and card_id is not None
-        and card_id in _rwkv_preserved_learning_start_cutoffs(reviewer)
-    ):
-        return int(RwkvReviewState.LEARNING)
-    return review_state
 
 
 def _latest_eligible_review_for_card(
@@ -9142,11 +9050,6 @@ def set_answer_rwkv_metadata(
             answered_at_millis=answered_at_millis,
         )
         card_id = _card_id(card)
-        review_state = _rwkv_review_state_with_preserved_history(
-            reviewer,
-            card_id,
-            review_state,
-        )
         review_kind = _rwkv_raw_review_kind(review_state)
         if (
             review_kind is not None
@@ -10080,8 +9983,6 @@ def _revalidate_resident_reviewer_backend_state(
         generation, identity = candidate
         if generation != warmup_generation:
             raise ValueError("candidate generation changed")
-        if _rwkv_preserved_learning_start_cutoffs(reviewer):
-            raise ValueError("preserved learning start cutoffs")
         metadata = _read_rwkv_state_cache_metadata(reviewer)
         if not metadata or not _rwkv_state_cache_metadata_compatible(
             reviewer,
@@ -12674,9 +12575,6 @@ def build_rwkv_state_cache_with_progress(
         progress: RwkvStateCacheProgressCallback | None = None,
     ) -> _RwkvStateCacheBuildResult:
         persistence_error: Exception | None = None
-
-        if force_rebuild:
-            _clear_rwkv_preserved_learning_start_cutoffs(SimpleNamespace(mw=mw))
 
         if rebuild_retrievability_cache:
             col = _collection(SimpleNamespace(mw=mw))
@@ -16490,9 +16388,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
     existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
-    if not newly_ignored_review_ids and not _rwkv_preserved_learning_start_cutoffs(
-        reviewer
-    ):
+    if not newly_ignored_review_ids:
         stored = _read_rwkv_state_cache_from_rust_fingerprint(
             reviewer,
             backend=backend,
@@ -17939,114 +17835,6 @@ def _rwkv_state_cache_dir(reviewer: object) -> Path | None:
     return Path(profile_folder()) / _RWKV_STATE_CACHE_DIR
 
 
-def _rwkv_preserved_learning_start_cutoffs(reviewer: object) -> dict[int, int]:
-    cache_dir = _rwkv_state_cache_dir(reviewer)
-    if cache_dir is None:
-        return {}
-    path = cache_dir / _RWKV_PRESERVED_HISTORY_FILE
-    if path in _rwkv_preserved_history_cache:
-        return dict(_rwkv_preserved_history_cache[path])
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf8"))
-    except FileNotFoundError:
-        cutoffs: dict[int, int] = {}
-    except Exception:
-        logger.warning("failed to read RWKV preserved-history markers", exc_info=True)
-        cutoffs = {}
-    else:
-        raw_cutoffs = payload.get("cards") if isinstance(payload, dict) else None
-        cutoffs = (
-            {
-                int(card_id): review_id
-                for card_id, review_id in raw_cutoffs.items()
-                if isinstance(card_id, str)
-                and card_id.isdigit()
-                and isinstance(review_id, int)
-                and not isinstance(review_id, bool)
-                and review_id > 0
-            }
-            if isinstance(raw_cutoffs, dict)
-            else {}
-        )
-    _rwkv_preserved_history_cache[path] = cutoffs
-    return dict(cutoffs)
-
-
-def _write_rwkv_preserved_learning_start_cutoffs(
-    reviewer: object,
-    cutoffs: Mapping[int, int],
-) -> None:
-    cache_dir = _rwkv_state_cache_dir(reviewer)
-    if cache_dir is None:
-        if cutoffs:
-            raise RuntimeError("RWKV profile cache folder is unavailable")
-        return
-    path = cache_dir / _RWKV_PRESERVED_HISTORY_FILE
-    normalized = {
-        card_id: review_id
-        for card_id, review_id in cutoffs.items()
-        if card_id > 0 and review_id > 0
-    }
-    if not normalized:
-        path.unlink(missing_ok=True)
-        _rwkv_preserved_history_cache[path] = {}
-        return
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write(
-        path,
-        json.dumps(
-            {
-                "version": 1,
-                "cards": {
-                    str(card_id): normalized[card_id] for card_id in sorted(normalized)
-                },
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf8"),
-    )
-    _rwkv_preserved_history_cache[path] = normalized
-
-
-def _clear_rwkv_preserved_learning_start_cutoffs(reviewer: object) -> None:
-    cutoffs = _rwkv_preserved_learning_start_cutoffs(reviewer)
-    if not cutoffs:
-        return
-    _write_rwkv_preserved_learning_start_cutoffs(reviewer, {})
-    logger.info(
-        "cleared RWKV preserved-history markers for forced rebuild: cards=%s",
-        len(cutoffs),
-    )
-
-
-def _latest_historical_review_ids(
-    reviewer: object,
-    card_ids: Sequence[int],
-) -> dict[int, int]:
-    valid_card_ids = {
-        card_id for value in card_ids if (card_id := _valid_card_id(value)) is not None
-    }
-    if not valid_card_ids:
-        return {}
-    latest: dict[int, int] = {}
-    for row in _historical_rwkv_review_rows(
-        reviewer,
-        card_ids=tuple(valid_card_ids),
-    ):
-        if len(row) < 2:
-            continue
-        review_id, row_card_id = row[0], row[1]
-        if (
-            isinstance(review_id, int)
-            and isinstance(row_card_id, int)
-            and row_card_id in valid_card_ids
-        ):
-            latest[row_card_id] = max(latest.get(row_card_id, 0), review_id)
-    return latest
-
-
 def _rwkv_collection_cache_key(reviewer: object) -> dict[str, object]:
     col = _collection(reviewer)
     db = getattr(col, "db", None)
@@ -19268,9 +19056,6 @@ def _historical_rwkv_review_inputs(
     )
     retained_start_by_card = _benchmark_retained_historical_review_starts(
         raw_rows,
-        preserved_learning_start_cutoffs=(
-            _rwkv_preserved_learning_start_cutoffs(reviewer)
-        ),
     )
     recovery_cutoff_review_id = (
         _historical_rwkv_recovery_cutoff(
@@ -19850,18 +19635,10 @@ def _historical_rwkv_review_rows(
         card_clause = f"and r.cid in {ids2str(valid_card_ids)}"
     else:
         card_clause = ""
-    preserved_card_ids = tuple(_rwkv_preserved_learning_start_cutoffs(reviewer))
-    preserved_reset_clause = (
-        f"or r.cid in {ids2str(preserved_card_ids)}" if preserved_card_ids else ""
-    )
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
+    # Start with SELECT so DBProxy treats this history read as read-only and
+    # preserves Anki's undo history.
     sql = f"""
-with latest_resets as (
-  select cid, max(id) as reset_id
-  from revlog
-  where type = 4 and ease = 0 and factor = 0
-  group by cid
-)
 select
   r.id,
   r.cid,
@@ -19874,9 +19651,14 @@ select
   cast(r.factor as integer)
 from revlog r
 join cards c on c.id = r.cid
-left join latest_resets resets on resets.cid = r.cid
+left join (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+) resets on resets.cid = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
-  and (r.id > coalesce(resets.reset_id, 0) {preserved_reset_clause})
+  and r.id > coalesce(resets.reset_id, 0)
   {after_clause}
   {deck_clause}
   {card_clause}

@@ -36,6 +36,8 @@ repeated here unless they materially affect a fork feature.
 
 - **Reset cards no longer repeatedly recover RWKV state after Build Cache.** Forgetting cards, repositioning them, and rebuilding the cache now excludes their old learning history immediately. Their first new reviews no longer trigger another collection-wide replay, including after deleting the state cache.
 
+- **Consistent RWKV history after resetting cards.** RWKV rebuilds now always exclude reviews before each card's latest reset, including after restarting Anki or recovering a cache. The old desktop preservation override and its misleading Forget notice are removed. The review log remains available in Anki.
+
 - **Clearer scheduling help.** Machine learning scheduling and Review scheduler help now separate the RWKV and FSRS explanations with headings and group the references and manual link below the text. Short paragraphs no longer run together.
 
 - **A lighter Scheduler panel.** Compact outlined model buttons replace the filled segments, and Apply Schedule to All Presets appears as an inline header action. Desired Retention keeps its Preset / This deck selector beside the input. Question-mark buttons open the descriptions and documentation links. Help and Apply actions stay flat without raised borders or shadows, including on macOS.
@@ -54,7 +56,7 @@ repeated here unless they materially affect a fork feature.
 
 - **RWKV reset-history accuracy benchmark:** add copied-collection replay recipes that compare retaining all eligible answers with discarding answers through each card's latest Forget operation. Score identical post-reset answers and non-reset cards, with fixed identity encodings, f32/int8 state, and paired card-cluster intervals. The [two-collection report](docs/rwkv-reset-history-2026-10-11.MD) shows mixed reset-card results and measurable shared-state effects; this tooling does not change scheduling or reset policy.
 
-- **RWKV reset boundaries:** native and Python history loading honor the latest non-answer Forget revlog entry unless desktop history preservation is active. Replay semantics version 4 forces one rebuild of existing caches; the state-store schema remains version 12. Regression coverage exercises reset, reposition, rebuild, first answers, and restart with both history loaders and with the cache retained or deleted, plus native fingerprint and manual-review boundary checks.
+- **RWKV reset boundaries:** native and Python history loading always honor the latest non-answer Forget revlog entry, including requests carrying old preservation cutoffs. The fallback history query preserves Anki's undo stack. Replay semantics version 5 forces one rebuild of existing caches; the state-store schema remains version 12. Regression coverage exercises stale markers, reset, undo/redo, reposition, normal/forced rebuild, first answers, cache upgrades, and restart with both history loaders and with the cache retained or deleted, plus native fingerprint and manual-review boundary checks.
 
 - **FSRS calibration:** use the per-review prediction API merged in [fsrs-rs #458](https://github.com/open-spaced-repetition/fsrs-rs/pull/458) for final-fit and validation-fold cache rows, removing Anki's duplicate history walk and prediction-source data. Prediction runs also honor cancellation between cards.
 

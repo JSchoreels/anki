@@ -120,9 +120,6 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_memorised_history_identity_cache
     )
     previous_preset_cache = dict(rwkv_scheduler._resolved_preset_id_cache)
-    previous_preserved_history_cache = dict(
-        rwkv_scheduler._rwkv_preserved_history_cache
-    )
     previous_queue_score_maps = dict(rwkv_scheduler._rwkv_review_queue_score_maps)
     previous_queue_target_maps = dict(rwkv_scheduler._rwkv_review_queue_target_maps)
     previous_queue_score_generations = dict(
@@ -154,7 +151,6 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._reviewer_backend_cold_fallback_generations.clear()
     rwkv_scheduler._rwkv_memorised_history_identity_cache.clear()
     rwkv_scheduler._resolved_preset_id_cache.clear()
-    rwkv_scheduler._rwkv_preserved_history_cache.clear()
     rwkv_scheduler._rwkv_review_queue_score_maps.clear()
     rwkv_scheduler._rwkv_review_queue_target_maps.clear()
     rwkv_scheduler._rwkv_review_queue_score_generations.clear()
@@ -207,10 +203,6 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         )
         rwkv_scheduler._resolved_preset_id_cache.clear()
         rwkv_scheduler._resolved_preset_id_cache.update(previous_preset_cache)
-        rwkv_scheduler._rwkv_preserved_history_cache.clear()
-        rwkv_scheduler._rwkv_preserved_history_cache.update(
-            previous_preserved_history_cache
-        )
         rwkv_scheduler._rwkv_review_queue_score_maps.clear()
         rwkv_scheduler._rwkv_review_queue_score_maps.update(previous_queue_score_maps)
         rwkv_scheduler._rwkv_review_queue_target_maps.clear()
@@ -725,7 +717,6 @@ def resident_revalidation(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         metadata=metadata,
         replay_key=identity.replay_key,
         compatible=True,
-        cutoffs={},
         fingerprint=rwkv_scheduler._RwkvHistoricalReviewFingerprint(
             fingerprint_identity, (100,), 2, True
         ),
@@ -759,11 +750,6 @@ def resident_revalidation(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
     monkeypatch.setattr(
         rwkv_scheduler, "_rwkv_state_cache_metadata_compatible", compatible
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_preserved_learning_start_cutoffs",
-        lambda _reviewer: state.cutoffs,
     )
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_replay_semantics_key", replay_key)
     monkeypatch.setattr(
@@ -831,7 +817,6 @@ def test_warmup_reuses_exact_resident_state_after_repeated_invalidations(
         "replayKey",
         "metadata-missing",
         "metadata-incompatible",
-        "learning-cutoffs",
         "generation",
         "invalidation",
         "unknown-identity",
@@ -871,8 +856,6 @@ def test_warmup_rejects_changed_resident_state(
         state.metadata = {}
     elif failure == "metadata-incompatible":
         state.compatible = False
-    elif failure == "learning-cutoffs":
-        state.cutoffs = {1: 100}
     elif failure == "generation":
         rwkv_scheduler._reviewer_backend_warmup_generations[state.key] += 1
     elif failure == "invalidation":
@@ -2203,17 +2186,30 @@ def test_live_learning_restart_requires_canonical_recovery() -> None:
     )
 
 
-def test_reset_card_learning_restart_uses_preserved_rwkv_history(
+def _write_legacy_rwkv_preservation_marker(
+    profile_folder: Path, cutoffs: dict[int, int]
+) -> None:
+    cache_dir = profile_folder / rwkv_scheduler._RWKV_STATE_CACHE_DIR
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "preserved-history-v1.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "cards": {str(card): cutoff for card, cutoff in cutoffs.items()},
+            }
+        ),
+        encoding="utf8",
+    )
+
+
+def test_reset_card_learning_restart_ignores_legacy_preservation_markers(
     tmp_path: Path,
 ) -> None:
     reviewer = _rwkv_reviewer()
     reviewer.mw.pm = SimpleNamespace(profileFolder=lambda: str(tmp_path))
     reviewer._v3.states.current.Clear()
     reviewer._v3.states.current.normal.new.SetInParent()
-    rwkv_scheduler._write_rwkv_preserved_learning_start_cutoffs(
-        reviewer,
-        {1: 1_000},
-    )
+    _write_legacy_rwkv_preservation_marker(tmp_path, {1: 1_000})
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=0)
     card.type = 0
     card.queue = 0
@@ -2230,8 +2226,8 @@ def test_reset_card_learning_restart_uses_preserved_rwkv_history(
         ease=3,
     )
 
-    assert review_input.card_type == int(RwkvReviewState.LEARNING)
-    assert review_input.current_normal_state_kind == "learning"
+    assert review_input.card_type == int(RwkvReviewState.LEARN_START)
+    assert review_input.current_normal_state_kind == "new"
 
 
 def test_reset_card_answer_does_not_request_canonical_recovery(
@@ -2239,13 +2235,12 @@ def test_reset_card_answer_does_not_request_canonical_recovery(
 ) -> None:
     reviewer = _rwkv_reviewer()
     reviewer.mw.pm = SimpleNamespace(profileFolder=lambda: str(tmp_path))
-    reviewer.mw.col.db = SimpleNamespace(first=lambda *_args: (1_000, 3, 1))
+    reviewer.mw.col.db = SimpleNamespace(
+        first=lambda *_args: None, all=lambda *_args: []
+    )
     reviewer._v3.states.current.Clear()
     reviewer._v3.states.current.normal.new.SetInParent()
-    rwkv_scheduler._write_rwkv_preserved_learning_start_cutoffs(
-        reviewer,
-        {1: 1_000},
-    )
+    _write_legacy_rwkv_preservation_marker(tmp_path, {1: 1_000})
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=100)
     card.type = 0
     card.queue = 0
@@ -2258,7 +2253,7 @@ def test_reset_card_answer_does_not_request_canonical_recovery(
     )
 
     pending = getattr(reviewer, rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR)
-    assert pending.review_input.card_type == int(RwkvReviewState.LEARNING)
+    assert pending.review_input.card_type == int(RwkvReviewState.LEARN_START)
     assert (
         rwkv_scheduler._rwkv_live_answer_canonical_recovery_reason(
             reviewer,
@@ -5583,7 +5578,7 @@ def test_historical_learning_start_resets_and_review_only_history_is_retained() 
     ]
 
 
-def test_preserved_learning_start_appends_until_explicit_rebuild() -> None:
+def test_explicit_benchmark_cutoffs_keep_learning_rows_append_only() -> None:
     rows = [
         (1_000, 1, 10, 100, 3, 100, 0, 1, 2500),
         (2_000, 1, 10, 100, 3, 100, 1, 2, 2500),
@@ -10699,114 +10694,67 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     )
 
 
-def test_forgetting_reviewed_cards_records_persistent_history_cutoff(
+@pytest.mark.parametrize("native_history", [True, False])
+def test_reset_history_ignores_legacy_preservation_markers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    native_history: bool,
 ) -> None:
-    rows = [
-        (1_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (2_000, 1, 10, 100, 3, 100, 1, 2, 2500),
-        (3_000, 2, 20, 100, 3, 100, 0, 1, 2500),
-    ]
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
-    monkeypatch.setattr("aqt.mw", reviewer.mw)
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "run_collection_mutation_preserving_rwkv_state",
-        lambda _col, mutation, **_kwargs: mutation(),
-    )
+    from anki.collection import Collection
 
-    result = rwkv_scheduler.run_forgetting_cards_preserving_rwkv_history(
-        reviewer.mw.col,
-        lambda: "reset",
-        card_ids=[1],
-    )
-
-    assert result == "reset"
-    assert rwkv_scheduler.forgotten_cards_with_rwkv_history(reviewer.mw, [1, 99]) == 1
-    assert rwkv_scheduler._rwkv_preserved_learning_start_cutoffs(reviewer) == {1: 2_000}
-
-
-def test_preserved_reset_history_restores_cache_and_replays_only_new_answer(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 100) * 1000
-    reset_answer = (42 * 86_400 + 100) * 1000
-    rows = [
-        (first_review, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (second_review, 1, 10, 100, 3, 100, 1, 2, 2500),
-    ]
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_model_cache_key",
-        lambda: {"model": "test"},
-    )
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
-    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
-    rwkv_scheduler._write_rwkv_preserved_learning_start_cutoffs(
-        reviewer,
-        {1: second_review},
-    )
-    rows.append((reset_answer, 1, 10, 100, 3, 100, 0, 1, 2500))
-
-    restored_runtime = _CacheRuntime()
-    set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
-
-    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
-    assert [review.card_type for review in restored_runtime.answered_inputs] == [
-        int(RwkvReviewState.LEARNING)
-    ]
-
-
-def test_forced_rwkv_rebuild_clears_preserved_history_cutoffs(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
-    rwkv_scheduler._write_rwkv_preserved_learning_start_cutoffs(
-        reviewer,
-        {1: 2_000},
-    )
-    observed_cutoffs: list[dict[int, int]] = []
-
-    def warm_up(_mw: object, **_kwargs: object) -> bool:
-        observed_cutoffs.append(
-            rwkv_scheduler._rwkv_preserved_learning_start_cutoffs(reviewer)
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        cards = []
+        for name in ("Reset", "Keep"):
+            notetype = col.models.current()
+            assert notetype is not None
+            note = col.new_note(notetype)
+            note.fields[0] = name
+            col.add_note(note, DeckId(1))
+            card = note.cards()[0]
+            for ease in (4, 3):
+                card = col.get_card(card.id)
+                card.start_timer()
+                col.sched.answerCard(card, ease)
+            cards.append(card.id)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        if not native_history:
+            monkeypatch.setattr(col._backend, "rwkv_historical_review_inputs", None)
+        before = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        reset_card, kept_card = cards
+        cutoff = before.previous_review_id_by_card[reset_card]
+        col.sched.schedule_cards_as_new(
+            [reset_card], restore_position=False, reset_counts=True
         )
-        return True
+        _write_legacy_rwkv_preservation_marker(tmp_path, {reset_card: cutoff})
+        reviewer.mw.pm = SimpleNamespace(profileFolder=lambda: str(tmp_path))
 
-    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", warm_up)
-    monkeypatch.setattr("aqt.utils.tooltip", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "prewarm_reviewer_queue_score_cache",
-        lambda *_args, **_kwargs: None,
-    )
-    _attach_progress_taskman(reviewer.mw)
+        history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
 
-    rwkv_scheduler.build_rwkv_state_cache_with_progress(
-        reviewer.mw,
-        force_rebuild=True,
-    )
-
-    assert observed_cutoffs == [{}]
-    assert not (
-        tmp_path
-        / rwkv_scheduler._RWKV_STATE_CACHE_DIR
-        / rwkv_scheduler._RWKV_PRESERVED_HISTORY_FILE
-    ).exists()
+        assert history.review_count_by_card == {kept_card: 2}
+        assert [review.identity.card_id for review in history.reviews] == [
+            kept_card,
+            kept_card,
+        ]
+        col.undo()
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 4
+        col.redo()
+        assert rwkv_scheduler._historical_rwkv_review_inputs(
+            reviewer
+        ).review_count_by_card == {kept_card: 2}
+    finally:
+        col.close()
 
 
 @pytest.mark.parametrize("native_history", [True, False])
 @pytest.mark.parametrize("delete_cache", [False, True])
+@pytest.mark.parametrize("force_rebuild", [False, True])
 def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     native_history: bool,
     delete_cache: bool,
+    force_rebuild: bool,
 ) -> None:
     import shutil
 
@@ -10870,7 +10818,7 @@ def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
         assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
         assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 6
 
-        changes = rwkv_scheduler.run_forgetting_cards_preserving_rwkv_history(
+        changes = rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
             col,
             lambda: col.sched.schedule_cards_as_new(
                 reset_cards, restore_position=False, reset_counts=True
@@ -10878,7 +10826,9 @@ def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
             card_ids=reset_cards,
         )
         AnkiQt.on_operation_did_execute(mw, changes, None)
-        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 6
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 2
+        while timers:
+            timers.pop(0)()
         repositioned = col.sched.reposition_new_cards(
             reset_cards,
             starting_from=1,
@@ -10890,7 +10840,9 @@ def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
         if delete_cache:
             shutil.rmtree(tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR)
 
-        rwkv_scheduler.build_rwkv_state_cache_with_progress(mw, force_rebuild=True)
+        rwkv_scheduler.build_rwkv_state_cache_with_progress(
+            mw, force_rebuild=force_rebuild
+        )
         assert rwkv_scheduler._rwkv_resident_state_ready(mw)
         assert set(backend.cache_snapshot().card_states) == {kept_card}
         assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 2
@@ -10927,6 +10879,42 @@ def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
         ) == set(card_ids)
     finally:
         col.close()
+
+
+def test_warmup_rebuilds_legacy_preservation_cache_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reviewer = _rwkv_cache_reviewer(
+        profile_folder=tmp_path,
+        rows=[
+            (1000, 1, 10, 100, 3, 100, 0, 1, 2500),
+            (2000, 1, 10, 100, 3, 100, 1, 1, 2500),
+        ],
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+    metadata_path = (
+        tmp_path
+        / rwkv_scheduler._RWKV_STATE_CACHE_DIR
+        / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf8"))
+    metadata["presetReplaySemantics"] = 4
+    metadata_path.write_text(json.dumps(metadata), encoding="utf8")
+
+    rebuilt_runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(rebuilt_runtime))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+    assert len(rebuilt_runtime.answered_inputs) == 2
+
+    restored_runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+    assert restored_runtime.answered_inputs == []
 
 
 def test_rwkv_state_cache_recovery_is_coalesced_until_scheduled_start(

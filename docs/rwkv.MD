@@ -172,18 +172,17 @@ While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
 the recurrent state. Before applying that answer, Anki falls back to canonical
 recovery if an unmarked new learning start replaces older retained history or
-if the answer changed dynamic preset routing. Forgetting a card explicitly
-marks its next learning sequence as append-only, so the resident state keeps
-using the card's previous reviews without a collection-wide replay. The marker
-is profile-local and remains active across restarts and undo/redo. The explicit
-**Build Cache** action in Deck Options clears these markers and applies
-the canonical reset and latest-learning-sequence rules again. A Forget review-log
+if the answer changed dynamic preset routing. A Forget review-log
 entry excludes the card's earlier reviews immediately, even when the card has
 not yet been reviewed after the reset. This lets a rebuild prepare the correct
 state before relearning begins, so the first new answer does not require another
 collection-wide recovery. Anki's Forget operation does not delete the underlying
-review log. Replay semantics version 4 invalidates caches built with the earlier
-reset handling; the next preparation rebuilds them once. The state-store schema
+review log. Normal preparation, recovery, restart, and **Build Cache** all apply
+the same reset boundary. The former profile-local preservation markers are no
+longer read or written. Replay semantics version 5 invalidates caches built with
+the earlier preservation rule; the next preparation rebuilds them once. Undoing
+Forget removes its boundary through Anki's normal undo operation, restoring the
+eligible history on the next replay. The state-store schema
 remains version 12. Append-only **Grade Now** batches apply
 their newly written review rows to the same resident state, retain grouped
 undo/redo snapshots, and invalidate transient queue work. Batches containing
@@ -317,7 +316,7 @@ The dataset builder identifies state `0` from the first answer of the retained
 learning sequence; it is not a separate raw revlog kind. Unrated reschedule
 entries and filtered entries with `factor = 0` are not answer tokens. An unrated
 Manual entry with `factor = 0` marks a Forget boundary: canonical replay excludes
-earlier answers unless profile-local history preservation is active. Rated Manual
+earlier answers in every replay. Rated Manual
 answers remain eligible even with zero factor, and unrated Set Due Date entries
 with nonzero factor do not reset history. Live
 answered inputs must use the scheduler state at answer time, before card state

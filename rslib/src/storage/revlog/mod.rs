@@ -742,15 +742,8 @@ impl SqliteStorage {
         };
         // Rows come back in rowid (review id) order, so no sort or window
         // function is needed; the per-card replay start is derived below.
-        let preserved_reset_clause = if preserved_learning_start_cutoffs.is_empty() {
-            String::new()
-        } else {
-            let mut ids = String::new();
-            ids_to_string(&mut ids, preserved_learning_start_cutoffs.keys());
-            format!("or r.cid in {ids}")
-        };
         // Forget keeps the revlog. Honor its reset boundary even before the
-        // first new answer, unless desktop history preservation is active.
+        // first new answer, including requests carrying legacy cutoffs.
         let sql = format!(
             "with latest_resets as (
   select cid, max(id) as reset_id
@@ -774,7 +767,7 @@ left join latest_resets resets on resets.cid = r.cid
 where r.ease between 1 and 4
   and r.type in (0, 1, 2, 3, 4, 5)
   and not (r.type = 3 and r.factor = 0)
-  and (r.id > coalesce(resets.reset_id, 0) {preserved_reset_clause})
+  and r.id > coalesce(resets.reset_id, 0)
   {ignored_clause}
 order by r.id"
         );
@@ -796,7 +789,25 @@ order by r.id"
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        retain_rwkv_rows_from_latest_learning_start(&mut rows, preserved_learning_start_cutoffs);
+        // A cutoff needs a retained prefix to preserve. A legacy cutoff before
+        // Forget must not turn the first post-reset Learning answer into a
+        // continuation of the discarded sequence.
+        let mut first_review_ids = HashMap::new();
+        if !preserved_learning_start_cutoffs.is_empty() {
+            for row in &rows {
+                first_review_ids.entry(row.card_id).or_insert(row.review_id);
+            }
+        }
+        let cutoffs = preserved_learning_start_cutoffs
+            .iter()
+            .filter(|(card_id, cutoff)| {
+                first_review_ids
+                    .get(*card_id)
+                    .is_some_and(|first| first <= *cutoff)
+            })
+            .map(|(&card_id, &cutoff)| (card_id, cutoff))
+            .collect();
+        retain_rwkv_rows_from_latest_learning_start(&mut rows, &cutoffs);
 
         Ok((rows, active_ignored_review_ids))
     }

@@ -47,9 +47,6 @@ def full_review_inputs(
                 scheduler._rwkv_first_review_uses_creation_by_config_id(reviewer)
             ),
         ),
-        preserved_learning_start_cutoffs=scheduler._rwkv_preserved_learning_start_cutoffs(
-            reviewer
-        ),
         # An absent override selects each deck's policy; False explicitly
         # selects missing elapsed time for every first review.
         first_review_uses_creation=(
