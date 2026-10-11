@@ -2454,8 +2454,10 @@ pub(crate) mod tests {
     #[test]
     fn fsrs_retrievability_cache_rows_preserve_predictions_and_review_ids() -> Result<()> {
         let mut same_day_review = revlog_for_card(1, RevlogReviewKind::Relearning, 9);
-        same_day_review.id.0 += 60_000;
+        same_day_review.id.0 += 120_000;
         let mut lapse = revlog_for_card(1, RevlogReviewKind::Review, 9);
+        // Keep both reviews after rollover, rather than straddling the boundary.
+        lapse.id.0 += 60_000;
         lapse.button_chosen = 1;
         let revlogs = vec![
             revlog_for_card(1, RevlogReviewKind::Learning, 10),
