@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -25,6 +26,7 @@ use crate::decks::DeckId;
 use crate::ops::Op;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
+use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
@@ -104,21 +106,35 @@ impl Collection {
             )?;
         let timing = self.timing_today()?;
 
-        let card_ids = rows
-            .iter()
-            .map(|row| CardId(row.card_id))
-            .collect::<HashSet<_>>();
-        let cards = self.all_cards_for_ids(&card_ids.iter().copied().collect::<Vec<_>>(), false)?;
-        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
-        let stable_preset_ids_by_card = presets_by_card
-            .into_iter()
-            .map(|(card_id, preset)| {
-                Ok((
-                    card_id,
-                    rwkv_stable_preset_id(&preset.id, &input.stable_preset_ids)?,
-                ))
-            })
-            .collect::<Result<HashMap<_, _>>>()?;
+        // Only an add-on overlay rule moves a card off its home deck's preset;
+        // without one, `walk` resolves the ids per home deck and no card is
+        // loaded.
+        let has_overlay_rules = self.fsrs_preset_overlay_has_rules()?;
+        let card_ids = if has_overlay_rules || input.dynamic_preset_replay {
+            rows.iter()
+                .map(|row| CardId(row.card_id))
+                .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        };
+        let stable_preset_ids_by_card = if has_overlay_rules {
+            let cards =
+                self.all_cards_for_ids(&card_ids.iter().copied().collect::<Vec<_>>(), false)?;
+            let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+            Some(
+                presets_by_card
+                    .into_iter()
+                    .map(|(card_id, preset)| {
+                        Ok((
+                            card_id,
+                            rwkv_stable_preset_id(&preset.id, &input.stable_preset_ids)?,
+                        ))
+                    })
+                    .collect::<Result<HashMap<_, _>>>()?,
+            )
+        } else {
+            None
+        };
         let preset_routes = if input.dynamic_preset_replay {
             self.rwkv_historical_preset_routes(&card_ids, &input.stable_preset_ids)?
         } else {
@@ -150,7 +166,8 @@ struct RwkvHistoricalReviews {
     rows: Vec<RwkvHistoricalReviewRow>,
     active_ignored_review_ids: Vec<i64>,
     timing: SchedTimingToday,
-    stable_preset_ids_by_card: HashMap<CardId, i64>,
+    /// None: every card's preset is its home deck's.
+    stable_preset_ids_by_card: Option<HashMap<CardId, i64>>,
     preset_routes: Vec<RwkvHistoricalPresetRoute>,
     decks_by_id: HashMap<DeckId, Deck>,
     configs_by_id: HashMap<DeckConfigId, DeckConfig>,
@@ -184,6 +201,7 @@ impl RwkvHistoricalReviews {
         });
 
         let mut previous_review_id_by_card = HashMap::new();
+        let mut stable_preset_ids_by_deck = HashMap::new();
         let mut previous_interval_days_by_card = HashMap::new();
         let mut review_count_by_card = HashMap::new();
         let mut history_hash = rwkv_empty_history_hash();
@@ -229,12 +247,27 @@ impl RwkvHistoricalReviews {
             let review_count_so_far = *review_count_by_card.get(&card_id).unwrap_or(&0);
             let previous_interval_days =
                 *previous_interval_days_by_card.get(&card_id).unwrap_or(&0);
-            let stable_preset_id = preset_routes
+            let stable_preset_id = match preset_routes
                 .iter()
                 .find(|route| route.matches(card_id, review_count_so_far, previous_interval_days))
-                .map(|route| route.stable_preset_id)
-                .or_else(|| stable_preset_ids_by_card.get(&card_id).copied())
-                .or_invalid("missing stable RWKV preset id")?;
+            {
+                Some(route) => route.stable_preset_id,
+                None => match &stable_preset_ids_by_card {
+                    Some(by_card) => by_card
+                        .get(&card_id)
+                        .copied()
+                        .or_invalid("missing stable RWKV preset id")?,
+                    None => match stable_preset_ids_by_deck.entry(row.deck_id) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => *entry.insert(rwkv_home_deck_stable_preset_id(
+                            DeckId(row.deck_id),
+                            &decks_by_id,
+                            &configs_by_id,
+                            &input.stable_preset_ids,
+                        )?),
+                    },
+                },
+            };
 
             previous_interval_days_by_card.insert(card_id, row.interval_days);
             review_count_by_card.insert(card_id, review_count_so_far + 1);
@@ -1008,6 +1041,23 @@ struct RwkvHistoricalFingerprintReview {
     elapsed_seconds: i64,
 }
 
+/// The preset id `fsrs_presets_for_cards` gives a card of this home deck
+/// when no overlay rule moves it, with the same lookups and errors.
+fn rwkv_home_deck_stable_preset_id(
+    deck_id: DeckId,
+    decks_by_id: &HashMap<DeckId, Deck>,
+    configs_by_id: &HashMap<DeckConfigId, DeckConfig>,
+    stable_preset_ids: &HashMap<String, i64>,
+) -> Result<i64> {
+    let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
+    let config_id = deck.config_id().or_invalid("home deck is filtered")?;
+    let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
+    rwkv_stable_preset_id(
+        &FsrsPreset::from_deck_config(config, deck)?.id,
+        stable_preset_ids,
+    )
+}
+
 fn rwkv_stable_preset_id(
     preset_id: &FsrsPresetId,
     stable_preset_ids: &HashMap<String, i64>,
@@ -1429,6 +1479,81 @@ mod test {
         let relearned = fingerprint_against_prefix(&mut col)?;
         assert!(!relearned.history_is_valid);
         assert!(!relearned.history_prefix_is_valid);
+
+        Ok(())
+    }
+
+    /// Without overlay rules the fingerprint resolves preset ids per deck; it
+    /// must give the per-card lookup's hash, and a rule that moves a card must
+    /// still change it.
+    #[test]
+    fn historical_fingerprint_agrees_with_the_per_card_preset_lookup() -> Result<()> {
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+
+        let mut col = Collection::new();
+        let mut card_ids = Vec::new();
+        for index in 0..3 {
+            let mut card = Card::new(NoteId(10 + index), 0, DeckId(1), 0);
+            col.add_card(&mut card)?;
+            for step in 0..3 {
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(card.id.0 + 10_000 + step * 1_000),
+                        cid: card.id,
+                        usn: Usn(0),
+                        button_chosen: 3,
+                        interval: step as i32 + 1,
+                        ease_factor: 2_500,
+                        taken_millis: 1_000,
+                        review_kind: RevlogReviewKind::Learning,
+                        ..Default::default()
+                    },
+                    false,
+                )?;
+            }
+            card_ids.push(card.id);
+        }
+
+        let request = || RwkvHistoricalReviewFingerprintRequest {
+            stable_preset_ids: HashMap::from([("addon:test:moved".to_string(), 77_000)]),
+            ..Default::default()
+        };
+        let by_deck = col.rwkv_historical_review_fingerprint(request())?;
+        assert_eq!(by_deck.review_count, 9);
+
+        let overlay = |search: String| FsrsPresetOverlay {
+            presets: vec![AddonFsrsPreset {
+                id: "addon:test:moved".into(),
+                name: "Moved".into(),
+                desired_retention: 0.9,
+                historical_retention: 0.9,
+                ..Default::default()
+            }],
+            rules: vec![FsrsPresetRule {
+                search,
+                preset_id: "addon:test:moved".into(),
+            }],
+            simulator_rules: Vec::new(),
+        };
+
+        // a rule that moves no card: per-card lookup, same history
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &overlay(format!("cid:{}", card_ids[0].0 + 1_000_000)),
+        )?;
+        let by_card = col.rwkv_historical_review_fingerprint(request())?;
+        assert_eq!(by_card.history_hash, by_deck.history_hash);
+
+        // a rule that moves a card changes the history
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &overlay(format!("cid:{}", card_ids[0].0)),
+        )?;
+        let moved = col.rwkv_historical_review_fingerprint(request())?;
+        assert_ne!(moved.history_hash, by_deck.history_hash);
 
         Ok(())
     }

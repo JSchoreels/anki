@@ -555,6 +555,12 @@ impl Collection {
         Ok(self.state.fsrs_preset_overlay_cache.as_ref().unwrap())
     }
 
+    /// Whether an add-on rule can move a card off its home deck's preset.
+    /// Without one, a card's preset is its home deck's.
+    pub(crate) fn fsrs_preset_overlay_has_rules(&mut self) -> Result<bool> {
+        Ok(!self.fsrs_preset_overlay_cache()?.rules.is_empty())
+    }
+
     fn fsrs_preset_rule_matches_card(&mut self, card_id: CardId, rule_node: Node) -> Result<bool> {
         let node = Node::Group(vec![
             Node::Search(SearchNode::CardIds(card_id.to_string())),
