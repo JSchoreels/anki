@@ -16,22 +16,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let showBadge = true;
 
     const modelIntroduction = [
+        "### RWKV",
         tr.deckConfigRwkvDescription(),
-        `[${tr.deckConfigRwkvReadMore()}](https://github.com/JSchoreels/anki/blob/main/RWKV_FAQ.md)`,
+        "### FSRS",
         tr.deckConfigFsrsDescription(),
-        `[${tr.deckConfigFsrsReadMore()}](https://github.com/open-spaced-repetition/srs-benchmark)`,
     ].join("\n\n");
+    const modelReferences = [
+        {
+            label: tr.deckConfigRwkvReadMore(),
+            url: "https://github.com/JSchoreels/anki/blob/main/RWKV_FAQ.md",
+        },
+        {
+            label: tr.deckConfigFsrsReadMore(),
+            url: "https://github.com/open-spaced-repetition/srs-benchmark",
+        },
+    ];
 
     const settings = {
         fsrs: {
             title: tr.deckConfigSchedulerEnableFsrs(),
-            help: modelIntroduction + "\n\n" + tr.deckConfigFsrsTooltip(),
+            help: tr.deckConfigFsrsTooltip() + "\n\n" + modelIntroduction,
+            references: modelReferences,
             url: HelpPage.DeckOptions.fsrs,
             global: true,
         },
         review: {
             title: tr.deckConfigSchedulerReview(),
             help: modelIntroduction,
+            references: modelReferences,
+            url: HelpPage.DeckOptions.fsrs,
         },
         dueDates: {
             title: tr.deckConfigSchedulerDueDates(),

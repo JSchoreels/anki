@@ -268,9 +268,20 @@ test("scheduler help opens model descriptions without changing the enabled state
         const modal = page.locator(".modal.show");
         const section = modal.locator(".carousel-item.active");
         await expect(section.getByRole("heading", { name: title, exact: true })).toBeVisible();
-        if (title === "Review scheduler") {
-            await expect(section.getByRole("link", { name: "Read more about RWKV" })).toBeVisible();
-            await expect(section.getByRole("link", { name: "Read more about FSRS" })).toBeVisible();
+        if (title === "Machine Learning Based scheduling" || title === "Review scheduler") {
+            await expect(section.getByRole("heading", { name: "RWKV", exact: true })).toBeVisible();
+            await expect(section.getByRole("heading", { name: "FSRS", exact: true })).toBeVisible();
+            const references = section.getByRole("list");
+            await expect(references.getByRole("link", { name: "Read more about RWKV" })).toBeVisible();
+            await expect(references.getByRole("link", { name: "Read more about FSRS" })).toBeVisible();
+            const description = section.getByText(/^FSRS uses your review history/);
+            const descriptionBox = (await description.boundingBox())!;
+            const referencesBox = (await references.boundingBox())!;
+            expect(referencesBox.y).toBeGreaterThan(descriptionBox.y + descriptionBox.height);
+            await section.screenshot({ path: testInfo.outputPath(`help-${title}.png`), animations: "disabled" });
+            await page.evaluate(() => document.documentElement.classList.add("night-mode"));
+            await section.screenshot({ path: testInfo.outputPath(`help-${title}-dark.png`), animations: "disabled" });
+            await page.evaluate(() => document.documentElement.classList.remove("night-mode"));
         }
         if (title === "Fallback") {
             await expect(

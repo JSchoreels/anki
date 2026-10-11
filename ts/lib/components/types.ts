@@ -8,6 +8,7 @@ export type HelpItem = {
     title: string;
     help?: string;
     url?: string;
+    references?: { label: string; url: string }[];
     sched?: HelpItemScheduler;
     global?: boolean;
 };
