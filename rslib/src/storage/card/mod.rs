@@ -21,6 +21,7 @@ use rusqlite::Row;
 use self::data::CardData;
 use super::ids_to_string;
 use super::sqlite::SqlSortOrder;
+use super::sqlite::RETRIEVABILITY_CACHE_DB_SCHEMA;
 use crate::card::Card;
 use crate::card::CardId;
 use crate::card::CardQueue;
@@ -169,6 +170,54 @@ and (data not like '%"s_int":%' or data not like '%"s_fast":%')"#,
             })?
             .filter_map(Result::transpose)
             .collect()
+    }
+
+    /// The collection's change time when the open-time scan for foreign FSRS
+    /// states last ran. Kept in the local retrievability-cache sidecar, which
+    /// does not sync. None before the first scan or without the sidecar table.
+    pub(crate) fn foreign_card_scan_stamp(&self) -> Result<Option<TimestampMillis>> {
+        let exists: bool = self.db.query_row(
+            &format!(
+                "select exists(select 1 from {RETRIEVABILITY_CACHE_DB_SCHEMA}.sqlite_master \
+                 where type = 'table' and name = 'foreign_card_scan')"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        self.db
+            .query_row(
+                &format!(
+                    "select collection_change from \
+                     {RETRIEVABILITY_CACHE_DB_SCHEMA}.foreign_card_scan where id = 0"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn set_foreign_card_scan_stamp(
+        &self,
+        collection_change: TimestampMillis,
+    ) -> Result<()> {
+        self.db.execute_batch(&format!(
+            "create table if not exists {RETRIEVABILITY_CACHE_DB_SCHEMA}.foreign_card_scan (
+                id integer primary key check (id = 0),
+                collection_change integer not null
+            )"
+        ))?;
+        self.db.execute(
+            &format!(
+                "insert or replace into {RETRIEVABILITY_CACHE_DB_SCHEMA}.foreign_card_scan \
+                 (id, collection_change) values (0, ?)"
+            ),
+            [collection_change],
+        )?;
+        Ok(())
     }
 
     pub fn get_card(&self, cid: CardId) -> Result<Option<Card>> {

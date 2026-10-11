@@ -1065,6 +1065,26 @@ impl Collection {
         .map(|out| out.output)
     }
 
+    /// `repair_foreign_fsrs_memory_states` when the collection opens. Its scan
+    /// reads every card, so it is skipped while the collection's change time
+    /// is the one saved after the last scan (in the local, unsynced
+    /// retrievability-cache sidecar). Full syncs repair on their own.
+    /// ponytail: a file replaced by one with the same change time (e.g. a
+    /// colpkg of this collection) is scanned at its next change.
+    pub(crate) fn repair_foreign_fsrs_memory_states_on_open(&mut self) -> Result<usize> {
+        if !self.get_config_bool(BoolKey::Fsrs) {
+            return Ok(0);
+        }
+        let changed = self.storage.get_collection_timestamps()?.collection_change;
+        if self.storage.foreign_card_scan_stamp()? == Some(changed) {
+            return Ok(0);
+        }
+        let repaired = self.repair_foreign_fsrs_memory_states()?;
+        let changed = self.storage.get_collection_timestamps()?.collection_change;
+        self.storage.set_foreign_card_scan_stamp(changed)?;
+        Ok(repaired)
+    }
+
     /// Repair a known set of imported/synced cards. Expects a transaction.
     pub(crate) fn repair_foreign_fsrs_memory_states_inner(
         &mut self,
@@ -1908,6 +1928,38 @@ mod tests {
         assert!((s90 - 20.0).abs() < 0.01, "{s90}");
         assert!(col.storage.card_ids_with_foreign_fsrs_state()?.is_empty());
         assert_eq!(col.repair_foreign_fsrs_memory_states()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn open_scan_for_foreign_cards_waits_for_a_change() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 30;
+        col.storage.update_card(&card)?;
+        let make_foreign = |col: &Collection| {
+            col.storage.db.execute(
+                r#"update cards set data = '{"s":20.0,"d":6.0,"dr":0.85}' where id = ?"#,
+                [card.id],
+            )
+        };
+        col.timing_today()?;
+
+        make_foreign(&col)?;
+        assert_eq!(col.repair_foreign_fsrs_memory_states_on_open()?, 1);
+        // written without a new change time: not scanned
+        make_foreign(&col)?;
+        assert_eq!(col.repair_foreign_fsrs_memory_states_on_open()?, 0);
+        // the next change is
+        let changed = col.storage.get_collection_timestamps()?.collection_change;
+        col.storage
+            .set_modified_time(TimestampMillis(changed.0 + 1))?;
+        assert_eq!(col.repair_foreign_fsrs_memory_states_on_open()?, 1);
+        assert_eq!(col.repair_foreign_fsrs_memory_states_on_open()?, 0);
         Ok(())
     }
 

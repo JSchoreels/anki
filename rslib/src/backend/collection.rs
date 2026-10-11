@@ -26,7 +26,7 @@ impl BackendCollectionService for Backend {
 
         let mut col = builder.build()?;
         if !self.server {
-            if let Err(err) = col.repair_foreign_fsrs_memory_states() {
+            if let Err(err) = col.repair_foreign_fsrs_memory_states_on_open() {
                 tracing::warn!(?err, "repairing foreign FSRS memory states on open failed");
             }
         }
