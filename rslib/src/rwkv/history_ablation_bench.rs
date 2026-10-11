@@ -143,7 +143,27 @@ fn losses(predictions: &[(usize, f32)], rows: &[Row]) -> Vec<f64> {
         .collect()
 }
 
+fn interday_answer_ids(rows: &[Row]) -> HashSet<i64> {
+    let mut seen = HashSet::new();
+    rows.iter()
+        .filter_map(|row| {
+            let has_previous_answer = !seen.insert(row.1);
+            (has_previous_answer && row.9 >= 1).then_some(row.0)
+        })
+        .collect()
+}
+
 fn metrics(rows: &[Row], losses: &[f64], baseline: &[f64], selected: &[bool]) -> serde_json::Value {
+    metrics_with_resamples(rows, losses, baseline, selected, 400)
+}
+
+fn metrics_with_resamples(
+    rows: &[Row],
+    losses: &[f64],
+    baseline: &[f64],
+    selected: &[bool],
+    samples: usize,
+) -> serde_json::Value {
     let mut per_card = HashMap::<i64, (f64, usize)>::new();
     let mut loss_sum = 0.0;
     let mut baseline_sum = 0.0;
@@ -167,7 +187,7 @@ fn metrics(rows: &[Row], losses: &[f64], baseline: &[f64], selected: &[bool]) ->
     clusters.sort_unstable_by_key(|item| item.0);
     let mut rng = StdRng::seed_from_u64(9407);
     let mut deltas = Vec::new();
-    for _ in 0..400 {
+    for _ in 0..samples {
         let mut sum = 0.0;
         let mut n = 0;
         for _ in 0..clusters.len() {
@@ -185,7 +205,8 @@ fn metrics(rows: &[Row], losses: &[f64], baseline: &[f64], selected: &[bool]) ->
         "baseline_log_loss": baseline_sum / count as f64,
         "delta_log_loss": (loss_sum - baseline_sum) / count as f64,
         "relative_increase_pct": 100.0 * (loss_sum - baseline_sum) / baseline_sum,
-        "delta_95pct_card_bootstrap": [deltas[10], deltas[389]],
+        "delta_95pct_card_bootstrap": [deltas[samples / 40], deltas[samples - samples / 40 - 1]],
+        "bootstrap_resamples": samples,
     })
 }
 
@@ -301,6 +322,191 @@ fn rwkv_history_ablation_metrics() {
         )
         .unwrap();
     }
+}
+
+#[test]
+#[ignore]
+fn rwkv_reset_history_metrics() {
+    let input_path = env::var("ANKI_RWKV_ABLATION_INPUT").expect("set ANKI_RWKV_ABLATION_INPUT");
+    let output_path = env::var("ANKI_RWKV_ABLATION_OUTPUT").expect("set ANKI_RWKV_ABLATION_OUTPUT");
+    let mut source: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(input_path).unwrap()).unwrap();
+    let variants: HashMap<String, Vec<Row>> =
+        serde_json::from_value(source.as_object_mut().unwrap().remove("variants").unwrap())
+            .unwrap();
+    let complete = &variants["all_reviews"];
+    let fresh = &variants["after_reset_only"];
+    let scored = fresh
+        .iter()
+        .filter(|row| row.11)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!scored.is_empty());
+    let evaluation_start = scored[0].0;
+    let reset_cards = source["reset_review_ids"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|id| id.parse::<i64>().unwrap())
+        .collect::<HashSet<_>>();
+    let rest = fresh
+        .iter()
+        .filter(|row| row.0 >= evaluation_start && !reset_cards.contains(&row.1))
+        .cloned()
+        .collect::<Vec<_>>();
+    let expected = scored
+        .iter()
+        .map(|row| (row.0, row.1, row.5))
+        .collect::<Vec<_>>();
+    for rows in variants.values() {
+        assert!(rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.11)
+                .map(|row| (row.0, row.1, row.5))
+                .collect::<Vec<_>>(),
+            expected,
+            "both conditions must score exactly the same outcomes"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.0 >= evaluation_start && !reset_cards.contains(&row.1))
+                .map(|row| (row.0, row.1, row.5))
+                .collect::<Vec<_>>(),
+            rest.iter()
+                .map(|row| (row.0, row.1, row.5))
+                .collect::<Vec<_>>(),
+            "non-reset outcomes must also be identical"
+        );
+    }
+    let all = vec![true; scored.len()];
+    let mut seen = HashSet::new();
+    let first = scored
+        .iter()
+        .map(|row| seen.insert(row.1))
+        .collect::<Vec<_>>();
+    let later = first.iter().map(|&is_first| !is_first).collect::<Vec<_>>();
+    // Membership comes from the reset condition for both policies. Creation
+    // elapsed time on a first query is not a gap since a previous answer.
+    let interday_ids = interday_answer_ids(fresh);
+    let interday = scored
+        .iter()
+        .map(|row| interday_ids.contains(&row.0))
+        .collect::<Vec<_>>();
+    let rest_all = vec![true; rest.len()];
+    let rest_interday = rest
+        .iter()
+        .map(|row| interday_ids.contains(&row.0))
+        .collect::<Vec<_>>();
+    let weights = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let mut features = FeatureState::default();
+    for rows in [complete, fresh] {
+        for row in rows {
+            features.features_for(&row.input());
+        }
+    }
+    assert_eq!(features.review_index, 0);
+    assert!(features.first_day_offset.is_none());
+    let mut results = Vec::new();
+    for (precision, precision_name) in
+        [(StatePrecision::F32, "f32"), (StatePrecision::Int8, "int8")]
+    {
+        let mut baseline = Vec::new();
+        let mut rest_baseline = Vec::new();
+        for mode in ["all_reviews", "after_reset_only"] {
+            let started = Instant::now();
+            let rows = &variants[mode];
+            let split = rows.iter().position(|row| row.11).unwrap();
+            let mut inference =
+                RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                    .unwrap();
+            inference.features = features.clone();
+            inference
+                .warm_up_reviews(rows[..split].iter().map(Row::input).collect(), false)
+                .unwrap();
+            let predictions = inference
+                .warm_up_reviews(rows[split..].iter().map(Row::input).collect(), true)
+                .unwrap();
+            let loss = losses(&predictions, &rows[split..]);
+            let selected_losses = rows[split..]
+                .iter()
+                .zip(&loss)
+                .filter_map(|(row, &loss)| row.11.then_some(loss))
+                .collect::<Vec<_>>();
+            let rest_losses = rows[split..]
+                .iter()
+                .zip(&loss)
+                .filter_map(|(row, &loss)| (!reset_cards.contains(&row.1)).then_some(loss))
+                .collect::<Vec<_>>();
+            if mode == "all_reviews" {
+                baseline = selected_losses.clone();
+                rest_baseline = rest_losses.clone();
+            }
+            let selected_predictions = predictions
+                .iter()
+                .zip(&rows[split..])
+                .zip(&loss)
+                .filter_map(|((&(_, p), row), &loss)| {
+                    row.11.then_some((row.0, row.1, row.5, p, loss))
+                })
+                .collect::<Vec<_>>();
+            let rest_predictions = predictions
+                .iter()
+                .zip(&rows[split..])
+                .zip(&loss)
+                .filter_map(|((&(_, p), row), &loss)| {
+                    (!reset_cards.contains(&row.1)).then_some((row.0, row.1, row.5, p, loss))
+                })
+                .collect::<Vec<_>>();
+            let result = json!({
+                "mode": mode, "precision": precision_name,
+                "replayed_answers": rows.len(),
+                "omitted_answers": complete.len() - rows.len(),
+                "all": metrics_with_resamples(&scored, &selected_losses, &baseline, &all, 10_000),
+                "interday": metrics_with_resamples(&scored, &selected_losses, &baseline, &interday, 10_000),
+                "first_per_card": metrics_with_resamples(&scored, &selected_losses, &baseline, &first, 10_000),
+                "after_first": metrics_with_resamples(&scored, &selected_losses, &baseline, &later, 10_000),
+                "rest_all": metrics(&rest, &rest_losses, &rest_baseline, &rest_all),
+                "rest_interday": metrics(&rest, &rest_losses, &rest_baseline, &rest_interday),
+                "predictions": selected_predictions,
+                "rest_predictions": rest_predictions,
+                "elapsed_seconds": started.elapsed().as_secs_f64(),
+            });
+            println!(
+                "{mode} precision={} all={} later={} first={} rest={} seconds={:.1}",
+                precision_name,
+                result["all"]["log_loss"],
+                result["after_first"]["log_loss"],
+                result["first_per_card"]["log_loss"],
+                result["rest_all"]["log_loss"],
+                started.elapsed().as_secs_f64()
+            );
+            results.push(result);
+            std::fs::write(
+                &output_path,
+                serde_json::to_vec_pretty(&json!({
+                    "source": source, "model": weights, "fixed_id_encodings": true,
+                    "evaluation_start_review_id": evaluation_start,
+                    "results": results,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn reset_history_interday_requires_a_previous_retained_answer() {
+    let rows = vec![
+        Row(1, 1, None, None, None, 3, 0, 0, 100, 100, 100, true),
+        Row(2, 2, None, None, None, 3, 0, 2, 100, 100, 100, true),
+        Row(3, 1, None, None, None, 3, 0, 1, 100, 0, 1, true),
+        Row(4, 1, None, None, None, 3, 0, 2, 101, 1, 86_400, true),
+        Row(5, 2, None, None, None, 3, 0, 2, 101, 1, 86_400, true),
+    ];
+    assert_eq!(interday_answer_ids(&rows), HashSet::from([4, 5]));
 }
 
 #[test]

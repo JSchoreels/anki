@@ -227,6 +227,14 @@ rwkv-history-ablation-prepare *args:
 rwkv-history-ablation-bench input output seeds='3':
     {{ if os() == "windows" { "$env:ANKI_RWKV_ABLATION_INPUT='" + input + "'; $env:ANKI_RWKV_ABLATION_OUTPUT='" + output + "'; $env:ANKI_RWKV_ABLATION_SEEDS='" + seeds + "'; cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_ABLATION_INPUT='" + input + "' ANKI_RWKV_ABLATION_OUTPUT='" + output + "' ANKI_RWKV_ABLATION_SEEDS='" + seeds + "' cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } }}
 
+# Prepare complete and post-reset replay histories from an explicit copied backup.
+rwkv-reset-history-prepare *args:
+    just rwkv-history-ablation-prepare --reset-comparison --deck-match= {{ args }}
+
+# Compare post-reset prediction accuracy with and without pre-reset history.
+rwkv-reset-history-bench input output:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_ABLATION_INPUT='" + input + "'; $env:ANKI_RWKV_ABLATION_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_reset_history_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_ABLATION_INPUT='" + input + "' ANKI_RWKV_ABLATION_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_reset_history_metrics -- --ignored --nocapture" } }}
+
 # Verify compact RWKV storage, normal queries, undo and checkpoint continuity.
 rwkv-state-precision-tests *args:
     cargo test -p anki --lib rwkv_state_precision {{ args }}

@@ -52,6 +52,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Technical details
 
+- **RWKV reset-history accuracy benchmark:** add copied-collection replay recipes that compare retaining all eligible answers with discarding answers through each card's latest Forget operation. Score identical post-reset answers and non-reset cards, with fixed identity encodings, f32/int8 state, and paired card-cluster intervals. The [two-collection report](docs/rwkv-reset-history-2026-10-11.MD) shows mixed reset-card results and measurable shared-state effects; this tooling does not change scheduling or reset policy.
+
 - **RWKV reset boundaries:** native and Python history loading honor the latest non-answer Forget revlog entry unless desktop history preservation is active. Replay semantics version 4 forces one rebuild of existing caches; the state-store schema remains version 12. Regression coverage exercises reset, reposition, rebuild, first answers, and restart with both history loaders and with the cache retained or deleted, plus native fingerprint and manual-review boundary checks.
 
 - **FSRS calibration:** use the per-review prediction API merged in [fsrs-rs #458](https://github.com/open-spaced-repetition/fsrs-rs/pull/458) for final-fit and validation-fold cache rows, removing Anki's duplicate history walk and prediction-source data. Prediction runs also honor cancellation between cards.
