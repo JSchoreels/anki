@@ -742,8 +742,23 @@ impl SqliteStorage {
         };
         // Rows come back in rowid (review id) order, so no sort or window
         // function is needed; the per-card replay start is derived below.
+        let preserved_reset_clause = if preserved_learning_start_cutoffs.is_empty() {
+            String::new()
+        } else {
+            let mut ids = String::new();
+            ids_to_string(&mut ids, preserved_learning_start_cutoffs.keys());
+            format!("or r.cid in {ids}")
+        };
+        // Forget keeps the revlog. Honor its reset boundary even before the
+        // first new answer, unless desktop history preservation is active.
         let sql = format!(
-            "select
+            "with latest_resets as (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+)
+select
   r.id,
   r.cid,
   c.nid,
@@ -755,9 +770,11 @@ impl SqliteStorage {
   cast(r.factor as integer)
 from revlog r
 join cards c on c.id = r.cid
+left join latest_resets resets on resets.cid = r.cid
 where r.ease between 1 and 4
   and r.type in (0, 1, 2, 3, 4, 5)
   and not (r.type = 3 and r.factor = 0)
+  and (r.id > coalesce(resets.reset_id, 0) {preserved_reset_clause})
   {ignored_clause}
 order by r.id"
         );
@@ -1762,7 +1779,12 @@ mod tests {
     ) -> Result<Vec<RwkvHistoricalReviewRow>> {
         let sql = format!(
             "
-with eligible as (
+with latest_resets as (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+), eligible as (
   select
     r.id, r.cid, c.nid,
     case when c.odid != 0 then c.odid else c.did end as deck_id,
@@ -1772,9 +1794,11 @@ with eligible as (
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
   join cards c on c.id = r.cid
+  left join latest_resets resets on resets.cid = r.cid
   where r.ease between 1 and 4
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
+    and r.id > coalesce(resets.reset_id, 0)
     {ignored_clause}
 ), retained_starts as (
   select

@@ -214,7 +214,7 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 3
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 4
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
@@ -19850,8 +19850,18 @@ def _historical_rwkv_review_rows(
         card_clause = f"and r.cid in {ids2str(valid_card_ids)}"
     else:
         card_clause = ""
+    preserved_card_ids = tuple(_rwkv_preserved_learning_start_cutoffs(reviewer))
+    preserved_reset_clause = (
+        f"or r.cid in {ids2str(preserved_card_ids)}" if preserved_card_ids else ""
+    )
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
     sql = f"""
+with latest_resets as (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+)
 select
   r.id,
   r.cid,
@@ -19864,7 +19874,9 @@ select
   cast(r.factor as integer)
 from revlog r
 join cards c on c.id = r.cid
+left join latest_resets resets on resets.cid = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
+  and (r.id > coalesce(resets.reset_id, 0) {preserved_reset_clause})
   {after_clause}
   {deck_clause}
   {card_clause}

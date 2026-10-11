@@ -177,8 +177,14 @@ marks its next learning sequence as append-only, so the resident state keeps
 using the card's previous reviews without a collection-wide replay. The marker
 is profile-local and remains active across restarts and undo/redo. The explicit
 **Build Cache** action in Deck Options clears these markers and applies
-the canonical latest-learning-sequence rule again. Anki's Forget operation does
-not delete the underlying review log. Append-only **Grade Now** batches apply
+the canonical reset and latest-learning-sequence rules again. A Forget review-log
+entry excludes the card's earlier reviews immediately, even when the card has
+not yet been reviewed after the reset. This lets a rebuild prepare the correct
+state before relearning begins, so the first new answer does not require another
+collection-wide recovery. Anki's Forget operation does not delete the underlying
+review log. Replay semantics version 4 invalidates caches built with the earlier
+reset handling; the next preparation rebuilds them once. The state-store schema
+remains version 12. Append-only **Grade Now** batches apply
 their newly written review rows to the same resident state, retain grouped
 undo/redo snapshots, and invalidate transient queue work. Batches containing
 only excluded cram rows also retain an identity-only rollback entry. If a batch
@@ -309,7 +315,11 @@ related but not interchangeable:
 
 The dataset builder identifies state `0` from the first answer of the retained
 learning sequence; it is not a separate raw revlog kind. Unrated reschedule
-entries and filtered entries with `factor = 0` are not answer tokens. Live
+entries and filtered entries with `factor = 0` are not answer tokens. An unrated
+Manual entry with `factor = 0` marks a Forget boundary: canonical replay excludes
+earlier answers unless profile-local history preservation is active. Rated Manual
+answers remain eligible even with zero factor, and unrated Set Due Date entries
+with nonzero factor do not reset history. Live
 answered inputs must use the scheduler state at answer time, before card state
 mutation, instead of copying the persistent card type. When RWKV synthesizes a
 same-day state outside Anki's learning queues, Qt places the corresponding raw

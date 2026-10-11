@@ -10800,6 +10800,135 @@ def test_forced_rwkv_rebuild_clears_preserved_history_cutoffs(
     ).exists()
 
 
+@pytest.mark.parametrize("native_history", [True, False])
+@pytest.mark.parametrize("delete_cache", [False, True])
+def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    native_history: bool,
+    delete_cache: bool,
+) -> None:
+    import shutil
+
+    from anki.collection import Collection
+    from anki.decks import UpdateDeckConfigs
+    from aqt.main import AnkiQt
+
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        config = col.decks.get_deck_configs_for_update(DeckId(1)).all_config[0].config
+        config.config.rwkv_review_enabled = True
+        col.decks.update_deck_configs(
+            UpdateDeckConfigs(target_deck_id=1, configs=[config])
+        )
+        card_ids = []
+        for name in ("Reset A", "Reset B", "Keep"):
+            notetype = col.models.current()
+            assert notetype is not None
+            note = col.new_note(notetype)
+            note.fields[0] = name
+            col.add_note(note, DeckId(1))
+            card = note.cards()[0]
+            card_ids.append(card.id)
+            for ease in (4, 3):
+                card = col.get_card(card.id)
+                card.start_timer()
+                col.sched.answerCard(card, ease)
+        reset_cards = card_ids[:2]
+        kept_card = card_ids[2]
+        timers: list[Callable[[], None]] = []
+        mw = SimpleNamespace(
+            col=col,
+            pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+            state="deckBrowser",
+            _legacy_reset_in_progress=False,
+            deckBrowser=SimpleNamespace(op_executed=lambda *_args: False),
+            toolbar=SimpleNamespace(update_sync_status=lambda: None),
+        )
+        reviewer = SimpleNamespace(mw=mw, _v3=SimpleNamespace())
+        mw.reviewer = reviewer
+        monkeypatch.setattr("aqt.mw", mw)
+        monkeypatch.setattr("aqt.main.current_window", lambda: mw)
+        monkeypatch.setattr("aqt.utils.tooltip", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "prewarm_reviewer_queue_score_cache",
+            lambda *_args, **_kwargs: None,
+        )
+        if not native_history:
+            monkeypatch.setattr(col._backend, "rwkv_historical_review_inputs", None)
+        _attach_progress_taskman(mw)
+        mw.progress.single_shot = lambda _delay, callback: timers.append(callback)
+        backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+        set_reviewer_backend(backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 6
+
+        changes = rwkv_scheduler.run_forgetting_cards_preserving_rwkv_history(
+            col,
+            lambda: col.sched.schedule_cards_as_new(
+                reset_cards, restore_position=False, reset_counts=True
+            ),
+            card_ids=reset_cards,
+        )
+        AnkiQt.on_operation_did_execute(mw, changes, None)
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 6
+        repositioned = col.sched.reposition_new_cards(
+            reset_cards,
+            starting_from=1,
+            step_size=1,
+            randomize=False,
+            shift_existing=False,
+        )
+        rwkv_scheduler.study_queues_did_change(mw, None, repositioned.changes)
+        if delete_cache:
+            shutil.rmtree(tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR)
+
+        rwkv_scheduler.build_rwkv_state_cache_with_progress(mw, force_rebuild=True)
+        assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+        assert set(backend.cache_snapshot().card_states) == {kept_card}
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 2
+        assert timers == []
+
+        for card_id in reset_cards:
+            card = col.get_card(card_id)
+            card.start_timer()
+            states = col.sched.get_scheduling_states(card_id)
+            reviewer._v3.states = states
+            answer = col.sched.build_answer(
+                card=card, states=states, rating=scheduler_pb2.CardAnswer.AGAIN
+            )
+            rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, 1)
+            changes = col.sched.answer_card(answer)
+            record_reviewer_answer(reviewer, card, 1)
+            AnkiQt.on_operation_did_execute(mw, changes, reviewer)
+            assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+            assert card_id in backend.cache_snapshot().card_states
+            assert timers == []
+
+        restored_runtime = _CacheRuntime()
+        set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert [
+            review.identity.card_id for review in restored_runtime.answered_inputs
+        ] == reset_cards
+        assert [review.card_type for review in restored_runtime.answered_inputs] == [
+            RwkvReviewState.LEARN_START,
+            RwkvReviewState.LEARN_START,
+        ]
+        assert set(
+            rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count_by_card
+        ) == set(card_ids)
+    finally:
+        col.close()
+
+
 def test_rwkv_state_cache_recovery_is_coalesced_until_scheduled_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
