@@ -48,6 +48,8 @@ repeated here unless they materially affect a fork feature.
 
 ### Technical details
 
+- **FSRS calibration:** use the per-review prediction API merged in [fsrs-rs #458](https://github.com/open-spaced-repetition/fsrs-rs/pull/458) for final-fit and validation-fold cache rows, removing Anki's duplicate history walk and prediction-source data. Prediction runs also honor cancellation between cards.
+
 - **Historical cache maintenance:** checkpoint and relocate the adjacent retrievability SQLite database on collection open when the new location is absent. Manual cache builds clear both prediction tables, rebuild FSRS final-fit and validation-fold rows with current deck-preset settings, and replay RWKV calibration against those folds. Automatic reviewer recovery retains its state-only behavior; review history and scheduling are unchanged.
 
 - **Bulk schedule editing:** reuse the existing Deck Options save request and modified-preset tracking. Copy only selected model settings and known FSRS auxiliary options, preserving unrelated preset and add-on data. Instant's fallback can be copied independently of its review model.
