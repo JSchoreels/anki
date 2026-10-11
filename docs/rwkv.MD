@@ -1,5 +1,8 @@
 # RWKV Review Scheduler
 
+For the offline comparison of missing whole-card histories versus holes within
+histories, see [History Omission Accuracy Benchmark](rwkv-history-ablation.MD).
+
 The RWKV review scheduler is a desktop-only review-time scheduler. In Deck
 Options, **Scheduler → Review scheduler** selects FSRS-6, FSRS-7, RWKV-Curve,
 or RWKV-Instant for the preset. Curve uses RWKV-Curve answer intervals and stores

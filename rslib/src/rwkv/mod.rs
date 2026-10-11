@@ -32,6 +32,8 @@ mod precision;
 pub use precision::StatePrecision;
 #[cfg(test)]
 mod collection_benchmark;
+#[cfg(test)]
+mod history_ablation_bench;
 #[cfg(target_os = "macos")]
 mod matmul;
 #[cfg(test)]
