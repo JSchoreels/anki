@@ -34,6 +34,14 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+### Technical details
+
+## 26.09.3+fsrs7.build.102 — 2026-10-12
+
+Changes since the last normal release, [build 100](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.100). The application version remains `26.09.3+fsrs7`.
+
+### User facing changes
+
 - **Working daily-limit help links.** New Cards/Day and Maximum Reviews/Day help now open the matching sections in the current Anki manual.
 
 - **Reset cards no longer repeatedly recover RWKV state after Build Cache.** Forgetting cards, repositioning them, and rebuilding the cache now excludes their old learning history immediately. Their first new reviews no longer trigger another collection-wide replay, including after deleting the state cache.
@@ -56,6 +64,10 @@ repeated here unless they materially affect a fork feature.
 
 ### Technical details
 
+- **RWKV history omission experiments:** added offline benchmarks that omit whole-card histories or individual answers at 25%, 50%, and 75% of the historical prefix, with fixed seeds, common evaluation answers, and paired card-cluster intervals. The [method](docs/rwkv-history-ablation.MD), [223,832-review report](docs/rwkv-history-ablation-2026-10-10.MD), and [Primarius report](docs/rwkv-history-ablation-primarius-2026-10-10.MD) document the accuracy impact. A separate [sibling-note memory report](docs/rwkv-sibling-note-memory-2026-10-10.MD) records an isolated experiment; its test-only memory policy is not part of the release.
+
+- **RWKV documentation:** clarified how load balancing and review fuzz apply to Curve's day-based answers, Instant's fallback due-date calculator, intraday intervals, and bulk rescheduling. The [RWKV FAQ](RWKV_FAQ.md) describes existing behavior.
+
 - **RWKV reset-history accuracy benchmark:** add copied-collection replay recipes that compare retaining all eligible answers with discarding answers through each card's latest Forget operation. Score identical post-reset answers and non-reset cards, with fixed identity encodings, f32/int8 state, and paired card-cluster intervals. The [two-collection report](docs/rwkv-reset-history-2026-10-11.MD) shows mixed reset-card results and measurable shared-state effects; this tooling does not change scheduling or reset policy.
 
 - **RWKV reset boundaries:** native and Python history loading always honor the latest non-answer Forget revlog entry, including requests carrying old preservation cutoffs. The fallback history query preserves Anki's undo stack. Replay semantics version 5 forces one rebuild of existing caches; the state-store schema remains version 12. Regression coverage exercises stale markers, reset, undo/redo, reposition, normal/forced rebuild, first answers, cache upgrades, and restart with both history loaders and with the cache retained or deleted, plus native fingerprint and manual-review boundary checks.
@@ -75,6 +87,11 @@ repeated here unless they materially affect a fork feature.
 - **Freed memory:** after full warm-up, calibration recompute, Memorised history and background state drops, Anki calls `malloc_trim(0)` on glibc Linux and `malloc_zone_pressure_relief` on macOS. In an 8 GB Linux container on a 63,000-card collection, this released 2.0–2.6 GB of retained RSS per job.
 - **Memorised history preemption:** calibration replays and full warm-up rebuilds mark a heavy replay. The Memorised job checkpoints at the next day boundary, drops its private runtime, waits, and resumes through the existing checkpoint restore, with identical final values.
 - Measurements are malloc bytes in use on macOS, release builds, on a 224,000-review collection (build 100 vs this change).
+
+- **Verification:** `just check` and all eight targeted reset/rebuild/relearning cases passed locally. The [complete CI run](https://github.com/JSchoreels/anki/actions/runs/38243095076) passed on the exact release commit, [fb7876ea9](https://github.com/JSchoreels/anki/commit/fb7876ea9ae8e9cb2350e244c3dd6baf24d63457), including Linux browser tests. The [build 102 release workflow](https://github.com/JSchoreels/anki/actions/runs/38250828803) completed successfully across all release platforms.
+- **Packaging:** build 102 provides 12 unsigned installer and portable downloads for macOS, Windows, and Linux on ARM64 and x64. Application versions and wheel versions keep the base `26.09.3+fsrs7` version; release tags and download filenames carry `.build.102`.
+
+[Full commit comparison since build 100](https://github.com/JSchoreels/anki/compare/29120cdd1ac762fe3e8a371445390952879d54ec...fb7876ea9ae8e9cb2350e244c3dd6baf24d63457)
 
 ## [26.09.3+fsrs7.build.100](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.100) — 2026-10-08
 
