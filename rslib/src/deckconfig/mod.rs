@@ -157,6 +157,18 @@ impl Default for DeckConfig {
 }
 
 impl DeckConfig {
+    pub(crate) fn intraday_learning_before_reviews(&self) -> bool {
+        serde_json::from_slice::<serde_json::Value>(&self.inner.other)
+            .ok()
+            .and_then(|other| {
+                other
+                    .get("jschoreels.deckoptions")?
+                    .get("intraday_learning_before_reviews")?
+                    .as_bool()
+            })
+            .unwrap_or(false)
+    }
+
     fn params_usable_in_current_fsrs(params: &[f32]) -> bool {
         matches!(params.len(), 17 | 19 | 21 | 34) && params.iter().all(|w| w.is_finite())
     }

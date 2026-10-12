@@ -272,8 +272,11 @@ interday-learning, and due-now intraday learning/relearning cards are gathered
 and scored together. With interday learning/review order set to Mix, they stay
 in one exact-retrievability ordering. Before and After place only the admitted
 interday learning cards before or after the other due cards, preserving the
-selected sort within each group. Intraday cards retain their relative order
-with review cards, and new cards still follow New/review order. Intraday cards
+selected sort within each group. By default, intraday cards retain their relative order
+with review cards, and new cards still follow New/review order. The optional
+Show due intraday learning/relearning before reviews setting instead prepends
+the admitted due intraday group, preserving its selected sort and leaving the
+interday/new/review mixing of the remaining cards intact. Intraday cards
 with a future timestamp remain hidden until their due time, at which point the
 queue is rebuilt so they can be inserted according to their current
 retrievability. The ordering key is
@@ -289,7 +292,15 @@ map; unscored new cards retain ascending-position fallback order.
 Review limits are applied after the shared retrievability sort, so filtered-deck
 positions do not decide which cards are admitted before sorting. Interday
 learning/review order changes presentation after this admission step; it does
-not change daily-limit selection or sibling burying.
+not change daily-limit selection or sibling burying. Intraday priority likewise
+changes presentation only after this selection.
+
+General fork display-order settings belong in deck-config `other` under
+`jschoreels.deckoptions`, separate from model-specific FSRS/RWKV metadata.
+`intraday_learning_before_reviews` is a boolean that defaults to false when
+absent or invalid. The selected study deck's preset controls it. The existing
+opaque JSON/protobuf/sync representation preserves this namespace on clients
+that do not interpret it; no numbered protobuf field is added.
 
 The Deck Options "New Card Intervals" preview passes the current unsaved values
 of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update

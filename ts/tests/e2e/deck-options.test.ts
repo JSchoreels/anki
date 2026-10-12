@@ -16,6 +16,53 @@ import {
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
 
+test("intraday learning priority saves and reloads without changing descending R or other metadata", async ({ page }) => {
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!;
+        config.config!.rwkvReviewEnabled = false;
+        config.config!.rwkvReviewInstantOrderEnabled = false;
+        config.config!.reviewOrder = 11;
+        config.config!.other = saved?.configs.at(-1)?.config?.other ?? new TextEncoder().encode(JSON.stringify({
+            "jschoreels.deckoptions": { future_option: "preserve" },
+            addon: { value: 42 },
+        }));
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const toggle = page.getByRole("checkbox", {
+        name: "Show due intraday learning/relearning before reviews",
+        exact: true,
+    });
+    await expect(toggle).not.toBeChecked();
+    for (const enabled of [true, false]) {
+        await toggle.setChecked(enabled);
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => {
+            const config = saved?.configs.at(-1)?.config;
+            return config && JSON.parse(new TextDecoder().decode(config.other))["jschoreels.deckoptions"];
+        }).toEqual({ future_option: "preserve", intraday_learning_before_reviews: enabled });
+        const config = saved!.configs.at(-1)!.config!;
+        expect(config.reviewOrder).toBe(11);
+        expect(JSON.parse(new TextDecoder().decode(config.other)).addon).toEqual({ value: 42 });
+        await page.reload();
+        if (enabled) {
+            await expect(toggle).toBeChecked();
+        } else {
+            await expect(toggle).not.toBeChecked();
+        }
+    }
+});
+
 test(
     "apply schedule dialog defaults to every category and only saves selected categories",
     async ({ page }, testInfo) => {

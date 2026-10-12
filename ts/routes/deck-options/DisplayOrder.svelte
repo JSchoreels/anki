@@ -17,6 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
+    import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import type { HelpItem } from "$lib/components/types";
 
@@ -26,6 +27,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reviewMixChoices,
         reviewOrderChoices,
     } from "./choices";
+    import {
+        readDisplayOrderSettings,
+        withDisplayOrderSettings,
+    } from "./display-order-settings";
     import type { DeckOptionsState } from "./lib";
 
     export let state: DeckOptionsState;
@@ -34,6 +39,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    const auxData = state.currentAuxData;
+
+    let intradayLearningBeforeReviews = false;
+    $: intradayLearningBeforeReviews =
+        readDisplayOrderSettings($auxData).intradayLearningBeforeReviews;
+    $: {
+        const updated = withDisplayOrderSettings($auxData, {
+            intradayLearningBeforeReviews,
+        });
+        if (updated) {
+            auxData.set(updated);
+        }
+    }
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
 
@@ -91,6 +109,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         interdayStepPriority: {
             title: tr.deckConfigInterdayStepPriority(),
             help: tr.deckConfigInterdayStepPriorityTooltip() + currentDeck,
+        },
+        intradayStepPriority: {
+            title: tr.deckConfigIntradayLearningBeforeReviews(),
+            help: tr.deckConfigIntradayLearningBeforeReviewsTooltip() + currentDeck,
         },
         reviewSortOrder: {
             title: tr.deckConfigReviewSortOrder(),
@@ -187,6 +209,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {settings.interdayStepPriority.title}
                 </SettingTitle>
             </EnumSelectorRow>
+        </Item>
+
+        <Item>
+            <SwitchRow bind:value={intradayLearningBeforeReviews} defaultValue={false}>
+                <SettingTitle
+                    on:click={() =>
+                        openHelpModal(
+                            Object.keys(settings).indexOf("intradayStepPriority"),
+                        )}
+                >
+                    {settings.intradayStepPriority.title}
+                </SettingTitle>
+            </SwitchRow>
         </Item>
 
         <Item>

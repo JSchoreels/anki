@@ -34,7 +34,11 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Prioritize due same-day learning without changing review sorting.** Deck Options → Display Order now offers Show due intraday learning/relearning before reviews. Enable it to show due same-day steps first while keeping ascending/descending retrievability or Relative Overdueness within each group. The option defaults off and syncs with the deck preset.
+
 ### Technical details
+
+- **Intraday queue priority:** separate admitted due intraday cards after exact scoring, daily-limit admission, and sibling selection, then prepend them to the main queue while retaining the selected sort within each group. Future steps still wait for their due timestamp. Store `intraday_learning_before_reviews` in deck-config extra data under `jschoreels.deckoptions`, with no new protobuf field. Regression coverage includes FSRS 6/7 ordering, current-card preservation, limits, new-card mixing, opaque-client preset edits, sync round trips, and browser save/reload.
 
 ## 26.09.3+fsrs7.build.102 — 2026-10-12
 

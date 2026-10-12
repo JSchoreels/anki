@@ -158,6 +158,7 @@ pub(super) struct QueueSortOptions {
     pub(super) new_gather_priority: NewCardGatherPriority,
     pub(super) review_order: ReviewCardOrder,
     pub(super) day_learn_mix: ReviewMix,
+    pub(super) intraday_learning_before_reviews: bool,
     pub(super) new_review_mix: ReviewMix,
     pub(super) rwkv_review_enabled: bool,
     pub(super) rwkv_review_instant_order_enabled: bool,
@@ -172,6 +173,7 @@ pub(super) struct QueueBuilder {
     pub(super) learning: Vec<DueCard>,
     pub(super) day_learning: Vec<DueCard>,
     pub(super) r_sorted_non_new: Vec<DueCard>,
+    r_sorted_intraday_learning: Vec<DueCard>,
     pinned_card_id: Option<CardId>,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     limits: LimitTreeMap,
@@ -271,6 +273,7 @@ impl QueueBuilder {
             learning: Vec::new(),
             day_learning: Vec::new(),
             r_sorted_non_new: Vec::new(),
+            r_sorted_intraday_learning: Vec::new(),
             pinned_card_id: None,
             deferred_rwkv_reviews: HashMap::new(),
             limits,
@@ -329,7 +332,7 @@ impl QueueBuilder {
                 if self.context.non_news_sorted_by_retrievability()
                     && card.due <= self.context.timing.now.0 as i32
                 {
-                    self.r_sorted_non_new.push(card);
+                    self.push_retrievability_sorted_card(card, false);
                 } else {
                     self.learning.push(card);
                 }
@@ -371,7 +374,9 @@ impl QueueBuilder {
     }
 
     fn push_retrievability_sorted_card(&mut self, card: DueCard, interday_or_review: bool) {
-        if interday_or_review
+        if !interday_or_review && self.context.sort_options.intraday_learning_before_reviews {
+            self.r_sorted_intraday_learning.push(card);
+        } else if interday_or_review
             && card.kind == DueCardKind::Learning
             && self.context.sort_options.day_learn_mix != ReviewMix::MixWithReviews
         {
@@ -416,7 +421,9 @@ impl QueueBuilder {
             .filter(|card| matches!(card.kind, DueCardKind::Review))
             .count();
         let learn_count = if shared_r_sort {
-            r_sorted_learning_count + self.day_learning.len()
+            r_sorted_learning_count
+                + self.day_learning.len()
+                + self.r_sorted_intraday_learning.len()
         } else {
             intraday_learning.iter().filter(|e| e.due <= cutoff).count() + self.day_learning.len()
         };
@@ -442,11 +449,15 @@ impl QueueBuilder {
                 self.context.sort_options.day_learn_mix,
             )
         };
-        let main_iter = merge_new(
-            with_interday_learn,
-            self.new,
-            self.context.sort_options.new_review_mix,
-        );
+        let main_iter = self
+            .r_sorted_intraday_learning
+            .into_iter()
+            .map(MainQueueEntry::from)
+            .chain(merge_new(
+                with_interday_learn,
+                self.new,
+                self.context.sort_options.new_review_mix,
+            ));
 
         CardQueues {
             counts: Counts {
@@ -535,6 +546,7 @@ fn sort_options(deck: &Deck, config_map: &HashMap<DeckConfigId, DeckConfig>) -> 
             new_gather_priority: config.inner.new_card_gather_priority(),
             review_order: config.inner.review_order(),
             day_learn_mix: config.inner.interday_learning_mix(),
+            intraday_learning_before_reviews: config.intraday_learning_before_reviews(),
             new_review_mix: config.inner.new_mix(),
             rwkv_review_enabled: config.inner.rwkv_review_enabled,
             rwkv_review_instant_order_enabled: config.inner.rwkv_review_instant_order_enabled,
@@ -1331,17 +1343,20 @@ mod test {
     }
 
     #[test]
-    fn fsrs_review_order_respects_interday_learning_mix() -> Result<()> {
+    fn fsrs_review_order_respects_learning_priorities() -> Result<()> {
         for version in [FsrsVersion::Six, FsrsVersion::Seven] {
             for order in [
                 ReviewCardOrder::RetrievabilityAscending,
                 ReviewCardOrder::RetrievabilityDescending,
                 ReviewCardOrder::RelativeOverdueness,
             ] {
-                for mix in [
-                    ReviewMix::BeforeReviews,
-                    ReviewMix::MixWithReviews,
-                    ReviewMix::AfterReviews,
+                for (mix, intraday_first) in [
+                    (ReviewMix::BeforeReviews, false),
+                    (ReviewMix::MixWithReviews, false),
+                    (ReviewMix::AfterReviews, false),
+                    (ReviewMix::BeforeReviews, true),
+                    (ReviewMix::MixWithReviews, true),
+                    (ReviewMix::AfterReviews, true),
                 ] {
                     let mut col = Collection::new();
                     col.set_config_bool(BoolKey::Fsrs, true, true)?;
@@ -1352,6 +1367,11 @@ mod test {
                         .unwrap();
                     config.inner.fsrs_version = version as i32;
                     config.inner.interday_learning_mix = mix as i32;
+                    config.inner.other = serde_json::to_vec(&serde_json::json!({
+                        "jschoreels.deckoptions": {
+                            "intraday_learning_before_reviews": intraday_first,
+                        },
+                    }))?;
                     col.add_or_update_deck_config(&mut config)?;
                     let timing = col.timing_today()?;
                     let mut ranked_cards = Vec::new();
@@ -1388,42 +1408,58 @@ mod test {
                         .map(|(id, _)| *id);
                     let other = ranked_cards
                         .iter()
-                        .filter(|(_, queue)| *queue != CardQueue::DayLearn)
+                        .filter(|(_, queue)| {
+                            *queue != CardQueue::DayLearn
+                                && (!intraday_first || *queue != CardQueue::Learn)
+                        })
                         .map(|(id, _)| *id);
-                    let expected = match mix {
+                    let mut expected = match mix {
                         ReviewMix::BeforeReviews => interday.chain(other).collect::<Vec<_>>(),
                         ReviewMix::AfterReviews => other.chain(interday).collect(),
-                        ReviewMix::MixWithReviews => {
-                            ranked_cards.iter().map(|(id, _)| *id).collect()
-                        }
+                        ReviewMix::MixWithReviews => ranked_cards
+                            .iter()
+                            .filter(|(_, queue)| !intraday_first || *queue != CardQueue::Learn)
+                            .map(|(id, _)| *id)
+                            .collect(),
                     };
+                    if intraday_first {
+                        expected = ranked_cards
+                            .iter()
+                            .filter(|(_, queue)| *queue == CardQueue::Learn)
+                            .map(|(id, _)| *id)
+                            .chain(expected)
+                            .collect();
+                    }
                     assert_eq!(
                         col.queue_as_ids(deck.id),
                         expected,
-                        "{version:?}, {order:?}, {mix:?}"
+                        "{version:?}, {order:?}, {mix:?}, intraday first={intraday_first}"
                     );
                     assert_eq!(col.counts(), [0, 4, 2]);
 
-                    let current_id = ranked_cards
-                        .iter()
-                        .find(|(_, queue)| *queue == CardQueue::DayLearn)
-                        .unwrap()
-                        .0;
-                    let current = col.storage.get_card(current_id)?.unwrap();
-                    let mut queues = col.build_queues_with_current_card(deck.id, Some(&current))?;
-                    let preserved_order = std::iter::once(current_id)
-                        .chain(expected.into_iter().filter(|id| *id != current_id))
-                        .collect::<Vec<_>>();
-                    assert_eq!(
-                        queues
+                    for current_queue in [CardQueue::DayLearn, CardQueue::Learn] {
+                        let current_id = ranked_cards
                             .iter()
-                            .map(|entry| entry.card_id())
-                            .collect::<Vec<_>>(),
-                        preserved_order,
-                        "preserved current card: {version:?}, {order:?}, {mix:?}"
-                    );
-                    let counts = queues.counts();
-                    assert_eq!([counts.new, counts.learning, counts.review], [0, 4, 2]);
+                            .find(|(_, queue)| *queue == current_queue)
+                            .unwrap()
+                            .0;
+                        let current = col.storage.get_card(current_id)?.unwrap();
+                        let mut queues =
+                            col.build_queues_with_current_card(deck.id, Some(&current))?;
+                        let preserved_order = std::iter::once(current_id)
+                            .chain(expected.iter().copied().filter(|id| *id != current_id))
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            queues
+                                .iter()
+                                .map(|entry| entry.card_id())
+                                .collect::<Vec<_>>(),
+                            preserved_order,
+                            "preserved current card: {version:?}, {order:?}, {mix:?}, intraday first={intraday_first}"
+                        );
+                        let counts = queues.counts();
+                        assert_eq!([counts.new, counts.learning, counts.review], [0, 4, 2]);
+                    }
                 }
             }
         }
@@ -1431,11 +1467,14 @@ mod test {
     }
 
     #[test]
-    fn fsrs_interday_learning_mix_preserves_review_limit_selection() -> Result<()> {
-        for mix in [
-            ReviewMix::BeforeReviews,
-            ReviewMix::MixWithReviews,
-            ReviewMix::AfterReviews,
+    fn fsrs_learning_priorities_preserve_review_limit_selection() -> Result<()> {
+        for (mix, intraday_first) in [
+            (ReviewMix::BeforeReviews, false),
+            (ReviewMix::MixWithReviews, false),
+            (ReviewMix::AfterReviews, false),
+            (ReviewMix::BeforeReviews, true),
+            (ReviewMix::MixWithReviews, true),
+            (ReviewMix::AfterReviews, true),
         ] {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, true)?;
@@ -1446,6 +1485,11 @@ mod test {
                 .get_deck_config(deck.config_id().unwrap(), false)?
                 .unwrap();
             config.inner.interday_learning_mix = mix as i32;
+            config.inner.other = serde_json::to_vec(&serde_json::json!({
+                "jschoreels.deckoptions": {
+                    "intraday_learning_before_reviews": intraday_first,
+                },
+            }))?;
             col.add_or_update_deck_config(&mut config)?;
             let timing = col.timing_today()?;
             let review = add_memory_state_card(
@@ -1475,7 +1519,16 @@ mod test {
                 3 * 86_400,
                 30.0,
             )?;
-            assert_eq!(col.queue_as_ids(deck.id), vec![review, intraday], "{mix:?}");
+            let expected = if intraday_first {
+                vec![intraday, review]
+            } else {
+                vec![review, intraday]
+            };
+            assert_eq!(
+                col.queue_as_ids(deck.id),
+                expected,
+                "{mix:?}, intraday first={intraday_first}"
+            );
             assert_eq!(col.counts(), [0, 1, 1]);
         }
         Ok(())
@@ -1845,6 +1898,15 @@ mod test {
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let mut config = col
+            .get_deck_config(deck.config_id().unwrap(), false)?
+            .unwrap();
+        config.inner.other = serde_json::to_vec(&serde_json::json!({
+            "jschoreels.deckoptions": {
+                "intraday_learning_before_reviews": true,
+            },
+        }))?;
+        col.add_or_update_deck_config(&mut config)?;
 
         let timing = col.timing_today()?;
         let review = add_memory_state_card(
@@ -1887,6 +1949,11 @@ mod test {
                 let mut config = col.get_deck_config(deck_config_id, false)?.unwrap();
                 config.inner.new_mix = new_mix as i32;
                 config.inner.interday_learning_mix = interday_mix as i32;
+                config.inner.other = serde_json::to_vec(&serde_json::json!({
+                    "jschoreels.deckoptions": {
+                        "intraday_learning_before_reviews": true,
+                    },
+                }))?;
                 col.add_or_update_deck_config(&mut config)?;
 
                 let new_card = CardAdder::new().add(&mut col)[0].id;
@@ -1910,6 +1977,16 @@ mod test {
                     30.0,
                 )?;
 
+                let intraday = add_memory_state_card(
+                    &mut col,
+                    deck.id,
+                    CardQueue::Learn,
+                    CardType::Relearn,
+                    (timing.now.0 - 1) as i32,
+                    86_400,
+                    30.0,
+                )?;
+
                 let mut expected = if interday_mix == ReviewMix::AfterReviews {
                     vec![review, interday]
                 } else {
@@ -1920,12 +1997,13 @@ mod test {
                 } else {
                     expected.push(new_card);
                 }
+                expected.insert(0, intraday);
                 assert_eq!(
                     col.queue_as_ids(deck.id),
                     expected,
                     "new: {new_mix:?}, interday: {interday_mix:?}"
                 );
-                assert_eq!(col.counts(), [1, 1, 1]);
+                assert_eq!(col.counts(), [1, 2, 1]);
             }
         }
         Ok(())

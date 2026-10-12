@@ -316,6 +316,12 @@ Desktop-only RWKV review settings are stored separately in deck config `other`
 under the `jschoreels.rwkv` key. See `rwkv.MD` for RWKV queue scoring, warm-up
 state, settings, inference runtime, and Rust/NEON parity coverage.
 
+General display-order settings use deck config `other["jschoreels.deckoptions"]`.
+The boolean `intraday_learning_before_reviews` defaults off and prioritizes due
+intraday learning/relearning while retaining the selected review sort. This
+namespace stays separate from FSRS/RWKV model settings and is preserved as opaque
+metadata by the existing preset storage and sync paths.
+
 When reading deck configs through the legacy Python `DeckConfigDict` API,
 fork-owned `other` entries may appear either under the `other` object or as
 top-level keys such as `jschoreels.fsrs` and `jschoreels.rwkv`. Code that
