@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Working daily-limit help links.** New Cards/Day and Maximum Reviews/Day help now open the matching sections in the current Anki manual.
+
 - **Reset cards no longer repeatedly recover RWKV state after Build Cache.** Forgetting cards, repositioning them, and rebuilding the cache now excludes their old learning history immediately. Their first new reviews no longer trigger another collection-wide replay, including after deleting the state cache.
 
 - **Consistent RWKV history after resetting cards.** RWKV rebuilds now always exclude reviews before each card's latest reset, including after restarting Anki or recovering a cache. The old desktop preservation override and its misleading Forget notice are removed. The review log remains available in Anki.

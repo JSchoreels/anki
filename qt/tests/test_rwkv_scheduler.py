@@ -10838,7 +10838,14 @@ def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
         )
         rwkv_scheduler.study_queues_did_change(mw, None, repositioned.changes)
         if delete_cache:
+            # Close the collection's attached retrievability database before
+            # deleting the cache, as when removing it while Anki is shut down.
+            col.close()
             shutil.rmtree(tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR)
+            col = Collection(str(tmp_path / "collection.anki2"))
+            mw.col = col
+            if not native_history:
+                monkeypatch.setattr(col._backend, "rwkv_historical_review_inputs", None)
 
         rwkv_scheduler.build_rwkv_state_cache_with_progress(
             mw, force_rebuild=force_rebuild
