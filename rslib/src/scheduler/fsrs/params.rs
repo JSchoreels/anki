@@ -43,6 +43,7 @@ use super::legacy_fsrs_params;
 use crate::card::Card;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
+use crate::progress::ThrottlingProgressHandler;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MAX;
@@ -130,7 +131,6 @@ pub(crate) struct PreparedComputeParams {
     pub items: Vec<FSRSItem>,
     pub item_card_ids: Vec<i64>,
     pub item_revlog_ids: Vec<RevlogId>,
-    pub fsrs_prediction_sources: Vec<FsrsReviewPredictionSource>,
     pub target_counts: TrainingTargetCounts,
 }
 
@@ -237,7 +237,6 @@ struct TrainingItemsForFsrs {
     items: Vec<FSRSItem>,
     card_ids: Option<Vec<i64>>,
     revlog_ids: Option<Vec<RevlogId>>,
-    prediction_sources: Vec<FsrsReviewPredictionSource>,
 }
 
 impl TrainingItemsForFsrs {
@@ -245,7 +244,6 @@ impl TrainingItemsForFsrs {
         items: Vec<FSRSItem>,
         card_ids: Vec<i64>,
         revlog_ids: Vec<RevlogId>,
-        prediction_sources: Vec<FsrsReviewPredictionSource>,
     ) -> Self {
         debug_assert_eq!(items.len(), card_ids.len());
         debug_assert_eq!(items.len(), revlog_ids.len());
@@ -253,7 +251,6 @@ impl TrainingItemsForFsrs {
             items,
             card_ids: Some(card_ids),
             revlog_ids: Some(revlog_ids),
-            prediction_sources,
         }
     }
 
@@ -262,7 +259,6 @@ impl TrainingItemsForFsrs {
             items,
             card_ids: None,
             revlog_ids: None,
-            prediction_sources: Vec::new(),
         }
     }
 
@@ -283,7 +279,6 @@ impl TrainingItemsForFsrs {
                     items,
                     card_ids: Some(card_ids),
                     revlog_ids: Some(revlog_ids),
-                    prediction_sources: Vec::new(),
                 }
             }
             (None, None) => Self::without_card_ids(
@@ -301,7 +296,6 @@ impl TrainingItemsForFsrs {
             items: self.items[start..end].to_vec(),
             card_ids: self.card_ids.as_ref().map(|ids| ids[start..end].to_vec()),
             revlog_ids: self.revlog_ids.as_ref().map(|ids| ids[start..end].to_vec()),
-            prediction_sources: Vec::new(),
         }
     }
 
@@ -311,29 +305,50 @@ impl TrainingItemsForFsrs {
 }
 
 #[derive(Clone)]
-pub(crate) struct FsrsReviewPredictionSource {
-    reviews: Vec<FSRSReview>,
-    targets: Vec<(RevlogId, usize)>,
-}
-
-#[derive(Clone)]
 pub(crate) struct FsrsReviewPredictionContext {
     items: Vec<FSRSItem>,
     card_ids: Vec<i64>,
     revlog_ids: Vec<RevlogId>,
-    sources: Vec<FsrsReviewPredictionSource>,
     model_version: ComputeParametersVersion,
     num_relearning_steps: usize,
     enable_scheduling_penalties: bool,
 }
 
 impl FsrsReviewPredictionContext {
+    pub(crate) fn from_revlogs(
+        revlogs: Vec<RevlogEntry>,
+        next_day_at: TimestampSecs,
+        input: PrepareComputeParamsInput<'_>,
+        progress: &mut ThrottlingProgressHandler<ComputeParamsProgress>,
+    ) -> Result<Self> {
+        let model_version =
+            resolved_model_version(input.current_params, input.model_version_override);
+        let include_same_day_reviews =
+            include_same_day_training_entries(model_version, input.include_same_day_reviews);
+        let training = fsrs_items_for_training_with_progress(
+            revlogs,
+            next_day_at,
+            input.ignore_revlogs_before,
+            include_same_day_reviews,
+            || progress.update(true, |_| {}),
+        )?;
+        progress.check_cancelled()?;
+        Ok(Self {
+            items: training.items,
+            card_ids: training.card_ids.unwrap_or_default(),
+            revlog_ids: training.revlog_ids.unwrap_or_default(),
+            model_version,
+            num_relearning_steps: input.num_of_relearning_steps,
+            enable_scheduling_penalties: input.enable_scheduling_penalties,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_prepared(prepared: &PreparedComputeParams) -> Self {
         Self {
             items: prepared.items.clone(),
             card_ids: prepared.item_card_ids.clone(),
             revlog_ids: prepared.item_revlog_ids.clone(),
-            sources: prepared.fsrs_prediction_sources.clone(),
             model_version: prepared.model_version,
             num_relearning_steps: prepared.num_of_relearning_steps,
             enable_scheduling_penalties: prepared.enable_scheduling_penalties,
@@ -443,28 +458,30 @@ fn time_series_split_items(
     sorted_items: TrainingItemsForFsrs,
     n_splits: usize,
 ) -> Vec<(TrainingItemsForFsrs, TrainingItemsForFsrs)> {
-    if sorted_items.items.is_empty() || n_splits == 0 {
-        return vec![];
-    }
-    let total_items = sorted_items.items.len();
-    let segment_size = total_items / (n_splits + 1);
-    if segment_size == 0 {
-        return vec![];
-    }
-    (0..n_splits)
-        .map(|i| {
-            let test_start = (i + 1) * segment_size;
-            let test_end = if i == n_splits - 1 {
-                total_items
-            } else {
-                (i + 2) * segment_size
-            };
+    time_series_split_ranges(sorted_items.items.len(), n_splits)
+        .map(|test| {
             (
-                sorted_items.slice(0, test_start),
-                sorted_items.slice(test_start, test_end),
+                sorted_items.slice(0, test.start),
+                sorted_items.slice(test.start, test.end),
             )
         })
         .collect()
+}
+
+fn time_series_split_ranges(
+    total_items: usize,
+    n_splits: usize,
+) -> impl Iterator<Item = std::ops::Range<usize>> {
+    let segment_size = total_items / (n_splits + 1);
+    (0..if segment_size == 0 { 0 } else { n_splits }).map(move |i| {
+        let start = (i + 1) * segment_size;
+        let end = if i == n_splits - 1 {
+            total_items
+        } else {
+            (i + 2) * segment_size
+        };
+        start..end
+    })
 }
 
 fn evaluate_with_time_series_splits_for_targets<F>(
@@ -492,7 +509,6 @@ where
             items: train_set,
             card_ids,
             revlog_ids: None,
-            prediction_sources: Vec::new(),
         },
         5,
     );
@@ -589,8 +605,7 @@ pub(crate) fn compute_params_from_prepared(
         items,
         item_card_ids,
         item_revlog_ids,
-        fsrs_prediction_sources: _,
-        target_counts: _,
+        ..
     }: PreparedComputeParams,
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
     progress_phase: Option<SharedComputeParamsProgressPhase>,
@@ -653,14 +668,12 @@ pub(crate) fn compute_params_from_prepared(
             items.clone(),
             item_card_ids.clone(),
             item_revlog_ids.clone(),
-            Vec::new(),
         )
     } else {
         TrainingItemsForFsrs::with_card_and_revlog_ids(
             items.clone(),
             item_card_ids.clone(),
             item_revlog_ids.clone(),
-            Vec::new(),
         )
         .filter_non_same_day_evaluation_targets()
     };
@@ -1139,93 +1152,6 @@ impl Collection {
         output
     }
 
-    pub(crate) fn compute_fsrs_review_retrievability_calibration_cache(
-        &mut self,
-        params: &[f32],
-        context: &FsrsReviewPredictionContext,
-        include_validation_folds: bool,
-    ) -> Result<u32> {
-        self.clear_progress();
-        let (progress, done, progress_thread) = self
-            .create_fsrs_review_retrievability_progress_thread(context, include_validation_folds)?;
-        let rows = fsrs_review_retrievability_cache_rows(
-            params,
-            context,
-            include_validation_folds,
-            Some(&progress),
-        );
-        done.store(true, Ordering::Release);
-        progress_thread.join().ok();
-        let rows = rows?;
-        let stored = self
-            .storage
-            .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")?;
-        tracing::debug!(
-            predictions = stored,
-            "stored FSRS review retrievability calibration cache"
-        );
-        Ok(stored as u32)
-    }
-
-    fn create_fsrs_review_retrievability_progress_thread(
-        &self,
-        context: &FsrsReviewPredictionContext,
-        include_validation_folds: bool,
-    ) -> Result<(
-        FsrsReviewRetrievabilityProgress,
-        Arc<AtomicBool>,
-        thread::JoinHandle<()>,
-    )> {
-        let mut anki_progress = self.new_progress_handler::<ComputeParamsProgress>();
-        let total_validation_folds = if include_validation_folds {
-            FSRS_VALIDATION_FOLDS
-        } else {
-            0
-        };
-        let target_counts = training_target_counts_from_items(&context.items);
-        let total_iterations = calibration_progress_total(total_validation_folds);
-        anki_progress.update(false, |p| {
-            p.current_iteration = 0;
-            p.total_iterations = total_iterations as u32;
-            p.reviews = target_counts.total_targets as u32;
-            p.long_term_reviews = target_counts.long_term_targets as u32;
-            p.short_term_reviews = target_counts.short_term_targets as u32;
-            p.current_preset = 1;
-            p.total_presets = 1;
-        })?;
-
-        let progress = FsrsReviewRetrievabilityProgress {
-            training_progress: CombinedProgressState::new_shared(),
-            completed_validation_folds: Arc::new(AtomicUsize::new(0)),
-        };
-        let done = Arc::new(AtomicBool::new(false));
-        let training_progress = progress.training_progress.clone();
-        let completed_validation_folds = progress.completed_validation_folds.clone();
-        let done_for_thread = done.clone();
-        let progress_thread = thread::spawn(move || {
-            while !done_for_thread.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(100));
-                let mut guard = training_progress.lock().unwrap();
-                let current_iterations = calibration_progress_current(
-                    completed_validation_folds.load(Ordering::Acquire),
-                    total_validation_folds,
-                    &guard,
-                );
-                if anki_progress
-                    .update(false, |s| {
-                        s.current_iteration = current_iterations as u32;
-                        s.total_iterations = total_iterations as u32;
-                    })
-                    .is_err()
-                {
-                    guard.want_abort = true;
-                    return;
-                }
-            }
-        });
-        Ok((progress, done, progress_thread))
-    }
-
     pub(crate) fn prepare_compute_params(
         &mut self,
         input: PrepareComputeParamsInput<'_>,
@@ -1296,7 +1222,6 @@ impl Collection {
             items,
             card_ids,
             revlog_ids,
-            prediction_sources,
         } = training_items;
         Ok(PreparedComputeParams {
             current_params: current_params.to_vec(),
@@ -1310,7 +1235,6 @@ impl Collection {
             items,
             item_card_ids: card_ids.unwrap_or_default(),
             item_revlog_ids: revlog_ids.unwrap_or_default(),
-            fsrs_prediction_sources: prediction_sources,
             target_counts,
         })
     }
@@ -1619,70 +1543,141 @@ fn fsrs_items_for_training(
     review_revlogs_before: TimestampMillis,
     include_same_day: bool,
 ) -> TrainingItemsForFsrs {
-    let mut prediction_sources = Vec::new();
-    let mut revlogs = revlogs
-        .into_iter()
-        .chunk_by(|r| r.cid)
-        .into_iter()
-        .filter_map(|(cid, entries)| {
-            reviews_for_fsrs(
-                entries.collect(),
-                next_day_at,
-                true,
-                review_revlogs_before,
-                include_same_day,
-            )
-            .map(|reviews| {
-                if let Some(source) = fsrs_prediction_source_from_filtered_revlogs(
-                    &reviews.filtered_revlogs,
-                    next_day_at,
-                    include_same_day,
-                ) {
-                    prediction_sources.push(source);
-                }
+    fsrs_items_for_training_with_progress(
+        revlogs,
+        next_day_at,
+        review_revlogs_before,
+        include_same_day,
+        || Ok(()),
+    )
+    .expect("preparation without a progress handler cannot be interrupted")
+}
+
+fn fsrs_items_for_training_with_progress(
+    revlogs: Vec<RevlogEntry>,
+    next_day_at: TimestampSecs,
+    review_revlogs_before: TimestampMillis,
+    include_same_day: bool,
+    mut check_cancelled: impl FnMut() -> Result<()>,
+) -> Result<TrainingItemsForFsrs> {
+    let mut revlogs_out = Vec::new();
+    for (cid, entries) in &revlogs.into_iter().chunk_by(|r| r.cid) {
+        check_cancelled()?;
+        if let Some(reviews) = reviews_for_fsrs_with_progress(
+            entries.collect(),
+            next_day_at,
+            true,
+            review_revlogs_before,
+            include_same_day,
+            &mut check_cancelled,
+        )? {
+            revlogs_out.extend(
                 reviews
                     .fsrs_items
                     .into_iter()
-                    .map(move |(revlog_id, item)| (revlog_id, cid, item))
-            })
-        })
-        .flatten()
-        .collect_vec();
+                    .map(|(revlog_id, item)| (revlog_id, cid, item)),
+            );
+        }
+    }
     // Sort by RevlogId
-    revlogs.sort_by_key(|(revlog_id, _, _)| revlog_id.0);
-    let (revlog_ids, card_items): (Vec<_>, Vec<_>) = revlogs
+    revlogs_out.sort_by_key(|(revlog_id, _, _)| revlog_id.0);
+    let (revlog_ids, card_items): (Vec<_>, Vec<_>) = revlogs_out
         .into_iter()
         .map(|(revlog_id, card_id, item)| (revlog_id, (card_id.0, item)))
         .unzip();
     let (card_ids, items) = card_items.into_iter().unzip();
-    TrainingItemsForFsrs::with_card_and_revlog_ids(items, card_ids, revlog_ids, prediction_sources)
+    Ok(TrainingItemsForFsrs::with_card_and_revlog_ids(
+        items, card_ids, revlog_ids,
+    ))
 }
 
-fn fsrs_prediction_source_from_filtered_revlogs(
-    entries: &[RevlogEntry],
-    next_day_at: TimestampSecs,
-    include_same_day: bool,
-) -> Option<FsrsReviewPredictionSource> {
-    let delta_ts = fsrs_review_delta_ts(entries, next_day_at, include_same_day);
-    let reviews = entries
-        .iter()
-        .zip(delta_ts.iter())
-        .map(|(entry, &delta_t)| FSRSReview {
-            rating: entry.button_chosen as u32,
-            delta_t,
-        })
-        .collect_vec();
-    let targets = entries
-        .iter()
-        .zip(delta_ts.iter())
-        .enumerate()
-        .filter_map(|(idx, (entry, &delta_t))| {
-            let keep_for_training = delta_t > 0.0 || include_same_day;
-            (idx >= 1 && keep_for_training).then_some((entry.id, idx))
-        })
-        .collect_vec();
+pub(crate) fn compute_fsrs_review_retrievability_calibration_rows(
+    params: &[f32],
+    context: &FsrsReviewPredictionContext,
+    include_validation_folds: bool,
+    anki_progress: ThrottlingProgressHandler<ComputeParamsProgress>,
+) -> Result<(
+    Vec<FsrsReviewRetrievabilityCacheRow>,
+    ThrottlingProgressHandler<ComputeParamsProgress>,
+)> {
+    let (progress, done, progress_thread) = create_fsrs_review_retrievability_progress_thread(
+        anki_progress,
+        context,
+        include_validation_folds,
+    )?;
+    let rows = fsrs_review_retrievability_cache_rows(
+        params,
+        context,
+        include_validation_folds,
+        Some(&progress),
+    );
+    done.store(true, Ordering::Release);
+    let anki_progress = progress_thread
+        .join()
+        .expect("calibration progress thread panicked");
+    if fsrs_review_retrievability_progress_wants_abort(Some(&progress)) {
+        return Err(AnkiError::Interrupted);
+    }
+    Ok((rows?, anki_progress))
+}
 
-    (!targets.is_empty()).then_some(FsrsReviewPredictionSource { reviews, targets })
+fn create_fsrs_review_retrievability_progress_thread(
+    mut anki_progress: ThrottlingProgressHandler<ComputeParamsProgress>,
+    context: &FsrsReviewPredictionContext,
+    include_validation_folds: bool,
+) -> Result<(
+    FsrsReviewRetrievabilityProgress,
+    Arc<AtomicBool>,
+    thread::JoinHandle<ThrottlingProgressHandler<ComputeParamsProgress>>,
+)> {
+    let total_validation_folds = if include_validation_folds {
+        FSRS_VALIDATION_FOLDS
+    } else {
+        0
+    };
+    let target_counts = training_target_counts_from_items(&context.items);
+    let total_iterations = calibration_progress_total(total_validation_folds);
+    anki_progress.update(false, |p| {
+        p.current_iteration = 0;
+        p.total_iterations = total_iterations as u32;
+        p.reviews = target_counts.total_targets as u32;
+        p.long_term_reviews = target_counts.long_term_targets as u32;
+        p.short_term_reviews = target_counts.short_term_targets as u32;
+        p.current_preset = 1;
+        p.total_presets = 1;
+    })?;
+
+    let progress = FsrsReviewRetrievabilityProgress {
+        training_progress: CombinedProgressState::new_shared(),
+        completed_validation_folds: Arc::new(AtomicUsize::new(0)),
+    };
+    let done = Arc::new(AtomicBool::new(false));
+    let training_progress = progress.training_progress.clone();
+    let completed_validation_folds = progress.completed_validation_folds.clone();
+    let done_for_thread = done.clone();
+    let progress_thread = thread::spawn(move || {
+        while !done_for_thread.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(100));
+            let mut guard = training_progress.lock().unwrap();
+            let current_iterations = calibration_progress_current(
+                completed_validation_folds.load(Ordering::Acquire),
+                total_validation_folds,
+                &guard,
+            );
+            if anki_progress
+                .update(false, |s| {
+                    s.current_iteration = current_iterations as u32;
+                    s.total_iterations = total_iterations as u32;
+                })
+                .is_err()
+            {
+                guard.want_abort = true;
+                return anki_progress;
+            }
+        }
+        anki_progress
+    });
+    Ok((progress, done, progress_thread))
 }
 
 pub(crate) fn fsrs_review_retrievability_cache_rows(
@@ -1691,16 +1686,21 @@ pub(crate) fn fsrs_review_retrievability_cache_rows(
     include_validation_folds: bool,
     progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
-    let mut rows =
-        fsrs_review_retrievability_predictions_for_targets(params, &context.sources, None)?
-            .into_iter()
-            .map(|(revlog_id, prediction)| FsrsReviewRetrievabilityCacheRow {
-                revlog_id,
-                prediction,
-                sample_role: FsrsReviewRetrievabilitySampleRole::FinalFit,
-                fold_index: -1,
-            })
-            .collect_vec();
+    let mut rows = fsrs_review_retrievability_predictions(
+        params,
+        context.items.clone(),
+        context.card_ids.clone(),
+        context.revlog_ids.clone(),
+        progress,
+    )?
+    .into_iter()
+    .map(|(revlog_id, prediction)| FsrsReviewRetrievabilityCacheRow {
+        revlog_id,
+        prediction,
+        sample_role: FsrsReviewRetrievabilitySampleRole::FinalFit,
+        fold_index: -1,
+    })
+    .collect_vec();
     if fsrs_review_retrievability_progress_wants_abort(progress) {
         return Err(AnkiError::Interrupted);
     }
@@ -1714,52 +1714,30 @@ pub(crate) fn fsrs_review_retrievability_cache_rows(
     Ok(rows)
 }
 
-fn fsrs_review_retrievability_predictions_for_targets(
+fn fsrs_review_retrievability_predictions(
     params: &[f32],
-    sources: &[FsrsReviewPredictionSource],
-    target_revlog_ids: Option<&HashSet<RevlogId>>,
+    items: Vec<FSRSItem>,
+    card_ids: Vec<i64>,
+    revlog_ids: Vec<RevlogId>,
+    progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> Result<Vec<(RevlogId, f32)>> {
-    if sources.is_empty() {
+    if fsrs_review_retrievability_progress_wants_abort(progress) {
+        return Err(AnkiError::Interrupted);
+    }
+    if items.is_empty() {
         return Ok(Vec::new());
     }
 
-    let fsrs = FSRS::new(legacy_fsrs_params(params))?;
-    let mut predictions = Vec::new();
-    for source in sources {
-        if let Some(target_revlog_ids) = target_revlog_ids {
-            if !source
-                .targets
-                .iter()
-                .any(|(revlog_id, _)| target_revlog_ids.contains(revlog_id))
-            {
-                continue;
-            }
-        }
-        let item = FSRSItem {
-            reviews: source.reviews.clone(),
-        };
-        let memory_states = fsrs.historical_memory_states(item, None)?;
-        for &(revlog_id, review_index) in &source.targets {
-            if target_revlog_ids.is_some_and(|ids| !ids.contains(&revlog_id)) {
-                continue;
-            }
-            let Some(previous_state) = review_index
-                .checked_sub(1)
-                .and_then(|index| memory_states.get(index))
-            else {
-                continue;
-            };
-            let Some(review) = source.reviews.get(review_index) else {
-                continue;
-            };
-            let prediction = fsrs.current_retrievability(*previous_state, review.delta_t);
-            if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
-                predictions.push((revlog_id, prediction));
-            }
-        }
-    }
-
-    Ok(predictions)
+    let predictions = FSRS::new(legacy_fsrs_params(params))?.predict_retrievability_with_card_ids(
+        items,
+        card_ids,
+        |_| !fsrs_review_retrievability_progress_wants_abort(progress),
+    )?;
+    Ok(revlog_ids
+        .into_iter()
+        .zip_eq(predictions)
+        .filter(|(_, prediction)| prediction.is_finite() && (0.0..=1.0).contains(prediction))
+        .collect())
 }
 
 fn fsrs_review_retrievability_progress_wants_abort(
@@ -1772,24 +1750,13 @@ fn fsrs_validation_retrievability_cache_rows(
     context: &FsrsReviewPredictionContext,
     progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
-    if context.items.is_empty() || context.sources.is_empty() {
+    if context.items.is_empty() {
         return Ok(Vec::new());
     }
-    let splits = time_series_split_items(
-        TrainingItemsForFsrs::with_card_and_revlog_ids(
-            context.items.clone(),
-            context.card_ids.clone(),
-            context.revlog_ids.clone(),
-            Vec::new(),
-        ),
-        FSRS_VALIDATION_FOLDS,
-    );
-    if splits.is_empty() {
-        return Ok(Vec::new());
-    }
-
     let mut rows = Vec::new();
-    for (fold_index, (train_items, test_items)) in splits.into_iter().enumerate() {
+    for (fold_index, test) in
+        time_series_split_ranges(context.items.len(), FSRS_VALIDATION_FOLDS).enumerate()
+    {
         if let Some(progress) = progress {
             progress
                 .completed_validation_folds
@@ -1798,13 +1765,18 @@ fn fsrs_validation_retrievability_cache_rows(
         if fsrs_review_retrievability_progress_wants_abort(progress) {
             return Err(AnkiError::Interrupted);
         }
-        let Some(test_revlog_ids) = test_items.revlog_ids else {
-            continue;
-        };
+        // Prepare one training prefix at a time to keep fold memory bounded.
+        let mut train_set = Vec::with_capacity(test.start);
+        for (index, item) in context.items[..test.start].iter().enumerate() {
+            if index % 1024 == 0 && fsrs_review_retrievability_progress_wants_abort(progress) {
+                return Err(AnkiError::Interrupted);
+            }
+            train_set.push(item.clone());
+        }
         let parameters = match compute_parameters(ComputeParametersInput {
             training_config: None,
-            train_set: train_items.items,
-            card_ids: train_items.card_ids,
+            train_set,
+            card_ids: Some(context.card_ids[..test.start].to_vec()),
             progress: progress.map(|progress| progress.training_progress.clone()),
             enable_short_term: true,
             enable_sched_penalties: context.enable_scheduling_penalties,
@@ -1818,13 +1790,15 @@ fn fsrs_validation_retrievability_cache_rows(
                 continue;
             }
         };
-        let target_revlog_ids = test_revlog_ids.into_iter().collect::<HashSet<_>>();
-        let predictions = match fsrs_review_retrievability_predictions_for_targets(
+        let predictions = match fsrs_review_retrievability_predictions(
             &parameters,
-            &context.sources,
-            Some(&target_revlog_ids),
+            context.items[test.clone()].to_vec(),
+            context.card_ids[test.clone()].to_vec(),
+            context.revlog_ids[test].to_vec(),
+            progress,
         ) {
             Ok(predictions) => predictions,
+            Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
             Err(err) => {
                 tracing::debug!(
                     ?err,
@@ -1869,12 +1843,31 @@ pub(crate) struct ReviewsForFsrs {
 /// and removing items such as reviews that happened prior to a card being reset
 /// to new.
 pub(crate) fn reviews_for_fsrs(
-    mut entries: Vec<RevlogEntry>,
+    entries: Vec<RevlogEntry>,
     next_day_at: TimestampSecs,
     training: bool,
     ignore_revlogs_before: TimestampMillis,
     include_same_day_training_entries: bool,
 ) -> Option<ReviewsForFsrs> {
+    reviews_for_fsrs_with_progress(
+        entries,
+        next_day_at,
+        training,
+        ignore_revlogs_before,
+        include_same_day_training_entries,
+        &mut || Ok(()),
+    )
+    .expect("preparation without a progress handler cannot be interrupted")
+}
+
+fn reviews_for_fsrs_with_progress(
+    mut entries: Vec<RevlogEntry>,
+    next_day_at: TimestampSecs,
+    training: bool,
+    ignore_revlogs_before: TimestampMillis,
+    include_same_day_training_entries: bool,
+    check_cancelled: &mut impl FnMut() -> Result<()>,
+) -> Result<Option<ReviewsForFsrs>> {
     let mut first_of_last_learn_entries = None;
     let mut first_user_grade_idx = None;
     let mut revlogs_complete = false;
@@ -1909,7 +1902,7 @@ pub(crate) fn reviews_for_fsrs(
             // User has not graded the card since it was reset, so all history
             // filtered out.
             } else {
-                return None;
+                return Ok(None);
             }
         // Previous versions of Anki didn't add a revlog entry when the card was
         // reset.
@@ -1922,7 +1915,7 @@ pub(crate) fn reviews_for_fsrs(
         // group of learning steps is before the ignore_revlogs_before date
         if let Some(idx) = first_of_last_learn_entries {
             if entries[idx].id.0 < ignore_revlogs_before.0 {
-                return None;
+                return Ok(None);
             }
         }
     } else {
@@ -1942,10 +1935,12 @@ pub(crate) fn reviews_for_fsrs(
         }
     } else if training {
         // when training, we ignore cards that don't have any learning steps
-        return None;
+        return Ok(None);
     } else {
         // if no valid user grades were found, ignore the card.
-        let idx = first_user_grade_idx?;
+        let Some(idx) = first_user_grade_idx else {
+            return Ok(None);
+        };
         // if there are no learning entries, but the user has reviewed the card,
         // we ignore all entries before the first grade
         if idx > 0 {
@@ -1964,6 +1959,9 @@ pub(crate) fn reviews_for_fsrs(
         let mut items = Vec::with_capacity(entries.len());
         let mut current_reviews = Vec::with_capacity(entries.len());
         for (idx, (entry, &delta_t)) in entries.iter().zip(delta_ts.iter()).enumerate() {
+            if idx % 128 == 0 {
+                check_cancelled()?;
+            }
             current_reviews.push(FSRSReview {
                 rating: entry.button_chosen as u32,
                 delta_t,
@@ -1996,13 +1994,13 @@ pub(crate) fn reviews_for_fsrs(
     };
 
     if items.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(ReviewsForFsrs {
+        Ok(Some(ReviewsForFsrs {
             fsrs_items: items,
             revlogs_complete,
             filtered_revlogs: entries,
-        })
+        }))
     }
 }
 
@@ -2064,8 +2062,11 @@ pub(crate) mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::backend::Backend;
     use crate::collection::Collection;
     use crate::collection::CollectionBuilder;
+    use crate::services::BackendCollectionService;
+    use crate::services::BackendSchedulerService;
 
     const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE_FOR_BENCH: &str =
         "search_stats_fsrs_review_retrievability";
@@ -2095,6 +2096,63 @@ pub(crate) mod tests {
             cid: CardId(cid),
             ..revlog(review_kind, days_ago)
         }
+    }
+
+    #[test]
+    fn calibration_preparation_can_be_cancelled_within_one_long_card() {
+        let entries = std::iter::once(revlog_for_card(1, RevlogReviewKind::Learning, 300))
+            .chain(
+                (1..300)
+                    .rev()
+                    .map(|day| revlog_for_card(1, RevlogReviewKind::Review, day)),
+            )
+            .collect();
+        let mut checks = 0;
+        let result =
+            fsrs_items_for_training_with_progress(entries, NEXT_DAY_AT, 0.into(), true, || {
+                checks += 1;
+                if checks == 3 {
+                    Err(AnkiError::Interrupted)
+                } else {
+                    Ok(())
+                }
+            });
+        assert!(matches!(result, Err(AnkiError::Interrupted)));
+        assert_eq!(checks, 3);
+    }
+
+    #[test]
+    fn calibration_predictions_honor_cancellation_without_validation_training() {
+        let items = vec![FSRSItem {
+            reviews: vec![review(0), review(1)],
+        }];
+        let progress = FsrsReviewRetrievabilityProgress {
+            training_progress: Arc::new(Mutex::new(CombinedProgressState::default())),
+            completed_validation_folds: Arc::new(AtomicUsize::new(0)),
+        };
+        progress.training_progress.lock().unwrap().want_abort = true;
+        let result = fsrs_review_retrievability_predictions(
+            &fsrs::DEFAULT_PARAMETERS,
+            items,
+            vec![1],
+            vec![RevlogId(1)],
+            Some(&progress),
+        );
+        assert!(matches!(result, Err(AnkiError::Interrupted)));
+    }
+
+    #[test]
+    fn calibration_fold_ranges_preserve_final_remainder_and_small_history() {
+        assert_eq!(
+            time_series_split_ranges(14, 5).collect_vec(),
+            vec![2..4, 4..6, 6..8, 8..10, 10..14]
+        );
+        assert_eq!(
+            time_series_split_ranges(6, 5).collect_vec(),
+            vec![1..2, 2..3, 3..4, 4..5, 5..6]
+        );
+        assert!(time_series_split_ranges(5, 5).next().is_none());
+        assert!(time_series_split_ranges(14, 0).next().is_none());
     }
 
     pub(crate) fn review(delta_t: u32) -> FSRSReview {
@@ -2194,7 +2252,6 @@ pub(crate) mod tests {
                 items: vec![],
                 item_card_ids: vec![],
                 item_revlog_ids: vec![],
-                fsrs_prediction_sources: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },
             None,
@@ -2339,7 +2396,6 @@ pub(crate) mod tests {
         let mut items = Vec::new();
         let mut card_ids = Vec::new();
         let mut revlog_ids = Vec::new();
-        let mut sources = Vec::new();
 
         for index in 0..12 {
             let revlog_id = RevlogId(index + 1);
@@ -2353,22 +2409,15 @@ pub(crate) mod tests {
                     delta_t: 1.0 + index as f32,
                 },
             ];
-            items.push(FSRSItem {
-                reviews: reviews.clone(),
-            });
+            items.push(FSRSItem { reviews });
             card_ids.push(index + 1);
             revlog_ids.push(revlog_id);
-            sources.push(FsrsReviewPredictionSource {
-                reviews,
-                targets: vec![(revlog_id, 1)],
-            });
         }
 
         let context = FsrsReviewPredictionContext {
             items,
             card_ids,
             revlog_ids,
-            sources,
             model_version: ComputeParametersVersion::Fsrs7,
             num_relearning_steps: 1,
             enable_scheduling_penalties: false,
@@ -2379,16 +2428,221 @@ pub(crate) mod tests {
             false,
             None,
         )?;
-        assert!(!final_fit_rows.is_empty());
-        assert!(final_fit_rows
-            .iter()
-            .all(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::FinalFit));
+        assert_eq!(
+            final_fit_rows.iter().map(|row| row.revlog_id).collect_vec(),
+            context.revlog_ids
+        );
+        assert!(final_fit_rows.iter().all(|row| row.sample_role
+            == FsrsReviewRetrievabilitySampleRole::FinalFit
+            && row.fold_index == -1));
 
         let validation_rows =
             fsrs_review_retrievability_cache_rows(&fsrs::DEFAULT_PARAMETERS, &context, true, None)?;
-        assert!(validation_rows
-            .iter()
-            .any(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold));
+        assert_eq!(
+            validation_rows
+                .iter()
+                .filter(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold)
+                .map(|row| (row.revlog_id, row.fold_index))
+                .collect_vec(),
+            (3..=12)
+                .map(|id| (RevlogId(id), ((id - 3) / 2) as i32))
+                .collect_vec()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_retrievability_cache_rows_preserve_predictions_and_review_ids() -> Result<()> {
+        let mut same_day_review = revlog_for_card(1, RevlogReviewKind::Relearning, 9);
+        same_day_review.id.0 += 120_000;
+        let mut lapse = revlog_for_card(1, RevlogReviewKind::Review, 9);
+        // Keep both reviews after rollover, rather than straddling the boundary.
+        lapse.id.0 += 60_000;
+        lapse.button_chosen = 1;
+        let revlogs = vec![
+            revlog_for_card(1, RevlogReviewKind::Learning, 10),
+            lapse,
+            same_day_review.clone(),
+            revlog_for_card(1, RevlogReviewKind::Review, 1),
+            revlog_for_card(2, RevlogReviewKind::Learning, 9),
+            revlog_for_card(2, RevlogReviewKind::Review, 8),
+            revlog_for_card(2, RevlogReviewKind::Review, 2),
+        ];
+
+        for params in [
+            &[][..],
+            &fsrs::FSRS6_DEFAULT_PARAMETERS[..],
+            &fsrs::DEFAULT_PARAMETERS[..],
+        ] {
+            let model_version = model_version_for_params(params);
+            let include_same_day = include_same_day_training_entries(model_version, None);
+            let training =
+                fsrs_items_for_training(revlogs.clone(), NEXT_DAY_AT, 0.into(), include_same_day);
+            let context = FsrsReviewPredictionContext {
+                items: training.items,
+                card_ids: training.card_ids.unwrap(),
+                revlog_ids: training.revlog_ids.unwrap(),
+                model_version,
+                num_relearning_steps: 1,
+                enable_scheduling_penalties: false,
+            };
+            // Compare with the historical-state calculation used before the refactor.
+            let fsrs = FSRS::new(legacy_fsrs_params(params))?;
+            let expected = context
+                .items
+                .iter()
+                .map(|item| {
+                    let states = fsrs.historical_memory_states(item.clone(), None).unwrap();
+                    fsrs.current_retrievability(
+                        states[states.len() - 2],
+                        item.reviews.last().unwrap().delta_t,
+                    )
+                })
+                .collect_vec();
+
+            let rows = fsrs_review_retrievability_cache_rows(params, &context, false, None)?;
+
+            assert_eq!(
+                rows.iter().map(|row| row.revlog_id).collect_vec(),
+                context.revlog_ids
+            );
+            assert_eq!(
+                rows.iter().map(|row| row.prediction).collect_vec(),
+                expected,
+                "parameter count: {}",
+                params.len()
+            );
+            assert_eq!(
+                rows.iter().any(|row| row.revlog_id == same_day_review.id),
+                include_same_day
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_retrievability_cache_rows_return_no_rows_without_targets() -> Result<()> {
+        let context = FsrsReviewPredictionContext {
+            items: vec![],
+            card_ids: vec![],
+            revlog_ids: vec![],
+            model_version: ComputeParametersVersion::Fsrs7,
+            num_relearning_steps: 1,
+            enable_scheduling_penalties: false,
+        };
+
+        let rows = fsrs_review_retrievability_cache_rows(&[], &context, true, None)?;
+
+        assert!(rows.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_calibration_backend_stores_same_rows_as_collection_computation() -> Result<()> {
+        for include_validation_folds in [false, true] {
+            let tempdir = tempdir()?;
+            let backend = Backend::new(I18n::template_only(), false);
+            backend.open_collection(anki_proto::collection::OpenCollectionRequest {
+                collection_path: tempdir
+                    .path()
+                    .join("collection.anki2")
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                media_folder_path: tempdir.path().join("media").to_str().unwrap().into(),
+                media_db_path: tempdir.path().join("media.db").to_str().unwrap().into(),
+            })?;
+            let context = backend.with_col(|col| {
+                crate::tests::NoteAdder::basic(col).add(col);
+                let cid = col.get_first_card().id;
+                col.storage.add_revlog_entry(
+                    &revlog_for_card(cid.0, RevlogReviewKind::Learning, 20),
+                    false,
+                )?;
+                for days_ago in (1..=12).rev() {
+                    let entry = RevlogEntry {
+                        button_chosen: if days_ago % 2 == 0 { 3 } else { 1 },
+                        ..revlog_for_card(cid.0, RevlogReviewKind::Review, days_ago)
+                    };
+                    col.storage.add_revlog_entry(&entry, false)?;
+                }
+                let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+                    search: "",
+                    ignore_revlogs_before: 0.into(),
+                    current_params: &fsrs::DEFAULT_PARAMETERS,
+                    num_of_relearning_steps: 1,
+                    include_same_day_reviews: Some(true),
+                    enable_scheduling_penalties: false,
+                    model_version_override: Some(ComputeParametersVersion::Fsrs7),
+                    dynamic_desired_retention_enabled: false,
+                    historical_retention: 0.9,
+                    desired_retention: 0.9,
+                    dynamic_desired_retention_simulator_options:
+                        DynamicDesiredRetentionSimulatorOptions::default(),
+                })?;
+                Ok(FsrsReviewPredictionContext::from_prepared(&prepared))
+            })?;
+            let expected_rows = fsrs_review_retrievability_cache_rows(
+                &fsrs::DEFAULT_PARAMETERS,
+                &context,
+                include_validation_folds,
+                None,
+            )?;
+            assert_eq!(
+                expected_rows
+                    .iter()
+                    .filter(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::FinalFit)
+                    .count(),
+                12
+            );
+            assert_eq!(
+                expected_rows.iter().any(|row| {
+                    row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold
+                }),
+                include_validation_folds
+            );
+
+            backend.set_wants_abort()?;
+            let stored = if include_validation_folds {
+                backend.rebuild_fsrs_review_retrievability_cache()?
+            } else {
+                backend.compute_fsrs_review_retrievability_calibration(
+                    anki_proto::scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
+                        params: fsrs::DEFAULT_PARAMETERS.to_vec(),
+                        num_of_relearning_steps: 1,
+                        include_same_day_reviews: Some(true),
+                        include_validation_folds,
+                        ..Default::default()
+                    },
+                )?
+            };
+            assert_eq!(stored.val as usize, expected_rows.len());
+            backend.with_col(|col| {
+                let count: usize = col.storage.db.query_row(
+                    "SELECT count(*) FROM search_stats_fsrs_review_retrievability",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, expected_rows.len());
+                for expected in &expected_rows {
+                    let stored: (f32, String) = col.storage.db.query_row(
+                        "SELECT prediction, source FROM search_stats_fsrs_review_retrievability
+                         WHERE revlog_id = ? AND sample_role = ? AND fold_index = ?",
+                        params![
+                            expected.revlog_id,
+                            expected.sample_role.as_str(),
+                            expected.fold_index
+                        ],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    assert_eq!(
+                        stored,
+                        (expected.prediction, "fsrs_calibration_recompute".into())
+                    );
+                }
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 

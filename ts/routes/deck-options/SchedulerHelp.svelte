@@ -13,13 +13,42 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let title: string;
     export let fsrs: boolean;
+    export let showBadge = true;
+
+    const modelIntroduction = [
+        "### RWKV",
+        tr.deckConfigRwkvDescription(),
+        "### FSRS",
+        tr.deckConfigFsrsDescription(),
+    ].join("\n\n");
+    const modelReferences = [
+        {
+            label: tr.deckConfigRwkvReadMore(),
+            url: "https://github.com/JSchoreels/anki/blob/main/RWKV_FAQ.md",
+        },
+        {
+            label: tr.deckConfigFsrsReadMore(),
+            url: "https://github.com/open-spaced-repetition/srs-benchmark",
+        },
+    ];
 
     const settings = {
         fsrs: {
             title: tr.deckConfigSchedulerEnableFsrs(),
-            help: tr.deckConfigFsrsTooltip(),
+            help: tr.deckConfigFsrsTooltip() + "\n\n" + modelIntroduction,
+            references: modelReferences,
             url: HelpPage.DeckOptions.fsrs,
             global: true,
+        },
+        review: {
+            title: tr.deckConfigSchedulerReview(),
+            help: modelIntroduction,
+            references: modelReferences,
+            url: HelpPage.DeckOptions.fsrs,
+        },
+        dueDates: {
+            title: tr.deckConfigSchedulerDueDates(),
+            help: tr.deckConfigSchedulerDueDatesDescription(),
         },
         desiredRetention: {
             title: tr.deckConfigDesiredRetention(),
@@ -27,7 +56,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 tr.deckConfigDesiredRetentionTooltip() +
                 "\n\n" +
                 tr.deckConfigDesiredRetentionTooltip2(),
-            sched: HelpItemScheduler.FSRS,
         },
         modelParams: {
             title: tr.deckConfigWeights(),
@@ -69,6 +97,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {title}
     url={HelpPage.DeckOptions.fsrs}
     {fsrs}
+    {showBadge}
     {helpSections}
     on:mount={(e) => {
         modal = e.detail.modal;

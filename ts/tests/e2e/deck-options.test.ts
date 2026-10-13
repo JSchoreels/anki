@@ -3,14 +3,116 @@
 
 import { OpChanges } from "@generated/anki/collection_pb";
 import {
+    DeckConfig,
+    DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate,
+    DeckConfigsForUpdate_ConfigWithExtra,
+    DeckConfigsForUpdate_CurrentDeck_Limits,
     GetRetentionWorkloadResponse,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test(
+    "apply schedule dialog defaults to every category and only saves selected categories",
+    async ({ page }, testInfo) => {
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            data.fsrs = true;
+            data.currentDeck!.configId = 1n;
+            data.currentDeck!.limits = new DeckConfigsForUpdate_CurrentDeck_Limits({ desiredRetention: 0.95 });
+            data.allConfig = [
+                new DeckConfigsForUpdate_ConfigWithExtra({
+                    config: new DeckConfig({
+                        id: 1n,
+                        name: "Source",
+                        config: new DeckConfig_Config({
+                            ...data.defaults!.config!,
+                            rwkvReviewInstantOrderEnabled: true,
+                            rwkvReviewEnabled: false,
+                            fsrsVersion: DeckConfig_Config_FsrsVersion.SIX,
+                            desiredRetention: 0.9,
+                            rwkvReviewMinElapsedSecs: 60,
+                        }),
+                    }),
+                    useCount: 1,
+                }),
+                new DeckConfigsForUpdate_ConfigWithExtra({
+                    config: new DeckConfig({
+                        id: 2n,
+                        name: "Other",
+                        config: new DeckConfig_Config({
+                            ...data.defaults!.config!,
+                            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
+                            rwkvReviewInstantOrderEnabled: false,
+                            rwkvReviewEnabled: false,
+                            desiredRetention: 0.8,
+                            rwkvReviewMinElapsedSecs: 10,
+                            newPerDay: 17,
+                        }),
+                    }),
+                    useCount: 0,
+                }),
+            ];
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+        await page.goto("/deck-options/1");
+        const open = page.getByRole("button", { name: "Apply Schedule to All Presets", exact: true });
+        const dialog = page.getByRole("dialog", { name: "Apply Schedule to All Presets", exact: true });
+        const save = page.getByRole("button", { name: "Save", exact: true });
+        await open.click();
+        for (const name of ["Scheduler", "Desired Retention", "Fallback", "Settings"]) {
+            await expect(dialog.getByRole("checkbox", { name, exact: true })).toBeChecked();
+        }
+        await dialog.screenshot({ path: testInfo.outputPath("apply-schedule-dialog.png") });
+        await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+        await save.click();
+        await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Source"]);
+
+        await open.click();
+        await expect(dialog).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+        await save.click();
+        await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Source"]);
+
+        await open.click();
+        for (const name of ["Scheduler", "Desired Retention", "Fallback", "Settings"]) {
+            await dialog.getByRole("checkbox", { name, exact: true }).uncheck();
+        }
+        await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
+        await dialog.getByRole("checkbox", { name: "Scheduler", exact: true }).check();
+        await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await save.click();
+        await expect.poll(() => saved?.configs.map((config) => config.name)).toEqual(["Other", "Source"]);
+        expect(saved!.configs[0].config!.rwkvReviewInstantOrderEnabled).toBe(true);
+        expect(saved!.configs[0].config!.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.SEVEN);
+        expect(saved!.configs[0].config!.desiredRetention).toBeCloseTo(0.8);
+        expect(saved!.configs[0].config!.rwkvReviewMinElapsedSecs).toBe(10);
+
+        await open.click();
+        for (const name of ["Scheduler", "Desired Retention", "Fallback", "Settings"]) {
+            await expect(dialog.getByRole("checkbox", { name, exact: true })).toBeChecked();
+        }
+        await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+        await save.click();
+        await expect.poll(() => saved?.configs[0].config?.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.SIX);
+        expect(saved!.configs[0].config!.desiredRetention).toBeCloseTo(0.9);
+        expect(saved!.configs[0].config!.rwkvReviewMinElapsedSecs).toBe(60);
+        expect(saved!.configs[0].config!.newPerDay).toBe(17);
+        expect(saved!.limits!.desiredRetention).toBeCloseTo(0.95);
+    },
+);
 
 test("scheduler selectors save the review and Instant due-date models", async ({ page }) => {
     await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
@@ -32,7 +134,7 @@ test("scheduler selectors save the review and Instant due-date models", async ({
 
     await page.goto("/deck-options/1");
     const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
-    const dueDates = page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true });
+    const dueDates = page.getByRole("radiogroup", { name: "Fallback", exact: true });
     const fsrs = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
     const schedulerCard = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
     const fsrsCard = page.getByRole("heading", { name: "FSRS", exact: true }).locator("../..");
@@ -113,6 +215,89 @@ test("scheduler selectors save the review and Instant due-date models", async ({
     }
 });
 
+test("scheduler help opens model descriptions without changing the enabled state", async ({ page }, testInfo) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const card = page.getByRole("heading", { name: "Scheduler", exact: true }).locator("../..");
+    // Include native webview styling, including macOS button shadows, for visual review.
+    await page.addStyleTag({ url: "/_anki/css/webview.css" });
+    await page.evaluate(() => document.body.classList.add("fancy", "isMac"));
+    await page.addStyleTag({
+        content: `
+            html { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+            button { box-shadow: 0px 1px 3px var(--border-subtle); }
+        `,
+    });
+    const enabled = page.getByRole("checkbox", { name: /^Machine Learning Based scheduling\b/ });
+    const model = card.getByRole("radio", { name: "RWKV-Instant", exact: true });
+    await expect(card.getByRole("link", { name: "Read more about RWKV" })).toBeHidden();
+    await card.screenshot({ path: testInfo.outputPath("scheduler-soft-outlines.png") });
+    for (const width of [736, 560]) {
+        await page.setViewportSize({ width, height: 900 });
+        await card.screenshot({ path: testInfo.outputPath(`scheduler-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.evaluate(() => document.documentElement.classList.add("night-mode"));
+    await card.screenshot({ path: testInfo.outputPath("scheduler-dark.png"), animations: "disabled" });
+    for (
+        const [name, label] of [
+            ["apply", "Apply Schedule to All Presets"],
+            ["help", "Help: Review scheduler"],
+        ]
+    ) {
+        const button = card.getByRole("button", { name: label, exact: true });
+        await button.hover();
+        await card.screenshot({ path: testInfo.outputPath(`scheduler-${name}-hover.png`), animations: "disabled" });
+        await button.focus();
+        await card.screenshot({ path: testInfo.outputPath(`scheduler-${name}-focus.png`), animations: "disabled" });
+    }
+    await page.evaluate(() => document.documentElement.classList.remove("night-mode"));
+
+    for (const title of ["Machine Learning Based scheduling", "Review scheduler", "Fallback", "Desired retention"]) {
+        const help = card.getByRole("button", { name: `Help: ${title}`, exact: true });
+        await help.focus();
+        await help.press("Enter");
+        const modal = page.locator(".modal.show");
+        const section = modal.locator(".carousel-item.active");
+        await expect(section.getByRole("heading", { name: title, exact: true })).toBeVisible();
+        if (title === "Machine Learning Based scheduling" || title === "Review scheduler") {
+            await expect(section.getByRole("heading", { name: "RWKV", exact: true })).toBeVisible();
+            await expect(section.getByRole("heading", { name: "FSRS", exact: true })).toBeVisible();
+            const references = section.getByRole("list");
+            await expect(references.getByRole("link", { name: "Read more about RWKV" })).toBeVisible();
+            await expect(references.getByRole("link", { name: "Read more about FSRS" })).toBeVisible();
+            const description = section.getByText(/^FSRS uses your review history/);
+            const descriptionBox = (await description.boundingBox())!;
+            const referencesBox = (await references.boundingBox())!;
+            expect(referencesBox.y).toBeGreaterThan(descriptionBox.y + descriptionBox.height);
+            await section.screenshot({ path: testInfo.outputPath(`help-${title}.png`), animations: "disabled" });
+            await page.evaluate(() => document.documentElement.classList.add("night-mode"));
+            await section.screenshot({ path: testInfo.outputPath(`help-${title}-dark.png`), animations: "disabled" });
+            await page.evaluate(() => document.documentElement.classList.remove("night-mode"));
+        }
+        if (title === "Fallback") {
+            await expect(
+                section.getByText(
+                    "Writes due dates for mobile sync and statistics. Instant selects reviews independently of these dates.",
+                ),
+            )
+                .toBeVisible();
+        }
+        await modal.getByRole("button", { name: "OK", exact: true }).click();
+        await expect(page.locator(".modal:visible")).toHaveCount(0);
+        await expect(enabled).toBeChecked();
+        await expect(model).toBeChecked();
+    }
+});
+
 test("shared retention updates the separate FSRS card and survives model changes", async ({ page }) => {
     await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
         const response = await route.fetch();
@@ -159,7 +344,7 @@ test("shared retention updates the separate FSRS card and survives model changes
     await expect(fsrsCard).toHaveCount(0);
     await expect(retention).toHaveValue("90");
     await model.getByRole("radio", { name: "RWKV-Instant", exact: true }).check();
-    await page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true })
+    await page.getByRole("radiogroup", { name: "Fallback", exact: true })
         .getByRole("radio", { name: "FSRS-6", exact: true }).check();
     await expect(fsrsCard.getByRole("columnheader", { name: "Selected DR (90.00%)", exact: true }))
         .toBeVisible();
@@ -208,7 +393,7 @@ test("current scheduler buttons preserve older saved models until explicitly cha
     });
 
     const model = page.getByRole("radiogroup", { name: "Review scheduler", exact: true });
-    const dueDates = page.getByRole("radiogroup", { name: "Fallback : Due-Date Calculator", exact: true });
+    const dueDates = page.getByRole("radiogroup", { name: "Fallback", exact: true });
     for (const oldVersion of [DeckConfig_Config_FsrsVersion.FOUR, DeckConfig_Config_FsrsVersion.FIVE]) {
         for (const instantEnabled of [false, true]) {
             version = oldVersion;

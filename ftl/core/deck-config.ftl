@@ -191,9 +191,13 @@ deck-config-interday-step-priority = Interday learning/review order
 deck-config-interday-step-priority-tooltip =
     When to show (re)learning cards that cross a day boundary.
     
-    The review limit is always applied first to interday learning cards, and
-    then review cards. This option will control the order the gathered cards are shown in,
-    but interday learning cards will always be gathered first.
+    With FSRS retrievability or Relative Overdueness sorting, Before and After
+    place interday learning cards before or after the other due cards, keeping
+    the selected sort order within each group. Mix sorts all due cards together.
+    This option does not change the order of intraday learning cards.
+
+    Review limits still determine which cards are available. With other review
+    sort orders, interday learning cards are gathered before review cards.
 deck-config-review-sort-order = Review sort order
 deck-config-review-sort-order-tooltip =
     The default order prioritizes cards that have been waiting longest, so that
@@ -393,9 +397,20 @@ deck-config-rwkv-review-refresh-on-exit-tooltip =
 deck-config-scheduler-review = Review scheduler
 deck-config-scheduler-enable-fsrs = Machine Learning Based scheduling
 deck-config-scheduler-disabled = Machine learning scheduling is disabled for this collection. Selecting a model enables it; RWKV settings remain independent.
-deck-config-scheduler-due-dates = Fallback : Due-Date Calculator
+deck-config-scheduler-due-dates = Fallback
 deck-config-scheduler-due-dates-description = Writes due dates for mobile sync and statistics. Instant selects reviews independently of these dates.
 deck-config-scheduler-recommended = Recommended: { $scheduler }
+deck-config-apply-schedule-to-all-presets = Apply Schedule to All Presets
+deck-config-apply-schedule-description = Choose what to copy from the current preset. Click Save in Deck Options to save the changes.
+deck-config-copy-scheduler = Scheduler
+deck-config-copy-scheduler-description = The selected review scheduler.
+deck-config-copy-fallback = Fallback
+deck-config-copy-fallback-description = The due-date calculator for RWKV-Instant presets. Other review schedulers calculate their own due dates.
+deck-config-copy-settings = Settings
+deck-config-copy-settings-description = FSRS and RWKV preset model settings, including parameters, interval limits, optimization options, Dynamic DR, and repeat spacing.
+deck-config-copy-retention = Desired Retention
+deck-config-copy-retention-description = The preset's desired retention. Deck-specific retention overrides remain unchanged.
+deck-config-apply-schedule = Apply
 deck-config-fsrs-description =
     FSRS uses your review history to predict retrievability and schedule reviews
     at your desired retention. FSRS-7 provides more accurate predictions than
@@ -575,9 +590,9 @@ deck-config-reschedule-cards-on-change = Reschedule cards on change
 deck-config-fsrs-tooltip =
     Affects the entire collection.
 
-    The Free Spaced Repetition Scheduler (FSRS) is an alternative to Anki's legacy SuperMemo 2 (SM-2) algorithm.
-    By more accurately determining how likely you are to forget a card, it can help you remember
-    more material in the same amount of time. This setting is shared by all presets.
+    Machine learning scheduling uses predictions of how likely you are to remember
+    a card to guide reviews, as an alternative to Anki's legacy SuperMemo 2 (SM-2)
+    algorithm. This switch is shared by all presets.
 
 deck-config-desired-retention-tooltip =
     By default, Anki schedules cards so that you have a 90% chance of remembering them when

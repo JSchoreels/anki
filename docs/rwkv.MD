@@ -1,5 +1,8 @@
 # RWKV Review Scheduler
 
+For the offline comparison of missing whole-card histories versus holes within
+histories, see [History Omission Accuracy Benchmark](rwkv-history-ablation.MD).
+
 The RWKV review scheduler is a desktop-only review-time scheduler. In Deck
 Options, **Scheduler → Review scheduler** selects FSRS-6, FSRS-7, RWKV-Curve,
 or RWKV-Instant for the preset. Curve uses RWKV-Curve answer intervals and stores
@@ -114,6 +117,33 @@ invalidates any cache checkpoint that still contains the older retained
 sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
+Preferences → Review → RWKV state selects storage precision for the whole local
+profile: `int8` (default), `f32` (the original full-precision fallback), or
+`int4` (experimental). The profile key is `rwkvStatePrecision`; an absent or
+unsupported value defaults to `int8`. This choice is local and is not synced.
+Changes take effect after restarting Anki (or reopening the profile), and the
+next state preparation rebuilds from retained review history. Precision is part
+of the replay identity, so a checkpoint from another mode cannot satisfy either
+canonical or fast startup validation. Returning to `f32` replays original
+reviews to recover full precision; it does not upcast previously truncated state.
+There is no parallel full-precision backup cache.
+
+Compact modes pack only card and note recurrent matrices: symmetric signed
+`int8` (−127…127) or packed `int4` (−7…7), with one f32 absolute-maximum scale
+per 32-element row and round-to-nearest-even codes. Both compact modes store
+time/channel shift vectors as IEEE f16 using the `half` crate. Matrices are
+quantized after each answer's f32 output is calculated, before the next answer
+reads them. Queries, preview answers, undo, workload simulation, historical
+replay, and Memorised history use the same precision. Weights, activations,
+arithmetic, feature context, recall curves, and deck/preset/global state remain
+f32. The runtime retains packed card/note modules and decodes only bounded query
+batches or active replay streams. Bulk replay preserves the last answer's exact
+integer codes and scales, so checkpoint reloads do not add another quantization.
+`int4` can noticeably change individual predictions and calibration, so it is
+offered as an explicit experimental choice.
+See the [native precision benchmark](rwkv-state-precision-2026-10-10.MD) for
+measured rebuild, checkpoint, memory, and accuracy tradeoffs.
+
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.
 Rebuilds write each historical recovery checkpoint as soon as it is captured.
@@ -142,13 +172,18 @@ While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
 the recurrent state. Before applying that answer, Anki falls back to canonical
 recovery if an unmarked new learning start replaces older retained history or
-if the answer changed dynamic preset routing. Forgetting a card explicitly
-marks its next learning sequence as append-only, so the resident state keeps
-using the card's previous reviews without a collection-wide replay. The marker
-is profile-local and remains active across restarts and undo/redo. The explicit
-**Rebuild RWKV State** action in Deck Options clears these markers and applies
-the canonical latest-learning-sequence rule again. Anki's Forget operation does
-not delete the underlying review log. Append-only **Grade Now** batches apply
+if the answer changed dynamic preset routing. A Forget review-log
+entry excludes the card's earlier reviews immediately, even when the card has
+not yet been reviewed after the reset. This lets a rebuild prepare the correct
+state before relearning begins, so the first new answer does not require another
+collection-wide recovery. Anki's Forget operation does not delete the underlying
+review log. Normal preparation, recovery, restart, and **Build Cache** all apply
+the same reset boundary. The former profile-local preservation markers are no
+longer read or written. Replay semantics version 5 invalidates caches built with
+the earlier preservation rule; the next preparation rebuilds them once. Undoing
+Forget removes its boundary through Anki's normal undo operation, restoring the
+eligible history on the next replay. The state-store schema
+remains version 12. Append-only **Grade Now** batches apply
 their newly written review rows to the same resident state, retain grouped
 undo/redo snapshots, and invalidate transient queue work. Batches containing
 only excluded cram rows also retain an identity-only rollback entry. If a batch
@@ -161,6 +196,12 @@ canonical history no longer includes them. The resident identity becomes
 unknown, so this state is never persisted or trusted as the cache identity, and
 the next canonical restore, normally at the next launch, rebuilds without those
 reviews. Undoing the deletion keeps the resident state.
+Deck deletion uses the same reconciliation, including subdecks and cards
+borrowed by filtered decks. Deleting an empty deck or cards without review
+history keeps the resident identity known. Deleting a filtered deck also keeps
+the state when its cards return to their original decks without changing their
+historical identities. Deletion and its undo/redo do not trigger an automatic
+recovery while that resident state remains ready.
 Broad mutations such as filtered-deck rebuilds remain
 conservative when dynamic preset routing rules make the affected identities
 ambiguous. Other collection mutations that can change replay inputs invalidate
@@ -273,7 +314,11 @@ related but not interchangeable:
 
 The dataset builder identifies state `0` from the first answer of the retained
 learning sequence; it is not a separate raw revlog kind. Unrated reschedule
-entries and filtered entries with `factor = 0` are not answer tokens. Live
+entries and filtered entries with `factor = 0` are not answer tokens. An unrated
+Manual entry with `factor = 0` marks a Forget boundary: canonical replay excludes
+earlier answers in every replay. Rated Manual
+answers remain eligible even with zero factor, and unrated Set Due Date entries
+with nonzero factor do not reset history. Live
 answered inputs must use the scheduler state at answer time, before card state
 mutation, instead of copying the persistent card type. When RWKV synthesizes a
 same-day state outside Anki's learning queues, Qt places the corresponding raw
@@ -333,6 +378,17 @@ history identity, compact per-card history maps, complete runtime feature state,
 and only the card, note, deck, preset, and global recurrent states changed since
 its parent. Large state deltas are streamed through ordered 64 MiB rows, avoiding
 SQLite's single-BLOB limit without assembling another full snapshot in memory.
+Full-precision modules keep the existing `ARWKVMODSTATE1` encoding. Compact
+card/note modules use `ARWKVMODSTATE2`, followed by a mode byte (8 or 4), a
+little-endian u32 layer count, and each layer's time shift, matrix, and channel
+shift. Vector lengths are little-endian u32 element counts; shifts contain f16
+bits. Each matrix row contains a little-endian f32 scale followed by 32 signed
+int8 codes or 16 bytes containing two signed two's-complement int4 codes each
+(first column in the low nibble). Decoders check layer/vector counts, scales,
+codes, finite values, truncation, and trailing bytes before retaining packed
+state. Checkpoints and stash spills preserve these bytes directly. The state
+store schema is unchanged; the new replay identity invalidates earlier caches
+once, including when choosing the historical `f32` mode.
 New stores use 64 KiB SQLite pages to reduce the page-management cost of
 streaming gigabyte-scale state blobs. A full build starts a temporary store and
 atomically promotes it after the final segment commits. The store keeps one
@@ -1017,17 +1073,26 @@ may be prompted to rebuild after the next restart; closing Anki and renaming the
 profile-local `rwkv-state-cache` folder before rebuilding clears stale derived
 cache files without changing the collection.
 
-RWKV review state and historical calibration data are built separately. The
-manual **Rebuild RWKV State** action replays answers and persists recurrent
-state without computing
-a pre-answer prediction for every historical review. Live review answers still
+Automatic RWKV state recovery replays answers and persists recurrent state
+without computing a pre-answer prediction for every historical review. The manual
+**Build Cache** action in Deck Options clears both historical prediction tables,
+rebuilds FSRS predictions and validation folds for every deck preset using its
+current parameters, history cutoff, relearning steps, same-day optimization and
+scheduling-penalty settings, rebuilds RWKV recurrent state, then recomputes RWKV
+calibration predictions aligned to the rebuilt FSRS folds. It does not reschedule
+cards or change review history. A failed or interrupted rebuild can leave partial
+derived predictions; rerun **Build Cache** to complete it. Live review answers still
 write their pre-answer prediction with source `rwkv_review` and role
 `post_optimization`.
 
 Historical calibration predictions live in the profile-local
 `search_stats_rwkv_review_retrievability` table, attached from
-`collection.retrievability-cache.sqlite`; they are not synced. The table is a
-derived cache, separate from the profile-local recurrent state cache and the
+`rwkv-state-cache/collection.retrievability-cache.sqlite`; they are not synced.
+The database and its SQLite WAL/SHM sidecars share the recurrent cache folder.
+On collection open, Anki checkpoints and moves the old adjacent database when
+there is no database at the new location, preserving existing predictions. An
+existing database at the new location takes precedence. The table is a
+derived cache, separate from the recurrent state database and the
 short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 `fold_index`, and `source`.
 
@@ -1048,12 +1113,38 @@ Add-ons that need these rows can call
 `aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
 The synchronous API returns immediately when current role-aware data is
 complete; otherwise it performs the same calibration-only replay while
-snapshotting and restoring active reviewer state. Calibration replays,
+snapshotting and restoring active reviewer state. It reuses the history prepared
+for the availability check instead of keeping two complete histories alive.
+If the backend still needs configuration, the check history is released before
+preparing history under the new backend.
+Before replay, the backend generation, replay settings and native history
+fingerprint must still match; a changed history interrupts the operation for retry.
+Calibration replays,
 first-review comparisons, and workload simulations claim an exclusive
 generation-scoped backend operation. A real answer that arrives during one of
 these temporary operations invalidates it and leaves state unready for replay
 from canonical history instead of letting the temporary snapshot erase the
 answer.
+
+Historical FSRS calibration reads a revlog snapshot under the collection lock,
+then converts inputs, predicts and trains outside that lock. Validation prepares
+only the current fold's training prefix, avoiding copies of all five folds at
+once. Cancellation is checked during conversion, prediction and saving as well
+as training. Cache rows are saved in transactions of at most 10,000 rows, releasing
+the collection lock between batches. Each batch checks the original collection
+session; closing and reopening the collection, including the same path, interrupts
+saving into the replacement session. Cancellation may leave completed batches in
+the local derived cache. Callers must track incomplete jobs and retry them rather
+than infer completion from the presence of validation rows.
+
+A calibration replay can temporarily spill the resident card and note states to
+`rwkv-state-cache/stash-spill.bin`, retaining the other scopes and runtime caches
+in a stash. A successful restore removes that temporary file. If restoring the
+stash fails, Anki discards it and its rollback frames, removes the spill file when
+possible, and leaves resident state unready. The next use restores the persistent
+state cache and replays newer revlogs through the normal recovery path. Historical
+warm-up or restore also removes an orphaned spill file left by a crash, provided
+no stash is active. Spill cleanup errors are logged and do not block recovery.
 
 A replay's pre-answer prediction depends only on the model, the replay
 semantics, and the reviews before it, never on the role it is stored under:

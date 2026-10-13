@@ -11,7 +11,7 @@ Behavior can differ between RWKV variants, add-ons, forks, and versions. The
 fork-specific statements below describe the current repository and may change
 as the code changes.
 
-Last reviewed: 2026-09-27.
+Last reviewed: 2026-10-08.
 
 ## Sources
 
@@ -42,6 +42,7 @@ Last reviewed: 2026-09-27.
   - [Can decks and presets have different behavior?](#can-decks-and-presets-have-different-behavior)
   - [What happens when a card or preset moves?](#what-happens-when-a-card-or-preset-moves)
 - [4. Scheduling, limits, and workload](#4-scheduling-limits-and-workload)
+  - [Do load balancing and review fuzz apply to RWKV?](#do-load-balancing-and-review-fuzz-apply-to-rwkv)
   - [How does the fork handle daily review limits?](#how-does-the-fork-handle-daily-review-limits)
   - [Can RWKV-Instant repeat a card when same-day reviews are disabled?](#can-rwkv-instant-repeat-a-card-when-same-day-reviews-are-disabled)
   - [How do the same-day settings interact?](#how-do-the-same-day-settings-interact)
@@ -236,6 +237,36 @@ existing saved choices are preserved until you explicitly select a current model
 enables it; other presets keep their own model choices. Turning it off restores
 SM2 for native intervals, while the existing per-preset RWKV settings remain
 independent.
+
+### Do load balancing and review fuzz apply to RWKV?
+
+**Enable load balancer** and **Enable review fuzz** in Deck Options are both
+collection-wide switches. The review-fuzz tooltip currently says "this preset",
+but the scheduler reads the collection-wide setting.
+
+| Scheduling path                          | Load balancer                                                                           | Review fuzz                                          |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| **RWKV-Curve while reviewing**           | Yes, for day-based answer intervals up to 90 days, within the available fuzz window.    | Yes, for day-based passing answer intervals.         |
+| **RWKV-Instant scored review selection** | No. Instant chooses eligible reviews from current recall predictions and spacing rules. | No. Fuzz does not change Instant's recall threshold. |
+
+Instant's **Fallback : Due-Date Calculator** still uses these settings when
+calculating day-based answer intervals, whether the fallback is FSRS or Curve.
+Those stored due dates are used by mobile clients and statistics; they do not
+determine when a scored review becomes eligible in Instant.
+
+The interval rules have a few exceptions:
+
+- Disabling review fuzz leaves the load balancer without a range of days to
+  choose from, so it cannot spread reviews across days even if its switch is on.
+- Curve's generated intraday intervals below 12 hours use exact seconds when
+  same-day reviews and learning queues are enabled. Neither setting applies to
+  those intraday intervals or configured learning/relearning step delays.
+- Day-based intervals below 2.5 days receive no fuzz. Curve's Again interval
+  when answering a review card is also clamped without fuzz or load balancing.
+
+The separate **Reschedule With RWKV-Curve** bulk action currently bypasses both
+settings. It writes the predicted whole-day intervals and due dates directly;
+the live-answer behavior above applies when reviewing cards.
 
 ### How does the fork handle daily review limits?
 
@@ -467,7 +498,10 @@ areas:
 - `rslib/src/rwkv/` for RWKV history queries and state processing;
 - `rslib/src/storage/revlog/` for revlog filtering and review kinds;
 - `rslib/src/decks/limits.rs` for daily limits and RWKV minimum-review
-  handling; and
+  handling;
 - `rslib/src/scheduler/answering/` and
   `rslib/src/scheduler/queue/builder/` for answer transitions, queueing, and
-  sibling burying.
+  sibling burying;
+- `rslib/src/scheduler/states/` for review fuzz, load balancing, and intraday
+  interval rules; and
+- `rslib/src/scheduler/rwkv.rs` for applying bulk RWKV-Curve rescheduling.

@@ -1,0 +1,516 @@
+{
+    "evaluation_reviews": 702743,
+    "evaluation_start_review_id": 1776017951561,
+    "fixed_id_encodings": true,
+    "model": "/Users/jschoreels/workspace/anki/rslib/../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
+    "prefix_reviews": 2810969,
+    "results": [
+        {
+            "actual_omission_pct": 0.0,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.37370287381954975,
+                "relative_increase_pct": 0.0,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 271.8167495,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.39270483251186816,
+                "relative_increase_pct": 0.0,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.32497072375617764,
+                "cards": 45183,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.32497072375617764,
+                "relative_increase_pct": 0.0,
+                "reviews": 45183
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6803122224102166,
+                "cards": 10641,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.6803122224102166,
+                "relative_increase_pct": 0.0,
+                "reviews": 10641
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.3270091203013455,
+                "relative_increase_pct": 0.0,
+                "reviews": 357634
+            },
+            "mode": "baseline",
+            "omitted_prefix_reviews": 0,
+            "requested_omission_pct": 0,
+            "retained_prefix_cards": 67535,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 25.00073817960995,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.0015666900640084757,
+                    0.0019207146771892817
+                ],
+                "delta_log_loss": 0.001750560007060771,
+                "log_loss": 0.37545343382661056,
+                "relative_increase_pct": 0.4684363246042538,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 121.264434166,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.014116336304279234,
+                    0.01685761408423923
+                ],
+                "delta_log_loss": 0.015502085954133726,
+                "log_loss": 0.4082069184660019,
+                "relative_increase_pct": 3.947515963828947,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.3227985025836093,
+                "cards": 33839,
+                "delta_95pct_card_bootstrap": [
+                    -0.0010521451952515343,
+                    0.000746021119887235
+                ],
+                "delta_log_loss": -0.0001937745150635538,
+                "log_loss": 0.32260472806854573,
+                "relative_increase_pct": -0.06002955822676516,
+                "reviews": 33839
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5003036634621698,
+                "cards": 21985,
+                "delta_95pct_card_bootstrap": [
+                    0.03663088319343737,
+                    0.04264340109352096
+                ],
+                "delta_log_loss": 0.03966093164060555,
+                "log_loss": 0.5399645951027754,
+                "relative_increase_pct": 7.9273718217744955,
+                "reviews": 21985
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    0.002876953160721564,
+                    0.0034208331339973344
+                ],
+                "delta_log_loss": 0.0031498028727166313,
+                "log_loss": 0.33015892317406215,
+                "relative_increase_pct": 0.9632156038382125,
+                "reviews": 357634
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 702763,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 50620,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 49.996282420759535,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.0023342775504743923,
+                    0.002805132647535635
+                ],
+                "delta_log_loss": 0.0025603606773871948,
+                "log_loss": 0.37626323449693694,
+                "relative_increase_pct": 0.6851327235507207,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 92.432934125,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.024032168525046117,
+                    0.02771931258668917
+                ],
+                "delta_log_loss": 0.025859707159582357,
+                "log_loss": 0.4185645396714505,
+                "relative_increase_pct": 6.585023920937066,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.3213569128606476,
+                "cards": 22616,
+                "delta_95pct_card_bootstrap": [
+                    -0.0003079373275227427,
+                    0.002756422292300239
+                ],
+                "delta_log_loss": 0.0012671221047895612,
+                "log_loss": 0.3226240349654372,
+                "relative_increase_pct": 0.39430367111443865,
+                "reviews": 22616
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.441295670587996,
+                "cards": 33208,
+                "delta_95pct_card_bootstrap": [
+                    0.03994320356679344,
+                    0.0450090183960969
+                ],
+                "delta_log_loss": 0.042608258821805016,
+                "log_loss": 0.48390392940980104,
+                "relative_increase_pct": 9.655263276213985,
+                "reviews": 33208
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    0.005084296265887249,
+                    0.005772941914406402
+                ],
+                "delta_log_loss": 0.005408047215053145,
+                "log_loss": 0.33241716751639866,
+                "relative_increase_pct": 1.653790943221865,
+                "reviews": 357634
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 1405380,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 33894,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 74.99997331880928,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.0029304326747746673,
+                    0.0034963272554520766
+                ],
+                "delta_log_loss": 0.0032069236459672736,
+                "log_loss": 0.37690979746551706,
+                "relative_increase_pct": 0.8581479754731037,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 61.922985541,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.03736672266297225,
+                    0.0417374684322547
+                ],
+                "delta_log_loss": 0.03950673203038481,
+                "log_loss": 0.43221156454225296,
+                "relative_increase_pct": 10.06015937662057,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.32116675784575877,
+                "cards": 11169,
+                "delta_95pct_card_bootstrap": [
+                    0.0009474055949294421,
+                    0.0064762535591813735
+                ],
+                "delta_log_loss": 0.003818646748520099,
+                "log_loss": 0.3249854045942789,
+                "relative_increase_pct": 1.188991903811544,
+                "reviews": 11169
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.4105977617682943,
+                "cards": 44655,
+                "delta_95pct_card_bootstrap": [
+                    0.04590643503766239,
+                    0.05087662604631126
+                ],
+                "delta_log_loss": 0.04843294912842585,
+                "log_loss": 0.4590307108967202,
+                "relative_increase_pct": 11.795716791012902,
+                "reviews": 44655
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    0.007542713169912683,
+                    0.008390111272585033
+                ],
+                "delta_log_loss": 0.007984426573560436,
+                "log_loss": 0.3349935468749059,
+                "relative_increase_pct": 2.4416525649812537,
+                "reviews": 357634
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 2108226,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 16768,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 24.99999110626976,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    -0.00010819826762697845,
+                    6.691027852526006e-05
+                ],
+                "delta_log_loss": -1.491607097532786e-05,
+                "log_loss": 0.37368795774857444,
+                "relative_increase_pct": -0.003991425279359879,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 107.864920625,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    -0.00010823310458152143,
+                    0.0010171122774290712
+                ],
+                "delta_log_loss": 0.0004381618587173461,
+                "log_loss": 0.39314299437058553,
+                "relative_increase_pct": 0.11157536715673194,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.32497072375617764,
+                "cards": 45183,
+                "delta_95pct_card_bootstrap": [
+                    0.0005098255781647032,
+                    0.0018944018689799028
+                ],
+                "delta_log_loss": 0.0012099679877196265,
+                "log_loss": 0.3261806917438973,
+                "relative_increase_pct": 0.37233138226551554,
+                "reviews": 45183
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6803122224102166,
+                "cards": 10641,
+                "delta_95pct_card_bootstrap": [
+                    -0.0035216280624436208,
+                    -0.0021879061858161037
+                ],
+                "delta_log_loss": -0.002839022271232426,
+                "log_loss": 0.6774732001389842,
+                "relative_increase_pct": -0.4173116662779203,
+                "reviews": 10641
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    -3.6193875251360474e-06,
+                    0.0003072409511518557
+                ],
+                "delta_log_loss": 0.00016345778253634049,
+                "log_loss": 0.32717257808388184,
+                "relative_increase_pct": 0.0499856953181339,
+                "reviews": 357634
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 702742,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 67518,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 49.99998221253952,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    -0.0003714339333394387,
+                    -0.00011030772687117997
+                ],
+                "delta_log_loss": -0.00023712624818061003,
+                "log_loss": 0.37346574757136913,
+                "relative_increase_pct": -0.06345315082995893,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 85.940554708,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    -0.00012697770599156047,
+                    0.001637620248170448
+                ],
+                "delta_log_loss": 0.0008186942011550439,
+                "log_loss": 0.3935235267130232,
+                "relative_increase_pct": 0.20847571340500418,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.32479861171703767,
+                "cards": 45144,
+                "delta_95pct_card_bootstrap": [
+                    0.0015299626504893323,
+                    0.0037649065981934966
+                ],
+                "delta_log_loss": 0.0026626838430547587,
+                "log_loss": 0.32746129556009246,
+                "relative_increase_pct": 0.8197953276273454,
+                "reviews": 45144
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6797421388378787,
+                "cards": 10680,
+                "delta_95pct_card_bootstrap": [
+                    -0.008384568058019735,
+                    -0.005695721929395744
+                ],
+                "delta_log_loss": -0.006975787858214454,
+                "log_loss": 0.6727663509796642,
+                "relative_increase_pct": -1.0262403137372962,
+                "reviews": 10680
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    8.420505210433612e-05,
+                    0.0005504924917194516
+                ],
+                "delta_log_loss": 0.00033458967191634065,
+                "log_loss": 0.32734370997326184,
+                "relative_increase_pct": 0.10231814684801743,
+                "reviews": 357634
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 1405484,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 67419,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 74.99997331880928,
+            "all": {
+                "baseline_log_loss": 0.37370287381954975,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    -0.00073798212195956,
+                    -0.00036870281770969325
+                ],
+                "delta_log_loss": -0.0005483566687421693,
+                "log_loss": 0.3731545171508076,
+                "relative_increase_pct": -0.14673600530215747,
+                "reviews": 702743
+            },
+            "elapsed_seconds": 65.235090708,
+            "first_per_card": {
+                "baseline_log_loss": 0.39270483251186816,
+                "cards": 55824,
+                "delta_95pct_card_bootstrap": [
+                    0.0027813005680086037,
+                    0.005154122329431942
+                ],
+                "delta_log_loss": 0.003994891686288175,
+                "log_loss": 0.39669972419815636,
+                "relative_increase_pct": 1.0172759170635985,
+                "reviews": 55824
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.3259794797968283,
+                "cards": 44470,
+                "delta_95pct_card_bootstrap": [
+                    0.004230228633607572,
+                    0.007162225192381049
+                ],
+                "delta_log_loss": 0.0056506985534027256,
+                "log_loss": 0.331630178350231,
+                "relative_increase_pct": 1.7334522273992858,
+                "reviews": 44470
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6540467767815354,
+                "cards": 11354,
+                "delta_95pct_card_bootstrap": [
+                    -0.004444473017730303,
+                    -0.0006089875791905221
+                ],
+                "delta_log_loss": -0.002490376182331959,
+                "log_loss": 0.6515564005992035,
+                "relative_increase_pct": -0.38076423135768983,
+                "reviews": 11354
+            },
+            "interday": {
+                "baseline_log_loss": 0.3270091203013455,
+                "cards": 55298,
+                "delta_95pct_card_bootstrap": [
+                    0.0003613419731559767,
+                    0.000962774472670759
+                ],
+                "delta_log_loss": 0.0006507938934506366,
+                "log_loss": 0.3276599141947961,
+                "relative_increase_pct": 0.19901398861625538,
+                "reviews": 357634
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 2108226,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 66207,
+            "seed": 20261010
+        }
+    ],
+    "source": {
+        "backup": "/private/tmp/rwkv-primarius-ablation-2026-10-10/primarius.colpkg",
+        "backup_sha256": "1dd3defdfa4c852b2b6df0339e5903c83d52565c5345041bbbb7209340078ea1",
+        "collection_copy": "/private/tmp/rwkv-primarius-ablation-2026-10-10/rwkv-ablation-_alu9jnj/collection.anki2",
+        "history_hash": "fe72ea18d2bd6c81e9e25485965733e6cfd2bd2509bcdcaaac62678eaaaf1024",
+        "model_sha256": "749ad1ad18d5b6ef8c4185802fa0c1e4a14e67cd7874f3efeaae355fffb1b9ec",
+        "replay_key": "98177df0d35d29c756e84e303e7c38803db86e859be9bbd91649449ef594fd11",
+        "deck_count": 758,
+        "scoring_scope": "all_decks",
+        "original_package": "/Users/jschoreels/Downloads/PRIMARIUS COLLECTION.apkg"
+    },
+    "runtime_provenance": {
+        "rslib/src/rwkv/mod.rs": "c9e0763bddf36bfd6d7bf864d95aff102ba51a7d3e45b0d3fe1378be8f708cbd",
+        "rslib/src/rwkv/bulk.rs": "4bdefd9e10b5f5c5402e3631f909772e777cf63febc7dbf9074f8613a112e78e",
+        "rslib/src/rwkv/history_ablation_bench.rs": "b05581b99e8dd06ce7d5f3fe30375797197c081ac17d74926fe2ffccf564ee20",
+        "rslib/src/rwkv/precision.rs": "8403102201c2db44825bfc83968fddd90f8dc7ecbc9a68862b6224a90f06ac97",
+        "qt/aqt/rwkv_history.py": "43a80706e6874a1e41e755fb2ccd9402578d9af18dc9bf5190ce14d333d08928",
+        "qt/aqt/rwkv_scheduler.py": "09011e3f4965733d62a47f62a8e1d689c87d384228c27a01990c33e463f41736",
+        "qt/tools/rwkv_history_ablation_prepare.py": "37077a3ec0c878b5deae034321ab5fea666fa969f1113787f39675f6bd14b564",
+        "target/release/deps/anki-2e23a790723b5768": "17ada8f0ff48557404d57eabc14b175f5bbd7bd842f285b4e76215cd38d312be"
+    },
+    "state_precision": "f32",
+    "samples_per_condition": 1,
+    "primary_metric": "interday: baseline elapsed scheduler days >= 1"
+}

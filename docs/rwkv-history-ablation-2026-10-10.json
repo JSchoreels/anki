@@ -1,0 +1,1335 @@
+{
+    "evaluation_reviews": 44767,
+    "evaluation_start_review_id": 1774458536865,
+    "fixed_id_encodings": true,
+    "model": "/Users/jschoreels/workspace/anki/rslib/../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
+    "prefix_reviews": 179065,
+    "results": [
+        {
+            "actual_omission_pct": 0.0,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.572255978862014,
+                "relative_increase_pct": 0.0,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 27.784124,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.5679582529468064,
+                "relative_increase_pct": 0.0,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5624312243315418,
+                "cards": 8583,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.5624312243315418,
+                "relative_increase_pct": 0.0,
+                "reviews": 8583
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6532792720202314,
+                "cards": 556,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.6532792720202314,
+                "relative_increase_pct": 0.0,
+                "reviews": 556
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.0,
+                    0.0
+                ],
+                "delta_log_loss": 0.0,
+                "log_loss": 0.57868679485776,
+                "relative_increase_pct": 0.0,
+                "reviews": 32483
+            },
+            "mode": "baseline",
+            "omitted_prefix_reviews": 0,
+            "requested_omission_pct": 0,
+            "retained_prefix_cards": 12366,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 24.98980817021752,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.013961203319786245,
+                    0.01741955675414471
+                ],
+                "delta_log_loss": 0.015705564778049966,
+                "log_loss": 0.5879615436400639,
+                "relative_increase_pct": 2.7444999018240037,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 8.057688125,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.032311781953982766,
+                    0.04191014042942618
+                ],
+                "delta_log_loss": 0.03708818417133675,
+                "log_loss": 0.6050464371181431,
+                "relative_increase_pct": 6.530089840038004,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5639311995967695,
+                "cards": 6423,
+                "delta_95pct_card_bootstrap": [
+                    -0.0012959435043834661,
+                    0.0020795491412823153
+                ],
+                "delta_log_loss": 0.0005084637424257053,
+                "log_loss": 0.5644396633391953,
+                "relative_increase_pct": 0.09016414463134415,
+                "reviews": 6423
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5774817299966201,
+                "cards": 2716,
+                "delta_95pct_card_bootstrap": [
+                    0.10743808682671767,
+                    0.1381805440102991
+                ],
+                "delta_log_loss": 0.12359464378654618,
+                "log_loss": 0.7010763737831662,
+                "relative_increase_pct": 21.40234701230627,
+                "reviews": 2716
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.014455442660036703,
+                    0.018152428217096565
+                ],
+                "delta_log_loss": 0.016263270990978913,
+                "log_loss": 0.5949500658487389,
+                "relative_increase_pct": 2.8103753421531574,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 44748,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 9308,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 24.99204199592327,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.012969197672967099,
+                    0.016012343828538774
+                ],
+                "delta_log_loss": 0.014551913387156029,
+                "log_loss": 0.5868078922491701,
+                "relative_increase_pct": 2.5429028135440204,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 9.399350875,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.025725274079627925,
+                    0.033719686263730564
+                ],
+                "delta_log_loss": 0.029647469074233154,
+                "log_loss": 0.5976057220210395,
+                "relative_increase_pct": 5.220008498936253,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5592222229828282,
+                "cards": 6509,
+                "delta_95pct_card_bootstrap": [
+                    -0.0010797605117681779,
+                    0.0023973980721430257
+                ],
+                "delta_log_loss": 0.000450448788802944,
+                "log_loss": 0.5596726717716312,
+                "relative_increase_pct": 0.08054915743517863,
+                "reviews": 6509
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5895790966865575,
+                "cards": 2630,
+                "delta_95pct_card_bootstrap": [
+                    0.08829804666386364,
+                    0.11530480102908419
+                ],
+                "delta_log_loss": 0.10190731889851123,
+                "log_loss": 0.6914864155850687,
+                "relative_increase_pct": 17.284757799459268,
+                "reviews": 2630
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.013290503264272658,
+                    0.01659595430049279
+                ],
+                "delta_log_loss": 0.014854487500339962,
+                "log_loss": 0.5935412823581,
+                "relative_increase_pct": 2.566930441879387,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 44752,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 9386,
+            "seed": 20261011
+        },
+        {
+            "actual_omission_pct": 25.000977298746264,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.014395237845825748,
+                    0.017590579169590215
+                ],
+                "delta_log_loss": 0.015950181365370866,
+                "log_loss": 0.5882061602273848,
+                "relative_increase_pct": 2.7872459099666087,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 7.667670916,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.03072004541235828,
+                    0.04001113344710223
+                ],
+                "delta_log_loss": 0.035461296771049595,
+                "log_loss": 0.6034195497178559,
+                "relative_increase_pct": 6.243644948737248,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5598586261180262,
+                "cards": 6441,
+                "delta_95pct_card_bootstrap": [
+                    -0.0016742447106700903,
+                    0.0020188055852881238
+                ],
+                "delta_log_loss": 4.528680705129099e-06,
+                "log_loss": 0.5598631547987314,
+                "relative_increase_pct": 0.0008088971918732905,
+                "reviews": 6441
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5872946860098834,
+                "cards": 2698,
+                "delta_95pct_card_bootstrap": [
+                    0.10328296859775742,
+                    0.13454230853450602
+                ],
+                "delta_log_loss": 0.12010808819799111,
+                "log_loss": 0.7074027742078745,
+                "relative_increase_pct": 20.451076956614905,
+                "reviews": 2698
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.014559089744552984,
+                    0.017993604281069546
+                ],
+                "delta_log_loss": 0.01619017010471285,
+                "log_loss": 0.5948769649624729,
+                "relative_increase_pct": 2.79774313991256,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 44768,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 9234,
+            "seed": 20261012
+        },
+        {
+            "actual_omission_pct": 50.000837684639656,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.030843977350543367,
+                    0.036295637620073214
+                ],
+                "delta_log_loss": 0.033736400744382646,
+                "log_loss": 0.6059923796063966,
+                "relative_increase_pct": 5.89533390484984,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 7.676743667,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.07019384379456022,
+                    0.08488746547031153
+                ],
+                "delta_log_loss": 0.07819871036160013,
+                "log_loss": 0.6461569633084064,
+                "relative_increase_pct": 13.768390538542636,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5599497029938734,
+                "cards": 4263,
+                "delta_95pct_card_bootstrap": [
+                    -0.0004754781798755757,
+                    0.006072425551263383
+                ],
+                "delta_log_loss": 0.0026537827082429534,
+                "log_loss": 0.5626034857021164,
+                "relative_increase_pct": 0.473932336074833,
+                "reviews": 4263
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5749599856066436,
+                "cards": 4876,
+                "delta_95pct_card_bootstrap": [
+                    0.12921510272515715,
+                    0.15827001203203242
+                ],
+                "delta_log_loss": 0.1442462957976603,
+                "log_loss": 0.719206281404304,
+                "relative_increase_pct": 25.088058196861333,
+                "reviews": 4876
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.03193189124474142,
+                    0.037550381847694075
+                ],
+                "delta_log_loss": 0.034633307669815934,
+                "log_loss": 0.613320102527576,
+                "relative_increase_pct": 5.9848104324427736,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 89534,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 6210,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 49.99525312037528,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.03065722547376273,
+                    0.03565466780619613
+                ],
+                "delta_log_loss": 0.033122852062892685,
+                "log_loss": 0.6053788309249066,
+                "relative_increase_pct": 5.788118130064915,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 6.43970275,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.06967095695759377,
+                    0.08355438251901853
+                ],
+                "delta_log_loss": 0.07663944283484908,
+                "log_loss": 0.6445976957816554,
+                "relative_increase_pct": 13.493851429609732,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5571527243815807,
+                "cards": 4328,
+                "delta_95pct_card_bootstrap": [
+                    0.0007955859488994686,
+                    0.007457350290584786
+                ],
+                "delta_log_loss": 0.003865561905432134,
+                "log_loss": 0.5610182862870129,
+                "relative_increase_pct": 0.693806515928423,
+                "reviews": 4328
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5776789612465998,
+                "cards": 4811,
+                "delta_95pct_card_bootstrap": [
+                    0.1305625321238592,
+                    0.15377640768661324
+                ],
+                "delta_log_loss": 0.14210719520701667,
+                "log_loss": 0.7197861564536165,
+                "relative_increase_pct": 24.59968334321144,
+                "reviews": 4811
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.031482772229105206,
+                    0.03700656150776538
+                ],
+                "delta_log_loss": 0.03383319166376696,
+                "log_loss": 0.612519986521527,
+                "relative_increase_pct": 5.846546346730286,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 89524,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 6285,
+            "seed": 20261011
+        },
+        {
+            "actual_omission_pct": 49.98966855611091,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.033436470581702814,
+                    0.03861839915636861
+                ],
+                "delta_log_loss": 0.035928622051201654,
+                "log_loss": 0.6081846009132157,
+                "relative_increase_pct": 6.278417942028176,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 6.7042275,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.07789450620170342,
+                    0.09201822076146755
+                ],
+                "delta_log_loss": 0.0849081298921972,
+                "log_loss": 0.6528663828390036,
+                "relative_increase_pct": 14.949713196640442,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.560977294317135,
+                "cards": 4306,
+                "delta_95pct_card_bootstrap": [
+                    -0.001448385446740593,
+                    0.00535691302802023
+                ],
+                "delta_log_loss": 0.001737013931897651,
+                "log_loss": 0.5627143082490326,
+                "relative_increase_pct": 0.3096406841228893,
+                "reviews": 4306
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5741779938653618,
+                "cards": 4833,
+                "delta_95pct_card_bootstrap": [
+                    0.14600329887152888,
+                    0.17357519117559228
+                ],
+                "delta_log_loss": 0.1590101007850248,
+                "log_loss": 0.7331880946503867,
+                "relative_increase_pct": 27.693520560509477,
+                "reviews": 4833
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.034027328179311866,
+                    0.039380416393423726
+                ],
+                "delta_log_loss": 0.03676841057187537,
+                "log_loss": 0.6154552054296354,
+                "relative_increase_pct": 6.3537669942707025,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 89514,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 6184,
+            "seed": 20261012
+        },
+        {
+            "actual_omission_pct": 75.01410102476754,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.0537880180901273,
+                    0.0612635751610692
+                ],
+                "delta_log_loss": 0.057715151005952176,
+                "log_loss": 0.6299711298679662,
+                "relative_increase_pct": 10.08554792572448,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 5.206102875,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.1358465446941238,
+                    0.15554765081146707
+                ],
+                "delta_log_loss": 0.14635068275842023,
+                "log_loss": 0.7143089357052266,
+                "relative_increase_pct": 25.767859169065918,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5723707761684659,
+                "cards": 2131,
+                "delta_95pct_card_bootstrap": [
+                    0.005332277888192385,
+                    0.022243322601275945
+                ],
+                "delta_log_loss": 0.013583528859977738,
+                "log_loss": 0.5859543050284437,
+                "relative_increase_pct": 2.373204472616138,
+                "reviews": 2131
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.56661648825141,
+                "cards": 7008,
+                "delta_95pct_card_bootstrap": [
+                    0.17509518810767474,
+                    0.19912569978844394
+                ],
+                "delta_log_loss": 0.18672265835167942,
+                "log_loss": 0.7533391466030893,
+                "relative_increase_pct": 32.953975435467704,
+                "reviews": 7008
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.05539157631931798,
+                    0.06315930384478072
+                ],
+                "delta_log_loss": 0.0592415183955491,
+                "log_loss": 0.6379283132533091,
+                "relative_increase_pct": 10.2372334952123,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 134324,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 3134,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 74.99734733197442,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.05394822373312998,
+                    0.061071104257600685
+                ],
+                "delta_log_loss": 0.0576062376415967,
+                "log_loss": 0.6298622165036107,
+                "relative_increase_pct": 10.066515645000727,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 4.597862417,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.13240711186151297,
+                    0.1519827158084778
+                ],
+                "delta_log_loss": 0.14185987486499674,
+                "log_loss": 0.7098181278118031,
+                "relative_increase_pct": 24.977165861921726,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5463971146379122,
+                "cards": 2171,
+                "delta_95pct_card_bootstrap": [
+                    -0.000768692159117083,
+                    0.012777125190012825
+                ],
+                "delta_log_loss": 0.005796929859186233,
+                "log_loss": 0.5521940444970984,
+                "relative_increase_pct": 1.0609371286720204,
+                "reviews": 2171
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5746759956661849,
+                "cards": 6968,
+                "delta_95pct_card_bootstrap": [
+                    0.17131375924007886,
+                    0.1955304133213674
+                ],
+                "delta_log_loss": 0.18425262079031118,
+                "log_loss": 0.758928616456496,
+                "relative_increase_pct": 32.06200053244246,
+                "reviews": 6968
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.055308527845559285,
+                    0.0632459171878604
+                ],
+                "delta_log_loss": 0.059042255783701446,
+                "log_loss": 0.6377290506414615,
+                "relative_increase_pct": 10.2027999097878,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 134294,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 3128,
+            "seed": 20261011
+        },
+        {
+            "actual_omission_pct": 75.02303632759055,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.06271646434052854,
+                    0.07045427147120949
+                ],
+                "delta_log_loss": 0.06656003540468411,
+                "log_loss": 0.6388160142666981,
+                "relative_increase_pct": 11.631164699588657,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 4.653815916,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.1661020473892832,
+                    0.18614406342095577
+                ],
+                "delta_log_loss": 0.1766229375380157,
+                "log_loss": 0.744581190484822,
+                "relative_increase_pct": 31.097873236566524,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5692459362290377,
+                "cards": 2089,
+                "delta_95pct_card_bootstrap": [
+                    0.00200811201849019,
+                    0.0165273702053058
+                ],
+                "delta_log_loss": 0.008734414400983105,
+                "log_loss": 0.5779803506300208,
+                "relative_increase_pct": 1.5343832683012406,
+                "reviews": 2089
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5675766968650247,
+                "cards": 7050,
+                "delta_95pct_card_bootstrap": [
+                    0.21209530207511224,
+                    0.24079059654250995
+                ],
+                "delta_log_loss": 0.22637033113138122,
+                "log_loss": 0.7939470279964059,
+                "relative_increase_pct": 39.88365491073259,
+                "reviews": 7050
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.06434125863346073,
+                    0.07242173459501805
+                ],
+                "delta_log_loss": 0.06839668437759656,
+                "log_loss": 0.6470834792353566,
+                "relative_increase_pct": 11.819292402275797,
+                "reviews": 32483
+            },
+            "mode": "whole_cards",
+            "omitted_prefix_reviews": 134340,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 3058,
+            "seed": 20261012
+        },
+        {
+            "actual_omission_pct": 24.999860385893392,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.0034972794759544775,
+                    0.005632290866684833
+                ],
+                "delta_log_loss": 0.004647332704919442,
+                "log_loss": 0.5769033115669334,
+                "relative_increase_pct": 0.8121073219996949,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 7.542712166,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.007432478031054445,
+                    0.01355695254780313
+                ],
+                "delta_log_loss": 0.010719655823361146,
+                "log_loss": 0.5786779087701674,
+                "relative_increase_pct": 1.8874020700893177,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5642714966848357,
+                "cards": 8422,
+                "delta_95pct_card_bootstrap": [
+                    0.004570873921801732,
+                    0.010682618020000917
+                ],
+                "delta_log_loss": 0.007472715583581807,
+                "log_loss": 0.5717442122684174,
+                "relative_increase_pct": 1.324312078048409,
+                "reviews": 8422
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6112634987464169,
+                "cards": 717,
+                "delta_95pct_card_bootstrap": [
+                    0.033684085649335914,
+                    0.06130394637338049
+                ],
+                "delta_log_loss": 0.048858750243751116,
+                "log_loss": 0.6601222489901681,
+                "relative_increase_pct": 7.993075055839412,
+                "reviews": 717
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.003619737521743673,
+                    0.0058912262237084305
+                ],
+                "delta_log_loss": 0.004770619257150969,
+                "log_loss": 0.583457414114911,
+                "relative_increase_pct": 0.8243870949783081,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 44766,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 12082,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 24.999860385893392,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.0035359103373235386,
+                    0.005720899603008051
+                ],
+                "delta_log_loss": 0.004719955612788307,
+                "log_loss": 0.5769759344748023,
+                "relative_increase_pct": 0.8247979553091593,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 8.005440333,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.008705105562043475,
+                    0.014893223063585322
+                ],
+                "delta_log_loss": 0.012033687410839142,
+                "log_loss": 0.5799919403576455,
+                "relative_increase_pct": 2.1187626640520336,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5637714914997335,
+                "cards": 8431,
+                "delta_95pct_card_bootstrap": [
+                    0.006764211246836529,
+                    0.012552675789462339
+                ],
+                "delta_log_loss": 0.009818336431952481,
+                "log_loss": 0.5735898279316859,
+                "relative_increase_pct": 1.7415453920583928,
+                "reviews": 8431
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.617815012495224,
+                "cards": 708,
+                "delta_95pct_card_bootstrap": [
+                    0.022494508199151587,
+                    0.05252031509501386
+                ],
+                "delta_log_loss": 0.03841451241505657,
+                "log_loss": 0.6562295249102806,
+                "relative_increase_pct": 6.217801710565189,
+                "reviews": 708
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.0038582987337937706,
+                    0.00582739737344028
+                ],
+                "delta_log_loss": 0.004873317976214006,
+                "log_loss": 0.583560112833974,
+                "relative_increase_pct": 0.8421339521686955,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 44766,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 12081,
+            "seed": 20261011
+        },
+        {
+            "actual_omission_pct": 24.999860385893392,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.003384358844838185,
+                    0.005464012213559497
+                ],
+                "delta_log_loss": 0.004417798278820849,
+                "log_loss": 0.5766737771408349,
+                "relative_increase_pct": 0.7719968758746855,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 7.367171917,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.007515053726800535,
+                    0.013771697365830282
+                ],
+                "delta_log_loss": 0.010883804526150407,
+                "log_loss": 0.5788420574729567,
+                "relative_increase_pct": 1.9163036138097562,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5634409835339347,
+                "cards": 8422,
+                "delta_95pct_card_bootstrap": [
+                    0.0055507172324458605,
+                    0.011147420090767262
+                ],
+                "delta_log_loss": 0.008083876758534192,
+                "log_loss": 0.571524860292469,
+                "relative_increase_pct": 1.434733538166082,
+                "reviews": 8422
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6210188428982838,
+                "cards": 717,
+                "delta_95pct_card_bootstrap": [
+                    0.027024619231954435,
+                    0.060707848915464255
+                ],
+                "delta_log_loss": 0.04377221688160551,
+                "log_loss": 0.6647910597798893,
+                "relative_increase_pct": 7.048452294510317,
+                "reviews": 717
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.0034376176397028684,
+                    0.005540786771668325
+                ],
+                "delta_log_loss": 0.0045012019152070384,
+                "log_loss": 0.5831879967729671,
+                "relative_increase_pct": 0.7778304179747915,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 44766,
+            "requested_omission_pct": 25,
+            "retained_prefix_cards": 12043,
+            "seed": 20261012
+        },
+        {
+            "actual_omission_pct": 49.999720771786784,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.008583040913367706,
+                    0.011391847746675643
+                ],
+                "delta_log_loss": 0.0100354162441034,
+                "log_loss": 0.5822913951061174,
+                "relative_increase_pct": 1.7536586099213485,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 5.75870625,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.019738445520041503,
+                    0.028191777783096332
+                ],
+                "delta_log_loss": 0.02411657922411657,
+                "log_loss": 0.5920748321709229,
+                "relative_increase_pct": 4.246188711756474,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5654810637988966,
+                "cards": 8043,
+                "delta_95pct_card_bootstrap": [
+                    0.014296682166319567,
+                    0.022256730023859223
+                ],
+                "delta_log_loss": 0.01825012797287527,
+                "log_loss": 0.5837311917717719,
+                "relative_increase_pct": 3.2273632383498536,
+                "reviews": 8043
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5861371145495811,
+                "cards": 1096,
+                "delta_95pct_card_bootstrap": [
+                    0.05210190360681639,
+                    0.08164193457338774
+                ],
+                "delta_log_loss": 0.06716755314175615,
+                "log_loss": 0.6533046676913372,
+                "relative_increase_pct": 11.459358480203266,
+                "reviews": 1096
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.00893620335022986,
+                    0.011968076409181242
+                ],
+                "delta_log_loss": 0.01024903721956359,
+                "log_loss": 0.5889358320773236,
+                "relative_increase_pct": 1.7710853799735973,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 89532,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 11430,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 49.999720771786784,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.008125639487718562,
+                    0.011143851467269228
+                ],
+                "delta_log_loss": 0.009723349416619216,
+                "log_loss": 0.5819793282786332,
+                "relative_increase_pct": 1.6991258764923751,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 5.820702417,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.01741513056398247,
+                    0.026253962161096597
+                ],
+                "delta_log_loss": 0.02209895574234942,
+                "log_loss": 0.5900572086891558,
+                "relative_increase_pct": 3.8909472003779757,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5652966743229,
+                "cards": 8037,
+                "delta_95pct_card_bootstrap": [
+                    0.011448399224294366,
+                    0.019981408001844902
+                ],
+                "delta_log_loss": 0.016111060047543712,
+                "log_loss": 0.5814077343704437,
+                "relative_increase_pct": 2.8500185441283885,
+                "reviews": 8037
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5873694211866791,
+                "cards": 1102,
+                "delta_95pct_card_bootstrap": [
+                    0.05003214571311594,
+                    0.08099339160512384
+                ],
+                "delta_log_loss": 0.06576929848204673,
+                "log_loss": 0.6531387196687258,
+                "relative_increase_pct": 11.197262933635725,
+                "reviews": 1102
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.008252009988620967,
+                    0.011411824279027932
+                ],
+                "delta_log_loss": 0.00990427091757925,
+                "log_loss": 0.5885910657753393,
+                "relative_increase_pct": 1.7115080222305226,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 89532,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 11422,
+            "seed": 20261011
+        },
+        {
+            "actual_omission_pct": 49.999720771786784,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.008421468867734526,
+                    0.011419476502839308
+                ],
+                "delta_log_loss": 0.009879539008255266,
+                "log_loss": 0.5821355178702693,
+                "relative_increase_pct": 1.7264195348210565,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 6.852754792,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.01769196087356781,
+                    0.026263917534273096
+                ],
+                "delta_log_loss": 0.022081272811552574,
+                "log_loss": 0.5900395257583589,
+                "relative_increase_pct": 3.887833779505033,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.563079808956138,
+                "cards": 8031,
+                "delta_95pct_card_bootstrap": [
+                    0.012659378861593467,
+                    0.020284420926899083
+                ],
+                "delta_log_loss": 0.0165775243517436,
+                "log_loss": 0.5796573333078816,
+                "relative_increase_pct": 2.944080765828869,
+                "reviews": 8031
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.6033181660235752,
+                "cards": 1108,
+                "delta_95pct_card_bootstrap": [
+                    0.045463431780643514,
+                    0.07865081022285184
+                ],
+                "delta_log_loss": 0.061973514581140886,
+                "log_loss": 0.6652916806047161,
+                "relative_increase_pct": 10.27211147802886,
+                "reviews": 1108
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.008302613190861187,
+                    0.011748979811131958
+                ],
+                "delta_log_loss": 0.010089111101423427,
+                "log_loss": 0.5887759059591835,
+                "relative_increase_pct": 1.7434493392757144,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 89532,
+            "requested_omission_pct": 50,
+            "retained_prefix_cards": 11358,
+            "seed": 20261012
+        },
+        {
+            "actual_omission_pct": 74.99958115768017,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.01693993476509986,
+                    0.02062032898994837
+                ],
+                "delta_log_loss": 0.018706079582974405,
+                "log_loss": 0.5909620584449884,
+                "relative_increase_pct": 3.268830780968552,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 4.9212955,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.039512273581343016,
+                    0.05066085455027953
+                ],
+                "delta_log_loss": 0.045413419618042995,
+                "log_loss": 0.6133716725648494,
+                "relative_increase_pct": 7.995908041201807,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.5681289179736422,
+                "cards": 6940,
+                "delta_95pct_card_bootstrap": [
+                    0.027818193769266728,
+                    0.040341628815348626
+                ],
+                "delta_log_loss": 0.03374896040662086,
+                "log_loss": 0.6018778783802631,
+                "relative_increase_pct": 5.940370105960108,
+                "reviews": 6940
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5674196375369709,
+                "cards": 2199,
+                "delta_95pct_card_bootstrap": [
+                    0.06985794472309127,
+                    0.09299942707634867
+                ],
+                "delta_log_loss": 0.08222621949400769,
+                "log_loss": 0.6496458570309785,
+                "relative_increase_pct": 14.491253748448235,
+                "reviews": 2199
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.016983120962450395,
+                    0.021182583605292654
+                ],
+                "delta_log_loss": 0.019060722420639765,
+                "log_loss": 0.5977475172783998,
+                "relative_increase_pct": 3.293789073815802,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 134298,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 9645,
+            "seed": 20261010
+        },
+        {
+            "actual_omission_pct": 74.99958115768017,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.015336532799723452,
+                    0.019440552648151
+                ],
+                "delta_log_loss": 0.01751204352361675,
+                "log_loss": 0.5897680223856308,
+                "relative_increase_pct": 3.0601765941250854,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 4.778953667,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.035843442818015187,
+                    0.04713836122565692
+                ],
+                "delta_log_loss": 0.041852148288854335,
+                "log_loss": 0.6098104012356607,
+                "relative_increase_pct": 7.3688775665654624,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.568337052314995,
+                "cards": 6949,
+                "delta_95pct_card_bootstrap": [
+                    0.025968217350817203,
+                    0.03954926315430175
+                ],
+                "delta_log_loss": 0.03336178105506653,
+                "log_loss": 0.6016988333700615,
+                "relative_increase_pct": 5.870069691774399,
+                "reviews": 6949
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.566756300065739,
+                "cards": 2190,
+                "delta_95pct_card_bootstrap": [
+                    0.055748066289896134,
+                    0.08218554656450255
+                ],
+                "delta_log_loss": 0.06879258751606383,
+                "log_loss": 0.6355488875818028,
+                "relative_increase_pct": 12.137948445934251,
+                "reviews": 2190
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.015785651653555454,
+                    0.019676111111929594
+                ],
+                "delta_log_loss": 0.017836132257143946,
+                "log_loss": 0.596522927114904,
+                "relative_increase_pct": 3.082173710483238,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 134298,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 9657,
+            "seed": 20261011
+        },
+        {
+            "actual_omission_pct": 74.99958115768017,
+            "all": {
+                "baseline_log_loss": 0.572255978862014,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.01642479267167579,
+                    0.020390912853076294
+                ],
+                "delta_log_loss": 0.01821827357100304,
+                "log_loss": 0.590474252433017,
+                "relative_increase_pct": 3.183588157039762,
+                "reviews": 33630
+            },
+            "elapsed_seconds": 4.6271010839999995,
+            "first_per_card": {
+                "baseline_log_loss": 0.5679582529468064,
+                "cards": 9139,
+                "delta_95pct_card_bootstrap": [
+                    0.03460880421672754,
+                    0.04668964625382216
+                ],
+                "delta_log_loss": 0.04078120560442776,
+                "log_loss": 0.6087394585512341,
+                "relative_increase_pct": 7.180317460453777,
+                "reviews": 9139
+            },
+            "first_seen_card": {
+                "baseline_log_loss": 0.565351675531082,
+                "cards": 6947,
+                "delta_95pct_card_bootstrap": [
+                    0.02946827804318048,
+                    0.040258373076187064
+                ],
+                "delta_log_loss": 0.03492930700636135,
+                "log_loss": 0.6002809825374434,
+                "relative_increase_pct": 6.178332623415209,
+                "reviews": 6947
+            },
+            "first_unseen_card": {
+                "baseline_log_loss": 0.5762191531781233,
+                "cards": 2192,
+                "delta_95pct_card_bootstrap": [
+                    0.04649038779805628,
+                    0.07270661662572139
+                ],
+                "delta_log_loss": 0.05932734591500013,
+                "log_loss": 0.6355464990931234,
+                "relative_increase_pct": 10.29596909227705,
+                "reviews": 2192
+            },
+            "interday": {
+                "baseline_log_loss": 0.57868679485776,
+                "cards": 9138,
+                "delta_95pct_card_bootstrap": [
+                    0.01633366164786634,
+                    0.020627675864077332
+                ],
+                "delta_log_loss": 0.018527237848062515,
+                "log_loss": 0.5972140327058225,
+                "relative_increase_pct": 3.2016002460564996,
+                "reviews": 32483
+            },
+            "mode": "random_holes",
+            "omitted_prefix_reviews": 134298,
+            "requested_omission_pct": 75,
+            "retained_prefix_cards": 9669,
+            "seed": 20261012
+        }
+    ],
+    "source": {
+        "backup": "/private/tmp/rwkv-history-ablation-2026-10-10/backup.colpkg",
+        "collection_copy": "/private/tmp/rwkv-history-ablation-2026-10-10/rwkv-ablation-0wa74gxs/collection.anki2",
+        "decks": [
+            "Japan::0. Kanji::Yomitan Kanji",
+            "Japan::1. Vocabulary::1.2 Normal Scheduling::Yomitan"
+        ],
+        "history_hash": "7cff8239010b74febad44f72e7549e5d2446a6e6a400f5879317d5d07a96f456",
+        "replay_key": "189594bd12e36b295a6b73d24b4c8d4a0bd2993e03288714239be156106c1d30",
+        "backup_sha256": "b2a5e1c9abaa2c0a666e750fdf1f95ca6ad52d8263becf62cccd7c402d7230e0",
+        "model_sha256": "749ad1ad18d5b6ef8c4185802fa0c1e4a14e67cd7874f3efeaae355fffb1b9ec",
+        "original_backup_filename": "backup-2026-10-10-14.56.35.colpkg",
+        "repository_base_commit": "a352e50936c356fe5ba2f3c61a284a7f9c86e8fb",
+        "input_sha256": "43cea69b14131e48782222d28f1322a4a178834b79bae24a13a68a0125596c54"
+    }
+}

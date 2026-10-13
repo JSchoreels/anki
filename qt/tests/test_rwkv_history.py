@@ -1,6 +1,7 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,13 +14,13 @@ from aqt import rwkv_scheduler as scheduler
 
 
 @pytest.mark.parametrize("elapsed_source", list(scheduler.RwkvFirstReviewElapsedSource))
-@pytest.mark.parametrize("preserve_history", [False, True])
+@pytest.mark.parametrize("legacy_marker", [False, True])
 def test_native_full_history_preserves_replay_and_recovery_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     elapsed_source: scheduler.RwkvFirstReviewElapsedSource,
-    preserve_history: bool,
+    legacy_marker: bool,
 ) -> None:
     col = Collection(str(tmp_path / "collection.anki2"))
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
@@ -40,18 +41,25 @@ def test_native_full_history_preserves_replay_and_recovery_inputs(
         col.sched.answerCard(card, 1)
         col.sched.answerCard(card, 3)
         col.sched.answerCard(card, 4)
-        if preserve_history:
-            monkeypatch.setattr(
-                scheduler,
-                "_rwkv_preserved_learning_start_cutoffs",
-                lambda _: {card.id: first_history.last_review_id},
+        if legacy_marker:
+            cache_dir = tmp_path / scheduler._RWKV_STATE_CACHE_DIR
+            cache_dir.mkdir(exist_ok=True)
+            (cache_dir / "preserved-history-v1.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "cards": {str(card.id): first_history.last_review_id},
+                    }
+                ),
+                encoding="utf8",
             )
+            reviewer.mw.pm = SimpleNamespace(profileFolder=lambda: str(tmp_path))
         options = dict(
             first_review_elapsed_source=elapsed_source,
             prepare_recovery_checkpoint=True,
         )
         native = scheduler._historical_rwkv_review_inputs(reviewer, **options)
-        assert native.review_count == (5 if preserve_history else 3)
+        assert native.review_count == 3
         assert native.reviews[0].card_type == scheduler.RwkvReviewState.LEARN_START
         assert native.prepared_checkpoint_histories[1].review_count == 1
 

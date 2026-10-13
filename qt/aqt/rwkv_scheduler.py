@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import zlib
 from array import array
 from collections import OrderedDict
@@ -55,6 +56,25 @@ from aqt.qt import QMessageBox, QWidget
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
+
+
+def _release_rwkv_free_memory() -> None:
+    from anki import _rsbridge
+
+    release = getattr(_rsbridge, "rwkv_release_free_memory", None)
+    if not callable(release):
+        return
+
+    def run() -> None:
+        try:
+            release()
+        except Exception:
+            logger.debug("failed to release RWKV free memory", exc_info=True)
+
+    try:
+        threading.Thread(target=run, name="rwkv-memory-release", daemon=True).start()
+    except Exception:
+        logger.debug("failed to start RWKV memory release", exc_info=True)
 
 
 class RwkvStatsPreparationStatus(enum.Enum):
@@ -194,7 +214,7 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 3
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 5
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
@@ -211,7 +231,6 @@ _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
-_RWKV_PRESERVED_HISTORY_FILE = "preserved-history-v1.json"
 _RWKV_STATE_CACHE_CHECKPOINT_PREFIX = "checkpoint-v1-"
 _RWKV_STATE_CACHE_CHECKPOINT_SUFFIX = ".bin"
 _RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT12\0"
@@ -641,7 +660,7 @@ class RwkvBackendCacheSnapshot:
 
 @dataclass(frozen=True)
 class RwkvStashedCacheSnapshot:
-    """Marks resident state that the runtime has moved aside, unserialized."""
+    """Marks resident state moved aside in the runtime, optionally spilled."""
 
     resident_state_populated: bool
     # The stash restores the state bit for bit, so its undo history stays valid.
@@ -749,7 +768,6 @@ class _RwkvCollectionMutationRollbackEntry:
 
 _rwkv_collection_mutation_undo_entries: list[_RwkvCollectionMutationRollbackEntry] = []
 _rwkv_collection_mutation_redo_entries: list[_RwkvCollectionMutationRollbackEntry] = []
-_rwkv_preserved_history_cache: dict[Path, dict[int, int]] = {}
 
 
 class _RwkvPendingAnswerState(NamedTuple):
@@ -971,6 +989,32 @@ _rwkv_workload_job_lock = threading.Lock()
 _rwkv_workload_job: RwkvWorkloadJob | None = None
 _rwkv_memorised_history_job_lock = threading.Lock()
 _rwkv_memorised_history_job: RwkvMemorisedHistoryJob | None = None
+_rwkv_heavy_replay_condition = threading.Condition()
+_rwkv_active_heavy_replays = 0
+
+
+@contextmanager
+def _rwkv_exclusive_replay() -> Iterator[None]:
+    """Give heavy replays priority over the isolated Memorised runtime."""
+    global _rwkv_active_heavy_replays
+
+    with _rwkv_heavy_replay_condition:
+        _rwkv_active_heavy_replays += 1
+    try:
+        yield
+    finally:
+        with _rwkv_heavy_replay_condition:
+            _rwkv_active_heavy_replays -= 1
+            _rwkv_heavy_replay_condition.notify_all()
+
+
+def _rwkv_heavy_replay_active() -> bool:
+    with _rwkv_heavy_replay_condition:
+        return _rwkv_active_heavy_replays > 0
+
+
+class _RwkvMemorisedPreempted(Exception):
+    pass
 
 
 @dataclass
@@ -1157,6 +1201,7 @@ class RwkvStatefulReviewerBackend:
         self._preset_states: dict[int, object | None] = {}
         self._global_state: object | None = None
         self._resident_state_populated = False
+        self._stashed_cache_snapshot: RwkvStashedCacheSnapshot | None = None
         self._state_generation = 0
         self._undo_frames: list[RwkvReviewRollbackEntry] = []
         self._redo_frames: list[RwkvReviewRollbackEntry] = []
@@ -1331,20 +1376,26 @@ class RwkvStatefulReviewerBackend:
             and supports() is True
         )
 
-    def stash_cache_snapshot(self) -> RwkvStashedCacheSnapshot:
-        """Move the resident state aside and reset, without serializing it.
+    def stash_cache_snapshot(
+        self, *, cache_dir: Path | None = None
+    ) -> RwkvStashedCacheSnapshot:
+        """Move the resident state aside and reset, spilling when available.
 
         This replaces `cache_snapshot()` + `reset_cache_snapshot()` for
         temporary replays; `restore_stashed_cache_snapshot()` undoes it.
         """
         if not self.supports_cache_snapshot_stash():
             raise TypeError("RWKV resident runtime stash is unavailable")
+        if self._stashed_cache_snapshot is not None:
+            raise RuntimeError("RWKV resident state is already stashed")
         stashed = RwkvStashedCacheSnapshot(
             resident_state_populated=self._resident_state_populated,
             undo_frames=tuple(self._undo_frames),
             redo_frames=tuple(self._redo_frames),
         )
-        cast(Any, self._runtime).stash_warm_up_state()
+        if not self._stash_cache_snapshot_to_file(cache_dir):
+            cast(Any, self._runtime).stash_warm_up_state()
+        self._stashed_cache_snapshot = stashed
         try:
             self.reset_cache_snapshot()
         except BaseException:
@@ -1354,17 +1405,71 @@ class RwkvStatefulReviewerBackend:
             raise
         return stashed
 
+    def _stash_cache_snapshot_to_file(self, cache_dir: Path | None) -> bool:
+        if cache_dir is None:
+            return False
+        try:
+            runtime = self._runtime
+            locked_process = getattr(runtime, "_locked_process", None)
+            with ExitStack() as stack:
+                # The embedded runtime wraps rsbridge behind this process lock.
+                # Older wrappers do not forward the optional spill methods.
+                if callable(locked_process):
+                    stack.enter_context(locked_process())
+                    runtime = getattr(runtime, "_process", runtime)
+                supports = getattr(runtime, "supports_warm_up_state_spill", None)
+                spill = getattr(runtime, "stash_warm_up_state_to_file", None)
+                if not (callable(supports) and supports() is True and callable(spill)):
+                    return False
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                path = cache_dir / "stash-spill.bin"
+                path.unlink(missing_ok=True)
+                spill(str(path))
+            return True
+        except Exception:
+            logger.warning(
+                "failed to spill RWKV resident state; using in-memory stash",
+                exc_info=True,
+            )
+            return False
+
     def restore_stashed_cache_snapshot(
         self,
         stashed: RwkvStashedCacheSnapshot,
     ) -> None:
-        cast(Any, self._runtime).restore_stashed_warm_up_state()
+        try:
+            cast(Any, self._runtime).restore_stashed_warm_up_state()
+        except BaseException:
+            try:
+                runtime = self._runtime
+                locked_process = getattr(runtime, "_locked_process", None)
+                with ExitStack() as stack:
+                    if callable(locked_process):
+                        stack.enter_context(locked_process())
+                        runtime = getattr(runtime, "_process", runtime)
+                    discard = getattr(runtime, "discard_stashed_warm_up_state", None)
+                    if callable(discard):
+                        discard()
+            except Exception:
+                logger.warning(
+                    "failed to discard RWKV resident state stash", exc_info=True
+                )
+            self._stashed_cache_snapshot = None
+            try:
+                self.reset_cache_snapshot()
+            except Exception:
+                logger.warning(
+                    "failed to reset RWKV state after stash restore failure",
+                    exc_info=True,
+                )
+            raise
         self._clear_python_state_cache()
         self._resident_state_populated = stashed.resident_state_populated
         self._advance_state_generation()
         self._undo_frames[:] = stashed.undo_frames
         self._redo_frames[:] = stashed.redo_frames
         self._clear_prediction_cache("state cache restored")
+        self._stashed_cache_snapshot = None
 
     def warm_up(
         self,
@@ -3954,6 +4059,7 @@ def configure_reviewer_backend_from_environment() -> bool:
                 model_path=resolved_model_path,
                 device=device,
                 dtype=dtype,
+                state_precision=_rwkv_state_precision(),
             )
         )
         logger.debug(
@@ -4130,74 +4236,6 @@ def run_collection_mutation_preserving_rwkv_state(
     ):
         record_collection_mutation_reconciliation(reconciliation)
     return result
-
-
-def forgotten_cards_with_rwkv_history(
-    mw: object,
-    card_ids: Sequence[int],
-) -> int:
-    """Return how many selected cards have history retained by RWKV."""
-
-    reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
-    if not _rwkv_collection_config_state(reviewer).review_enabled:
-        return 0
-    return len(_latest_historical_review_ids(reviewer, card_ids))
-
-
-def run_forgetting_cards_preserving_rwkv_history(
-    col: object,
-    mutation: Callable[[], _T],
-    *,
-    card_ids: Sequence[int],
-) -> _T:
-    """Reset cards while keeping their existing resident RWKV history append-only."""
-
-    import aqt
-
-    mw = aqt.mw
-    reviewer = (
-        getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
-        if mw is not None and getattr(mw, "col", None) is col
-        else SimpleNamespace(mw=SimpleNamespace(col=col))
-    )
-    previous_cutoffs = _rwkv_preserved_learning_start_cutoffs(reviewer)
-    historical_cutoffs = (
-        _latest_historical_review_ids(reviewer, card_ids)
-        if _rwkv_collection_config_state(reviewer).review_enabled
-        else {}
-    )
-    if historical_cutoffs:
-        _write_rwkv_preserved_learning_start_cutoffs(
-            reviewer,
-            {
-                **historical_cutoffs,
-                **previous_cutoffs,
-            },
-        )
-        logger.info(
-            "RWKV history preserved across card reset: cards=%s",
-            len(historical_cutoffs),
-        )
-
-    try:
-        return run_collection_mutation_preserving_rwkv_state(
-            col,
-            mutation,
-            card_ids=card_ids,
-        )
-    except Exception:
-        if historical_cutoffs:
-            try:
-                _write_rwkv_preserved_learning_start_cutoffs(
-                    reviewer,
-                    previous_cutoffs,
-                )
-            except Exception:
-                logger.warning(
-                    "failed to restore RWKV reset-history markers",
-                    exc_info=True,
-                )
-        raise
 
 
 def _rwkv_operation_changes_require_reconciliation(
@@ -4657,9 +4695,6 @@ def prepare_grade_now_reconciliation(
             _historical_rwkv_review_rows(
                 reviewer,
                 card_ids=valid_card_ids,
-            ),
-            preserved_learning_start_cutoffs=(
-                _rwkv_preserved_learning_start_cutoffs(reviewer)
             ),
         )
         identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
@@ -8353,11 +8388,6 @@ def rwkv_review_input(
             card,
             base_review_state=base_review_state,
         )
-    review_state = _rwkv_review_state_with_preserved_history(
-        reviewer,
-        identity.card_id,
-        review_state,
-    )
 
     if review_state in (
         int(RwkvReviewState.REVIEW),
@@ -8497,20 +8527,6 @@ def _rwkv_review_state_for_live_context(
         ):
             return int(RwkvReviewState.FILTERED)
     return base_review_state
-
-
-def _rwkv_review_state_with_preserved_history(
-    reviewer: object,
-    card_id: int | None,
-    review_state: int | None,
-) -> int | None:
-    if (
-        review_state == int(RwkvReviewState.LEARN_START)
-        and card_id is not None
-        and card_id in _rwkv_preserved_learning_start_cutoffs(reviewer)
-    ):
-        return int(RwkvReviewState.LEARNING)
-    return review_state
 
 
 def _latest_eligible_review_for_card(
@@ -9034,11 +9050,6 @@ def set_answer_rwkv_metadata(
             answered_at_millis=answered_at_millis,
         )
         card_id = _card_id(card)
-        review_state = _rwkv_review_state_with_preserved_history(
-            reviewer,
-            card_id,
-            review_state,
-        )
         review_kind = _rwkv_raw_review_kind(review_state)
         if (
             review_kind is not None
@@ -9972,8 +9983,6 @@ def _revalidate_resident_reviewer_backend_state(
         generation, identity = candidate
         if generation != warmup_generation:
             raise ValueError("candidate generation changed")
-        if _rwkv_preserved_learning_start_cutoffs(reviewer):
-            raise ValueError("preserved learning start cutoffs")
         metadata = _read_rwkv_state_cache_metadata(reviewer)
         if not metadata or not _rwkv_state_cache_metadata_compatible(
             reviewer,
@@ -10080,6 +10089,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
 
     start = time.monotonic()
     revalidated = False
+    full_warm_up_completed = False
     try:
         if (
             not force_rebuild
@@ -10111,6 +10121,15 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
         if revalidate_only:
             return False
         _drop_reviewer_backend_revalidation_candidates(backend)
+        if getattr(backend, "_stashed_cache_snapshot", None) is None:
+            cache_dir = _rwkv_state_cache_dir(reviewer)
+            if cache_dir is not None:
+                try:
+                    (cache_dir / "stash-spill.bin").unlink(missing_ok=True)
+                except OSError:
+                    logger.debug(
+                        "failed to delete stale RWKV state spill", exc_info=True
+                    )
         logger.debug("RWKV historical warm-up started")
         _report_rwkv_state_cache_progress(
             progress,
@@ -10207,38 +10226,39 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
         )
         warm_up_start = time.monotonic()
         _require_reviewer_backend_warmup_current(is_current)
-        _warm_up_rwkv_reviews(
-            reviewer,
-            backend,
-            warm_up,
-            history.reviews,
-            review_ids=history.review_ids,
-            progress=progress,
-            label="Building RWKV state cache",
-            record_retrievability_cache=record_retrievability_cache,
-            snapshot_after_reviews=snapshot_review_counts,
-            snapshot_recorder=checkpoint_writer,
-            is_current=is_current,
-        )
-        warm_up_elapsed_ms = (time.monotonic() - warm_up_start) * 1000
-        _require_reviewer_backend_warmup_current(is_current)
-        _report_rwkv_state_cache_progress(
-            progress,
-            "Saving RWKV state cache...",
-        )
-        save_start = time.monotonic()
-        _require_reviewer_backend_warmup_current(is_current)
-        persistence_error = _save_reviewer_backend_cache(
-            reviewer,
-            history,
-            backend=backend,
-            checkpoint_entries=checkpoint_writer.entries,
-            write_context=checkpoint_writer.context,
-        )
-        if persistence_error is not None and on_cache_persistence_error is not None:
-            on_cache_persistence_error(persistence_error)
-        save_elapsed_ms = (time.monotonic() - save_start) * 1000
-        _require_reviewer_backend_warmup_current(is_current)
+        with _rwkv_exclusive_replay():
+            _warm_up_rwkv_reviews(
+                reviewer,
+                backend,
+                warm_up,
+                history.reviews,
+                review_ids=history.review_ids,
+                progress=progress,
+                label="Building RWKV state cache",
+                record_retrievability_cache=record_retrievability_cache,
+                snapshot_after_reviews=snapshot_review_counts,
+                snapshot_recorder=checkpoint_writer,
+                is_current=is_current,
+            )
+            warm_up_elapsed_ms = (time.monotonic() - warm_up_start) * 1000
+            _require_reviewer_backend_warmup_current(is_current)
+            _report_rwkv_state_cache_progress(
+                progress,
+                "Saving RWKV state cache...",
+            )
+            save_start = time.monotonic()
+            _require_reviewer_backend_warmup_current(is_current)
+            persistence_error = _save_reviewer_backend_cache(
+                reviewer,
+                history,
+                backend=backend,
+                checkpoint_entries=checkpoint_writer.entries,
+                write_context=checkpoint_writer.context,
+            )
+            if persistence_error is not None and on_cache_persistence_error is not None:
+                on_cache_persistence_error(persistence_error)
+            save_elapsed_ms = (time.monotonic() - save_start) * 1000
+            _require_reviewer_backend_warmup_current(is_current)
         if not _publish_reviewer_backend_state(
             key,
             _resident_state_identity(history),
@@ -10256,6 +10276,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
             save_elapsed_ms,
             (time.monotonic() - start) * 1000,
         )
+        full_warm_up_completed = True
         return True
     except _ReviewerBackendWarmupInvalidated:
         return False
@@ -10272,6 +10293,11 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
                     _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
             finally:
                 _reviewer_backend_execution_lock.release()
+                if full_warm_up_completed:
+                    # Drop the history and checkpoint prefixes before trimming;
+                    # the state-store connection has also been closed above.
+                    del checkpoint_writer, history
+                    _release_rwkv_free_memory()
 
 
 def _reviewer_backend_warmup_context(
@@ -10681,6 +10707,8 @@ def _rwkv_temporary_replay_snapshot_callables(
     backend: object,
     cache_snapshot: Callable[[], Any],
     restore_cache_snapshot: Callable[[Any], object],
+    *,
+    reviewer: object | None = None,
 ) -> tuple[Callable[[], Any], Callable[[Any], object]]:
     """Prefer moving resident state aside in the runtime over serializing it.
 
@@ -10696,6 +10724,11 @@ def _rwkv_temporary_replay_snapshot_callables(
         and callable(stash)
         and callable(restore_stashed)
     ):
+        if isinstance(backend, RwkvStatefulReviewerBackend) and reviewer is not None:
+            return (
+                lambda: stash(cache_dir=_rwkv_state_cache_dir(reviewer)),
+                restore_stashed,
+            )
         return stash, restore_stashed
     return cache_snapshot, restore_cache_snapshot
 
@@ -10707,6 +10740,16 @@ def recompute_rwkv_calibration_data(
 ) -> bool:
     """Rewrite historical RWKV calibration rows without replacing active state."""
 
+    return _recompute_rwkv_calibration_data(mw, progress=progress)
+
+
+def _recompute_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+    history: RwkvHistoricalReviewInputs | None = None,
+    history_context: tuple[RwkvReviewerBackend, tuple[int, int], int] | None = None,
+) -> bool:
     configure_reviewer_backend_from_environment()
     backend = _reviewer_backend
     if backend is None:
@@ -10727,13 +10770,19 @@ def recompute_rwkv_calibration_data(
         )
         return False
 
+    reviewer = SimpleNamespace(mw=mw)
     cache_snapshot, restore_cache_snapshot = _rwkv_temporary_replay_snapshot_callables(
         backend,
         cache_snapshot,
         restore_cache_snapshot,
+        reviewer=reviewer,
     )
-    reviewer = SimpleNamespace(mw=mw)
     start = time.monotonic()
+    writer = None
+    temporary = None
+    _original_snapshot = None
+    sample_role_by_review_id: Mapping[int, str] = {}
+    fold_index_by_review_id: Mapping[int, int] = {}
     try:
         with _temporary_reviewer_backend_operation(
             reviewer,
@@ -10749,6 +10798,14 @@ def recompute_rwkv_calibration_data(
             operation, _original_snapshot = temporary
 
             operation.require_current()
+            if history is not None:
+                if history_context != (backend, operation.key, operation.generation):
+                    raise _ReviewerBackendWarmupInvalidated
+                if history.replay_key != _rwkv_replay_semantics_key(
+                    reviewer,
+                    first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+                ):
+                    raise _ReviewerBackendWarmupInvalidated
 
             def current_progress(
                 label: str,
@@ -10766,46 +10823,70 @@ def recompute_rwkv_calibration_data(
             current_progress(
                 "Loading RWKV review history...",
             )
-            history = _historical_rwkv_review_inputs(
-                reviewer,
-                progress=current_progress,
-            )
+            if history is None:
+                history = _historical_rwkv_review_inputs(
+                    reviewer,
+                    progress=current_progress,
+                )
+            else:
+                fingerprint = _rwkv_historical_review_fingerprint(
+                    reviewer,
+                    ignored_review_ids=history.ignored_review_ids,
+                    expected_identity=_RwkvHistoryPrefixIdentity(
+                        history.last_review_id,
+                        history.review_count,
+                        history.history_hash,
+                    ),
+                )
+                if fingerprint is not None and (
+                    not fingerprint.history_is_valid
+                    or fingerprint.identity
+                    != _RwkvHistoryPrefixIdentity(
+                        history.last_review_id,
+                        history.review_count,
+                        history.history_hash,
+                    )
+                    or fingerprint.active_ignored_review_ids
+                    != history.ignored_review_ids
+                ):
+                    raise _ReviewerBackendWarmupInvalidated
             operation.require_current()
             logger.debug(
                 "RWKV calibration recompute inputs prepared: reviews=%s",
                 len(history.reviews),
             )
-            reset_cache_snapshot()
-            sample_role_by_review_id, fold_index_by_review_id = (
-                _rwkv_calibration_fold_role_maps(reviewer, history)
-            )
-            writer = _RwkvReviewRetrievabilityCacheWriter(
-                reviewer,
-                source=_RWKV_CALIBRATION_RECOMPUTE_SOURCE,
-                sample_role_by_review_id=sample_role_by_review_id,
-                fold_index_by_review_id=fold_index_by_review_id,
-            )
-            started_at = time.monotonic()
-
-            def replay_progress(replay_progress: RwkvWarmUpProgress) -> None:
-                operation.require_current()
-                _report_rwkv_review_replay_progress(
-                    progress,
-                    label="Recomputing RWKV calibration data",
-                    replay_progress=replay_progress,
-                    elapsed_seconds=time.monotonic() - started_at,
+            with _rwkv_exclusive_replay():
+                reset_cache_snapshot()
+                sample_role_by_review_id, fold_index_by_review_id = (
+                    _rwkv_calibration_fold_role_maps(reviewer, history)
                 )
-
-            try:
-                cast(Callable[..., object], warm_up)(
-                    history.reviews,
-                    review_ids=history.review_ids,
-                    prediction_recorder=writer.record,
-                    progress=replay_progress,
+                writer = _RwkvReviewRetrievabilityCacheWriter(
+                    reviewer,
+                    source=_RWKV_CALIBRATION_RECOMPUTE_SOURCE,
+                    sample_role_by_review_id=sample_role_by_review_id,
+                    fold_index_by_review_id=fold_index_by_review_id,
                 )
-                operation.require_current()
-            finally:
-                writer.flush()
+                started_at = time.monotonic()
+
+                def replay_progress(replay_progress: RwkvWarmUpProgress) -> None:
+                    operation.require_current()
+                    _report_rwkv_review_replay_progress(
+                        progress,
+                        label="Recomputing RWKV calibration data",
+                        replay_progress=replay_progress,
+                        elapsed_seconds=time.monotonic() - started_at,
+                    )
+
+                try:
+                    cast(Callable[..., object], warm_up)(
+                        history.reviews,
+                        review_ids=history.review_ids,
+                        prediction_recorder=writer.record,
+                        progress=replay_progress,
+                    )
+                    operation.require_current()
+                finally:
+                    writer.flush()
             _prune_superseded_rwkv_calibration_rows(
                 reviewer,
                 history,
@@ -10825,6 +10906,12 @@ def recompute_rwkv_calibration_data(
     except Exception:
         logger.exception("RWKV calibration data recompute failed")
         return False
+    finally:
+        # Rust trims the replay state after its background drop. The Python
+        # history and per-review role maps can also be large on long histories.
+        del history, writer, sample_role_by_review_id, fold_index_by_review_id
+        del temporary, _original_snapshot
+        _release_rwkv_free_memory()
 
 
 def _prune_superseded_rwkv_calibration_rows(
@@ -11125,8 +11212,18 @@ def ensure_rwkv_calibration_data(
     """
 
     reviewer = SimpleNamespace(mw=mw)
+    context = _reviewer_backend_warmup_context(reviewer)
+    history_context = None
+    if context is not None:
+        backend, key = context
+        with _reviewer_backend_state_lock:
+            history_context = (
+                backend,
+                key,
+                _reviewer_backend_warmup_generations.get(key, 0),
+            )
     try:
-        history = _historical_rwkv_review_inputs(reviewer)
+        history = _historical_rwkv_review_inputs(reviewer, progress=progress)
     except Exception:
         logger.debug("RWKV calibration history unavailable", exc_info=True)
         return recompute_rwkv_calibration_data(mw, progress=progress)
@@ -11134,7 +11231,21 @@ def ensure_rwkv_calibration_data(
         return True
     if _realign_rwkv_calibration_data(reviewer, history):
         return True
-    return recompute_rwkv_calibration_data(mw, progress=progress)
+    if history_context is None:
+        # A cold backend must be configured by recompute. Drop this history
+        # before loading under the newly configured backend's generation.
+        del history
+        return recompute_rwkv_calibration_data(mw, progress=progress)
+    try:
+        return _recompute_rwkv_calibration_data(
+            mw,
+            progress=progress,
+            history=history,
+            history_context=history_context,
+        )
+    finally:
+        del history
+        _release_rwkv_free_memory()
 
 
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
@@ -11816,6 +11927,14 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
     """Invalidate resident state before startup sync can change the collection."""
 
     _invalidate_reviewer_backend_runtime_state_for_profile_open()
+    from aqt.rwkv_precision import state_precision_for_profile
+    from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
+
+    profile = getattr(getattr(mw, "pm", None), "profile", None)
+    if isinstance(
+        _reviewer_backend, EmbeddedRwkvReviewerBackend
+    ) and _reviewer_backend.state_precision != state_precision_for_profile(profile):
+        set_reviewer_backend(None)
     _set_rwkv_state_cache_recovery_failed(mw, False)
     _set_rwkv_state_cache_loading(mw, True)
 
@@ -12419,10 +12538,11 @@ def build_rwkv_state_cache_with_progress(
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
+    rebuild_retrievability_cache: bool = False,
     recovery_reason: str | None = None,
     on_done: Callable[[bool], None] | None = None,
 ) -> None:
-    """Build the local RWKV state cache with a modal progress dialog."""
+    """Build local RWKV state, optionally refreshing both historical caches."""
 
     from aqt.utils import show_warning, tooltip
 
@@ -12456,8 +12576,22 @@ def build_rwkv_state_cache_with_progress(
     ) -> _RwkvStateCacheBuildResult:
         persistence_error: Exception | None = None
 
-        if force_rebuild:
-            _clear_rwkv_preserved_learning_start_cutoffs(SimpleNamespace(mw=mw))
+        if rebuild_retrievability_cache:
+            col = _collection(SimpleNamespace(mw=mw))
+            if col is None:
+                return _RwkvStateCacheBuildResult(ready=False)
+            backend = getattr(col, "_backend")
+            _report_rwkv_state_cache_progress(
+                progress, "Clearing historical prediction caches..."
+            )
+            backend.clear_review_retrievability_cache()
+            cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+            if cache_dir is not None:
+                (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).unlink(missing_ok=True)
+            _report_rwkv_state_cache_progress(
+                progress, "Rebuilding FSRS calibration predictions..."
+            )
+            backend.rebuild_fsrs_review_retrievability_cache()
 
         def remember_persistence_error(error: Exception) -> None:
             nonlocal persistence_error
@@ -12471,6 +12605,8 @@ def build_rwkv_state_cache_with_progress(
             progress=progress,
             on_cache_persistence_error=remember_persistence_error,
         )
+        if ready and rebuild_retrievability_cache:
+            ready = recompute_rwkv_calibration_data(mw, progress=progress)
         return _RwkvStateCacheBuildResult(
             ready=ready,
             persistence_error=persistence_error,
@@ -12509,6 +12645,8 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV review state recovered."
                 if recovery_reason is not None
+                else "RWKV state and historical prediction caches ready."
+                if rebuild_retrievability_cache
                 else "RWKV state cache ready.",
                 parent=parent,
             )
@@ -12522,6 +12660,8 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV state recovery failed."
                 if recovery_reason is not None
+                else "Cache rebuild failed. Run Build Cache again to retry."
+                if rebuild_retrievability_cache
                 else "RWKV state cache could not be built.",
                 parent=parent,
             )
@@ -12592,6 +12732,8 @@ def build_rwkv_state_cache_with_progress(
                 tooltip(
                     "RWKV state recovery failed."
                     if recovery_reason is not None
+                    else "Cache rebuild failed. Run Build Cache again to retry."
+                    if rebuild_retrievability_cache
                     else "RWKV state cache build failed.",
                     parent=parent,
                 )
@@ -12611,7 +12753,9 @@ def build_rwkv_state_cache_with_progress(
                 label=progress_label,
                 immediate=True,
                 uses_collection=True,
-                title="RWKV State Cache",
+                title="Cache Build"
+                if rebuild_retrievability_cache
+                else "RWKV State Cache",
             )
         except Exception:
             _set_rwkv_state_cache_recovery_failed(mw, True)
@@ -12844,11 +12988,41 @@ def _run_rwkv_memorised_history_job(
     job: RwkvMemorisedHistoryJob,
 ) -> None:
     try:
-        _compute_rwkv_memorised_history(mw, job)
-    except InterruptedError:
+        while True:
+            try:
+                _compute_rwkv_memorised_history(mw, job)
+                break
+            except _RwkvMemorisedPreempted as exc:
+                # The traceback retains the compute frame and its full runtime.
+                traceback.clear_frames(exc.__traceback__)
+                with job.lock:
+                    job.phase = "waiting"
+                    completed_day = job.completed_through_day
+            _release_rwkv_free_memory()
+            logger.debug(
+                "RWKV Memorised history yielded: completed_day=%s", completed_day
+            )
+            with _rwkv_heavy_replay_condition:
+                while _rwkv_active_heavy_replays and not job.cancel_event.is_set():
+                    # Callers can set the cancellation event directly.
+                    _rwkv_heavy_replay_condition.wait(timeout=0.1)
+            with job.lock:
+                if job.cancel_event.is_set():
+                    job.phase = "cancelled"
+                    job.result = job.checkpoint
+                    return
+                job.phase = "resuming"
+            logger.debug(
+                "RWKV Memorised history resuming: completed_day=%s", completed_day
+            )
+    except InterruptedError as exc:
+        traceback.clear_frames(exc.__traceback__)
         with job.lock:
             job.phase = "cancelled"
     except Exception as exc:
+        # Logging handlers may retain the traceback. Keep its stack locations,
+        # but free the completed compute frame's runtime and replay objects.
+        traceback.clear_frames(exc.__traceback__)
         logger.exception("RWKV Memorised history build failed")
         with job.lock:
             job.phase = "failed"
@@ -12856,6 +13030,8 @@ def _run_rwkv_memorised_history_job(
     finally:
         with job.lock:
             job.done = True
+        # The compute frame (and its private runtime) has finished unwinding.
+        _release_rwkv_free_memory()
 
 
 def _predict_rwkv_memorised_day(
@@ -12957,10 +13133,14 @@ def _compute_rwkv_memorised_history(
         if note_id is not None:
             selected_note_counts[note_id] = selected_note_counts.get(note_id, 0) + 1
 
+    if _rwkv_heavy_replay_active():
+        raise _RwkvMemorisedPreempted
+
     runtime = _RustRwkvRuntime(
         model_path=model_path,
         target_retention=_RWKV_DEFAULT_TARGET_RETENTION,
         max_interval_days=36_500,
+        state_precision=_rwkv_state_precision(),
     )
     (
         review_index,
@@ -13016,6 +13196,24 @@ def _compute_rwkv_memorised_history(
                 values_by_card=values_by_card,
             )
             return
+
+        if _rwkv_heavy_replay_active():
+            completed_day = job.completed_through_day
+            if completed_day is not None:
+                checkpoint = _rwkv_memorised_result_from_values(
+                    identity=identity,
+                    first_day=first_day,
+                    last_day=last_day,
+                    completed_through_day=completed_day,
+                    total=total,
+                    note_id_by_card=note_id_by_card,
+                    start_day_by_card=start_day_by_card,
+                    values_by_card=values_by_card,
+                    complete=False,
+                )
+                with job.lock:
+                    job.checkpoint = checkpoint
+            raise _RwkvMemorisedPreempted
 
         day_start = review_index
         while review_index < len(reviews) and reviews[review_index].day_offset == day:
@@ -16190,9 +16388,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
     existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
-    if not newly_ignored_review_ids and not _rwkv_preserved_learning_start_cutoffs(
-        reviewer
-    ):
+    if not newly_ignored_review_ids:
         stored = _read_rwkv_state_cache_from_rust_fingerprint(
             reviewer,
             backend=backend,
@@ -17639,114 +17835,6 @@ def _rwkv_state_cache_dir(reviewer: object) -> Path | None:
     return Path(profile_folder()) / _RWKV_STATE_CACHE_DIR
 
 
-def _rwkv_preserved_learning_start_cutoffs(reviewer: object) -> dict[int, int]:
-    cache_dir = _rwkv_state_cache_dir(reviewer)
-    if cache_dir is None:
-        return {}
-    path = cache_dir / _RWKV_PRESERVED_HISTORY_FILE
-    if path in _rwkv_preserved_history_cache:
-        return dict(_rwkv_preserved_history_cache[path])
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf8"))
-    except FileNotFoundError:
-        cutoffs: dict[int, int] = {}
-    except Exception:
-        logger.warning("failed to read RWKV preserved-history markers", exc_info=True)
-        cutoffs = {}
-    else:
-        raw_cutoffs = payload.get("cards") if isinstance(payload, dict) else None
-        cutoffs = (
-            {
-                int(card_id): review_id
-                for card_id, review_id in raw_cutoffs.items()
-                if isinstance(card_id, str)
-                and card_id.isdigit()
-                and isinstance(review_id, int)
-                and not isinstance(review_id, bool)
-                and review_id > 0
-            }
-            if isinstance(raw_cutoffs, dict)
-            else {}
-        )
-    _rwkv_preserved_history_cache[path] = cutoffs
-    return dict(cutoffs)
-
-
-def _write_rwkv_preserved_learning_start_cutoffs(
-    reviewer: object,
-    cutoffs: Mapping[int, int],
-) -> None:
-    cache_dir = _rwkv_state_cache_dir(reviewer)
-    if cache_dir is None:
-        if cutoffs:
-            raise RuntimeError("RWKV profile cache folder is unavailable")
-        return
-    path = cache_dir / _RWKV_PRESERVED_HISTORY_FILE
-    normalized = {
-        card_id: review_id
-        for card_id, review_id in cutoffs.items()
-        if card_id > 0 and review_id > 0
-    }
-    if not normalized:
-        path.unlink(missing_ok=True)
-        _rwkv_preserved_history_cache[path] = {}
-        return
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write(
-        path,
-        json.dumps(
-            {
-                "version": 1,
-                "cards": {
-                    str(card_id): normalized[card_id] for card_id in sorted(normalized)
-                },
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf8"),
-    )
-    _rwkv_preserved_history_cache[path] = normalized
-
-
-def _clear_rwkv_preserved_learning_start_cutoffs(reviewer: object) -> None:
-    cutoffs = _rwkv_preserved_learning_start_cutoffs(reviewer)
-    if not cutoffs:
-        return
-    _write_rwkv_preserved_learning_start_cutoffs(reviewer, {})
-    logger.info(
-        "cleared RWKV preserved-history markers for forced rebuild: cards=%s",
-        len(cutoffs),
-    )
-
-
-def _latest_historical_review_ids(
-    reviewer: object,
-    card_ids: Sequence[int],
-) -> dict[int, int]:
-    valid_card_ids = {
-        card_id for value in card_ids if (card_id := _valid_card_id(value)) is not None
-    }
-    if not valid_card_ids:
-        return {}
-    latest: dict[int, int] = {}
-    for row in _historical_rwkv_review_rows(
-        reviewer,
-        card_ids=tuple(valid_card_ids),
-    ):
-        if len(row) < 2:
-            continue
-        review_id, row_card_id = row[0], row[1]
-        if (
-            isinstance(review_id, int)
-            and isinstance(row_card_id, int)
-            and row_card_id in valid_card_ids
-        ):
-            latest[row_card_id] = max(latest.get(row_card_id, 0), review_id)
-    return latest
-
-
 def _rwkv_collection_cache_key(reviewer: object) -> dict[str, object]:
     col = _collection(reviewer)
     db = getattr(col, "db", None)
@@ -18968,9 +19056,6 @@ def _historical_rwkv_review_inputs(
     )
     retained_start_by_card = _benchmark_retained_historical_review_starts(
         raw_rows,
-        preserved_learning_start_cutoffs=(
-            _rwkv_preserved_learning_start_cutoffs(reviewer)
-        ),
     )
     recovery_cutoff_review_id = (
         _historical_rwkv_recovery_cutoff(
@@ -19551,6 +19636,8 @@ def _historical_rwkv_review_rows(
     else:
         card_clause = ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
+    # Start with SELECT so DBProxy treats this history read as read-only and
+    # preserves Anki's undo history.
     sql = f"""
 select
   r.id,
@@ -19564,7 +19651,14 @@ select
   cast(r.factor as integer)
 from revlog r
 join cards c on c.id = r.cid
+left join (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+) resets on resets.cid = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
+  and r.id > coalesce(resets.reset_id, 0)
   {after_clause}
   {deck_clause}
   {card_clause}
@@ -19918,6 +20012,20 @@ def _rwkv_preset_routing_config_key(
     return sorted(routing, key=lambda item: cast(int, item[0]))
 
 
+def _rwkv_state_precision() -> str:
+    # Keep the running session's precision stable if Preferences has saved a
+    # different choice for the next restart. Background jobs share this mode.
+    precision = getattr(_reviewer_backend, "state_precision", None)
+    if isinstance(precision, str):
+        return precision
+    from aqt import mw
+    from aqt.rwkv_precision import state_precision_for_profile
+
+    return state_precision_for_profile(
+        getattr(getattr(mw, "pm", None), "profile", None)
+    )
+
+
 def _rwkv_replay_semantics_key(
     reviewer: object,
     *,
@@ -19926,6 +20034,7 @@ def _rwkv_replay_semantics_key(
     dynamic_preset_replay = _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
     payload: dict[str, object] = {
         "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
+        "statePrecision": _rwkv_state_precision(),
         "firstReviewElapsedSource": first_review_elapsed_source.value,
         "firstReviewElapsedConfig": (
             _rwkv_first_review_elapsed_config_key(reviewer)

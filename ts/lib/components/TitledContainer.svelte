@@ -23,10 +23,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     style:--gutter-block="2px"
     style:--container-margin="0"
 >
-    <div class="position-relative">
+    <div class="position-relative" class:inline-heading={!!$$slots["header-actions"]}>
         <h1>
             {title}
         </h1>
+        <slot name="header-actions" />
         <div class="help-badge position-absolute" class:rtl>
             <slot name="tooltip" />
         </div>
@@ -66,6 +67,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         &.rtl {
             right: unset;
             left: 0;
+        }
+    }
+
+    .inline-heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem 1rem;
+        margin-bottom: 1rem;
+
+        h1 {
+            border: 0;
+            padding: 0;
+            margin: 0;
+            font-size: 1.5rem;
         }
     }
 

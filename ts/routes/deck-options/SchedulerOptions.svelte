@@ -21,6 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let state: DeckOptionsState;
     export let onSelect: () => void;
+    export let openHelp: (key: string) => void;
 
     const config = state.currentConfig;
     const dueDateChoices: Choice<DueDateScheduler>[] = [
@@ -44,57 +45,36 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<div class="scheduler-introduction">
-    <p class="scheduler-description">
-        {tr.deckConfigRwkvDescription()}
-        <a href="https://github.com/JSchoreels/anki/blob/main/RWKV_FAQ.md">
-            {tr.deckConfigRwkvReadMore()}
-        </a>
-    </p>
-    <p class="scheduler-description">
-        {tr.deckConfigFsrsDescription()}
-        <a href="https://github.com/open-spaced-repetition/srs-benchmark">
-            {tr.deckConfigFsrsReadMore()}
-        </a>
-    </p>
-</div>
-
-<Item>
-    <SchedulerSelect
-        id="review-scheduler"
-        title={tr.deckConfigSchedulerReview()}
-        recommended="RWKV-Instant"
-        value={scheduler($config)}
-        choices={schedulerChoices}
-        onChange={selectScheduler}
-    />
-</Item>
-
-{#if $config.rwkvReviewInstantOrderEnabled}
+<div class="scheduler-options">
     <Item>
         <SchedulerSelect
-            id="due-date-scheduler"
-            title={tr.deckConfigSchedulerDueDates()}
-            recommended="FSRS-7"
-            value={dueDateScheduler($config)}
-            choices={dueDateChoices}
-            onChange={selectDueDates}
+            id="review-scheduler"
+            title={tr.deckConfigSchedulerReview()}
+            recommended="RWKV-Instant"
+            value={scheduler($config)}
+            choices={schedulerChoices}
+            onChange={selectScheduler}
+            onHelp={() => openHelp("review")}
         />
-        <p class="scheduler-description">
-            {tr.deckConfigSchedulerDueDatesDescription()}
-        </p>
     </Item>
-{/if}
+
+    {#if $config.rwkvReviewInstantOrderEnabled}
+        <Item>
+            <SchedulerSelect
+                id="due-date-scheduler"
+                title={tr.deckConfigSchedulerDueDates()}
+                recommended="FSRS-7"
+                value={dueDateScheduler($config)}
+                choices={dueDateChoices}
+                onChange={selectDueDates}
+                onHelp={() => openHelp("dueDates")}
+            />
+        </Item>
+    {/if}
+</div>
 
 <style>
-    .scheduler-introduction {
-        margin: 0.5rem 0 0.875rem;
-    }
-
-    .scheduler-description {
-        color: var(--fg-subtle);
-        font-size: 0.8rem;
-        font-style: italic;
-        margin: 0.375rem 0 0;
+    .scheduler-options {
+        container: scheduler-controls / inline-size;
     }
 </style>

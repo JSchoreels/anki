@@ -1276,6 +1276,7 @@ def build_rwkv_state_cache() -> bytes:
     aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress(
         aqt.mw,
         record_retrievability_cache=False,
+        rebuild_retrievability_cache=True,
     )
     return b""
 
@@ -1285,6 +1286,7 @@ def force_build_rwkv_state_cache() -> bytes:
         aqt.mw,
         force_rebuild=True,
         record_retrievability_cache=False,
+        rebuild_retrievability_cache=True,
     )
     return b""
 

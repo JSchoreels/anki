@@ -344,11 +344,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         class="btn btn-outline-primary"
                         disabled={rwkvActionInProgress}
                         on:click={() => forceBuildRwkvStateCache()}
+                        title="Rebuild RWKV state and clear/rebuild historical RWKV and FSRS predictions."
                     >
                         {#if forceBuildingRwkvStateCache}
-                            Rebuilding RWKV State...
+                            Rebuilding Caches...
                         {:else}
-                            Rebuild RWKV State
+                            Build Cache
                         {/if}
                     </button>
 

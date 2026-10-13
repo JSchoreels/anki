@@ -218,6 +218,27 @@ rwkv-review-performance-bench *args:
 rwkv-review-type-metrics collection target-deck-ids:
     {{ if os() == "windows" { "$env:ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "'; $env:ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "'; $env:ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin'; $env:ANKI_RWKV_STATE_COMPRESSION_LIMIT='0'; $env:ANKI_RWKV_STATE_COMPRESSION_CONFIGS='raw'; cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } else { "ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "' ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "' ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin' ANKI_RWKV_STATE_COMPRESSION_LIMIT=0 ANKI_RWKV_STATE_COMPRESSION_CONFIGS=raw cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } }}
 
+# Prepare canonical replay inputs from an explicit copied backup.
+rwkv-history-ablation-prepare *args:
+    {{ ninja }} pylib qt
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_history_ablation_prepare.py {{ args }}
+
+# Measure accuracy after omitting whole cards or individual historical answers.
+rwkv-history-ablation-bench input output seeds='3':
+    {{ if os() == "windows" { "$env:ANKI_RWKV_ABLATION_INPUT='" + input + "'; $env:ANKI_RWKV_ABLATION_OUTPUT='" + output + "'; $env:ANKI_RWKV_ABLATION_SEEDS='" + seeds + "'; cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_ABLATION_INPUT='" + input + "' ANKI_RWKV_ABLATION_OUTPUT='" + output + "' ANKI_RWKV_ABLATION_SEEDS='" + seeds + "' cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } }}
+
+# Prepare complete and post-reset replay histories from an explicit copied backup.
+rwkv-reset-history-prepare *args:
+    just rwkv-history-ablation-prepare --reset-comparison --deck-match= {{ args }}
+
+# Compare post-reset prediction accuracy with and without pre-reset history.
+rwkv-reset-history-bench input output:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_ABLATION_INPUT='" + input + "'; $env:ANKI_RWKV_ABLATION_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_reset_history_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_ABLATION_INPUT='" + input + "' ANKI_RWKV_ABLATION_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_reset_history_metrics -- --ignored --nocapture" } }}
+
+# Verify compact RWKV storage, normal queries, undo and checkpoint continuity.
+rwkv-state-precision-tests *args:
+    cargo test -p anki --lib rwkv_state_precision {{ args }}
+
 # Build and run the standalone RWKV predictor benchmark.
 rwkv-predict-bench *args:
     cargo run -p anki --release --bin rwkv_predict_bench -- {{ args }}
@@ -245,6 +266,10 @@ clanki-gui-bench *args:
 # Benchmark backend operations on an explicitly supplied backup copy.
 clanki-collection-bench *args:
     {{ python }} qt/tools/clanki_collection_bench.py {{ args }}
+
+# Measure SSE calibration stalls using an explicit build and a copied backup.
+sse-calibration-bench *args:
+    {{ python }} qt/tools/sse_calibration_bench.py {{ args }}
 
 # Check web caching and simulate the Windows mpv transport.
 clanki-asset-audio-bench *args:

@@ -288,7 +288,6 @@ mod test {
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
                     item_revlog_ids: Vec::new(),
-                    fsrs_prediction_sources: Vec::new(),
                     target_counts: TrainingTargetCounts {
                         total_targets: reviews,
                         long_term_targets: reviews,
@@ -343,7 +342,6 @@ mod test {
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
                     item_revlog_ids: Vec::new(),
-                    fsrs_prediction_sources: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
                 },
             },
@@ -362,7 +360,6 @@ mod test {
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
                     item_revlog_ids: Vec::new(),
-                    fsrs_prediction_sources: Vec::new(),
                     target_counts: TrainingTargetCounts::default(),
                 },
             },

@@ -456,6 +456,14 @@
     "repository": "https://github.com/crossbeam-rs/crossbeam"
   },
   {
+    "authors": "Eira Fransham <jackefransham@gmail.com>",
+    "description": "Crunchy unroller: deterministically unroll constant loops",
+    "license": "MIT",
+    "license_file": null,
+    "name": "crunchy",
+    "repository": "https://github.com/eira-fransham/crunchy"
+  },
+  {
     "authors": "RustCrypto Developers",
     "description": "Common cryptographic traits",
     "license": "Apache-2.0 OR MIT",
@@ -886,6 +894,14 @@
     "license_file": null,
     "name": "h2",
     "repository": "https://github.com/hyperium/h2"
+  },
+  {
+    "authors": "Kathryn Long <squeeself@gmail.com>",
+    "description": "Half-precision floating point f16 and bf16 types for Rust implementing the IEEE 754-2008 standard binary16 and bfloat16 types.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "half",
+    "repository": "https://github.com/VoidStarKat/half-rs"
   },
   {
     "authors": "Amanieu d'Antras <amanieu@gmail.com>",

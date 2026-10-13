@@ -10,11 +10,13 @@ import {
     DeckConfig_Config_FsrsVersion,
     DeckConfig_Config_LeechAction,
     DeckConfigsForUpdate,
+    DeckConfigsForUpdate_CurrentDeck_Limits,
     UpdateDeckConfigsMode,
 } from "@generated/anki/deck_config_pb";
 import { get } from "svelte/store";
 import { expect, test } from "vitest";
 
+import { defaultScheduleCopyOptions } from "./apply-schedule";
 import { DeckOptionsState } from "./lib";
 
 const exampleData = {
@@ -350,4 +352,68 @@ test("aux data", () => {
             },
         },
     ]);
+});
+
+test("bulk schedule copies save changed presets while preserving deck limits and unrelated fields", async () => {
+    const data = new DeckConfigsForUpdate(exampleData);
+    data.currentDeck!.limits = new DeckConfigsForUpdate_CurrentDeck_Limits({ desiredRetention: 0.95 });
+    const source = data.allConfig[1].config!.config!;
+    source.rwkvReviewInstantOrderEnabled = true;
+    source.fsrsVersion = DeckConfig_Config_FsrsVersion.SIX;
+    source.desiredRetention = 0.9;
+    source.fsrsParams6 = Array(21).fill(2);
+    source.rwkvReviewMinElapsedSecs = 30;
+    source.fsrsDynamicDesiredRetentionParams = Array(15).fill(3);
+    source.other = new TextEncoder().encode(JSON.stringify({ fsrs7IncludeSameDayOptimize: false, addon: "source" }));
+    const state = new DeckOptionsState(123n, data);
+    state.resolveOriginalConfigs();
+    state.addConfig("new preset");
+    state.setCurrentIndex(get(state.configList).findIndex((entry) => entry.name === "another one"));
+    state.applyScheduleToAllPresets(defaultScheduleCopyOptions());
+
+    const out = state.dataForSaving(UpdateDeckConfigsMode.NORMAL);
+    expect(out.configs!.map((config) => config.name)).toEqual(["Default", "new preset", "another one"]);
+    for (const config of out.configs!) {
+        expect(config.config!.rwkvReviewInstantOrderEnabled).toBe(true);
+        expect(config.config!.fsrsVersion).toBe(DeckConfig_Config_FsrsVersion.SIX);
+        expect(config.config!.desiredRetention).toBe(0.9);
+        expect(config.config!.fsrsParams6).toEqual(Array(21).fill(2));
+        expect(config.config!.rwkvReviewMinElapsedSecs).toBe(30);
+        expect(config.config!.fsrsDynamicDesiredRetentionParams).toEqual(Array(15).fill(3));
+    }
+    expect(out.configs![0].config!.newPerDay).toBe(10);
+    expect(out.configs![0].config!.learnSteps).toEqual([1, 10]);
+    expect(JSON.parse(new TextDecoder().decode(out.configs![0].config!.other))).toEqual({
+        new: { separate: true },
+        rev: { fuzz: 0.05, minSpace: 1 },
+        fsrs7IncludeSameDayOptimize: false,
+    });
+    expect(out.limits!.desiredRetention).toBe(0.95);
+    expect(state.getConfigById(1618570764780n)!.config!.other).toEqual(source.other);
+    expect(await state.isModified()).toBe(true);
+});
+
+test("copied retention stays an unsaved change after first selecting the destination preset", async () => {
+    const data = new DeckConfigsForUpdate(exampleData);
+    data.allConfig[0].config!.config!.desiredRetention = 0.8;
+    data.allConfig[1].config!.config!.desiredRetention = 0.9;
+    const state = new DeckOptionsState(123n, data);
+    state.resolveOriginalConfigs();
+    expect(await state.isModified()).toBe(false);
+    state.applyScheduleToAllPresets({ scheduler: false, fallback: false, settings: false, retention: true });
+    state.setCurrentIndex(1);
+    await state.markCurrentPresetAsLoaded();
+    expect(get(state.currentConfig).desiredRetention).toBe(0.9);
+    expect(await state.isModified()).toBe(true);
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).configs!.map((config) => config.name))
+        .toEqual(["Default"]);
+});
+
+test("applying no categories leaves other presets out of the save request", async () => {
+    const state = startingState();
+    state.resolveOriginalConfigs();
+    state.applyScheduleToAllPresets({ scheduler: false, fallback: false, settings: false, retention: false });
+    expect(await state.isModified()).toBe(false);
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).configs!.map((config) => config.name))
+        .toEqual(["another one"]);
 });

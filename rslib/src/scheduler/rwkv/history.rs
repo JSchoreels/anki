@@ -148,6 +148,84 @@ mod tests {
     use crate::revlog::RevlogReviewKind;
 
     #[test]
+    fn historical_inputs_use_forget_boundary_before_relearning() -> Result<()> {
+        let mut col = Collection::new();
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        col.add_card(&mut card)?;
+        let start = 1_700_000_000_000;
+        let add_review = |col: &mut Collection, offset, kind, button, factor| {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: RevlogId(start + offset),
+                    cid: card.id,
+                    usn: Usn(0),
+                    button_chosen: button,
+                    interval: 1,
+                    ease_factor: factor,
+                    taken_millis: 1_000,
+                    review_kind: kind,
+                    ..Default::default()
+                },
+                false,
+            )
+        };
+        add_review(&mut col, 0, RevlogReviewKind::Learning, 3, 2_500)?;
+        add_review(&mut col, 1, RevlogReviewKind::Review, 3, 2_500)?;
+        assert_eq!(
+            col.rwkv_historical_review_inputs(Default::default())?
+                .reviews
+                .len(),
+            2
+        );
+
+        // Forget writes a non-answer manual row with zero factor. It must
+        // exclude the old sequence before the first new learning answer.
+        add_review(&mut col, 2, RevlogReviewKind::Manual, 0, 0)?;
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        assert_eq!(
+            col.rwkv_historical_review_fingerprint(Default::default())?
+                .review_count,
+            0
+        );
+        let legacy_request = RwkvHistoricalReviewInputsRequest {
+            preserved_learning_start_cutoffs: HashMap::from([(card.id.0, start + 1)]),
+            ..Default::default()
+        };
+        assert!(col
+            .rwkv_historical_review_inputs(legacy_request.clone())?
+            .reviews
+            .is_empty());
+
+        add_review(&mut col, 3, RevlogReviewKind::Learning, 3, 2_500)?;
+        // Grade Now answers may have zero factor; Set Due Date writes a
+        // non-answer manual row with a nonzero factor. Neither is Forget.
+        add_review(&mut col, 4, RevlogReviewKind::Manual, 3, 0)?;
+        add_review(&mut col, 5, RevlogReviewKind::Manual, 0, 2_500)?;
+        let history = col.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(
+            history
+                .reviews
+                .iter()
+                .map(|review| (review.review_id, review.card_type))
+                .collect::<Vec<_>>(),
+            vec![(start + 3, 0), (start + 4, 5)]
+        );
+        assert_eq!(
+            col.rwkv_historical_review_inputs(legacy_request)?.reviews,
+            history.reviews
+        );
+        assert_eq!(
+            col.rwkv_historical_review_fingerprint(Default::default())?
+                .review_count,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
     fn historical_inputs_checkpoint_preserves_prefix_maps_and_identity() -> Result<()> {
         let mut col = Collection::new();
         let mut first = Card::new(NoteId(10), 0, DeckId(1), 0);

@@ -12,10 +12,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let modalKey: string = Math.random().toString(36).substring(2);
     export let dialogClass: string = "";
+    export let labelId = "modalLabel";
     export let onOkClicked: (() => void) | undefined = undefined;
     export let onCancelClicked: (() => void) | undefined = undefined;
     export let onShown: (() => void) | undefined = undefined;
     export let onHidden: (() => void) | undefined = undefined;
+    export let cancelOnEscape = false;
 
     const modals = getContext<Map<string, Modal>>(modalsKey);
 
@@ -47,7 +49,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export { onOkClicked_ as acceptHandler, onCancelClicked_ as cancelHandler };
 
     const { set: setModalOpen, remove: removeModalClosingHandler } =
-        registerModalClosingHandler(onOkClicked_);
+        registerModalClosingHandler(() =>
+            cancelOnEscape ? onCancelClicked_() : onOkClicked_(),
+        );
 
     function onShown_() {
         setModalOpen(true);
@@ -77,7 +81,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     bind:this={modalRef}
     class="modal fade"
     tabindex="-1"
-    aria-labelledby="modalLabel"
+    aria-labelledby={labelId}
     aria-hidden="true"
 >
     <div class="modal-dialog {dialogClass}">

@@ -222,6 +222,27 @@ impl SqliteStorage {
         Ok(dropped)
     }
 
+    pub(crate) fn clear_review_retrievability_cache(&self) -> Result<()> {
+        self.ensure_fsrs_review_retrievability_cache_schema()?;
+        self.ensure_rwkv_review_retrievability_cache_schema()?;
+        self.with_retrievability_cache_write_batch(|| {
+            for table in [
+                FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+                RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+            ] {
+                self.db.execute(
+                    &format!(
+                        "DELETE FROM {}",
+                        Self::qualified_retrievability_cache_table(table)
+                    ),
+                    [],
+                )?;
+            }
+            Ok(0)
+        })?;
+        Ok(())
+    }
+
     pub(crate) fn review_retrievability_cache_cleanup_full_sync_marked(&self) -> Result<bool> {
         Ok(self
             .get_config_value::<bool>(REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER)?
@@ -724,8 +745,16 @@ impl SqliteStorage {
         let card_clause = card_id.map_or(String::new(), |id| format!("and r.cid = {}", id.0));
         // Rows come back in rowid (review id) order, so no sort or window
         // function is needed; the per-card replay start is derived below.
+        // Forget keeps the revlog. Honor its reset boundary even before the
+        // first new answer, including requests carrying legacy cutoffs.
         let sql = format!(
-            "select
+            "with latest_resets as (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+)
+select
   r.id,
   r.cid,
   c.nid,
@@ -737,9 +766,11 @@ impl SqliteStorage {
   cast(r.factor as integer)
 from revlog r
 join cards c on c.id = r.cid
+left join latest_resets resets on resets.cid = r.cid
 where r.ease between 1 and 4
   and r.type in (0, 1, 2, 3, 4, 5)
   and not (r.type = 3 and r.factor = 0)
+  and r.id > coalesce(resets.reset_id, 0)
   {ignored_clause}
   {card_clause}
 order by r.id"
@@ -762,7 +793,25 @@ order by r.id"
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        retain_rwkv_rows_from_latest_learning_start(&mut rows, preserved_learning_start_cutoffs);
+        // A cutoff needs a retained prefix to preserve. A legacy cutoff before
+        // Forget must not turn the first post-reset Learning answer into a
+        // continuation of the discarded sequence.
+        let mut first_review_ids = HashMap::new();
+        if !preserved_learning_start_cutoffs.is_empty() {
+            for row in &rows {
+                first_review_ids.entry(row.card_id).or_insert(row.review_id);
+            }
+        }
+        let cutoffs = preserved_learning_start_cutoffs
+            .iter()
+            .filter(|(card_id, cutoff)| {
+                first_review_ids
+                    .get(*card_id)
+                    .is_some_and(|first| first <= *cutoff)
+            })
+            .map(|(&card_id, &cutoff)| (card_id, cutoff))
+            .collect();
+        retain_rwkv_rows_from_latest_learning_start(&mut rows, &cutoffs);
 
         Ok((rows, active_ignored_review_ids))
     }
@@ -1028,6 +1077,81 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(rwkv_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn retrievability_cache_relocation_preserves_wal_predictions() -> Result<()> {
+        let (col, source_dir, col_path) = temp_collection("collection")?;
+        let cache_path = super::super::sqlite::retrievability_cache_path(&col_path);
+        drop(col);
+        let old_path = source_dir
+            .path()
+            .join("collection.retrievability-cache.sqlite");
+        std::fs::rename(&cache_path, &old_path)?;
+        let old_db = rusqlite::Connection::open(&old_path)?;
+        old_db.execute_batch(&format!(
+            "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;
+             INSERT INTO {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} VALUES (1, 0.7, 'test', 0, 'final_fit', -1);
+             INSERT INTO {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} VALUES (1, 0.6, 'rwkv_review', 0, 'post_optimization', -1);"
+        ))?;
+        // Snapshot a committed WAL before the source connection checkpoints it.
+        let target_dir = tempdir()?;
+        let target_col = target_dir.path().join("collection.anki2");
+        std::fs::copy(&col_path, &target_col)?;
+        let target_old = target_dir
+            .path()
+            .join("collection.retrievability-cache.sqlite");
+        std::fs::copy(&old_path, &target_old)?;
+        std::fs::copy(wal_path(&old_path), wal_path(&target_old))?;
+        let mut builder = CollectionBuilder::new(&target_col);
+        builder.with_desktop_media_paths();
+        let col = builder.build()?;
+        let target_cache = super::super::sqlite::retrievability_cache_path(&target_col);
+        assert_eq!(
+            target_cache,
+            target_dir
+                .path()
+                .join("rwkv-state-cache/collection.retrievability-cache.sqlite")
+        );
+        assert!(target_cache.exists());
+        assert!(!target_old.exists());
+        assert!(!wal_path(&target_old).exists());
+        assert_eq!(count_fsrs_cache_rows(&col.storage)?, 1);
+        let prediction: f64 = col.storage.db.query_row(
+            &format!("SELECT prediction FROM {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}"),
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(prediction, 0.6);
+        Ok(())
+    }
+
+    #[test]
+    fn clear_review_retrievability_cache_clears_both_models() -> Result<()> {
+        let (col, _dir, _path) = temp_collection("clear-cache")?;
+        col.storage
+            .set_fsrs_review_retrievability_predictions(&fsrs_cache_rows(2, 0), "test")?;
+        col.storage
+            .set_rwkv_review_retrievability_prediction(RevlogId(1), 0.7, "rwkv_review")?;
+        col.storage
+            .db
+            .execute_batch("INSERT INTO revlog VALUES (1, 1, 0, 3, 1, 0, 2500, 1000, 1)")?;
+        col.storage.clear_review_retrievability_cache()?;
+        assert_eq!(count_fsrs_cache_rows(&col.storage)?, 0);
+        let rwkv_count: usize = col.storage.db.query_row(
+            &format!("SELECT count() FROM {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}"),
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rwkv_count, 0);
+        let reviews: usize =
+            col.storage
+                .db
+                .query_row("SELECT count() FROM revlog WHERE ease = 3", [], |row| {
+                    row.get(0)
+                })?;
+        assert_eq!(reviews, 1);
         Ok(())
     }
 
@@ -1670,7 +1794,12 @@ mod tests {
     ) -> Result<Vec<RwkvHistoricalReviewRow>> {
         let sql = format!(
             "
-with eligible as (
+with latest_resets as (
+  select cid, max(id) as reset_id
+  from revlog
+  where type = 4 and ease = 0 and factor = 0
+  group by cid
+), eligible as (
   select
     r.id, r.cid, c.nid,
     case when c.odid != 0 then c.odid else c.did end as deck_id,
@@ -1680,9 +1809,11 @@ with eligible as (
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
   join cards c on c.id = r.cid
+  left join latest_resets resets on resets.cid = r.cid
   where r.ease between 1 and 4
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
+    and r.id > coalesce(resets.reset_id, 0)
     {ignored_clause}
 ), retained_starts as (
   select

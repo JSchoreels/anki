@@ -44,7 +44,7 @@ const BUFFER: usize = 1 << 20;
 /// from before is then ignored and the history replayed. It used to be the
 /// backend build hash, so every app update replayed the whole history (~10
 /// min for 3.7M reviews on a Pixel 8a) even when nothing about it changed.
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2; // 2: fork build 102 (reset boundaries in the history)
 
 /// What the file must have been written for: this [STATE_VERSION] and this
 /// model file (its size and an FNV-1a hash of its bytes). The model doesn't

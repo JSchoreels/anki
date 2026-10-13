@@ -1,0 +1,366 @@
+{
+    "date": "2026-10-09",
+    "platform": "macOS-26.7.1-arm64-arm-64bit",
+    "baseline_core_commit": "82c081c0575759209179c33b067026aca6d8d81b",
+    "sample_count_per_case": 3,
+    "cases": {
+        "final-fit": {
+            "before": {
+                "samples": [
+                    {
+                        "stored": 247394,
+                        "elapsed_ms": 1841.8604579055682,
+                        "max_card_query_ms": 1063.8659161049873,
+                        "query_samples": 13,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "final-fit",
+                        "peak_rss_mib": 454.0625
+                    },
+                    {
+                        "stored": 247394,
+                        "elapsed_ms": 1787.1301249833778,
+                        "max_card_query_ms": 1021.926167071797,
+                        "query_samples": 12,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "final-fit",
+                        "peak_rss_mib": 490.4375
+                    },
+                    {
+                        "stored": 247394,
+                        "elapsed_ms": 1838.094916078262,
+                        "max_card_query_ms": 1047.9418750619516,
+                        "query_samples": 12,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "final-fit",
+                        "peak_rss_mib": 456.875
+                    }
+                ],
+                "medians": {
+                    "elapsed_ms": 1838.094916078262,
+                    "max_card_query_ms": 1047.9418750619516,
+                    "peak_rss_mib": 456.875
+                }
+            },
+            "after": {
+                "samples": [
+                    {
+                        "stored": 247394,
+                        "elapsed_ms": 1543.024249956943,
+                        "max_card_query_ms": 234.73120806738734,
+                        "query_samples": 67,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "final-fit",
+                        "peak_rss_mib": 406.984375
+                    },
+                    {
+                        "stored": 247394,
+                        "elapsed_ms": 1571.2977499933913,
+                        "max_card_query_ms": 253.15233308356255,
+                        "query_samples": 67,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "final-fit",
+                        "peak_rss_mib": 408.1875
+                    },
+                    {
+                        "stored": 247394,
+                        "elapsed_ms": 1526.0722500970587,
+                        "max_card_query_ms": 243.40066604781896,
+                        "query_samples": 66,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "final-fit",
+                        "peak_rss_mib": 406.859375
+                    }
+                ],
+                "medians": {
+                    "elapsed_ms": 1543.024249956943,
+                    "max_card_query_ms": 243.40066604781896,
+                    "peak_rss_mib": 406.984375
+                }
+            }
+        },
+        "early-abort": {
+            "before": {
+                "samples": [
+                    {
+                        "abort_at_ms": 22.045208024792373,
+                        "stored": 247394,
+                        "elapsed_ms": 1811.3559170160443,
+                        "max_card_query_ms": 1035.433082957752,
+                        "query_samples": 11,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "early-abort",
+                        "peak_rss_mib": 455.265625
+                    },
+                    {
+                        "abort_at_ms": 25.283875060267746,
+                        "stored": 247394,
+                        "elapsed_ms": 1808.4422081010416,
+                        "max_card_query_ms": 1037.5155420042574,
+                        "query_samples": 11,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "early-abort",
+                        "peak_rss_mib": 457.09375
+                    },
+                    {
+                        "abort_at_ms": 25.24883404839784,
+                        "stored": 247394,
+                        "elapsed_ms": 1760.4858750710264,
+                        "max_card_query_ms": 1005.3039159392938,
+                        "query_samples": 11,
+                        "rows": 247394,
+                        "prediction_checksum": "6a31cad25c7abf034a08b6ba3dc13dbf6d39d597da84d9d4f7cef45a9fcb6443",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "early-abort",
+                        "peak_rss_mib": 456.28125
+                    }
+                ],
+                "medians": {
+                    "elapsed_ms": 1808.4422081010416,
+                    "max_card_query_ms": 1035.433082957752,
+                    "peak_rss_mib": 456.28125,
+                    "abort_at_ms": 25.24883404839784
+                }
+            },
+            "after": {
+                "samples": [
+                    {
+                        "abort_at_ms": 24.710832978598773,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 253.5404999507591,
+                        "max_card_query_ms": 253.37349995970726,
+                        "query_samples": 1,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "early-abort",
+                        "peak_rss_mib": 135.203125
+                    },
+                    {
+                        "abort_at_ms": 20.855708047747612,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 240.22195802535862,
+                        "max_card_query_ms": 240.02833291888237,
+                        "query_samples": 1,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "early-abort",
+                        "peak_rss_mib": 134.90625
+                    },
+                    {
+                        "abort_at_ms": 25.238582980819046,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 230.34049989655614,
+                        "max_card_query_ms": 230.19804200157523,
+                        "query_samples": 1,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "early-abort",
+                        "peak_rss_mib": 133.703125
+                    }
+                ],
+                "medians": {
+                    "elapsed_ms": 240.22195802535862,
+                    "max_card_query_ms": 240.02833291888237,
+                    "peak_rss_mib": 134.90625,
+                    "abort_at_ms": 24.710832978598773
+                }
+            }
+        },
+        "fold-start": {
+            "before": {
+                "samples": [
+                    {
+                        "abort_at_ms": 838.6915409937501,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 1061.9987080572173,
+                        "max_card_query_ms": 617.0247499831021,
+                        "query_samples": 37,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "fold-start",
+                        "peak_rss_mib": 462.546875
+                    },
+                    {
+                        "abort_at_ms": 828.6981249693781,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 1046.426958986558,
+                        "max_card_query_ms": 604.9678750569001,
+                        "query_samples": 37,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "fold-start",
+                        "peak_rss_mib": 464.1875
+                    },
+                    {
+                        "abort_at_ms": 810.1608749711886,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 1034.527999931015,
+                        "max_card_query_ms": 598.4347079647705,
+                        "query_samples": 36,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "fold-start",
+                        "peak_rss_mib": 462.5
+                    }
+                ],
+                "medians": {
+                    "elapsed_ms": 1046.426958986558,
+                    "max_card_query_ms": 604.9678750569001,
+                    "peak_rss_mib": 462.546875,
+                    "abort_at_ms": 828.6981249693781
+                }
+            },
+            "after": {
+                "samples": [
+                    {
+                        "abort_at_ms": 614.7680421127006,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 722.5537500344217,
+                        "max_card_query_ms": 240.02687504980713,
+                        "query_samples": 39,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "fold-start",
+                        "peak_rss_mib": 245.578125
+                    },
+                    {
+                        "abort_at_ms": 589.5871670218185,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 704.9032500945032,
+                        "max_card_query_ms": 231.7906670505181,
+                        "query_samples": 39,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "fold-start",
+                        "peak_rss_mib": 247.359375
+                    },
+                    {
+                        "abort_at_ms": 584.8142079776153,
+                        "error": "Interrupted: Interrupted",
+                        "elapsed_ms": 697.3490420496091,
+                        "max_card_query_ms": 228.85133395902812,
+                        "query_samples": 39,
+                        "rows": 0,
+                        "prediction_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "cards": 31665,
+                        "rated_reviews": 269694,
+                        "scenario": "fold-start",
+                        "peak_rss_mib": 247.609375
+                    }
+                ],
+                "medians": {
+                    "elapsed_ms": 704.9032500945032,
+                    "max_card_query_ms": 231.7906670505181,
+                    "peak_rss_mib": 247.359375,
+                    "abort_at_ms": 589.5871670218185
+                }
+            }
+        },
+        "sse-ui": {
+            "before": {
+                "samples": [
+                    {
+                        "max_heartbeat_gap_ms": 353.36179193109274,
+                        "sql_on_main": [
+                            true
+                        ],
+                        "scenario": "sse-ui",
+                        "peak_rss_mib": 149.21875
+                    },
+                    {
+                        "max_heartbeat_gap_ms": 354.98774994630367,
+                        "sql_on_main": [
+                            true
+                        ],
+                        "scenario": "sse-ui",
+                        "peak_rss_mib": 150.109375
+                    },
+                    {
+                        "max_heartbeat_gap_ms": 356.6029160283506,
+                        "sql_on_main": [
+                            true
+                        ],
+                        "scenario": "sse-ui",
+                        "peak_rss_mib": 148.9375
+                    }
+                ],
+                "medians": {
+                    "max_heartbeat_gap_ms": 354.98774994630367,
+                    "peak_rss_mib": 149.21875
+                }
+            },
+            "after": {
+                "samples": [
+                    {
+                        "max_heartbeat_gap_ms": 17.96883309725672,
+                        "sql_on_main": [
+                            false
+                        ],
+                        "scenario": "sse-ui",
+                        "peak_rss_mib": 150.015625
+                    },
+                    {
+                        "max_heartbeat_gap_ms": 15.77599998563528,
+                        "sql_on_main": [
+                            false
+                        ],
+                        "scenario": "sse-ui",
+                        "peak_rss_mib": 150.03125
+                    },
+                    {
+                        "max_heartbeat_gap_ms": 20.03666607197374,
+                        "sql_on_main": [
+                            false
+                        ],
+                        "scenario": "sse-ui",
+                        "peak_rss_mib": 149.859375
+                    }
+                ],
+                "medians": {
+                    "max_heartbeat_gap_ms": 17.96883309725672,
+                    "peak_rss_mib": 150.015625
+                }
+            }
+        }
+    }
+}

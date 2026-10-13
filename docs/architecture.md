@@ -275,9 +275,14 @@ configured step.
 
 When FSRS review order is ascending or descending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
-into one exact-retrievability ordering. Intraday cards with a future timestamp
-remain hidden until their due time, at which point the queue is rebuilt so they
-can be inserted according to their current retrievability. The ordering key is
+and scored together. With interday learning/review order set to Mix, they stay
+in one exact-retrievability ordering. Before and After place only the admitted
+interday learning cards before or after the other due cards, preserving the
+selected sort within each group. Intraday cards retain their relative order
+with review cards, and new cards still follow New/review order. Intraday cards
+with a future timestamp remain hidden until their due time, at which point the
+queue is rebuilt so they can be inserted according to their current
+retrievability. The ordering key is
 the card's current FSRS retrievability from its selected deck preset. Relative
 Overdueness uses the same shared gather path, with the model-independent key
 `-elapsed_days / interval_at_retrievability(full_state, desired_retention)`.
@@ -288,7 +293,9 @@ mode, new-card gather order can instead use ascending or descending RWKV
 retrievability when the reviewer has installed a current-day RWKV queue score
 map; unscored new cards retain ascending-position fallback order.
 Review limits are applied after the shared retrievability sort, so filtered-deck
-positions do not decide which cards are admitted before sorting.
+positions do not decide which cards are admitted before sorting. Interday
+learning/review order changes presentation after this admission step; it does
+not change daily-limit selection or sibling burying.
 
 The Deck Options "New Card Intervals" preview passes the current unsaved values
 of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update
@@ -428,7 +435,14 @@ FSRS calibration consumers can populate a local review-time prediction cache in
 the profile-local retrievability cache database, not in the synced collection
 DB, with `ComputeFsrsReviewRetrievabilityCalibration`. The cache table is
 `search_stats_fsrs_review_retrievability`, attached to the collection
-connection from `collection.retrievability-cache.sqlite`. Rows are keyed by
+connection from `rwkv-state-cache/collection.retrievability-cache.sqlite`.
+Existing adjacent cache databases are checkpointed and moved on collection open
+when the new path is absent. The SQLite WAL/SHM sidecars remain in the same folder.
+Deck Options **Build Cache** clears both FSRS and RWKV historical tables, rebuilds
+FSRS final-fit predictions and validation folds for each deck preset with its
+current settings, then rebuilds RWKV state and aligned calibration predictions.
+This action does not modify review history or card scheduling. Interrupted jobs
+can leave partial derived rows; rerun the action to complete the rebuild. Rows are keyed by
 `revlog.id`, role, fold, and source. `final_fit` rows store the pre-answer
 predicted retrievability computed with the supplied parameter array.
 `validation_fold` rows store out-of-sample predictions from the expanding
@@ -437,6 +451,13 @@ store pre-answer predictions for later reviews. This table is a local derived
 cache for calibration-style consumers; it is not populated by ordinary FSRS
 optimization, is not card state, is not synced as part of collection sync/full
 upload, and should not be used for current retrievability ordering/search.
+
+The backend reads a revlog snapshot under the collection mutex, releases it for
+input conversion, prediction and fold training, then saves in batches of up to
+10,000 rows. Each batch checks cancellation and the original collection session.
+Interrupted jobs can leave partial derived rows; consumers must record job
+completion separately and retry interrupted generation. Fold training owns only
+one expanding training prefix at a time.
 
 The SQL helper functions in `rslib/src/storage/sqlite.rs` still use per-card
 stored scalar decay from `card.data` for legacy expressions. Built-in FSRS

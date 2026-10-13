@@ -198,9 +198,14 @@ def test_temporal_calibration_report_reads_cached_predictions(tmp_path: Path) ->
     assert "rmse_bins" in report["models"]["rwkv_plus_hour_session"]["test"]
 
 
-def test_temporal_calibration_report_reads_adjacent_cache_db(tmp_path: Path) -> None:
+@pytest.mark.parametrize("nested", [False, True])
+def test_temporal_calibration_report_reads_local_cache_db(
+    tmp_path: Path, nested: bool
+) -> None:
     db_path = tmp_path / "collection.anki2"
-    cache_path = tmp_path / probe.RWKV_CACHE_DB_FILENAME
+    cache_dir = tmp_path / probe.RWKV_CACHE_DIRNAME if nested else tmp_path
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / probe.RWKV_CACHE_DB_FILENAME
     connection = sqlite3.connect(db_path)
     cache_connection = sqlite3.connect(cache_path)
     try:

@@ -1,0 +1,180 @@
+{
+    "reviews": 223832,
+    "rounds": [
+        {
+            "mode": "f32",
+            "run": 0,
+            "replay_seconds": 8.099896833009552,
+            "save_seconds": 1.5528957920032553,
+            "total_seconds": 9.652805416000774,
+            "disk_bytes": 1247215616,
+            "load_seconds": 0.35508533399843145,
+            "fresh_load_peak_rss_bytes": 1325629440
+        },
+        {
+            "mode": "int8",
+            "run": 0,
+            "replay_seconds": 10.738807582980371,
+            "save_seconds": 0.23410162499931175,
+            "total_seconds": 10.972917749997578,
+            "disk_bytes": 394788864,
+            "load_seconds": 0.38345533299434464,
+            "fresh_load_peak_rss_bytes": 530677760
+        },
+        {
+            "mode": "int4",
+            "run": 0,
+            "replay_seconds": 11.08014729199931,
+            "save_seconds": 0.17277524899691343,
+            "total_seconds": 11.252929624999524,
+            "disk_bytes": 252575744,
+            "load_seconds": 0.5064636659953976,
+            "fresh_load_peak_rss_bytes": 377815040
+        },
+        {
+            "mode": "int8",
+            "run": 1,
+            "replay_seconds": 10.474695834011072,
+            "save_seconds": 0.2494128329999512,
+            "total_seconds": 10.724116541998228,
+            "disk_bytes": 394788864,
+            "load_seconds": 0.37080083299952094,
+            "fresh_load_peak_rss_bytes": 527482880
+        },
+        {
+            "mode": "int4",
+            "run": 1,
+            "replay_seconds": 10.953187209001044,
+            "save_seconds": 0.17307458400318865,
+            "total_seconds": 11.126268415988307,
+            "disk_bytes": 252575744,
+            "load_seconds": 0.4924995829933323,
+            "fresh_load_peak_rss_bytes": 373719040
+        },
+        {
+            "mode": "f32",
+            "run": 1,
+            "replay_seconds": 8.39022262499202,
+            "save_seconds": 0.8205054159916472,
+            "total_seconds": 9.210736208013259,
+            "disk_bytes": 1247215616,
+            "load_seconds": 0.3569907079945551,
+            "fresh_load_peak_rss_bytes": 1324417024
+        },
+        {
+            "mode": "int4",
+            "run": 2,
+            "replay_seconds": 11.049334832001477,
+            "save_seconds": 0.17327758301689755,
+            "total_seconds": 11.22261883300962,
+            "disk_bytes": 252575744,
+            "load_seconds": 0.5021474579989444,
+            "fresh_load_peak_rss_bytes": 374849536
+        },
+        {
+            "mode": "f32",
+            "run": 2,
+            "replay_seconds": 8.50064183298673,
+            "save_seconds": 1.5244681659823982,
+            "total_seconds": 10.02511712499836,
+            "disk_bytes": 1247215616,
+            "load_seconds": 0.4046622910100268,
+            "fresh_load_peak_rss_bytes": 1326284800
+        },
+        {
+            "mode": "int8",
+            "run": 2,
+            "replay_seconds": 11.032147999008885,
+            "save_seconds": 0.2435434999933932,
+            "total_seconds": 11.275698124998598,
+            "disk_bytes": 394788864,
+            "load_seconds": 0.38420174999919254,
+            "fresh_load_peak_rss_bytes": 527695872
+        }
+    ],
+    "accuracy": {
+        "f32": {
+            "count": 176722,
+            "log_loss": 0.4557365182707083,
+            "rmse_bins": 0.01855496925710324,
+            "max_abs_prediction_change": 0.0,
+            "log_loss_increase_percent": 0.0,
+            "rmse_bins_increase_percent": 0.0
+        },
+        "int8": {
+            "count": 176722,
+            "log_loss": 0.4557362809906328,
+            "rmse_bins": 0.018556714995427312,
+            "max_abs_prediction_change": 0.0067896246910095215,
+            "log_loss_increase_percent": -5.206518811640137e-05,
+            "rmse_bins_increase_percent": 0.009408467887417338
+        },
+        "int4": {
+            "count": 176722,
+            "log_loss": 0.45604445528777937,
+            "rmse_bins": 0.019612384984080754,
+            "max_abs_prediction_change": 0.1408584713935852,
+            "log_loss_increase_percent": 0.06756908975376064,
+            "rmse_bins_increase_percent": 5.698827695835251
+        }
+    },
+    "method": "Integrated production release bridge, prepared canonical history, native recovery root + final delta, fsync, fresh-process load with warm OS cache. Model startup, SQL preparation, manifest/GUI excluded. f32 snapshot matches pre-feature SHA-256 exactly.",
+    "machine": {
+        "model": "MacBookPro18,2",
+        "logical_cpus": 10,
+        "ram_bytes": 68719476736
+    },
+    "model_sha256": "749ad1ad18d5b6ef8c4185802fa0c1e4a14e67cd7874f3efeaae355fffb1b9ec",
+    "bridge_sha256": "dd6331d3b10198934d3e0341a7d65f340574052ae58c75b3faca5b2b710dbd92",
+    "source_sha256": {
+        "rslib/src/rwkv/mod.rs": "c9e0763bddf36bfd6d7bf864d95aff102ba51a7d3e45b0d3fe1378be8f708cbd",
+        "rslib/src/rwkv/bulk.rs": "4bdefd9e10b5f5c5402e3631f909772e777cf63febc7dbf9074f8613a112e78e",
+        "rslib/src/rwkv/precision.rs": "8403102201c2db44825bfc83968fddd90f8dc7ecbc9a68862b6224a90f06ac97"
+    },
+    "medians": {
+        "f32": {
+            "replay_seconds": 8.39022262499202,
+            "save_seconds": 1.5244681659823982,
+            "total_seconds": 9.652805416000774,
+            "disk_bytes": 1247215616,
+            "load_seconds": 0.3569907079945551,
+            "fresh_load_peak_rss_bytes": 1325629440,
+            "disk_reduction_percent": 0.0,
+            "fresh_load_peak_rss_reduction_percent": 0.0,
+            "total_time_increase_percent": 0.0
+        },
+        "int8": {
+            "replay_seconds": 10.738807582980371,
+            "save_seconds": 0.2435434999933932,
+            "total_seconds": 10.972917749997578,
+            "disk_bytes": 394788864,
+            "load_seconds": 0.38345533299434464,
+            "fresh_load_peak_rss_bytes": 527695872,
+            "disk_reduction_percent": 68.34638221848563,
+            "fresh_load_peak_rss_reduction_percent": 60.19280682239525,
+            "total_time_increase_percent": 13.675944734248425
+        },
+        "int4": {
+            "replay_seconds": 11.049334832001477,
+            "save_seconds": 0.17307458400318865,
+            "total_seconds": 11.22261883300962,
+            "disk_bytes": 252575744,
+            "load_seconds": 0.5021474579989444,
+            "fresh_load_peak_rss_bytes": 374849536,
+            "disk_reduction_percent": 79.74883085492091,
+            "fresh_load_peak_rss_reduction_percent": 71.72290198986528,
+            "total_time_increase_percent": 16.262768691127615
+        }
+    },
+    "date": "2026-10-10",
+    "timing_contention": "Competing Primarius native benchmark paused for all nine timing rounds, then resumed before accuracy replay.",
+    "cards": 13965,
+    "notes": 13190,
+    "review_days": 984,
+    "input_sha256": "d77b984f55d9b21df7cf2557d9dbbb18542b27552dcc9831dea195c0c88d60f1",
+    "f32_control_snapshot_sha256": "78f1d94e75b19a3e34409c07535969d692c1bbf885924e71115749471e93f089",
+    "recovery_root_reviews": 223584,
+    "final_delta_reviews": 248,
+    "units": "Seconds; decimal MB = 1,000,000 bytes. RSS is fresh-process peak, not Anki GUI memory or rebuild peak.",
+    "metrics": "Natural-log mean binary loss, recall = rating != 1; probability clipped to [1e-6,1-1e-6]. RMSE(bins) uses weighted empirical recall bins of elapsed days, prior long-term reviews + 1, and prior lapses. Only elapsed_days >= 1 is scored; all retained reviews update state."
+}

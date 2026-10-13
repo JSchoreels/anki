@@ -1,0 +1,258 @@
+{
+    "date": "2026-10-10",
+    "base_commit": "d79d1ad56",
+    "baseline_matches_production_int8_predictions_exactly": true,
+    "reviews": 223832,
+    "scored_reviews": 176722,
+    "review_days": 984,
+    "classification": "Fixed collection-wide eligibility from copied backup, including new/suspended/buried cards; reviewed policy uses full retained history. No dynamic sibling introduction simulated.",
+    "policy": "All input IDs/features retained. Note module still runs, but excluded notes start fresh on every review and never persist note state. Card and kept note state int8 with f16 shifts; math and deck/preset/global state f32.",
+    "measurement": "Optimized native Rust test harness, single full checkpoint per policy, minimal history-map placeholders, fsync; separate process native load with warm OS cache. RSS includes native model and test runner, not Python or Anki GUI. Timings are single observations of prediction-enabled replay, not production state-only rebuild timings. Fresh-load RSS is the median of three rotated loads per policy. Loads 1 and 2 overlapped just check, so their times are not suitable for speed claims.",
+    "results": {
+        "all": {
+            "storage": {
+                "card_payload_bytes": 215270475,
+                "card_states": 13965,
+                "checkpoint_bytes": 371326976,
+                "note_payload_bytes": 135632770,
+                "note_states": 13190,
+                "policy": "all",
+                "replay_with_predictions_seconds": 21.406217583,
+                "reviews": 223832,
+                "save_seconds": 0.358744333,
+                "segment": 1,
+                "load_seconds": 1.149974875,
+                "fresh_load_peak_rss_bytes": 503087104,
+                "note_payload_bytes_saved": 0,
+                "note_payload_bytes_reduction_percent": 0.0,
+                "checkpoint_bytes_saved": 0,
+                "checkpoint_bytes_reduction_percent": 0.0,
+                "fresh_load_peak_rss_bytes_saved": 0,
+                "fresh_load_peak_rss_bytes_reduction_percent": 0.0,
+                "card_note_payload_bytes": 350903245,
+                "card_note_payload_reduction_percent": 0.0
+            },
+            "accuracy": {
+                "all": {
+                    "count": 176722,
+                    "log_loss": 0.4557362809906328,
+                    "rmse_bins": 0.018556714995427312,
+                    "log_loss_increase_percent": 0.0,
+                    "rmse_bins_increase_percent": 0.0,
+                    "mean_abs_prediction_change": 0.0,
+                    "p99_abs_prediction_change": 0.0,
+                    "max_abs_prediction_change": 0.0
+                },
+                "retained_note_reviews": {
+                    "count": 176722,
+                    "log_loss": 0.4557362809906328,
+                    "rmse_bins": 0.018556714995427312,
+                    "log_loss_increase_percent": 0.0,
+                    "rmse_bins_increase_percent": 0.0,
+                    "mean_abs_prediction_change": 0.0,
+                    "p99_abs_prediction_change": 0.0,
+                    "max_abs_prediction_change": 0.0
+                }
+            }
+        },
+        "existing": {
+            "storage": {
+                "card_payload_bytes": 215270475,
+                "card_states": 13965,
+                "checkpoint_bytes": 365953024,
+                "note_payload_bytes": 130378157,
+                "note_states": 12679,
+                "policy": "existing",
+                "replay_with_predictions_seconds": 18.335559334,
+                "reviews": 223832,
+                "save_seconds": 0.445232833,
+                "segment": 1,
+                "load_seconds": 0.847828791,
+                "fresh_load_peak_rss_bytes": 497909760,
+                "note_payload_bytes_saved": 5254613,
+                "note_payload_bytes_reduction_percent": 3.874147081122059,
+                "checkpoint_bytes_saved": 5373952,
+                "checkpoint_bytes_reduction_percent": 1.4472290857747927,
+                "fresh_load_peak_rss_bytes_saved": 5177344,
+                "fresh_load_peak_rss_bytes_reduction_percent": 1.029114830977662,
+                "card_note_payload_bytes": 345648632,
+                "card_note_payload_reduction_percent": 1.4974535216965568
+            },
+            "accuracy": {
+                "all": {
+                    "count": 176722,
+                    "log_loss": 0.45888669466193144,
+                    "rmse_bins": 0.019128395943858092,
+                    "log_loss_increase_percent": 0.6912799798274971,
+                    "rmse_bins_increase_percent": 3.080722792647572,
+                    "mean_abs_prediction_change": 0.006114159730130451,
+                    "p99_abs_prediction_change": 0.09966466605663304,
+                    "max_abs_prediction_change": 0.7232329249382019
+                },
+                "dropped_note_reviews": {
+                    "count": 11081,
+                    "log_loss": 0.2983985537699932,
+                    "rmse_bins": 0.06676871345236718,
+                    "log_loss_increase_percent": 19.663440497504613,
+                    "rmse_bins_increase_percent": 60.78607640686948,
+                    "mean_abs_prediction_change": 0.05372274190916308,
+                    "p99_abs_prediction_change": 0.2176350474357606,
+                    "max_abs_prediction_change": 0.7232329249382019
+                },
+                "retained_note_reviews": {
+                    "count": 165641,
+                    "log_loss": 0.46962298029908406,
+                    "rmse_bins": 0.018286222461258658,
+                    "log_loss_increase_percent": 0.017235376748470088,
+                    "rmse_bins_increase_percent": -3.2802361620437037,
+                    "mean_abs_prediction_change": 0.002929255635577408,
+                    "p99_abs_prediction_change": 0.021949696540832522,
+                    "max_abs_prediction_change": 0.17798066139221191
+                }
+            }
+        },
+        "reviewed": {
+            "storage": {
+                "card_payload_bytes": 215270475,
+                "card_states": 13965,
+                "checkpoint_bytes": 243400704,
+                "note_payload_bytes": 7969325,
+                "note_states": 775,
+                "policy": "reviewed",
+                "replay_with_predictions_seconds": 19.233548375,
+                "reviews": 223832,
+                "save_seconds": 0.274772625,
+                "segment": 1,
+                "load_seconds": 0.789581584,
+                "fresh_load_peak_rss_bytes": 341278720,
+                "note_payload_bytes_saved": 127663445,
+                "note_payload_bytes_reduction_percent": 94.12433661865049,
+                "checkpoint_bytes_saved": 127926272,
+                "checkpoint_bytes_reduction_percent": 34.451111895517116,
+                "fresh_load_peak_rss_bytes_saved": 161808384,
+                "fresh_load_peak_rss_bytes_reduction_percent": 32.163095160554946,
+                "card_note_payload_bytes": 223239800,
+                "card_note_payload_reduction_percent": 36.38138057116001
+            },
+            "accuracy": {
+                "all": {
+                    "count": 176722,
+                    "log_loss": 0.7378197210180573,
+                    "rmse_bins": 0.16125000265188225,
+                    "log_loss_increase_percent": 61.896200015996186,
+                    "rmse_bins_increase_percent": 768.9576937061165,
+                    "mean_abs_prediction_change": 0.16596577697976878,
+                    "p99_abs_prediction_change": 0.4744155013561249,
+                    "max_abs_prediction_change": 0.8397576808929443
+                },
+                "dropped_note_reviews": {
+                    "count": 170290,
+                    "log_loss": 0.7498682101526051,
+                    "rmse_bins": 0.16660204329836303,
+                    "log_loss_increase_percent": 63.369036334493515,
+                    "rmse_bins_increase_percent": 801.9169411549422,
+                    "mean_abs_prediction_change": 0.1691505770922281,
+                    "p99_abs_prediction_change": 0.47472912132739986,
+                    "max_abs_prediction_change": 0.8397576808929443
+                },
+                "retained_note_reviews": {
+                    "count": 6432,
+                    "log_loss": 0.4188307261918164,
+                    "rmse_bins": 0.05438170503848681,
+                    "log_loss_increase_percent": 13.425056990531935,
+                    "rmse_bins_increase_percent": 9.650257898206771,
+                    "mean_abs_prediction_change": 0.08164680758444824,
+                    "p99_abs_prediction_change": 0.4205533492565153,
+                    "max_abs_prediction_change": 0.7632920742034912
+                }
+            }
+        }
+    },
+    "load_rounds": [
+        {
+            "policy": "all",
+            "run": 0,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 503087104,
+            "load_seconds": 0.382301959,
+            "note_states": 13190
+        },
+        {
+            "policy": "existing",
+            "run": 0,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 501579776,
+            "load_seconds": 0.40257325,
+            "note_states": 12679
+        },
+        {
+            "policy": "reviewed",
+            "run": 0,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 341278720,
+            "load_seconds": 0.369525042,
+            "note_states": 775
+        },
+        {
+            "policy": "existing",
+            "run": 1,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 495845376,
+            "load_seconds": 1.263536625,
+            "note_states": 12679
+        },
+        {
+            "policy": "reviewed",
+            "run": 1,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 341442560,
+            "load_seconds": 0.789581584,
+            "note_states": 775
+        },
+        {
+            "policy": "all",
+            "run": 1,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 502611968,
+            "load_seconds": 1.149974875,
+            "note_states": 13190
+        },
+        {
+            "policy": "reviewed",
+            "run": 2,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 339656704,
+            "load_seconds": 0.8669065,
+            "note_states": 775
+        },
+        {
+            "policy": "all",
+            "run": 2,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 509640704,
+            "load_seconds": 1.400204167,
+            "note_states": 13190
+        },
+        {
+            "policy": "existing",
+            "run": 2,
+            "card_states": 13965,
+            "fresh_load_peak_rss_bytes": 497909760,
+            "load_seconds": 0.847828791,
+            "note_states": 12679
+        }
+    ],
+    "sha256": {
+        "model": "749ad1ad18d5b6ef8c4185802fa0c1e4a14e67cd7874f3efeaae355fffb1b9ec",
+        "prepared_input": "3e71f15259cd99c6d0a259cfa20911c2162a0b02c44906114b8de40fe6f8b6ef",
+        "native_test_binary": "3b9663dc3ce0ffbde2703978439e1a0184d81388751872c72640b32e1bfcd788",
+        "local_experiment_patch": "e15d3ac6cf88ff15ae1655c1f3ad34905e7ab8dc8988bd828574c95f1abd46c3"
+    },
+    "verification": {
+        "scalar_bulk_parity": "Passed for 51 interleaved reviews, keeping 2 of 4 note streams, chunks 1/9/51; final states and runtime feature cache byte-identical, predictions within 1e-5.",
+        "checkpoint_resume": "Passed midpoint save/reload and suffix continuation, matching uninterrupted scalar final state and predictions.",
+        "full_checkpoints": "All three full-history native checkpoints restored byte-identical states and runtime features.",
+        "production_control": "All 223832 baseline predictions exactly matched prior optimized production int8 replay.",
+        "just_check": "Passed in the isolated worktree. Initial run had two installer-fixture failures from the absent mac-template submodule; after local initialization the full check succeeded in 66.39 seconds."
+    }
+}

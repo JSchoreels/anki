@@ -379,6 +379,7 @@ struct StreamPlan {
 }
 
 struct ModulePlan {
+    precision: StatePrecision,
     streams: Vec<StreamPlan>,
     stream_of_row: Vec<u32>,
     prev_row: Vec<Option<u32>>,
@@ -416,6 +417,7 @@ impl ModulePlan {
             }
         }
         Self {
+            precision: StatePrecision::F32,
             streams,
             stream_of_row,
             prev_row,
@@ -424,7 +426,9 @@ impl ModulePlan {
 }
 
 fn layer_states(initial: Option<ModuleState>, layer_count: usize) -> Vec<LayerState> {
-    let mut layers = initial.map(|state| state.layers).unwrap_or_default();
+    let mut layers = initial
+        .map(|state| state.into_decoded().layers)
+        .unwrap_or_default();
     layers.truncate(layer_count);
     while layers.len() < layer_count {
         layers.push(LayerState {
@@ -447,7 +451,8 @@ fn run_module(
     query_recurrence: QueryRecurrence,
 ) {
     let rows = inputs.len();
-    let plan = ModulePlan::build(module_id, inputs);
+    let mut plan = ModulePlan::build(module_id, inputs);
+    plan.precision = module.precision;
     let layer_count = module.layers.len();
 
     let mut stream_layers: Vec<Vec<LayerState>> = plan
@@ -482,7 +487,16 @@ fn run_module(
 
     for (stream, layers) in plan.streams.iter().zip(stream_layers) {
         if let Some(key) = stream.key {
-            put_stream_state(states, module_id, key, ModuleState { layers });
+            put_stream_state(
+                states,
+                module_id,
+                key,
+                ModuleState {
+                    layers,
+                    packed: None,
+                }
+                .compact(module.precision),
+            );
         }
     }
 }
@@ -804,6 +818,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                 Some(time) => time.matrix,
                 None => vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE],
             };
+            let mut packed_matrix = None;
             // Separate source/destination matrices let the recurrence kernel
             // vectorize, while swapping reuses both allocations per stream.
             let mut next_matrix = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
@@ -860,12 +875,14 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                     &mut next_matrix,
                 );
                 std::mem::swap(&mut matrix, &mut next_matrix);
+                plan.precision.round_matrix(&mut matrix, &mut packed_matrix);
             }
             if plan.streams[stream_index].key.is_some() {
                 let last = *stream_rows.last().unwrap() as usize - chunk_start;
                 layer_state.time = Some(TimeState {
                     x_shift: row(&x_norm, last).to_vec(),
                     matrix,
+                    packed_matrix,
                 });
             }
             Some((outs, outs_query))
@@ -1068,6 +1085,24 @@ fn resolve_shift<'a>(
     }
 }
 
+/// Fresh streams mix against their own unrounded activation. Only a previous
+/// answer's persisted shift is truncated, including answers in this chunk.
+fn compact_shift<'a>(
+    plan: &ModulePlan,
+    row_index: usize,
+    shift: &'a [f32],
+    rounded: &'a mut [f32; D_MODEL],
+) -> &'a [f32] {
+    if plan.precision == StatePrecision::F32 || plan.prev_row[row_index].is_none() {
+        // A stream may have state from an earlier outer call even with no
+        // preceding row here. Those shifts were already packed on that call.
+        return shift;
+    }
+    rounded.copy_from_slice(shift);
+    plan.precision.round_shift(rounded);
+    rounded
+}
+
 #[allow(clippy::too_many_arguments)]
 fn time_parts(
     mixer: &TimeMixer,
@@ -1144,7 +1179,13 @@ fn time_parts_block(
     // The shift source per row is fixed for the whole layer, so resolve it
     // once and reuse it for every lerp mix.
     let mut shifts: [&[f32]; LINEAR_BLOCK_ROWS] = [&[]; LINEAR_BLOCK_ROWS];
-    for (index, shift) in shifts.iter_mut().enumerate().take(rows) {
+    let mut rounded_shifts = [[0.0; D_MODEL]; LINEAR_BLOCK_ROWS];
+    for (index, (shift, rounded)) in shifts
+        .iter_mut()
+        .zip(&mut rounded_shifts)
+        .enumerate()
+        .take(rows)
+    {
         let own = row(x_norm, block_start + index);
         *shift = resolve_shift(
             plan,
@@ -1154,6 +1195,7 @@ fn time_parts_block(
             own,
             |stream_index| time_shifts[stream_index].as_deref(),
         );
+        *shift = compact_shift(plan, chunk_start + block_start + index, shift, rounded);
     }
     let fill_mixed = |mix_id: usize, mixed: &mut [f32]| {
         for index in 0..rows {
@@ -1355,6 +1397,9 @@ fn channel_outputs(
                             .as_deref()
                     },
                 );
+                let mut rounded_shift = [0.0; D_MODEL];
+                let x_shift =
+                    compact_shift(plan, chunk_start + chunk_index, x_shift, &mut rounded_shift);
                 let out = &mut mixed[index * D_MODEL..(index + 1) * D_MODEL];
                 for channel in 0..D_MODEL {
                     out[channel] = lerp(own[channel], x_shift[channel], cm.lerp_k[channel]);

@@ -73,6 +73,11 @@ fn syncserver() -> PyResult<()> {
 }
 
 #[pyfunction]
+fn rwkv_release_free_memory(py: Python<'_>) {
+    py.detach(rwkv::release_free_memory_to_os);
+}
+
+#[pyfunction]
 fn open_backend(init_msg: &Bound<'_, PyBytes>) -> PyResult<Backend> {
     match init_backend(init_msg.as_bytes()) {
         Ok(backend) => Ok(Backend { backend }),
@@ -120,11 +125,23 @@ impl Backend {
 #[pymethods]
 impl RwkvInference {
     #[new]
-    #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500))]
-    fn new(model_path: &str, target_retention: f32, max_interval_days: u32) -> PyResult<Self> {
-        rwkv::RwkvInference::load(model_path.into(), target_retention, max_interval_days)
-            .map(|inner| Self { inner })
-            .map_err(|err| PyException::new_err(err.to_string()))
+    #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500, state_precision="f32"))]
+    fn new(
+        model_path: &str,
+        target_retention: f32,
+        max_interval_days: u32,
+        state_precision: &str,
+    ) -> PyResult<Self> {
+        let precision = rwkv::StatePrecision::parse(state_precision)
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        rwkv::RwkvInference::load_with_precision(
+            model_path.into(),
+            target_retention,
+            max_interval_days,
+            precision,
+        )
+        .map(|inner| Self { inner })
+        .map_err(|err| PyException::new_err(err.to_string()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -680,9 +697,22 @@ impl RwkvInference {
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn supports_warm_up_state_spill(&self) -> bool {
+        true
+    }
+
+    fn stash_warm_up_state_to_file(&mut self, py: Python<'_>, path: String) -> PyResult<()> {
+        py.detach(|| self.inner.stash_warm_up_state_to_file(path.as_ref()))
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn restore_stashed_warm_up_state(&mut self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.inner.restore_stashed_warm_up_state())
             .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    fn discard_stashed_warm_up_state(&mut self, py: Python<'_>) {
+        py.detach(|| self.inner.discard_stashed_warm_up_state());
     }
 
     fn state_for_card(&self, card_id: i64) -> RwkvInferenceState {
@@ -1239,6 +1269,8 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Backend>()?;
     m.add_class::<RwkvInference>()?;
     m.add_class::<RwkvInferenceState>()?;
+    m.add_wrapped(wrap_pyfunction!(rwkv_release_free_memory))
+        .unwrap();
     m.add_wrapped(wrap_pyfunction!(buildhash)).unwrap();
     m.add_wrapped(wrap_pyfunction!(open_backend)).unwrap();
     m.add_wrapped(wrap_pyfunction!(initialize_logging)).unwrap();

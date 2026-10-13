@@ -6,7 +6,6 @@
     import * as tr from "@generated/ftl";
     import { renderMarkdown } from "@tslib/helpers";
 
-    import Row from "./Row.svelte";
     import type { HelpItem } from "./types";
     import { mdiEarth } from "./icons";
     import Icon from "./Icon.svelte";
@@ -14,20 +13,20 @@
     export let item: HelpItem;
 </script>
 
-<Row>
+<div class="help-section">
     <h2>
-        {#if item.url}
-            {@html item.title}
-        {:else}
-            {@html item.title}
+        {@html item.title}
+        {#if item.global}
+            <span
+                class="icon"
+                title={tr.deckConfigAffectsEntireCollection()}
+                aria-hidden="true"
+            >
+                <Icon icon={mdiEarth} />
+            </span>
         {/if}
     </h2>
     {#if item.help}
-        {#if item.global}
-            <div class="icon">
-                <Icon icon={mdiEarth} />
-            </div>
-        {/if}
         {@html renderMarkdown(item.help)}
     {:else}
         {@html renderMarkdown(
@@ -36,24 +35,38 @@
             }),
         )}
     {/if}
-</Row>
-{#if item.url}
+</div>
+{#if item.url || item.references?.length}
     <hr />
     <div class="chapter-redirect">
-        {@html renderMarkdown(
-            tr.helpForMoreInfo({
-                link: `<a href="${item.url}" title="${tr.helpOpenManualChapter({
-                    name: item.title,
-                })}">${item.title}</a>`,
-            }),
-        )}
+        {#if item.references?.length}
+            <ul>
+                {#each item.references as reference}
+                    <li><a href={reference.url}>{reference.label}</a></li>
+                {/each}
+            </ul>
+        {/if}
+        {#if item.url}
+            {@html renderMarkdown(
+                tr.helpForMoreInfo({
+                    link: `<a href="${item.url}" title="${tr.helpOpenManualChapter({
+                        name: item.title,
+                    })}">${item.title}</a>`,
+                }),
+            )}
+        {/if}
     </div>
 {/if}
 
 <style lang="scss">
     h2 {
-        margin-bottom: 1em;
-        width: 100%;
+        margin-bottom: 1rem;
+    }
+
+    .help-section :global(h3) {
+        font-size: 1.1rem;
+        margin-top: 1.5rem;
+        margin-bottom: 0.5rem;
     }
 
     .chapter-redirect {
@@ -66,7 +79,12 @@
         display: inline-block;
         width: 1em;
         fill: currentColor;
-        margin-right: 0.25em;
-        margin-bottom: 1.25em;
+        margin-inline-start: 0.25em;
+        font-size: 1rem;
+        vertical-align: middle;
+    }
+
+    li + li {
+        margin-top: 0.5rem;
     }
 </style>

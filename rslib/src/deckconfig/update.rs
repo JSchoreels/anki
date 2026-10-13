@@ -627,7 +627,7 @@ fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
     }
 }
 
-fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> {
+pub(crate) fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> {
     match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
         FsrsVersion::Seven => {}
         _ => return None,
@@ -639,7 +639,7 @@ fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> 
         .as_bool()
 }
 
-fn fsrs7_enable_scheduling_penalties(config: &DeckConfig) -> bool {
+pub(crate) fn fsrs7_enable_scheduling_penalties(config: &DeckConfig) -> bool {
     match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
         FsrsVersion::Seven => {}
         _ => return false,

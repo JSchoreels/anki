@@ -127,8 +127,83 @@ impl Backend {
 #[cfg(test)]
 mod test {
     use anki_proto::collection::CreateBackupRequest;
+    use anki_proto::collection::OpenCollectionRequest;
+    use rusqlite::OptionalExtension;
 
     use super::*;
+    use crate::storage::FsrsReviewRetrievabilityCacheRow;
+    use crate::storage::FsrsReviewRetrievabilitySampleRole;
+
+    #[test]
+    fn collection_session_preserves_calibration_cache_after_reopen() -> Result<()> {
+        for same_path in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Backend::new(I18n::template_only(), false);
+            let request = OpenCollectionRequest {
+                collection_path: dir.path().join("original.anki2").to_str().unwrap().into(),
+                media_folder_path: dir.path().join("media").to_str().unwrap().into(),
+                media_db_path: dir.path().join("media.db").to_str().unwrap().into(),
+            };
+            backend.open_collection(request.clone())?;
+            let session = backend.with_col(|col| Ok(col.session_id.clone()))?;
+            let row = FsrsReviewRetrievabilityCacheRow {
+                revlog_id: 1.into(),
+                prediction: 0.25,
+                sample_role: FsrsReviewRetrievabilitySampleRole::FinalFit,
+                fold_index: -1,
+            };
+            assert_eq!(
+                backend.with_col_in_session(&session, |col| {
+                    col.storage
+                        .set_fsrs_review_retrievability_predictions(&[row], "test")
+                })?,
+                1
+            );
+            backend.close_collection(Default::default())?;
+            assert!(matches!(
+                backend.with_col_in_session(&session, |_| -> Result<()> {
+                    panic!("must not publish into a closed collection")
+                }),
+                Err(AnkiError::CollectionNotOpen)
+            ));
+            let request = if same_path {
+                request
+            } else {
+                OpenCollectionRequest {
+                    collection_path: dir
+                        .path()
+                        .join("replacement.anki2")
+                        .to_str()
+                        .unwrap()
+                        .into(),
+                    ..request
+                }
+            };
+            backend.open_collection(request)?;
+            let error = backend
+                .with_col_in_session(&session, |col| {
+                    col.storage.set_fsrs_review_retrievability_predictions(
+                        &[FsrsReviewRetrievabilityCacheRow {
+                            prediction: 0.75,
+                            ..row
+                        }],
+                        "test",
+                    )
+                })
+                .unwrap_err();
+            assert!(matches!(error, AnkiError::Interrupted));
+            backend.with_col(|col| {
+                let prediction: Option<f32> = col.storage.db.query_row(
+                    "SELECT prediction FROM search_stats_fsrs_review_retrievability WHERE revlog_id = 1",
+                    [],
+                    |row| row.get(0),
+                ).optional()?;
+                assert_eq!(prediction, same_path.then_some(0.25));
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
 
     fn retry_after_failure(wait_for_completion: bool, force: bool, consume_by_next_request: bool) {
         let dir = tempfile::tempdir().unwrap();
