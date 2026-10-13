@@ -35,10 +35,12 @@ repeated here unless they materially affect a fork feature.
 ### User facing changes
 
 - **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
+- **Updated HTML sanitization dependency.** This build includes the patched Ammonia release for CSS URL escaping and SVG animation filtering.
 
 ### Technical details
 
 - **Intraday queue ordering:** group admitted due intraday cards before or after the remaining queue after exact scoring, daily-limit admission, and sibling selection; Mix keeps the shared ordering. Future steps still wait for their due timestamp. Store `intraday_learning_mix` in deck-config extra data under `jschoreels.deckoptions`, using the existing ReviewMix values and no new protobuf field. Earlier enabled toggles map to Before and migrate on the next Deck Options save. Regression coverage includes all three modes with FSRS 6/7, current-card preservation, limits, new-card mixing, opaque-client preset edits, sync round trips, and browser save/reload.
+- **Dependency security:** update Ammonia from 4.1.4 to 4.1.7 and raise the workspace minimum to the patched version, addressing [RUSTSEC-2021-0157](https://rustsec.org/advisories/RUSTSEC-2021-0157.html) and [RUSTSEC-2021-0158](https://rustsec.org/advisories/RUSTSEC-2021-0158.html). Anki's sanitization helpers use the default tag and attribute policy, without enabling the custom CSS/SVG features described in those advisories.
 
 ## 26.09.3+fsrs7.build.102 — 2026-10-12
 
