@@ -54,7 +54,6 @@ fn snapshot_bytes(inference: &RwkvInference) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "kuma3: card/note states are f16 (HalfStateMap), so bulk and sequential agree only within tolerance and never hold packed states"]
 fn rwkv_state_precision_bulk_matches_answers_across_chunk_boundaries() {
     let reviews = reviews(51);
     for precision in [

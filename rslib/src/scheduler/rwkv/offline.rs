@@ -52,6 +52,7 @@ use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::decks::limits::LimitTreeMap;
 use crate::rwkv::ReviewInput;
 use crate::rwkv::RwkvInference;
+use crate::rwkv::StatePrecision;
 use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
 use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
 use crate::scheduler::states::CardState;
@@ -86,9 +87,17 @@ const FORECAST_SEARCH: &str = "is:review -is:learn -is:suspended -is:buried";
 /// The model path of the last successful `RwkvPrepareOffline`. The runtime
 /// lives in the collection state, which is lost when the collection is
 /// reopened; this lets the next queue build or deck count restore it.
-static REGISTERED_MODEL: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// The model file and the precision its card/note states are kept in (the
+/// app's Settings > kuma3; int8 by default, as in the fork's desktop).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct OfflineModel {
+    pub(super) path: PathBuf,
+    pub(super) precision: StatePrecision,
+}
 
-fn registered_model() -> Option<PathBuf> {
+static REGISTERED_MODEL: Mutex<Option<OfflineModel>> = Mutex::new(None);
+
+fn registered_model() -> Option<OfflineModel> {
     REGISTERED_MODEL.lock().unwrap().clone()
 }
 
@@ -144,7 +153,7 @@ impl ReplayStamp {
 }
 
 pub(crate) struct RwkvOfflineRuntime {
-    model_path: PathBuf,
+    model: OfflineModel,
     inference: RwkvInference,
     /// Feature/curve state of the freshly loaded model, for full rebuilds.
     initial_cache_state: Vec<u8>,
@@ -172,7 +181,7 @@ impl Drop for RwkvOfflineRuntime {
 impl fmt::Debug for RwkvOfflineRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RwkvOfflineRuntime")
-            .field("model_path", &self.model_path)
+            .field("model", &self.model)
             .field("identity", &self.identity)
             .field("generation", &self.generation)
             .finish_non_exhaustive()
@@ -199,15 +208,16 @@ struct ScoredCard {
 }
 
 impl RwkvOfflineRuntime {
-    fn load(model_path: PathBuf) -> Result<Self> {
-        let inference = RwkvInference::load(
-            model_path.clone(),
+    fn load(model: OfflineModel) -> Result<Self> {
+        let inference = RwkvInference::load_with_precision(
+            model.path.clone(),
             MODEL_TARGET_RETENTION,
             MODEL_MAX_INTERVAL_DAYS,
+            model.precision,
         )?;
         let initial_cache_state = inference.cache_state();
         Ok(Self {
-            model_path,
+            model,
             inference,
             initial_cache_state,
             identity: None,
@@ -224,8 +234,8 @@ impl RwkvOfflineRuntime {
     /// when there is a usable one. Whether that state still fits the
     /// collection is checked by the next history sync, which replays only
     /// what is missing (or everything, when the history changed otherwise).
-    fn load_with_saved_state(model_path: PathBuf, path: &Path) -> Result<Self> {
-        let mut runtime = Self::load(model_path)?;
+    fn load_with_saved_state(model: OfflineModel, path: &Path) -> Result<Self> {
+        let mut runtime = Self::load(model)?;
         if path.exists() {
             if let Err(err) = runtime.restore_saved_state(path) {
                 tracing::warn!(?err, "saved RWKV offline state not used");
@@ -236,7 +246,7 @@ impl RwkvOfflineRuntime {
     }
 
     fn restore_saved_state(&mut self, path: &Path) -> std::io::Result<()> {
-        let header = offline_state::header(&self.model_path)?;
+        let header = offline_state::header(&self.model)?;
         let identity = offline_state::read(path, &header, &mut self.inference)?;
         let identity = RwkvHistoricalReviewIdentity::decode(identity.as_slice())
             .map_err(std::io::Error::other)?;
@@ -256,7 +266,7 @@ impl RwkvOfflineRuntime {
         let Some(identity) = self.identity.clone() else {
             return;
         };
-        let header = match offline_state::header(&self.model_path) {
+        let header = match offline_state::header(&self.model) {
             Ok(header) => header,
             Err(err) => return tracing::warn!(?err, "RWKV offline state not saved"),
         };
@@ -540,15 +550,22 @@ impl Collection {
         input: RwkvPrepareOfflineRequest,
     ) -> Result<RwkvPrepareOfflineResponse> {
         require!(!input.model_path.is_empty(), "missing RWKV model path");
-        let model_path = PathBuf::from(input.model_path);
+        let model = OfflineModel {
+            path: PathBuf::from(input.model_path),
+            // empty: the fork's desktop default
+            precision: match input.state_precision.as_str() {
+                "" => StatePrecision::Int8,
+                other => StatePrecision::parse(other)?,
+            },
+        };
         let mut runtime = match self.state.rwkv_offline.take() {
-            Some(runtime) if runtime.model_path == model_path => runtime,
+            Some(runtime) if runtime.model == model => runtime,
             _ => {
                 // Built on its own thread; `reviews_replayed` is then what it
                 // is replaying, and the next queue build or deck count
                 // installs it once done.
-                *REGISTERED_MODEL.lock().unwrap() = Some(model_path.clone());
-                let reviews_replayed = self.rwkv_offline_start_build(model_path)?;
+                *REGISTERED_MODEL.lock().unwrap() = Some(model.clone());
+                let reviews_replayed = self.rwkv_offline_start_build(model)?;
                 return Ok(RwkvPrepareOfflineResponse { reviews_replayed });
             }
         };
@@ -558,7 +575,7 @@ impl Collection {
         if reviews_replayed > 0 {
             self.state.card_queues = None;
         }
-        *REGISTERED_MODEL.lock().unwrap() = Some(runtime.model_path.clone());
+        *REGISTERED_MODEL.lock().unwrap() = Some(runtime.model.clone());
         self.state.rwkv_offline = Some(runtime);
         Ok(RwkvPrepareOfflineResponse { reviews_replayed })
     }
@@ -938,13 +955,13 @@ impl Collection {
             None => {
                 // Not built yet, or the collection was reopened (e.g. after a
                 // full sync) since the client's prepare call.
-                let Some(model_path) = registered_model() else {
+                let Some(model) = registered_model() else {
                     return true;
                 };
                 match self.rwkv_offline_take_built() {
                     Some(runtime) => runtime,
                     None => {
-                        if let Err(err) = self.rwkv_offline_start_build(model_path) {
+                        if let Err(err) = self.rwkv_offline_start_build(model) {
                             tracing::warn!(?err, "RWKV offline build not started");
                         }
                         return true;
@@ -1004,7 +1021,7 @@ impl Collection {
                 // minute on a big one. The runtime without identity is dropped by
                 // the caller and rebuilt on its own thread.
                 runtime.identity = None;
-                self.rwkv_offline_start_build(runtime.model_path.clone())?;
+                self.rwkv_offline_start_build(runtime.model.clone())?;
                 invalid_input!("RWKV history changed; rebuilding in the background")
             }
             Some(plan) => runtime.apply_history_plan(plan, &self.rwkv_offline_state_path()),
@@ -1152,7 +1169,7 @@ impl Collection {
     /// big history, which must not hold the collection. Until it is installed
     /// (`rwkv_offline_take_built`) the standard order applies. Returns the
     /// number of reviews it replays.
-    fn rwkv_offline_start_build(&mut self, model_path: PathBuf) -> Result<u64> {
+    fn rwkv_offline_start_build(&mut self, model: OfflineModel) -> Result<u64> {
         let mut building = BUILDING.lock().unwrap();
         if building
             .as_ref()
@@ -1162,7 +1179,7 @@ impl Collection {
         }
         // Only the identity is read here; the states are loaded on the thread.
         let state_path = self.rwkv_offline_state_path();
-        let planned_for = offline_state::header(&model_path)
+        let planned_for = offline_state::header(&model)
             .and_then(|header| offline_state::read_identity(&state_path, &header))
             .ok()
             .and_then(|bytes| RwkvHistoricalReviewIdentity::decode(bytes.as_slice()).ok());
@@ -1182,7 +1199,7 @@ impl Collection {
         let handle = std::thread::spawn(move || -> Result<Box<RwkvOfflineRuntime>> {
             let started = Instant::now();
             let plan = history_plan(history, collection_mod, stamp)?;
-            let mut runtime = RwkvOfflineRuntime::load_with_saved_state(model_path, &state_path)?;
+            let mut runtime = RwkvOfflineRuntime::load_with_saved_state(model, &state_path)?;
             // A file that changed since the plan was made is left to the
             // history sync after install.
             if runtime.identity == planned_for {

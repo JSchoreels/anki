@@ -12,9 +12,10 @@
 //! and read it; the history check there catches a file that no longer fits
 //! the collection.
 //!
-//! The states are streamed to and from the file, as half floats: with a big
-//! history the file was over 1 GB, and holding it in memory next to the
-//! engine's own copy got the app's neighbours killed on phones.
+//! The states are streamed to and from the file: with a big history the file
+//! was over 1 GB, and holding it in memory next to the engine's own copy got
+//! the app's neighbours killed on phones. Card and note states are written as
+//! the engine keeps them (int8 by default), the few others as half floats.
 //!
 //! The file never leaves the device (it is not synced; the desktop keeps its
 //! own state), so its format can change freely: a file in an old format is
@@ -31,11 +32,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use super::offline::OfflineModel;
 use crate::rwkv::RwkvInference;
 use crate::rwkv::RwkvStateSnapshot;
 
-/// 2: states as half floats (1: full floats).
-const MAGIC: &[u8] = b"KUMA3RWKVOFFLINE2\n";
+/// 3: card/note states as the engine keeps them (2: all as half floats, 1:
+/// full floats).
+const MAGIC: &[u8] = b"KUMA3RWKVOFFLINE3\n";
 const BUFFER: usize = 1 << 20;
 
 /// How a saved state was made, besides the model: the engine, the review
@@ -44,30 +47,30 @@ const BUFFER: usize = 1 << 20;
 /// from before is then ignored and the history replayed. It used to be the
 /// backend build hash, so every app update replayed the whole history (~10
 /// min for 3.7M reviews on a Pixel 8a) even when nothing about it changed.
-const STATE_VERSION: u32 = 2; // 2: fork build 102 (reset boundaries in the history)
+const STATE_VERSION: u32 = 3; // 3: fork build 102 (reset boundaries, int8 states)
 
-/// What the file must have been written for: this [STATE_VERSION] and this
-/// model file (its size and an FNV-1a hash of its bytes). The model doesn't
-/// change while the app runs, so its 11 MB are read and hashed once, not at
-/// every save and start.
-pub(super) fn header(model_path: &Path) -> io::Result<String> {
-    static HEADER: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
-    let mut cached = HEADER.lock().unwrap();
-    if let Some((path, header)) = cached.as_ref() {
-        if path == model_path {
-            return Ok(header.clone());
+/// What the file must have been written for: this [STATE_VERSION], this
+/// state precision and this model file (its size and an FNV-1a hash of its
+/// bytes). The model doesn't change while the app runs, so its 11 MB are read
+/// and hashed once, not at every save and start.
+pub(super) fn header(model: &OfflineModel) -> io::Result<String> {
+    static HASHED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+    let mut cached = HASHED.lock().unwrap();
+    let hashed = match cached.as_ref() {
+        Some((path, hashed)) if *path == model.path => hashed.clone(),
+        _ => {
+            let bytes = fs::read(&model.path)?;
+            let mut hash = fnv::FnvHasher::default();
+            hash.write(&bytes);
+            let hashed = format!("{} {:016x}", bytes.len(), hash.finish());
+            *cached = Some((model.path.clone(), hashed.clone()));
+            hashed
         }
-    }
-    let model = fs::read(model_path)?;
-    let mut hash = fnv::FnvHasher::default();
-    hash.write(&model);
-    let header = format!(
-        "state{STATE_VERSION} {} {:016x}",
-        model.len(),
-        hash.finish()
-    );
-    *cached = Some((model_path.to_owned(), header.clone()));
-    Ok(header)
+    };
+    Ok(format!(
+        "state{STATE_VERSION} {:?} {hashed}",
+        model.precision
+    ))
 }
 
 /// Writes the file whole (to a temporary file, then renamed), so a crash

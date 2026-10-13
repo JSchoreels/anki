@@ -978,6 +978,9 @@ message FsrsIntervalAtRetrievabilityByConfigBatchResponse {
 message RwkvPrepareOfflineRequest {
   // The RWKV model file (the app installs it from its assets).
   string model_path = 1;
+  // How card/note states are kept: "f32", "int8" or "int4"; empty: int8 (the
+  // fork's desktop default).
+  string state_precision = 2;
 }
 
 message RwkvPrepareOfflineResponse {

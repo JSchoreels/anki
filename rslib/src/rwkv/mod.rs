@@ -953,8 +953,8 @@ impl RwkvInference {
             .iter()
             .map(|input| self.features.features_for(input))
             .collect::<Vec<_>>();
-        // Card and note states are kept as halves: convert them a chunk at a
-        // time, not all of a big collection's at once.
+        // Compact card and note states are decoded a chunk at a time, not all of
+        // a big collection's at once.
         let mut retrievabilities = Vec::with_capacity(inputs.len());
         for (inputs, features) in inputs
             .chunks(STATE_VIEW_CHUNK)
@@ -1482,7 +1482,7 @@ insert into segments (
     }
 
     /// What kuma3's offline state file holds, taken now to be written on
-    /// another thread: card and note states are shared ([HalfModuleState]),
+    /// another thread: card and note states are shared ([SharedStateMap]),
     /// so this copies pointers, not the states (the deck, preset and global
     /// ones are few and copied).
     pub fn state_snapshot(&self) -> RwkvStateSnapshot {
@@ -1504,25 +1504,26 @@ insert into segments (
     /// a time.
     pub fn read_warm_up_states(&mut self, input: &mut impl io::Read) -> io::Result<()> {
         let mut buffer = Vec::new();
-        let mut card = HalfStateMap::default();
-        let mut note = HalfStateMap::default();
+        let mut card = SharedStateMap::default();
+        let mut note = SharedStateMap::default();
         let mut deck = HashMap::new();
         let mut preset = HashMap::new();
         // the file's map order (card, note, deck, preset) against the model's module
         // order (card, deck, note, preset, global): every state must have its
         // module's layer count
         let layers = |module: usize| self.model.modules[module].layers.len();
-        let maps: [(&mut dyn StateMap, usize); 4] = [
-            (&mut card, layers(0)),
-            (&mut note, layers(2)),
-            (&mut deck, layers(1)),
-            (&mut preset, layers(3)),
-        ];
-        for (map, layers) in maps {
+        for (map, layers) in [(&mut card, layers(0)), (&mut note, layers(2))] {
             let count = read_u64_le(input)?;
             for _ in 0..count {
                 let id = read_u64_le(input)? as i64;
-                map.put(id, read_half_module_state(input, &mut buffer, layers)?);
+                map.put(id, read_file_module_state(input, layers)?);
+            }
+        }
+        for (map, layers) in [(&mut deck, layers(1)), (&mut preset, layers(3))] {
+            let count = read_u64_le(input)?;
+            for _ in 0..count {
+                let id = read_u64_le(input)? as i64;
+                map.insert(id, read_half_module_state(input, &mut buffer, layers)?);
             }
         }
         let mut flag = [0_u8];
@@ -2202,7 +2203,7 @@ insert into segments (
     }
 
     /// The model's review of each of `inputs` (with its `features`) from
-    /// `states`, whose half states are converted [STATE_VIEW_CHUNK] at a time;
+    /// `states`, [STATE_VIEW_CHUNK] at a time;
     /// `map` gets the index into `inputs`.
     fn review_in_chunks<T: Send>(
         &self,
@@ -3935,7 +3936,7 @@ impl<'a> SrsStateRef<'a> {
     }
 }
 
-/// [SrsStateRef] for states that may have been converted from halves.
+/// [SrsStateRef] for states that may have been decoded for the query.
 struct SrsStateView<'a> {
     card: Option<Cow<'a, ModuleState>>,
     note: Option<Cow<'a, ModuleState>>,
@@ -3993,9 +3994,9 @@ pub struct RwkvStateSnapshot {
 impl RwkvStateSnapshot {
     /// Writes the warm-up states one at a time (kuma3's offline state file):
     /// the card, note, deck and preset maps (u64 count, then i64 id + state,
-    /// by id), then the global state (flag byte + state). A state is stored as
-    /// 16-bit floats (see [write_half_module_state]): half the size, and the
-    /// RWKV predictions don't change measurably.
+    /// by id), then the global state (flag byte + state). Card and note states
+    /// are stored as the engine keeps them ([SharedStateMap]), the others as
+    /// 16-bit floats (see [write_half_module_state]).
     pub fn write_warm_up_states(&self, out: &mut impl io::Write) -> io::Result<()> {
         let states = &self.states;
         let maps: [&dyn StateMap; 4] = [&states.card, &states.note, &states.deck, &states.preset];
@@ -4005,7 +4006,7 @@ impl RwkvStateSnapshot {
             ids.sort_unstable();
             for id in ids {
                 out.write_all(&id.to_le_bytes())?;
-                map.write_half_state(&id, out)?;
+                map.write_file_state(&id, out)?;
             }
         }
         match &states.global {
@@ -4025,8 +4026,8 @@ impl RwkvStateSnapshot {
 
 #[derive(Default)]
 struct ReviewStateMaps {
-    card: HalfStateMap,
-    note: HalfStateMap,
+    card: SharedStateMap,
+    note: SharedStateMap,
     deck: HashMap<i64, ModuleState>,
     preset: HashMap<i64, ModuleState>,
     global: Option<ModuleState>,
@@ -4437,7 +4438,7 @@ impl<'a> SimulationStates<'a> {
         }
         fn lookup_half<'s>(
             own: &'s HashMap<i64, ModuleState>,
-            base: &'s HalfStateMap,
+            base: &'s SharedStateMap,
             id: i64,
         ) -> Option<Cow<'s, ModuleState>> {
             own.get(&id).map(Cow::Borrowed).or_else(|| base.state(&id))
@@ -4628,6 +4629,36 @@ fn read_u32_le(input: &mut impl io::Read) -> io::Result<u32> {
     let mut bytes = [0_u8; 4];
     input.read_exact(&mut bytes)?;
     Ok(u32::from_le_bytes(bytes))
+}
+
+/// Reads what [SharedStateMap::write_file_state] wrote. Like
+/// [read_half_module_state], anything but the shape the model gives its
+/// states (`layers` layers of the model's sizes) is a damaged file.
+fn read_file_module_state(input: &mut impl io::Read, layers: usize) -> io::Result<ModuleState> {
+    let damaged = || io::Error::new(io::ErrorKind::InvalidData, "damaged RWKV state");
+    let len = read_u64_le(input)?;
+    // a compact or f32 state of the biggest module is well under 8 MB
+    if len > 8 << 20 {
+        return Err(damaged());
+    }
+    let mut bytes = vec![0; len as usize];
+    input.read_exact(&mut bytes)?;
+    let state = deserialize_module_state(Some(&bytes))?.ok_or_else(damaged)?;
+    let decoded = state.decoded();
+    let shape_ok = decoded.layers.len() == layers
+        && decoded.layers.iter().all(|layer| {
+            layer.time.as_ref().is_some_and(|time| {
+                time.x_shift.len() == D_MODEL && time.matrix.len() == HEADS * HEAD_SIZE * HEAD_SIZE
+            }) && layer
+                .channel_shift
+                .as_ref()
+                .is_some_and(|c| c.len() == D_MODEL)
+        });
+    if !shape_ok {
+        return Err(damaged());
+    }
+    drop(decoded);
+    Ok(state)
 }
 
 /// Reads what [write_half_module_state] wrote; `buffer` is reused between
@@ -5955,103 +5986,18 @@ impl RwkvLayer {
     }
 }
 
-/// Card and note states as 16-bit floats (kuma3). A big collection holds tens
-/// of thousands: about 90 KB each as f32, 1.3 GB for a 22k-card collection on
-/// a phone, where Android then kills other apps. A state is converted to f32
-/// only while a review or query uses it. Deck, preset and global states are
-/// few but change with every review, so they stay f32. Card states rounded to
-/// halves after each review gave the same log loss and RMSE in the fork's
-/// state compression metric.
+/// Card and note states: one per card and note, so they are most of the RWKV
+/// memory (3 GB for a 101k-card collection in f32 on a Pixel 8a). They are
+/// kept as the model makes them: compact (int8 by default, [StatePrecision])
+/// and shared (`Arc`), so copying a map copies pointers: the state file is
+/// written from such a copy on another thread ([RwkvStateSnapshot]). A state
+/// is never changed in place, only replaced, so the copy stays as it was.
 #[derive(Clone, Default)]
-struct HalfStateMap(HashMap<i64, HalfModuleState>);
+struct SharedStateMap(HashMap<i64, Arc<ModuleState>>);
 
-/// Shared (`Arc`), so copying a map of them copies pointers: the state file is
-/// written from such a copy on another thread ([RwkvStateSnapshot]). A state is
-/// never changed in place, only replaced, so the copy stays as it was.
-#[derive(Clone)]
-struct HalfModuleState {
-    /// Per layer, the lengths of the time-mix shift, time-mix matrix and
-    /// channel-mix shift (`ABSENT`: no such part).
-    lens: Arc<[[u32; 3]]>,
-    values: Arc<[half::f16]>,
-}
-
-const ABSENT: u32 = u32::MAX;
-
-/// Queries converted from half states at a time (see [HalfStateMap]): about
-/// 90 MB of f32 states.
+/// Queries at a time when scoring many cards: compact states are decoded
+/// for their batch only.
 const STATE_VIEW_CHUNK: usize = 512;
-
-impl HalfModuleState {
-    fn new(state: &ModuleState) -> Self {
-        use half::slice::HalfFloatSliceExt;
-        let state = state.decoded();
-        fn parts(layer: &LayerState) -> [Option<&[f32]>; 3] {
-            let time = layer.time.as_ref();
-            [
-                time.map(|time| time.x_shift.as_slice()),
-                time.map(|time| time.matrix.as_slice()),
-                layer.channel_shift.as_deref(),
-            ]
-        }
-        let lens: Arc<[[u32; 3]]> = state
-            .layers
-            .iter()
-            .map(|layer| parts(layer).map(|part| part.map_or(ABSENT, |p| p.len() as u32)))
-            .collect();
-        let total = lens
-            .iter()
-            .flatten()
-            .filter(|&&len| len != ABSENT)
-            .sum::<u32>();
-        let mut values = vec![half::f16::ZERO; total as usize].into_boxed_slice();
-        let mut at = 0;
-        for part in state.layers.iter().flat_map(parts).flatten() {
-            values[at..at + part.len()].convert_from_f32_slice(part);
-            at += part.len();
-        }
-        Self {
-            lens,
-            values: values.into(),
-        }
-    }
-
-    fn to_module_state(&self) -> ModuleState {
-        use half::slice::HalfFloatSliceExt;
-        let mut at = 0;
-        let mut take = |len: u32| {
-            (len != ABSENT).then(|| {
-                let part = self.values[at..at + len as usize].to_f32_vec();
-                at += len as usize;
-                part
-            })
-        };
-        ModuleState {
-            layers: self
-                .lens
-                .iter()
-                .map(|&[x_shift, matrix, channel]| {
-                    let x_shift = take(x_shift);
-                    let matrix = take(matrix);
-                    LayerState {
-                        time: x_shift.zip(matrix).map(|(x_shift, matrix)| TimeState {
-                            x_shift,
-                            matrix,
-                            packed_matrix: None,
-                        }),
-                        channel_shift: take(channel),
-                    }
-                })
-                .collect(),
-            packed: None,
-        }
-    }
-
-    /// The length [serialize_module_state] gives the f32 state.
-    fn serialized_len(&self) -> usize {
-        b"ARWKVMODSTATE1".len() + 4 + self.lens.len() * 12 + 4 * self.values.len()
-    }
-}
 
 /// What the state helpers need from a map of states, f32 or half.
 trait StateMap {
@@ -6062,8 +6008,9 @@ trait StateMap {
     fn count(&self) -> usize;
     /// The length [serialize_module_state] gives the state.
     fn serialized_len(&self, id: &i64) -> Option<usize>;
-    /// Writes the state (it must be there) as [write_half_module_state] does.
-    fn write_half_state(&self, id: &i64, mut out: &mut dyn io::Write) -> io::Result<()> {
+    /// Writes the state (it must be there) for kuma3's offline state file, as
+    /// [write_half_module_state] does.
+    fn write_file_state(&self, id: &i64, mut out: &mut dyn io::Write) -> io::Result<()> {
         write_half_module_state(&mut out, &self.state(id).unwrap())
     }
 }
@@ -6089,17 +6036,15 @@ impl StateMap for HashMap<i64, ModuleState> {
     }
 }
 
-impl StateMap for HalfStateMap {
+impl StateMap for SharedStateMap {
     fn state(&self, id: &i64) -> Option<Cow<'_, ModuleState>> {
-        self.0
-            .get(id)
-            .map(|state| Cow::Owned(state.to_module_state()))
+        self.0.get(id).map(|state| Cow::Borrowed(&**state))
     }
     fn put(&mut self, id: i64, state: ModuleState) {
-        self.0.insert(id, HalfModuleState::new(&state));
+        self.0.insert(id, Arc::new(state));
     }
     fn take(&mut self, id: &i64) -> Option<ModuleState> {
-        self.0.remove(id).map(|state| state.to_module_state())
+        self.0.remove(id).map(Arc::unwrap_or_clone)
     }
     fn ids(&self) -> Vec<i64> {
         self.0.keys().copied().collect()
@@ -6108,26 +6053,20 @@ impl StateMap for HalfStateMap {
         self.0.len()
     }
     fn serialized_len(&self, id: &i64) -> Option<usize> {
-        self.0.get(id).map(HalfModuleState::serialized_len)
+        self.0
+            .get(id)
+            .map(|state| serialized_module_state_len(state))
     }
-    /// Already halves: written as they are.
-    fn write_half_state(&self, id: &i64, out: &mut dyn io::Write) -> io::Result<()> {
-        let state = &self.0[id];
-        let mut bytes = (state.lens.len() as u32).to_le_bytes().to_vec();
-        let mut at = 0;
-        for len in state.lens.iter().flatten() {
-            let len = if *len == ABSENT { 0 } else { *len as usize };
-            bytes.extend_from_slice(&(len as u32).to_le_bytes());
-            for value in &state.values[at..at + len] {
-                bytes.extend_from_slice(&value.to_le_bytes());
-            }
-            at += len;
-        }
+    /// As the engine keeps it (u64 length + [serialize_module_state]), so a
+    /// compact state is written as it is.
+    fn write_file_state(&self, id: &i64, out: &mut dyn io::Write) -> io::Result<()> {
+        let bytes = serialize_module_state(&self.0[id]);
+        out.write_all(&(bytes.len() as u64).to_le_bytes())?;
         out.write_all(&bytes)
     }
 }
 
-impl HalfStateMap {
+impl SharedStateMap {
     #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -6139,23 +6078,20 @@ impl HalfStateMap {
     fn capacity(&self) -> usize {
         self.0.capacity()
     }
-    /// The states as f32 (converted one at a time).
-    fn iter(&self) -> impl Iterator<Item = (&i64, ModuleState)> {
-        self.0
-            .iter()
-            .map(|(id, state)| (id, state.to_module_state()))
+    fn iter(&self) -> impl Iterator<Item = (&i64, &ModuleState)> {
+        self.0.iter().map(|(id, state)| (id, &**state))
     }
     #[cfg(test)]
-    fn values(&self) -> impl Iterator<Item = ModuleState> + '_ {
-        self.0.values().map(HalfModuleState::to_module_state)
+    fn values(&self) -> impl Iterator<Item = &ModuleState> {
+        self.0.values().map(|state| &**state)
     }
 }
 
-impl FromIterator<(i64, ModuleState)> for HalfStateMap {
+impl FromIterator<(i64, ModuleState)> for SharedStateMap {
     fn from_iter<T: IntoIterator<Item = (i64, ModuleState)>>(iter: T) -> Self {
         Self(
             iter.into_iter()
-                .map(|(id, state)| (id, HalfModuleState::new(&state)))
+                .map(|(id, state)| (id, Arc::new(state)))
                 .collect(),
         )
     }
@@ -10339,9 +10275,9 @@ order by e.id, e.cid
         );
     }
 
-    /// Bulk and per-review replays round card and note states to halves at
-    /// different points (after each chunk vs after each review, see
-    /// [HalfStateMap]), so they agree only to about that precision.
+    /// Bulk and per-review replays may round compact card and note states at
+    /// different points (after each chunk vs after each review), so they are
+    /// compared to about that precision.
     fn assert_warm_up_close(sequential: &RwkvInference, bulk: &RwkvInference) {
         fn values(state: &[u8]) -> Vec<f32> {
             deserialize_module_state(Some(state))
@@ -12417,15 +12353,23 @@ order by e.id, e.cid
             "absent parts are written empty and refused"
         );
 
-        // half states are written as they are, the same bytes as via f32
-        let mut values = state(D_MODEL);
-        values.layers[0].time.as_mut().unwrap().matrix[7] = 0.333_333_34;
-        values.layers.push(empty.layers[0].clone());
-        let halves: HalfStateMap = [(1, values)].into_iter().collect();
-        let (mut direct, mut via_f32) = (Vec::new(), Vec::new());
-        halves.write_half_state(&1, &mut direct).unwrap();
-        write_half_module_state(&mut via_f32, &halves.state(&1).unwrap()).unwrap();
-        assert_eq!(direct, via_f32);
+        // card/note states are written as the engine keeps them, f32 or compact
+        for precision in [StatePrecision::F32, StatePrecision::Int8] {
+            let mut values = state(D_MODEL);
+            values.layers[0].time.as_mut().unwrap().matrix[7] = 0.333_333_34;
+            // real modules have 2 or 3 layers (the compact format checks it)
+            values.layers.push(values.layers[0].clone());
+            let kept = values.compact(precision);
+            let map: SharedStateMap = [(1, kept.clone())].into_iter().collect();
+            let mut bytes = Vec::new();
+            map.write_file_state(&1, &mut bytes).unwrap();
+            let back = read_file_module_state(&mut bytes.as_slice(), 2).unwrap();
+            assert_eq!(serialize_module_state(&back), serialize_module_state(&kept));
+            assert!(
+                read_file_module_state(&mut bytes.as_slice(), 3).is_err(),
+                "wrong layer count"
+            );
+        }
 
         let huge = u32::MAX.to_le_bytes();
         assert!(

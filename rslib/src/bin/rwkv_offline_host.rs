@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: args[2].clone(),
+            state_precision: state_precision(),
             ..Default::default()
         },
     )?;
@@ -46,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: args[2].clone(),
+            state_precision: state_precision(),
             ..Default::default()
         },
     )?;
@@ -125,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: args[2].clone(),
+            state_precision: state_precision(),
         },
     )?;
     let prepare_ms = start.elapsed().as_millis();
@@ -360,6 +363,7 @@ fn answer_check(
             &mut col,
             RwkvPrepareOfflineRequest {
                 model_path: model_path.into(),
+                state_precision: state_precision(),
             },
         )?;
         SchedulerService::rwkv_offline_instant_pass_step(
@@ -380,6 +384,7 @@ fn answer_check(
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: model_path.into(),
+            state_precision: state_precision(),
         },
     )?;
     DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
@@ -627,4 +632,9 @@ fn probe_check(
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     Ok(())
+}
+
+/// KUMA3_RWKV_PRECISION (f32, int8, int4); unset: the app's default (int8).
+fn state_precision() -> String {
+    std::env::var("KUMA3_RWKV_PRECISION").unwrap_or_default()
 }
