@@ -1046,6 +1046,11 @@ finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
 to the cache, elapsed time, and estimated time remaining.
 
+Add-on update prompts wait until the RWKV startup question and modal progress
+operation have closed. Only one add-on update check or prompt is active at a
+time. Closing a profile cancels its pending update prompt and closes any visible
+update window, so a later profile load does not retain an old blocked window.
+
 RWKV switches apply to each card's own deck preset, including the original deck
 of a filtered card. Enabling RWKV on a parent does not override a different
 subdeck preset. Saving deck or preset changes invalidates dependent predictions

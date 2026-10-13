@@ -206,6 +206,7 @@ class AddonManager:
     def __init__(self, mw: aqt.main.AnkiQt) -> None:
         self.mw = mw
         self.dirty = False
+        self._update_check_in_progress = False
         f = self.mw.form
         qconnect(f.actionAdd_ons.triggered, self.onAddonsDialog)
         sys.path.insert(0, self.addonsFolder())
@@ -1443,6 +1444,7 @@ class ChooseAddonsToUpdateList(QListWidget):
 
 class ChooseAddonsToUpdateDialog(QDialog):
     _on_done: Callable[[list[int]], None]
+    silentlyClose = True
 
     def __init__(
         self, parent: QWidget, mgr: AddonManager, updated_addons: list[AddonInfo]
@@ -1485,8 +1487,13 @@ class ChooseAddonsToUpdateDialog(QDialog):
     def accept(self) -> None:
         saveGeom(self, "addonsChooseUpdate")
         self.addons_list_widget.save_check_state()
-        self._on_done(self.addons_list_widget.get_selected_addon_ids())
+        ids = self.addons_list_widget.get_selected_addon_ids()
         QDialog.accept(self)
+        self._on_done(ids)
+
+    def reject(self) -> None:
+        QDialog.reject(self)
+        self._on_done([])
 
 
 def fetch_update_info(ids: list[int]) -> list[AddonInfo]:
@@ -1516,8 +1523,55 @@ def check_and_prompt_for_updates(
     on_done: Callable[[list[DownloadLogEntry]], None],
     requested_by_user: bool = True,
 ) -> None:
+    if mgr._update_check_in_progress:
+        return
+    mgr._update_check_in_progress = True
+    collection = mgr.mw.col
+    completed = False
+
+    def finish(
+        log: list[DownloadLogEntry],
+        *,
+        notify: bool = True,
+        defer_hook_removal: bool = False,
+    ) -> None:
+        nonlocal completed
+        if completed:
+            return
+        completed = True
+        mgr._update_check_in_progress = False
+
+        def remove_hook() -> None:
+            gui_hooks.profile_will_close.remove(on_profile_close)
+
+        if defer_hook_removal:
+            # The hook dispatcher iterates its live list of callbacks.
+            QTimer.singleShot(0, remove_hook)
+        else:
+            remove_hook()
+        if notify:
+            on_done(log)
+
+    def on_profile_close() -> None:
+        finish([], notify=False, defer_hook_removal=True)
+
+    gui_hooks.profile_will_close.append(on_profile_close)
+
     def on_updates_received(items: list[AddonInfo]) -> None:
-        handle_update_info(parent, mgr, items, on_done, requested_by_user)
+        def deliver() -> None:
+            if completed:
+                return
+            if collection is not None and mgr.mw.col is not collection:
+                finish([], notify=False)
+                return
+            modal = QApplication.activeModalWidget()
+            if modal is not None and modal is not parent:
+                mgr.mw.progress.single_shot(100, deliver, requires_collection=False)
+                return
+            handle_update_info(parent, mgr, items, finish, requested_by_user)
+
+        # Background callbacks can arrive while a modal is still cleaning up.
+        mgr.mw.progress.single_shot(100, deliver, requires_collection=False)
 
     check_for_updates(mgr, on_updates_received)
 
@@ -1581,11 +1635,14 @@ def prompt_to_update(
             if mgr.addon_meta(str(addon.id)).update_enabled:
                 prompt_update = True
         if not prompt_update:
+            on_done([])
             return
 
     def after_choosing(ids: list[int]) -> None:
         if ids:
             download_addons(parent, mgr, ids, on_done, client)
+        else:
+            on_done([])
 
     ChooseAddonsToUpdateDialog(parent, mgr, updated_addons).ask(after_choosing)
 
