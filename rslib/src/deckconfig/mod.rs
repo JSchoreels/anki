@@ -157,16 +157,29 @@ impl Default for DeckConfig {
 }
 
 impl DeckConfig {
-    pub(crate) fn intraday_learning_before_reviews(&self) -> bool {
-        serde_json::from_slice::<serde_json::Value>(&self.inner.other)
-            .ok()
-            .and_then(|other| {
-                other
-                    .get("jschoreels.deckoptions")?
-                    .get("intraday_learning_before_reviews")?
-                    .as_bool()
-            })
-            .unwrap_or(false)
+    pub(crate) fn intraday_learning_mix(&self) -> ReviewMix {
+        let Ok(other) = serde_json::from_slice::<serde_json::Value>(&self.inner.other) else {
+            return ReviewMix::MixWithReviews;
+        };
+        let Some(metadata) = other.get("jschoreels.deckoptions") else {
+            return ReviewMix::MixWithReviews;
+        };
+        if let Some(value) = metadata.get("intraday_learning_mix") {
+            return value
+                .as_i64()
+                .and_then(|value| i32::try_from(value).ok())
+                .and_then(|value| ReviewMix::try_from(value).ok())
+                .unwrap_or(ReviewMix::MixWithReviews);
+        }
+        if metadata
+            .get("intraday_learning_before_reviews")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            ReviewMix::BeforeReviews
+        } else {
+            ReviewMix::MixWithReviews
+        }
     }
 
     fn params_usable_in_current_fsrs(params: &[f32]) -> bool {
@@ -458,6 +471,52 @@ fn ensure_u32_valid(val: &mut u32, default: u32, min: u32, max: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intraday_learning_mix_reads_modes_and_legacy_toggle() -> Result<()> {
+        for (metadata, expected) in [
+            (serde_json::json!({}), ReviewMix::MixWithReviews),
+            (
+                serde_json::json!({"intraday_learning_before_reviews": false}),
+                ReviewMix::MixWithReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_before_reviews": true}),
+                ReviewMix::BeforeReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_mix": 0}),
+                ReviewMix::MixWithReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_mix": 1}),
+                ReviewMix::AfterReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_mix": 2}),
+                ReviewMix::BeforeReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_mix": 99}),
+                ReviewMix::MixWithReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_mix": "before"}),
+                ReviewMix::MixWithReviews,
+            ),
+            (
+                serde_json::json!({"intraday_learning_mix": 1, "intraday_learning_before_reviews": true}),
+                ReviewMix::AfterReviews,
+            ),
+        ] {
+            let mut config = DeckConfig::default();
+            config.inner.other = serde_json::to_vec(&serde_json::json!({
+                "jschoreels.deckoptions": metadata,
+            }))?;
+            assert_eq!(config.intraday_learning_mix(), expected, "{metadata}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn fsrs_params_respects_selected_version_when_usable() {

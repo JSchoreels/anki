@@ -317,8 +317,11 @@ under the `jschoreels.rwkv` key. See `rwkv.MD` for RWKV queue scoring, warm-up
 state, settings, inference runtime, and Rust/NEON parity coverage.
 
 General display-order settings use deck config `other["jschoreels.deckoptions"]`.
-The boolean `intraday_learning_before_reviews` defaults off and prioritizes due
-intraday learning/relearning while retaining the selected review sort. This
+`intraday_learning_mix` defaults to Mix (0), with After (1) and Before (2) placing
+due intraday learning/relearning after or before the remaining queue while
+retaining the selected review sort within each group. The earlier
+`intraday_learning_before_reviews: true` maps to Before when the new key is
+absent, and the UI replaces the old boolean on the next save. This
 namespace stays separate from FSRS/RWKV model settings and is preserved as opaque
 metadata by the existing preset storage and sync paths.
 

@@ -6,6 +6,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         DeckConfig_Config_NewCardGatherPriority as GatherOrder,
         DeckConfig_Config_NewCardSortOrder as SortOrder,
+        DeckConfig_Config_ReviewMix as ReviewMix,
     } from "@generated/anki/deck_config_pb";
     import * as tr from "@generated/ftl";
     import { HelpPage } from "@tslib/help-page";
@@ -17,7 +18,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
-    import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import type { HelpItem } from "$lib/components/types";
 
@@ -41,12 +41,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fsrs = state.fsrs;
     const auxData = state.currentAuxData;
 
-    let intradayLearningBeforeReviews = false;
-    $: intradayLearningBeforeReviews =
-        readDisplayOrderSettings($auxData).intradayLearningBeforeReviews;
+    let intradayLearningMix = ReviewMix.MIX_WITH_REVIEWS;
+    $: intradayLearningMix = readDisplayOrderSettings($auxData).intradayLearningMix;
     $: {
         const updated = withDisplayOrderSettings($auxData, {
-            intradayLearningBeforeReviews,
+            intradayLearningMix,
         });
         if (updated) {
             auxData.set(updated);
@@ -111,8 +110,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigInterdayStepPriorityTooltip() + currentDeck,
         },
         intradayStepPriority: {
-            title: tr.deckConfigIntradayLearningBeforeReviews(),
-            help: tr.deckConfigIntradayLearningBeforeReviewsTooltip() + currentDeck,
+            title: tr.deckConfigIntradayStepPriority(),
+            help: tr.deckConfigIntradayStepPriorityTooltip() + currentDeck,
         },
         reviewSortOrder: {
             title: tr.deckConfigReviewSortOrder(),
@@ -212,7 +211,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </Item>
 
         <Item>
-            <SwitchRow bind:value={intradayLearningBeforeReviews} defaultValue={false}>
+            <EnumSelectorRow
+                bind:value={intradayLearningMix}
+                defaultValue={ReviewMix.MIX_WITH_REVIEWS}
+                choices={reviewMixChoices()}
+            >
                 <SettingTitle
                     on:click={() =>
                         openHelpModal(
@@ -221,7 +224,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 >
                     {settings.intradayStepPriority.title}
                 </SettingTitle>
-            </SwitchRow>
+            </EnumSelectorRow>
         </Item>
 
         <Item>

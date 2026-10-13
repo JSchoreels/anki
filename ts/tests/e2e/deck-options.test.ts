@@ -6,6 +6,7 @@ import {
     DeckConfig,
     DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
+    DeckConfig_Config_ReviewMix as ReviewMix,
     DeckConfigsForUpdate,
     DeckConfigsForUpdate_ConfigWithExtra,
     DeckConfigsForUpdate_CurrentDeck_Limits,
@@ -16,7 +17,7 @@ import {
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
 
-test("intraday learning priority saves and reloads without changing descending R or other metadata", async ({ page }) => {
+test("all intraday orders save and reload without changing descending R or other metadata", async ({ page }) => {
     let saved: UpdateDeckConfigsRequest | undefined;
     await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
         const response = await route.fetch();
@@ -39,27 +40,29 @@ test("intraday learning priority saves and reloads without changing descending R
     });
 
     await page.goto("/deck-options/1");
-    const toggle = page.getByRole("checkbox", {
-        name: "Show due intraday learning/relearning before reviews",
-        exact: true,
-    });
-    await expect(toggle).not.toBeChecked();
-    for (const enabled of [true, false]) {
-        await toggle.setChecked(enabled);
+    const selector = page.locator(".setting-title", { hasText: "Intraday learning/review order" })
+        .locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' row ')][1]")
+        .getByRole("combobox");
+    await expect(selector).toHaveText("Mix with reviews");
+    for (
+        const [mix, label] of [
+            [ReviewMix.BEFORE_REVIEWS, "Show before reviews"],
+            [ReviewMix.AFTER_REVIEWS, "Show after reviews"],
+            [ReviewMix.MIX_WITH_REVIEWS, "Mix with reviews"],
+        ] as const
+    ) {
+        await selector.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect.poll(() => {
             const config = saved?.configs.at(-1)?.config;
             return config && JSON.parse(new TextDecoder().decode(config.other))["jschoreels.deckoptions"];
-        }).toEqual({ future_option: "preserve", intraday_learning_before_reviews: enabled });
+        }).toEqual({ future_option: "preserve", intraday_learning_mix: mix });
         const config = saved!.configs.at(-1)!.config!;
         expect(config.reviewOrder).toBe(11);
         expect(JSON.parse(new TextDecoder().decode(config.other)).addon).toEqual({ value: 42 });
         await page.reload();
-        if (enabled) {
-            await expect(toggle).toBeChecked();
-        } else {
-            await expect(toggle).not.toBeChecked();
-        }
+        await expect(selector).toHaveText(label);
     }
 });
 

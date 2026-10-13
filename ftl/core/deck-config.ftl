@@ -198,12 +198,13 @@ deck-config-interday-step-priority-tooltip =
 
     Review limits still determine which cards are available. With other review
     sort orders, interday learning cards are gathered before review cards.
-deck-config-intraday-learning-before-reviews = Show due intraday learning/relearning before reviews
-deck-config-intraday-learning-before-reviews-tooltip =
-    Show learning and relearning cards due today before other cards, while keeping
-    the selected FSRS retrievability or Relative Overdueness order within each group.
-    Future learning steps still wait until their due time. With other review sort
-    orders, due intraday learning cards already have priority.
+deck-config-intraday-step-priority = Intraday learning/review order
+deck-config-intraday-step-priority-tooltip =
+    With FSRS retrievability or Relative Overdueness sorting, show due intraday
+    learning and relearning cards before or after the other cards, keeping the
+    selected sort within each group. Mix keeps them in the shared sorted order.
+    Future learning steps still wait until their due time. With other review
+    sort orders, due intraday learning cards already have priority.
 deck-config-review-sort-order = Review sort order
 deck-config-review-sort-order-tooltip =
     The default order prioritizes cards that have been waiting longest, so that

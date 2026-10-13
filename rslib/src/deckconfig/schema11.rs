@@ -887,13 +887,18 @@ mod test {
     use serde_json::Value;
 
     use super::*;
+    use crate::deckconfig::ReviewMix;
     use crate::prelude::*;
 
     #[test]
     fn deck_options_metadata_survives_unsupported_preset_edits() -> Result<()> {
-        for enabled in [false, true] {
+        for mix in [
+            ReviewMix::BeforeReviews,
+            ReviewMix::AfterReviews,
+            ReviewMix::MixWithReviews,
+        ] {
             let metadata = json!({
-                "intraday_learning_before_reviews": enabled,
+                "intraday_learning_mix": mix as i32,
                 "future_option": "preserve",
             });
             let mut wire = serde_json::to_value(DeckConfSchema11::default())?;
@@ -913,7 +918,7 @@ mod test {
                     .encode_to_vec()
                     .as_slice(),
             )?;
-            assert_eq!(restored.intraday_learning_before_reviews(), enabled);
+            assert_eq!(restored.intraday_learning_mix(), mix);
             assert_eq!(restored.name, "Edited on another client");
             assert_eq!(restored.inner.reviews_per_day, 123);
             let wire = serde_json::to_value(DeckConfSchema11::from(restored))?;
