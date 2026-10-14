@@ -239,6 +239,10 @@ rwkv-reset-history-bench input output:
 rwkv-state-precision-tests *args:
     cargo test -p anki --lib rwkv_state_precision {{ args }}
 
+# Compare card/note-only int8 with int8 shared state using prepared backup inputs.
+rwkv-state-scope-bench input output:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_STATE_SCOPE_INPUT='" + input + "'; $env:ANKI_RWKV_STATE_SCOPE_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_state_scope_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_STATE_SCOPE_INPUT='" + input + "' ANKI_RWKV_STATE_SCOPE_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_state_scope_metrics -- --ignored --nocapture" } }}
+
 # Build and run the standalone RWKV predictor benchmark.
 rwkv-predict-bench *args:
     cargo run -p anki --release --bin rwkv_predict_bench -- {{ args }}

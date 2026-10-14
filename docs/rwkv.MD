@@ -143,6 +143,10 @@ integer codes and scales, so checkpoint reloads do not add another quantization.
 offered as an explicit experimental choice.
 See the [native precision benchmark](rwkv-state-precision-2026-10-10.MD) for
 measured rebuild, checkpoint, memory, and accuracy tradeoffs.
+An [offline shared-state int8 POC](rwkv-shared-state-int8-2026-10-14.MD) also
+measures deck/preset/global compression. It saves only 0.46% of the final state
+payload on the tested collection and substantially worsens calibration, so these
+shared scopes continue to use f32.
 
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.

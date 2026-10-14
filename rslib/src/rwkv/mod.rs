@@ -42,6 +42,8 @@ mod precision_tests;
 mod query_kernels;
 #[cfg(test)]
 mod query_math_bench;
+#[cfg(test)]
+mod state_scope_bench;
 
 const D_MODEL: usize = 128;
 const CARD_FEATURES: usize = 92;
