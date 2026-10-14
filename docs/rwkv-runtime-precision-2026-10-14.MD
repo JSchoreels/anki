@@ -4,6 +4,20 @@ The fused packed int4 prototype removes the repeated f32 projection-buffer alloc
 
 All packed-weight kernels and the shared-state experiment are test-only. The desktop continues to use its existing weights, kernels, precision options and cache format. These are native backend measurements, not complete Anki GUI startup or review timings.
 
+## Recommended default
+
+Keep **f32 weights with int8 card/note recurrent matrices** as the default for the bundled model. Retain the existing f16 card/note shift vectors, f32 deck/preset/global state, and f32 activations and arithmetic. This combination gives the best overall memory, speed and quality balance among the tested variants.
+
+After fresh cache restore, current int8 state uses 506.2 MB versus 1,302.5 MB for f32, a **61.1% RAM reduction**, with almost identical historical quality: UM+ max 0.009604 versus 0.009582. F32 is still faster for rebuild and queue scoring, so int8 does not win every individual metric.
+
+Further quantization does not improve that overall balance here:
+
+- Int4 card/note state saves another 30.2% ready RAM, but worsens UM+ and calibration. Keep it an explicit experimental option for workloads where lower memory matters more than prediction quality.
+- Fused int4 weights save 2.9% observed ready RAM versus current weights, while using 38.2% more rebuild CPU work and 3.34× the queue-scoring CPU work. The 82.65% model-file reduction is a storage benefit; the approximately 11 MB weight file is small beside recurrent-state memory.
+- Int8 deck/preset/global state saves only 0.46% of serialized state payload, substantially worsens UM+, and demonstrates no ready-RSS improvement in these trials.
+
+This recommendation applies to this trained model, collection and M1 Max measurement. Evaluate a different model or workload using matched outcomes and measured runtime costs; keep storage savings, fresh-restore RSS and rebuild RSS separate when choosing precision.
+
 ## Fused packed computation
 
 The trained model has 2,762,884 parameters. Int4 quantizes 2,719,744 dense projection parameters, with symmetric signed codes and one f32 scale per group of up to 32 input weights within an output row. Norms, biases and mixing parameters stay f32. The file shrinks from **11,082,637 to 1,922,693 bytes**, an 82.65% reduction. This is the same quantized model as the earlier [storage POC](rwkv-int4-weights-int8-state-2026-10-14.MD).

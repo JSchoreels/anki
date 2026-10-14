@@ -156,6 +156,14 @@ buffer-decoding rebuild penalty, but remains slower than current f32 weights;
 fresh-process RAM savings are small because recurrent state dominates memory.
 These kernels remain offline experiments.
 
+For the bundled model, the [recommended default](rwkv-runtime-precision-2026-10-14.MD#recommended-default)
+remains f32 weights with int8 card/note matrices and f32 deck/preset/global state.
+It gives the best tested memory, speed and quality balance: 61.1% less ready RAM
+than f32 state after fresh cache restore, with almost identical historical UM+.
+F32 remains faster; further quantization trades quality or CPU work for additional
+storage or memory savings. This conclusion is scoped to the measured model,
+collection and machine.
+
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.
 Rebuilds write each historical recovery checkpoint as soon as it is captured.
