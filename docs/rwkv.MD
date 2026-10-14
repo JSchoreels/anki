@@ -147,6 +147,9 @@ An [offline shared-state int8 POC](rwkv-shared-state-int8-2026-10-14.MD) also
 measures deck/preset/global compression. It saves only 0.46% of the final state
 payload on the tested collection and substantially worsens calibration, so these
 shared scopes continue to use f32.
+The [int4-weight/int8-state POC](rwkv-int4-weights-int8-state-2026-10-14.MD)
+measures a separate model-storage and accuracy tradeoff. Its experimental
+projection weights decode to f32 before inference; production weights remain f32.
 
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.

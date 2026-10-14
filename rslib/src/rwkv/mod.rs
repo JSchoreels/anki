@@ -44,6 +44,8 @@ mod query_kernels;
 mod query_math_bench;
 #[cfg(test)]
 mod state_scope_bench;
+#[cfg(test)]
+mod weight_precision_bench;
 
 const D_MODEL: usize = 128;
 const CARD_FEATURES: usize = 92;
@@ -3444,6 +3446,10 @@ impl Default for ReviewRetrievabilityScratch {
 impl SrsModel {
     fn load(path: &PathBuf) -> io::Result<Self> {
         let weights = WeightMap::load(path)?;
+        Self::from_weights(weights)
+    }
+
+    fn from_weights(weights: WeightMap) -> io::Result<Self> {
         let modules = MODULE_LAYERS
             .iter()
             .enumerate()

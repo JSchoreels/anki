@@ -243,6 +243,14 @@ rwkv-state-precision-tests *args:
 rwkv-state-scope-bench input output:
     {{ if os() == "windows" { "$env:ANKI_RWKV_STATE_SCOPE_INPUT='" + input + "'; $env:ANKI_RWKV_STATE_SCOPE_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_state_scope_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_STATE_SCOPE_INPUT='" + input + "' ANKI_RWKV_STATE_SCOPE_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_state_scope_metrics -- --ignored --nocapture" } }}
 
+# Verify the offline int4 weight codec and native decoded-model loading.
+rwkv-weight-precision-tests *args:
+    cargo test -p anki --lib rwkv_weight_precision {{ args }}
+
+# Pack int4 projection weights and compare accuracy with f32/int8 state.
+rwkv-weight-precision-bench input output packed-model:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_WEIGHT_PRECISION_INPUT='" + input + "'; $env:ANKI_RWKV_WEIGHT_PRECISION_OUTPUT='" + output + "'; $env:ANKI_RWKV_WEIGHT_PRECISION_MODEL='" + packed-model + "'; cargo test -p anki --release --lib rwkv_weight_precision_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_WEIGHT_PRECISION_INPUT='" + input + "' ANKI_RWKV_WEIGHT_PRECISION_OUTPUT='" + output + "' ANKI_RWKV_WEIGHT_PRECISION_MODEL='" + packed-model + "' cargo test -p anki --release --lib rwkv_weight_precision_metrics -- --ignored --nocapture" } }}
+
 # Build and run the standalone RWKV predictor benchmark.
 rwkv-predict-bench *args:
     cargo run -p anki --release --bin rwkv_predict_bench -- {{ args }}

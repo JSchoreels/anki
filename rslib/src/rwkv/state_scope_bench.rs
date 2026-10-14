@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::*;
 
-type Row = (
+pub(super) type Row = (
     i64,
     i64,
     Option<i64>,
@@ -44,7 +44,11 @@ pub(super) fn load_for_scopes(
     inference
 }
 
-fn metrics(rows: &[Row], predictions: &[(usize, f32)], baseline: &[f32]) -> serde_json::Value {
+pub(super) fn metrics(
+    rows: &[Row],
+    predictions: &[(usize, f32)],
+    baseline: &[f32],
+) -> serde_json::Value {
     assert_eq!(predictions.len(), rows.len());
     assert_eq!(baseline.len(), rows.len());
     let mut seen = HashSet::new();
@@ -134,7 +138,7 @@ fn rwkv_state_scope_metrics_score_only_selected_interday_answers() {
     assert_eq!(count_bin(4.0, 248.0, 3.62), 898);
 }
 
-fn scope_sizes(inference: &RwkvInference) -> serde_json::Value {
+pub(super) fn scope_sizes(inference: &RwkvInference) -> serde_json::Value {
     let mut scopes = serde_json::Map::new();
     for (name, states) in [
         ("card", &inference.warm_up_states.card),
