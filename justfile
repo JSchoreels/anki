@@ -251,6 +251,22 @@ rwkv-weight-precision-tests *args:
 rwkv-weight-precision-bench input output packed-model:
     {{ if os() == "windows" { "$env:ANKI_RWKV_WEIGHT_PRECISION_INPUT='" + input + "'; $env:ANKI_RWKV_WEIGHT_PRECISION_OUTPUT='" + output + "'; $env:ANKI_RWKV_WEIGHT_PRECISION_MODEL='" + packed-model + "'; cargo test -p anki --release --lib rwkv_weight_precision_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_WEIGHT_PRECISION_INPUT='" + input + "' ANKI_RWKV_WEIGHT_PRECISION_OUTPUT='" + output + "' ANKI_RWKV_WEIGHT_PRECISION_MODEL='" + packed-model + "' cargo test -p anki --release --lib rwkv_weight_precision_metrics -- --ignored --nocapture" } }}
 
+# Fresh-process native CPU/time/RSS measurements and matched RWKV UM+ comparisons.
+rwkv-runtime-precision-bench input output rounds='3':
+    {{ if os() == "windows" { "$env:PYTHONPATH='qt'; " } else { "PYTHONPATH=qt " } }}{{ python }} qt/tools/rwkv_runtime_precision_bench.py --input '{{ input }}' --output '{{ output }}' --rounds {{ rounds }}
+
+# Plot an existing comparison with the local Python plotting environment.
+rwkv-runtime-precision-plot result output:
+    {{ if os() == "windows" { "$env:PYTHONPATH='qt'; " } else { "PYTHONPATH=qt " } }}python3 qt/tools/rwkv_runtime_precision_bench.py --plot-only '{{ result }}' --output '{{ output }}'
+
+# Compare fused int4 compute with current and on-demand decoded kernels.
+rwkv-runtime-fused-bench input output reference rounds='3':
+    {{ if os() == "windows" { "$env:PYTHONPATH='qt'; " } else { "PYTHONPATH=qt " } }}{{ python }} qt/tools/rwkv_runtime_precision_bench.py --input '{{ input }}' --output '{{ output }}' --reference '{{ reference }}' --rounds {{ rounds }} --modes state_int8 weights_int4_resident weights_int4_fused
+
+# Measure native RAM/CPU after restoring a saved cache in a fresh process.
+rwkv-runtime-cold-cache-bench input output reference rounds='3':
+    {{ if os() == "windows" { "$env:PYTHONPATH='qt'; " } else { "PYTHONPATH=qt " } }}{{ python }} qt/tools/rwkv_runtime_cold_cache_bench.py --input '{{ input }}' --output '{{ output }}' --reference '{{ reference }}' --rounds {{ rounds }}
+
 # Build and run the standalone RWKV predictor benchmark.
 rwkv-predict-bench *args:
     cargo run -p anki --release --bin rwkv_predict_bench -- {{ args }}

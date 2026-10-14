@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -33,15 +34,21 @@ pub use precision::StatePrecision;
 #[cfg(test)]
 mod collection_benchmark;
 #[cfg(test)]
+mod fused_packed;
+#[cfg(test)]
 mod history_ablation_bench;
 #[cfg(target_os = "macos")]
 mod matmul;
+#[cfg(test)]
+mod packed_weights;
 #[cfg(test)]
 mod precision_tests;
 #[cfg(target_arch = "aarch64")]
 mod query_kernels;
 #[cfg(test)]
 mod query_math_bench;
+#[cfg(all(test, unix))]
+mod runtime_precision_bench;
 #[cfg(test)]
 mod state_scope_bench;
 #[cfg(test)]
@@ -806,10 +813,23 @@ impl RwkvInference {
         max_interval_days: u32,
         precision: StatePrecision,
     ) -> io::Result<Self> {
-        let mut model = SrsModel::load(&path)?;
+        Ok(Self::from_model(
+            SrsModel::load(&path)?,
+            target_retention,
+            max_interval_days,
+            precision,
+        ))
+    }
+
+    fn from_model(
+        mut model: SrsModel,
+        target_retention: f32,
+        max_interval_days: u32,
+        precision: StatePrecision,
+    ) -> Self {
         model.modules[0].precision = precision;
         model.modules[2].precision = precision;
-        Ok(Self {
+        Self {
             model: Arc::new(model),
             features: FeatureState::default(),
             curves: HashMap::new(),
@@ -818,7 +838,7 @@ impl RwkvInference {
             state_cache_store: None,
             target_retention,
             max_interval_days,
-        })
+        }
     }
 
     pub fn review(
@@ -3159,6 +3179,8 @@ fn cyclic_cos(value: i64, period: i64) -> f32 {
 
 struct WeightMap {
     tensors: HashMap<String, Tensor>,
+    #[cfg(test)]
+    packed_linears: HashMap<String, packed_weights::PackedLinear>,
 }
 
 struct Tensor {
@@ -3195,7 +3217,11 @@ impl WeightMap {
         }
 
         cursor.expect_end()?;
-        Ok(Self { tensors })
+        Ok(Self {
+            tensors,
+            #[cfg(test)]
+            packed_linears: HashMap::new(),
+        })
     }
 
     fn values(&self, name: &str) -> io::Result<Vec<f32>> {
@@ -3209,22 +3235,34 @@ impl WeightMap {
         let weight_name = format!("{name}.weight");
         let bias_name = format!("{name}.bias");
         let weight = &self.tensor(&weight_name, &[output, input])?.values;
+        let bias = if bias {
+            Some(self.tensor(&bias_name, &[output])?.values.clone())
+        } else {
+            None
+        };
+        #[cfg(test)]
+        if let Some(packed) = self.packed_linears.get(&weight_name) {
+            return Ok(Linear {
+                input,
+                output,
+                weight_by_input: Vec::new(),
+                bias,
+                packed_weight: Some(packed.clone()),
+            });
+        }
         let mut weight_by_input = vec![0.0; weight.len()];
         for row in 0..output {
             for column in 0..input {
                 weight_by_input[column * output + row] = weight[row * input + column];
             }
         }
-        let bias = if bias {
-            Some(self.tensor(&bias_name, &[output])?.values.clone())
-        } else {
-            None
-        };
         Ok(Linear {
             input,
             output,
             weight_by_input,
             bias,
+            #[cfg(test)]
+            packed_weight: None,
         })
     }
 
@@ -6543,9 +6581,20 @@ struct Linear {
     output: usize,
     weight_by_input: Vec<f32>,
     bias: Option<Vec<f32>>,
+    #[cfg(test)]
+    packed_weight: Option<packed_weights::PackedLinear>,
 }
 
 impl Linear {
+    #[inline(always)]
+    fn weight_values(&self) -> Cow<'_, [f32]> {
+        #[cfg(test)]
+        if let Some(packed) = &self.packed_weight {
+            return Cow::Owned(packed.decode_by_input());
+        }
+        Cow::Borrowed(&self.weight_by_input)
+    }
+
     fn apply(&self, input: &[f32]) -> Vec<f32> {
         let mut out = vec![0.0; self.output];
         self.apply_into(input, &mut out);
@@ -6555,6 +6604,17 @@ impl Linear {
     fn apply_into(&self, input: &[f32], out: &mut [f32]) {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
+        #[cfg(test)]
+        if let Some(fused) = self
+            .packed_weight
+            .as_ref()
+            .and_then(|packed| packed.fused.as_ref())
+        {
+            fused.apply(input, out, 1, self.bias.as_deref());
+            rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+            return;
+        }
+        let weight_by_input = self.weight_values();
 
         debug_assert_eq!(input.len(), self.input);
         debug_assert_eq!(out.len(), self.output);
@@ -6569,7 +6629,7 @@ impl Linear {
             // SAFETY: aarch64 guarantees NEON support. The helper receives
             // slices whose dimensions were checked above and only accesses
             // complete weight columns and output elements within them.
-            unsafe { linear_apply_row_neon(input, &self.weight_by_input, out) };
+            unsafe { linear_apply_row_neon(input, &weight_by_input, out) };
             #[cfg(test)]
             rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
             return;
@@ -6580,8 +6640,7 @@ impl Linear {
             if scale == 0.0 {
                 continue;
             }
-            let weight_column =
-                &self.weight_by_input[column * self.output..(column + 1) * self.output];
+            let weight_column = &weight_by_input[column * self.output..(column + 1) * self.output];
             add_scaled_in_place(out, weight_column, scale);
         }
         #[cfg(test)]
@@ -6601,16 +6660,20 @@ impl Linear {
         if rows == 0 {
             return;
         }
+        #[cfg(test)]
+        if let Some(fused) = self
+            .packed_weight
+            .as_ref()
+            .and_then(|packed| packed.fused.as_ref())
+        {
+            fused.apply(input, out, rows, self.bias.as_deref());
+            return;
+        }
 
         #[cfg(target_os = "macos")]
-        matmul::matrix_times_matrix(
-            input,
-            &self.weight_by_input,
-            rows,
-            self.output,
-            self.input,
-            out,
-        );
+        let weight_by_input = self.weight_values();
+        #[cfg(target_os = "macos")]
+        matmul::matrix_times_matrix(input, &weight_by_input, rows, self.output, self.input, out);
 
         #[cfg(not(target_os = "macos"))]
         out.par_chunks_mut(self.output)
@@ -6636,6 +6699,17 @@ impl Linear {
     fn apply_block_into(&self, inputs: &[f32], outs: &mut [f32], rows: usize) {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
+        #[cfg(test)]
+        if let Some(fused) = self
+            .packed_weight
+            .as_ref()
+            .and_then(|packed| packed.fused.as_ref())
+        {
+            fused.apply(inputs, outs, rows, self.bias.as_deref());
+            rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
+            return;
+        }
+        let weight_by_input = self.weight_values();
 
         debug_assert_eq!(inputs.len(), rows * self.input);
         debug_assert_eq!(outs.len(), rows * self.output);
@@ -6655,7 +6729,7 @@ impl Linear {
             unsafe {
                 linear_apply_block_neon(
                     inputs,
-                    &self.weight_by_input,
+                    &weight_by_input,
                     outs,
                     rows,
                     self.input,
@@ -6675,7 +6749,7 @@ impl Linear {
             unsafe {
                 linear_apply_block_avx2_fma(
                     inputs,
-                    &self.weight_by_input,
+                    &weight_by_input,
                     outs,
                     rows,
                     self.input,
@@ -6688,8 +6762,7 @@ impl Linear {
         }
 
         for column in 0..self.input {
-            let weight_column =
-                &self.weight_by_input[column * self.output..(column + 1) * self.output];
+            let weight_column = &weight_by_input[column * self.output..(column + 1) * self.output];
             for (row, out) in outs.chunks_exact_mut(self.output).enumerate() {
                 let scale = inputs[row * self.input + column];
                 if scale == 0.0 {
@@ -6712,14 +6785,24 @@ impl Linear {
         rows: usize,
         approximate: bool,
     ) {
+        #[cfg(test)]
+        if self
+            .packed_weight
+            .as_ref()
+            .is_some_and(|packed| packed.fused.is_some())
+        {
+            self.apply_block_into(inputs, outs, rows);
+            return;
+        }
         #[cfg(not(target_os = "macos"))]
         let _ = approximate;
 
         #[cfg(target_os = "macos")]
         if approximate && rows >= 16 && self.input * self.output >= 4096 {
+            let weight_by_input = self.weight_values();
             matmul::matrix_times_matrix(
                 inputs,
-                &self.weight_by_input,
+                &weight_by_input,
                 rows,
                 self.output,
                 self.input,
@@ -8769,6 +8852,7 @@ mod tests {
             output,
             weight_by_input: deterministic_simd_values(input * output, 29, -0.0078125),
             bias: Some(deterministic_simd_values(output, 11, 0.015625)),
+            packed_weight: None,
         };
         let mut inputs = deterministic_simd_values(rows * input, 17, 0.03125);
         for index in (0..inputs.len()).step_by(9) {
@@ -8797,6 +8881,7 @@ mod tests {
                 output,
                 weight_by_input: deterministic_simd_values(input * output, 29, -0.0078125),
                 bias: Some(deterministic_simd_values(output, 11, 0.015625)),
+                packed_weight: None,
             };
             let mut values = deterministic_simd_values(input, 17, 0.03125);
             for index in (0..values.len()).step_by(5) {

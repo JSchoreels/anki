@@ -150,6 +150,11 @@ shared scopes continue to use f32.
 The [int4-weight/int8-state POC](rwkv-int4-weights-int8-state-2026-10-14.MD)
 measures a separate model-storage and accuracy tradeoff. Its experimental
 projection weights decode to f32 before inference; production weights remain f32.
+The [runtime and UM+ follow-up](rwkv-runtime-precision-2026-10-14.MD) tests
+resident packed weights and a fused NEON projection kernel. Fusing reduces the
+buffer-decoding rebuild penalty, but remains slower than current f32 weights;
+fresh-process RAM savings are small because recurrent state dominates memory.
+These kernels remain offline experiments.
 
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.

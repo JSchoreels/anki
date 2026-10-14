@@ -17,7 +17,7 @@ fn runtime(precision: StatePrecision, shared: [bool; 3]) -> RwkvInference {
     load_for_scopes(weights, precision, shared)
 }
 
-fn reviews(count: usize) -> Vec<ReviewInput> {
+pub(super) fn reviews(count: usize) -> Vec<ReviewInput> {
     (0..count)
         .map(|index| ReviewInput {
             card_id: 100 + (index % 7) as i64,
@@ -37,7 +37,7 @@ fn reviews(count: usize) -> Vec<ReviewInput> {
         .collect()
 }
 
-fn snapshot_bytes(inference: &RwkvInference) -> Vec<u8> {
+pub(super) fn snapshot_bytes(inference: &RwkvInference) -> Vec<u8> {
     let mut out = Vec::new();
     for states in [
         &inference.warm_up_states.card,

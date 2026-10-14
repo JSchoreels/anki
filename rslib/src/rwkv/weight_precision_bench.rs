@@ -15,13 +15,13 @@ use super::state_scope_bench::Row;
 use super::*;
 
 const MAGIC: &[u8] = b"ARWKVINT4POC1";
-const GROUP_SIZE: usize = 32;
+pub(super) const GROUP_SIZE: usize = 32;
 
 fn projection(name: &str, tensor: &Tensor) -> bool {
     name.ends_with(".weight") && tensor.shape.len() == 2
 }
 
-fn encode(weights: &WeightMap) -> Vec<u8> {
+pub(super) fn encode(weights: &WeightMap) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
     write_u32(&mut out, weights.tensors.len() as u32);
@@ -67,10 +67,15 @@ fn encode(weights: &WeightMap) -> Vec<u8> {
 }
 
 fn decode(data: &[u8]) -> io::Result<WeightMap> {
+    decode_with_storage(data, false)
+}
+
+pub(super) fn decode_with_storage(data: &[u8], resident: bool) -> io::Result<WeightMap> {
     let mut cursor = Cursor::new(data);
     cursor.expect_magic(MAGIC)?;
     let count = cursor.u32()? as usize;
     let mut tensors = HashMap::new();
+    let mut packed_linears = HashMap::new();
     for _ in 0..count {
         let name_len = cursor.u16()? as usize;
         let name = cursor.string(name_len)?;
@@ -94,6 +99,7 @@ fn decode(data: &[u8]) -> io::Result<WeightMap> {
                 }
             }
             1 if rank == 2 && name.ends_with(".weight") => {
+                let packed_start = cursor.offset;
                 for _ in 0..shape[0] {
                     let mut remaining = shape[1];
                     while remaining > 0 {
@@ -117,6 +123,17 @@ fn decode(data: &[u8]) -> io::Result<WeightMap> {
                         remaining -= group_len;
                     }
                 }
+                if resident {
+                    packed_linears.insert(
+                        name.clone(),
+                        super::packed_weights::PackedLinear {
+                            input: shape[1],
+                            output: shape[0],
+                            bytes: data[packed_start..cursor.offset].to_vec(),
+                            fused: None,
+                        },
+                    );
+                }
             }
             _ => return Err(invalid_weights()),
         }
@@ -126,7 +143,10 @@ fn decode(data: &[u8]) -> io::Result<WeightMap> {
         tensors.insert(name, Tensor { shape, values });
     }
     cursor.expect_end()?;
-    Ok(WeightMap { tensors })
+    Ok(WeightMap {
+        tensors,
+        packed_linears,
+    })
 }
 
 fn invalid_weights() -> io::Error {
@@ -134,21 +154,45 @@ fn invalid_weights() -> io::Error {
 }
 
 fn runtime(weights_path: &Path, packed: Option<&[u8]>, precision: StatePrecision) -> RwkvInference {
-    let mut inference =
-        RwkvInference::load_with_precision(weights_path.to_path_buf(), 0.9, 36_500, precision)
-            .unwrap();
+    runtime_with_storage(weights_path, packed, precision, false)
+}
+
+pub(super) fn runtime_with_storage(
+    weights_path: &Path,
+    packed: Option<&[u8]>,
+    precision: StatePrecision,
+    resident: bool,
+) -> RwkvInference {
+    runtime_with_compute(weights_path, packed, precision, resident, false)
+}
+
+pub(super) fn runtime_with_compute(
+    weights_path: &Path,
+    packed: Option<&[u8]>,
+    precision: StatePrecision,
+    resident: bool,
+    fused: bool,
+) -> RwkvInference {
     if let Some(packed) = packed {
-        let mut model = SrsModel::from_weights(decode(packed).unwrap()).unwrap();
-        model.modules[0].precision = precision;
-        model.modules[2].precision = precision;
-        inference.model = Arc::new(model);
+        let mut weights = decode_with_storage(packed, resident).unwrap();
+        if fused {
+            assert!(resident);
+            for projection in weights.packed_linears.values_mut() {
+                projection.enable_fused();
+            }
+        }
+        let model = SrsModel::from_weights(weights).unwrap();
+        RwkvInference::from_model(model, 0.9, 36_500, precision)
+    } else {
+        RwkvInference::load_with_precision(weights_path.to_path_buf(), 0.9, 36_500, precision)
+            .unwrap()
     }
-    inference
 }
 
 #[test]
 fn rwkv_weight_precision_preserves_float_tensors_and_quantizes_signed_odd_rows() {
     let weights = WeightMap {
+        packed_linears: HashMap::new(),
         tensors: HashMap::from([
             (
                 "projection.weight".into(),
@@ -193,6 +237,7 @@ fn rwkv_weight_precision_groups_do_not_cross_projection_rows() {
     values.extend(vec![700.0; GROUP_SIZE]);
     values.push(7.0);
     let weights = WeightMap {
+        packed_linears: HashMap::new(),
         tensors: HashMap::from([(
             "test.weight".into(),
             Tensor {
@@ -210,6 +255,7 @@ fn rwkv_weight_precision_groups_do_not_cross_projection_rows() {
 #[test]
 fn rwkv_weight_precision_rejects_truncated_scales_codes_and_padding() {
     let weights = WeightMap {
+        packed_linears: HashMap::new(),
         tensors: HashMap::from([(
             "test.weight".into(),
             Tensor {

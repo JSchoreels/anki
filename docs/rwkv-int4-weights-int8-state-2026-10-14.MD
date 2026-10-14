@@ -4,6 +4,8 @@ Packing dense projection weights to int4 shrinks the bundled model from **11.083
 
 This is an offline storage and numerical-accuracy POC. The experimental file is decoded to f32 before native inference; runtime weight RAM savings and packed-kernel speed have not been measured or implemented. Desktop loading, trained model files, profile precision settings, and live caches are unchanged.
 
+This records the initial storage experiment. The later [runtime and UM+ comparison](rwkv-runtime-precision-2026-10-14.MD) implements resident int4 weights and fused packed computation, and measures their CPU, time and RSS costs.
+
 ## Controlled Comparison
 
 | Weights | Card/note state | Model file | Final state payload | Combined storage payload | Log loss | RMSE(bins) |
