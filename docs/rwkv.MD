@@ -554,7 +554,12 @@ to `0` removes that minimum.
 While RWKV-Instant is enabled for the selected deck, these same spacing guards
 also apply to learning and relearning cards in that deck tree. They are checked
 when selecting cards, including already-due steps and cards pulled forward by
-Learn ahead, and the reviewer learning count excludes withheld cards. Each
+Learn ahead, and the reviewer learning count excludes withheld cards. When the
+intervening-review minimum alone would withhold every remaining learning card,
+because no new, review, or other learning card can be shown, that minimum is
+dropped for the selection so the last learning cards are not withheld
+indefinitely; the elapsed-seconds minimum still applies, and the counts include
+the cards admitted this way. Each
 selection reads the latest answer time and recent answered reviews, so answers,
 undo, redo, and elapsed time update eligibility without changing stored due
 times or step lists. These guards do not apply Instant's recall threshold to

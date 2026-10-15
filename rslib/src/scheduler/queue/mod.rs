@@ -432,7 +432,31 @@ impl Collection {
                 })
                 .unwrap_or(false)
         {
-            self.state.card_queues = Some(self.build_queues(deck.id)?);
+            let shown_card_id = self
+                .state
+                .card_queues
+                .as_ref()
+                .and_then(|queues| queues.shown_top_card);
+            let queues = if let Some(card_id) = shown_card_id {
+                let card = self.storage.get_card(card_id)?;
+                match card
+                    .or_not_found(card_id)
+                    .and_then(|card| self.build_queues_with_current_card(deck.id, Some(&card)))
+                {
+                    Ok(queues) => queues,
+                    Err(error) => {
+                        tracing::debug!(
+                            %card_id,
+                            %error,
+                            "failed to preserve shown card during queue rebuild"
+                        );
+                        self.build_queues(deck.id)?
+                    }
+                }
+            } else {
+                self.build_queues(deck.id)?
+            };
+            self.state.card_queues = Some(queues);
         }
 
         self.refresh_rwkv_learning_repeat_guards(&deck)?;
@@ -489,6 +513,40 @@ impl Collection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::NoteAdder;
+
+    #[test]
+    fn get_queues_keeps_pinned_card_first_when_rebuilding_for_ready_deferred_review() -> Result<()>
+    {
+        let mut col = Collection::new();
+        let first_note = NoteAdder::basic(&mut col).add(&mut col);
+        let first_card = col.storage.card_ids_of_notes(&[first_note.id])?[0];
+        let pinned_note = NoteAdder::basic(&mut col).add(&mut col);
+        let pinned_card = col.storage.card_ids_of_notes(&[pinned_note.id])?[0];
+        assert_eq!(
+            col.get_queued_cards(1, false, true)?.cards[0].card.id,
+            first_card
+        );
+
+        col.rebuild_queued_cards_preserving_current_card(pinned_card)?;
+        col.state.card_queues.as_mut().unwrap().defer_rwkv_review(
+            first_card,
+            DeferredRwkvReview {
+                required_intervening_reviews: None,
+                intervening_reviews: None,
+                eligible_at: None,
+            },
+        );
+
+        let queued = col.get_queued_cards(1, false, true)?;
+
+        assert_eq!(queued.cards[0].card.id, pinned_card);
+        assert_eq!(
+            col.state.card_queues.as_ref().unwrap().shown_top_card,
+            Some(pinned_card)
+        );
+        Ok(())
+    }
 
     #[test]
     fn deferred_rwkv_review_requires_every_guard_to_be_ready() {
