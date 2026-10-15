@@ -245,7 +245,7 @@ fn rwkv_history_ablation_metrics() {
     // Preassignment uses identities only, never answers or learned state.
     let mut features = FeatureState::default();
     for row in &rows {
-        features.features_for(&row.input());
+        features.assign_id_encodings(&row.input());
     }
     let mut baseline = Vec::new();
     let mut results = Vec::new();
@@ -403,7 +403,7 @@ fn rwkv_reset_history_metrics() {
     let mut features = FeatureState::default();
     for rows in [complete, fresh] {
         for row in rows {
-            features.features_for(&row.input());
+            features.assign_id_encodings(&row.input());
         }
     }
     assert_eq!(features.review_index, 0);

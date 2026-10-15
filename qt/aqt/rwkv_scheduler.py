@@ -130,6 +130,7 @@ class _RwkvHistoricalReviewFingerprint(NamedTuple):
 
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
 _REVIEWER_PENDING_ANSWER_STATE_ATTR = "_rwkv_pending_answer_state"
+_REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR = "_rwkv_answer_preset_override"
 _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR = "_rwkv_synthetic_answer_states"
 _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_DESCENDING
@@ -781,6 +782,12 @@ class _RwkvPendingAnswerState(NamedTuple):
     review_input: RwkvReviewInput
 
 
+class _RwkvAnswerPresetOverride(NamedTuple):
+    card_id: int
+    ease: int
+    preset_id: int
+
+
 class _ReviewerBackendWarmupStart(NamedTuple):
     generation: int | None
     ready: bool
@@ -812,6 +819,10 @@ class _ReviewerBackendWarmupInvalidated(Exception):
 
 
 class _RwkvGradeNowReconciliationUnavailable(Exception):
+    pass
+
+
+class _RwkvLiveAnswerReplayPresetUnavailable(Exception):
     pass
 
 
@@ -2520,7 +2531,7 @@ class RwkvStatefulReviewerBackend:
         )
         if review_input.ease is None:
             return None
-        state = self._review_state_snapshot(identity, review_input)
+        state = self._review_state_snapshot(review_input.identity, review_input)
         transition = self._runtime.review(
             review_input=replace(
                 review_input,
@@ -5096,6 +5107,32 @@ def _rwkv_grade_now_card_histories(
     return histories
 
 
+def _latest_answer_excluded_from_rwkv_replay(reviewer: object, card_id: int) -> bool:
+    try:
+        db = getattr(_collection(reviewer), "db", None)
+        first = getattr(db, "first", None)
+        if not callable(first):
+            logger.debug("cannot check latest RWKV answer: database unavailable")
+            return False
+        row = first(
+            "select type, factor from revlog where cid = ? order by id desc limit 1",
+            card_id,
+        )
+        if (
+            not isinstance(row, Sequence)
+            or len(row) != 2
+            or not all(type(value) is int for value in row)
+        ):
+            logger.debug("cannot check latest RWKV answer: unexpected revlog row")
+            return False
+        return tuple(row) == (3, 0)
+    except Exception:
+        logger.debug(
+            "failed to check latest RWKV answer for card %s", card_id, exc_info=True
+        )
+        return False
+
+
 def record_reviewer_answer(
     reviewer: object,
     card: object,
@@ -5165,11 +5202,32 @@ def record_reviewer_answer(
             ):
                 logger.debug("RWKV answer update skipped: backend context changed")
                 return
-            if recovery_reason := _rwkv_live_answer_canonical_recovery_reason(
+            if card_id is not None and _latest_answer_excluded_from_rwkv_replay(
+                reviewer, card_id
+            ):
+                _mark_reviewer_backend_identity_unknown(
+                    reviewer,
+                    reason="cramming answer recorded",
+                    expected_mutation_context=mutation_context,
+                )
+                logger.debug(
+                    "RWKV answer update skipped: cramming answer is excluded from replay"
+                )
+                return
+            recovery_reason = _rwkv_live_answer_canonical_recovery_reason(
                 reviewer,
                 card,
                 ease,
-            ):
+            )
+            replay_preset_id = None
+            if recovery_reason is None and card_id is not None:
+                try:
+                    replay_preset_id = _rwkv_live_answer_replay_preset_id(
+                        reviewer, card_id
+                    )
+                except _RwkvLiveAnswerReplayPresetUnavailable:
+                    recovery_reason = "review answer preset routing cannot be verified"
+            if recovery_reason:
                 _invalidate_reviewer_backend_state(
                     reviewer,
                     reason=recovery_reason,
@@ -5178,6 +5236,24 @@ def record_reviewer_answer(
                 logger.debug("RWKV answer update deferred: %s", recovery_reason)
                 return
             _drop_reviewer_backend_revalidation_candidates(backend)
+            if card_id is not None and replay_preset_id is not None:
+                live_identity = rwkv_review_identity(reviewer, card)
+                if (
+                    live_identity is not None
+                    and live_identity.preset_id != replay_preset_id
+                ):
+                    logger.debug(
+                        "RWKV answer uses historical preset: "
+                        "card_id=%s live_preset=%s replay_preset=%s",
+                        card_id,
+                        live_identity.preset_id,
+                        replay_preset_id,
+                    )
+                setattr(
+                    reviewer,
+                    _REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR,
+                    _RwkvAnswerPresetOverride(card_id, ease, replay_preset_id),
+                )
             calibration_prediction = _rwkv_answer_calibration_prediction(
                 reviewer,
                 backend,
@@ -5217,6 +5293,8 @@ def record_reviewer_answer(
         )
         logger.exception("RWKV review state update failed")
     finally:
+        if hasattr(reviewer, _REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR):
+            delattr(reviewer, _REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR)
         if card_id is not None:
             try:
                 _set_rwkv_card_info_score(
@@ -5299,6 +5377,81 @@ def _rwkv_live_answer_canonical_recovery_reason(
     if current_identity != review_input.identity:
         return "review answer changed RWKV identity routing"
     return None
+
+
+def _rwkv_live_answer_replay_preset_id(
+    reviewer: object,
+    card_id: int,
+) -> int | None:
+    # The overlay check is a single config read; the replay flag reads every
+    # deck config, so only pay for it when routing rules exist.
+    if not _fsrs_preset_overlay_has_known_routing_rules(
+        reviewer
+    ) or not _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer):
+        return None
+
+    started = time.monotonic()
+    try:
+        rules = [
+            rule
+            for rule in _historical_preset_rules(reviewer, card_id=card_id)
+            if rule.card_ids is None or card_id in rule.card_ids
+        ]
+        if rules:
+            inputs = _rwkv_card_replay_preset_inputs(reviewer, card_id)
+            if inputs is None:
+                raise _RwkvLiveAnswerReplayPresetUnavailable
+            previous_interval_days, retained_count_before = inputs
+            replay_preset = _historical_preset_id_for_review(
+                rules,
+                card_id=card_id,
+                interval_days=previous_interval_days,
+                review_count=retained_count_before,
+            )
+            if replay_preset is not None:
+                return _stable_preset_id(str(replay_preset))
+    finally:
+        logger.debug(
+            "RWKV answer historical preset check: card_id=%s elapsed_ms=%.3f",
+            card_id,
+            (time.monotonic() - started) * 1000,
+        )
+    return None
+
+
+def _rwkv_card_replay_preset_inputs(
+    reviewer: object, card_id: int
+) -> tuple[int, int] | None:
+    db = getattr(_collection(reviewer), "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return None
+    try:
+        rows = all_rows(
+            f"""
+select id, cid, 0, 0, ease, 0, type, cast(ivl as integer), cast(factor as integer)
+from revlog
+where cid = ?
+  and {_rwkv_historical_answer_sql_condition()}
+  and id > coalesce((select max(id) from revlog where cid = ? and type = 4 and ease = 0 and factor = 0), 0)
+order by id
+""",
+            card_id,
+            card_id,
+        )
+        retained = _benchmark_retained_historical_review_rows(rows)
+    except Exception:
+        logger.debug(
+            "failed to load RWKV replay preset inputs for card %s",
+            card_id,
+            exc_info=True,
+        )
+        return None
+    if not retained:
+        return None
+    # The final retained row is the answer that was just committed.
+    previous = [row for row, _state in retained[:-1]]
+    return (cast(int, previous[-1][7]) if previous else 0, len(previous))
 
 
 def refresh_answered_card_queue_score(
@@ -8354,6 +8507,15 @@ def rwkv_review_input(
     ease: int | None,
     _use_pending_answer: bool = True,
 ) -> RwkvReviewInput:
+    override = getattr(reviewer, _REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR, None)
+    if (
+        ease is None
+        or not isinstance(override, _RwkvAnswerPresetOverride)
+        or override.card_id != identity.card_id
+        or override.ease != ease
+    ):
+        override = None
+
     pending = getattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR, None)
     if (
         _use_pending_answer
@@ -8362,7 +8524,17 @@ def rwkv_review_input(
         and pending.card_id == identity.card_id
         and pending.ease == ease
     ):
+        if override is not None:
+            return replace(
+                pending.review_input,
+                identity=replace(
+                    pending.review_input.identity, preset_id=override.preset_id
+                ),
+            )
         return pending.review_input
+
+    if override is not None:
+        identity = replace(identity, preset_id=override.preset_id)
 
     current_state = _current_scheduling_state(reviewer)
     state_kind, normal_state_kind = _scheduling_state_kinds(current_state)
@@ -9022,6 +9194,34 @@ def _rwkv_answer_duration_millis(
     )
 
 
+def _rwkv_factor_zero_rescheduled_learning_kind(
+    current_state: SchedulingState | None,
+    answer: object,
+) -> str | None:
+    next_state = getattr(answer, "new_state", None)
+    if not isinstance(current_state, SchedulingState) or not isinstance(
+        next_state, SchedulingState
+    ):
+        return None
+    for state in (current_state, next_state):
+        if (
+            state.WhichOneof("kind") != "filtered"
+            or state.filtered.WhichOneof("kind") != "rescheduling"
+        ):
+            return None
+    original_kind = current_state.filtered.rescheduling.original_state.WhichOneof(
+        "kind"
+    )
+    next_original = next_state.filtered.rescheduling.original_state
+    if (
+        original_kind in ("new", "learning")
+        and next_original.WhichOneof("kind") == "learning"
+        and not next_original.learning.HasField("memory_state")
+    ):
+        return original_kind
+    return None
+
+
 def set_answer_rwkv_metadata(
     answer: object,
     reviewer: object,
@@ -9041,6 +9241,17 @@ def set_answer_rwkv_metadata(
             normal_state_kind=normal_state_kind,
             card_type=_int_attr(card, "type"),
         )
+        if state_kind == "filtered" and (
+            original_kind := _rwkv_factor_zero_rescheduled_learning_kind(
+                current_state, answer
+            )
+        ):
+            # A factor-0 Filtered row is cramming and would disappear from replay.
+            base_review_state = _rwkv_review_state_for_scheduling_state(
+                state_kind="normal",
+                normal_state_kind=original_kind,
+                card_type=_int_attr(card, "type"),
+            )
         answered_at_millis = _int_attr(answer, "answered_at_millis")
         if answered_at_millis is None or answered_at_millis <= 0:
             timing = _timing_today(reviewer)
@@ -19542,7 +19753,11 @@ def _historical_deck_config_ids_by_card(
     return preset_ids
 
 
-def _historical_preset_rules(reviewer: object) -> list[RwkvHistoricalPresetRule]:
+def _historical_preset_rules(
+    reviewer: object,
+    *,
+    card_id: int | None = None,
+) -> list[RwkvHistoricalPresetRule]:
     overlay = _fsrs_preset_overlay_config(reviewer)
     if overlay is None:
         return []
@@ -19563,7 +19778,9 @@ def _historical_preset_rules(reviewer: object) -> list[RwkvHistoricalPresetRule]
         search_text = (
             search.strip() if isinstance(search, str) and search.strip() else None
         )
-        card_ids = _historical_preset_rule_card_ids(reviewer, search_text)
+        card_ids = _historical_preset_rule_card_ids(
+            reviewer, search_text, card_id=card_id
+        )
         if search_text is not None and card_ids is None:
             continue
 
@@ -19612,6 +19829,8 @@ def _fsrs_preset_overlay_config(reviewer: object) -> dict[str, object] | None:
 def _historical_preset_rule_card_ids(
     reviewer: object,
     search: str | None,
+    *,
+    card_id: int | None = None,
 ) -> frozenset[int] | None:
     if search is None:
         return None
@@ -19622,7 +19841,10 @@ def _historical_preset_rule_card_ids(
         return None
 
     try:
-        card_ids = find_cards(search, order=False)
+        card_ids = find_cards(
+            f"({search}) cid:{card_id}" if card_id is not None else search,
+            order=False,
+        )
     except Exception:
         logger.debug(
             "failed to evaluate RWKV historical preset rule search: search=%r",

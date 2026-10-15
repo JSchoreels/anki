@@ -1142,8 +1142,11 @@ class _RustRwkvRuntime:
         return output
 
     def snapshot(self, review_input: RwkvReviewInput) -> object:
+        identity = review_input.identity
         with self._locked_process():
-            return self._process.state_for_card(review_input.identity.card_id)
+            return self._process.state_for_review(
+                identity.card_id, identity.note_id, identity.deck_id, identity.preset_id
+            )
 
     def restore(self, state: object | None) -> None:
         if state is not None:

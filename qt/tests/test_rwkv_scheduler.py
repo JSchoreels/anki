@@ -2319,6 +2319,235 @@ def test_live_answer_rechecks_dynamic_preset_routing() -> None:
     )
 
 
+@pytest.mark.parametrize("use_pending_answer", [False, True])
+def test_record_reviewer_answer_uses_replay_preset_when_live_routing_differs(
+    use_pending_answer: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer(
+        rwkv_review_dynamic_preset_replay=True,
+        resolved_preset_id="young",
+    )
+    counter = _UndoCounter(reviewer)
+    warmup_key = (id(backend), id(reviewer.mw.col))
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = None
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=100)
+    card.reps = 100
+    reviewer.mw.col.get_card = lambda _card_id: card
+    reviewer.mw.col.get_config = lambda _key: {
+        "simulator_rules": [
+            {
+                "preset_id": "mature",
+                "search": "tag:eligible",
+                "min_interval_days": 21,
+                "min_reps": 2,
+                "max_reps": 3,
+            }
+        ]
+    }
+
+    def find_cards(search: str, *, order: bool) -> list[int]:
+        assert search == "(tag:eligible) cid:1"
+        assert order is False
+        return [1]
+
+    rows = [
+        (1_000, 1, 0, 0, 3, 0, 1, 99, 2500),
+        (2_000, 1, 0, 0, 0, 0, 4, 0, 0),  # Forget without resetting reps.
+        (3_000, 1, 0, 0, 3, 0, 0, 1, 0),
+        (4_000, 1, 0, 0, 3, 0, 1, 30, 2500),
+    ]
+
+    class DB:
+        def first(self, sql: str, *args: object) -> tuple[int, int] | None:
+            if "select type, factor" in sql:
+                assert args == (1,)
+                return (rows[-1][6], rows[-1][8])
+            return None
+
+        def all(self, sql: str, *args: object) -> list[tuple[int, ...]]:
+            assert args == (1, 1)
+            assert "where cid = ?" in sql
+            assert "type = 4 and ease = 0 and factor = 0" in sql
+            assert rwkv_scheduler._rwkv_historical_answer_sql_condition() in sql
+            reset_id = max(
+                row[0] for row in rows if (row[6], row[4], row[8]) == (4, 0, 0)
+            )
+            return [row for row in rows if row[0] > reset_id and row[4] > 0]
+
+    reviewer.mw.col.find_cards = find_cards
+    reviewer.mw.col.db = DB()
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_calibration_epoch_current", lambda _reviewer: True
+    )
+    replay_preset = _expected_preset_hash("mature")
+    expected_backend = RwkvStatefulReviewerBackend(_SharedReviewRuntime())
+    after_first = None
+    with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+        for index, review_id in enumerate((5_000, 6_000), start=1):
+            card.reps += 1
+            live_input = rwkv_scheduler._rwkv_answer_input(reviewer, card, 3)
+            assert live_input is not None
+            assert live_input.identity.preset_id == _expected_preset_hash("young")
+            if use_pending_answer:
+                setattr(
+                    reviewer,
+                    rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR,
+                    rwkv_scheduler._RwkvPendingAnswerState(
+                        1,
+                        3,
+                        int(RwkvReviewState.REVIEW),
+                        int(RwkvReviewState.REVIEW),
+                        review_id,
+                        live_input,
+                    ),
+                )
+            rows.append((review_id, 1, 0, 0, 3, 0, 1, 30, 2500))
+            counter.set(index)
+            generation = backend.state_generation()
+
+            record_reviewer_answer(reviewer, card, ease=3)
+
+            assert backend.state_generation() == generation + 1
+            assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+            assert not hasattr(
+                reviewer, rwkv_scheduler._REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR
+            )
+            assert not hasattr(
+                reviewer, rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR
+            )
+            replay_input = replace(
+                live_input,
+                identity=replace(live_input.identity, preset_id=replay_preset),
+            )
+            assert runtime.answered_inputs[-1] == replay_input
+            assert runtime.query_inputs[-1].identity == replay_input.identity
+            expected_backend.review_input_answered(replay_input)
+            state = backend._snapshot(replay_input.identity, replay_input)
+            assert state == expected_backend._snapshot(
+                replay_input.identity, replay_input
+            )
+            assert state.preset_state == ("preset", replay_preset, index)
+            if index == 1:
+                after_first = state
+
+    assert runtime.reviewed == [(1, 3), (1, 3)]
+    assert runtime.query_preset_states == [None, ("preset", replay_preset, 1)]
+    assert "RWKV resident state invalidated" not in caplog.text
+    assert backend.answer_undone(2, 3) == 1
+    assert backend._snapshot(replay_input.identity, replay_input) == after_first
+    assert backend.answer_redone(3, 4) == 1
+    assert backend._snapshot(replay_input.identity, replay_input) == state
+
+
+def test_record_reviewer_answer_recovers_when_replay_preset_inputs_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer(rwkv_review_dynamic_preset_replay=True)
+    warmup_key = (id(backend), id(reviewer.mw.col))
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = None
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=100)
+    reviewer.mw.col.get_card = lambda _card_id: card
+    reviewer.mw.col.get_config = lambda _key: {
+        "simulator_rules": [{"preset_id": "mature", "max_reps": 3}]
+    }
+
+    def all_rows(sql: str, *args: object) -> list[tuple[int, ...]]:
+        raise sqlite3.OperationalError("replay inputs unavailable")
+
+    reviewer.mw.col.db = SimpleNamespace(first=lambda *_args: (1, 2500), all=all_rows)
+    generation = backend.state_generation()
+
+    with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+        record_reviewer_answer(reviewer, card, ease=3)
+
+    assert "reason=review answer preset routing cannot be verified" in caplog.text
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert backend.state_generation() == generation
+    assert runtime.reviewed == []
+    assert not hasattr(reviewer, rwkv_scheduler._REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR)
+
+
+@pytest.mark.parametrize("matches_search", [False, True])
+def test_live_answer_replay_preset_uses_live_preset_when_no_rule_matches(
+    matches_search: bool,
+) -> None:
+    reviewer = _rwkv_reviewer(rwkv_review_dynamic_preset_replay=True)
+    reviewer.mw.col.get_config = lambda _key: {
+        "simulator_rules": [
+            {"preset_id": "mature", "search": "tag:eligible", "max_reps": 0}
+        ]
+    }
+
+    def find_cards(search: str, *, order: bool) -> list[int]:
+        assert search == "(tag:eligible) cid:1"
+        assert order is False
+        return [1] if matches_search else []
+
+    def all_rows(sql: str, *args: object) -> list[tuple[int, ...]]:
+        assert matches_search, "a rule excluding this card needs no replay inputs"
+        return [
+            (1_000, 1, 0, 0, 3, 0, 1, 30, 2500),
+            (2_000, 1, 0, 0, 3, 0, 1, 40, 2500),
+        ]
+
+    reviewer.mw.col.find_cards = find_cards
+    reviewer.mw.col.db = SimpleNamespace(all=all_rows)
+
+    assert rwkv_scheduler._rwkv_live_answer_replay_preset_id(reviewer, 1) is None
+
+
+@pytest.mark.parametrize("use_pending_answer", [False, True])
+@pytest.mark.parametrize(
+    ("card_id", "ease", "expected_preset"),
+    [(1, None, "young"), (1, 3, "mature"), (1, 4, "young"), (2, 3, "young")],
+)
+def test_rwkv_review_input_overrides_preset_only_for_matching_answer(
+    use_pending_answer: bool,
+    card_id: int,
+    ease: int | None,
+    expected_preset: str,
+) -> None:
+    reviewer = _rwkv_reviewer(resolved_preset_id="young")
+    card = _rwkv_card(card_id=card_id, note_id=10, duration_millis=100)
+    identity = rwkv_review_identity(reviewer, card)
+    assert identity is not None
+    pending_input = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        identity=replace(identity, card_id=1),
+        is_query=False,
+        ease=3,
+    )
+    setattr(
+        reviewer,
+        rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR,
+        rwkv_scheduler._RwkvPendingAnswerState(1, 3, 2, 2, 5_000, pending_input),
+    )
+    setattr(
+        reviewer,
+        rwkv_scheduler._REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR,
+        rwkv_scheduler._RwkvAnswerPresetOverride(1, 3, _expected_preset_hash("mature")),
+    )
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=identity,
+        ease=ease,
+        _use_pending_answer=use_pending_answer,
+    )
+
+    assert review_input.identity.preset_id == _expected_preset_hash(expected_preset)
+    assert pending_input.identity.preset_id == _expected_preset_hash("young")
+
+
 def test_grade_now_batch_can_be_undone_and_redone_incrementally() -> None:
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
@@ -6130,6 +6359,38 @@ def test_rwkv_stats_graph_uses_creation_time_with_legacy_flag_off() -> None:
     assert review_input.current_elapsed_seconds == 90_000
 
 
+def test_record_reviewer_answer_skips_cramming_answer_without_undo_frame() -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    counter = _UndoCounter(reviewer)
+    counter.set(7)
+    rwkv_scheduler._reviewer_backend_warmup_states[
+        (id(backend), id(reviewer.mw.col))
+    ] = None
+
+    def first(sql: str, *args: object) -> tuple[int, int] | None:
+        if "select type, factor" in sql:
+            assert args == (1,)
+            return (3, 0)
+        return None
+
+    reviewer.mw.col.db = SimpleNamespace(first=first)
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=100)
+    before = backend.predict_review(reviewer=reviewer, card=card)
+    generation = backend.state_generation()
+
+    record_reviewer_answer(reviewer, card, ease=3)
+
+    assert runtime.reviewed == []
+    assert backend.state_generation() == generation
+    assert record_collection_undo(_undo_result(counter=7, next_counter=8)) == []
+    assert record_collection_redo(_undo_result(counter=8, next_counter=9)) == []
+    assert backend.state_generation() == generation
+    assert backend.predict_review(reviewer=reviewer, card=card) == before
+
+
 def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -6154,6 +6415,7 @@ def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
         "unexpected card update"
     )
     reviewer.mw.col.db = SimpleNamespace(
+        first=lambda *_args: (1, 2500),
         execute=lambda *args, **kwargs: pytest.fail("unexpected DB execute"),
         executemany=lambda *args, **kwargs: pytest.fail("unexpected DB executemany"),
         scalar=lambda *args, **kwargs: pytest.fail("unexpected DB scalar"),
@@ -6223,6 +6485,41 @@ def test_set_answer_rwkv_metadata_persists_same_day_relearning_kind() -> None:
     assert review_input.card_type == int(RwkvReviewState.RELEARNING)
     assert review_input.card_queue == int(rwkv_scheduler.QUEUE_TYPE_DAY_LEARN_RELEARN)
     assert review_input.current_normal_state_kind == "relearning"
+
+
+@pytest.mark.parametrize("original_kind", ["new", "learning"])
+@pytest.mark.parametrize("has_memory_state", [False, True])
+def test_set_answer_rwkv_metadata_keeps_learning_kind_for_rescheduled_learning_without_memory_state(
+    original_kind: str,
+    has_memory_state: bool,
+) -> None:
+    reviewer = _rwkv_reviewer()
+    states = SchedulingStates()
+    original = states.current.filtered.rescheduling.original_state
+    getattr(original, original_kind).SetInParent()
+    reviewer._v3.states = states
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=100)
+    card.type = 0 if original_kind == "new" else 1
+    next_state = SchedulingState()
+    learning = next_state.filtered.rescheduling.original_state.learning
+    learning.remaining_steps = 1
+    if has_memory_state:
+        learning.memory_state.stability = 1.0
+        learning.memory_state.difficulty = 5.0
+    answer = SimpleNamespace(new_state=next_state, answered_at_millis=2_000)
+
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+
+    assert answer.rwkv_review_kind == (3 if has_memory_state else 0)
+    pending = getattr(reviewer, rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR)
+    expected_state = (
+        RwkvReviewState.FILTERED
+        if has_memory_state
+        else RwkvReviewState.LEARN_START
+        if original_kind == "new"
+        else RwkvReviewState.LEARNING
+    )
+    assert pending.review_input.card_type == int(expected_state)
 
 
 def test_failed_answer_retry_replaces_pending_rwkv_input() -> None:
@@ -21822,6 +22119,7 @@ class _SharedReviewRuntime:
         self.reviewed: list[tuple[int, int]] = []
         self.queries: list[tuple[int, object | None, object | None]] = []
         self.query_inputs: list[RwkvReviewInput] = []
+        self.query_preset_states: list[object | None] = []
         self.answered_inputs: list[RwkvReviewInput] = []
         self.runtime_review_count = 0
 
@@ -21840,6 +22138,7 @@ class _SharedReviewRuntime:
         ease = review_input.ease
         if ease is None:
             self.query_inputs.append(review_input)
+            self.query_preset_states.append(preset_state)
             self.queries.append((identity.card_id, global_state, deck_state))
             return RwkvReviewTransition(
                 prediction=RwkvReviewPrediction(

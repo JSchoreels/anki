@@ -192,7 +192,11 @@ While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
 the recurrent state. Before applying that answer, Anki falls back to canonical
 recovery if an unmarked new learning start replaces older retained history or
-if the answer changed dynamic preset routing. A Forget review-log
+if the answer changed dynamic preset routing. With dynamic preset replay, the
+answer is applied under the preset historical replay would choose for it. Anki
+recovers for replay preset routing only if that choice cannot be computed. Answers
+recorded as cramming rows (Filtered with factor 0, such as preview-only filtered
+decks) leave the resident state unchanged, matching replay. A Forget review-log
 entry excludes the card's earlier reviews immediately, even when the card has
 not yet been reviewed after the reset. This lets a rebuild prepare the correct
 state before relearning begins, so the first new answer does not require another
@@ -344,6 +348,8 @@ mutation, instead of copying the persistent card type. When RWKV synthesizes a
 same-day state outside Anki's learning queues, Qt places the corresponding raw
 kind on `CardAnswer`; the Rust answer transaction validates and writes that kind
 to the revlog, so undo and redo keep the card update and review type atomic.
+In a rescheduling filtered deck, a learning answer that has no FSRS memory state
+keeps Anki's Learning kind, because a factor-0 Filtered row would be excluded as cramming.
 Histories without a Learning answer, such as cards introduced through Grade
 Now, begin with their actual recorded Review, Relearning, Filtered, Manual, or
 Rescheduled state; replay does not synthesize state `0`.

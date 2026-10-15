@@ -1697,6 +1697,22 @@ insert into segments (
         }
     }
 
+    pub fn state_for_review(
+        &self,
+        card_id: i64,
+        note_id: Option<i64>,
+        deck_id: Option<i64>,
+        preset_id: Option<i64>,
+    ) -> RwkvInferenceState {
+        RwkvInferenceState {
+            feature_state: self
+                .features
+                .state_for_review(card_id, note_id, deck_id, preset_id),
+            card_id,
+            curve: self.curves.get(&card_id).cloned(),
+        }
+    }
+
     pub fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.features.restore_state(&state.feature_state);
         if let Some(curve) = &state.curve {
@@ -2263,7 +2279,12 @@ fn predict_retrievability_many_after_reviews_for_identity(
     let query_count = query_inputs.len();
     let mut query_work_items = Vec::with_capacity(answers.len() * query_count);
     for (answer, heads) in answers.into_iter().zip(answer_heads) {
-        let feature_state = features.state_for_card(answer.card_id);
+        let feature_state = features.state_for_review(
+            answer.card_id,
+            answer.note_id,
+            answer.deck_id,
+            answer.preset_id,
+        );
         features.store_review(&answer);
         for query_input in query_inputs {
             query_work_items.push(ReviewPredictionWorkItem {
@@ -2654,6 +2675,19 @@ struct FeatureStateForCard {
     card_elapsed_days_cumulative: Option<i64>,
     card_elapsed_seconds_cumulative: Option<i64>,
     review_index: i64,
+    id_encodings: Option<IdEncodingSnapshot>,
+}
+
+#[derive(Clone)]
+struct IdEncodingSnapshot {
+    id_rng: TorchIdRng,
+    encodings: [IdEncodingSnapshotEntry; 4],
+}
+
+#[derive(Clone)]
+struct IdEncodingSnapshotEntry {
+    key: (IdKind, i64),
+    encoding: Option<Vec<f32>>,
 }
 
 impl FeatureState {
@@ -2675,6 +2709,28 @@ impl FeatureState {
                 .get(&card_id)
                 .copied(),
             review_index: self.review_index,
+            id_encodings: None,
+        }
+    }
+
+    fn state_for_review(
+        &self,
+        card_id: i64,
+        note_id: Option<i64>,
+        deck_id: Option<i64>,
+        preset_id: Option<i64>,
+    ) -> FeatureStateForCard {
+        FeatureStateForCard {
+            id_encodings: Some(IdEncodingSnapshot {
+                id_rng: self.id_rng.clone(),
+                encodings: id_encoding_keys(card_id, note_id, deck_id, preset_id).map(|key| {
+                    IdEncodingSnapshotEntry {
+                        key,
+                        encoding: self.id_encodings.get(&key).cloned(),
+                    }
+                }),
+            }),
+            ..self.state_for_card(card_id)
         }
     }
 
@@ -2712,6 +2768,16 @@ impl FeatureState {
             state.card_id,
             state.card_elapsed_seconds_cumulative,
         );
+        if let Some(snapshot) = &state.id_encodings {
+            self.id_rng = snapshot.id_rng.clone();
+            for entry in &snapshot.encodings {
+                if let Some(encoding) = &entry.encoding {
+                    self.id_encodings.insert(entry.key, encoding.clone());
+                } else {
+                    self.id_encodings.remove(&entry.key);
+                }
+            }
+        }
     }
 
     fn features_for(&mut self, input: &ReviewInput) -> Vec<f32> {
@@ -2787,9 +2853,6 @@ impl FeatureState {
             });
         }
 
-        let note_id = input.note_id.unwrap_or(ID_PLACEHOLDER + input.card_id);
-        let deck_id = input.deck_id.unwrap_or(ID_PLACEHOLDER);
-        let preset_id = input.preset_id.unwrap_or(ID_PLACEHOLDER);
         features.extend([
             if input.note_id.is_none() { 1.0 } else { 0.0 },
             if input.deck_id.is_none() { 1.0 } else { 0.0 },
@@ -2808,10 +2871,20 @@ impl FeatureState {
             if input.is_query { 1.0 } else { 0.0 },
         ]);
 
-        self.append_id_encoding(&mut features, IdKind::Card, input.card_id);
-        self.append_id_encoding(&mut features, IdKind::Note, note_id);
-        self.append_id_encoding(&mut features, IdKind::Deck, deck_id);
-        self.append_id_encoding(&mut features, IdKind::Preset, preset_id);
+        // Preview unseen IDs using the answer's allocation order, without
+        // reserving encodings or advancing the committed RNG.
+        let mut preview_id_rng = None;
+        for key in id_encoding_keys(input.card_id, input.note_id, input.deck_id, input.preset_id) {
+            if let Some(encoding) = self.id_encodings.get(&key) {
+                features.extend_from_slice(encoding);
+            } else {
+                features.extend(
+                    preview_id_rng
+                        .get_or_insert_with(|| self.id_rng.clone())
+                        .encoding(id_encoding_dim(key.0)),
+                );
+            }
+        }
         append_day_offset_encoding(&mut features, day_offset, day_offset_first);
         debug_assert_eq!(features.len(), CARD_FEATURES);
         #[cfg(test)]
@@ -2822,6 +2895,8 @@ impl FeatureState {
     fn store_review(&mut self, input: &ReviewInput) {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
+
+        self.assign_id_encodings(input);
 
         let elapsed_seconds = elapsed_seconds(input);
         let elapsed_days = elapsed_days(input, elapsed_seconds);
@@ -2864,12 +2939,12 @@ impl FeatureState {
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeaturesStore, profile_started);
     }
 
-    fn append_id_encoding(&mut self, features: &mut Vec<f32>, kind: IdKind, value: i64) {
-        let encoding = self.id_encodings.entry((kind, value)).or_insert_with(|| {
-            let dim = id_encoding_dim(kind);
-            self.id_rng.encoding(dim)
-        });
-        features.extend(encoding.iter().copied());
+    fn assign_id_encodings(&mut self, input: &ReviewInput) {
+        for key in id_encoding_keys(input.card_id, input.note_id, input.deck_id, input.preset_id) {
+            self.id_encodings
+                .entry(key)
+                .or_insert_with(|| self.id_rng.encoding(id_encoding_dim(key.0)));
+        }
     }
 
     #[cfg(test)]
@@ -2944,6 +3019,20 @@ enum IdKind {
     Note,
     Deck,
     Preset,
+}
+
+fn id_encoding_keys(
+    card_id: i64,
+    note_id: Option<i64>,
+    deck_id: Option<i64>,
+    preset_id: Option<i64>,
+) -> [(IdKind, i64); 4] {
+    [
+        (IdKind::Card, card_id),
+        (IdKind::Note, note_id.unwrap_or(ID_PLACEHOLDER + card_id)),
+        (IdKind::Deck, deck_id.unwrap_or(ID_PLACEHOLDER)),
+        (IdKind::Preset, preset_id.unwrap_or(ID_PLACEHOLDER)),
+    ]
 }
 
 fn id_encoding_dim(kind: IdKind) -> usize {
@@ -11757,7 +11846,7 @@ order by e.id, e.cid
             enforce_grade_order: true,
         };
 
-        features.features_for(&input);
+        features.store_review(&input);
 
         assert!(features
             .id_encodings
@@ -11870,6 +11959,157 @@ order by e.id, e.cid
         let expected_next_values = features.features_for(&next_input);
         let restored_next_values = restored.features_for(&next_input);
         assert_eq!(&restored_next_values[24..64], &expected_next_values[24..64]);
+    }
+
+    fn id_feature_review_input(card_id: i64) -> ReviewInput {
+        ReviewInput {
+            card_id,
+            note_id: Some(card_id + 1000),
+            deck_id: Some(card_id + 2000),
+            preset_id: Some(card_id + 3000),
+            is_query: false,
+            ease: Some(3),
+            duration_millis: Some(1200),
+            card_type: Some(2),
+            day_offset: Some(42),
+            current_elapsed_days: Some(3),
+            current_elapsed_seconds: Some(259_200),
+            target_retentions: [None; 4],
+            enforce_grade_order: true,
+        }
+    }
+
+    #[test]
+    fn query_features_for_unseen_ids_do_not_shift_later_id_encodings() {
+        let mut queried = FeatureState::default();
+        let mut fresh = FeatureState::default();
+        queried.features_for(&ReviewInput {
+            is_query: true,
+            ease: None,
+            ..id_feature_review_input(123)
+        });
+
+        let answer = id_feature_review_input(124);
+        let queried_values = queried.features_for(&answer);
+        queried.store_review(&answer);
+        let fresh_values = fresh.features_for(&answer);
+        fresh.store_review(&answer);
+
+        assert_eq!(queried_values, fresh_values);
+        let mut queried_cache = Vec::new();
+        queried.write_cache_state(&mut queried_cache);
+        let mut fresh_cache = Vec::new();
+        fresh.write_cache_state(&mut fresh_cache);
+        assert_eq!(queried_cache, fresh_cache);
+    }
+
+    #[test]
+    fn state_for_review_restore_rolls_back_new_id_encodings() {
+        let mut features = FeatureState::default();
+        let mut original_cache = Vec::new();
+        features.write_cache_state(&mut original_cache);
+        let answer = id_feature_review_input(123);
+        let before = features.state_for_review(
+            answer.card_id,
+            answer.note_id,
+            answer.deck_id,
+            answer.preset_id,
+        );
+
+        features.features_for(&answer);
+        features.store_review(&answer);
+        features.restore_state(&before);
+
+        let mut restored_cache = Vec::new();
+        features.write_cache_state(&mut restored_cache);
+        assert_eq!(restored_cache, original_cache);
+
+        let next_answer = id_feature_review_input(124);
+        let restored_values = features.features_for(&next_answer);
+        features.store_review(&next_answer);
+        let mut fresh = FeatureState::default();
+        let fresh_values = fresh.features_for(&next_answer);
+        fresh.store_review(&next_answer);
+
+        assert_eq!(restored_values, fresh_values);
+        let mut restored_cache = Vec::new();
+        features.write_cache_state(&mut restored_cache);
+        let mut fresh_cache = Vec::new();
+        fresh.write_cache_state(&mut fresh_cache);
+        assert_eq!(restored_cache, fresh_cache);
+    }
+
+    #[test]
+    fn state_for_review_restore_after_snapshot_reapplies_id_encodings() {
+        let mut features = FeatureState::default();
+        let answer = id_feature_review_input(123);
+        let before = features.state_for_review(
+            answer.card_id,
+            answer.note_id,
+            answer.deck_id,
+            answer.preset_id,
+        );
+
+        features.features_for(&answer);
+        features.store_review(&answer);
+        let after = features.state_for_review(
+            answer.card_id,
+            answer.note_id,
+            answer.deck_id,
+            answer.preset_id,
+        );
+        let mut answered_cache = Vec::new();
+        features.write_cache_state(&mut answered_cache);
+
+        features.restore_state(&before);
+        assert!(features.id_encodings.is_empty());
+        features.restore_state(&after);
+
+        let mut restored_cache = Vec::new();
+        features.write_cache_state(&mut restored_cache);
+        assert_eq!(restored_cache, answered_cache);
+    }
+
+    #[test]
+    fn features_for_then_store_review_matches_committed_encoding() {
+        let mut features = FeatureState::default();
+        for answer in [
+            id_feature_review_input(123),
+            ReviewInput {
+                card_id: 124,
+                deck_id: Some(2124),
+                ..id_feature_review_input(123)
+            },
+            ReviewInput {
+                note_id: None,
+                deck_id: None,
+                preset_id: None,
+                ..id_feature_review_input(125)
+            },
+            ReviewInput {
+                preset_id: Some(9999),
+                ..id_feature_review_input(123)
+            },
+        ] {
+            let values = features.features_for(&answer);
+            features.store_review(&answer);
+
+            let mut offset = 24;
+            for key in id_encoding_keys(
+                answer.card_id,
+                answer.note_id,
+                answer.deck_id,
+                answer.preset_id,
+            ) {
+                let dim = id_encoding_dim(key.0);
+                assert_eq!(
+                    &values[offset..offset + dim],
+                    features.id_encodings[&key].as_slice(),
+                    "committed encoding differs for {key:?}"
+                );
+                offset += dim;
+            }
+        }
     }
 
     #[test]

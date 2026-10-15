@@ -721,6 +721,21 @@ impl RwkvInference {
         }
     }
 
+    #[pyo3(signature = (card_id, note_id=None, deck_id=None, preset_id=None))]
+    fn state_for_review(
+        &self,
+        card_id: i64,
+        note_id: Option<i64>,
+        deck_id: Option<i64>,
+        preset_id: Option<i64>,
+    ) -> RwkvInferenceState {
+        RwkvInferenceState {
+            inner: self
+                .inner
+                .state_for_review(card_id, note_id, deck_id, preset_id),
+        }
+    }
+
     fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.inner.restore_state(&state.inner)
     }
