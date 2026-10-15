@@ -2066,6 +2066,7 @@ def test_deck_deletion_keeps_rwkv_state_through_undo_and_redo(
         timers: list[Callable[[], None]] = []
         mw = SimpleNamespace(
             col=col,
+            pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
             state="deckBrowser",
             _legacy_reset_in_progress=False,
             deckBrowser=SimpleNamespace(op_executed=lambda *_args: False),
@@ -2081,11 +2082,14 @@ def test_deck_deletion_keeps_rwkv_state_through_undo_and_redo(
         monkeypatch.setattr(
             rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
         )
+        monkeypatch.setattr(
+            rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+        )
         runtime = _CacheRuntime()
         backend = RwkvStatefulReviewerBackend(runtime)
         set_reviewer_backend(backend)
         history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
-        backend.review_inputs_answered(reviewer, history.reviews)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
         warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
         assert warmup_key is not None
         resident_identity = rwkv_scheduler._resident_state_identity(history)
@@ -2135,11 +2139,17 @@ def test_deck_deletion_keeps_rwkv_state_through_undo_and_redo(
         assert_resident_state_kept()
 
         restored_runtime = _CacheRuntime()
-        set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+        restored_backend = RwkvStatefulReviewerBackend(restored_runtime)
+        set_reviewer_backend(restored_backend)
         assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
-        assert {
-            review.identity.card_id for review in restored_runtime.answered_inputs
-        } == expected_cards
+        assert set(restored_backend.cache_snapshot().card_states) == expected_cards
+        if loses_history:
+            assert {
+                review.identity.card_id for review in restored_runtime.answered_inputs
+            } == expected_cards
+        else:
+            assert restored_runtime.reviewed == []
+            assert restored_runtime.restored_cache_states == [b"runtime-cache"]
     finally:
         col.close()
 
@@ -10884,6 +10894,133 @@ def test_reset_rebuild_and_relearn_keeps_rwkv_state_ready(
         assert set(
             rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count_by_card
         ) == set(card_ids)
+    finally:
+        col.close()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "add_empty_deck",
+        "add_preset",
+        "switch_empty_deck_preset",
+        "desired_retention",
+        "switch_reviewed_deck_preset",
+    ],
+)
+def test_deck_and_preset_edits_reuse_rwkv_state_cache_unless_review_routing_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    edit: str,
+) -> None:
+    from anki import deck_config_pb2
+    from anki.collection import Collection
+    from anki.decks import UpdateDeckConfigs
+    from aqt.main import AnkiQt
+
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        config = col.decks.get_deck_configs_for_update(DeckId(1)).all_config[0].config
+        config.config.rwkv_review_enabled = True
+        col.decks.update_deck_configs(
+            UpdateDeckConfigs(target_deck_id=1, configs=[config])
+        )
+        empty_deck = col.decks.add_normal_deck_with_name("Empty").id
+        alternate = col.decks.add_config(
+            "Alternate", clone_from=col.decks.config_dict_for_deck_id(DeckId(1))
+        )
+        alternate_config = next(
+            entry.config
+            for entry in col.decks.get_deck_configs_for_update(DeckId(1)).all_config
+            if entry.config.id == alternate["id"]
+        )
+        notetype = col.models.current()
+        assert notetype is not None
+        note = col.new_note(notetype)
+        note.fields[0] = "Reviewed"
+        col.add_note(note, DeckId(1))
+        card = note.cards()[0]
+        card.start_timer()
+        col.sched.answerCard(card, 4)
+
+        timers: list[Callable[[], None]] = []
+        mw = SimpleNamespace(
+            col=col,
+            pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+            state="deckBrowser",
+            _legacy_reset_in_progress=False,
+            deckBrowser=SimpleNamespace(op_executed=lambda *_args: False),
+            toolbar=SimpleNamespace(update_sync_status=lambda: None),
+        )
+        reviewer = SimpleNamespace(mw=mw)
+        mw.reviewer = reviewer
+        monkeypatch.setattr("aqt.mw", mw)
+        monkeypatch.setattr("aqt.main.current_window", lambda: mw)
+        monkeypatch.setattr("aqt.utils.tooltip", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "prewarm_reviewer_queue_score_cache",
+            lambda *_args, **_kwargs: None,
+        )
+        _attach_progress_taskman(mw)
+        mw.progress.single_shot = lambda _delay, callback: timers.append(callback)
+        runtime = _CacheRuntime()
+        backend = RwkvStatefulReviewerBackend(runtime)
+        set_reviewer_backend(backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert runtime.reviewed == [(card.id, 4)]
+        snapshot = backend.cache_snapshot()
+        runtime.reviewed.clear()
+        runtime.answered_inputs.clear()
+
+        if edit == "add_empty_deck":
+            changes = col.decks.add_normal_deck_with_name("Added").changes
+        elif edit == "add_preset":
+            new_config = deck_config_pb2.DeckConfig(name="Added")
+            new_config.config.CopyFrom(config.config)
+            changes = col.decks.update_deck_configs(
+                UpdateDeckConfigs(target_deck_id=1, configs=[new_config, config])
+            )
+        elif edit in ("switch_empty_deck_preset", "switch_reviewed_deck_preset"):
+            changes = col.decks.update_deck_configs(
+                UpdateDeckConfigs(
+                    target_deck_id=(
+                        empty_deck if edit == "switch_empty_deck_preset" else 1
+                    ),
+                    configs=[alternate_config],
+                )
+            )
+        else:
+            assert edit == "desired_retention"
+            config.config.desired_retention = 0.85
+            changes = col.decks.update_deck_configs(
+                UpdateDeckConfigs(target_deck_id=1, configs=[config])
+            )
+        AnkiQt.on_operation_did_execute(mw, changes, None)
+        while timers:
+            timers.pop(0)()
+
+        assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+        if edit == "switch_reviewed_deck_preset":
+            assert runtime.reviewed == [(card.id, 4)]
+            assert runtime.answered_inputs[0].identity.preset_id == alternate_config.id
+        else:
+            assert runtime.reviewed == []
+            assert backend.cache_snapshot() == snapshot
+
+        restored_runtime = _CacheRuntime()
+        restored_backend = RwkvStatefulReviewerBackend(restored_runtime)
+        set_reviewer_backend(restored_backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert restored_runtime.reviewed == []
+        assert restored_runtime.restored_cache_states == [b"runtime-cache"]
+        assert restored_backend.cache_snapshot() == backend.cache_snapshot()
     finally:
         col.close()
 

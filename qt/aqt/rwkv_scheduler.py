@@ -19976,42 +19976,6 @@ def _rwkv_first_review_elapsed_config_key(
     return sorted(key, key=lambda item: str(item[0]))
 
 
-def _rwkv_preset_routing_config_key(
-    reviewer: object,
-) -> list[list[object]]:
-    col = _collection(reviewer)
-    decks = getattr(col, "decks", None)
-    all_names_and_ids = getattr(decks, "all_names_and_ids", None)
-    if not callable(all_names_and_ids):
-        return []
-
-    try:
-        raw_decks = all_names_and_ids()
-    except Exception:
-        logger.debug("failed to read deck routing for RWKV replay identity")
-        return []
-
-    routing: list[list[object]] = []
-    for raw_deck in raw_decks:
-        raw_deck_id = (
-            raw_deck.get("id")
-            if isinstance(raw_deck, dict)
-            else getattr(raw_deck, "id", None)
-        )
-        if not isinstance(raw_deck_id, int) or isinstance(raw_deck_id, bool):
-            continue
-        config = _deck_config_for_deck_id(reviewer, raw_deck_id)
-        config_id = config.get("id") if isinstance(config, dict) else None
-        routing.append(
-            [
-                raw_deck_id,
-                config_id if isinstance(config_id, int) else None,
-            ]
-        )
-
-    return sorted(routing, key=lambda item: cast(int, item[0]))
-
-
 def _rwkv_state_precision() -> str:
     # Keep the running session's precision stable if Preferences has saved a
     # different choice for the next restart. Background jobs share this mode.
@@ -20036,13 +20000,7 @@ def _rwkv_replay_semantics_key(
         "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "statePrecision": _rwkv_state_precision(),
         "firstReviewElapsedSource": first_review_elapsed_source.value,
-        "firstReviewElapsedConfig": (
-            _rwkv_first_review_elapsed_config_key(reviewer)
-            if first_review_elapsed_source == RwkvFirstReviewElapsedSource.DECK_CONFIG
-            else []
-        ),
         "dynamicPresetReplay": dynamic_preset_replay,
-        "presetRouting": _rwkv_preset_routing_config_key(reviewer),
         "presetOverlay": (
             _fsrs_preset_overlay_config(reviewer) if dynamic_preset_replay else None
         ),

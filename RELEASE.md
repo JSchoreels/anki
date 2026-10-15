@@ -34,12 +34,16 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Fewer full RWKV state rebuilds after deck edits.** Adding or importing decks, adding presets, moving never-reviewed decks to another preset, or deleting never-reviewed decks no longer discards the RWKV state cache and triggers a full "Building RWKV state cache" replay. Moving a deck that has reviews to another preset still rebuilds.
+
 - **Clickable add-on updates after RWKV startup.** Add-on update prompts wait until the RWKV question and state-cache progress window close. Repeated checks share one active update flow, and closing a profile removes its old update window.
 
 - **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
 - **Updated HTML sanitization dependency.** This build includes the patched Ammonia release for CSS URL escaping and SVG animation filtering.
 
 ### Technical details
+
+- **RWKV replay identity:** the replay semantics key no longer hashes collection-wide deck-to-preset routing or per-preset first-review config, because per-review deck and preset ids are already covered by the chained history hash. The first launch after updating rebuilds once because the key changes.
 
 - **Add-on update dialog lifecycle:** deliver update results through progress-safe timers, defer them while another modal dialog is active, and cancel results belonging to a closed profile or replaced collection. Close the chooser before starting downloads and complete cancelled or disabled update checks. Qt regression coverage exercises RWKV question/progress ordering, button clicks, repeated checks, and profile reloads.
 

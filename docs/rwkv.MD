@@ -439,10 +439,13 @@ restored state are unchanged.
 The manifest in `state-v1.meta.json` records the base segment, its
 store generation, the latest effective revlog id, and the historical recovery
 base. It also records a chained SHA-256 identity of the canonical replay
-inputs plus a replay-semantics identity covering first-review elapsed-time
-settings, deck-to-preset routing, and the dynamic preset overlay. Filtered cards
-use their original deck as the effective historical deck, matching normal
-review after they leave the filtered deck.
+inputs plus a replay-semantics identity covering state precision, the first-review
+elapsed source, the dynamic preset replay flag, and the dynamic preset overlay
+when enabled. Per-review deck and preset ids are covered by the chained history
+hash instead, so adding, deleting, or re-routing never-reviewed decks and adding
+presets keeps the cache. Moving a reviewed deck to another preset still
+invalidates it. Filtered cards use their original deck as the effective
+historical deck, matching normal review after they leave the filtered deck.
 Note and tag edits re-resolve only the affected note's cards when an add-on
 preset overlay is active. If those cards remain in the same presets, Anki keeps
 the resident recurrent state and refreshes only content-dependent queue inputs.
