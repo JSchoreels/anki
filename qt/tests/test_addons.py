@@ -80,25 +80,57 @@ def test_update_check_does_not_repeat_while_waiting_for_a_prompt(
         "handle_update_info",
         lambda _parent, _mgr, _items, on_done, _requested: prompts.append(on_done),
     )
-    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
-    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    check_and_prompt_for_updates(
+        mgr.mw, mgr, lambda log: finished.append(("first", log))
+    )
+    check_and_prompt_for_updates(
+        mgr.mw, mgr, lambda log: finished.append(("second", log))
+    )
     assert len(callbacks) == 1
 
-    callbacks.pop()([])
+    callbacks[0]([])
     assert prompts == []
     timers.pop()()
-    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    check_and_prompt_for_updates(
+        mgr.mw, mgr, lambda log: finished.append(("third", log))
+    )
     assert len(prompts) == 1
-    assert callbacks == []
-
-    prompts.pop()([])
-    assert finished == [[]]
-    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
     assert len(callbacks) == 1
+    assert finished == []
+
+    prompts[0]([])
+    prompts[0]([])
+    assert finished == [("first", []), ("second", []), ("third", [])]
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    assert len(callbacks) == 2
+
+
+def test_update_check_raises_visible_prompt(update_check, monkeypatch) -> None:
+    mgr, callbacks, _timers, finished = update_check
+    calls = []
+
+    class Prompt:
+        def isVisible(self) -> bool:
+            return True
+
+        def raise_(self) -> None:
+            calls.append("raise")
+
+        def activateWindow(self) -> None:
+            calls.append("activate")
+
+    monkeypatch.setattr(aqt.addons, "ChooseAddonsToUpdateDialog", Prompt)
+    monkeypatch.setattr(QApplication, "topLevelWidgets", lambda: [Prompt()])
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+
+    assert calls == ["raise", "activate"]
+    assert len(callbacks) == 1
+    assert finished == []
 
 
 @pytest.mark.parametrize("close_profile", [False, True])
-def test_update_check_discards_results_from_a_previous_collection(
+def test_update_check_skips_prompt_for_a_previous_collection(
     update_check, monkeypatch, close_profile: bool
 ) -> None:
     mgr, callbacks, timers, finished = update_check
@@ -107,6 +139,8 @@ def test_update_check_discards_results_from_a_previous_collection(
         aqt.addons, "handle_update_info", lambda *args: prompts.append(args)
     )
     check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    waiter_finished: list[list[aqt.addons.DownloadLogEntry]] = []
+    check_and_prompt_for_updates(mgr.mw, mgr, waiter_finished.append)
     callbacks.pop()([])
     if close_profile:
         gui_hooks.profile_will_close()
@@ -114,7 +148,9 @@ def test_update_check_discards_results_from_a_previous_collection(
     timers.pop()()
 
     assert prompts == []
-    assert finished == []
+    assert finished == ([] if close_profile else [[]])
+    assert waiter_finished == ([] if close_profile else [[]])
+    assert mgr._update_check_waiters == []
     check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
     assert len(callbacks) == 1
 

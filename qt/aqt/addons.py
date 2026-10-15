@@ -207,6 +207,7 @@ class AddonManager:
         self.mw = mw
         self.dirty = False
         self._update_check_in_progress = False
+        self._update_check_waiters: list[Callable[[list[DownloadLogEntry]], None]] = []
         f = self.mw.form
         qconnect(f.actionAdd_ons.triggered, self.onAddonsDialog)
         sys.path.insert(0, self.addonsFolder())
@@ -1524,6 +1525,11 @@ def check_and_prompt_for_updates(
     requested_by_user: bool = True,
 ) -> None:
     if mgr._update_check_in_progress:
+        mgr._update_check_waiters.append(on_done)
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, ChooseAddonsToUpdateDialog) and widget.isVisible():
+                widget.raise_()
+                widget.activateWindow()
         return
     mgr._update_check_in_progress = True
     collection = mgr.mw.col
@@ -1540,6 +1546,8 @@ def check_and_prompt_for_updates(
             return
         completed = True
         mgr._update_check_in_progress = False
+        waiters = mgr._update_check_waiters
+        mgr._update_check_waiters = []
 
         def remove_hook() -> None:
             gui_hooks.profile_will_close.remove(on_profile_close)
@@ -1551,6 +1559,8 @@ def check_and_prompt_for_updates(
             remove_hook()
         if notify:
             on_done(log)
+            for waiter in waiters:
+                waiter(log)
 
     def on_profile_close() -> None:
         finish([], notify=False, defer_hook_removal=True)
@@ -1562,7 +1572,7 @@ def check_and_prompt_for_updates(
             if completed:
                 return
             if collection is not None and mgr.mw.col is not collection:
-                finish([], notify=False)
+                finish([])
                 return
             modal = QApplication.activeModalWidget()
             if modal is not None and modal is not parent:

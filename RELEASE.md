@@ -38,6 +38,8 @@ repeated here unless they materially affect a fork feature.
 
 - **Clickable add-on updates after RWKV startup.** Add-on update prompts wait until the RWKV question and state-cache progress window close. Repeated checks share one active update flow, and closing a profile removes its old update window.
 
+- **Faster, quieter quit and profile switch with RWKV.** The sync on close no longer runs "Updating RWKV state after sync..." (the next profile open reconciles the state), which also avoids an error dialog when quitting from the deck list. Closing a profile cancels running RWKV Memorised-history and workload-simulation jobs. Tools → Add-ons → Check for Updates while an update window is already open brings that window forward instead of doing nothing, and the Anki update check still runs if a collection import replaced the collection during the startup add-on check.
+
 - **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
 - **Updated HTML sanitization dependency.** This build includes the patched Ammonia release for CSS URL escaping and SVG animation filtering.
 
