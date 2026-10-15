@@ -236,6 +236,8 @@ _RWKV_STATE_CACHE_CHECKPOINT_SUFFIX = ".bin"
 _RWKV_STATE_CACHE_SNAPSHOT_MAGIC = b"ARWKVSNAPSHOT12\0"
 _RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS12\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
+# Replay costs ~70 µs/review at every startup; recovery rewrites segments and empties the log.
+_RWKV_STATE_CACHE_DELTA_FOLD_REVIEW_COUNT = 10_000
 _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS = 8 * 86_400_000
 _RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY = "ignoredReviewIds"
 _RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
@@ -835,6 +837,7 @@ class RwkvStoredStateCache:
     pending_history: RwkvHistoricalReviewInputs | None = None
     reusable_checkpoint_entries: tuple[_RwkvStateCacheCheckpointEntry, ...] = ()
     recovered_from_checkpoint: bool = False
+    folded_delta_log: bool = False
     desired_checkpoint_review_counts: tuple[int, ...] = ()
     state_store_path: Path | None = None
     state_store_generation: str | None = None
@@ -11007,6 +11010,23 @@ def _write_rwkv_calibration_epoch(
         logger.exception("failed to record RWKV calibration epoch")
 
 
+def _carry_forward_rwkv_calibration_epoch(reviewer: object) -> None:
+    """Preserve current predictions after folding the same history into a segment."""
+
+    try:
+        cache_dir = _rwkv_state_cache_dir(reviewer)
+        epoch = _rwkv_calibration_epoch_from_metadata(
+            _read_rwkv_state_cache_metadata(reviewer)
+        )
+        if cache_dir is not None and epoch is not None:
+            _atomic_write(
+                cache_dir / _RWKV_CALIBRATION_EPOCH_FILE,
+                json.dumps(epoch, sort_keys=True).encode("utf8"),
+            )
+    except Exception:
+        logger.exception("failed to carry forward RWKV calibration epoch")
+
+
 def _rwkv_calibration_epoch_current(reviewer: object) -> bool:
     cache_dir = _rwkv_state_cache_dir(reviewer)
     if cache_dir is None:
@@ -11158,6 +11178,8 @@ def _rwkv_calibration_data_available(
         metadata,
         current_history=history,
     ):
+        return False
+    if not _rwkv_calibration_epoch_current(reviewer):
         return False
 
     last_review_id = _int_value(metadata.get("lastReviewId"))
@@ -12865,13 +12887,12 @@ def _rwkv_memorised_history_identity(
     if not _rwkv_history_hash_is_valid(history_hash) or not replay_key:
         raise ValueError("invalid RWKV Memorised history identity")
     value = {
-        "version": 3,
+        "version": 4,
         "collection": _rwkv_collection_cache_key(reviewer),
         "model": _rwkv_model_cache_key(),
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
             reviewer
         ),
-        "firstReviewElapsed": _rwkv_first_review_elapsed_config_key(reviewer),
         "lastReviewId": last_review_id,
         "reviewCount": review_count,
         "historyHash": history_hash,
@@ -15213,6 +15234,7 @@ def _restore_reviewer_backend_cache(
     pending_history = stored.pending_history
     reusable_checkpoint_entries = stored.reusable_checkpoint_entries
     recovered_from_checkpoint = stored.recovered_from_checkpoint
+    folded_delta_log = stored.folded_delta_log
     desired_checkpoint_review_counts = stored.desired_checkpoint_review_counts
     state_store_path = stored.state_store_path
     state_store_generation = stored.state_store_generation
@@ -15337,6 +15359,9 @@ def _restore_reviewer_backend_cache(
                     desired_checkpoint_review_counts
                 )
                 _require_reviewer_backend_warmup_current(is_current)
+                preserve_calibration_epoch = (
+                    folded_delta_log and _rwkv_calibration_epoch_current(reviewer)
+                )
                 _save_reviewer_backend_cache(
                     reviewer,
                     history,
@@ -15352,6 +15377,8 @@ def _restore_reviewer_backend_cache(
                     ],
                     write_context=checkpoint_writer.context,
                 )
+                if preserve_calibration_epoch:
+                    _carry_forward_rwkv_calibration_epoch(reviewer)
             elif _rwkv_state_cache_uses_current_model_key(stored_metadata):
                 _require_reviewer_backend_warmup_current(is_current)
                 _append_rwkv_state_cache_deltas(
@@ -16088,6 +16115,7 @@ def _save_reviewer_backend_state_store(
         raise ValueError("missing RWKV state-cache store path")
     live_store_path = context.cache_dir / _RWKV_STATE_CACHE_STORE_FILE
     if context.state_store_temporary:
+        _remove_rwkv_state_cache_store_sidecar_files(live_store_path)
         _replace_rwkv_state_cache_file(store_path, live_store_path)
         context.state_store_path = live_store_path
         context.state_store_temporary = False
@@ -16935,6 +16963,7 @@ def _read_rwkv_state_cache_store(
         prefix_review_ids,
     )
 
+    folded_delta_log = False
     if manifest_matches_snapshot and _rwkv_state_cache_metadata_usable(
         reviewer,
         metadata,
@@ -16952,13 +16981,26 @@ def _read_rwkv_state_cache_store(
                 snapshot_history,
                 delta_reviews,
             )
-            if (
+            effective_history_valid = (
                 history.last_review_id
                 == (_int_value(metadata.get("lastReviewId")) or 0)
                 and history.review_count
                 == (_int_value(metadata.get("reviewCount")) or 0)
                 and history.history_hash == metadata.get("historyHash")
+            )
+            # Only a validated log folds: recovery then replays the same
+            # history, so calibration predictions stay valid.
+            if (
+                effective_history_valid
+                and len(delta_reviews) >= _RWKV_STATE_CACHE_DELTA_FOLD_REVIEW_COUNT
             ):
+                folded_delta_log = True
+                logger.info(
+                    "folding RWKV delta log through checkpoint recovery: "
+                    "delta_reviews=%s",
+                    len(delta_reviews),
+                )
+            elif effective_history_valid:
                 return RwkvStoredStateCache(
                     metadata=metadata,
                     snapshot=None,
@@ -17067,6 +17109,9 @@ def _read_rwkv_state_cache_store(
         ),
         reusable_checkpoint_entries=reusable_checkpoint_entries,
         recovered_from_checkpoint=True,
+        folded_delta_log=(
+            folded_delta_log and selected_segment_id == snapshot_segment_id
+        ),
         desired_checkpoint_review_counts=desired_checkpoint_review_counts,
         state_store_path=store_path,
         state_store_generation=store_generation,
@@ -18133,8 +18178,12 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def _remove_rwkv_state_cache_store_files(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    _remove_rwkv_state_cache_store_sidecar_files(path)
+
+
+def _remove_rwkv_state_cache_store_sidecar_files(path: Path) -> None:
     for candidate in (
-        path,
         Path(f"{path}-journal"),
         Path(f"{path}-wal"),
         Path(f"{path}-shm"),

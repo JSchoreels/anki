@@ -424,8 +424,17 @@ after every answer. Later startup loads restore the effective state-store
 segment, replay any delta-log reviews, then replay newer revlogs from the
 collection. Those newer revlogs are appended to the delta log as well: only a
 checkpoint recovery writes a state-store segment during a restore, because only
-recovery adopts that segment as the effective state. Replaying the log is cheap
-(about 60 µs per review on Apple Silicon). Earlier versions also wrote an
+recovery adopts that segment as the effective state. Replaying the log costs
+about 60-70 µs per review on Apple Silicon at every startup, and the log used to
+grow until the next full build: on a copy of a 283k-review collection, replaying
+10k, 25k and 50k reviews took 2.8s, 7.7s and 9.4s on a heavily loaded machine
+(load average 80-100), about 3.5s for 50k when idle. At about 300 reviews a day
+the log reaches 50k reviews in six months. Once the log holds 10,000 reviews, a
+restore therefore takes the checkpoint-recovery path from the effective segment
+instead: it replays the same reviews, writes the eight-day recovery root and the
+current delta, empties the log and prunes the old chain. The replayed history
+is unchanged, so a calibration epoch that matched before the fold is carried to
+the new segment. Earlier versions also wrote an
 unreferenced delta segment on every restore that found newer revlogs, so one
 desktop store had grown to 3.06 GB, 1.7 GB of it unreachable. The next restore
 that keeps the manifest's segment removes such segments and, when that frees at

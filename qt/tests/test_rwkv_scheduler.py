@@ -3706,16 +3706,17 @@ def test_rwkv_memorised_identity_includes_canonical_history(
         "_rwkv_dynamic_preset_replay_enabled_for_collection",
         lambda _reviewer: False,
     )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_first_review_elapsed_config_key",
-        lambda _reviewer: [],
-    )
     monkeypatch.setattr(rwkv_scheduler, "_day_offset", lambda _reviewer: 42)
 
+    presets = [{"id": 1}]
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(decks=SimpleNamespace(all_config=lambda: presets))
+        )
+    )
     identity = json.loads(
         rwkv_scheduler._rwkv_memorised_history_identity(
-            SimpleNamespace(),
+            reviewer,
             last_review_id=2000,
             review_count=2,
             history_hash="b" * 64,
@@ -3723,9 +3724,23 @@ def test_rwkv_memorised_identity_includes_canonical_history(
         )
     )
 
-    assert identity["version"] == 3
+    assert identity["version"] == 4
     assert identity["historyHash"] == "b" * 64
     assert identity["replayKey"] == "canonical-replay"
+
+    presets.append({"id": 2})
+    assert (
+        json.loads(
+            rwkv_scheduler._rwkv_memorised_history_identity(
+                reviewer,
+                last_review_id=2000,
+                review_count=2,
+                history_hash="b" * 64,
+                replay_key="canonical-replay",
+            )
+        )
+        == identity
+    )
 
 
 def test_rwkv_memorised_identity_uses_only_resident_state_identity(
@@ -8147,6 +8162,13 @@ def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
     cache_dir.mkdir()
     temporary_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_TEMP_FILE
     temporary_store.write_bytes(b"delta-store")
+    live_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+    live_store.write_bytes(b"old-store")
+    sidecars = [
+        Path(f"{live_store}{suffix}") for suffix in ("-journal", "-wal", "-shm")
+    ]
+    for sidecar in sidecars:
+        sidecar.write_bytes(b"stale-sidecar")
     history = _rwkv_checkpoint_test_history(3)
     checkpoint_history = rwkv_scheduler._rwkv_history_prefix(history, 1)
     context = rwkv_scheduler._RwkvStateCacheWriteContext(
@@ -8199,6 +8221,7 @@ def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
     live_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
     assert finished_checkpoint_writes
     assert live_store.read_bytes() == b"delta-store"
+    assert all(not sidecar.exists() for sidecar in sidecars)
     assert not (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_SNAPSHOT_FILE).exists()
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
     assert metadata is not None
@@ -8696,6 +8719,174 @@ def test_rwkv_delta_store_recovers_when_manifest_is_ahead_of_snapshot(
     _assert_rwkv_checkpoint_history_matches(stored.history, snapshot_history)
     assert stored.pending_history is not None
     assert stored.pending_history.review_ids == current_history.review_ids[2:]
+
+
+@pytest.mark.parametrize(
+    ("threshold", "manifest_matches", "epoch_current", "folded"),
+    [
+        (3, True, True, False),
+        (2, True, True, True),
+        (1, True, True, True),
+        (2, True, False, True),
+        (2, False, True, False),
+    ],
+)
+def test_rwkv_delta_restore_folds_long_logs_and_preserves_only_current_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    threshold: int,
+    manifest_matches: bool,
+    epoch_current: bool,
+    folded: bool,
+) -> None:
+    current = _rwkv_checkpoint_test_history(5)
+    snapshot = rwkv_scheduler._rwkv_history_prefix(current, 2)
+    effective = rwkv_scheduler._rwkv_history_prefix(current, 4)
+    cache_dir = tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR
+    cache_dir.mkdir()
+    store_path = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+    store_path.write_bytes(b"store")
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    base_metadata: dict[str, object] = {
+        "version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION,
+        "presetReplaySemantics": rwkv_scheduler._RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
+        "collection": {"test": True},
+        "model": {"model": "test"},
+        "dynamicPresetReplay": False,
+    }
+    metadata = rwkv_scheduler._rwkv_state_cache_metadata(
+        reviewer,
+        effective,
+        snapshot_review_id=snapshot.last_review_id
+        if manifest_matches
+        else effective.last_review_id,
+        snapshot_history_hash=snapshot.history_hash
+        if manifest_matches
+        else effective.history_hash,
+        base_metadata=base_metadata,
+        state_store_generation="generation",
+        snapshot_segment_id=2,
+    )
+    (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE).write_text(
+        json.dumps(metadata)
+    )
+    delta_path = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_DELTAS_FILE
+    rwkv_scheduler._append_rwkv_delta_records(
+        delta_path, current.review_ids[2:4], current.reviews[2:4]
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_RWKV_STATE_CACHE_DELTA_FOLD_REVIEW_COUNT", threshold
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_base",
+        lambda _reviewer: base_metadata,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_usable",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_store_segment_history",
+        lambda *_args: snapshot,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_state_cache_store_segment_chain", lambda *_args: [2]
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prune_rwkv_state_cache_store", lambda *_args: 0
+    )
+    rwkv_scheduler._write_rwkv_calibration_epoch(reviewer, current)
+    if not epoch_current:
+        (cache_dir / rwkv_scheduler._RWKV_CALIBRATION_EPOCH_FILE).unlink()
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is epoch_current
+
+    class Runtime:
+        resident_warm_up_state = True
+
+        def __init__(self) -> None:
+            self.state = list(current.reviews[:2])
+            self.writes = 0
+
+        def review(self, **_kwargs: object) -> RwkvReviewTransition:
+            raise AssertionError("bulk warm-up expected")
+
+        def restore_warm_up_state_checkpoint(self, *_args: object) -> None:
+            self.state = list(current.reviews[:2])
+
+        def write_warm_up_state_checkpoint(self, *_args: object) -> int:
+            self.writes += 1
+            return 2 + self.writes
+
+        def warm_up_reviews(
+            self,
+            reviews: Sequence[RwkvReviewInput],
+            *,
+            snapshot_after_reviews: Sequence[int] = (),
+            snapshot_recorder: Any = None,
+            **_kwargs: object,
+        ) -> None:
+            for count, review in enumerate(reviews, 1):
+                self.state.append(review)
+                if count in snapshot_after_reviews:
+                    snapshot_recorder.write_runtime_checkpoint(
+                        count, self.write_warm_up_state_checkpoint
+                    )
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(cast(Any, runtime))
+    stored_results: list[rwkv_scheduler.RwkvStoredStateCache] = []
+
+    def read_store(
+        *_args: object, **_kwargs: object
+    ) -> rwkv_scheduler.RwkvStoredStateCache:
+        stored = rwkv_scheduler._read_rwkv_state_cache_store(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            current_history=current,
+            desired_checkpoint_review_counts=(),
+            dynamic_preset_replay_enabled=False,
+        )
+        assert stored is not None
+        stored_results.append(stored)
+        return stored
+
+    monkeypatch.setattr(rwkv_scheduler, "_read_rwkv_state_cache", read_store)
+    identity = rwkv_scheduler._restore_reviewer_backend_cache(
+        reviewer, backend=backend, is_current=lambda: True
+    )
+
+    recovered = folded or not manifest_matches
+    assert identity == rwkv_scheduler._resident_state_identity(current)
+    assert runtime.state == current.reviews
+    assert stored_results[0].recovered_from_checkpoint is recovered
+    assert stored_results[0].folded_delta_log is folded
+    updated = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert updated is not None
+    assert updated["historyHash"] == current.history_hash
+    assert updated["reviewCount"] == current.review_count
+    if recovered:
+        assert runtime.writes == 1
+        assert updated["snapshotSegmentId"] == 3
+        assert delta_path.read_bytes() == rwkv_scheduler._rwkv_empty_deltas_log()
+    else:
+        assert runtime.writes == 0
+        assert updated["snapshotSegmentId"] == 2
+        assert rwkv_scheduler._read_rwkv_delta_records(
+            delta_path,
+            after_review_id=snapshot.last_review_id,
+            until_review_id=current.last_review_id,
+        ) == list(zip(current.review_ids[2:], current.reviews[2:]))
+    assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is (
+        epoch_current and (folded or not recovered)
+    )
 
 
 def test_rwkv_state_cache_file_replace_retries_windows_lock(
@@ -11922,6 +12113,9 @@ def test_ensure_rwkv_calibration_data_releases_duplicate_history_and_restores_st
     assert len(histories) == (1 if configured else 2)
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert backend.cache_snapshot() == before
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_calibration_epoch_current", lambda _reviewer: True
+    )
     # The availability API also requires the warmed resident-state metadata.
     assert rwkv_scheduler.rwkv_calibration_data_available(reviewer.mw) is configured
     assert {row[4] for row in reviewer.mw.col.rwkv_retrievability_rows} == {
@@ -12284,6 +12478,52 @@ def test_rwkv_calibration_epoch_follows_state_cache_lineage(
     assert rwkv_scheduler._rwkv_calibration_epoch_current(reviewer) is False
     rwkv_scheduler._write_rwkv_calibration_epoch(reviewer, cast(Any, None))
     assert not (cache_dir / rwkv_scheduler._RWKV_CALIBRATION_EPOCH_FILE).exists()
+
+
+def test_rwkv_calibration_availability_rejects_rebuilt_state_with_old_predictions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    metadata: dict[str, object] = {
+        "storeGeneration": "original",
+        "snapshotSegmentId": 2,
+        "model": {"model": "test"},
+        "lastReviewId": 3000,
+        "reviewCount": 3,
+    }
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache_metadata", lambda _reviewer: metadata
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_usable",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_retrievability_cache_complete",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_calibration_test_folds_match_fsrs",
+        lambda *_args, **_kwargs: True,
+    )
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+            col=SimpleNamespace(db=SimpleNamespace(scalar=lambda *_args: 1)),
+        )
+    )
+    (tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR).mkdir()
+    rwkv_scheduler._write_rwkv_calibration_epoch(reviewer, cast(Any, None))
+
+    assert rwkv_scheduler._rwkv_calibration_data_available(reviewer) is True
+    metadata["storeGeneration"] = "rebuilt"
+    assert rwkv_scheduler._rwkv_calibration_data_available(reviewer) is False
 
 
 def test_rwkv_calibration_realign_relabels_existing_predictions(

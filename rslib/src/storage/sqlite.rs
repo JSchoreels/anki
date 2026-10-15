@@ -120,19 +120,41 @@ fn relocate_retrievability_cache(collection_path: &Path, cache_path: &Path) -> R
     if cache_path == Path::new(":memory:") {
         return Ok(());
     }
-    anki_io::create_dir_all(cache_path.parent().unwrap())?;
+    if let Err(err) = anki_io::create_dir_all(cache_path.parent().unwrap()) {
+        tracing::warn!(?err, "failed to prepare retrievability cache directory");
+        return Ok(());
+    }
     let old_path = collection_path.with_extension("retrievability-cache.sqlite");
     if old_path.exists() && !cache_path.exists() {
         // Checkpoint before moving: committed predictions may still be in the WAL.
         // Switching journal mode also refuses relocation while another reader is busy.
-        let old_db = Connection::open(&old_path)?;
-        let mode: String =
-            old_db.query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))?;
-        require!(mode == "delete", "retrievability cache is busy");
-        drop(old_db);
-        std::fs::rename(&old_path, cache_path)?;
+        let mode = (|| -> rusqlite::Result<String> {
+            let old_db = Connection::open(&old_path)?;
+            old_db.query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        })();
+        match mode {
+            Ok(mode) => require!(mode == "delete", "retrievability cache is busy"),
+            Err(err) if retrievability_cache_is_busy(&err) => return Err(err.into()),
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "failed to open old retrievability cache for relocation"
+                );
+                return Ok(());
+            }
+        }
+        if let Err(err) = std::fs::rename(&old_path, cache_path) {
+            tracing::warn!(?err, "failed to relocate retrievability cache");
+        }
     }
     Ok(())
+}
+
+fn retrievability_cache_is_busy(err: &rusqlite::Error) -> bool {
+    matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 fn attach_retrievability_cache_db(db: &Connection, collection_path: Option<&Path>) -> Result<()> {
@@ -142,12 +164,35 @@ fn attach_retrievability_cache_db(db: &Connection, collection_path: Option<&Path
     if let Some(collection_path) = collection_path {
         relocate_retrievability_cache(collection_path, &cache_path)?;
     }
-    let cache_path = cache_path.to_string_lossy();
-    db.execute(
-        &format!("ATTACH DATABASE ? AS {RETRIEVABILITY_CACHE_DB_SCHEMA}"),
-        [cache_path.as_ref()],
-    )?;
-    db.pragma_update(Some(RETRIEVABILITY_CACHE_DB_SCHEMA), "journal_mode", "wal")?;
+    let attach = || -> rusqlite::Result<()> {
+        db.execute(
+            &format!("ATTACH DATABASE ? AS {RETRIEVABILITY_CACHE_DB_SCHEMA}"),
+            [cache_path.to_string_lossy().as_ref()],
+        )?;
+        db.pragma_update(Some(RETRIEVABILITY_CACHE_DB_SCHEMA), "journal_mode", "wal")
+    };
+    if let Err(err) = attach() {
+        if retrievability_cache_is_busy(&err) || !cache_path.is_file() {
+            return Err(err.into());
+        }
+        tracing::warn!(?err, "recreating unusable retrievability cache");
+        let _ = db.execute(
+            &format!("DETACH DATABASE {RETRIEVABILITY_CACHE_DB_SCHEMA}"),
+            [],
+        );
+        for path in [
+            cache_path.clone(),
+            PathBuf::from(format!("{}-wal", cache_path.display())),
+            PathBuf::from(format!("{}-shm", cache_path.display())),
+        ] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        attach()?;
+    }
     Ok(())
 }
 
@@ -789,6 +834,74 @@ mod test {
     use super::*;
     use crate::scheduler::answering::test::v3_test_collection;
     use crate::storage::card::ReviewOrderSubclause;
+
+    #[test]
+    fn collection_open_recreates_corrupt_retrievability_cache() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let collection_path = dir.path().join("collection.anki2");
+        let cache_path = retrievability_cache_path(&collection_path);
+        std::fs::create_dir_all(cache_path.parent().unwrap())?;
+        std::fs::write(&cache_path, b"not a database")?;
+
+        let col = crate::collection::CollectionBuilder::new(&collection_path).build()?;
+        let count: i64 = col.storage.db.query_row(
+            "SELECT count(*) FROM retrievability_cache.search_stats_rwkv_review_retrievability",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn collection_open_preserves_corrupt_legacy_retrievability_cache() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let collection_path = dir.path().join("collection.anki2");
+        let old_path = collection_path.with_extension("retrievability-cache.sqlite");
+        std::fs::write(&old_path, b"not a database")?;
+
+        let col = crate::collection::CollectionBuilder::new(&collection_path).build()?;
+        let count: i64 = col.storage.db.query_row(
+            "SELECT count(*) FROM retrievability_cache.search_stats_rwkv_review_retrievability",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        assert_eq!(std::fs::read(old_path)?, b"not a database");
+        Ok(())
+    }
+
+    #[test]
+    fn collection_open_preserves_busy_retrievability_caches() -> Result<()> {
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let collection_path = dir.path().join("collection.anki2");
+            let cache_path = if legacy {
+                collection_path.with_extension("retrievability-cache.sqlite")
+            } else {
+                retrievability_cache_path(&collection_path)
+            };
+            std::fs::create_dir_all(cache_path.parent().unwrap())?;
+            let cache = Connection::open(&cache_path)?;
+            cache.execute_batch(
+                "CREATE TABLE sentinel (value); INSERT INTO sentinel VALUES (42); BEGIN EXCLUSIVE",
+            )?;
+
+            let err = crate::collection::CollectionBuilder::new(&collection_path)
+                .build()
+                .err()
+                .unwrap();
+            assert!(
+                matches!(err, AnkiError::DbError { source } if source.kind == DbErrorKind::Locked)
+            );
+            assert_eq!(
+                cache.query_row("SELECT value FROM sentinel", [], |row| row.get::<_, i64>(0))?,
+                42
+            );
+            assert!(cache_path.is_file());
+        }
+        Ok(())
+    }
 
     #[test]
     fn regexp_fields_matches_only_selected_fields() -> rusqlite::Result<()> {
