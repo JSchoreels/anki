@@ -8546,9 +8546,11 @@ select id, ease, type
 from revlog
 where cid = ?
   and {_rwkv_historical_answer_sql_condition()}
+  and id > coalesce((select max(id) from revlog where cid = ? and type = 4 and ease = 0 and factor = 0), 0)
 order by id desc
 limit 1
 """,
+            card_id,
             card_id,
         )
     except Exception:
@@ -12382,6 +12384,7 @@ def refresh_rwkv_state_after_sync(
 ) -> None:
     """Reconcile resident RWKV state with the merged review history."""
 
+    col = getattr(mw, "col", None)
     reviewer = SimpleNamespace(mw=mw)
     ignored_review_count_before = len(
         _rwkv_state_cache_ignored_review_ids(_read_rwkv_state_cache_metadata(reviewer))
@@ -12475,6 +12478,11 @@ def refresh_rwkv_state_after_sync(
                 parent=cast(QWidget | None, mw),
             )
         on_done()
+        if col is None or getattr(mw, "col", None) is not col:
+            logger.debug(
+                "RWKV post-sync refresh skipped view refresh: collection closed"
+            )
+            return
         # The view rendered when the sync finished deferred its RWKV counts
         # while the state was reloading.
         _refresh_active_rwkv_count_view(mw)
@@ -20652,10 +20660,18 @@ def _historical_rwkv_card_ids(
     try:
         values = list_rows(
             f"""
-select distinct cid
-from revlog
-where cid in {ids2str(card_ids)}
-  and {_rwkv_historical_answer_sql_condition()}
+select distinct r.cid
+from revlog r
+left join (
+  select cid, max(id) as reset_id
+  from revlog
+  where cid in {ids2str(card_ids)}
+    and type = 4 and ease = 0 and factor = 0
+  group by cid
+) resets on resets.cid = r.cid
+where r.cid in {ids2str(card_ids)}
+  and {_rwkv_historical_answer_sql_condition("r")}
+  and r.id > coalesce(resets.reset_id, 0)
 """
         )
     except Exception:
