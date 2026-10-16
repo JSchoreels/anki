@@ -1682,7 +1682,8 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.actionEmptyCards.triggered, self.onEmptyCards)
         qconnect(m.actionNoteTypes.triggered, self.onNoteTypes)
         qconnect(m.action_check_for_updates.triggered, self.on_check_for_updates)
-        m.action_check_for_updates.setVisible(not aqt.is_portable())
+        # kuma3: no update check, the releases it finds are the upstream fork's, not kuma3 desktop
+        m.action_check_for_updates.setVisible(False)
         qconnect(m.actionPreferences.triggered, self.onPrefs)
 
         # View
@@ -1745,10 +1746,8 @@ title="{}" {}>{}</button>""".format(
     ##########################################################################
 
     def setup_auto_update(self, _log: list[DownloadLogEntry]) -> None:
-        from aqt.update import check_for_update
-
-        if aqt.mw.pm.check_for_updates():
-            check_for_update(parent=self, manual=False)
+        # kuma3: no update check (it offered the upstream fork's builds over kuma3 desktop)
+        return
 
     # Timers
     ##########################################################################
