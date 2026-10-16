@@ -436,7 +436,9 @@ class Game:
         boss = self.is_boss(deck_id, card_id)
         points = FAST_POINTS if fast else POINTS
         mult = self.mult() * (3 if boss else 1)
-        xp = round(points * mult)
+        xp = math.floor(
+            points * mult + 0.5
+        )  # the phone's Math.round (half up), not banker's
         t = self._today()
         t["reps"] = int(t.get("reps", 0)) + 1
         if fast:

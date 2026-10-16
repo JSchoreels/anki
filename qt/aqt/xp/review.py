@@ -8,6 +8,8 @@ shared progress note is written when the reviewer closes."""
 from __future__ import annotations
 
 import json
+import logging
+import socket
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
     from aqt.main import AnkiQt
 
 HERE = Path(__file__).parent
+logger = logging.getLogger(__name__)
 PROFILE_KEY = "kuma3_xp"
 
 
@@ -76,6 +79,8 @@ class XpReview:
         """The game for this profile (its part, settings and boss cards live in the profile)."""
         if self.game is None:
             store = self.mw.pm.profile.setdefault(PROFILE_KEY, {})
+            # one part per PC, the same after a crash (the profile, and a random id in it, is saved only on close)
+            store.setdefault("device", f"kuma3-desktop-{socket.gethostname()}")
             self.game = Game(store)
         return self.game
 
@@ -218,7 +223,9 @@ class XpReview:
 
     def on_undo(self, changes: Any) -> None:
         """Undoing an answer gives back its rep, XP, quests and boss."""
-        if self.game and getattr(changes, "operation", "") == tr.actions_answer_card():
+        op = getattr(changes, "operation", "")
+        logger.debug("Anki XP: undo of %r", op)
+        if self.game and op == tr.actions_answer_card():
             if self.game.undo_answer():
                 self.push_bar()
 
