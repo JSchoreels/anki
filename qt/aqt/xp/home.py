@@ -1,8 +1,8 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 """kuma3: the Anki XP home on the desktop deck list (the phone's XpHome): a Player group box above the decks (level,
-XP bar, streak, daily goal, Quests and Trophies) and the decks with nothing due folded into "N decks done for today".
-Only while Anki XP is on."""
+XP bar, streak, daily goal, Quests and Trophies), the decks with nothing due folded into "N decks done for today",
+and Today, RWKV recall and Activity boxes under them (today.py). Only while Anki XP is on."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from aqt import gui_hooks
 
 from . import progress
+from .today import Today
 from .game import TROPHIES, level, level_start
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ FOLD_JS = """
 class XpHome:
     def __init__(self, review: XpReview) -> None:
         self.review = review
+        self.today = Today(review.mw)
         gui_hooks.deck_browser_will_render_content.append(self.on_render)
 
     def on_render(self, deck_browser: Any, content: Any) -> None:
@@ -118,3 +120,4 @@ class XpHome:
 <a onclick="return pycmd('kxp:quests')">Trophies {trophies}/{len(TROPHIES)} ▸</a></div>
 </fieldset>"""
         content.tree = CSS + player + content.tree + FOLD_JS
+        content.stats = self.today.html(content.stats, deck_browser)
