@@ -11,6 +11,7 @@ from aqt import gui_hooks
 from aqt.qt import QAction, qconnect
 
 from .home import XpHome
+from .look import XpLook
 from .review import XpReview
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 def setup(mw: AnkiQt) -> XpReview:
     review = XpReview(mw)
     review.home = XpHome(review)
+    review.look = XpLook(review)
     action = QAction("Anki XP", mw)
     action.setCheckable(True)
     action.setToolTip(
@@ -32,9 +34,11 @@ def setup(mw: AnkiQt) -> XpReview:
     gui_hooks.profile_did_open.append(opened)
 
     def toggled(on: bool) -> None:
+        if on == review.on:
+            return  # the profile opening: nothing changed
         review.set_on(on)
-        if mw.state == "deckBrowser":
-            mw.deckBrowser.refresh()
+        mw.toolbar.redraw()
+        mw.reset()  # the screen again, with or without the XP look
 
     qconnect(action.toggled, toggled)
     mw.form.menuTools.addSeparator()

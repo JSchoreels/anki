@@ -1,0 +1,344 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* kuma3 XP theme on the backend's web pages (statistics, deck options, card info, congrats, import, image
+   occlusion). Injected by PageWebViewClient when the day theme is Anki XP. Only Anki's own CSS variables and a few
+   generic elements are touched, so a backend update can't break a page, at worst it loses some XP look. */
+:root {
+    --canvas: #ece9d8;
+    --canvas-elevated: #ffffff;
+    --canvas-elevated-hover: #c1d2ee;
+    --canvas-inset: #ffffff;
+    --canvas-overlay: #ffffe1;
+    --window-bg: #ece9d8;
+    --fg: #000000;
+    --fg-subtle: #444444;
+    --fg-link: #0000ff;
+    --link-color: #0000ff;
+    --border: #7f9db9;
+    --border-subtle: #7f9db9;
+    --border-strong: #003c74;
+    --border-focus: #316ac5;
+    --border-radius: 3px;
+    --border-radius-medium: 0px;
+    --button-bg: #ece9d8;
+    --button-gradient-start: #ffffff;
+    --button-gradient-end: #d6d0c5;
+    --button-primary-bg: #0054e3;
+    --button-primary-gradient-start: #3c8cf3;
+    --button-primary-gradient-end: #0054e3;
+    --highlight-bg: #316ac5;
+    --highlight-fg: #ffffff;
+    --state-new: #0000ff;
+    --state-learn: #c00000;
+    --state-review: #008000;
+    --shadow: rgba(0, 0, 0, 0.3);
+    --bs-body-bg: #ece9d8;
+    --bs-body-color: #000000;
+    --bs-border-color: #7f9db9;
+    --bs-primary-rgb: 0, 84, 227;
+    --bs-border-radius: 3px;
+    --bs-border-radius-sm: 3px;
+    --bs-border-radius-lg: 3px;
+}
+
+/* Wine's Tahoma, served by PageWebViewClient from res/font */
+@font-face { font-family: "XP Tahoma"; src: url("/_xp/tahoma.ttf"); }
+@font-face { font-family: "XP Tahoma"; font-weight: bold; src: url("/_xp/tahomabd.ttf"); }
+
+html, body, button, select, input {
+    font-family: "XP Tahoma", Tahoma, Roboto, sans-serif !important;
+}
+
+html, body {
+    background: #ece9d8 !important;
+}
+
+/* Titled sections (TitledContainer: a .container whose first child holds the h1) become XP group boxes on the
+   window face, like an XP Properties sheet and the home screen: thin etched frame, the title set into the top
+   edge on the left, the help badge into it on the right. Only titled sections: the page's own layout
+   .container stays unframed. */
+.container:has(> .position-relative > h1) {
+    position: relative;
+    background: transparent !important;
+    border: 1px solid #b9b6a1 !important;
+    border-radius: 3px !important;
+    box-shadow: inset 1px 1px 0 #ffffff !important; /* etched: the white inner line of an XP group box */
+    padding: 20px 12px 10px !important;
+}
+
+.container:has(> .position-relative > h1) > .position-relative {
+    position: static !important;
+}
+
+.container > .position-relative > h1 {
+    position: absolute;
+    top: -0.75em;
+    left: 8px;
+    margin: 0 !important;
+    padding: 0 4px !important;
+    border: 0 !important;
+    background: #ece9d8;
+    color: #0046d5 !important;
+    font-family: "XP Tahoma", Tahoma, Roboto, sans-serif !important;
+    font-size: 16px !important;
+    font-weight: normal;
+    line-height: 1.5;
+}
+
+.container > .position-relative > .help-badge {
+    top: -15px !important;
+    right: 8px !important;
+    padding: 0 2px;
+    background: #ece9d8;
+}
+
+/* Scheduler's "Apply schedule to all presets" starts the first row under the title */
+.container > .inline-heading {
+    justify-content: flex-start !important;
+    margin-bottom: 8px !important;
+}
+
+
+button:not(.badge):not(.scheduler-help), .btn, select, input[type="number"], input[type="text"] {
+    border-radius: 3px !important;
+}
+
+/* not the small revert (.badge) and help (.scheduler-help) icon buttons: framed they became big boxes over the
+   labels and toggles */
+button:not(.badge):not(.scheduler-help), .btn {
+    background: linear-gradient(#ffffff, #ecebe6 86%, #d6d0c5) !important;
+    border: 1px solid #003c74 !important;
+    color: #000000 !important;
+}
+
+button:not(.badge):not(.scheduler-help):active, .btn:active {
+    background: linear-gradient(#cdcac3, #e3e3db 8%, #f2f2f1) !important;
+}
+
+h1, h2 {
+    font-family: "XP Tahoma", Tahoma, Roboto, sans-serif !important; /* Trebuchet is not on Android */
+    color: #215dc6;
+}
+
+/* Deck options Preset / This deck / Today only tabs: the button rule above wipes Anki's active underline, so
+   the active tab gets the XP selection colour (only TabbedValue uses aria-pressed) */
+li.active > button[aria-pressed="true"] {
+    background: #316ac5 !important;
+    color: #ffffff !important;
+}
+
+/* the chosen scheduler (FSRS-6 / FSRS-7 / RWKV-...) in the same selection colour as the tabs */
+.scheduler-choices label.active {
+    background: #316ac5 !important;
+    border-color: #003c74 !important;
+    color: #ffffff !important;
+}
+
+/* Accessibility (2026-10-15 check on the Pixel): the revert icon was #9a9a9a (2.8:1) on a ~20 px target next to
+   the field; the Preset / This deck / Today only tabs were 20 px
+   tall. The revert badge is the only .badge with p-1 (RevertButton.svelte). */
+button.badge.p-1 {
+    color: #444444 !important;
+    opacity: 1 !important;
+    min-width: 32px;
+    min-height: 32px;
+}
+
+
+li > button[aria-pressed] {
+    min-height: 32px;
+}
+
+/* Switches become XP check boxes (DESIGN.md: no Material pills): 24 px square, navy edge, the XP white-to-grey
+   diagonal face, green tick when on. The label still toggles it, so the target is the whole row. */
+.form-switch .form-check-input {
+    width: 24px !important;
+    height: 24px !important;
+    border: 1px solid #1c5180 !important;
+    border-radius: 0 !important;
+    background: linear-gradient(135deg, #dcdcd7, #ffffff 70%) !important;
+}
+
+.form-switch .form-check-input:checked {
+    background:
+        url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3e%3cpath d=%27M3 8.2l3.2 3.2L13 4.6%27 fill=%27none%27 stroke=%27%2321a121%27 stroke-width=%272.6%27/%3e%3c/svg%3e") center / 18px no-repeat,
+        linear-gradient(135deg, #dcdcd7, #ffffff 70%) !important;
+}
+
+.form-switch .form-check-input:focus-visible {
+    outline: 1px dotted #000000 !important;
+    outline-offset: 2px;
+    box-shadow: none !important;
+}
+
+/* Easy Days sliders become XP trackbars: a thin sunken groove and a push-button thumb */
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 32px;
+    background: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: #f0f0ea;
+    border: 1px solid;
+    border-color: #9d9da1 #ffffff #ffffff #9d9da1;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 26px;
+    margin-top: -12px;
+    border: 1px solid #003c74;
+    border-radius: 2px;
+    background: linear-gradient(#ffffff, #ecebe6 86%, #d6d0c5);
+}
+
+/* Drop-downs are XP combo boxes: a white field (the arrow button keeps Anki's own) */
+.select-container {
+    background: #ffffff !important;
+}
+
+/* Section help: XP blue "?" instead of a dark grey disc, on a 32 px target centred on the frame line */
+.container > .position-relative > .help-badge {
+    top: -16px !important;
+    color: #215dc6 !important;
+}
+
+.container > .position-relative > .help-badge .badge {
+    min-width: 32px;
+    min-height: 32px;
+}
+
+/* Statistics (/graphs): the range controls become XP option buttons and check boxes on 32 px rows (they were
+   stock 16 px controls with 10 px labels), chart text is Tahoma and fully opaque, stat values outweigh their
+   labels. Chart fills stay Anki's own (d3 sets them in code). Scoped to the stats markup (.range-box, .graph). */
+:is(.range-box, .graph) label:has(> input[type="radio"], > input[type="checkbox"]) {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    margin-inline-end: 10px;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+:is(.range-box, .graph) input[type="radio"],
+:is(.range-box, .graph) input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    margin: 0 6px 0 0;
+    border: 1px solid #1c5180;
+    background: linear-gradient(135deg, #dcdcd7, #ffffff 70%);
+}
+
+:is(.range-box, .graph) input[type="radio"] {
+    border-radius: 50%;
+}
+
+:is(.range-box, .graph) input[type="radio"]:checked {
+    background: radial-gradient(circle, #21a121 0 4px, transparent 4.5px), linear-gradient(135deg, #dcdcd7, #ffffff 70%);
+}
+
+:is(.range-box, .graph) input[type="checkbox"]:checked {
+    background:
+        url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3e%3cpath d=%27M3 8.2l3.2 3.2L13 4.6%27 fill=%27none%27 stroke=%27%2321a121%27 stroke-width=%272.6%27/%3e%3c/svg%3e") center / 14px no-repeat,
+        linear-gradient(135deg, #dcdcd7, #ffffff 70%);
+}
+
+:is(.range-box, .graph) :is(input[type="radio"], input[type="checkbox"]):focus-visible {
+    outline: 1px dotted #000000;
+    outline-offset: 2px;
+}
+
+/* chart text: Tahoma (beats the d3 font-family attributes), axis labels opaque instead of 50% */
+svg text {
+    font-family: "XP Tahoma", Tahoma, Roboto, sans-serif !important;
+}
+
+.tick text {
+    opacity: 1 !important;
+    fill: #444444;
+    font-size: 18px;
+}
+
+/* Retention table: the young/mature greens were 1.8:1 and 2.7:1 on the face */
+table .young {
+    color: #26703a !important;
+}
+
+table .mature {
+    color: #00501e !important;
+}
+
+/* stat tables (Today, Future Due, intervals...): the value outweighs its label */
+table td.align-end + td.align-start {
+    font-weight: bold;
+    font-size: 14px;
+}
+
+.graph .subtitle {
+    text-align: start !important;
+    font-size: 13px !important;
+    color: #444444 !important;
+}
+
+/* a row of range controls wraps between labels, never off the screen edge */
+:is(.range-box, .graph) div:has(> label > input[type="radio"]) {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    column-gap: 2px;
+}
+
+/* Statistics "At a glance" (xp/XpGlance.kt): four read-only XP fields, number first */
+.xp-glance {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.xp-glance-cell {
+    display: flex;
+    flex-direction: column;
+    padding: 8px 10px;
+    background: #ffffff;
+    border: 1px solid #7f9db9;
+}
+
+.xp-glance-cell b {
+    font-size: 24px;
+    line-height: 1.2;
+}
+
+.xp-glance-cell span {
+    font-size: 13px;
+}
+
+.xp-glance-cell small {
+    font-size: 12px;
+    color: #444444;
+}
+
+.xp-glance-cell.below b {
+    color: #c00000;
+}
+
+.xp-glance-cell.met b {
+    color: #008000;
+}
+
+.xp-glance-deck {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: #444444;
+}
+
+/* the help modal's close button keeps Bootstrap's drawn × (last in the file: it must beat the push-button rule) */
+button.btn-close.btn-close {
+    background: transparent var(--bs-btn-close-bg) center / 1em auto no-repeat !important;
+    border: 0 !important;
+}

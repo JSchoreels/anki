@@ -51,6 +51,7 @@ class XpReview:
         self.token = 0
         self.in_review = False
         self.home: object | None = None  # aqt.xp.home.XpHome, set by setup()
+        self.look: object | None = None  # aqt.xp.look.XpLook, set by setup()
         gui_hooks.webview_will_set_content.append(self.on_content)
         gui_hooks.state_did_change.append(self.on_state)
         gui_hooks.reviewer_did_show_question.append(self.on_question)

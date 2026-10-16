@@ -1,0 +1,57 @@
+/* kuma3: the Anki XP look on the desktop's own screens (deck list, overview, top toolbar, bottom bars, reviewer
+   buttons). pages.css (the phone's, Anki's CSS variables) comes first; these are the few desktop-only rules.
+   Tokens from the app repo's DESIGN.md "kuma3 Anki XP". Light mode only. */
+html, body { font-family: Tahoma, "Segoe UI", sans-serif !important; }
+body { background: #ece9d8 !important; color: #000; }
+
+/* the top toolbar: a Luna title strip */
+body.fancy .toolbar, .toolbar {
+  background: linear-gradient(#0997ff 0, #0053ee 12%, #0050ee 70%, #0047dc 90%, #003dd7 100%) !important;
+  border: 1px solid #0831d9 !important; border-top: 0 !important;
+  border-radius: 0 0 7px 7px !important; box-shadow: none !important; backdrop-filter: none !important;
+}
+.hitem, body.fancy:not(.flat) .hitem {
+  color: #fff !important; text-shadow: 1px 1px 0 #0f1089; background: transparent !important;
+  border: 1px solid transparent !important; box-shadow: none !important; font-family: Tahoma, sans-serif !important;
+}
+.hitem:hover, body.fancy .hitem:hover {
+  background: rgba(255, 255, 255, .18) !important; border-color: rgba(255, 255, 255, .45) !important;
+  text-decoration: none !important;
+}
+
+/* push buttons: white to beige, navy frame, the orange hover rim */
+button, .btn, input[type=button], input[type=submit] {
+  font-family: Tahoma, sans-serif !important; color: #000 !important;
+  background: linear-gradient(#ffffff, #ece9d8 86%, #d6d0c5) !important;
+  border: 1px solid #003c74 !important; border-radius: 3px !important; box-shadow: none !important;
+}
+button:hover, .btn:hover { box-shadow: inset 0 0 0 2px #f8b636 !important; }
+button:focus-visible, .btn:focus-visible { box-shadow: inset 0 0 0 2px #7da2ce !important; outline: 1px dotted #000; }
+button:active, .btn:active { background: linear-gradient(#d6d0c5, #ece9d8) !important; }
+
+/* the deck list: a white Explorer pane in a window frame */
+#deckbrowser-content, body > center > table, .deck-tree {
+  background: #fff;
+}
+tr.deck td { border-color: transparent; }
+tr.current, tr.current td, .current a.deck { background: #316ac5 !important; color: #fff !important; }
+tr.current .zero-count, tr.current .new-count, tr.current .learn-count, tr.current .review-count { color: #fff !important; }
+.new-count { color: #0000ff !important; }
+.learn-count { color: #c00000 !important; }
+.review-count { color: #008000 !important; }
+.zero-count { color: #757575 !important; }
+a.deck { color: #000 !important; }
+th { color: #215dc6; font-family: Tahoma, sans-serif; }
+
+/* the overview's Study Now: the Start button's green */
+#study, button#study {
+  color: #fff !important; text-shadow: 1px 1px 0 #1d5a1d;
+  background: linear-gradient(#5fc35f, #3c9a3c 60%, #2f7d2f) !important; border-color: #1d5a1d !important;
+}
+
+/* reviewer answer buttons: the phone's answer colours on XP buttons */
+#outer, body { background: #ece9d8 !important; }
+button[data-ease="1"] { color: #8b0000 !important; }
+button[data-ease="3"] { color: #004a00 !important; }
+button[data-ease="4"] { color: #0000b0 !important; }
+.stattxt, .nobold { color: #444 !important; }
