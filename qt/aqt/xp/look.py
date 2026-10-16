@@ -44,8 +44,11 @@ class XpLook:
         """The Svelte pages (deck options, statistics, card info, …): pages.css after Anki's own style."""
         if not self.on:
             return
-        css = json.dumps(self.css("pages.css"))
+        congrats = "congrats" in webview.page().url().path()
+        css = json.dumps(self.css("pages.css", *(["congrats.css"] if congrats else [])))
         webview.eval(
             "(() => { const s = document.createElement('style'); s.id = 'kuma3-xp';"
             f" s.textContent = {css}; document.head.appendChild(s); }})();"
         )
+        if congrats:  # the phone's Easter egg: the window's close box, 5 clicks
+            webview.eval(self.css("congrats.js"))

@@ -1,0 +1,82 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* kuma3 XP theme on the congrats page ("Congratulations! You have finished this deck"): the XP desktop (sky,
+   clouds, hills) with the message in an Internet Explorer-style window. Injected after pages.css by
+   PageWebViewClient for /congrats only. */
+html, body {
+    min-height: 100vh;
+    background:
+        radial-gradient(160% 38% at 25% 106%, #4fb536 0 47%, transparent 47.4%),
+        radial-gradient(130% 34% at 90% 110%, #3a8f28 0 50%, transparent 50.4%),
+        radial-gradient(30% 5% at 22% 14%, rgba(255, 255, 255, 0.9), transparent 70%),
+        radial-gradient(22% 4% at 30% 12%, rgba(255, 255, 255, 0.8), transparent 70%),
+        radial-gradient(34% 6% at 78% 26%, rgba(255, 255, 255, 0.85), transparent 70%),
+        radial-gradient(18% 4% at 70% 24%, rgba(255, 255, 255, 0.8), transparent 70%),
+        radial-gradient(26% 5% at 40% 40%, rgba(255, 255, 255, 0.6), transparent 70%),
+        linear-gradient(#2a6fd6, #6fa8ee 45%, #b6d7f7 75%) fixed !important;
+}
+
+/* the generic section window from pages.css doesn't belong here */
+.container {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+
+.congrats {
+    position: relative;
+    margin: 28px 10px 24px !important;
+    padding: 64px 16px 16px;
+    background: #ffffff;
+    border: 3px solid #0831d9;
+    border-top: 0;
+    border-radius: 8px 8px 0 0;
+    box-shadow: 3px 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* title bar with the three buttons */
+.congrats::before {
+    content: "Congratulations - kuma3";
+    position: absolute;
+    top: 0;
+    left: -3px;
+    right: -3px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    padding-left: 10px;
+    color: #ffffff;
+    font: bold 14px "XP Tahoma", Tahoma, sans-serif;
+    text-shadow: 1px 1px #0f1089;
+    border-radius: 7px 7px 0 0;
+    background:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='76' height='22'%3E%3Cdefs%3E%3CradialGradient id='b' cx='.9' cy='.9' r='1'%3E%3Cstop offset='0' stop-color='%230054e9'/%3E%3Cstop offset='.55' stop-color='%232263d5'/%3E%3Cstop offset='.7' stop-color='%234479e4'/%3E%3Cstop offset='.9' stop-color='%23a3bbec'/%3E%3Cstop offset='1' stop-color='%23fff'/%3E%3C/radialGradient%3E%3CradialGradient id='r' cx='.9' cy='.9' r='1'%3E%3Cstop offset='0' stop-color='%23cc4600'/%3E%3Cstop offset='.55' stop-color='%23dc6527'/%3E%3Cstop offset='.7' stop-color='%23cd7546'/%3E%3Cstop offset='.9' stop-color='%23ffccb2'/%3E%3Cstop offset='1' stop-color='%23fff'/%3E%3C/radialGradient%3E%3C/defs%3E%3Cg stroke='%23fff'%3E%3Crect x='.5' y='.5' width='21' height='21' rx='3' fill='url%28%23b%29'/%3E%3Crect x='27.5' y='.5' width='21' height='21' rx='3' fill='url%28%23b%29'/%3E%3Crect x='54.5' y='.5' width='21' height='21' rx='3' fill='url%28%23r%29'/%3E%3C/g%3E%3Cg stroke='%23fff' stroke-width='2.4' fill='none'%3E%3Cpath d='M6 15.5h7'/%3E%3Crect x='32.5' y='5.5' width='11' height='11'/%3E%3Cpath d='M60 6l10 10M70 6l-10 10'/%3E%3C/g%3E%3C/svg%3E") right 5px center no-repeat,
+        linear-gradient(#0997ff, #0053ee 8%, #0050ee 40%, #06f 88%, #06f 93%, #005bff 95%, #003dd7 96%, #003dd7);
+}
+
+/* Internet Explorer's menu bar, with the flag at the right */
+.congrats::after {
+    content: "File   Edit   View   Favorites   Tools   Help";
+    white-space: pre;
+    position: absolute;
+    top: 30px;
+    left: 0;
+    right: 0;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    padding-left: 8px;
+    color: #000000;
+    font: 13px "XP Tahoma", Tahoma, sans-serif;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cpath fill='%23f35325' d='M1 3L9 2V9.5L1 10Z'/%3E%3Cpath fill='%2381bc06' d='M10 1.9L19 1V9L10 9.5Z'/%3E%3Cpath fill='%2305a6f0' d='M1 11L9 10.5V18L1 19Z'/%3E%3Cpath fill='%23ffba08' d='M10 10.5L19 10V17L10 18Z'/%3E%3C/svg%3E") right 6px center / 18px no-repeat, #ece9d8;
+    border-bottom: 1px solid #d6d2c2;
+}
+
+.congrats h1 {
+    font: bold 1.6em "XP Tahoma", Tahoma, sans-serif !important;
+    color: #215dc6 !important;
+    margin-top: 0.4em;
+}
+
+.congrats p {
+    line-height: 1.5;
+}
