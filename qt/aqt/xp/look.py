@@ -7,6 +7,7 @@ the Svelte pages - deck options, statistics, card info - follow it); look.css ad
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from .review import XpReview
 
 HERE = Path(__file__).parent
+logger = logging.getLogger(__name__)
 
 
 class XpLook:
@@ -52,3 +54,26 @@ class XpLook:
         )
         if congrats:  # the phone's Easter egg: the window's close box, 5 clicks
             webview.eval(self.css("congrats.js"))
+        if "graphs" in webview.page().url().path():
+            self.glance(webview)
+
+    def glance(self, webview: Any) -> None:
+        """Statistics: "At a glance" for the page's deck and the "Player" box (the phone's XpGlance)."""
+        from urllib.parse import parse_qs
+
+        from aqt import mw
+
+        from . import glance, progress
+
+        if not mw or not mw.col:
+            return
+        try:
+            query = parse_qs(webview.page().url().query())
+            did = int((query.get("currentDeckId") or [mw.col.decks.current()["id"]])[0])
+            game = self.review.load()
+            progress.read_notes(mw.col, game)
+            webview.eval(
+                glance.script(glance.glance_html(mw.col, did), glance.player_html(game))
+            )
+        except Exception:
+            logger.exception("Anki XP: statistics boxes")
