@@ -1,0 +1,59 @@
+/* kuma3: the Anki XP game in the desktop reviewer (aqt/xp). The phone's XpReview look: XP status bar, Tahoma,
+   blue points / red multiplier chips, gold total on navy, XP balloon tips. */
+body.kxp { padding-top: 38px; }
+body.kxp #_flag, body.kxp #_mark { top: 40px !important; }
+#kxp-bar {
+  position: fixed; top: 0; left: 0; right: 0; height: 34px; z-index: 50; box-sizing: border-box;
+  display: flex; align-items: center; gap: 12px; padding: 0 12px 4px; cursor: pointer; user-select: none;
+  font: 13px Tahoma, "Segoe UI", sans-serif; color: #000;
+  background: linear-gradient(#f5f4ee, #ece9d8 60%, #d8d2bd); border-bottom: 1px solid #a5a28f;
+}
+#kxp-bar b { font-family: Tahoma, sans-serif; font-weight: bold; }
+#kxp-bar .ok { color: #006b00; }
+#kxp-xp { flex: 1; min-width: 40px; height: 12px; background: #686868; padding: 1px; box-sizing: border-box; }
+#kxp-xp > div { height: 100%; background: #fff; }
+#kxp-xp i { display: block; height: 100%; background: linear-gradient(#a5c8ff, #3a7ce8, #2563d8); }
+#kxp-combo { white-space: nowrap; display: inline-block; transform-origin: center; }
+#kxp-combo.hot { color: #a00000; font-weight: bold; }
+#kxp-combo.fire { color: #8f4000; font-weight: bold; font-size: 15px; }
+#kxp-combo.blaze { color: #800000; font-weight: bold; font-size: 17px; }
+#kxp-combo .mult { color: #fff; -webkit-text-stroke: 3px #600000; paint-order: stroke fill; }
+#kxp-combo.fire .mult, #kxp-combo.blaze .mult {
+  padding: 0 3px; border-radius: 4px;
+  background: linear-gradient(to top, #ff4000, #ffb000, rgba(255, 246, 160, 0));
+  animation: kxp-flicker .16s infinite alternate;
+}
+@keyframes kxp-flicker { from { filter: brightness(.95); } to { filter: brightness(1.15); } }
+#kxp-clock { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #d8d5c8; display: none; }
+#kxp-clock i { display: block; height: 100%; width: 100%; background: #1e7b1e; }
+#kxp-clock.wait i { background: #3a5f9e; }
+#kxp-clock.red i { background: #b00000; }
+#kxp-fx { position: fixed; left: 0; right: 0; bottom: 18px; z-index: 60; pointer-events: none;
+  display: flex; justify-content: center; }
+.kxp-chips { display: flex; gap: 6px; align-items: center; transition: transform .35s, opacity .35s; }
+.kxp-chip {
+  font: bold 22px Tahoma, sans-serif; color: #fff; padding: 1px 8px; border: 2px solid #000; border-radius: 4px;
+  text-shadow: 1.5px 1.5px 3px #000; transition: transform .2s;
+}
+.kxp-chip.pts { background: #0070c0; }
+.kxp-chip.mul { background: #c83228; }
+.kxp-chip.tot { background: #0f1089; color: #ffd700; font-size: 28px; text-align: center; }
+.kxp-pop { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); z-index: 61; pointer-events: none;
+  font: bold 26px Tahoma, sans-serif; color: #ff3030; text-shadow: 1.5px 1.5px 3px #000;
+  transition: transform .9s, opacity .9s; }
+#kxp-balloons { position: fixed; right: 12px; bottom: 16px; z-index: 62; display: flex; flex-direction: column-reverse;
+  gap: 6px; align-items: flex-end; pointer-events: none; }
+.kxp-balloon {
+  max-width: 280px; padding: 8px 10px; font: 13px Tahoma, sans-serif; color: #000; background: #ffffe1;
+  border: 1px solid #000; border-radius: 6px; box-shadow: 2px 3px 6px rgba(0, 0, 0, .35);
+  opacity: 0; transition: opacity .15s;
+}
+.kxp-balloon b { display: block; margin-bottom: 2px; }
+.kxp-shake { animation: kxp-shake .4s; }
+@keyframes kxp-shake {
+  0% { transform: translate(0); } 20% { transform: translate(-4px, 1px); } 40% { transform: translate(4px, -1px); }
+  60% { transform: translate(-2px, 1px); } 80% { transform: translate(2px, 0); } 100% { transform: translate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kxp-shake, #kxp-combo .mult { animation: none !important; }
+}

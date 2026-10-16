@@ -1865,6 +1865,11 @@ title="{}" {}>{}</button>""".format(
 
         self._activeWindowOnPlay: QWidget | None = None
 
+        # kuma3: Anki XP in reviews (aqt/xp)
+        import aqt.xp
+
+        self.xp = aqt.xp.setup(self)
+
     def onOdueInvalid(self) -> None:
         showWarning(tr.qt_misc_invalid_property_found_on_card_please())
 
