@@ -5,6 +5,7 @@ body.kxp #_flag, body.kxp #_mark { top: 40px !important; }
 #kxp-bar {
   position: fixed; top: 0; left: 0; right: 0; height: 34px; z-index: 50; box-sizing: border-box;
   display: flex; align-items: center; gap: 12px; padding: 0 12px 4px; cursor: pointer; user-select: none;
+  white-space: nowrap; overflow: hidden;
   font: 13px Tahoma, "Segoe UI", sans-serif; color: #000;
   background: linear-gradient(#f5f4ee, #ece9d8 60%, #d8d2bd); border-bottom: 1px solid #a5a28f;
 }
