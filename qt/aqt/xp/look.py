@@ -35,11 +35,24 @@ class XpLook:
         return "\n".join((HERE / n).read_text(encoding="utf-8") for n in names)
 
     def on_content(self, web_content: Any, context: object | None) -> None:
-        """Anki's own screens (stdHtml): deck list, overview, toolbars, the reviewer's bottom bar."""
-        from aqt.reviewer import Reviewer
+        """Anki's own screens (stdHtml): deck list, overview, the toolbars, the reviewer's answer bar. Not the card
+        (its note type's styling) nor the editor or add-on pages (untested with these rules)."""
+        from aqt.deckbrowser import DeckBrowser, DeckBrowserBottomBar
+        from aqt.overview import Overview, OverviewBottomBar
+        from aqt.reviewer import ReviewerBottomBar
+        from aqt.toolbar import BottomToolbar, TopToolbar
 
-        if not self.on or context is None or isinstance(context, Reviewer):
-            return  # the card keeps its note type's styling
+        screens = (
+            DeckBrowser,
+            DeckBrowserBottomBar,
+            Overview,
+            OverviewBottomBar,
+            ReviewerBottomBar,
+            TopToolbar,
+            BottomToolbar,
+        )
+        if not self.on or not isinstance(context, screens):
+            return
         web_content.head += f"<style>{self.css('pages.css', 'look.css')}</style>"
 
     def on_page(self, webview: Any) -> None:
