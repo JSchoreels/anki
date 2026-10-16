@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import enum
 import time
 from collections.abc import Callable, Sequence
 from types import SimpleNamespace
@@ -352,10 +353,29 @@ def unbury_cards(
     )
 
 
+class FilteredDeckRwkvPolicy(enum.Enum):
+    WARM_UP = "warm_up"
+    REQUIRE_STATE = "require_state"
+    SKIP = "skip"
+
+
+class RwkvFilteredDeckStateCold(Exception):
+    def __init__(
+        self,
+        message: str = "RWKV state is not ready; build it before building this filtered deck.",
+    ) -> None:
+        super().__init__(message)
+
+
 def rebuild_filtered_deck(
-    *, parent: QWidget, deck_id: DeckId
+    *,
+    parent: QWidget,
+    deck_id: DeckId,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: _rebuild_filtered_deck(col, deck_id))
+    return CollectionOp(
+        parent, lambda col: _rebuild_filtered_deck(col, deck_id, rwkv_policy)
+    )
 
 
 def empty_filtered_deck(*, parent: QWidget, deck_id: DeckId) -> CollectionOp[OpChanges]:
@@ -373,16 +393,25 @@ def add_or_update_filtered_deck(
     *,
     parent: QWidget,
     deck: FilteredDeckForUpdate,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
 ) -> CollectionOp[OpChangesWithId]:
-    return CollectionOp(parent, lambda col: _add_or_update_filtered_deck(col, deck))
+    return CollectionOp(
+        parent, lambda col: _add_or_update_filtered_deck(col, deck, rwkv_policy)
+    )
 
 
 def _rebuild_filtered_deck(
     col: Collection,
     deck_id: DeckId,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
 ) -> OpChangesWithCount:
     deck = col.sched.get_or_create_filtered_deck(deck_id=deck_id)
-    _prepare_filtered_deck_retrievability_scores(col, deck, operation="rebuild")
+    if rwkv_policy is FilteredDeckRwkvPolicy.SKIP:
+        _log_filtered_deck_rwkv_skip(deck, operation="rebuild")
+    else:
+        _prepare_filtered_deck_retrievability_scores(
+            col, deck, operation="rebuild", rwkv_policy=rwkv_policy
+        )
     return _run_preserving_rwkv_state(
         col,
         lambda: col.sched.rebuild_filtered_deck(deck_id),
@@ -393,8 +422,14 @@ def _rebuild_filtered_deck(
 def _add_or_update_filtered_deck(
     col: Collection,
     deck: FilteredDeckForUpdate,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
 ) -> OpChangesWithId:
-    _prepare_filtered_deck_retrievability_scores(col, deck, operation="add_or_update")
+    if rwkv_policy is FilteredDeckRwkvPolicy.SKIP:
+        _log_filtered_deck_rwkv_skip(deck, operation="add_or_update")
+    else:
+        _prepare_filtered_deck_retrievability_scores(
+            col, deck, operation="add_or_update", rwkv_policy=rwkv_policy
+        )
     return _run_preserving_rwkv_state(
         col,
         lambda: col.sched.add_or_update_filtered_deck(deck),
@@ -402,14 +437,7 @@ def _add_or_update_filtered_deck(
     )
 
 
-def _prepare_filtered_deck_retrievability_scores(
-    col: Collection,
-    deck: FilteredDeckForUpdate,
-    *,
-    operation: str,
-) -> None:
-    from aqt import rwkv_scheduler
-
+def _filtered_deck_log_context(deck: FilteredDeckForUpdate, *, operation: str) -> str:
     order_names = {
         value: name for name, value in FilteredDeckConfig.SearchTerm.Order.items()
     }
@@ -422,11 +450,34 @@ def _prepare_filtered_deck_retrievability_scores(
         }
         for index, term in enumerate(deck.config.search_terms[:2], start=1)
     ]
-    logger = rwkv_scheduler.logger
-    log_context = (
+    return (
         f"operation={operation} deck_id={deck.id} deck_name={deck.name!r} "
         f"reschedule={deck.config.reschedule} filters={filters!r}"
     )
+
+
+def _log_filtered_deck_rwkv_skip(
+    deck: FilteredDeckForUpdate, *, operation: str
+) -> None:
+    from aqt import rwkv_scheduler
+
+    rwkv_scheduler.logger.info(
+        "RWKV preparation skipped by user choice; FSRS retrievability order is used: %s",
+        _filtered_deck_log_context(deck, operation=operation),
+    )
+
+
+def _prepare_filtered_deck_retrievability_scores(
+    col: Collection,
+    deck: FilteredDeckForUpdate,
+    *,
+    operation: str,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
+) -> None:
+    from aqt import rwkv_scheduler
+
+    logger = rwkv_scheduler.logger
+    log_context = _filtered_deck_log_context(deck, operation=operation)
     logger.debug(
         "RWKV filtered-deck preparation started: %s",
         log_context,
@@ -441,6 +492,7 @@ def _prepare_filtered_deck_retrievability_scores(
         status = rwkv_scheduler.prepare_filtered_deck_retrievability_scores(
             reviewer,
             deck.config,
+            allow_full_replay=rwkv_policy is FilteredDeckRwkvPolicy.WARM_UP,
         )
     except Exception:
         logger.exception(
@@ -449,6 +501,13 @@ def _prepare_filtered_deck_retrievability_scores(
             (time.monotonic() - start) * 1000,
         )
         raise
+    if status is rwkv_scheduler.RwkvStatsPreparationStatus.COLD:
+        logger.info(
+            "RWKV filtered-deck preparation needs state: %s status=cold elapsed_ms=%.1f",
+            log_context,
+            (time.monotonic() - start) * 1000,
+        )
+        raise RwkvFilteredDeckStateCold()
     if status in {
         rwkv_scheduler.RwkvStatsPreparationStatus.PENDING,
         rwkv_scheduler.RwkvStatsPreparationStatus.FAILED,

@@ -18068,11 +18068,13 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         search: str,
         *,
         warm_up_if_needed: bool = False,
+        allow_full_replay: bool = True,
         prepare_instant_due: bool = False,
         prepare_curve_due: bool = False,
         prepare_curve_retrievability: bool = False,
     ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
         assert warm_up_if_needed
+        assert allow_full_replay
         prepared.append(
             (
                 reviewer,

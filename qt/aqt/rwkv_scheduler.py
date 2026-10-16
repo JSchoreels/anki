@@ -31,6 +31,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple, Protocol, TypedDict, TypeVar, cast
@@ -82,6 +83,13 @@ class RwkvStatsPreparationStatus(enum.Enum):
     PENDING = "pending"
     UNAVAILABLE = "unavailable"
     FAILED = "failed"
+    COLD = "cold"  # No usable state; preparing it requires a full historical replay.
+
+
+class FilteredDeckRwkvNeed(enum.Enum):
+    NONE = "none"
+    ORDER = "order"
+    SEARCH = "search"
 
 
 class RwkvFirstReviewElapsedSource(enum.Enum):
@@ -6392,6 +6400,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     search: str,
     *,
     warm_up_if_needed: bool = False,
+    allow_full_replay: bool = True,
     wait_for_warmup: bool = True,
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
@@ -6456,7 +6465,14 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         logger.debug("RWKV stats preparation started: search=%r", search)
         warmup_start = time.monotonic()
         prepare_backend = (
-            _prepare_reviewer_backend_for_filtered_deck
+            (
+                _prepare_reviewer_backend_for_filtered_deck
+                if allow_full_replay
+                else partial(
+                    _prepare_reviewer_backend_for_filtered_deck,
+                    allow_full_replay=False,
+                )
+            )
             if warm_up_if_needed
             else _prepare_reviewer_backend_for_stats
         )
@@ -6497,6 +6513,12 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 "RWKV stats retrievability scoring skipped: warm-up pending search=%r",
                 search,
             )
+            if (
+                warm_up_if_needed
+                and not allow_full_replay
+                and not _reviewer_backend_warmup_pending(reviewer)
+            ):
+                return stopped("state_cold", RwkvStatsPreparationStatus.COLD)
             if warm_up_if_needed and _reviewer_backend is not None:
                 return stopped("warmup_not_ready")
             return stopped(
@@ -6718,9 +6740,27 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 )
 
 
+def filtered_deck_rwkv_need(config: FilteredDeckConfig) -> FilteredDeckRwkvNeed:
+    """Classify RWKV use in the active filters, with membership taking priority."""
+
+    terms = [term for term in config.search_terms[:2] if term.limit > 0]
+    if any(
+        search_uses_rwkv_retrievability(term.search)
+        or _search_uses_rwkv_instant_due(term.search)
+        or _search_uses_rwkv_curve_due(term.search)
+        for term in terms
+    ):
+        return FilteredDeckRwkvNeed.SEARCH
+    if any(term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS for term in terms):
+        return FilteredDeckRwkvNeed.ORDER
+    return FilteredDeckRwkvNeed.NONE
+
+
 def prepare_filtered_deck_retrievability_scores(
     reviewer: object,
     config: FilteredDeckConfig,
+    *,
+    allow_full_replay: bool = True,
 ) -> RwkvStatsPreparationStatus | None:
     """Prepare RWKV scores needed by a filtered deck's filters and ordering."""
 
@@ -6732,17 +6772,7 @@ def prepare_filtered_deck_retrievability_scores(
     prepare_curve_retrievability = any(
         _search_uses_rwkv_curve_retrievability(term.search) for term in terms
     )
-    needs_scores = (
-        any(
-            term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS
-            or _RWKV_INSTANT_R_SEARCH_PATTERN.search(term.search)
-            for term in terms
-        )
-        or prepare_instant_due
-        or prepare_curve_due
-        or prepare_curve_retrievability
-    )
-    if not needs_scores:
+    if filtered_deck_rwkv_need(config) is FilteredDeckRwkvNeed.NONE:
         return None
 
     col = _collection(reviewer)
@@ -6770,6 +6800,7 @@ def prepare_filtered_deck_retrievability_scores(
         reviewer,
         search,
         warm_up_if_needed=True,
+        allow_full_replay=allow_full_replay,
         prepare_instant_due=prepare_instant_due,
         prepare_curve_due=prepare_curve_due,
         prepare_curve_retrievability=prepare_curve_retrievability,
@@ -6787,13 +6818,17 @@ def _prepare_reviewer_backend_for_stats(reviewer: object) -> bool:
     return _prepare_reviewer_backend_from_cache(reviewer)
 
 
-def _prepare_reviewer_backend_for_filtered_deck(reviewer: object) -> bool:
+def _prepare_reviewer_backend_for_filtered_deck(
+    reviewer: object, *, allow_full_replay: bool = True
+) -> bool:
     """Ensure a filtered-deck rebuild does not race a cold RWKV backend."""
 
     if _reviewer_backend is None or _reviewer_backend_warmed_up(reviewer):
         return True
     if _reviewer_backend_warmup_pending(reviewer):
         return False
+    if not allow_full_replay:
+        return _prepare_reviewer_backend_from_cache(reviewer)
     return _warm_up_reviewer_backend(reviewer)
 
 
@@ -12212,6 +12247,20 @@ def _rwkv_resident_state_ready(mw: object) -> bool:
     return _reviewer_backend_warmup_key(
         reviewer
     ) is not None and _reviewer_backend_warmed_up(reviewer)
+
+
+def filtered_deck_rwkv_state_cold(mw: object) -> bool:
+    """Cheap GUI preflight; leave history validation and cache restore to the worker."""
+
+    if not configure_reviewer_backend_from_environment():
+        return False
+    if _rwkv_resident_state_ready(mw) or rwkv_state_cache_loading(mw):
+        return False
+    reviewer = SimpleNamespace(mw=mw)
+    metadata = _read_rwkv_state_cache_metadata(reviewer)
+    return metadata is None or not _rwkv_state_cache_metadata_compatible(
+        reviewer, metadata
+    )
 
 
 def _show_rwkv_state_cache_prompt(mw: object) -> None:

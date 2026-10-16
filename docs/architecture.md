@@ -527,11 +527,13 @@ Current exact-vs-scalar status:
   whose search uses either explicit RWKV property, or whose ordering uses
   retrievability, the RWKV layer pre-scores the union of its active search
   terms, excluding suspended cards because the build never includes them.
-  The standard desktop build blocks until an in-progress RWKV warm-up
-  completes, or performs the normal warm-up when starting from a cold backend;
-  a failed preparation aborts the rebuild. RWKV predicates are broadened only
-  for this candidate pre-scoring pass; the final filtered-deck search then
-  applies the original predicates against the populated score map.
+  The standard desktop build waits for an in-progress RWKV warm-up or restores
+  the state cache. When no usable state or cache exists, it never replays the
+  history inside the operation, but asks first: build the state with labelled
+  progress and then the deck, build in FSRS order when RWKV only orders the
+  deck, or cancel. A failed preparation aborts the rebuild. RWKV predicates are
+  broadened only for this candidate pre-scoring pass; the final filtered-deck
+  search then applies the original predicates against the populated score map.
 - `card.data.s` stores `S90` (the interval at 90% retrievability), so
   `prop:s`, the browser stability column, and Card Info all use the same
   stability value across FSRS-6 and FSRS-7. When a positive FSRS stability value

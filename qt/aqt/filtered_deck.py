@@ -322,6 +322,8 @@ class FilteredDeckConfigDialog(QDialog):
         QDialog.reject(self)
 
     def accept(self) -> None:
+        from aqt.rwkv_filtered_deck import run_filtered_deck_op_with_rwkv_check
+
         if not self._update_deck():
             return
 
@@ -335,6 +337,11 @@ class FilteredDeckConfigDialog(QDialog):
 
         gui_hooks.filtered_deck_dialog_will_add_or_update_deck(self, self.deck)
 
-        add_or_update_filtered_deck(parent=self, deck=self.deck).success(
-            success
-        ).run_in_background()
+        run_filtered_deck_op_with_rwkv_check(
+            mw=self.mw,
+            parent=self,
+            config=self.deck.config,
+            make_op=lambda policy: add_or_update_filtered_deck(
+                parent=self, deck=self.deck, rwkv_policy=policy
+            ).success(success),
+        )
