@@ -10098,6 +10098,60 @@ def test_historical_rwkv_review_rows_do_not_repeat_note_payloads() -> None:
     assert "case when c.odid != 0 then c.odid else c.did end" in sql
 
 
+def test_historical_rwkv_review_rows_limits_reset_scan_to_requested_cards() -> None:
+    captured_sql: list[str] = []
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(
+            """
+create table cards (id integer, nid integer, did integer, odid integer);
+create table revlog (
+  id integer, cid integer, ease integer, time integer,
+  type integer, ivl integer, factor integer
+);
+insert into cards values (1, 10, 100, 0), (2, 20, 100, 0), (3, 30, 100, 0);
+insert into revlog values
+  (10, 1, 3, 1000, 1, 5, 2500),
+  (15, 3, 3, 1000, 1, 5, 2500),
+  (20, 1, 0, 0, 4, 0, 0),
+  (25, 2, 3, 1000, 1, 5, 2500),
+  (30, 1, 3, 1000, 0, 1, 2500),
+  (40, 2, 0, 0, 4, 0, 0),
+  (50, 2, 3, 1000, 0, 1, 2500);
+"""
+        )
+
+        class DB:
+            def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+                captured_sql.append(sql)
+                return connection.execute(sql, args).fetchall()
+
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+        rows = rwkv_scheduler._historical_rwkv_review_rows(reviewer, card_ids=[1, 3])
+        unrestricted_rows = rwkv_scheduler._historical_rwkv_review_rows(reviewer)
+
+        assert rows == [
+            (15, 3, 30, 100, 3, 1000, 1, 5, 2500),
+            (30, 1, 10, 100, 3, 1000, 0, 1, 2500),
+        ]
+        assert unrestricted_rows == [
+            *rows,
+            (50, 2, 20, 100, 3, 1000, 0, 1, 2500),
+        ]
+        reset_subquery = captured_sql[0].split("left join (")[1].split(") resets")[0]
+        assert "where cid in (1,3)" in reset_subquery
+        assert "and type = 4 and ease = 0 and factor = 0" in reset_subquery
+        unrestricted_reset_subquery = (
+            captured_sql[1].split("left join (")[1].split(") resets")[0]
+        )
+        assert (
+            "where type = 4 and ease = 0 and factor = 0" in unrestricted_reset_subquery
+        )
+    finally:
+        connection.close()
+
+
 def test_historical_rwkv_review_count_excludes_deleted_cards() -> None:
     captured_sql: list[str] = []
 
@@ -17992,9 +18046,9 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         def __init__(self) -> None:
             self.build_calls: list[tuple[tuple[str, ...], str]] = []
 
-        def build_search_string(self, *searches: str, joiner: str) -> str:
+        def build_search_string(self, *searches: str, joiner: str = "AND") -> str:
             self.build_calls.append((searches, joiner))
-            return "combined search"
+            return "union search" if joiner == "OR" else "restricted search"
 
     col = Collection()
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
@@ -18039,16 +18093,55 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
     status = prepare_filtered_deck_retrievability_scores(reviewer, config)
 
     assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
-    assert col.build_calls == [((search,), "OR")]
+    assert col.build_calls == [
+        ((search,), "OR"),
+        (("union search", "-is:suspended"), "AND"),
+    ]
     assert prepared == [
         (
             reviewer,
-            "combined search",
+            "restricted search",
             prepare_instant_due,
             prepare_curve_due,
             prepare_curve_retrievability,
         )
     ]
+
+
+def test_filtered_deck_candidate_scoring_excludes_suspended_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Collection:
+        def build_search_string(self, *searches: str, joiner: str = "AND") -> str:
+            return f" {joiner} ".join(f"({search})" for search in searches)
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection()))
+    config = FilteredDeckConfig(
+        search_terms=[
+            FilteredDeckConfig.SearchTerm(
+                search=search,
+                limit=100,
+                order=FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
+            )
+            for search in ("deck:Japanese", "tag:vocabulary")
+        ]
+    )
+    prepared: list[str] = []
+
+    def prepare(
+        reviewer: object, search: str, **kwargs: Any
+    ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
+        prepared.append(search)
+        return rwkv_scheduler.RwkvStatsPreparationStatus.READY
+
+    monkeypatch.setattr(rwkv_scheduler, "prepare_stats_retrievability_scores", prepare)
+
+    status = prepare_filtered_deck_retrievability_scores(reviewer, config)
+
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert prepared == ["((deck:Japanese) OR (tag:vocabulary)) AND (-is:suspended)"]
+    assert "is:buried" not in prepared[0]
+    assert "deck:filtered" not in prepared[0]
 
 
 def test_filtered_deck_fsrs_retrievability_does_not_prepare_rwkv_scores() -> None:
@@ -18097,7 +18190,9 @@ def rwkv_filtered_deck_context(
     )
     col = reviewer.mw.col
     col.find_cards = lambda search, order=False: [1]
-    col.build_search_string = lambda *searches, joiner: " OR ".join(searches)
+    col.build_search_string = lambda *searches, joiner="AND": f" {joiner} ".join(
+        searches
+    )
     config = FilteredDeckConfig(
         search_terms=[
             FilteredDeckConfig.SearchTerm(
@@ -18239,7 +18334,7 @@ def test_filtered_deck_waits_for_busy_backend_before_mutating(
             else collection_pb2.OpChangesWithId(id=200)
         ]
         call = col._backend.stats_calls[-1]
-        assert call["search"] == "deck:current"
+        assert call["search"] == "deck:current AND -is:suspended"
         assert [score.retrievability for score in call["scores"]] == [
             pytest.approx(0.64)
         ]

@@ -6755,6 +6755,8 @@ def prepare_filtered_deck_retrievability_scores(
             *(term.search for term in terms),
             joiner="OR",
         )
+        # The filtered-deck build never includes suspended cards.
+        search = build_search_string(search, "-is:suspended")
     except Exception:
         logger.warning(
             "RWKV filtered-deck scoring stopped: reason=candidate_search_failed "
@@ -19912,8 +19914,10 @@ def _historical_rwkv_review_rows(
         if not valid_card_ids:
             return []
         card_clause = f"and r.cid in {ids2str(valid_card_ids)}"
+        reset_card_clause = f"cid in {ids2str(valid_card_ids)} and "
     else:
         card_clause = ""
+        reset_card_clause = ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
     # Start with SELECT so DBProxy treats this history read as read-only and
     # preserves Anki's undo history.
@@ -19933,7 +19937,7 @@ join cards c on c.id = r.cid
 left join (
   select cid, max(id) as reset_id
   from revlog
-  where type = 4 and ease = 0 and factor = 0
+  where {reset_card_clause}type = 4 and ease = 0 and factor = 0
   group by cid
 ) resets on resets.cid = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}

@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Faster filtered-deck builds and new-card answers.** Fixed a long "Processing..." wait when building filtered decks sorted by retrievability or relative overdueness (especially with FSRS preset overlay rules), and a short stall after answering each new card on large collections. Filtered decks sorted by RWKV retrievability also build faster on collections with many suspended cards, with the same card order.
+
 - **Fewer full RWKV state rebuilds after deck edits.** Adding or importing decks, adding presets, moving never-reviewed decks to another preset, or deleting never-reviewed decks no longer discards the RWKV state cache and triggers a full "Building RWKV state cache" replay. Moving a deck that has reviews to another preset still rebuilds.
 
 - **Clickable add-on updates after RWKV startup.** Add-on update prompts wait until the RWKV question and state-cache progress window close. Repeated checks share one active update flow, and closing a profile removes its old update window.

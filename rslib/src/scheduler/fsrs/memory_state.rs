@@ -782,6 +782,7 @@ impl Collection {
         fsrs_current_retrievability_for_state(&params, state, elapsed_days)
     }
 
+    #[cfg(test)]
     pub(crate) fn fsrs_relative_overdueness_for_card_state(
         &mut self,
         card: &Card,
