@@ -1236,8 +1236,18 @@ impl Collection {
             return None;
         }
         let (_, handle) = building.take()?;
+        drop(building);
         match handle.join() {
             Ok(Ok(runtime)) => {
+                // The precision was changed while it was built: build again.
+                // ponytail: the old build runs to its end first; cancel it if
+                // changes during long replays matter
+                if let Some(model) = registered_model().filter(|model| *model != runtime.model) {
+                    if let Err(err) = self.rwkv_offline_start_build(model) {
+                        tracing::warn!(?err, "RWKV offline build not started");
+                    }
+                    return None;
+                }
                 // queues built meanwhile have the standard order
                 self.state.card_queues = None;
                 Some(runtime)

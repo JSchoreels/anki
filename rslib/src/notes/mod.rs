@@ -408,8 +408,8 @@ impl Collection {
                 Ok(())
             })
         } else {
-            // kuma3: no undo entry, but Anki's undo stays (upstream cleared it, so every Anki XP progress write
-            // took away the last answer's undo)
+            // kuma3: no undo entry, but Anki's undo stays (upstream cleared it, so every
+            // Anki XP progress write took away the last answer's undo)
             self.transact(Op::SkipUndo, |col| {
                 for mut note in notes {
                     col.update_note_inner(&mut note)?;
