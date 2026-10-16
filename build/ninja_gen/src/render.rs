@@ -33,9 +33,12 @@ impl Build {
         writeln!(&mut buf, "builddir = {}", self.buildroot.as_str()).unwrap();
         writeln!(
             &mut buf,
-            "runner = $builddir/rust/{}/{}",
+            // MAIN_SEPARATOR: CreateProcess rejects a relative "out/rust/..." path
+            // on Windows 11 24H2 (the kuma3 desktop PC)
+            "runner = $builddir{sep}rust{sep}{}{sep}{}",
             profile_output_dir(self.build_profile),
-            with_exe("runner")
+            with_exe("runner"),
+            sep = std::path::MAIN_SEPARATOR
         )
         .unwrap();
         for (key, value) in &self.variables {
