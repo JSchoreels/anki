@@ -531,7 +531,11 @@ Current exact-vs-scalar status:
   the state cache. When no usable state or cache exists, it never replays the
   history inside the operation, but asks first: build the state with labelled
   progress and then the deck, build in FSRS order when RWKV only orders the
-  deck, or cancel. A failed preparation aborts the rebuild. RWKV predicates are
+  deck, or cancel. Declining (startup prompt Cancel or FSRS order) is remembered
+  for the session: automatic recovery requests, empty-queue recovery and
+  post-sync refresh do not start a full replay until an explicit build
+  (startup/filtered/deck-options build actions) clears it; cache restores still
+  run. A failed preparation aborts the rebuild. RWKV predicates are
   broadened only for this candidate pre-scoring pass; the final filtered-deck
   search then applies the original predicates against the populated score map.
 - `card.data.s` stores `S90` (the interval at 90% retrievability), so

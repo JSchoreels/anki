@@ -20,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12133,6 +12134,182 @@ def test_failed_rwkv_state_recovery_is_not_immediately_requeued(
     )
 
 
+@pytest.mark.parametrize(
+    "reason", ["deck or preset change", "overview", "reviewer exit"]
+)
+@pytest.mark.parametrize("declined_after_scheduling", [False, True])
+def test_rwkv_state_recovery_is_suppressed_when_declined(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    reason: str,
+    declined_after_scheduling: bool,
+) -> None:
+    timers: list[Callable[[], None]] = []
+    during_review = reason == "deck or preset change"
+    mw = SimpleNamespace(state="review" if during_review else "overview", col=object())
+    _attach_progress_taskman(mw)
+    mw.progress.single_shot = lambda _delay, callback: timers.append(callback)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: False)
+    build = MagicMock()
+    monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
+    if not declined_after_scheduling:
+        rwkv_scheduler.mark_rwkv_state_declined(mw, source="startup prompt")
+
+    with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+        scheduled = rwkv_scheduler.request_rwkv_state_cache_recovery(
+            mw, reason=reason, allow_during_review=during_review
+        )
+        assert scheduled is declined_after_scheduling
+        if declined_after_scheduling:
+            assert len(timers) == 1
+            rwkv_scheduler.mark_rwkv_state_declined(mw, source="startup prompt")
+            timers.pop()()
+
+    assert timers == []
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+    build.assert_not_called()
+    assert (
+        f"RWKV state recovery request suppressed after decline: reason={reason}"
+        in caplog.messages
+    )
+
+
+def test_empty_queue_recovery_is_suppressed_when_declined(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    rwkv_scheduler.mark_rwkv_state_declined(reviewer.mw, source="startup prompt")
+    monkeypatch.setattr(rwkv_scheduler, "reviewer_queue_order_enabled", lambda _: True)
+    build = MagicMock()
+    on_done = MagicMock()
+    monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
+
+    with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+        assert not rwkv_scheduler.recover_reviewer_queue_state(reviewer, on_done)
+
+    build.assert_not_called()
+    on_done.assert_not_called()
+    assert (
+        "RWKV empty review queue recovery suppressed after decline" in caplog.messages
+    )
+
+
+@pytest.mark.parametrize("resident_ready", [False, True])
+def test_post_sync_refresh_skips_cold_state_when_declined(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resident_ready: bool,
+) -> None:
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    _attach_progress_taskman(reviewer.mw)
+    rwkv_scheduler.mark_rwkv_state_declined(reviewer.mw, source="startup prompt")
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: resident_ready
+    )
+    invalidate = MagicMock()
+    warm_up = MagicMock(return_value=False)
+    on_done = MagicMock()
+    monkeypatch.setattr(
+        rwkv_scheduler, "_invalidate_reviewer_backend_state", invalidate
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_warm_up_reviewer_backend", warm_up)
+
+    rwkv_scheduler.refresh_rwkv_state_after_sync(reviewer.mw, on_done)
+
+    on_done.assert_called_once_with()
+    assert invalidate.call_count == int(resident_ready)
+    assert warm_up.call_count == int(resident_ready)
+    assert rwkv_scheduler.rwkv_state_declined(reviewer.mw)
+
+
+def test_review_scores_use_cache_only_when_declined(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    rwkv_scheduler.mark_rwkv_state_declined(reviewer.mw, source="startup prompt")
+    warm_up = MagicMock()
+    prepare = MagicMock(return_value=False)
+    monkeypatch.setattr(rwkv_scheduler, "_warm_up_reviewer_backend", warm_up)
+    monkeypatch.setattr(rwkv_scheduler, "_prepare_reviewer_backend_for_review", prepare)
+
+    rwkv_scheduler._prepare_rwkv_review_scores_for_deck(
+        reviewer=reviewer,
+        deck_id=100,
+        deck_config={},
+        reason="overview",
+        allow_historical_rebuild=True,
+    )
+
+    prepare.assert_called_once_with(reviewer)
+    warm_up.assert_not_called()
+
+
+@pytest.mark.parametrize("recovery_reason", [None, "overview"])
+@pytest.mark.parametrize("loading", [False, True])
+def test_state_cache_build_clears_declined_only_for_explicit_build(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    recovery_reason: str | None,
+    loading: bool,
+) -> None:
+    mw = SimpleNamespace(_rwkv_state_declined=True, _rwkv_state_cache_loading=loading)
+    _attach_progress_taskman(mw)
+    warm_up = MagicMock(return_value=False)
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", warm_up)
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+
+    with caplog.at_level("INFO", logger="aqt.rwkv_scheduler"):
+        rwkv_scheduler.build_rwkv_state_cache_with_progress(
+            mw, recovery_reason=recovery_reason
+        )
+
+    assert rwkv_scheduler.rwkv_state_declined(mw) is (recovery_reason is not None)
+    assert caplog.messages.count(
+        "RWKV state decline cleared: explicit build requested"
+    ) == (1 if recovery_reason is None else 0)
+    assert warm_up.call_count == (0 if loading else 1)
+
+
+def test_backend_invalidation_preserves_declined(tmp_path: Path) -> None:
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    reviewer.mw._rwkv_state_cache_recovery_failed = True
+    rwkv_scheduler.mark_rwkv_state_declined(reviewer.mw, source="startup prompt")
+
+    rwkv_scheduler._invalidate_reviewer_backend_state(reviewer, reason="deck change")
+
+    assert rwkv_scheduler.rwkv_state_declined(reviewer.mw)
+    assert reviewer.mw._rwkv_state_cache_recovery_failed is False
+
+
+def test_state_cache_restore_still_runs_when_declined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mw = SimpleNamespace(_rwkv_state_declined=True)
+    _attach_progress_taskman(mw)
+    load = MagicMock(return_value=False)
+    monkeypatch.setattr(rwkv_scheduler, "load_rwkv_state_cache", load)
+
+    rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
+
+    load.assert_called_once()
+    assert rwkv_scheduler.rwkv_state_declined(mw)
+
+
 def test_rwkv_state_cache_build_coalesces_existing_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14178,6 +14355,62 @@ def test_stale_startup_prompt_choice_does_not_rebuild_ready_state(
     prompt_callbacks[0](1)
 
     assert build_calls == []
+
+
+@pytest.mark.parametrize(
+    "choice,resident_ready", [(0, False), (1, False), (2, False), (2, True)]
+)
+def test_startup_prompt_records_declined_only_for_cold_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    choice: int,
+    resident_ready: bool,
+) -> None:
+    prompt = MagicMock()
+    build = MagicMock()
+    monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
+    monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    _attach_progress_taskman(reviewer.mw)
+    assert not rwkv_scheduler.rwkv_state_declined(reviewer.mw)
+    assert not rwkv_scheduler.rwkv_state_declined(None)
+    rwkv_scheduler._show_rwkv_state_cache_prompt(reviewer.mw)
+    callback = prompt.call_args.kwargs["callback"]
+    if resident_ready:
+        key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+        assert key is not None
+        rwkv_scheduler._reviewer_backend_warmup_states[key] = _rwkv_resident_identity()
+
+    with caplog.at_level("INFO", logger="aqt.rwkv_scheduler"):
+        callback(choice)
+        if choice == 2:
+            callback(choice)
+
+    declined = choice == 2 and not resident_ready
+    assert rwkv_scheduler.rwkv_state_declined(reviewer.mw) is declined
+    assert caplog.messages == (
+        ["RWKV state declined for this session: source=startup prompt"]
+        if declined
+        else []
+    )
+    if choice in (0, 1):
+        build.assert_called_once_with(
+            reviewer.mw, record_retrievability_cache=choice == 1
+        )
+    else:
+        build.assert_not_called()
+
+
+def test_startup_resets_declined_silently(caplog: pytest.LogCaptureFixture) -> None:
+    mw = SimpleNamespace(_rwkv_state_declined=True)
+
+    with caplog.at_level("INFO", logger="aqt.rwkv_scheduler"):
+        rwkv_scheduler.begin_rwkv_state_cache_startup(mw)
+
+    assert not rwkv_scheduler.rwkv_state_declined(mw)
+    assert "RWKV state decline cleared: explicit build requested" not in caplog.messages
 
 
 def test_startup_prompt_can_build_rwkv_state_cache_only(

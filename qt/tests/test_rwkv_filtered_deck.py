@@ -328,7 +328,9 @@ class FakeOp:
 
 @pytest.fixture
 def gui_flow(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    flow = SimpleNamespace(mw=object(), parent=object(), ops=[], prompts=[], builds=[])
+    flow = SimpleNamespace(
+        mw=SimpleNamespace(), parent=object(), ops=[], prompts=[], builds=[]
+    )
     monkeypatch.setattr(
         rwkv_scheduler, "filtered_deck_rwkv_state_cold", lambda mw: True
     )
@@ -419,6 +421,23 @@ def test_gui_fsrs_choice_skips_preparation(gui_flow: SimpleNamespace) -> None:
         (FilteredDeckRwkvPolicy.SKIP, True, None)
     ]
     assert gui_flow.builds == []
+
+
+@pytest.mark.parametrize("choice", [1, 2])
+def test_gui_records_declined_for_fsrs_order_only(
+    gui_flow: SimpleNamespace, choice: int
+) -> None:
+    gui_flow.run(config_for())
+
+    gui_flow.prompts[0]["callback"](choice)
+
+    assert rwkv_scheduler.rwkv_state_declined(gui_flow.mw) is (choice == 1)
+    assert [(op.policy, op.ran) for op in gui_flow.ops] == (
+        [(FilteredDeckRwkvPolicy.SKIP, True)] if choice == 1 else []
+    )
+    assert gui_flow.builds == []
+    gui_flow.run(config_for())
+    assert len(gui_flow.prompts) == 2
 
 
 @pytest.mark.parametrize(

@@ -49,6 +49,9 @@ def run_filtered_deck_op_with_rwkv_check(
             )
         elif choice == 1 and need is rwkv_scheduler.FilteredDeckRwkvNeed.ORDER:
             logger.info("RWKV filtered-deck choice: FSRS order need=%s", need.value)
+            rwkv_scheduler.mark_rwkv_state_declined(
+                mw, source="filtered deck FSRS order"
+            )
             make_op(FilteredDeckRwkvPolicy.SKIP).run_in_background()
         else:
             logger.debug("RWKV filtered-deck choice: cancel need=%s", need.value)

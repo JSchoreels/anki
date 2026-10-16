@@ -34,7 +34,7 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
-- **Choose before a filtered deck needs a full RWKV state rebuild.** Building or rebuilding a filtered deck that needs RWKV scores when the state is not ready (for example, with no cache after cancelling the startup prompt) now asks first: build the RWKV state with a progress window and then the deck, build the deck now in FSRS order when RWKV is used only for sorting, or cancel. Before, Anki silently replayed the review history inside "Processing..." for minutes and looked frozen.
+- **Choose before a filtered deck needs a full RWKV state rebuild.** Building or rebuilding a filtered deck that needs RWKV scores when the state is not ready (for example, with no cache after cancelling the startup prompt) now asks first: build the RWKV state with a progress window and then the deck, build the deck now in FSRS order when RWKV is used only for sorting, or cancel. Before, Anki silently replayed the review history inside "Processing..." for minutes and looked frozen. After you cancel the startup prompt or choose FSRS order, Anki also stops starting the full rebuild on its own for the rest of the session (after deck changes, leaving the reviewer or opening a deck) until you build the state.
 
 - **Faster filtered-deck builds and new-card answers.** Fixed a long "Processing..." wait when building filtered decks sorted by retrievability or relative overdueness (especially with FSRS preset overlay rules), and a short stall after answering each new card on large collections. Filtered decks sorted by RWKV retrievability also build faster on collections with many suspended cards, with the same card order.
 

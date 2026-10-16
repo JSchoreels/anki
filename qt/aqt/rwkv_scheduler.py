@@ -7928,7 +7928,9 @@ def _prepare_rwkv_review_scores_for_deck(
 
     try:
         warmup_start = time.monotonic()
-        if allow_historical_rebuild:
+        if allow_historical_rebuild and not rwkv_state_declined(
+            getattr(reviewer, "mw", None)
+        ):
             warmed_up = _warm_up_reviewer_backend(reviewer)
         else:
             warmed_up = _prepare_reviewer_backend_for_review(reviewer)
@@ -12208,6 +12210,7 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
     ) and _reviewer_backend.state_precision != state_precision_for_profile(profile):
         set_reviewer_backend(None)
     _set_rwkv_state_cache_recovery_failed(mw, False)
+    setattr(mw, "_rwkv_state_declined", False)
     _set_rwkv_state_cache_loading(mw, True)
 
 
@@ -12283,7 +12286,11 @@ def _show_rwkv_state_cache_prompt(mw: object) -> None:
         from aqt.utils import ask_user_dialog
 
         def on_choice(choice: int) -> None:
-            if choice not in (0, 1) or _rwkv_resident_state_ready(mw):
+            if choice not in (0, 1):
+                if not _rwkv_resident_state_ready(mw):
+                    mark_rwkv_state_declined(mw, source="startup prompt")
+                return
+            if _rwkv_resident_state_ready(mw):
                 return
             if choice == 0:
                 build_rwkv_state_cache_with_progress(
@@ -12344,6 +12351,24 @@ def _set_rwkv_state_cache_recovery_failed(mw: object, failed: bool) -> None:
     setattr(mw, "_rwkv_state_cache_recovery_failed", failed)
 
 
+def rwkv_state_declined(mw: object) -> bool:
+    return bool(getattr(mw, "_rwkv_state_declined", False))
+
+
+def mark_rwkv_state_declined(mw: object, *, source: str) -> None:
+    was_declined = rwkv_state_declined(mw)
+    setattr(mw, "_rwkv_state_declined", True)
+    if not was_declined:
+        logger.info("RWKV state declined for this session: source=%s", source)
+
+
+def _clear_rwkv_state_declined(mw: object) -> None:
+    was_declined = rwkv_state_declined(mw)
+    setattr(mw, "_rwkv_state_declined", False)
+    if was_declined:
+        logger.info("RWKV state decline cleared: explicit build requested")
+
+
 def request_rwkv_state_cache_recovery(
     mw: object,
     *,
@@ -12363,6 +12388,12 @@ def request_rwkv_state_cache_recovery(
     if getattr(mw, "_rwkv_state_cache_recovery_failed", False):
         logger.debug(
             "RWKV state recovery request suppressed after failure: reason=%s",
+            reason,
+        )
+        return False
+    if rwkv_state_declined(mw):
+        logger.debug(
+            "RWKV state recovery request suppressed after decline: reason=%s",
             reason,
         )
         return False
@@ -12419,6 +12450,12 @@ def request_rwkv_state_cache_recovery(
                 refresh_review(True)
             return
 
+        if rwkv_state_declined(mw):
+            logger.debug(
+                "RWKV state recovery request suppressed after decline: reason=%s",
+                reason,
+            )
+            return
         logger.info("RWKV state recovery starting: reason=%s", reason)
         try:
             build_rwkv_state_cache_with_progress(
@@ -12685,6 +12722,11 @@ def refresh_rwkv_state_after_sync(
         on_done()
         return
 
+    if rwkv_state_declined(mw) and not _rwkv_resident_state_ready(mw):
+        logger.debug("RWKV post-sync state refresh skipped after decline")
+        on_done()
+        return
+
     _invalidate_reviewer_backend_state(
         reviewer,
         reason="post-sync refresh",
@@ -12811,7 +12853,10 @@ def recover_reviewer_queue_state(
         or not reviewer_queue_order_enabled(reviewer)
         or _rwkv_resident_state_ready(mw)
         or getattr(mw, "_rwkv_state_cache_recovery_failed", False)
+        or rwkv_state_declined(mw)
     ):
+        if rwkv_state_declined(mw):
+            logger.debug("RWKV empty review queue recovery suppressed after decline")
         return False
     try:
         build_rwkv_state_cache_with_progress(
@@ -12835,6 +12880,9 @@ def build_rwkv_state_cache_with_progress(
     on_done: Callable[[bool], None] | None = None,
 ) -> None:
     """Build local RWKV state, optionally refreshing both historical caches."""
+
+    if recovery_reason is None:
+        _clear_rwkv_state_declined(mw)
 
     from aqt.utils import show_warning, tooltip
 
