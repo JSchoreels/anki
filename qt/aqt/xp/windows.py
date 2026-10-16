@@ -111,6 +111,9 @@ def show_quests(mw: AnkiQt, game: Game) -> None:
     sound = QCheckBox("Sounds", d)
     sound.setChecked(game.sound)
     row.addWidget(sound)
+    crt = QCheckBox("Retro CRT screen", d)
+    crt.setChecked(bool(game.store.get("crt", True)))
+    row.addWidget(crt)
     row.addStretch()
     lay.addLayout(row)
 
@@ -121,9 +124,11 @@ def show_quests(mw: AnkiQt, game: Game) -> None:
     def apply() -> None:
         game.store["limit"] = clock.currentData()
         game.store["sound"] = sound.isChecked()
+        game.store["crt"] = crt.isChecked()
         if goal.value() != game.g.goal:
             game.set_goal(goal.value())
         if mw.xp:
+            mw.xp.look.restyle()
             mw.xp.push_bar()
             mw.xp.js(
                 f"kxp.init({{sound: {str(game.sound).lower()}, limit: {game.limit}}})"

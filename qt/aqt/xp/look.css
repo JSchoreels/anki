@@ -51,6 +51,7 @@ th { color: #215dc6; font-family: Tahoma, sans-serif; }
 
 /* reviewer answer buttons: the phone's answer colours on XP buttons */
 #outer, body { background: #ece9d8 !important; }
+#header { background: transparent !important; }
 button[data-ease="1"] { color: #8b0000 !important; }
 button[data-ease="3"] { color: #004a00 !important; }
 button[data-ease="4"] { color: #0000b0 !important; }
