@@ -11,7 +11,9 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from anki.utils import is_win
 from aqt import gui_hooks
+from aqt.qt import QEvent, QObject, Qt, QWidget
 from aqt.theme import theme_manager
 
 if TYPE_CHECKING:
@@ -66,6 +68,12 @@ class XpLook:
 
         theme_manager._apply_palette(mw.app)
         theme_manager._apply_style(mw.app)
+        if not hasattr(self, "_bars"):
+            self._bars = _LunaBars(self)
+            mw.app.installEventFilter(self._bars)
+        for w in mw.app.topLevelWidgets():
+            if w.isVisible():
+                self._bars.paint(w)
 
     def on_content(self, web_content: Any, context: object | None) -> None:
         """Anki's own screens (stdHtml): deck list, overview, the toolbars, the reviewer's answer bar. Not the card
@@ -130,3 +138,40 @@ class XpLook:
             )
         except Exception:
             logger.exception("Anki XP: statistics boxes")
+
+
+class _LunaBars(QObject):
+    """Luna blue title bars on Anki's own windows only: Windows 11 lets an app colour its caption (DWM caption,
+    text and border colours), so nothing changes outside Anki. A flat Luna blue, not the gradient: the gradient and
+    the round caption buttons would need frameless windows with home-made bars (not worth it)."""
+
+    def __init__(self, look: XpLook) -> None:
+        super().__init__()
+        self.look = look
+
+    def eventFilter(self, obj: QObject | None, event: QEvent | None) -> bool:
+        if (
+            event is not None
+            and event.type() == QEvent.Type.Show
+            and isinstance(obj, QWidget)
+            and obj.isWindow()
+        ):
+            self.paint(obj)
+        return False
+
+    def paint(self, w: QWidget) -> None:
+        if not is_win or w.windowType() not in (Qt.WindowType.Window, Qt.WindowType.Dialog):
+            return
+        import ctypes
+
+        default = 0xFFFFFFFF  # DWMWA_COLOR_DEFAULT
+        on = self.look.on
+        # COLORREF is 0x00BBGGRR: border #0831d9, caption #0054e3, text white
+        for attr, color in ((34, 0x00D93108), (35, 0x00E35400), (36, 0x00FFFFFF)):
+            value = ctypes.c_uint(color if on else default)
+            try:
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    int(w.winId()), attr, ctypes.byref(value), ctypes.sizeof(value)
+                )
+            except Exception:
+                return  # Windows 10: no caption colours
