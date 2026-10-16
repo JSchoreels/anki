@@ -511,16 +511,44 @@ class Game:
             level_up,
         )
 
-    def finish_session(self) -> list[tuple[str, str]]:
-        """The reviewer closes: the combo ends; a sitting of 20+ reps without Again is a Clean sweep."""
+    def finish_session(self) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """The reviewer closes: the combo ends. Answers (report rows, wins): the phone's session report, and a
+        sitting of 20+ reps earns Clean sweep."""
         self.break_combo()
         s, self.session = self.session, None
-        if s and s.reps >= 20 and s.again == 0:
-            return [
+        if not s or s.reps <= 0:
+            return [], []
+        wins = []
+        if s.reps >= 20:
+            wins = [
                 (f"🏆 {t.icon} {t.name}", t.desc)
                 for t in self.check_trophies(("perfect",))
             ]
-        return []
+            self.save()
+        g = self.g
+        mins = max(1, (self.now_ms() - s.start) // 60000)
+        streak = (
+            f"🔥 {g.streak} day{'s' if g.streak != 1 else ''}"
+            if g.streak > 0
+            else f"goal {g.reps}/{g.goal} today"
+        )
+        rows = [
+            ("Reps", str(s.reps)),
+            ("XP earned", f"+{g.xp - s.xp0:,}"),
+            (
+                "Best combo",
+                f"{s.best}{' (record!)' if s.best > 0 and s.best >= g.record else ''}",
+            ),
+            ("Correct", f"{round(100 * (s.reps - s.again) / s.reps)}%"),
+            (
+                "Average answer",
+                f"{s.think / s.think_n / 1000:.1f} s" if s.think_n else "-",
+            ),
+            ("Time", f"{mins} min"),
+            ("Streak", streak),
+            ("Level", str(level(g.xp) + 1)),
+        ]
+        return rows, wins
 
 
 def _self_check() -> None:
@@ -581,6 +609,15 @@ def _self_check() -> None:
     clock[0] += 86_400_000
     g.new_day()
     assert g.combo == 0 and g.g.reps == 0
+    g.start_session()
+    g.score(3, 1000, False, 1, 60)
+    rows, wins = g.finish_session()
+    assert (
+        rows[0] == ("Reps", "1")
+        and rows[3] == ("Correct", "100%")
+        and not wins
+        and g.session is None
+    )
     print("aqt.xp.game self-check ok")
 
 

@@ -235,12 +235,19 @@ class XpReview:
             return
         self.in_review = False
         g = self.game
-        wins = g.finish_session()
+        rows, wins = g.finish_session()
         progress.write_note(self.mw.col, g)  # quick; before the collection may close
-        if wins:
+        if rows:
             from aqt.utils import tooltip
 
-            tooltip("<br>".join(f"<b>{t}</b> {m}" for t, m in wins), period=5000)
+            table = "".join(
+                f"<tr><td>{k}</td><td align=right><b>{v}</b></td></tr>" for k, v in rows
+            )
+            extra = "".join(f"<br><b>{t}</b> {m}" for t, m in wins)
+            tooltip(
+                f"<b>✔ Session report</b><table cellspacing=4>{table}</table>{extra}",
+                period=7000,
+            )
 
     def balloon(self, title: str, msg: str) -> None:
         self.js(
