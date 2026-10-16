@@ -45,7 +45,7 @@ body.kxp #_flag, body.kxp #_mark { top: 40px !important; }
 #kxp-balloons { position: fixed; right: 12px; bottom: 16px; z-index: 62; display: flex; flex-direction: column-reverse;
   gap: 6px; align-items: flex-end; pointer-events: none; }
 .kxp-balloon {
-  max-width: 280px; padding: 8px 10px; font: 13px Tahoma, sans-serif; color: #000; background: #ffffe1;
+  max-width: 280px; padding: 8px 10px; font: 13px Tahoma, sans-serif; color: #000; background: #ffffe1; text-align: left;
   border: 1px solid #000; border-radius: 6px; box-shadow: 2px 3px 6px rgba(0, 0, 0, .35);
   opacity: 0; transition: opacity .15s;
 }

@@ -30,6 +30,8 @@ def setup(mw: AnkiQt) -> XpReview:
 
     def opened() -> None:
         action.setChecked(review.on)
+        # the toolbar was drawn before the profile (and its Anki XP switch) was known
+        mw.toolbar.draw()
 
     gui_hooks.profile_did_open.append(opened)
 
@@ -37,7 +39,7 @@ def setup(mw: AnkiQt) -> XpReview:
         if on == review.on:
             return  # the profile opening: nothing changed
         review.set_on(on)
-        mw.toolbar.redraw()
+        mw.toolbar.draw()
         mw.reset()  # the screen again, with or without the XP look
 
     qconnect(action.toggled, toggled)
