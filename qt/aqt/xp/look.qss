@@ -1,0 +1,90 @@
+/* kuma3: the Anki XP look on the desktop's Qt widgets (Browse, Add, Edit, Add-ons, Preferences, every dialog), the
+   Qt side of look.css. Appended to Anki's stylesheet by look.py while Anki XP is on, in light mode. Tokens from the
+   app repo's DESIGN.md "kuma3 Anki XP". Windows keeps its own title bars. */
+* { font-family: Tahoma, "Segoe UI"; }
+QWidget { color: #000; }
+QMainWindow, QDialog, QWidget#centralwidget { background: #ece9d8; }
+QToolTip { background: #ffffe1; color: #000; border: 1px solid #000; }
+
+/* push buttons: white to beige, navy frame, the orange hover rim */
+QPushButton, QToolButton {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:0.86 #ece9d8, stop:1 #d6d0c5);
+  border: 1px solid #003c74; border-radius: 3px; padding: 3px 10px; min-height: 16px;
+}
+QToolButton { padding: 2px 4px; }
+QPushButton:hover, QToolButton:hover { border: 2px solid #f8b636; padding: 2px 9px; }
+QToolButton:hover { padding: 1px 3px; }
+QPushButton:focus, QPushButton:default { border: 2px solid #7da2ce; padding: 2px 9px; }
+QPushButton:pressed, QToolButton:pressed, QToolButton:checked {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d6d0c5, stop:1 #ece9d8);
+}
+QPushButton:disabled, QToolButton:disabled { color: #aca899; border-color: #c9c7ba; background: #f5f4ea; }
+
+/* fields: white, the XP blue-grey frame */
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+  background: #fff; border: 1px solid #7f9db9; border-radius: 0; padding: 2px 3px;
+  selection-background-color: #316ac5; selection-color: #fff;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #316ac5; }
+QComboBox::drop-down {
+  width: 16px; border: 1px solid #b9cdf5; border-radius: 2px; margin: 1px;
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #c1d3fb, stop:1 #a7c0f3);
+}
+QComboBox QAbstractItemView { background: #fff; border: 1px solid #000; selection-background-color: #316ac5; }
+
+/* lists, tables, trees: a white Explorer pane, Selection Blue */
+QTableView, QTreeView, QListView, QListWidget, QTreeWidget, QTableWidget {
+  background: #fff; alternate-background-color: #f4f3ee; border: 1px solid #7f9db9;
+  selection-background-color: #316ac5; selection-color: #fff; gridline-color: #e3e1d6;
+}
+QTableView::item:selected, QTreeView::item:selected, QListView::item:selected { background: #316ac5; color: #fff; }
+QHeaderView::section {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #ebeadb);
+  border: 0; border-right: 1px solid #c7c5b2; border-bottom: 3px solid #e2decd; padding: 3px 5px;
+}
+QHeaderView::section:hover { border-bottom: 3px solid #f9b119; }
+
+/* menus: white, the blue highlight */
+QMenuBar { background: #ece9d8; border-bottom: 1px solid #c4c1b0; }
+QMenuBar::item { background: transparent; padding: 3px 7px; }
+QMenuBar::item:selected { background: #316ac5; color: #fff; }
+QMenu { background: #fff; border: 1px solid #aca899; padding: 2px; }
+QMenu::item { padding: 3px 22px 3px 20px; }
+QMenu::item:selected { background: #316ac5; color: #fff; }
+QMenu::separator { height: 1px; background: #aca899; margin: 3px 2px; }
+
+/* group boxes: the etched frame, the title set into the top edge */
+QGroupBox { border: 1px solid #d0d0bf; border-radius: 4px; margin-top: 8px; padding-top: 6px; }
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; color: #0046d5; }
+
+/* tabs: white tabs on the face, the orange top line on the open one */
+QTabWidget::pane { background: #fcfcfe; border: 1px solid #919b9c; top: -1px; }
+QTabBar::tab {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #ecebe5);
+  border: 1px solid #919b9c; border-bottom: 0; padding: 3px 10px; margin-right: 1px;
+}
+QTabBar::tab:selected { background: #fcfcfe; border-top: 2px solid #ffc83c; }
+QTabBar::tab:hover { border-top: 2px solid #ffc83c; }
+
+/* scrollbars: Luna's pale blue */
+QScrollBar:vertical { background: #f4f3ee; width: 17px; margin: 17px 0; border: 0; }
+QScrollBar:horizontal { background: #f4f3ee; height: 17px; margin: 0 17px; border: 0; }
+QScrollBar::handle {
+  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c8d7fd, stop:1 #b4c8f6);
+  border: 1px solid #a3bbf2; border-radius: 3px; min-height: 20px; min-width: 20px;
+}
+QScrollBar::handle:hover { background: #d7e3ff; }
+QScrollBar::add-line, QScrollBar::sub-line {
+  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c8d7fd, stop:1 #b4c8f6);
+  border: 1px solid #a3bbf2; border-radius: 3px; width: 15px; height: 15px; subcontrol-origin: margin;
+}
+QScrollBar::add-line:vertical { subcontrol-position: bottom; }
+QScrollBar::sub-line:vertical { subcontrol-position: top; }
+QScrollBar::add-line:horizontal { subcontrol-position: right; }
+QScrollBar::sub-line:horizontal { subcontrol-position: left; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+
+QSplitter::handle { background: #ece9d8; }
+QProgressBar { background: #fff; border: 1px solid #7f9db9; border-radius: 3px; text-align: center; }
+QProgressBar::chunk { background: #2fbf2f; margin: 1px; }
+QStatusBar { background: #ece9d8; border-top: 1px solid #c4c1b0; }

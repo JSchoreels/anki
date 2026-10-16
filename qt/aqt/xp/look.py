@@ -26,6 +26,7 @@ class XpLook:
         self.review = review
         gui_hooks.webview_will_set_content.append(self.on_content)
         gui_hooks.webview_did_inject_style_into_page.append(self.on_page)
+        gui_hooks.style_did_init.append(self.on_qss)
 
     @property
     def on(self) -> bool:
@@ -34,9 +35,43 @@ class XpLook:
     def css(self, *names: str) -> str:
         return "\n".join((HERE / n).read_text(encoding="utf-8") for n in names)
 
+    def on_qss(self, buf: str) -> str:
+        """The Qt widgets (Browse, Add, Add-ons, every dialog): Fusion, so the stylesheet draws the same everywhere,
+        the XP face in the palette, and look.qss after Anki's own rules."""
+        if not self.on:
+            return buf
+        from aqt import mw
+        from aqt.qt import QColor, QPalette, QStyleFactory
+
+        app = mw.app
+        app.setStyle(QStyleFactory.create("fusion"))
+        palette = app.palette()
+        for role, color in (
+            (QPalette.ColorRole.Window, "#ece9d8"),
+            (QPalette.ColorRole.Button, "#ece9d8"),
+            (QPalette.ColorRole.AlternateBase, "#f4f3ee"),
+            (QPalette.ColorRole.Base, "#ffffff"),
+            (QPalette.ColorRole.Highlight, "#316ac5"),
+            (QPalette.ColorRole.HighlightedText, "#ffffff"),
+            (QPalette.ColorRole.ToolTipBase, "#ffffe1"),
+        ):
+            palette.setColor(role, QColor(color))
+        app.setPalette(palette)
+        return buf + self.css("look.qss")
+
+    def restyle(self) -> None:
+        """Anki XP switched, or the profile (and its switch) just opened: Anki's palette and stylesheet again,
+        with or without on_qss."""
+        from aqt import mw
+
+        theme_manager._apply_palette(mw.app)
+        theme_manager._apply_style(mw.app)
+
     def on_content(self, web_content: Any, context: object | None) -> None:
         """Anki's own screens (stdHtml): deck list, overview, the toolbars, the reviewer's answer bar. Not the card
-        (its note type's styling) nor the editor or add-on pages (untested with these rules)."""
+        (its note type's styling) nor add-on pages (untested with these rules). The editor gets pages.css only
+        (Anki's colour variables), not look.css's button and toolbar rules."""
+        from aqt.editor_legacy import Editor
         from aqt.deckbrowser import DeckBrowser, DeckBrowserBottomBar
         from aqt.overview import Overview, OverviewBottomBar
         from aqt.reviewer import ReviewerBottomBar
@@ -51,7 +86,12 @@ class XpLook:
             TopToolbar,
             BottomToolbar,
         )
-        if not self.on or not isinstance(context, screens):
+        if not self.on:
+            return
+        if isinstance(context, Editor):
+            web_content.head += f"<style>{self.css('pages.css')}</style>"
+            return
+        if not isinstance(context, screens):
             return
         web_content.head += f"<style>{self.css('pages.css', 'look.css')}</style>"
 
