@@ -220,6 +220,7 @@ class XpReview:
         }
         self.js(f"kxp.answered({json.dumps(payload, ensure_ascii=False)})")
         self.push_bar()
+        progress.write_note(self.mw.col, g, create=False)  # the phone and Skins see it on the next sync
 
     def on_undo(self, changes: Any) -> None:
         """Undoing an answer gives back its rep, XP, quests and boss."""
@@ -228,6 +229,7 @@ class XpReview:
         if self.game and op == tr.actions_answer_card():
             if self.game.undo_answer():
                 self.push_bar()
+                progress.write_note(self.mw.col, self.game, create=False)
 
     def on_end(self) -> None:
         """The reviewer closes: the combo ends, a clean sitting may earn a trophy, the note is written."""

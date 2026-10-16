@@ -73,9 +73,10 @@ def read_notes(col: Collection, game: Game) -> None:
     game.save()
 
 
-def write_note(col: Collection, game: Game) -> None:
-    """This device's part into its note (made with its note type the first time). Only when the reviewer closes:
-    a write that leaves no undo entry still clears Anki's undo history (rslib transact_no_undo)."""
+def write_note(col: Collection, game: Game, create: bool = True) -> None:
+    """This device's part into its note (made with its note type the first time, which is undoable: only when the
+    reviewer closes, create=True). An update leaves no undo entry and keeps Anki's undo (kuma3's rslib change), so
+    it is written after every answer."""
     try:
         data = json.dumps(game.mine, ensure_ascii=False, separators=(",", ":"))
         nt = col.models.by_name(PROGRESS)
@@ -87,7 +88,9 @@ def write_note(col: Collection, game: Game) -> None:
                         note.fields[1] = data
                         col.update_note(note, skip_undo_entry=True)
                     return
-        else:
+        if not create:
+            return
+        if not nt:
             m = col.models.new(PROGRESS)
             col.models.add_field(m, col.models.new_field("Device"))
             col.models.add_field(m, col.models.new_field("Data"))
