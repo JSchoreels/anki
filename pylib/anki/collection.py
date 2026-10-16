@@ -1615,6 +1615,9 @@ class Collection(DeprecatedNamesMixin):
         if not self.conf["timeLim"]:
             # timeboxing disabled
             return False
+        if not hasattr(self, "_startTime"):
+            # kuma3: review opened without Study Now (AnkiConnect's guiDeckReview): the timebox starts now
+            self.startTimebox()
         elapsed = time.time() - self._startTime
         if elapsed > self.conf["timeLim"]:
             return (self.conf["timeLim"], self.sched.reps - self._startReps)
