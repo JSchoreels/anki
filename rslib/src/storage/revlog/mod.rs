@@ -743,56 +743,77 @@ impl SqliteStorage {
             (format!("and r.id not in {ids}"), active)
         };
         let card_clause = card_id.map_or(String::new(), |id| format!("and r.cid = {}", id.0));
-        // Rows come back in rowid (review id) order, so no sort or window
-        // function is needed; the per-card replay start is derived below.
+        // The cards and resets are joined here, not in SQL: a cards lookup per
+        // review and the resets read through the cid index (random reads into
+        // the table) made the query 5.6 s for 3.8M reviews, against 0.9 s for
+        // the scan of revlog alone. One card's resets do come through the
+        // index: the read after each answer used to compute every card's (3.3 s).
+        let (cards_filter, resets_scan, resets_card) = match card_id {
+            Some(id) => (
+                format!("where id = {}", id.0),
+                "",
+                format!("and cid = {}", id.0),
+            ),
+            None => (String::new(), "not indexed", String::new()),
+        };
+        let cards: HashMap<i64, (i64, i64)> = self
+            .db
+            .prepare(&format!(
+                "select id, nid, case when odid != 0 then odid else did end from cards {cards_filter}"
+            ))?
+            .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+            .collect::<std::result::Result<_, _>>()?;
         // Forget keeps the revlog. Honor its reset boundary even before the
         // first new answer, including requests carrying legacy cutoffs.
+        let latest_resets: HashMap<i64, i64> = self
+            .db
+            .prepare(&format!(
+                "select cid, max(id) from revlog {resets_scan}
+                 where type = 4 and ease = 0 and factor = 0 {resets_card} group by cid"
+            ))?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        // Rows come back in rowid (review id) order, so no sort or window
+        // function is needed; the per-card replay start is derived below.
         let sql = format!(
-            "with latest_resets as (
-  select cid, max(id) as reset_id
-  from revlog
-  where type = 4 and ease = 0 and factor = 0
-  group by cid
-)
-select
-  r.id,
-  r.cid,
-  c.nid,
-  case when c.odid != 0 then c.odid else c.did end,
-  r.ease,
-  r.time,
-  r.type,
-  cast(r.ivl as integer),
+            "select r.id, r.cid, r.ease, r.time, r.type, cast(r.ivl as integer),
   cast(r.factor as integer)
 from revlog r
-join cards c on c.id = r.cid
-left join latest_resets resets on resets.cid = r.cid
 where r.ease between 1 and 4
   and r.type in (0, 1, 2, 3, 4, 5)
   and not (r.type = 3 and r.factor = 0)
-  and r.id > coalesce(resets.reset_id, 0)
   {ignored_clause}
   {card_clause}
 order by r.id"
         );
-        let mut rows = self
-            .db
-            .prepare(&sql)?
-            .query_map([], |row| {
-                Ok(RwkvHistoricalReviewRow {
-                    review_id: row.get(0)?,
-                    card_id: row.get(1)?,
-                    note_id: row.get(2)?,
-                    deck_id: row.get(3)?,
-                    ease: row.get(4)?,
-                    duration_millis: row.get(5)?,
-                    review_kind: row.get(6)?,
-                    interval_days: row.get(7)?,
-                    ease_factor: row.get(8)?,
-                    is_learning_start: false,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut rows = Vec::new();
+        let mut stmt = self.db.prepare(&sql)?;
+        let mut query = stmt.query([])?;
+        while let Some(row) = query.next()? {
+            let review_id: i64 = row.get(0)?;
+            let card_id: i64 = row.get(1)?;
+            let Some(&(note_id, deck_id)) = cards.get(&card_id) else {
+                continue;
+            };
+            if latest_resets
+                .get(&card_id)
+                .is_some_and(|&reset_id| review_id <= reset_id)
+            {
+                continue;
+            }
+            rows.push(RwkvHistoricalReviewRow {
+                review_id,
+                card_id,
+                note_id,
+                deck_id,
+                ease: row.get(2)?,
+                duration_millis: row.get(3)?,
+                review_kind: row.get(4)?,
+                interval_days: row.get(5)?,
+                ease_factor: row.get(6)?,
+                is_learning_start: false,
+            });
+        }
         // A cutoff needs a retained prefix to preserve. A legacy cutoff before
         // Forget must not turn the first post-reset Learning answer into a
         // continuation of the discarded sequence.

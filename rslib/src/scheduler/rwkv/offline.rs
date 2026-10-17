@@ -1400,6 +1400,12 @@ impl Collection {
         deck: &Deck,
         cards: &[ScoredCard],
     ) -> Result<HashMap<CardId, RwkvReviewQueueScoreEntry>> {
+        // Every deck count asks this for each deck row; most rows score no
+        // cards, and the query walks the whole revlog for a deck with few
+        // answers (a 3.8M-review history: 20 s per deck list on a PC).
+        if cards.is_empty() {
+            return Ok(HashMap::new());
+        }
         let intervening = self.rwkv_offline_intervening_reviews(deck)?;
         Ok(cards
             .iter()
