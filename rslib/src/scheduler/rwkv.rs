@@ -98,7 +98,7 @@ impl Collection {
             .collect::<Vec<_>>();
         ignored_review_ids.sort_unstable();
         ignored_review_ids.dedup();
-        let (rows, active_ignored_review_ids) =
+        let (rows, active_ignored_review_ids, revlog_scan) =
             self.storage.rwkv_historical_review_rows_with_cutoffs(
                 &ignored_review_ids,
                 &options.preserved_learning_start_cutoffs,
@@ -148,6 +148,7 @@ impl Collection {
             ignored_review_ids,
             rows,
             active_ignored_review_ids,
+            revlog_scan,
             timing,
             stable_preset_ids_by_card,
             preset_routes,
@@ -165,6 +166,9 @@ struct RwkvHistoricalReviews {
     ignored_review_ids: Vec<RevlogId>,
     rows: Vec<RwkvHistoricalReviewRow>,
     active_ignored_review_ids: Vec<i64>,
+    /// Revlog rows read for `rows`, and the newest one's id (all of revlog
+    /// for the whole history without ignored ids).
+    revlog_scan: (u64, i64),
     timing: SchedTimingToday,
     /// None: every card's preset is its home deck's.
     stable_preset_ids_by_card: Option<HashMap<CardId, i64>>,
@@ -185,6 +189,7 @@ impl RwkvHistoricalReviews {
             ignored_review_ids,
             rows,
             active_ignored_review_ids,
+            revlog_scan: _,
             timing,
             stable_preset_ids_by_card,
             preset_routes,

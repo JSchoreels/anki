@@ -1051,12 +1051,6 @@ impl Collection {
 
     /// See [ReplayStamp].
     fn rwkv_offline_replay_stamp(&mut self) -> Result<Option<ReplayStamp>> {
-        if self
-            .get_config_optional::<FsrsPresetOverlay, _>(FSRS_PRESET_OVERLAY_CONFIG_KEY)
-            .is_some_and(|overlay| !overlay.rules.is_empty() || !overlay.simulator_rules.is_empty())
-        {
-            return Ok(None);
-        }
         // ponytail: a review edited in place (same count and newest id) isn't
         // seen; nothing on the phone does that. Hash the rows if something does.
         let (revlog_rows, last_review_id) = self.storage.db.query_row(
@@ -1064,6 +1058,22 @@ impl Collection {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        self.rwkv_offline_replay_stamp_with(revlog_rows, last_review_id)
+    }
+
+    /// [ReplayStamp] for a revlog of `revlog_rows` rows, the newest
+    /// `last_review_id`.
+    fn rwkv_offline_replay_stamp_with(
+        &mut self,
+        revlog_rows: u64,
+        last_review_id: i64,
+    ) -> Result<Option<ReplayStamp>> {
+        if self
+            .get_config_optional::<FsrsPresetOverlay, _>(FSRS_PRESET_OVERLAY_CONFIG_KEY)
+            .is_some_and(|overlay| !overlay.rules.is_empty() || !overlay.simulator_rules.is_empty())
+        {
+            return Ok(None);
+        }
         let mut hash = fnv::FnvHasher::default();
         {
             let mut cards = self.storage.db.prepare(
@@ -1188,10 +1198,20 @@ impl Collection {
         // check against the state file, the replay inputs) is done on the
         // thread: it held the collection ~22 s for a 4M-review history on a
         // Pixel 8a, and the app's main thread waits for the open.
-        let stamp = self.rwkv_offline_replay_stamp()?;
+        let read_started = Instant::now();
         let mut request = self.rwkv_offline_history_request()?;
         request.expected_identity = planned_for.clone().filter(|id| id.review_count > 0);
         let history = self.read_rwkv_historical_reviews(request, Default::default())?;
+        // That read scanned all of revlog: counting it again for the stamp
+        // was a second pass (7 s of a 15 s start on a Tab S7+, 3.8M reviews).
+        let (revlog_rows, last_review_id) = history.revlog_scan;
+        let stamp = self.rwkv_offline_replay_stamp_with(revlog_rows, last_review_id)?;
+        // what the app waits for at a start ("Processing..." on the deck list)
+        tracing::info!(
+            ms = read_started.elapsed().as_millis() as u64,
+            reviews = history.rows.len(),
+            "RWKV offline history read under the collection"
+        );
         // ponytail: an estimate (for the app's message), assumes the state
         // file is a valid prefix; the walk on the thread decides
         let replaying = (history.rows.len() as u64)

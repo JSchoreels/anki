@@ -711,15 +711,19 @@ impl SqliteStorage {
         ignored_review_ids: &[RevlogId],
     ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
         self.rwkv_historical_review_rows_with_cutoffs(ignored_review_ids, &HashMap::new(), None)
+            .map(|(rows, active, _)| (rows, active))
     }
 
+    /// Also returns how many revlog rows were scanned and the newest one's id:
+    /// the whole revlog without `card_id` and ignored ids, so the replay stamp
+    /// needn't count it again.
     pub(crate) fn rwkv_historical_review_rows_with_cutoffs(
         &self,
         ignored_review_ids: &[RevlogId],
         preserved_learning_start_cutoffs: &HashMap<i64, i64>,
         // Only this card's reviews (what is kept of a card depends only on its own).
         card_id: Option<CardId>,
-    ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
+    ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>, (u64, i64))> {
         let (ignored_clause, active_ignored_review_ids) = if ignored_review_ids.is_empty() {
             (String::new(), Vec::new())
         } else {
@@ -775,22 +779,30 @@ impl SqliteStorage {
             .collect::<std::result::Result<_, _>>()?;
         // Rows come back in rowid (review id) order, so no sort or window
         // function is needed; the per-card replay start is derived below.
+        // Which answers count is decided here too, so every row is seen.
         let sql = format!(
             "select r.id, r.cid, r.ease, r.time, r.type, cast(r.ivl as integer),
   cast(r.factor as integer)
 from revlog r
-where r.ease between 1 and 4
-  and r.type in (0, 1, 2, 3, 4, 5)
-  and not (r.type = 3 and r.factor = 0)
-  {ignored_clause}
-  {card_clause}
+where 1 {ignored_clause} {card_clause}
 order by r.id"
         );
         let mut rows = Vec::new();
+        let mut scanned = (0, 0);
         let mut stmt = self.db.prepare(&sql)?;
         let mut query = stmt.query([])?;
         while let Some(row) = query.next()? {
             let review_id: i64 = row.get(0)?;
+            scanned = (scanned.0 + 1, review_id);
+            let ease: i64 = row.get(2)?;
+            let review_kind: i64 = row.get(4)?;
+            let ease_factor: i64 = row.get(6)?;
+            if !(1..=4).contains(&ease)
+                || !(0..=5).contains(&review_kind)
+                || (review_kind == 3 && ease_factor == 0)
+            {
+                continue;
+            }
             let card_id: i64 = row.get(1)?;
             let Some(&(note_id, deck_id)) = cards.get(&card_id) else {
                 continue;
@@ -806,11 +818,11 @@ order by r.id"
                 card_id,
                 note_id,
                 deck_id,
-                ease: row.get(2)?,
+                ease,
                 duration_millis: row.get(3)?,
-                review_kind: row.get(4)?,
+                review_kind,
                 interval_days: row.get(5)?,
-                ease_factor: row.get(6)?,
+                ease_factor,
                 is_learning_start: false,
             });
         }
@@ -834,7 +846,7 @@ order by r.id"
             .collect();
         retain_rwkv_rows_from_latest_learning_start(&mut rows, &cutoffs);
 
-        Ok((rows, active_ignored_review_ids))
+        Ok((rows, active_ignored_review_ids, scanned))
     }
 
     pub(crate) fn get_revlog_entries_for_searched_cards_after_stamp(
