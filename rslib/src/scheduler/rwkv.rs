@@ -714,21 +714,29 @@ impl Collection {
         Ok(card.last_review_time)
     }
 
-    pub(crate) fn populate_rwkv_last_review_times(&self, cards: &mut [Card]) -> Result<()> {
+    pub(crate) fn populate_rwkv_last_review_times(&mut self, cards: &mut [Card]) -> Result<()> {
+        // A review changes the card's mtime and reps (an undo restores both).
+        let key = |card: &Card| (card.mtime, card.reps);
+        let cache = &self.state.rwkv_last_review_times;
         let missing_card_ids: Vec<_> = cards
             .iter()
-            .filter(|card| card.last_review_time.is_none())
+            .filter(|card| {
+                card.last_review_time.is_none()
+                    && cache.get(&card.id).is_none_or(|(k, _)| *k != key(card))
+            })
             .map(|card| card.id)
             .collect();
-        if missing_card_ids.is_empty() {
-            return Ok(());
-        }
-
         let review_times = self.storage.times_of_last_review(&missing_card_ids)?;
+        let cache = &mut self.state.rwkv_last_review_times;
         for card in cards {
-            if card.last_review_time.is_none() {
-                card.last_review_time = review_times.get(&card.id).copied();
+            if card.last_review_time.is_some() {
+                continue;
             }
+            card.last_review_time = match cache.get(&card.id) {
+                Some((k, time)) if *k == key(card) => *time,
+                _ => review_times.get(&card.id).copied(),
+            };
+            cache.insert(card.id, (key(card), card.last_review_time));
         }
 
         Ok(())

@@ -147,6 +147,15 @@ pub struct CollectionState {
     /// What the last deck count did with each RWKV scope's cards, by scope
     /// deck (read by the RWKV forecast).
     pub(crate) rwkv_count_cards: HashMap<DeckId, RwkvCountCards>,
+    /// Last review time by card, valid while the card's (mtime, reps) match:
+    /// each queue build looked it up in the revlog for every due card.
+    pub(crate) rwkv_last_review_times: HashMap<
+        CardId,
+        (
+            (crate::timestamp::TimestampSecs, u32),
+            Option<crate::timestamp::TimestampSecs>,
+        ),
+    >,
     pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
     /// True if legacy Python code has executed SQL that has modified the
