@@ -45,6 +45,7 @@ SOURCE_FILES = (
     "qt/tools/rwkv_runtime_precision_bench.py",
     "qt/tools/rwkv_runtime_cold_cache_bench.py",
     "qt/tools/rwkv_um_plus.py",
+    "qt/tools/rwkv_hybrid_precision_bench.py",
 )
 
 

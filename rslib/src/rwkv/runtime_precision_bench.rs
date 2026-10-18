@@ -115,6 +115,156 @@ fn latest_queries(rows: &[Row], limit: usize) -> Vec<ReviewInput> {
         .collect()
 }
 
+/// Offline comparison only: the production INT4 option still quantizes notes.
+fn hybrid_runtime() -> RwkvInference {
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let mut inference =
+        RwkvInference::load_with_precision(weights, 0.9, 36_500, StatePrecision::Int4).unwrap();
+    Arc::get_mut(&mut inference.model).unwrap().modules[2].precision = StatePrecision::Int8;
+    inference
+}
+
+#[test]
+fn rwkv_hybrid_precision_preserves_replay_across_chunks() {
+    let reviews = super::precision_tests::reviews(51);
+    let mut sequential = hybrid_runtime();
+    sequential
+        .warm_up_reviews_sequential(reviews.clone(), true)
+        .unwrap();
+    for chunk_size in [1, 9, 51] {
+        let mut bulk = hybrid_runtime();
+        bulk::warm_up_reviews_bulk_chunked(&mut bulk, reviews.clone(), false, chunk_size).unwrap();
+        assert_eq!(state_hash(&sequential), state_hash(&bulk));
+    }
+}
+
+#[test]
+#[ignore]
+fn rwkv_hybrid_precision_metrics() {
+    use fsrs::FSRSItem;
+    use fsrs::FSRSReview;
+    use fsrs::ModelVersion;
+    use fsrs::FSRS;
+
+    let source: serde_json::Value =
+        serde_json::from_slice(&fs::read(env::var("ANKI_RWKV_HYBRID_INPUT").unwrap()).unwrap())
+            .unwrap();
+    let rows: Vec<Row> = serde_json::from_value(source["rows"].clone()).unwrap();
+    let output = PathBuf::from(env::var("ANKI_RWKV_HYBRID_OUTPUT").unwrap());
+    let reviews: Vec<_> = rows
+        .iter()
+        .map(|row| ReviewInput {
+            card_id: row.1,
+            note_id: row.2,
+            deck_id: row.3,
+            preset_id: row.4,
+            is_query: false,
+            ease: Some(row.5),
+            duration_millis: Some(row.6),
+            card_type: Some(row.7),
+            day_offset: Some(row.8),
+            current_elapsed_days: Some(row.9),
+            current_elapsed_seconds: Some(row.10),
+            target_retentions: [None; 4],
+            enforce_grade_order: true,
+        })
+        .collect();
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let mut summaries = serde_json::Map::new();
+    for mode in ["state_int8", "cards_int4_notes_int8"] {
+        let mut inference = if mode == "state_int8" {
+            RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, StatePrecision::Int8)
+                .unwrap()
+        } else {
+            hybrid_runtime()
+        };
+        let started = Instant::now();
+        let mut predictions = Vec::with_capacity(rows.len());
+        for chunk in reviews.chunks(16_384) {
+            let offset = predictions.len();
+            for (index, probability) in inference.warm_up_reviews(chunk.to_vec(), true).unwrap() {
+                assert_eq!(index, predictions.len() - offset);
+                predictions.push(probability);
+            }
+        }
+        assert_eq!(predictions.len(), rows.len());
+        write_predictions(&output.join(format!("{mode}.f32")), &predictions);
+        summaries.insert(
+            mode.into(),
+            json!({
+                "prediction_replay_seconds": started.elapsed().as_secs_f64(),
+                "scopes": scope_sizes(&inference),
+                "state_blake3": state_hash(&inference),
+            }),
+        );
+        println!("Completed {mode}: {} predictions", predictions.len());
+    }
+
+    let models: HashMap<i64, FSRS> = source["fsrs_presets"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(id, preset)| {
+            let params: Vec<f32> = serde_json::from_value(preset["params"].clone()).unwrap();
+            let model = FSRS::new(&params).unwrap();
+            assert_eq!(model.version(), ModelVersion::Fsrs7);
+            (id.parse().unwrap(), model)
+        })
+        .collect();
+    // Use the exact timestamp delta used by Anki's FSRS7 training adapter.
+    // Reconstruct the prefix with the target preset's frozen parameters, so a
+    // preset switch does not carry state computed with another parameter set.
+    let mut histories: HashMap<i64, (i64, Vec<FSRSReview>)> = HashMap::new();
+    let mut predictions = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let model = &models[&row.4.unwrap()];
+        let (previous, history) = histories.entry(row.1).or_default();
+        let delta_t = if history.is_empty() {
+            0.0
+        } else {
+            row.0.saturating_sub(*previous).max(1) as f32 / 86_400_000.0
+        };
+        let probability = if history.is_empty() {
+            // First answers initialize state and are excluded from scoring.
+            0.0
+        } else {
+            let state = model
+                .memory_state(
+                    FSRSItem {
+                        reviews: history.clone(),
+                    },
+                    None,
+                )
+                .unwrap();
+            model.current_retrievability(state, delta_t)
+        };
+        predictions.push(probability);
+        history.push(FSRSReview {
+            rating: u32::from(row.5),
+            delta_t,
+        });
+        *previous = row.0;
+    }
+    write_predictions(&output.join("fsrs7.f32"), &predictions);
+    fs::write(
+        output.join("native.json"),
+        serde_json::to_vec_pretty(&summaries).unwrap(),
+    )
+    .unwrap();
+    println!("Completed FSRS7: {} predictions", predictions.len());
+}
+
+fn write_predictions(path: &Path, predictions: &[f32]) {
+    let mut output = std::io::BufWriter::new(fs::File::create(path).unwrap());
+    for probability in predictions {
+        assert!(probability.is_finite() && (0.0..=1.0).contains(probability));
+        output.write_all(&probability.to_le_bytes()).unwrap();
+    }
+    output.flush().unwrap();
+}
+
 #[test]
 #[ignore]
 fn rwkv_runtime_precision_case() {

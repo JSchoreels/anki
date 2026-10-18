@@ -272,6 +272,14 @@ rwkv-weight-precision-bench input output packed-model:
 rwkv-runtime-precision-bench input output rounds='3':
     {{ if os() == "windows" { "$env:PYTHONPATH='qt'; " } else { "PYTHONPATH=qt " } }}{{ python }} qt/tools/rwkv_runtime_precision_bench.py --input '{{ input }}' --output '{{ output }}' --rounds {{ rounds }}
 
+# Compare hybrid card/note precision with INT8 and configured FSRS7 on a copied backup.
+rwkv-hybrid-precision-bench input output:
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;qt'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:qt " } }}{{ python }} qt/tools/rwkv_hybrid_precision_bench.py --input '{{ input }}' --output '{{ output }}'
+
+# Verify hybrid recurrence across sequential and chunked replay.
+rwkv-hybrid-precision-tests *args:
+    cargo test -p anki --lib rwkv_hybrid_precision_preserves_replay {{ args }}
+
 # Plot an existing comparison with the local Python plotting environment.
 rwkv-runtime-precision-plot result output:
     {{ if os() == "windows" { "$env:PYTHONPATH='qt'; " } else { "PYTHONPATH=qt " } }}python3 qt/tools/rwkv_runtime_precision_bench.py --plot-only '{{ result }}' --output '{{ output }}'
