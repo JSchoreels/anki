@@ -71,8 +71,13 @@ const QUEUE_SCORE_MAX_AGE_SECS: i64 = 30;
 /// 0.37 points in 30 minutes, no card crossed its target in 2 minutes), and
 /// scoring all of a 10,870-card deck took 0.6 s on a Tab S7+ every 2 minutes.
 const NEAR_TARGET: f32 = 0.02;
-/// ...and every scoreable card again after this long, or after anything else
-/// changed the model state (answers, a sync, a new day).
+/// Cards answered less than this ago are re-scored too: their recall still
+/// moves fast (one moved 21 points in 2 minutes).
+const RECENT_ANSWER_SECS: u32 = 24 * 60 * 60;
+/// ...and every scoreable card again after this long, a new day, or any change
+/// to the model state: an answer also moves the deck, preset and collection
+/// states every card's recall reads (10 answers moved that deck's cards 8
+/// points on average; 4,148 of 10,903 crossed their target).
 const FULL_SCORE_MAX_AGE_SECS: i64 = 30 * 60;
 const DECK_COUNT_SCORE_MAX_AGE_SECS: i64 = 120;
 /// The desktop's default and bounds for `rwkv_review_batch_size`, the number of
@@ -200,8 +205,11 @@ struct ScopeScores {
     generation: u64,
     days_elapsed: u32,
     computed_at: TimestampSecs,
-    /// When every card in the scope was last scored ([NEAR_TARGET]).
+    /// When every card in the scope was last scored ([NEAR_TARGET]), and the
+    /// model state's generation then (a queue update in approximate mode marks
+    /// the scope current without scoring every card).
     fully_computed_at: TimestampSecs,
+    fully_computed_generation: u64,
     cards: Vec<ScoredCard>,
     /// Cards answered since the last update of the whole scope (or of its
     /// candidates): their scores are older than their answer.
@@ -522,8 +530,8 @@ fn score_rows(runtime: &mut RwkvOfflineRuntime, rows: &[Row]) -> Result<Vec<Scor
 }
 
 /// The scope's current `rows` split into the scores to keep and the rows to
-/// score again: those near their target, answered since, or new to the scope.
-/// Cards no longer in `rows` are dropped.
+/// score again: those near their target, answered recently or since, or new to
+/// the scope. Cards no longer in `rows` are dropped.
 fn split_near_target(
     previous: &[ScoredCard],
     answered: &[CardId],
@@ -537,6 +545,9 @@ fn split_near_target(
         match previous.get(&CardId(row.card_id)) {
             Some(card)
                 if !answered.contains(&card.card_id)
+                    && row
+                        .current_elapsed_seconds
+                        .is_none_or(|secs| secs >= RECENT_ANSWER_SECS)
                     && (card.retrievability
                         - card.target_retention.unwrap_or(DEFAULT_TARGET_RETENTION))
                     .abs()
@@ -649,6 +660,13 @@ impl Collection {
                 runtime.checked_at_mod = None;
             }
             reviews_replayed = self.rwkv_offline_sync_history(&mut runtime)?;
+            if input.status_only {
+                // The app polls this until the runtime is in, then redraws the
+                // deck list, which scores what it shows: scoring every scope
+                // here too held the collection (0.6 s for 10,870 cards on a
+                // Tab S7+) while that redraw waited.
+                return Ok(0);
+            }
             self.rwkv_offline_install_deck_count_scores_inner(&mut runtime, 0)
         })();
         let reviews_absorbed = runtime
@@ -854,8 +872,19 @@ impl Collection {
             let started = Instant::now();
             col.rwkv_offline_sync_history(runtime)?;
             let synced = started.elapsed().as_millis() as u64;
-            let cards =
-                col.rwkv_offline_scope_scores(runtime, &deck, QUEUE_SCORE_MAX_AGE_SECS, true)?;
+            // A subdeck shares the scores of the top-most Instant deck above it
+            // (the deck list's scope), cut to its own tree: scoring it as a scope
+            // of its own scored those cards again (9,881 cards: 2.1 s on a Tab
+            // S7+, seconds after the deck list had scored them).
+            let scope = col
+                .rwkv_offline_shared_scope(&deck)?
+                .unwrap_or_else(|| deck.clone());
+            let mut cards =
+                col.rwkv_offline_scope_scores(runtime, &scope, QUEUE_SCORE_MAX_AGE_SECS, true)?;
+            if scope.id != deck.id {
+                let tree = col.rwkv_offline_deck_tree_ids(&deck)?;
+                cards.retain(|card| tree.contains(&card.deck_id));
+            }
             let scored = started.elapsed().as_millis() as u64;
             let entries = col.rwkv_offline_score_entries(&deck, &cards)?;
             tracing::info!(
@@ -1443,7 +1472,7 @@ impl Collection {
         if let Some(scope) = runtime.scopes.get(&deck.id).filter(|scope| {
             !partial
                 && scope.days_elapsed == days_elapsed
-                && scope.generation == runtime.generation
+                && scope.fully_computed_generation == runtime.generation
                 && now.0 - scope.fully_computed_at.0 < FULL_SCORE_MAX_AGE_SECS
         }) {
             let (mut cards, rescore) = split_near_target(&scope.cards, &scope.answered, rows);
@@ -1462,6 +1491,7 @@ impl Collection {
                 days_elapsed,
                 computed_at: now,
                 fully_computed_at: now,
+                fully_computed_generation: runtime.generation,
                 cards: cards.clone(),
                 answered: Vec::new(),
             },
@@ -1536,6 +1566,22 @@ impl Collection {
             .collect();
         ids.insert(deck.id);
         Ok(ids)
+    }
+
+    /// The top-most Instant deck above `deck`, when it uses `deck`'s preset:
+    /// its scores (and their batch and refresh options) then stand for
+    /// `deck`'s.
+    fn rwkv_offline_shared_scope(&mut self, deck: &Deck) -> Result<Option<Deck>> {
+        let name = deck.name.as_native_str();
+        Ok(self
+            .rwkv_offline_instant_scopes()?
+            .into_iter()
+            .find(|scope| {
+                scope.config_id() == deck.config_id()
+                    && name
+                        .strip_prefix(scope.name.as_native_str())
+                        .is_some_and(|rest| rest.starts_with('\x1f'))
+            }))
     }
 
     /// The top-most Instant-enabled decks: each is scored with its children.
@@ -1622,6 +1668,31 @@ mod test {
     }
 
     #[test]
+    fn subdeck_queues_share_their_instant_parent_scores() -> Result<()> {
+        let mut col = Collection::new();
+        let parent = DeckAdder::new("parent")
+            .with_config(|config| config.inner.rwkv_review_instant_order_enabled = true)
+            .add(&mut col);
+        let mut child = DeckAdder::new("parent::child").add(&mut col);
+        child.normal_mut()?.config_id = parent.config_id().unwrap().0;
+        col.add_or_update_deck(&mut child)?;
+        let other = DeckAdder::new("parent::other")
+            .with_config(|config| config.inner.rwkv_review_instant_order_enabled = true)
+            .add(&mut col);
+        let shared = |col: &mut Collection, deck: &Deck| {
+            col.rwkv_offline_shared_scope(deck)
+                .unwrap()
+                .map(|scope| scope.id)
+        };
+        assert_eq!(shared(&mut col, &child), Some(parent.id));
+        // a top-most Instant deck is its own scope
+        assert_eq!(shared(&mut col, &parent), None);
+        // another preset under the parent is scored on its own
+        assert_eq!(shared(&mut col, &other), None);
+        Ok(())
+    }
+
+    #[test]
     fn expired_deck_counts_rescore_only_cards_near_their_target() {
         let scored = |id, retrievability| ScoredCard {
             card_id: CardId(id),
@@ -1631,6 +1702,7 @@ mod test {
         };
         let row = |id| Row {
             card_id: id,
+            current_elapsed_seconds: Some(3 * 86_400),
             ..Default::default()
         };
         let previous = [
@@ -1639,14 +1711,17 @@ mod test {
             scored(3, 0.98), // far above: still not due
             scored(4, 0.5),  // answered since
             scored(5, 0.5),  // no longer in the scope (moved, suspended)
+            scored(7, 0.5),  // answered an hour ago: still moving fast
         ];
-        let rows = vec![row(1), row(2), row(3), row(4), row(6)];
+        let mut recent = row(7);
+        recent.current_elapsed_seconds = Some(3600);
+        let rows = vec![row(1), row(2), row(3), row(4), row(6), recent];
         let (keep, rescore) = split_near_target(&previous, &[CardId(4)], rows);
         let kept: Vec<_> = keep.iter().map(|card| card.card_id.0).collect();
         assert_eq!(kept, vec![1, 3]);
         // 6: new to the scope
         let rescored: Vec<_> = rescore.iter().map(|row| row.card_id).collect();
-        assert_eq!(rescored, vec![2, 4, 6]);
+        assert_eq!(rescored, vec![2, 4, 6, 7]);
     }
 
     #[test]
