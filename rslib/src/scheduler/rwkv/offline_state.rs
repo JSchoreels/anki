@@ -35,6 +35,7 @@ use std::sync::Mutex;
 use super::offline::OfflineModel;
 use crate::rwkv::RwkvInference;
 use crate::rwkv::RwkvStateSnapshot;
+use crate::rwkv::StatePrecision;
 
 /// 3: card/note states as the engine keeps them (2: all as half floats, 1:
 /// full floats).
@@ -67,10 +68,13 @@ pub(super) fn header(model: &OfflineModel) -> io::Result<String> {
             hashed
         }
     };
-    Ok(format!(
-        "state{STATE_VERSION} {:?} {hashed}",
-        model.precision
-    ))
+    // int4 keeps note states in int8 since kuma3 17: a file from before
+    // holds int4 note states and is rebuilt
+    let precision = match model.precision {
+        StatePrecision::Int4 => "Int4Int8Notes".to_string(),
+        other => format!("{other:?}"),
+    };
+    Ok(format!("state{STATE_VERSION} {precision} {hashed}"))
 }
 
 /// Writes the file whole (to a temporary file, then renamed), so a crash

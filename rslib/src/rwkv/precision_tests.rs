@@ -231,3 +231,10 @@ fn rwkv_state_precision_session_checkpoints_and_spills_preserve_continuation() {
         assert!(!dir.path().join("spill.bin").exists());
     }
 }
+
+#[test]
+fn rwkv_state_precision_int4_keeps_note_states_int8() {
+    let inference = runtime(StatePrecision::Int4);
+    assert_eq!(inference.model.modules[0].precision, StatePrecision::Int4);
+    assert_eq!(inference.model.modules[2].precision, StatePrecision::Int8);
+}

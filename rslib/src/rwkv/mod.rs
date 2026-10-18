@@ -805,7 +805,14 @@ impl RwkvInference {
     ) -> io::Result<Self> {
         let mut model = SrsModel::load(&path)?;
         model.modules[0].precision = precision;
-        model.modules[2].precision = precision;
+        // A note's state takes every answer to all its cards, and int4's
+        // rounding drift there grew without bound (a 3.5M-review history went
+        // past f32's range two minutes into its replay, then NaN). Card states
+        // stay int4; notes keep int8.
+        model.modules[2].precision = match precision {
+            StatePrecision::Int4 => StatePrecision::Int8,
+            other => other,
+        };
         Ok(Self {
             model: Arc::new(model),
             features: FeatureState::default(),
