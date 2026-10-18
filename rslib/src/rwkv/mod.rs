@@ -47,6 +47,8 @@ mod precision_tests;
 mod query_kernels;
 #[cfg(test)]
 mod query_math_bench;
+#[cfg(test)]
+mod review_order_bench;
 #[cfg(all(test, unix))]
 mod runtime_precision_bench;
 #[cfg(test)]

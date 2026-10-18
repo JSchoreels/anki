@@ -223,6 +223,19 @@ rwkv-history-ablation-prepare *args:
     {{ ninja }} pylib qt
     {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_history_ablation_prepare.py {{ args }}
 
+# Prepare history rows and review-card simulation inputs for the review-order experiment.
+rwkv-review-order-prepare *args:
+    {{ ninja }} pylib qt
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_review_order_prepare.py {{ args }}
+
+# Compare review-ordering strategies under a backlog with the RWKV workload simulator.
+rwkv-review-order-bench input output:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "'; $env:ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_review_order_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "' ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_review_order_metrics -- --ignored --nocapture" } }}
+
+# Measure how far card retrievability drops between days without a review, on the real history.
+rwkv-review-order-real-drops input output:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "'; $env:ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_review_order_real_drops -- --ignored --nocapture" } else { "ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "' ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_review_order_real_drops -- --ignored --nocapture" } }}
+
 # Measure accuracy after omitting whole cards or individual historical answers.
 rwkv-history-ablation-bench input output seeds='3':
     {{ if os() == "windows" { "$env:ANKI_RWKV_ABLATION_INPUT='" + input + "'; $env:ANKI_RWKV_ABLATION_OUTPUT='" + output + "'; $env:ANKI_RWKV_ABLATION_SEEDS='" + seeds + "'; cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_ABLATION_INPUT='" + input + "' ANKI_RWKV_ABLATION_OUTPUT='" + output + "' ANKI_RWKV_ABLATION_SEEDS='" + seeds + "' cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } }}
