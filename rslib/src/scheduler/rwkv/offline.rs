@@ -664,8 +664,14 @@ impl Collection {
                 // The app polls this until the runtime is in, then redraws the
                 // deck list, which scores what it shows: scoring every scope
                 // here too held the collection (0.6 s for 10,870 cards on a
-                // Tab S7+) while that redraw waited.
-                return Ok(0);
+                // Tab S7+) while that redraw waited. Report what the last
+                // scoring left (top-most scopes: subdecks share theirs).
+                let scopes = self.rwkv_offline_instant_scopes()?;
+                return Ok(scopes
+                    .iter()
+                    .filter_map(|scope| runtime.scopes.get(&scope.id))
+                    .map(|scores| scores.cards.len())
+                    .sum());
             }
             self.rwkv_offline_install_deck_count_scores_inner(&mut runtime, 0)
         })();
