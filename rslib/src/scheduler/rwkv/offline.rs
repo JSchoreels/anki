@@ -66,6 +66,14 @@ const DEFAULT_TARGET_RETENTION: f32 = 0.9;
 /// Scores depend on the seconds since each card's last review, so they are
 /// recomputed once they are this old, even when no review happened.
 const QUEUE_SCORE_MAX_AGE_SECS: i64 = 30;
+/// Deck counts past their max age re-score only the cards within this of their
+/// target: recall drifts slowly with the clock (203k-review collection: at most
+/// 0.37 points in 30 minutes, no card crossed its target in 2 minutes), and
+/// scoring all of a 10,870-card deck took 0.6 s on a Tab S7+ every 2 minutes.
+const NEAR_TARGET: f32 = 0.02;
+/// ...and every scoreable card again after this long, or after anything else
+/// changed the model state (answers, a sync, a new day).
+const FULL_SCORE_MAX_AGE_SECS: i64 = 30 * 60;
 const DECK_COUNT_SCORE_MAX_AGE_SECS: i64 = 120;
 /// The desktop's default and bounds for `rwkv_review_batch_size`, the number of
 /// cards a "faster, approximate" queue update rechecks.
@@ -192,6 +200,8 @@ struct ScopeScores {
     generation: u64,
     days_elapsed: u32,
     computed_at: TimestampSecs,
+    /// When every card in the scope was last scored ([NEAR_TARGET]).
+    fully_computed_at: TimestampSecs,
     cards: Vec<ScoredCard>,
     /// Cards answered since the last update of the whole scope (or of its
     /// candidates): their scores are older than their answer.
@@ -509,6 +519,35 @@ fn score_rows(runtime: &mut RwkvOfflineRuntime, rows: &[Row]) -> Result<Vec<Scor
             })
         })
         .collect())
+}
+
+/// The scope's current `rows` split into the scores to keep and the rows to
+/// score again: those near their target, answered since, or new to the scope.
+/// Cards no longer in `rows` are dropped.
+fn split_near_target(
+    previous: &[ScoredCard],
+    answered: &[CardId],
+    rows: Vec<Row>,
+) -> (Vec<ScoredCard>, Vec<Row>) {
+    let previous: HashMap<_, _> = previous.iter().map(|card| (card.card_id, *card)).collect();
+    let answered: HashSet<_> = answered.iter().copied().collect();
+    let mut keep = Vec::with_capacity(rows.len());
+    let mut rescore = Vec::new();
+    for row in rows {
+        match previous.get(&CardId(row.card_id)) {
+            Some(card)
+                if !answered.contains(&card.card_id)
+                    && (card.retrievability
+                        - card.target_retention.unwrap_or(DEFAULT_TARGET_RETENTION))
+                    .abs()
+                        >= NEAR_TARGET =>
+            {
+                keep.push(*card)
+            }
+            _ => rescore.push(row),
+        }
+    }
+    (keep, rescore)
 }
 
 fn query_input(row: &Row) -> ReviewInput {
@@ -1399,6 +1438,22 @@ impl Collection {
                 },
             )?
             .rows;
+        // Only the clock moved since every card was scored: re-score the cards
+        // near their target, and any the scope didn't have (moved, unsuspended).
+        if let Some(scope) = runtime.scopes.get(&deck.id).filter(|scope| {
+            !partial
+                && scope.days_elapsed == days_elapsed
+                && scope.generation == runtime.generation
+                && now.0 - scope.fully_computed_at.0 < FULL_SCORE_MAX_AGE_SECS
+        }) {
+            let (mut cards, rescore) = split_near_target(&scope.cards, &scope.answered, rows);
+            cards.extend(score_rows(runtime, &rescore)?);
+            let scope = runtime.scopes.get_mut(&deck.id).unwrap();
+            scope.cards = cards.clone();
+            scope.computed_at = now;
+            scope.answered.clear();
+            return Ok(cards);
+        }
         let cards = score_rows(runtime, &rows)?;
         runtime.scopes.insert(
             deck.id,
@@ -1406,6 +1461,7 @@ impl Collection {
                 generation: runtime.generation,
                 days_elapsed,
                 computed_at: now,
+                fully_computed_at: now,
                 cards: cards.clone(),
                 answered: Vec::new(),
             },
@@ -1563,6 +1619,34 @@ mod test {
                 false,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn expired_deck_counts_rescore_only_cards_near_their_target() {
+        let scored = |id, retrievability| ScoredCard {
+            card_id: CardId(id),
+            deck_id: DeckId(1),
+            retrievability,
+            target_retention: Some(0.9),
+        };
+        let row = |id| Row {
+            card_id: id,
+            ..Default::default()
+        };
+        let previous = [
+            scored(1, 0.5),  // far below its target: still due
+            scored(2, 0.89), // near it: may have crossed
+            scored(3, 0.98), // far above: still not due
+            scored(4, 0.5),  // answered since
+            scored(5, 0.5),  // no longer in the scope (moved, suspended)
+        ];
+        let rows = vec![row(1), row(2), row(3), row(4), row(6)];
+        let (keep, rescore) = split_near_target(&previous, &[CardId(4)], rows);
+        let kept: Vec<_> = keep.iter().map(|card| card.card_id.0).collect();
+        assert_eq!(kept, vec![1, 3]);
+        // 6: new to the scope
+        let rescored: Vec<_> = rescore.iter().map(|row| row.card_id).collect();
+        assert_eq!(rescored, vec![2, 4, 6]);
     }
 
     #[test]
