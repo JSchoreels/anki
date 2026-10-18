@@ -103,6 +103,26 @@ struct RunResult {
     metrics: Value,
     reviews_per_day: Vec<u32>,
     summary: BTreeMap<&'static str, f64>,
+    /// Flat shock-experiment metrics; empty without a `ShockSpec`.
+    shock_summary: BTreeMap<String, f64>,
+}
+
+/// Cards whose true R differs from the model's prediction.
+struct ShockSpec {
+    /// Measured card groups (name, membership by input index).
+    groups: Vec<(&'static str, Vec<bool>)>,
+    /// Group whose true R is the square of the predicted R.
+    applied: Option<usize>,
+}
+
+fn masked_mean(values: &[f32], mask: &[bool], member: bool) -> f64 {
+    let selected: Vec<f32> = values
+        .iter()
+        .zip(mask)
+        .filter(|(_, &m)| m == member)
+        .map(|(&v, _)| v)
+        .collect();
+    mean(&selected)
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +200,13 @@ fn quantile(sorted: &[f32], q: f64) -> f64 {
     f64::from(sorted[((sorted.len() - 1) as f64 * q).round() as usize])
 }
 
+fn mean_f64(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
 fn sorted(values: &[f32]) -> Vec<f32> {
     let mut values = values.to_vec();
     values.sort_by(f32::total_cmp);
@@ -214,6 +241,7 @@ fn run_strategy(
     scenario: &Scenario,
     strategy: &Strategy,
     counterfactual: bool,
+    shock: Option<&ShockSpec>,
 ) -> io::Result<RunResult> {
     let started = Instant::now();
     let tr = TARGET_RETENTION;
@@ -250,6 +278,43 @@ fn run_strategy(
     let days = scenario.days;
     let card_id =
         |cards: &[RwkvSimulationCard], index: usize| cards[index].review_input.review_input.card_id;
+
+    let applied_mask: Vec<bool> = match shock {
+        Some(spec) => spec
+            .applied
+            .map_or(vec![false; n], |group| spec.groups[group].1.clone()),
+        None => vec![false; n],
+    };
+    let true_of = |index: usize, r: f32| {
+        if applied_mask[index] {
+            r * r
+        } else {
+            r
+        }
+    };
+    let deck_of =
+        |cards: &[RwkvSimulationCard], index: usize| cards[index].review_input.review_input.deck_id;
+    let mut min_true_after_start = vec![1.0f32; n];
+    let mut final_true: Vec<f32> = Vec::new();
+    let mut first_review_day: Vec<Option<i64>> = vec![None; n];
+    // (card index, predicted R, true R, lapse) per review.
+    let mut review_log: Vec<(usize, f32, f32, bool)> = Vec::new();
+    let group_count = shock.map_or(0, |spec| spec.groups.len());
+    let mut group_pred_series: Vec<Vec<f64>> = vec![Vec::new(); group_count];
+    let mut group_true_series: Vec<Vec<f64>> = vec![Vec::new(); group_count];
+    let mut deck_last_day = HashMap::<Option<i64>, i64>::new();
+    let mut deck_max_gap = HashMap::<Option<i64>, i64>::new();
+    let mut deck_entropy: Vec<f64> = Vec::new();
+    let mut deck_distinct: Vec<f64> = Vec::new();
+    let deck_cards = {
+        let mut counts = HashMap::<Option<i64>, usize>::new();
+        for card in &cards {
+            *counts
+                .entry(card.review_input.review_input.deck_id)
+                .or_default() += 1;
+        }
+        counts
+    };
 
     let mut mix_counter = 0u64;
     let mut total_cost = 0.0f64;
@@ -307,6 +372,18 @@ fn run_strategy(
                 }
             }
         }
+        let r_true: Vec<f32> = (0..n).map(|index| true_of(index, r[index])).collect();
+        if day >= 1 {
+            for index in 0..n {
+                min_true_after_start[index] = min_true_after_start[index].min(r_true[index]);
+            }
+        }
+        if let Some(spec) = shock {
+            for (group, (_, mask)) in spec.groups.iter().enumerate() {
+                group_pred_series[group].push(masked_mean(&r, mask, true));
+                group_true_series[group].push(masked_mean(&r_true, mask, true));
+            }
+        }
         let due: Vec<usize> = (0..n)
             .filter(|&index| !cards[index].suspended && cards[index].due_day <= day)
             .collect();
@@ -320,6 +397,7 @@ fn run_strategy(
         push("backlog_before", due.len() as f64);
         if day == days {
             final_r = r;
+            final_true = r_true;
             break;
         }
 
@@ -369,6 +447,31 @@ fn run_strategy(
         for &index in &selected {
             reviewed_today[index] = true;
         }
+        // Deck concentration of the day's reviews.
+        let mut deck_counts = HashMap::<Option<i64>, u32>::new();
+        for &index in &selected {
+            *deck_counts.entry(deck_of(&cards, index)).or_default() += 1;
+        }
+        for deck in deck_counts.keys() {
+            let last = deck_last_day.get(deck).copied().unwrap_or(-1);
+            let gap = deck_max_gap.entry(*deck).or_insert(0);
+            *gap = (*gap).max(day - last - 1);
+            deck_last_day.insert(*deck, day);
+        }
+        if !selected.is_empty() {
+            let total = selected.len() as f64;
+            let entropy: f64 = deck_counts
+                .values()
+                .map(|&c| {
+                    let p = f64::from(c) / total;
+                    -p * p.ln()
+                })
+                .sum();
+            deck_distinct.push(deck_counts.len() as f64);
+            if deck_cards.len() > 1 {
+                deck_entropy.push(entropy / (deck_cards.len() as f64).ln());
+            }
+        }
         series
             .entry("backlog_after")
             .or_default()
@@ -402,7 +505,8 @@ fn run_strategy(
                 .pop()
                 .unwrap();
             let r_at_review = sanitize(prediction.retrievability);
-            let probabilities = review_model.probabilities_for(r_at_review);
+            let true_r = true_of(index, r_at_review);
+            let probabilities = review_model.probabilities_for(true_r);
             let ease = simulation_grade(
                 probabilities,
                 card_id(&cards, index) ^ strategy.grade_seed.wrapping_mul(0x5851_F42D_4C95_7F2D),
@@ -418,6 +522,8 @@ fn run_strategy(
             .clamp(1, MAX_INTERVAL);
             let seconds = review_model.grade_seconds[(ease - 1) as usize];
             total_cost += f64::from(seconds);
+            review_log.push((index, r_at_review, true_r, ease == 1));
+            first_review_day[index].get_or_insert(day);
             review_rs.push(r_at_review);
             intervals.push(interval as f32);
             if !ever_reviewed[index] {
@@ -590,10 +696,134 @@ fn run_strategy(
     ] {
         summary.insert(key, value);
     }
+    let mut metrics = metrics;
+    let mut shock_summary = BTreeMap::<String, f64>::new();
+    let mut shock_json = Value::Null;
+    if let Some(spec) = shock {
+        let mut groups_json = serde_json::Map::new();
+        for (group, (name, mask)) in spec.groups.iter().enumerate() {
+            let mut sides = serde_json::Map::new();
+            for (side, member) in [("m", true), ("u", false)] {
+                let reviews: Vec<_> = review_log
+                    .iter()
+                    .filter(|(index, ..)| mask[*index] == member)
+                    .collect();
+                let true_rs: Vec<f32> = reviews.iter().map(|r| r.2).collect();
+                let pred_rs: Vec<f32> = reviews.iter().map(|r| r.1).collect();
+                let sorted_true = sorted(&true_rs);
+                let lapse_rate = if reviews.is_empty() {
+                    f64::NAN
+                } else {
+                    reviews.iter().filter(|r| r.3).count() as f64 / reviews.len() as f64
+                };
+                let pick = |values: &[f32]| -> Vec<f32> {
+                    values
+                        .iter()
+                        .zip(mask)
+                        .filter(|(_, &m)| m == member)
+                        .map(|(&v, _)| v)
+                        .collect()
+                };
+                let min_true = pick(&min_true_after_start);
+                let end_true = pick(&final_true);
+                let end_pred = pick(&final_r);
+                let sorted_end = sorted(&end_true);
+                let mut values: Vec<(&str, f64)> = vec![
+                    ("cards", min_true.len() as f64),
+                    ("reviews", reviews.len() as f64),
+                    ("lapse_rate", lapse_rate),
+                    ("true_r_mean", mean(&true_rs)),
+                    ("true_r_p5", quantile(&sorted_true, 0.05)),
+                    ("true_r_lt05", fraction(&true_rs, |v| v < 0.5)),
+                    ("pred_r_at_review_mean", mean(&pred_rs)),
+                    ("min_true_lt05", fraction(&min_true, |v| v < 0.5)),
+                    ("min_true_lt07", fraction(&min_true, |v| v < 0.7)),
+                    ("end_true_mean", mean(&end_true)),
+                    ("end_true_p5", quantile(&sorted_end, 0.05)),
+                    ("end_pred_mean", mean(&end_pred)),
+                ];
+                if member {
+                    let members = mask.iter().filter(|&&m| m).count();
+                    for (label, fraction_wanted) in
+                        [("t25", 0.25), ("t50", 0.50), ("t75", 0.75), ("t90", 0.90)]
+                    {
+                        let needed = (fraction_wanted * members as f64).ceil() as usize;
+                        let reached = (0..days).find(|&day| {
+                            first_review_day
+                                .iter()
+                                .zip(mask)
+                                .filter(|(d, &m)| m && d.is_some_and(|d| d <= day))
+                                .count()
+                                >= needed
+                        });
+                        // Censored at days + 1 when the share is never reached.
+                        values.push((label, reached.map_or(days as f64 + 1.0, |d| d as f64)));
+                    }
+                    let reviewed_by_30 = first_review_day
+                        .iter()
+                        .zip(mask)
+                        .filter(|(d, &m)| m && d.is_some_and(|d| d < 30))
+                        .count();
+                    values.push((
+                        "reviewed_by_d30",
+                        reviewed_by_30 as f64 / members.max(1) as f64,
+                    ));
+                    for day in [7usize, 14, 30] {
+                        let label = match day {
+                            7 => "pred_d7",
+                            14 => "pred_d14",
+                            _ => "pred_d30",
+                        };
+                        values.push((label, group_pred_series[group][day]));
+                    }
+                }
+                let mut side_json = serde_json::Map::new();
+                for (key, value) in values {
+                    side_json.insert(key.into(), json!(value));
+                    shock_summary.insert(format!("{name}.{side}.{key}"), value);
+                }
+                sides.insert(side.into(), Value::Object(side_json));
+            }
+            sides.insert("pred_r_series".into(), json!(group_pred_series[group]));
+            sides.insert("true_r_series".into(), json!(group_true_series[group]));
+            groups_json.insert((*name).into(), Value::Object(sides));
+        }
+        // Deck concentration.
+        let mut gaps: Vec<f32> = deck_cards
+            .iter()
+            .filter(|(_, &count)| count >= 10)
+            .map(|(deck, _)| {
+                let last = deck_last_day.get(deck).copied().unwrap_or(-1);
+                deck_max_gap
+                    .get(deck)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(days - 1 - last) as f32
+            })
+            .collect();
+        gaps.sort_by(f32::total_cmp);
+        let concentration = [
+            ("distinct_decks_per_day", mean_f64(&deck_distinct)),
+            ("norm_entropy", mean_f64(&deck_entropy)),
+            ("gap_p50", quantile(&gaps, 0.5)),
+            ("gap_p90", quantile(&gaps, 0.9)),
+            ("gap_max", quantile(&gaps, 1.0)),
+        ];
+        let mut concentration_json = serde_json::Map::new();
+        for (key, value) in concentration {
+            concentration_json.insert(key.into(), json!(value));
+            shock_summary.insert(format!("conc.{key}"), value);
+        }
+        concentration_json.insert("decks_total".into(), json!(deck_cards.len()));
+        concentration_json.insert("decks_with_10_cards".into(), json!(gaps.len()));
+        shock_json = json!({"groups": groups_json, "deck_concentration": concentration_json});
+    }
+    metrics["shock"] = shock_json;
     Ok(RunResult {
         metrics,
         reviews_per_day,
         summary,
+        shock_summary,
     })
 }
 
@@ -1053,6 +1283,7 @@ fn rwkv_review_order_metrics() {
             &unlimited,
             &all_strategies[0],
             counterfactual,
+            None,
         )
         .unwrap();
         let total: u32 = calibration.reviews_per_day.iter().sum();
@@ -1106,9 +1337,15 @@ fn rwkv_review_order_metrics() {
                 .par_iter()
                 .map(|strategy| {
                     let started = Instant::now();
-                    let result =
-                        run_strategy(&inference, &inputs, &scenario, strategy, counterfactual)
-                            .unwrap();
+                    let result = run_strategy(
+                        &inference,
+                        &inputs,
+                        &scenario,
+                        strategy,
+                        counterfactual,
+                        None,
+                    )
+                    .unwrap();
                     println!(
                         "[{residue}/{}/{}] done in {:.0}s",
                         scenario.name,
@@ -1600,5 +1837,432 @@ fn rwkv_review_order_real_drops() {
     println!("== stretches: {stretch_stats}");
     for event in top.iter().take(10) {
         println!("top: {event}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shock experiment: the model mispredicts part of the collection
+// ---------------------------------------------------------------------------
+
+/// The deck with the median card count among decks with at least 30 cards
+/// (the lower median, then the lower deck id on ties).
+fn pick_shock_deck(inputs: &[RwkvWorkloadSimulationInput]) -> Option<(i64, usize)> {
+    let mut counts = HashMap::<i64, usize>::new();
+    for input in inputs {
+        if let Some(deck) = input.review_input.deck_id {
+            *counts.entry(deck).or_default() += 1;
+        }
+    }
+    let mut decks: Vec<(usize, i64)> = counts
+        .into_iter()
+        .filter(|&(_, count)| count >= 30)
+        .map(|(deck, count)| (count, deck))
+        .collect();
+    decks.sort();
+    decks
+        .get(decks.len().checked_sub(1)? / 2)
+        .map(|&(count, deck)| (deck, count))
+}
+
+#[test]
+fn review_order_shock_deck_choice() {
+    let input = |deck: i64| RwkvWorkloadSimulationInput {
+        review_input: ReviewInput {
+            card_id: 1,
+            note_id: None,
+            deck_id: Some(deck),
+            preset_id: None,
+            is_query: true,
+            ease: None,
+            duration_millis: None,
+            card_type: Some(2),
+            day_offset: Some(0),
+            current_elapsed_days: Some(1),
+            current_elapsed_seconds: None,
+            target_retentions: [None; 4],
+            enforce_grade_order: true,
+        },
+        interval_days: None,
+        ease_factor: None,
+        reps: None,
+        lapses: None,
+    };
+    // Counts: deck 1 -> 40, deck 2 -> 100, deck 3 -> 40, deck 4 -> 10 (too small).
+    let mut inputs = Vec::new();
+    for (deck, count) in [(1, 40), (2, 100), (3, 40), (4, 10)] {
+        inputs.extend((0..count).map(|_| input(deck)));
+    }
+    // Sorted (count, id): (40,1) (40,3) (100,2); the median is deck 3.
+    assert_eq!(pick_shock_deck(&inputs), Some((3, 40)));
+    assert_eq!(pick_shock_deck(&inputs[..10]), None);
+}
+
+type ShockCollected = BTreeMap<(String, String, String), Vec<BTreeMap<String, f64>>>;
+
+fn shock_aggregate(collected: &ShockCollected) -> Value {
+    let mut out = serde_json::Map::new();
+    for ((scenario, shock, strategy), replicates) in collected {
+        let baseline = &collected[&(scenario.clone(), shock.clone(), "asc_r".to_string())];
+        let mut metrics = serde_json::Map::new();
+        for key in replicates[0].keys() {
+            let values: Vec<f64> = replicates.iter().map(|r| r[key]).collect();
+            let diffs: Vec<f64> = replicates
+                .iter()
+                .zip(baseline)
+                .map(|(r, b)| r[key] - b[key])
+                .collect();
+            let (mean, sd) = mean_sd(&values);
+            let (diff_mean, diff_sd) = mean_sd(&diffs);
+            metrics.insert(
+                key.clone(),
+                json!({"mean": mean, "sd": sd, "values": values,
+                    "paired_vs_asc_r": {"mean": diff_mean, "sd": diff_sd, "values": diffs}}),
+            );
+        }
+        out.entry(scenario.clone())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap()
+            .entry(shock.clone())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap()
+            .insert(strategy.clone(), Value::Object(metrics));
+    }
+    Value::Object(out)
+}
+
+fn shock_columns(shock: &str) -> Vec<(String, String)> {
+    let mut columns = Vec::new();
+    for (label, key) in [
+        ("t25", "m.t25"),
+        ("t50", "m.t50"),
+        ("t75", "m.t75"),
+        ("t90", "m.t90"),
+        ("rev@30d", "m.reviewed_by_d30"),
+        ("trueR", "m.true_r_mean"),
+        ("trueR<.5", "m.true_r_lt05"),
+        ("lapse/rev", "m.lapse_rate"),
+        ("min<.5", "m.min_true_lt05"),
+        ("min<.7", "m.min_true_lt07"),
+        ("endTrue", "m.end_true_mean"),
+        ("endTrueP5", "m.end_true_p5"),
+    ] {
+        columns.push((label.to_string(), format!("{shock}.{key}")));
+    }
+    for (label, key) in [
+        ("det_d7", "det_d7"),
+        ("det_d14", "det_d14"),
+        ("det_d30", "det_d30"),
+        ("spill_end", "spill_end_true"),
+        ("spill_min<.5", "spill_min_lt05"),
+    ] {
+        columns.push((label.to_string(), format!("{shock}.{key}")));
+    }
+    columns
+}
+
+fn print_shock_table(
+    title: &str,
+    collected: &ShockCollected,
+    scenario: &str,
+    shock: &str,
+    columns: &[(String, String)],
+    paired: bool,
+) {
+    println!("\n== {title} ==");
+    print!("{:<21}", "strategy");
+    for (label, _) in columns {
+        print!(" {label:>12}");
+    }
+    println!();
+    let strategies: Vec<&String> = collected
+        .keys()
+        .filter(|(sc, sh, _)| sc == scenario && sh == shock)
+        .map(|(_, _, st)| st)
+        .collect();
+    let baseline = &collected[&(scenario.to_string(), shock.to_string(), "asc_r".to_string())];
+    for strategy in strategies {
+        let replicates = &collected[&(scenario.to_string(), shock.to_string(), strategy.clone())];
+        print!("{strategy:<21}");
+        for (_, key) in columns {
+            let values: Vec<f64> = if paired {
+                replicates
+                    .iter()
+                    .zip(baseline)
+                    .map(|(r, b)| r[key] - b[key])
+                    .collect()
+            } else {
+                replicates.iter().map(|r| r[key]).collect()
+            };
+            let (mean, sd) = mean_sd(&values);
+            if paired {
+                print!(" {:>+7.3}({:>4.3})", mean, sd);
+            } else {
+                print!(" {mean:>12.4}");
+            }
+        }
+        println!();
+    }
+}
+
+#[test]
+#[ignore]
+fn rwkv_review_order_shock() {
+    let input = env::var("ANKI_RWKV_REVIEW_ORDER_INPUT").expect("set ANKI_RWKV_REVIEW_ORDER_INPUT");
+    let output =
+        env::var("ANKI_RWKV_REVIEW_ORDER_OUTPUT").expect("set ANKI_RWKV_REVIEW_ORDER_OUTPUT");
+    assert_ne!(Path::new(&input), Path::new(&output));
+    let sample_modulus: u64 = 10;
+    let residues: Vec<u64> = env::var("ANKI_RWKV_REVIEW_ORDER_SAMPLE_RESIDUES")
+        .unwrap_or_else(|_| "0,1,2,3,4".into())
+        .split(',')
+        .map(|v| v.trim().parse().unwrap())
+        .collect();
+    let input_bytes = fs::read(&input).unwrap();
+    let mut source: Value = serde_json::from_slice(&input_bytes).unwrap();
+    let rows: Vec<Row> =
+        serde_json::from_value(source.as_object_mut().unwrap().remove("rows").unwrap()).unwrap();
+    assert!(rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    let all_inputs = parse_inputs(source["inputs"].as_array().expect("inputs"));
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let mut inference = super::state_scope_bench::load_for_scopes(
+        weights.clone(),
+        StatePrecision::Int8,
+        [false; 3],
+    );
+    let started = Instant::now();
+    inference
+        .warm_up_reviews(rows_to_reviews(&rows), false)
+        .unwrap();
+    println!("warm-up: {:.1}s", started.elapsed().as_secs_f64());
+
+    let wanted = [
+        "asc_r",
+        "random_daily",
+        "mix_2",
+        "mix_4",
+        "rr_deck",
+        "asc_r_noise1",
+        "random_daily_noise1",
+    ];
+    let all_strategies: Vec<Strategy> = strategies()
+        .into_iter()
+        .filter(|s| wanted.contains(&s.name.as_str()))
+        .collect();
+    assert_eq!(all_strategies.len(), wanted.len());
+    let mut results = serde_json::Map::new();
+    results.insert(
+        "meta".into(),
+        json!({
+            "backup_sha256": source["backup_sha256"],
+            "input_blake3": blake3::hash(&input_bytes).to_hex().to_string(),
+            "residues": residues, "sample_modulus": sample_modulus,
+            "truth": "shocked cards: true R = predicted R squared; grades drawn from true R",
+            "grade_seconds": GRADE_SECONDS, "counterfactual": false,
+        }),
+    );
+    let mut collected = ShockCollected::new();
+    let mut replicates = serde_json::Map::new();
+    let overall_started = Instant::now();
+    for &residue in &residues {
+        let inputs: Vec<_> = all_inputs
+            .iter()
+            .filter(|i| {
+                (simulation_unit_hash(i.review_input.card_id, 0, 123) * 1e9) as u64 % sample_modulus
+                    == residue
+            })
+            .cloned()
+            .collect();
+        println!(
+            "\n######## replicate residue {residue}: {} cards",
+            inputs.len()
+        );
+        let (deck, deck_cards) = pick_shock_deck(&inputs).expect("a deck with 30+ cards");
+        let deck_mask: Vec<bool> = inputs
+            .iter()
+            .map(|i| i.review_input.deck_id == Some(deck))
+            .collect();
+        let scatter_mask: Vec<bool> = inputs
+            .iter()
+            .map(|i| simulation_unit_hash(i.review_input.card_id, -3, 5) < 0.10)
+            .collect();
+        let groups = vec![("deck", deck_mask), ("scatter", scatter_mask)];
+        println!(
+            "  deck_shock: deck {deck}, {deck_cards} cards ({:.1}%); scatter: {} cards",
+            100.0 * deck_cards as f64 / inputs.len() as f64,
+            groups[1].1.iter().filter(|&&m| m).count()
+        );
+        let mut replicate = serde_json::Map::new();
+        replicate.insert(
+            "shock_groups".into(),
+            json!({
+                "cards": inputs.len(), "deck_id": deck, "deck_cards": deck_cards,
+                "deck_share": deck_cards as f64 / inputs.len() as f64,
+                "scatter_cards": groups[1].1.iter().filter(|&&m| m).count(),
+            }),
+        );
+
+        let unlimited = Scenario {
+            name: "unlimited",
+            days: 60,
+            review_limit: usize::MAX,
+            age_days: 0,
+        };
+        let calibration = run_strategy(
+            &inference,
+            &inputs,
+            &unlimited,
+            &all_strategies[0],
+            false,
+            None,
+        )
+        .unwrap();
+        let a = f64::from(calibration.reviews_per_day.iter().sum::<u32>()) / unlimited.days as f64;
+        println!("  unlimited calibration A={a:.2}");
+        replicate.insert("A".into(), json!(a));
+        let scenarios = [
+            Scenario {
+                name: "chronic_60",
+                days: 90,
+                review_limit: (0.6 * a).round() as usize,
+                age_days: 0,
+            },
+            Scenario {
+                name: "vacation_30",
+                days: 90,
+                review_limit: a.round() as usize,
+                age_days: 30,
+            },
+        ];
+        for scenario in scenarios {
+            println!(
+                "\n### residue {residue} {} (limit {}/day)",
+                scenario.name, scenario.review_limit
+            );
+            let scenario_started = Instant::now();
+            // (shock name, group whose truth is shocked)
+            let shocks: [(&str, Option<usize>); 3] =
+                [("none", None), ("deck", Some(0)), ("scatter", Some(1))];
+            let jobs: Vec<(&str, Option<usize>, &Strategy)> = shocks
+                .iter()
+                .flat_map(|&(name, applied)| all_strategies.iter().map(move |s| (name, applied, s)))
+                .collect();
+            let runs: Vec<(String, String, RunResult)> = jobs
+                .par_iter()
+                .map(|&(shock, applied, strategy)| {
+                    let spec = ShockSpec {
+                        groups: groups.clone(),
+                        applied,
+                    };
+                    let started = Instant::now();
+                    let result =
+                        run_strategy(&inference, &inputs, &scenario, strategy, false, Some(&spec))
+                            .unwrap();
+                    println!(
+                        "[{residue}/{}/{shock}/{}] done in {:.0}s",
+                        scenario.name,
+                        strategy.name,
+                        started.elapsed().as_secs_f64()
+                    );
+                    (shock.to_string(), strategy.name.clone(), result)
+                })
+                .collect();
+            let mut shock_json = serde_json::Map::new();
+            for (shock, strategy, run) in &runs {
+                let mut summary = run.shock_summary.clone();
+                if shock != "none" {
+                    let control = &runs
+                        .iter()
+                        .find(|(s, st, _)| s == "none" && st == strategy)
+                        .unwrap()
+                        .2
+                        .shock_summary;
+                    for day in [7, 14, 30] {
+                        let key = format!("{shock}.m.pred_d{day}");
+                        summary
+                            .insert(format!("{shock}.det_d{day}"), summary[&key] - control[&key]);
+                    }
+                    for (new, key) in [
+                        ("spill_end_true", "u.end_true_mean"),
+                        ("spill_min_lt05", "u.min_true_lt05"),
+                    ] {
+                        let key = format!("{shock}.{key}");
+                        summary.insert(format!("{shock}.{new}"), summary[&key] - control[&key]);
+                    }
+                }
+                collected
+                    .entry((scenario.name.to_string(), shock.clone(), strategy.clone()))
+                    .or_default()
+                    .push(summary);
+                shock_json
+                    .entry(shock.clone())
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(strategy.clone(), run.metrics.clone());
+            }
+            replicate.insert(
+                scenario.name.into(),
+                json!({
+                    "review_limit": scenario.review_limit,
+                    "runtime_seconds": scenario_started.elapsed().as_secs_f64(),
+                    "runs": shock_json,
+                }),
+            );
+            replicates.insert(
+                format!("residue_{residue}"),
+                Value::Object(replicate.clone()),
+            );
+            results.insert("replicates".into(), Value::Object(replicates.clone()));
+            results.insert("aggregate".into(), shock_aggregate(&collected));
+            write_output(&output, &results);
+        }
+        println!(
+            "elapsed total {:.0}s",
+            overall_started.elapsed().as_secs_f64()
+        );
+    }
+
+    for scenario in ["chronic_60", "vacation_30"] {
+        for shock in ["deck", "scatter"] {
+            let columns = shock_columns(shock);
+            print_shock_table(
+                &format!("{scenario} / {shock}_shock: MEAN over replicates (shocked cards unless det/spill)"),
+                &collected,
+                scenario,
+                shock,
+                &columns,
+                false,
+            );
+            print_shock_table(
+                &format!("{scenario} / {shock}_shock: PAIRED delta vs asc_r, mean(sd)"),
+                &collected,
+                scenario,
+                shock,
+                &columns,
+                true,
+            );
+        }
+        let columns: Vec<(String, String)> = [
+            ("decks/day", "conc.distinct_decks_per_day"),
+            ("norm_entropy", "conc.norm_entropy"),
+            ("gap_p50", "conc.gap_p50"),
+            ("gap_p90", "conc.gap_p90"),
+            ("gap_max", "conc.gap_max"),
+        ]
+        .map(|(l, k)| (l.to_string(), k.to_string()))
+        .to_vec();
+        for shock in ["none", "deck", "scatter"] {
+            print_shock_table(
+                &format!("{scenario} / {shock}: deck concentration, MEAN"),
+                &collected,
+                scenario,
+                shock,
+                &columns,
+                false,
+            );
+        }
     }
 }

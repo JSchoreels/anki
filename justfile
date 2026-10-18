@@ -236,6 +236,10 @@ rwkv-review-order-bench input output:
 rwkv-review-order-real-drops input output:
     {{ if os() == "windows" { "$env:ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "'; $env:ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_review_order_real_drops -- --ignored --nocapture" } else { "ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "' ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_review_order_real_drops -- --ignored --nocapture" } }}
 
+# Compare review orderings when the model mispredicts a deck or a scattered subset of cards.
+rwkv-review-order-shock input output:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "'; $env:ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_review_order_shock -- --ignored --nocapture" } else { "ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "' ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_review_order_shock -- --ignored --nocapture" } }}
+
 # Measure accuracy after omitting whole cards or individual historical answers.
 rwkv-history-ablation-bench input output seeds='3':
     {{ if os() == "windows" { "$env:ANKI_RWKV_ABLATION_INPUT='" + input + "'; $env:ANKI_RWKV_ABLATION_OUTPUT='" + output + "'; $env:ANKI_RWKV_ABLATION_SEEDS='" + seeds + "'; cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_ABLATION_INPUT='" + input + "' ANKI_RWKV_ABLATION_OUTPUT='" + output + "' ANKI_RWKV_ABLATION_SEEDS='" + seeds + "' cargo test -p anki --release --lib rwkv_history_ablation_metrics -- --ignored --nocapture" } }}
