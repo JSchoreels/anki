@@ -117,8 +117,7 @@ fn latest_queries(rows: &[Row], limit: usize) -> Vec<ReviewInput> {
 
 /// Offline comparison only: the production INT4 option still quantizes notes.
 fn hybrid_runtime() -> RwkvInference {
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let mut inference =
         RwkvInference::load_with_precision(weights, 0.9, 36_500, StatePrecision::Int4).unwrap();
     Arc::get_mut(&mut inference.model).unwrap().modules[2].precision = StatePrecision::Int8;
@@ -170,8 +169,7 @@ fn rwkv_hybrid_precision_metrics() {
             enforce_grade_order: true,
         })
         .collect();
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let mut summaries = serde_json::Map::new();
     for mode in ["state_int8", "cards_int4_notes_int8"] {
         let mut inference = if mode == "state_int8" {
@@ -269,8 +267,7 @@ fn write_predictions(path: &Path, predictions: &[f32]) {
 #[ignore]
 fn rwkv_runtime_precision_case() {
     let mode = env::var("ANKI_RWKV_RUNTIME_MODE").unwrap();
-    let weights_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let packed_path = PathBuf::from(env::var("ANKI_RWKV_RUNTIME_PACKED_MODEL").unwrap());
     if mode == "prepare" {
         let packed = encode(&WeightMap::load(&weights_path).unwrap());

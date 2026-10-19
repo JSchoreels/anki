@@ -58,6 +58,42 @@ delays. Turning it on bypasses the delays without deleting the saved step lists;
 cards already graduated to Review do not automatically return to learning when
 it is turned off again.
 
+## Bundled SM40 Model
+
+The experimental SM40 integration replaces the desktop's bundled 2.76M-parameter
+model with the 331,511-parameter `sm40v2` release. The current weights are
+`qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent architecture and
+manifest record the exact upstream export. This branch retains f32 weight
+computation and the existing INT8 card/note default. Loading the optional
+`weights.int8.bin` through `ANKI_RWKV_MODEL_PATH` dequantizes it once to f32;
+it reduces the weight file size, not the resident compute representation.
+
+SM40 has width 64, four 16-wide heads and card/deck/note/preset/user depths
+2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
+layer-zero value residual, and only four layers retain channel mixers. Input
+feature 22 is zeroed in every inference path. The feature builder's timing,
+entity codes, canonical history and routing rules are unchanged. The curve
+head is a mixture of three learned power curves and the Instant head remains
+a four-rating classifier.
+
+The verified architectures are fixed at compilation in
+`rslib/src/rwkv/architecture.rs`, with a test against the published JSON spec.
+Cargo enables `rwkv-sm40` by default. `--no-default-features` on the standalone
+native benchmark selects the legacy architecture and original weight file;
+it is an offline comparison configuration, not a second desktop model selector.
+A custom embedded weight file must match the compiled architecture.
+
+The model content hash invalidates the previous local profile cache. Native
+state-store schema 5 and runtime-state marker `ARWKVPROCSTATE3` additionally
+separate the new curve payload from previous caches. The next state preparation
+reconstructs state from canonical retained history; collection data and synced
+deck settings do not migrate. Undo, temporary workload replays, compact state,
+checkpoints and fresh-process restoration retain the complete power curve.
+
+The [SM40 comparison](rwkv-sm40-2026-10-20.MD) records the matched full-history
+resource and quality measurements. Older dated performance/precision reports
+below concern the original model and are historical evidence, not SM40 results.
+
 ## Settings And Storage
 
 Desktop-only RWKV review settings are stored in deck config `other` under the
@@ -130,7 +166,7 @@ There is no parallel full-precision backup cache.
 
 Compact modes pack only card and note recurrent matrices: symmetric signed
 `int8` (−127…127) or packed `int4` (−7…7), with one f32 absolute-maximum scale
-per 32-element row and round-to-nearest-even codes. Both compact modes store
+per model head row (16 elements for SM40; 32 for the legacy model) and round-to-nearest-even codes. Both compact modes store
 time/channel shift vectors as IEEE f16 using the `half` crate. Matrices are
 quantized after each answer's f32 output is calculated, before the next answer
 reads them. Queries, preview answers, undo, workload simulation, historical
@@ -156,7 +192,7 @@ buffer-decoding rebuild penalty, but remains slower than current f32 weights;
 fresh-process RAM savings are small because recurrent state dominates memory.
 These kernels remain offline experiments.
 
-For the bundled model, the [recommended default](rwkv-runtime-precision-2026-10-14.MD#recommended-default)
+For the previous bundled model, the [recommended default](rwkv-runtime-precision-2026-10-14.MD#recommended-default)
 remains f32 weights with int8 card/note matrices and f32 deck/preset/global state.
 It gives the best tested memory, speed and quality balance: 61.1% less ready RAM
 than f32 state after fresh cache restore, with almost identical historical UM+.
@@ -871,10 +907,11 @@ When RWKV-Curve is enabled and the desktop RWKV backend is available, the
 reviewer computes each answer button by simulating that rating from the current
 RWKV state. The embedded runtime evaluates the current query plus hypothetical
 Again, Hard, Good, and Easy answer states. Each hypothetical answer state
-returns an RWKV-Curve. Anki evaluates its monotonic exponential-mixture base and
-uses that curve to find the interval at the target retention for that grade.
-The model's experimental piecewise `ahead_logits` correction is deliberately
-ignored because it can make predicted retrievability increase with elapsed
+returns an RWKV-Curve. Anki evaluates SM40's monotonic power-mixture curve and
+uses it to find the interval at the target retention for that grade. SM40 has
+no learned ahead correction; its constant 1e-5 logit residual is applied as in
+the published reference. The legacy comparison continues to ignore its learned
+piecewise `ahead_logits`, which can make retrievability increase with elapsed
 time. The interval is the first sampled downward crossing of the target; if the
 curve never reaches the target, the configured maximum interval is used.
 
@@ -1215,7 +1252,7 @@ recompute, which starts a new epoch. On a 224,000-review copy the relabel took
 ## Inference Runtime
 
 Desktop RWKV inference uses Anki's embedded Rust inference-only runner and
-default RWKV checkpoint. `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
+bundled SM40 checkpoint. `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
 weight file while keeping the embedded runner. `ANKI_RWKV_BENCHMARK_PATH` plus
 `ANKI_RWKV_MODEL_PATH` selects the legacy PyTorch-based `srs-benchmark` bridge
 for local development or retrained models.
@@ -1383,6 +1420,8 @@ serializing the warm-up snapshot, so Python-side work such as UI progress
 updates no longer stalls behind multi-second replay calls.
 
 ### RWKV Performance Investigation Notes
+
+These measurements predate SM40 and use the original width-128 model.
 
 For review-time overhead, run the following against an extracted collection
 backup, never the live profile database:

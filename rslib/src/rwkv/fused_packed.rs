@@ -258,8 +258,7 @@ mod tests {
 
     #[test]
     fn rwkv_weight_precision_fused_preserves_complete_replay_states_and_bounds_query_error() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
         let data = encode(&WeightMap::load(&path).unwrap());
         let mut decoded =
             runtime_with_compute(&path, Some(&data), StatePrecision::Int8, false, false);

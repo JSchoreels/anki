@@ -10,6 +10,9 @@ workspace = ".."
 description = "Anki's Rust library code"
 
 [features]
+default = ["rwkv-sm40"]
+# Disable default features only for the offline legacy-model comparison.
+rwkv-sm40 = []
 bench = ["criterion"]
 rustls = ["reqwest/rustls-tls", "reqwest/rustls-tls-native-roots"]
 native-tls = ["reqwest/native-tls"]

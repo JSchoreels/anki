@@ -135,9 +135,7 @@ def main() -> None:
     metadata: dict[str, Any] = {
         "source_input_sha256": sha256(source_path),
         "input_sha256": sha256(prepared),
-        "model_sha256": sha256(
-            root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
-        ),
+        "model_sha256": sha256(root / "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin"),
         "driver_sha256": sha256(Path(__file__)),
         "provenance": provenance(root, output),
         "fsrs_baseline": "Frozen configured FSRS7 parameters; matched canonical history; no fitting",
@@ -184,7 +182,7 @@ def main() -> None:
     if sha256(Path(__file__)) != metadata["driver_sha256"]:
         raise ValueError("Benchmark driver changed during measurement")
     if (
-        sha256(root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin")
+        sha256(root / "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin")
         != metadata["model_sha256"]
     ):
         raise ValueError("RWKV model changed during measurement")

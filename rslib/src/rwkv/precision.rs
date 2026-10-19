@@ -162,7 +162,7 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<ModuleState> {
         _ => return Err(invalid_state()),
     };
     let count = cursor.u32()? as usize;
-    if !(2..=4).contains(&count) {
+    if !(1..=4).contains(&count) {
         return Err(invalid_state());
     }
     let mut layers = Vec::with_capacity(count);

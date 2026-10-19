@@ -104,13 +104,16 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
             output: "qt/_aqt/py.typed",
         },
     )?;
-    build.add_action(
-        "qt:aqt:rwkv_weights",
-        CopyFile {
-            input: "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin".into(),
-            output: "qt/_aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
-        },
-    )?;
+    for name in ["weights.f32.bin", "architecture.json", "manifest.json"] {
+        let output = format!("qt/_aqt/rwkv_inference/sm40v2/{name}");
+        build.add_action(
+            format!("qt:aqt:rwkv_sm40_{name}"),
+            CopyFile {
+                input: format!("qt/aqt/rwkv_inference/sm40v2/{name}").into(),
+                output: &output,
+            },
+        )?;
+    }
     Ok(())
 }
 
