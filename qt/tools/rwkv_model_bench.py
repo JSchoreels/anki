@@ -26,6 +26,7 @@ MODELS = {
     "sm40": "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin",
 }
 VARIANTS = {
+    "legacy_f32": ("legacy", "f32"),
     "legacy_int8": ("legacy", "state_int8"),
     "sm40_f32": ("sm40", "f32"),
     "sm40_int8": ("sm40", "state_int8"),
@@ -194,7 +195,7 @@ def main() -> None:
             ["rtk", "proxy", "git", "rev-parse", "HEAD"], cwd=root, text=True
         ).strip(),
         "variants": {name: list(value) for name, value in VARIANTS.items()},
-        "state_precision": "SM40 f32 primary; legacy and SM40 INT8 card/note comparisons; shared scopes f32",
+        "state_precision": "Legacy and SM40 each with f32 or INT8 card/note state; shared scopes f32",
         "weights_precision": "f32",
         "retained_answers": len(source["rows"]),
         "rounds": args.rounds,
