@@ -4,8 +4,11 @@
 use super::*;
 
 fn runtime(precision: StatePrecision) -> RwkvInference {
+    #[cfg(not(feature = "rwkv_small"))]
     let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    #[cfg(feature = "rwkv_small")]
+    let weights = PathBuf::from(std::env::var("ANKI_RWKV_SMALL_MODEL").unwrap());
     RwkvInference::load_with_precision(weights, 0.9, 36_500, precision).unwrap()
 }
 

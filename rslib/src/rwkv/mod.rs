@@ -43,16 +43,35 @@ mod precision_tests;
 mod query_kernels;
 #[cfg(test)]
 mod query_math_bench;
+#[cfg(all(test, feature = "rwkv_small"))]
+mod small_model_tests;
 
+// The model's shape is chosen at build time: the fork's 2.76M-parameter model,
+// or with the `rwkv_small` feature JSchoreels' 331k-parameter "w64" model
+// (anki-rwkv release small-model-sm40-2026-10-19, its INTEGRATION.md): d_model
+// 64, heads of 16, fewer layers per stream run interleaved (LAYER_STEPS), some
+// layers without a channel mixer, and a 3-power-curve head.
+#[cfg(not(feature = "rwkv_small"))]
 const D_MODEL: usize = 128;
+#[cfg(feature = "rwkv_small")]
+const D_MODEL: usize = 64;
 const CARD_FEATURES: usize = 92;
 const HEADS: usize = 4;
 const HEAD_SIZE: usize = D_MODEL / HEADS;
+/// Hidden width of the feature MLP and the heads.
+#[cfg(not(feature = "rwkv_small"))]
 const HEAD_DIM: usize = 4 * D_MODEL;
+#[cfg(feature = "rwkv_small")]
+const HEAD_DIM: usize = 128;
+#[cfg(not(feature = "rwkv_small"))]
 const NUM_CURVES: usize = 128;
 const ANSWER_EASES: [u8; 4] = [1, 2, 3, 4];
 const S90_TARGET_RETENTION: f32 = 0.9;
+#[cfg(not(feature = "rwkv_small"))]
 const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 4;
+// a store of the other model is never read
+#[cfg(feature = "rwkv_small")]
+const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 1_004;
 const STATE_CACHE_STORE_PAGE_SIZE: i64 = 64 * 1024;
 const STATE_CACHE_DELTA_MAGIC: &[u8] = b"ARWKVSTATEDELTA1\0";
 const WARM_UP_STATE_SPILL_MAGIC: &[u8] = b"ARWKVSTASH1\0";
@@ -65,8 +84,38 @@ const STATE_CACHE_READ_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 const STATE_CACHE_READ_BUFFER_BYTES: usize = 4 * 1024;
 
+#[cfg(not(feature = "rwkv_small"))]
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
+#[cfg(not(feature = "rwkv_small"))]
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
+/// (module, layer) in the order one review runs them; each module keeps its
+/// own value residual (v0) across its layers.
+#[cfg(not(feature = "rwkv_small"))]
+#[rustfmt::skip]
+const LAYER_STEPS: [(usize, usize); 16] = [
+    (0, 0), (0, 1), (0, 2),
+    (1, 0), (1, 1), (1, 2), (1, 3),
+    (2, 0), (2, 1),
+    (3, 0), (3, 1), (3, 2),
+    (4, 0), (4, 1), (4, 2), (4, 3),
+];
+/// LoRA ranks of the time mixer: value, a, decay, gate.
+#[cfg(not(feature = "rwkv_small"))]
+const LORA_RANKS: [usize; 4] = [8, 16, 16, 16];
+#[cfg(feature = "rwkv_small")]
+const MODULE_LAYERS: [usize; 5] = [2, 4, 1, 3, 3];
+#[cfg(feature = "rwkv_small")]
+const CHANNEL_MIXER_DIMS: [usize; 5] = [64; 5];
+#[cfg(feature = "rwkv_small")]
+#[rustfmt::skip]
+const LAYER_STEPS: [(usize, usize); 13] = [
+    (0, 0), (1, 0), (2, 0), (3, 0), (4, 0),
+    (0, 1), (1, 1), (3, 1), (4, 1),
+    (1, 2), (3, 2), (4, 2),
+    (1, 3),
+];
+#[cfg(feature = "rwkv_small")]
+const LORA_RANKS: [usize; 4] = [2, 4, 4, 4];
 /// Rows per block in the bulk replay's blocked projection kernels. Bounds the
 /// stack scratch used per block; larger blocks amortize weight-matrix streaming
 /// over more rows.
@@ -3322,23 +3371,37 @@ impl WeightMap {
         let weight_name = format!("{name}.weight");
         let bias_name = format!("{name}.bias");
         let weight = &self.tensor(&weight_name, &[output, input])?.values;
-        let mut weight_by_input = vec![0.0; weight.len()];
-        for row in 0..output {
-            for column in 0..input {
-                weight_by_input[column * output + row] = weight[row * input + column];
-            }
-        }
         let bias = if bias {
             Some(self.tensor(&bias_name, &[output])?.values.clone())
         } else {
             None
         };
-        Ok(Linear {
-            input,
-            output,
-            weight_by_input,
-            bias,
-        })
+        Ok(Linear::from_rows(weight, input, output, bias))
+    }
+
+    /// `gru_{w,s,d}_weight` ([3, HEAD_DIM]) and `_bias` ([3]) as one
+    /// projection to 9 values: mixture logits, log scales, log decays.
+    #[cfg(feature = "rwkv_small")]
+    fn power_curves(&self) -> io::Result<Linear> {
+        let mut weight = Vec::new();
+        let mut bias = Vec::new();
+        for part in ["w", "s", "d"] {
+            weight.extend_from_slice(
+                &self
+                    .tensor(&format!("gru_{part}_weight"), &[3, HEAD_DIM])?
+                    .values,
+            );
+            bias.extend_from_slice(&self.tensor(&format!("gru_{part}_bias"), &[3])?.values);
+        }
+        Ok(Linear::from_rows(&weight, HEAD_DIM, 9, Some(bias)))
+    }
+
+    /// The small model stores a layer's missing parts (channel mixer, layer
+    /// 0's value LoRA) as 1x1 dummies.
+    fn is_dummy(&self, name: &str) -> bool {
+        self.tensors
+            .get(name)
+            .is_some_and(|tensor| tensor.values.len() == 1)
     }
 
     fn layer_norm(&self, name: &str, dim: usize, eps: f32) -> io::Result<Norm> {
@@ -3524,9 +3587,15 @@ struct SrsModel {
     head_w_0: Linear,
     head_w_norm: Norm,
     head_w_4: Linear,
+    #[cfg(not(feature = "rwkv_small"))]
     w_linear: Linear,
+    #[cfg(not(feature = "rwkv_small"))]
     head_ahead_0: Linear,
+    #[cfg(not(feature = "rwkv_small"))]
     ahead_linear: Linear,
+    /// The 3 power curves' mixture logits, log scales and log decays.
+    #[cfg(feature = "rwkv_small")]
+    power_curves: Linear,
     head_p_0: Linear,
     p_linear: Linear,
 }
@@ -3579,8 +3648,14 @@ impl SrsModel {
             .map(|(module_id, layer_count)| RwkvModule::load(&weights, module_id, *layer_count))
             .collect::<io::Result<Vec<_>>>()?;
 
+        #[allow(unused_mut)]
+        let mut features_0 = weights.linear("features2card.0", CARD_FEATURES, HEAD_DIM, true)?;
+        // the small model ignores input 22 (card state)
+        #[cfg(feature = "rwkv_small")]
+        features_0.weight_by_input[22 * HEAD_DIM..23 * HEAD_DIM].fill(0.0);
+
         Ok(Self {
-            features_0: weights.linear("features2card.0", CARD_FEATURES, HEAD_DIM, true)?,
+            features_0,
             features_norm: weights.layer_norm("features2card.2", HEAD_DIM, 1e-5)?,
             features_3: weights.linear("features2card.3", HEAD_DIM, D_MODEL, true)?,
             modules,
@@ -3588,9 +3663,14 @@ impl SrsModel {
             head_w_0: weights.linear("head_w.0", D_MODEL, D_MODEL, true)?,
             head_w_norm: weights.layer_norm("head_w.2", D_MODEL, 1e-5)?,
             head_w_4: weights.linear("head_w.4", D_MODEL, HEAD_DIM, true)?,
+            #[cfg(not(feature = "rwkv_small"))]
             w_linear: weights.linear("w_linear", HEAD_DIM, NUM_CURVES, true)?,
+            #[cfg(not(feature = "rwkv_small"))]
             head_ahead_0: weights.linear("head_ahead_logits.0", D_MODEL, HEAD_DIM, true)?,
+            #[cfg(not(feature = "rwkv_small"))]
             ahead_linear: weights.linear("ahead_linear", HEAD_DIM, NUM_CURVES, true)?,
+            #[cfg(feature = "rwkv_small")]
+            power_curves: weights.power_curves()?,
             head_p_0: weights.linear("head_p.0", D_MODEL, HEAD_DIM, true)?,
             p_linear: weights.linear("p_linear", HEAD_DIM, 4, true)?,
         })
@@ -3705,8 +3785,46 @@ impl SrsModel {
             .apply_batch(&scratch.normalized_features, rows, &mut scratch.x);
         query_silu_batch_in_place(&mut scratch.x);
 
-        for (module_id, module) in self.modules.iter().enumerate() {
-            module.run_query_batch(&mut scratch.x, items, module_id, &mut scratch.module);
+        // compact states decoded for this batch only
+        let decoded: Vec<_> = items
+            .iter()
+            .map(|item| {
+                [0, 1, 2, 3, 4]
+                    .map(|module_id| item.state.module(module_id).map(ModuleState::decoded))
+            })
+            .collect();
+        let items: Vec<_> = items
+            .iter()
+            .zip(&decoded)
+            .map(
+                |(item, [card, deck, note, preset, global])| ReviewPredictionQueryRef {
+                    features: item.features,
+                    state: SrsStateRef {
+                        card: card.as_deref(),
+                        deck: deck.as_deref(),
+                        note: note.as_deref(),
+                        preset: preset.as_deref(),
+                        global: global.as_deref(),
+                    },
+                },
+            )
+            .collect();
+        let ModuleQueryBatchScratch { next, v0, layer } = &mut scratch.module;
+        for v0 in v0.iter_mut() {
+            v0.resize(rows * D_MODEL, 0.0);
+            v0.fill(0.0);
+        }
+        for (module_id, layer_id) in LAYER_STEPS {
+            self.modules[module_id].layers[layer_id].run_query_batch(
+                &scratch.x,
+                &mut v0[module_id],
+                &items,
+                module_id,
+                layer_id,
+                next,
+                layer,
+            );
+            std::mem::swap(&mut scratch.x, next);
         }
 
         self.prehead_norm
@@ -3743,15 +3861,31 @@ impl SrsModel {
         relu_in_place(&mut head_w);
         head_w = self.head_w_norm.apply(&head_w);
         head_w = self.head_w_4.apply(&head_w);
-        let weights = softmax(&self.w_linear.apply(&head_w));
 
-        let mut ahead = self.head_ahead_0.apply(prehead_x);
-        relu_in_place(&mut ahead);
-        let ahead_logits = self.ahead_linear.apply(&ahead);
+        #[cfg(feature = "rwkv_small")]
+        {
+            // [mixture weights, scales S, decays d] of R(t) = sum w (1 + t/S)^-d
+            let raw = self.power_curves.apply(&head_w);
+            let mut weights = softmax(&raw[..3]);
+            weights.extend(raw[3..].iter().map(|value| value.clamp(-25.0, 25.0).exp()));
+            ReviewCurve {
+                ahead_logits: Vec::new(),
+                weights,
+            }
+        }
 
-        ReviewCurve {
-            ahead_logits,
-            weights,
+        #[cfg(not(feature = "rwkv_small"))]
+        {
+            let weights = softmax(&self.w_linear.apply(&head_w));
+
+            let mut ahead = self.head_ahead_0.apply(prehead_x);
+            relu_in_place(&mut ahead);
+            let ahead_logits = self.ahead_linear.apply(&ahead);
+
+            ReviewCurve {
+                ahead_logits,
+                weights,
+            }
         }
     }
 
@@ -3785,37 +3919,49 @@ impl SrsModel {
             feature_mlp_profile_started,
         );
 
-        #[cfg(test)]
-        let module_profile_started = rwkv_warmup_profile_start();
-        let (x, card_state) = self.modules[0].run(&x, state.card);
-        #[cfg(test)]
-        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleCard, module_profile_started);
-        #[cfg(test)]
-        let module_profile_started = rwkv_warmup_profile_start();
-        let (x, deck_state) = self.modules[1].run(&x, state.deck);
-        #[cfg(test)]
-        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleDeck, module_profile_started);
-        #[cfg(test)]
-        let module_profile_started = rwkv_warmup_profile_start();
-        let (x, note_state) = self.modules[2].run(&x, state.note);
-        #[cfg(test)]
-        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleNote, module_profile_started);
-        #[cfg(test)]
-        let module_profile_started = rwkv_warmup_profile_start();
-        let (x, preset_state) = self.modules[3].run(&x, state.preset);
-        #[cfg(test)]
-        rwkv_warmup_profile_record(
-            RwkvWarmupProfileBucket::ModulePreset,
-            module_profile_started,
-        );
-        #[cfg(test)]
-        let module_profile_started = rwkv_warmup_profile_start();
-        let (x, global_state) = self.modules[4].run(&x, state.global);
-        #[cfg(test)]
-        rwkv_warmup_profile_record(
-            RwkvWarmupProfileBucket::ModuleGlobal,
-            module_profile_started,
-        );
+        let states = [
+            state.card,
+            state.deck,
+            state.note,
+            state.preset,
+            state.global,
+        ]
+        .map(|state| state.map(ModuleState::decoded));
+        let mut x = x;
+        let mut v0: [Vec<f32>; 5] = Default::default();
+        let mut next_layers: [Vec<LayerState>; 5] = Default::default();
+        for (module_id, layer_id) in LAYER_STEPS {
+            #[cfg(test)]
+            let module_profile_started = rwkv_warmup_profile_start();
+            if v0[module_id].is_empty() {
+                v0[module_id] = vec![0.0; D_MODEL];
+            }
+            let layer_state = states[module_id]
+                .as_deref()
+                .and_then(|state| state.layers.get(layer_id));
+            let (next_x, next_v0, next_layer_state) =
+                self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], layer_state);
+            x = next_x;
+            v0[module_id] = next_v0;
+            next_layers[module_id].push(next_layer_state);
+            #[cfg(test)]
+            rwkv_warmup_profile_record(
+                bulk::module_profile_bucket(module_id),
+                module_profile_started,
+            );
+        }
+        let [card_state, deck_state, note_state, preset_state, global_state] = {
+            let mut module_id = 0;
+            next_layers.map(|layers| {
+                let state = ModuleState {
+                    layers,
+                    packed: None,
+                }
+                .compact(self.modules[module_id].precision);
+                module_id += 1;
+                state
+            })
+        };
 
         #[cfg(test)]
         let heads_profile_started = rwkv_warmup_profile_start();
@@ -3868,9 +4014,24 @@ impl SrsModel {
             state.note,
             state.preset,
             state.global,
-        ];
-        for (module, state) in self.modules.iter().zip(states) {
-            x = module.run_query(&x, state, &mut scratch.module);
+        ]
+        .map(|state| state.map(ModuleState::decoded));
+        let ModuleQueryScratch { next, v0, layer } = &mut scratch.module;
+        for v0 in v0.iter_mut() {
+            v0.fill(0.0);
+        }
+        for (module_id, layer_id) in LAYER_STEPS {
+            let layer_state = states[module_id]
+                .as_deref()
+                .and_then(|state| state.layers.get(layer_id));
+            self.modules[module_id].layers[layer_id].run_query_into(
+                &x,
+                &mut v0[module_id],
+                layer_state,
+                next,
+                layer,
+            );
+            std::mem::swap(&mut x, next);
         }
 
         self.prehead_norm.apply_into(&x, &mut scratch.prehead);
@@ -4659,7 +4820,7 @@ fn read_file_module_state(input: &mut impl io::Read, layers: usize) -> io::Resul
             }) && layer
                 .channel_shift
                 .as_ref()
-                .is_some_and(|c| c.len() == D_MODEL)
+                .is_none_or(|c| c.len() == D_MODEL)
         });
     if !shape_ok {
         return Err(damaged());
@@ -4688,29 +4849,42 @@ fn read_half_module_state(
         buffer: &mut Vec<u8>,
         want: usize,
     ) -> io::Result<Vec<f32>> {
+        read_values_or_none(input, buffer, want)?.ok_or_else(damaged)
+    }
+    /// None for a layer without a channel mixer (no values)
+    fn read_values_or_none(
+        input: &mut impl io::Read,
+        buffer: &mut Vec<u8>,
+        want: usize,
+    ) -> io::Result<Option<Vec<f32>>> {
         let len = read_u32_le(input)? as usize;
+        if len == 0 {
+            return Ok(None);
+        }
         if len != want {
             return Err(damaged());
         }
         buffer.resize(len * 2, 0);
         input.read_exact(buffer)?;
-        Ok(buffer
-            .chunks_exact(2)
-            .map(|bytes| half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
-            .collect())
+        Ok(Some(
+            buffer
+                .chunks_exact(2)
+                .map(|bytes| half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
+                .collect(),
+        ))
     }
     let mut states = Vec::with_capacity(layers);
     for _ in 0..layers {
         let x_shift = read_values(input, buffer, D_MODEL)?;
         let matrix = read_values(input, buffer, HEADS * HEAD_SIZE * HEAD_SIZE)?;
-        let channel_shift = read_values(input, buffer, D_MODEL)?;
+        let channel_shift = read_values_or_none(input, buffer, D_MODEL)?;
         states.push(LayerState {
             time: Some(TimeState {
                 x_shift,
                 matrix,
                 packed_matrix: None,
             }),
-            channel_shift: Some(channel_shift),
+            channel_shift,
         });
     }
     Ok(ModuleState {
@@ -5317,7 +5491,8 @@ fn deserialize_module_state(bytes: Option<&[u8]>) -> io::Result<Option<ModuleSta
                 matrix,
                 packed_matrix: None,
             }),
-            channel_shift: Some(channel_shift),
+            // empty: a layer without a channel mixer
+            channel_shift: (!channel_shift.is_empty()).then_some(channel_shift),
         });
     }
     cursor.expect_end()?;
@@ -5692,6 +5867,19 @@ fn current_curve_retrievability(input: &ReviewInput, curve: &ReviewCurve) -> Opt
     Some(predict_curve(curve, elapsed_seconds as f32))
 }
 
+#[cfg(feature = "rwkv_small")]
+fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
+    let t = elapsed_seconds.max(1.0);
+    let [weights, scales, decays] = [0, 3, 6].map(|start| &curve.weights[start..start + 3]);
+    let mut raw_probability = 0.0;
+    for curve in 0..3 {
+        raw_probability +=
+            weights[curve] * (-decays[curve] * (t / (1e-7 + scales[curve])).ln_1p()).exp();
+    }
+    1e-5 + (1.0 - 2e-5) * raw_probability
+}
+
+#[cfg(not(feature = "rwkv_small"))]
 fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
     let elapsed_seconds = elapsed_seconds.max(1.0);
     let mut raw_probability = 0.0;
@@ -5703,6 +5891,7 @@ fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
     1e-5 + (1.0 - 2e-5) * raw_probability
 }
 
+#[cfg(not(feature = "rwkv_small"))]
 fn linspace_exp(index: usize, count: usize, point_spread: f32) -> f32 {
     let value = if count <= 1 {
         0.0
@@ -5717,11 +5906,11 @@ struct RwkvModule {
     precision: StatePrecision,
 }
 
+/// Scratch of the one-at-a-time query path: one value residual per module.
 #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
 struct ModuleQueryScratch {
-    current: [f32; D_MODEL],
     next: [f32; D_MODEL],
-    v0: [f32; D_MODEL],
+    v0: [[f32; D_MODEL]; 5],
     layer: LayerQueryScratch,
 }
 
@@ -5729,7 +5918,7 @@ struct ModuleQueryScratch {
 #[derive(Default)]
 struct ModuleQueryBatchScratch {
     next: Vec<f32>,
-    v0: Vec<f32>,
+    v0: [Vec<f32>; 5],
     layer: LayerQueryBatchScratch,
 }
 
@@ -5737,9 +5926,8 @@ struct ModuleQueryBatchScratch {
 impl Default for ModuleQueryScratch {
     fn default() -> Self {
         Self {
-            current: [0.0; D_MODEL],
             next: [0.0; D_MODEL],
-            v0: [0.0; D_MODEL],
+            v0: [[0.0; D_MODEL]; 5],
             layer: LayerQueryScratch::default(),
         }
     }
@@ -5756,117 +5944,6 @@ impl RwkvModule {
             precision: StatePrecision::F32,
         })
     }
-
-    fn run(&self, input: &[f32], state: Option<&ModuleState>) -> (Vec<f32>, ModuleState) {
-        let decoded = state.map(ModuleState::decoded);
-        let state = decoded.as_deref();
-        #[cfg(test)]
-        let profile_started = rwkv_warmup_profile_start();
-
-        let mut x = input.to_vec();
-        let mut v0 = vec![0.0; D_MODEL];
-        let mut next_layers = Vec::with_capacity(self.layers.len());
-
-        for (layer_id, layer) in self.layers.iter().enumerate() {
-            let layer_state = state.and_then(|state| state.layers.get(layer_id));
-            let (next_x, next_v0, next_layer_state) = layer.run(&x, &v0, layer_state);
-            x = next_x;
-            v0 = next_v0;
-            next_layers.push(next_layer_state);
-        }
-
-        let output = (
-            x,
-            ModuleState {
-                layers: next_layers,
-                packed: None,
-            }
-            .compact(self.precision),
-        );
-        #[cfg(test)]
-        rwkv_warmup_profile_record(RwkvWarmupProfileBucket::ModuleRun, profile_started);
-        output
-    }
-
-    #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
-    fn run_query(
-        &self,
-        input: &[f32],
-        state: Option<&ModuleState>,
-        scratch: &mut ModuleQueryScratch,
-    ) -> [f32; D_MODEL] {
-        let decoded = state.map(ModuleState::decoded);
-        let state = decoded.as_deref();
-        let ModuleQueryScratch {
-            current,
-            next,
-            v0,
-            layer: layer_scratch,
-        } = scratch;
-        current.copy_from_slice(input);
-        v0.fill(0.0);
-        let mut current = current;
-        let mut next = next;
-
-        for (layer_id, layer) in self.layers.iter().enumerate() {
-            let layer_state = state.and_then(|state| state.layers.get(layer_id));
-            layer.run_query_into(current, v0, layer_state, next, layer_scratch);
-            std::mem::swap(&mut current, &mut next);
-        }
-
-        *current
-    }
-
-    #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
-    fn run_query_batch(
-        &self,
-        x: &mut Vec<f32>,
-        items: &[ReviewPredictionQueryRef<'_>],
-        module_id: usize,
-        scratch: &mut ModuleQueryBatchScratch,
-    ) {
-        let decoded: Vec<_> = items
-            .iter()
-            .map(|item| item.state.module(module_id).map(ModuleState::decoded))
-            .collect();
-        let decoded_items: Vec<_> = items
-            .iter()
-            .zip(&decoded)
-            .map(|(item, state)| {
-                let mut item = *item;
-                match module_id {
-                    0 => item.state.card = state.as_deref(),
-                    1 => item.state.deck = state.as_deref(),
-                    2 => item.state.note = state.as_deref(),
-                    3 => item.state.preset = state.as_deref(),
-                    _ => item.state.global = state.as_deref(),
-                }
-                item
-            })
-            .collect();
-        let items = decoded_items.as_slice();
-        let rows = items.len();
-        scratch.v0.resize(rows * D_MODEL, 0.0);
-        scratch.v0.fill(0.0);
-        let mut current = std::mem::take(x);
-        let mut next = std::mem::take(&mut scratch.next);
-
-        for (layer_id, layer) in self.layers.iter().enumerate() {
-            layer.run_query_batch(
-                &current,
-                &mut scratch.v0,
-                items,
-                module_id,
-                layer_id,
-                &mut next,
-                &mut scratch.layer,
-            );
-            std::mem::swap(&mut current, &mut next);
-        }
-
-        *x = current;
-        scratch.next = next;
-    }
 }
 
 #[derive(Clone)]
@@ -5878,7 +5955,8 @@ struct ModuleState {
 
 struct RwkvLayer {
     time_mixer: TimeMixer,
-    channel_mixer: ChannelMixer,
+    /// None where the small model has none
+    channel_mixer: Option<ChannelMixer>,
 }
 
 #[cfg(any(not(any(target_os = "macos", target_arch = "aarch64")), test))]
@@ -5911,7 +5989,11 @@ impl RwkvLayer {
     fn load(weights: &WeightMap, module_id: usize, layer_id: usize) -> io::Result<Self> {
         Ok(Self {
             time_mixer: TimeMixer::load(weights, module_id, layer_id)?,
-            channel_mixer: ChannelMixer::load(weights, module_id, layer_id)?,
+            channel_mixer: (!weights.is_dummy(&format!(
+                "rwkv_modules.{module_id}.blocks.{layer_id}.channel_mixer.W_k.weight"
+            )))
+            .then(|| ChannelMixer::load(weights, module_id, layer_id))
+            .transpose()?,
         })
     }
 
@@ -5924,9 +6006,18 @@ impl RwkvLayer {
         let (x, v0, time_state) =
             self.time_mixer
                 .run(input, v0, state.and_then(|state| state.time.as_ref()));
-        let (x, channel_shift) = self
-            .channel_mixer
-            .run(&x, state.and_then(|state| state.channel_shift.as_ref()));
+        let Some(channel_mixer) = &self.channel_mixer else {
+            return (
+                x,
+                v0,
+                LayerState {
+                    time: Some(time_state),
+                    channel_shift: None,
+                },
+            );
+        };
+        let (x, channel_shift) =
+            channel_mixer.run(&x, state.and_then(|state| state.channel_shift.as_ref()));
         (
             x,
             v0,
@@ -5953,12 +6044,15 @@ impl RwkvLayer {
             &mut scratch.time_output,
             &mut scratch.time,
         );
-        self.channel_mixer.run_query_into(
-            &scratch.time_output,
-            state.and_then(|state| state.channel_shift.as_deref()),
-            out,
-            &mut scratch.channel,
-        );
+        match &self.channel_mixer {
+            Some(channel_mixer) => channel_mixer.run_query_into(
+                &scratch.time_output,
+                state.and_then(|state| state.channel_shift.as_deref()),
+                out,
+                &mut scratch.channel,
+            ),
+            None => out.copy_from_slice(&scratch.time_output),
+        }
     }
 
     #[cfg(any(target_os = "macos", target_arch = "aarch64", test))]
@@ -5982,14 +6076,17 @@ impl RwkvLayer {
             &mut scratch.time_output,
             &mut scratch.time,
         );
-        self.channel_mixer.run_query_batch(
-            &scratch.time_output,
-            items,
-            module_id,
-            layer_id,
-            out,
-            &mut scratch.channel,
-        );
+        match &self.channel_mixer {
+            Some(channel_mixer) => channel_mixer.run_query_batch(
+                &scratch.time_output,
+                items,
+                module_id,
+                layer_id,
+                out,
+                &mut scratch.channel,
+            ),
+            None => std::mem::swap(out, &mut scratch.time_output),
+        }
     }
 }
 
@@ -6123,7 +6220,8 @@ struct TimeMixer {
     w_o: Linear,
     k_scale_linear: Linear,
     v_scale_linear: Linear,
-    v_lora: LoraSimple,
+    /// None in layer 0, which takes v as it is
+    v_lora: Option<LoraSimple>,
     a_lora: LoraSimple,
     d_lora: LoraSimple,
     lora_a_g: Linear,
@@ -6193,6 +6291,12 @@ impl Default for TimeMixerQueryScratch {
 }
 
 impl TimeMixer {
+    fn v_lora(&self) -> &LoraSimple {
+        self.v_lora
+            .as_ref()
+            .expect("layers after the first have a value LoRA")
+    }
+
     fn load(weights: &WeightMap, module_id: usize, layer_id: usize) -> io::Result<Self> {
         let prefix = format!("rwkv_modules.{module_id}.blocks.{layer_id}.time_mixer");
         Ok(Self {
@@ -6218,11 +6322,25 @@ impl TimeMixer {
                 HEADS,
                 true,
             )?,
-            v_lora: LoraSimple::load(weights, &format!("{prefix}.v_lora_simple"), 8)?,
-            a_lora: LoraSimple::load(weights, &format!("{prefix}.a_lora_simple"), 16)?,
-            d_lora: LoraSimple::load(weights, &format!("{prefix}.d_lora_mlp"), 16)?,
-            lora_a_g: weights.linear(&format!("{prefix}.lora_A_g"), D_MODEL, 16, false)?,
-            lora_b_g: weights.linear(&format!("{prefix}.lora_B_g"), 16, D_MODEL, false)?,
+            v_lora: (layer_id > 0)
+                .then(|| {
+                    LoraSimple::load(weights, &format!("{prefix}.v_lora_simple"), LORA_RANKS[0])
+                })
+                .transpose()?,
+            a_lora: LoraSimple::load(weights, &format!("{prefix}.a_lora_simple"), LORA_RANKS[1])?,
+            d_lora: LoraSimple::load(weights, &format!("{prefix}.d_lora_mlp"), LORA_RANKS[2])?,
+            lora_a_g: weights.linear(
+                &format!("{prefix}.lora_A_g"),
+                D_MODEL,
+                LORA_RANKS[3],
+                false,
+            )?,
+            lora_b_g: weights.linear(
+                &format!("{prefix}.lora_B_g"),
+                LORA_RANKS[3],
+                D_MODEL,
+                false,
+            )?,
             out_group_norm: weights.group_norm(
                 &format!("{prefix}.out_group_norm"),
                 HEADS,
@@ -6320,7 +6438,7 @@ impl TimeMixer {
             let v = self.w_v.apply(&mixed);
             (v.clone(), v)
         } else {
-            let mut v_lerp = self.v_lora.apply_sigmoid(&mixed);
+            let mut v_lerp = self.v_lora().apply_sigmoid(&mixed);
             let w_v = self.w_v.apply(&mixed);
             for channel in 0..D_MODEL {
                 v_lerp[channel] = lerp(w_v[channel], v0[channel], v_lerp[channel]);
@@ -6459,7 +6577,7 @@ impl TimeMixer {
             self.w_v.apply_into(&mixed[2], v);
             v0.copy_from_slice(v);
         } else {
-            self.v_lora.apply_sigmoid_into(&mixed[2], lora_hidden, v);
+            self.v_lora().apply_sigmoid_into(&mixed[2], lora_hidden, v);
             self.w_v.apply_into(&mixed[2], temp);
             for channel in 0..D_MODEL {
                 v[channel] = lerp(temp[channel], v0[channel], v[channel]);
@@ -6467,9 +6585,10 @@ impl TimeMixer {
         }
 
         self.a_lora.apply_sigmoid_into(&mixed[4], lora_hidden, a);
-        self.lora_a_g.apply_into(&mixed[5], lora_hidden);
-        sigmoid_in_place(lora_hidden);
-        self.lora_b_g.apply_into(lora_hidden, g);
+        let gate_hidden = &mut lora_hidden[..self.lora_a_g.output];
+        self.lora_a_g.apply_into(&mixed[5], gate_hidden);
+        sigmoid_in_place(gate_hidden);
+        self.lora_b_g.apply_into(gate_hidden, g);
 
         self.d_lora.apply_tanh_into(&mixed[3], lora_hidden, w);
         for value in w.iter_mut() {
@@ -6573,7 +6692,7 @@ impl TimeMixer {
                 .apply_batch(&scratch.mixed[2], rows, &mut scratch.v);
             v0.copy_from_slice(&scratch.v);
         } else {
-            self.v_lora.apply_sigmoid_batch(
+            self.v_lora().apply_sigmoid_batch(
                 &scratch.mixed[2],
                 rows,
                 &mut scratch.lora_hidden,
@@ -6958,6 +7077,22 @@ struct Linear {
 }
 
 impl Linear {
+    /// `weight` as PyTorch stores it, [output, input].
+    fn from_rows(weight: &[f32], input: usize, output: usize, bias: Option<Vec<f32>>) -> Self {
+        let mut weight_by_input = vec![0.0; weight.len()];
+        for row in 0..output {
+            for column in 0..input {
+                weight_by_input[column * output + row] = weight[row * input + column];
+            }
+        }
+        Self {
+            input,
+            output,
+            weight_by_input,
+            bias,
+        }
+    }
+
     fn apply(&self, input: &[f32]) -> Vec<f32> {
         let mut out = vec![0.0; self.output];
         self.apply_into(input, &mut out);
@@ -10080,9 +10215,17 @@ order by e.id, e.cid
         assert_close(&reduced_state, &sequential_state, 1e-4);
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     fn embedded_weights_path() -> Option<PathBuf> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+        path.exists().then_some(path)
+    }
+
+    /// The small model's weights.f32.bin (not in the repo: no license yet).
+    #[cfg(feature = "rwkv_small")]
+    fn embedded_weights_path() -> Option<PathBuf> {
+        let path = PathBuf::from(env::var("ANKI_RWKV_SMALL_MODEL").ok()?);
         path.exists().then_some(path)
     }
 
@@ -11266,6 +11409,7 @@ order by e.id, e.cid
         assert_eq!(clamped_interval_days(12.0, 10), 10);
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn interval_for_curve_returns_max_when_target_not_reached() {
         let curve = ReviewCurve {
@@ -11276,6 +11420,7 @@ order by e.id, e.cid
         assert_eq!(interval_for_curve(&curve, 0.0, 365), Some(365));
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     fn basis_curve(basis_index: usize) -> ReviewCurve {
         let mut weights = vec![0.0; basis_index + 1];
         weights[basis_index] = 1.0;
@@ -11285,6 +11430,7 @@ order by e.id, e.cid
         }
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn rwkv_crossings_are_fractional_and_lie_on_the_curve() {
         for basis in [32, 60, 90] {
@@ -11302,6 +11448,7 @@ order by e.id, e.cid
         assert!(slow > 1.0 && slow != slow.round(), "{slow}");
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn predict_curve_ignores_ahead_logits_and_is_monotonic() {
         let curve = ReviewCurve {
@@ -11358,6 +11505,7 @@ order by e.id, e.cid
         }
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn answer_curve_grade_order_enforcement_can_be_disabled() {
         let curve_for_basis_index = |basis_index: usize| {
@@ -11441,6 +11589,7 @@ order by e.id, e.cid
         assert_eq!(elapsed_days(&answer, elapsed_seconds(&answer)), -1);
     }
 
+    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn current_curve_retrievability_uses_elapsed_seconds_then_days() {
         let mut input = ReviewInput {
@@ -11539,9 +11688,7 @@ order by e.id, e.cid
 
     #[test]
     fn batched_retrievability_matches_scalar_query_path() {
-        let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
-        assert!(model_path.exists(), "RWKV parity model is missing");
+        let model_path = embedded_weights_path().expect("RWKV parity model is missing");
 
         fn input(index: usize, is_query: bool) -> ReviewInput {
             ReviewInput {

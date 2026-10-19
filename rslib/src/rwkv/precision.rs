@@ -162,7 +162,8 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<ModuleState> {
         _ => return Err(invalid_state()),
     };
     let count = cursor.u32()? as usize;
-    if count != 2 && count != 3 {
+    // card and note modules: 3 and 2 layers, the small model's 2 and 1
+    if !(1..=3).contains(&count) {
         return Err(invalid_state());
     }
     let mut layers = Vec::with_capacity(count);

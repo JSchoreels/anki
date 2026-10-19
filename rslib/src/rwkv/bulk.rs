@@ -25,6 +25,7 @@
 //! replay to the same states as one large call.
 
 use std::collections::HashMap;
+#[cfg(not(feature = "rwkv_small"))]
 use std::sync::Mutex;
 
 use rayon::prelude::*;
@@ -138,6 +139,35 @@ fn warm_up_reviews_bulk_impl(
     #[cfg(test)]
     rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeatureMlp, profile_started);
 
+    // The small model runs its streams' layers interleaved (LAYER_STEPS), so
+    // a module can't run alone over the rows: all modules' layers run in
+    // step order, over all rows (predictions) or chunk by chunk.
+    #[cfg(feature = "rwkv_small")]
+    if record_predictions {
+        run_layer_steps(
+            &model,
+            &inputs,
+            &mut inference.warm_up_states,
+            &mut x,
+            x_query.as_deref_mut(),
+            chunk_size,
+            query_recurrence,
+        );
+    } else {
+        for start in (0..rows).step_by(chunk_size) {
+            let end = (start + chunk_size).min(rows);
+            run_layer_steps(
+                &model,
+                &inputs[start..end],
+                &mut inference.warm_up_states,
+                &mut x[start * D_MODEL..end * D_MODEL],
+                None,
+                chunk_size,
+                QueryRecurrence::Exact,
+            );
+        }
+    }
+    #[cfg(not(feature = "rwkv_small"))]
     if record_predictions {
         for (module_id, module) in model.modules.iter().enumerate() {
             #[cfg(test)]
@@ -206,7 +236,7 @@ fn warm_up_reviews_bulk_impl(
 }
 
 #[cfg(test)]
-fn module_profile_bucket(module_id: usize) -> RwkvWarmupProfileBucket {
+pub(super) fn module_profile_bucket(module_id: usize) -> RwkvWarmupProfileBucket {
     match module_id {
         0 => RwkvWarmupProfileBucket::ModuleCard,
         1 => RwkvWarmupProfileBucket::ModuleDeck,
@@ -231,6 +261,7 @@ fn row(buffer: &[f32], index: usize) -> &[f32] {
     &buffer[index * D_MODEL..(index + 1) * D_MODEL]
 }
 
+#[cfg(not(feature = "rwkv_small"))]
 /// Runs state-only replay as a dependency-safe wavefront over review chunks
 /// and state-scope modules. Node `(chunk, module)` depends only on the previous
 /// module for the same chunk and the previous chunk for the same module, so all
@@ -300,6 +331,7 @@ fn run_state_only_module_wavefront(
     x
 }
 
+#[cfg(not(feature = "rwkv_small"))]
 fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewStateMaps {
     let mut module_states = ReviewStateMaps::default();
     match module_id {
@@ -313,6 +345,7 @@ fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewS
     module_states
 }
 
+#[cfg(not(feature = "rwkv_small"))]
 fn put_module_states(
     states: &mut ReviewStateMaps,
     module_id: usize,
@@ -439,6 +472,88 @@ fn layer_states(initial: Option<ModuleState>, layer_count: usize) -> Vec<LayerSt
     layers
 }
 
+/// One module's streams over a run of rows: their decoded layer states and
+/// the rows' value residuals.
+struct ModuleWork {
+    plan: ModulePlan,
+    stream_layers: Vec<Vec<LayerState>>,
+    v0: Vec<f32>,
+    v0_query: Option<Vec<f32>>,
+}
+
+impl ModuleWork {
+    fn take(
+        module: &RwkvModule,
+        module_id: usize,
+        inputs: &[ReviewInput],
+        states: &mut ReviewStateMaps,
+        query: bool,
+    ) -> Self {
+        let rows = inputs.len();
+        let mut plan = ModulePlan::build(module_id, inputs);
+        plan.precision = module.precision;
+        let layer_count = module.layers.len();
+        let stream_layers = plan
+            .streams
+            .iter()
+            .map(|stream| {
+                let initial = stream
+                    .key
+                    .and_then(|key| take_stream_state(states, module_id, key));
+                layer_states(initial, layer_count)
+            })
+            .collect();
+        Self {
+            plan,
+            stream_layers,
+            v0: vec![0.0; rows * D_MODEL],
+            v0_query: query.then(|| vec![0.0; rows * D_MODEL]),
+        }
+    }
+
+    fn run_layer(
+        &mut self,
+        layer: &RwkvLayer,
+        layer_id: usize,
+        x: &mut [f32],
+        x_query: Option<&mut [f32]>,
+        chunk_size: usize,
+        query_recurrence: QueryRecurrence,
+    ) {
+        run_layer_chunks(LayerChunks {
+            layer,
+            layer_id,
+            plan: &self.plan,
+            stream_layers: &mut self.stream_layers,
+            rows: self.plan.stream_of_row.len(),
+            chunk_size,
+            x,
+            v0: &mut self.v0,
+            x_query,
+            v0_query: self.v0_query.as_deref_mut(),
+            query_recurrence,
+        });
+    }
+
+    fn put(self, module_id: usize, states: &mut ReviewStateMaps) {
+        for (stream, layers) in self.plan.streams.iter().zip(self.stream_layers) {
+            if let Some(key) = stream.key {
+                put_stream_state(
+                    states,
+                    module_id,
+                    key,
+                    ModuleState {
+                        layers,
+                        packed: None,
+                    }
+                    .compact(self.plan.precision),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "rwkv_small"))]
 #[allow(clippy::too_many_arguments)]
 fn run_module(
     module: &RwkvModule,
@@ -450,54 +565,56 @@ fn run_module(
     chunk_size: usize,
     query_recurrence: QueryRecurrence,
 ) {
-    let rows = inputs.len();
-    let mut plan = ModulePlan::build(module_id, inputs);
-    plan.precision = module.precision;
-    let layer_count = module.layers.len();
-
-    let mut stream_layers: Vec<Vec<LayerState>> = plan
-        .streams
-        .iter()
-        .map(|stream| {
-            let initial = stream
-                .key
-                .and_then(|key| take_stream_state(states, module_id, key));
-            layer_states(initial, layer_count)
-        })
-        .collect();
-
-    let mut v0 = vec![0.0; rows * D_MODEL];
-    let mut v0_query = x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]);
-
+    let mut work = ModuleWork::take(module, module_id, inputs, states, x_query.is_some());
     for (layer_id, layer) in module.layers.iter().enumerate() {
-        run_layer_chunks(LayerChunks {
+        work.run_layer(
             layer,
             layer_id,
-            plan: &plan,
-            stream_layers: &mut stream_layers,
-            rows,
-            chunk_size,
             x,
-            v0: &mut v0,
-            x_query: x_query.as_deref_mut(),
-            v0_query: v0_query.as_deref_mut(),
+            x_query.as_deref_mut(),
+            chunk_size,
             query_recurrence,
-        });
+        );
     }
+    work.put(module_id, states);
+}
 
-    for (stream, layers) in plan.streams.iter().zip(stream_layers) {
-        if let Some(key) = stream.key {
-            put_stream_state(
-                states,
-                module_id,
-                key,
-                ModuleState {
-                    layers,
-                    packed: None,
-                }
-                .compact(module.precision),
-            );
-        }
+/// Every module's layers over `inputs`, in [LAYER_STEPS] order.
+#[cfg(feature = "rwkv_small")]
+#[allow(clippy::too_many_arguments)]
+fn run_layer_steps(
+    model: &SrsModel,
+    inputs: &[ReviewInput],
+    states: &mut ReviewStateMaps,
+    x: &mut [f32],
+    mut x_query: Option<&mut [f32]>,
+    chunk_size: usize,
+    query_recurrence: QueryRecurrence,
+) {
+    let mut works: Vec<ModuleWork> = model
+        .modules
+        .iter()
+        .enumerate()
+        .map(|(module_id, module)| {
+            ModuleWork::take(module, module_id, inputs, states, x_query.is_some())
+        })
+        .collect();
+    for (module_id, layer_id) in LAYER_STEPS {
+        #[cfg(test)]
+        let profile_started = rwkv_warmup_profile_start();
+        works[module_id].run_layer(
+            &model.modules[module_id].layers[layer_id],
+            layer_id,
+            x,
+            x_query.as_deref_mut(),
+            chunk_size,
+            query_recurrence,
+        );
+        #[cfg(test)]
+        rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
+    }
+    for (module_id, work) in works.into_iter().enumerate() {
+        work.put(module_id, states);
     }
 }
 
@@ -926,9 +1043,16 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
         )
     });
 
+    let chunk_range = chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL;
+    let Some(cm) = &layer.channel_mixer else {
+        x[chunk_range.clone()].copy_from_slice(&time_out);
+        if let (Some(x_query), Some(time_out_query)) = (x_query, &time_out_query) {
+            x_query[chunk_range].copy_from_slice(time_out_query);
+        }
+        return;
+    };
     // Channel mixer. Shift states must stay pre-chunk until both lanes have
     // resolved their shifts.
-    let cm = &layer.channel_mixer;
     let cm_norm = normed_rows_from(&cm.layer_norm, &time_out, chunk_rows);
     let cm_norm_query = time_out_query
         .as_ref()
@@ -1242,7 +1366,9 @@ fn time_parts_block(
             .apply_block_approx_into(mixed, block.v, rows, approximate_projections);
         block.next_v0.copy_from_slice(block.v);
     } else {
-        mixer.v_lora.apply_sigmoid_block_into(mixed, block.v, rows);
+        mixer
+            .v_lora()
+            .apply_sigmoid_block_into(mixed, block.v, rows);
         let mut w_v = [0.0f32; LINEAR_BLOCK_ROWS * D_MODEL];
         let w_v = &mut w_v[..rows * D_MODEL];
         mixer
@@ -1267,7 +1393,7 @@ fn time_parts_block(
 
     fill_mixed(5, mixed);
     let mut g_hidden = [0.0f32; LINEAR_BLOCK_ROWS * 16];
-    let g_hidden = &mut g_hidden[..rows * 16];
+    let g_hidden = &mut g_hidden[..rows * mixer.lora_a_g.output];
     mixer.lora_a_g.apply_block_into(mixed, g_hidden, rows);
     sigmoid_in_place(g_hidden);
     mixer.lora_b_g.apply_block_into(g_hidden, block.g, rows);
