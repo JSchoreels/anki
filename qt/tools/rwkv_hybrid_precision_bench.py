@@ -17,11 +17,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from tools.rwkv_runtime_precision_bench import build, provenance, sha256
+from tools.rwkv_um_plus import um_plus_pair
+
 import anki.collection
 from anki.cards import CardId
 from aqt import rwkv_scheduler
-from tools.rwkv_runtime_precision_bench import build, provenance, sha256
-from tools.rwkv_um_plus import um_plus_pair
 
 MODES = ("state_int8", "cards_int4_notes_int8", "fsrs7")
 
@@ -39,7 +40,9 @@ def frozen_presets(source: dict) -> dict:
         for row in source["rows"]:
             preset_id = rwkv_scheduler._stable_preset_id(resolved[row[1]])
             if preset_id != row[4]:
-                raise ValueError("Historical preset routing differs from current routing")
+                raise ValueError(
+                    "Historical preset routing differs from current routing"
+                )
             if str(preset_id) not in presets:
                 preset = col.fsrs_preset_for_card(CardId(row[1]))
                 if preset.fsrs_version != "seven":
@@ -95,7 +98,9 @@ def comparison(rows: list, output: Path) -> dict:
     differences = sorted(
         abs(a - b)
         for a, b in zip(
-            probabilities["cards_int4_notes_int8"], probabilities["state_int8"], strict=True
+            probabilities["cards_int4_notes_int8"],
+            probabilities["state_int8"],
+            strict=True,
         )
     )
     return {
@@ -105,7 +110,9 @@ def comparison(rows: list, output: Path) -> dict:
         "um_plus_pairs": pairs,
         "hybrid_vs_int8": {
             "mean_abs_probability_difference": statistics.mean(differences),
-            "p99_abs_probability_difference": differences[(len(differences) - 1) * 99 // 100],
+            "p99_abs_probability_difference": differences[
+                (len(differences) - 1) * 99 // 100
+            ],
             "max_abs_probability_difference": differences[-1],
             "fraction_over_5pp": sum(d > 0.05 for d in differences) / len(differences),
         },
@@ -128,23 +135,37 @@ def main() -> None:
     metadata: dict[str, Any] = {
         "source_input_sha256": sha256(source_path),
         "input_sha256": sha256(prepared),
-        "model_sha256": sha256(root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"),
+        "model_sha256": sha256(
+            root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
+        ),
         "driver_sha256": sha256(Path(__file__)),
         "provenance": provenance(root, output),
         "fsrs_baseline": "Frozen configured FSRS7 parameters; matched canonical history; no fitting",
     }
     if source["model_sha256"] != metadata["model_sha256"]:
         raise ValueError("Prepared history used a different RWKV model")
-    print(f"Building benchmark for {len(source['rows']):,} retained answers...", flush=True)
+    print(
+        f"Building benchmark for {len(source['rows']):,} retained answers...",
+        flush=True,
+    )
     executable = build(root, output)
     metadata["executable_sha256"] = sha256(executable)
     with (output / "replay.log").open("w") as log:
         subprocess.run(
-            [str(executable), "rwkv::runtime_precision_bench::rwkv_hybrid_precision_metrics",
-             "--ignored", "--exact", "--nocapture", "--test-threads=1"],
+            [
+                str(executable),
+                "rwkv::runtime_precision_bench::rwkv_hybrid_precision_metrics",
+                "--ignored",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ],
             cwd=root,
-            env={**os.environ, "ANKI_RWKV_HYBRID_INPUT": str(prepared),
-                 "ANKI_RWKV_HYBRID_OUTPUT": str(output)},
+            env={
+                **os.environ,
+                "ANKI_RWKV_HYBRID_INPUT": str(prepared),
+                "ANKI_RWKV_HYBRID_OUTPUT": str(output),
+            },
             stdout=log,
             stderr=subprocess.STDOUT,
             check=True,
@@ -162,7 +183,10 @@ def main() -> None:
         raise ValueError("Prepared input changed during benchmark")
     if sha256(Path(__file__)) != metadata["driver_sha256"]:
         raise ValueError("Benchmark driver changed during measurement")
-    if sha256(root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin") != metadata["model_sha256"]:
+    if (
+        sha256(root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin")
+        != metadata["model_sha256"]
+    ):
         raise ValueError("RWKV model changed during measurement")
     (output / "results.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result["comparison"]["metrics"], indent=2), flush=True)
