@@ -245,6 +245,15 @@ per-preset review counts and iteration progress.
 After deck-options Optimize All finishes parameter optimization, Anki reports a
 short per-preset save phase while writing the optimized deck configs. It then
 updates each affected preset's card memory state from the final saved config.
+Deck-options bulk memory-state updates resolve the current first matching overlay
+rule for each affected non-new card before changing any cards. Cards assigned to
+an overlay use its FSRS parameters, desired retention, historical retention, and
+review-history cutoff; unmatched cards keep the saved home-deck preset and any
+deck-specific retention override. Routing is fixed for the pass, including rules
+based on the stored interval, rather than being re-evaluated after rescheduling.
+Home-deck maximum intervals, review fuzz, and the rescheduling switch still apply.
+Without rescheduling, stored intervals, due dates, and review logs stay unchanged.
+
 If "Reschedule cards on change" is enabled, that same pass also updates due
 dates and writes rescheduled review-log entries. The progress payload includes
 the active preset name, preset index, and per-preset counts so the UI can show

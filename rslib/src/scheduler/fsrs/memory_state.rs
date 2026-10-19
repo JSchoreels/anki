@@ -14,6 +14,7 @@ use itertools::Itertools;
 use rayon::prelude::*;
 
 use super::legacy_fsrs_params;
+use super::preset::FsrsPresetId;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
@@ -330,7 +331,7 @@ fn scale_state_to_interval(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct UpdateMemoryStateRequest {
     pub params: Params,
     pub preset_desired_retention: f32,
@@ -363,6 +364,68 @@ impl<T> ChunkIntoVecs<T> for Vec<T> {
 }
 
 impl Collection {
+    /// Freeze deck-options routing before any card updates can change rule
+    /// matches. Keep home-deck scheduling limits while replacing FSRS
+    /// settings for overlays.
+    pub(crate) fn resolve_memory_state_presets(
+        &mut self,
+        entries: Vec<UpdateMemoryStateEntry>,
+    ) -> Result<Vec<UpdateMemoryStateEntry>> {
+        let mut resolved = Vec::new();
+        for entry in entries {
+            let Some(req) = &entry.req else {
+                resolved.push(entry);
+                continue;
+            };
+            let cards = self.all_cards_for_search(SearchBuilder::all([
+                entry.search.clone(),
+                SearchNode::State(StateKind::New).negated(),
+            ]))?;
+            if cards.is_empty() {
+                resolved.push(entry);
+                continue;
+            }
+            let presets = self.fsrs_presets_for_cards(&cards)?;
+            let groups = cards
+                .into_iter()
+                .into_group_map_by(|card| presets[&card.id].id.clone());
+            for (preset_id, cards) in groups
+                .into_iter()
+                .sorted_by_key(|(_, cards)| cards.iter().map(|card| card.id).min())
+            {
+                let preset = &presets[&cards[0].id];
+                let mut request = req.clone();
+                let mut ignore_before = entry.ignore_before;
+                let mut preset_name = entry.preset_name.clone();
+                if matches!(preset_id, FsrsPresetId::Addon(_)) {
+                    request.params.clone_from(&preset.params);
+                    request.preset_desired_retention = preset.desired_retention;
+                    request.historical_retention = preset.historical_retention;
+                    // Overlay retention takes precedence over home-deck overrides.
+                    request.deck_desired_retention.clear();
+                    ignore_before = preset.ignore_revlogs_before_ms()?;
+                    preset_name.clone_from(&preset.name);
+                }
+                resolved.push(UpdateMemoryStateEntry {
+                    req: Some(request),
+                    search: Node::Search(SearchNode::CardIds(comma_separated_ids(
+                        &cards.iter().map(|card| card.id).collect_vec(),
+                    ))),
+                    ignore_before,
+                    preset_name,
+                    current_preset: 0,
+                    total_presets: 0,
+                });
+            }
+        }
+        let total_presets = resolved.len() as u32;
+        for (index, entry) in resolved.iter_mut().enumerate() {
+            entry.current_preset = index as u32 + 1;
+            entry.total_presets = total_presets;
+        }
+        Ok(resolved)
+    }
+
     /// For each provided set of params, locate cards with the provided search,
     /// and update their memory state.
     /// Should be called inside a transaction.
