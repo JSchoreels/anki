@@ -26,7 +26,7 @@ def test_model_comparison_scores_previous_answers_on_identical_rows(tmp_path) ->
             [(1, 3, 1), (2, 1, 1), (1, 3, 0), (2, 1, 1), (1, 3, 1)]
         )
     ]
-    for model in ("legacy_int8", "sm40_f32", "sm40_int8"):
+    for model in ("legacy_f32", "legacy_int8", "sm40_f32", "sm40_int8"):
         (tmp_path / model).mkdir()
         for head in ("curve", "instant"):
             (tmp_path / model / f"{head}.f32").write_bytes(
@@ -41,6 +41,9 @@ def test_model_comparison_scores_previous_answers_on_identical_rows(tmp_path) ->
     assert (
         result["interday"]["um_plus"]["instant"]["legacy_int8 vs sm40_f32"]["count"]
         == 2
+    )
+    assert (
+        result["interday"]["um_plus"]["instant"]["legacy_f32 vs sm40_f32"]["count"] == 2
     )
     assert json.loads(json.dumps(result))["interday"]["reviews"] == 2
 

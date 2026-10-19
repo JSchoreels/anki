@@ -34,7 +34,7 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
-- **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.52 s with f32 state versus 12.24 s for the legacy model with INT8 state; cache size falls from 371.6 MB to 192.0 MB. Existing profile precision choices are preserved and INT8 remains the default pending review; SM40 INT8 uses a 67.4 MB cache and rebuilds in 4.19 s. Instant log loss is 0.061% higher on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
+- **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved and INT8 remains the default pending review; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 
 - **Correct dynamic FSRS presets during Deck Options recalculation.** Bulk memory-state updates now use each card's first matching Dynamic Preset Selection rule and its model parameters, retention settings, and history cutoff. Previously, every card used the home-deck preset. Optional rescheduling uses the same matched model; recalculating without rescheduling still preserves intervals and due dates.
 
