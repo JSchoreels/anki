@@ -34,6 +34,8 @@ MODES = (
     "state_int8_all",
 )
 SOURCE_FILES = (
+    "rslib/src/rwkv/architecture.rs",
+    "rslib/src/rwkv/model_bench.rs",
     "rslib/src/rwkv/mod.rs",
     "rslib/src/rwkv/bulk.rs",
     "rslib/src/rwkv/precision.rs",
@@ -432,7 +434,7 @@ def main() -> None:
         parser.error("supply --input and --rounds >= 1")
     input_path = args.input.resolve(strict=True)
     root = Path(__file__).resolve().parents[2]
-    original_model = root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
+    original_model = root / "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin"
     metadata: dict[str, Any] = {
         "provenance": provenance(root, output),
         "input_sha256": sha256(input_path),

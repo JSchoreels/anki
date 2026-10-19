@@ -10321,14 +10321,9 @@ def test_rwkv_model_cache_key_uses_model_content_not_install_path(
     monkeypatch,
     tmp_path,
 ) -> None:
-    first_model_path = (
-        tmp_path / "first-install" / "rwkv_inference" / "RWKV_trained_on_5000_10000.bin"
-    )
+    first_model_path = tmp_path / "first-install" / "rwkv_inference" / "weights.f32.bin"
     second_model_path = (
-        tmp_path
-        / "second-install"
-        / "rwkv_inference"
-        / "RWKV_trained_on_5000_10000.bin"
+        tmp_path / "second-install" / "rwkv_inference" / "weights.f32.bin"
     )
     first_model_path.parent.mkdir(parents=True)
     second_model_path.parent.mkdir(parents=True)
@@ -10359,7 +10354,7 @@ def test_rwkv_model_cache_key_changes_when_model_content_changes(
     monkeypatch,
     tmp_path,
 ) -> None:
-    model_path = tmp_path / "RWKV_trained_on_5000_10000.bin"
+    model_path = tmp_path / "weights.f32.bin"
 
     monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
     monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
@@ -10391,7 +10386,7 @@ def test_rwkv_model_cache_key_memoizes_and_detects_replaced_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    model_path = tmp_path / "RWKV_trained_on_5000_10000.bin"
+    model_path = tmp_path / "weights.f32.bin"
     model_path.write_bytes(b"model one")
     original_stat = model_path.stat()
     hash_file = rwkv_scheduler._sha256_file
@@ -10435,7 +10430,7 @@ def test_rwkv_model_cache_key_single_flights_concurrent_hash(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    model_path = tmp_path / "RWKV_trained_on_5000_10000.bin"
+    model_path = tmp_path / "weights.f32.bin"
     model_path.write_bytes(b"shared model")
     hash_file = rwkv_scheduler._sha256_file
     hash_started = threading.Event()
@@ -10521,14 +10516,9 @@ def test_rwkv_state_cache_restores_legacy_embedded_model_key_after_reinstall(
     tmp_path,
 ) -> None:
     model_bytes = b"same bundled model"
-    first_model_path = (
-        tmp_path / "first-install" / "rwkv_inference" / "RWKV_trained_on_5000_10000.bin"
-    )
+    first_model_path = tmp_path / "first-install" / "rwkv_inference" / "weights.f32.bin"
     second_model_path = (
-        tmp_path
-        / "second-install"
-        / "rwkv_inference"
-        / "RWKV_trained_on_5000_10000.bin"
+        tmp_path / "second-install" / "rwkv_inference" / "weights.f32.bin"
     )
     first_model_path.parent.mkdir(parents=True)
     second_model_path.parent.mkdir(parents=True)
@@ -13784,9 +13774,7 @@ def test_stateful_backend_spill_stash_restores_state_when_reset_fails(
 def test_embedded_backend_spill_stash_round_trip(tmp_path: Path) -> None:
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
-    model = (
-        Path(__file__).parents[1] / "aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
-    )
+    model = Path(__file__).parents[1] / "aqt/rwkv_inference/sm40v2/weights.f32.bin"
     backend = EmbeddedRwkvReviewerBackend(model_path=model)
     backend.warm_up([_warm_up_review_input(card_id=1, note_id=10, ease=2)])
     before = backend.cache_snapshot()
@@ -13807,9 +13795,7 @@ def test_embedded_backend_discards_spill_stash_when_restore_fails(
 ) -> None:
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
-    model = (
-        Path(__file__).parents[1] / "aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
-    )
+    model = Path(__file__).parents[1] / "aqt/rwkv_inference/sm40v2/weights.f32.bin"
     backend = EmbeddedRwkvReviewerBackend(model_path=model)
     empty = backend.cache_snapshot()
     backend.warm_up([_warm_up_review_input(card_id=1, note_id=10, ease=2)])

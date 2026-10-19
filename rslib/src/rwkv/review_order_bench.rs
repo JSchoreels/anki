@@ -1211,8 +1211,7 @@ fn rwkv_review_order_metrics() {
 
     // (a) warm up, keeping the per-review predictions.
     let reviews = rows_to_reviews(&rows);
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let mut inference = super::state_scope_bench::load_for_scopes(
         weights.clone(),
         StatePrecision::Int8,
@@ -1523,8 +1522,7 @@ fn rwkv_review_order_real_drops() {
         .max(last_history_day);
     let start_day = last_history_day - (WINDOW_DAYS - 1);
     let reviews = rows_to_reviews(&rows);
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let load = || {
         super::state_scope_bench::load_for_scopes(weights.clone(), StatePrecision::Int8, [false; 3])
     };
@@ -2025,8 +2023,7 @@ fn rwkv_review_order_shock() {
         serde_json::from_value(source.as_object_mut().unwrap().remove("rows").unwrap()).unwrap();
     assert!(rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
     let all_inputs = parse_inputs(source["inputs"].as_array().expect("inputs"));
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let mut inference = super::state_scope_bench::load_for_scopes(
         weights.clone(),
         StatePrecision::Int8,

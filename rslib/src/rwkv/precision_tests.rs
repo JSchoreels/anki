@@ -12,8 +12,7 @@ const PRECISIONS: [(StatePrecision, [bool; 3]); 4] = [
 ];
 
 fn runtime(precision: StatePrecision, shared: [bool; 3]) -> RwkvInference {
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     load_for_scopes(weights, precision, shared)
 }
 

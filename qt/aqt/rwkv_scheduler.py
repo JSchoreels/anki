@@ -219,7 +219,7 @@ _RWKV_CALIBRATION_EPOCH_KEYS = (
     "snapshotSegmentId",
     "snapshotHistoryHash",
 )
-_EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
+_EMBEDDED_RWKV_MODEL_FILENAME = "weights.f32.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
@@ -4103,7 +4103,12 @@ def configure_reviewer_backend_from_environment() -> bool:
 
 
 def embedded_rwkv_model_path() -> Path | None:
-    path = Path(__file__).parent / "rwkv_inference" / _EMBEDDED_RWKV_MODEL_FILENAME
+    path = (
+        Path(__file__).parent
+        / "rwkv_inference"
+        / "sm40v2"
+        / _EMBEDDED_RWKV_MODEL_FILENAME
+    )
     return path if path.exists() else None
 
 

@@ -56,8 +56,7 @@ mod tests {
 
     #[test]
     fn rwkv_weight_precision_resident_projection_matches_decoded_scalar_block_and_gemm() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
         let data = super::super::weight_precision_bench::encode(&WeightMap::load(&path).unwrap());
         let decoded = decode_with_storage(&data, false).unwrap();
         let packed = decode_with_storage(&data, true).unwrap();
@@ -90,8 +89,7 @@ mod tests {
 
     #[test]
     fn rwkv_weight_precision_resident_replay_and_queries_match_decoded_model() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
         let data = super::super::weight_precision_bench::encode(&WeightMap::load(&path).unwrap());
         let mut decoded = runtime_with_storage(&path, Some(&data), StatePrecision::Int8, false);
         let mut packed = runtime_with_storage(&path, Some(&data), StatePrecision::Int8, true);
