@@ -43,35 +43,19 @@ mod precision_tests;
 mod query_kernels;
 #[cfg(test)]
 mod query_math_bench;
-#[cfg(all(test, feature = "rwkv_small"))]
+#[cfg(test)]
 mod small_model_tests;
 
-// The model's shape is chosen at build time: the fork's 2.76M-parameter model,
-// or with the `rwkv_small` feature JSchoreels' 331k-parameter "w64" model
-// (anki-rwkv release small-model-sm40-2026-10-19, its INTEGRATION.md): d_model
-// 64, heads of 16, fewer layers per stream run interleaved (LAYER_STEPS), some
-// layers without a channel mixer, and a 3-power-curve head.
-#[cfg(not(feature = "rwkv_small"))]
-const D_MODEL: usize = 128;
-#[cfg(feature = "rwkv_small")]
-const D_MODEL: usize = 64;
+// The model's shape (sizes, layer order, which heads) comes from the parent
+// module: crate::rwkv is the fork's 2.76M-parameter model (rwkv/shape_big.rs),
+// crate::rwkv_small compiles this engine again for JSchoreels' 331k-parameter
+// one (rwkv/shape_small.rs, SMALL).
+use super::rwkv_shape::*;
 const CARD_FEATURES: usize = 92;
 const HEADS: usize = 4;
 const HEAD_SIZE: usize = D_MODEL / HEADS;
-/// Hidden width of the feature MLP and the heads.
-#[cfg(not(feature = "rwkv_small"))]
-const HEAD_DIM: usize = 4 * D_MODEL;
-#[cfg(feature = "rwkv_small")]
-const HEAD_DIM: usize = 128;
-#[cfg(not(feature = "rwkv_small"))]
-const NUM_CURVES: usize = 128;
 const ANSWER_EASES: [u8; 4] = [1, 2, 3, 4];
 const S90_TARGET_RETENTION: f32 = 0.9;
-#[cfg(not(feature = "rwkv_small"))]
-const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 4;
-// a store of the other model is never read
-#[cfg(feature = "rwkv_small")]
-const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 1_004;
 const STATE_CACHE_STORE_PAGE_SIZE: i64 = 64 * 1024;
 const STATE_CACHE_DELTA_MAGIC: &[u8] = b"ARWKVSTATEDELTA1\0";
 const WARM_UP_STATE_SPILL_MAGIC: &[u8] = b"ARWKVSTASH1\0";
@@ -84,38 +68,6 @@ const STATE_CACHE_READ_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 const STATE_CACHE_READ_BUFFER_BYTES: usize = 4 * 1024;
 
-#[cfg(not(feature = "rwkv_small"))]
-const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
-#[cfg(not(feature = "rwkv_small"))]
-const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
-/// (module, layer) in the order one review runs them; each module keeps its
-/// own value residual (v0) across its layers.
-#[cfg(not(feature = "rwkv_small"))]
-#[rustfmt::skip]
-const LAYER_STEPS: [(usize, usize); 16] = [
-    (0, 0), (0, 1), (0, 2),
-    (1, 0), (1, 1), (1, 2), (1, 3),
-    (2, 0), (2, 1),
-    (3, 0), (3, 1), (3, 2),
-    (4, 0), (4, 1), (4, 2), (4, 3),
-];
-/// LoRA ranks of the time mixer: value, a, decay, gate.
-#[cfg(not(feature = "rwkv_small"))]
-const LORA_RANKS: [usize; 4] = [8, 16, 16, 16];
-#[cfg(feature = "rwkv_small")]
-const MODULE_LAYERS: [usize; 5] = [2, 4, 1, 3, 3];
-#[cfg(feature = "rwkv_small")]
-const CHANNEL_MIXER_DIMS: [usize; 5] = [64; 5];
-#[cfg(feature = "rwkv_small")]
-#[rustfmt::skip]
-const LAYER_STEPS: [(usize, usize); 13] = [
-    (0, 0), (1, 0), (2, 0), (3, 0), (4, 0),
-    (0, 1), (1, 1), (3, 1), (4, 1),
-    (1, 2), (3, 2), (4, 2),
-    (1, 3),
-];
-#[cfg(feature = "rwkv_small")]
-const LORA_RANKS: [usize; 4] = [2, 4, 4, 4];
 /// Rows per block in the bulk replay's blocked projection kernels. Bounds the
 /// stack scratch used per block; larger blocks amortize weight-matrix streaming
 /// over more rows.
@@ -3381,7 +3333,6 @@ impl WeightMap {
 
     /// `gru_{w,s,d}_weight` ([3, HEAD_DIM]) and `_bias` ([3]) as one
     /// projection to 9 values: mixture logits, log scales, log decays.
-    #[cfg(feature = "rwkv_small")]
     fn power_curves(&self) -> io::Result<Linear> {
         let mut weight = Vec::new();
         let mut bias = Vec::new();
@@ -3587,15 +3538,13 @@ struct SrsModel {
     head_w_0: Linear,
     head_w_norm: Norm,
     head_w_4: Linear,
-    #[cfg(not(feature = "rwkv_small"))]
-    w_linear: Linear,
-    #[cfg(not(feature = "rwkv_small"))]
-    head_ahead_0: Linear,
-    #[cfg(not(feature = "rwkv_small"))]
-    ahead_linear: Linear,
-    /// The 3 power curves' mixture logits, log scales and log decays.
-    #[cfg(feature = "rwkv_small")]
-    power_curves: Linear,
+    /// The big model's 128-curve head.
+    w_linear: Option<Linear>,
+    head_ahead_0: Option<Linear>,
+    ahead_linear: Option<Linear>,
+    /// The small model's 3 power curves: mixture logits, log scales, log
+    /// decays.
+    power_curves: Option<Linear>,
     head_p_0: Linear,
     p_linear: Linear,
 }
@@ -3648,11 +3597,12 @@ impl SrsModel {
             .map(|(module_id, layer_count)| RwkvModule::load(&weights, module_id, *layer_count))
             .collect::<io::Result<Vec<_>>>()?;
 
-        #[allow(unused_mut)]
         let mut features_0 = weights.linear("features2card.0", CARD_FEATURES, HEAD_DIM, true)?;
         // the small model ignores input 22 (card state)
-        #[cfg(feature = "rwkv_small")]
-        features_0.weight_by_input[22 * HEAD_DIM..23 * HEAD_DIM].fill(0.0);
+        if SMALL {
+            features_0.weight_by_input[22 * HEAD_DIM..23 * HEAD_DIM].fill(0.0);
+        }
+        let big = |linear: io::Result<Linear>| (!SMALL).then_some(linear).transpose();
 
         Ok(Self {
             features_0,
@@ -3663,14 +3613,10 @@ impl SrsModel {
             head_w_0: weights.linear("head_w.0", D_MODEL, D_MODEL, true)?,
             head_w_norm: weights.layer_norm("head_w.2", D_MODEL, 1e-5)?,
             head_w_4: weights.linear("head_w.4", D_MODEL, HEAD_DIM, true)?,
-            #[cfg(not(feature = "rwkv_small"))]
-            w_linear: weights.linear("w_linear", HEAD_DIM, NUM_CURVES, true)?,
-            #[cfg(not(feature = "rwkv_small"))]
-            head_ahead_0: weights.linear("head_ahead_logits.0", D_MODEL, HEAD_DIM, true)?,
-            #[cfg(not(feature = "rwkv_small"))]
-            ahead_linear: weights.linear("ahead_linear", HEAD_DIM, NUM_CURVES, true)?,
-            #[cfg(feature = "rwkv_small")]
-            power_curves: weights.power_curves()?,
+            w_linear: big(weights.linear("w_linear", HEAD_DIM, NUM_CURVES, true))?,
+            head_ahead_0: big(weights.linear("head_ahead_logits.0", D_MODEL, HEAD_DIM, true))?,
+            ahead_linear: big(weights.linear("ahead_linear", HEAD_DIM, NUM_CURVES, true))?,
+            power_curves: SMALL.then(|| weights.power_curves()).transpose()?,
             head_p_0: weights.linear("head_p.0", D_MODEL, HEAD_DIM, true)?,
             p_linear: weights.linear("p_linear", HEAD_DIM, 4, true)?,
         })
@@ -3814,7 +3760,7 @@ impl SrsModel {
             v0.resize(rows * D_MODEL, 0.0);
             v0.fill(0.0);
         }
-        for (module_id, layer_id) in LAYER_STEPS {
+        for &(module_id, layer_id) in LAYER_STEPS {
             self.modules[module_id].layers[layer_id].run_query_batch(
                 &scratch.x,
                 &mut v0[module_id],
@@ -3862,30 +3808,31 @@ impl SrsModel {
         head_w = self.head_w_norm.apply(&head_w);
         head_w = self.head_w_4.apply(&head_w);
 
-        #[cfg(feature = "rwkv_small")]
-        {
+        if let Some(power_curves) = &self.power_curves {
             // [mixture weights, scales S, decays d] of R(t) = sum w (1 + t/S)^-d
-            let raw = self.power_curves.apply(&head_w);
+            let raw = power_curves.apply(&head_w);
             let mut weights = softmax(&raw[..3]);
             weights.extend(raw[3..].iter().map(|value| value.clamp(-25.0, 25.0).exp()));
-            ReviewCurve {
+            return ReviewCurve {
                 ahead_logits: Vec::new(),
                 weights,
-            }
+            };
         }
 
-        #[cfg(not(feature = "rwkv_small"))]
-        {
-            let weights = softmax(&self.w_linear.apply(&head_w));
+        let (Some(w_linear), Some(head_ahead_0), Some(ahead_linear)) =
+            (&self.w_linear, &self.head_ahead_0, &self.ahead_linear)
+        else {
+            unreachable!("the big model has its curve head");
+        };
+        let weights = softmax(&w_linear.apply(&head_w));
 
-            let mut ahead = self.head_ahead_0.apply(prehead_x);
-            relu_in_place(&mut ahead);
-            let ahead_logits = self.ahead_linear.apply(&ahead);
+        let mut ahead = head_ahead_0.apply(prehead_x);
+        relu_in_place(&mut ahead);
+        let ahead_logits = ahead_linear.apply(&ahead);
 
-            ReviewCurve {
-                ahead_logits,
-                weights,
-            }
+        ReviewCurve {
+            ahead_logits,
+            weights,
         }
     }
 
@@ -3930,7 +3877,7 @@ impl SrsModel {
         let mut x = x;
         let mut v0: [Vec<f32>; 5] = Default::default();
         let mut next_layers: [Vec<LayerState>; 5] = Default::default();
-        for (module_id, layer_id) in LAYER_STEPS {
+        for &(module_id, layer_id) in LAYER_STEPS {
             #[cfg(test)]
             let module_profile_started = rwkv_warmup_profile_start();
             if v0[module_id].is_empty() {
@@ -4020,7 +3967,7 @@ impl SrsModel {
         for v0 in v0.iter_mut() {
             v0.fill(0.0);
         }
-        for (module_id, layer_id) in LAYER_STEPS {
+        for &(module_id, layer_id) in LAYER_STEPS {
             let layer_state = states[module_id]
                 .as_deref()
                 .and_then(|state| state.layers.get(layer_id));
@@ -5867,8 +5814,16 @@ fn current_curve_retrievability(input: &ReviewInput, curve: &ReviewCurve) -> Opt
     Some(predict_curve(curve, elapsed_seconds as f32))
 }
 
-#[cfg(feature = "rwkv_small")]
 fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
+    if SMALL {
+        predict_power_curves(curve, elapsed_seconds)
+    } else {
+        predict_basis_curves(curve, elapsed_seconds)
+    }
+}
+
+/// The small model's curve: R(t) = sum w (1 + t/S)^-d over 3 power curves.
+fn predict_power_curves(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
     let t = elapsed_seconds.max(1.0);
     let [weights, scales, decays] = [0, 3, 6].map(|start| &curve.weights[start..start + 3]);
     let mut raw_probability = 0.0;
@@ -5879,8 +5834,8 @@ fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
     1e-5 + (1.0 - 2e-5) * raw_probability
 }
 
-#[cfg(not(feature = "rwkv_small"))]
-fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
+/// The big model's curve: a mixture of 128 exponential curves.
+fn predict_basis_curves(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
     let elapsed_seconds = elapsed_seconds.max(1.0);
     let mut raw_probability = 0.0;
     for (index, weight) in curve.weights.iter().enumerate() {
@@ -5891,7 +5846,6 @@ fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
     1e-5 + (1.0 - 2e-5) * raw_probability
 }
 
-#[cfg(not(feature = "rwkv_small"))]
 fn linspace_exp(index: usize, count: usize, point_spread: f32) -> f32 {
     let value = if count <= 1 {
         0.0
@@ -10215,17 +10169,15 @@ order by e.id, e.cid
         assert_close(&reduced_state, &sequential_state, 1e-4);
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
-    fn embedded_weights_path() -> Option<PathBuf> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
-        path.exists().then_some(path)
-    }
-
-    /// The small model's weights.f32.bin (not in the repo: no license yet).
-    #[cfg(feature = "rwkv_small")]
-    fn embedded_weights_path() -> Option<PathBuf> {
-        let path = PathBuf::from(env::var("ANKI_RWKV_SMALL_MODEL").ok()?);
+    /// The model this copy of the engine runs: the fork's file in the repo, or
+    /// the small model's weights.f32.bin from ANKI_RWKV_SMALL_MODEL.
+    pub(super) fn embedded_weights_path() -> Option<PathBuf> {
+        let path = if SMALL {
+            PathBuf::from(env::var("ANKI_RWKV_SMALL_MODEL").ok()?)
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin")
+        };
         path.exists().then_some(path)
     }
 
@@ -11409,9 +11361,11 @@ order by e.id, e.cid
         assert_eq!(clamped_interval_days(12.0, 10), 10);
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn interval_for_curve_returns_max_when_target_not_reached() {
+        if SMALL {
+            return; // the big model's 128-curve head
+        }
         let curve = ReviewCurve {
             ahead_logits: vec![20.0],
             weights: vec![1.0],
@@ -11420,7 +11374,6 @@ order by e.id, e.cid
         assert_eq!(interval_for_curve(&curve, 0.0, 365), Some(365));
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
     fn basis_curve(basis_index: usize) -> ReviewCurve {
         let mut weights = vec![0.0; basis_index + 1];
         weights[basis_index] = 1.0;
@@ -11430,9 +11383,11 @@ order by e.id, e.cid
         }
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn rwkv_crossings_are_fractional_and_lie_on_the_curve() {
+        if SMALL {
+            return; // the big model's 128-curve head
+        }
         for basis in [32, 60, 90] {
             let curve = basis_curve(basis);
             let crossing = unrounded_interval_for_curve(&curve, 0.9, 36_500).unwrap();
@@ -11448,9 +11403,11 @@ order by e.id, e.cid
         assert!(slow > 1.0 && slow != slow.round(), "{slow}");
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn predict_curve_ignores_ahead_logits_and_is_monotonic() {
+        if SMALL {
+            return; // the big model's 128-curve head
+        }
         let curve = ReviewCurve {
             ahead_logits: vec![-20.0, 20.0, -20.0, 20.0],
             weights: vec![0.2, 0.3, 0.5],
@@ -11505,9 +11462,11 @@ order by e.id, e.cid
         }
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn answer_curve_grade_order_enforcement_can_be_disabled() {
+        if SMALL {
+            return; // the big model's 128-curve head
+        }
         let curve_for_basis_index = |basis_index: usize| {
             let mut weights = vec![0.0; basis_index + 1];
             weights[basis_index] = 1.0;
@@ -11589,9 +11548,11 @@ order by e.id, e.cid
         assert_eq!(elapsed_days(&answer, elapsed_seconds(&answer)), -1);
     }
 
-    #[cfg(not(feature = "rwkv_small"))]
     #[test]
     fn current_curve_retrievability_uses_elapsed_seconds_then_days() {
+        if SMALL {
+            return; // the big model's 128-curve head
+        }
         let mut input = ReviewInput {
             card_id: 123,
             note_id: None,

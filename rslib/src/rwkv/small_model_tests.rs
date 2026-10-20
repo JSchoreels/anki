@@ -21,6 +21,9 @@ fn env_path(name: &str) -> PathBuf {
 #[test]
 #[ignore = "needs the sm40 package files"]
 fn small_model_matches_reference_vectors() {
+    if !SMALL {
+        return;
+    }
     let model = SrsModel::load(&env_path("ANKI_RWKV_SMALL_MODEL")).unwrap();
     let int8 = std::env::var("ANKI_RWKV_SMALL_WEIGHTS").as_deref() == Ok("int8");
     let data = fs::read(env_path("ANKI_RWKV_SMALL_VECTORS")).unwrap();

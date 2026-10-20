@@ -11,8 +11,6 @@ description = "Anki's Rust library code"
 
 [features]
 bench = ["criterion"]
-# JSchoreels' 331k-parameter RWKV ("w64", sm40) instead of the 2.76M one
-rwkv_small = []
 rustls = ["reqwest/rustls-tls", "reqwest/rustls-tls-native-roots"]
 native-tls = ["reqwest/native-tls"]
 

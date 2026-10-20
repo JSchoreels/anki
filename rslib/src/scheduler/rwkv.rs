@@ -39,6 +39,7 @@ use crate::storage::RwkvHistoricalReviewRow;
 
 mod history;
 mod offline;
+mod offline_engine;
 mod offline_state;
 
 pub(crate) use offline::RwkvOfflineRuntime;

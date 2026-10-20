@@ -46,12 +46,12 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use prost::Message;
 use rusqlite::OptionalExtension;
 
+use super::offline_engine::Engine;
 use super::offline_state;
 use super::*;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::decks::limits::LimitTreeMap;
 use crate::rwkv::ReviewInput;
-use crate::rwkv::RwkvInference;
 use crate::rwkv::StatePrecision;
 use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
 use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
@@ -167,7 +167,7 @@ impl ReplayStamp {
 
 pub(crate) struct RwkvOfflineRuntime {
     model: OfflineModel,
-    inference: RwkvInference,
+    inference: Engine,
     /// Feature/curve state of the freshly loaded model, for full rebuilds.
     initial_cache_state: Vec<u8>,
     /// Identity of the review history the model state has absorbed.
@@ -227,7 +227,7 @@ struct ScoredCard {
 
 impl RwkvOfflineRuntime {
     fn load(model: OfflineModel) -> Result<Self> {
-        let inference = RwkvInference::load_with_precision(
+        let inference = Engine::load_with_precision(
             model.path.clone(),
             MODEL_TARGET_RETENTION,
             MODEL_MAX_INTERVAL_DAYS,

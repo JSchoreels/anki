@@ -33,8 +33,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::offline::OfflineModel;
-use crate::rwkv::RwkvInference;
-use crate::rwkv::RwkvStateSnapshot;
+use super::offline_engine::Engine;
+use super::offline_engine::Snapshot;
 use crate::rwkv::StatePrecision;
 
 /// 3: card/note states as the engine keeps them (2: all as half floats, 1:
@@ -84,7 +84,7 @@ pub(super) fn write(
     path: &Path,
     header: &str,
     identity: &[u8],
-    state: &RwkvStateSnapshot,
+    state: &Snapshot,
 ) -> io::Result<()> {
     // a name of its own: two builds for one collection (profile switching) don't
     // write into the same file, and a failed write leaves nothing behind
@@ -106,11 +106,7 @@ pub(super) fn write(
 /// Reads the file written by [write] into `inference` and returns the history
 /// identity; an error when it is missing, damaged or was written for another
 /// header. After an error `inference` may hold part of the file: reset it.
-pub(super) fn read(
-    path: &Path,
-    header: &str,
-    inference: &mut RwkvInference,
-) -> io::Result<Vec<u8>> {
+pub(super) fn read(path: &Path, header: &str, inference: &mut Engine) -> io::Result<Vec<u8>> {
     let mut input = BufReader::with_capacity(BUFFER, fs::File::open(path)?);
     let identity = read_head(&mut input, header)?;
     inference.read_warm_up_states(&mut input)?;
@@ -194,7 +190,9 @@ mod tests {
         let header = String::from_utf8(get_bytes(&mut input, 4096).unwrap()).unwrap();
         drop(input);
 
-        let mut inference = RwkvInference::load(PathBuf::from(model), 0.9, 36_500).unwrap();
+        let mut inference =
+            Engine::load_with_precision(PathBuf::from(model), 0.9, 36_500, StatePrecision::F32)
+                .unwrap();
         let started = Instant::now();
         let identity = read(&file, &header, &mut inference).unwrap();
         eprintln!("read {} ms", started.elapsed().as_millis());

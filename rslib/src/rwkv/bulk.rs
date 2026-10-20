@@ -25,23 +25,13 @@
 //! replay to the same states as one large call.
 
 use std::collections::HashMap;
-#[cfg(not(feature = "rwkv_small"))]
 use std::sync::Mutex;
 
 use rayon::prelude::*;
 
 use super::*;
 
-/// Rows processed per internal chunk. A chunk holds the f32 states of every
-/// card and note it touches (kuma3 keeps them as halves otherwise), so kuma3
-/// uses a quarter of the desktop bridge's 8192: a 203k-review replay on a PC
-/// peaked at 1.33 GB instead of 1.83 GB, and took 16.4 s instead of 14.7 s.
-#[cfg(not(feature = "rwkv_small"))]
-const BULK_CHUNK_ROWS: usize = 2_048;
-/// The small model's states are ~6x smaller and its layer steps run one after
-/// another, chunk by chunk: bigger chunks mean fewer waits between threads.
-#[cfg(feature = "rwkv_small")]
-const BULK_CHUNK_ROWS: usize = 16_384;
+// BULK_CHUNK_ROWS: rows per internal chunk, from the model's shape.
 
 #[derive(Clone, Copy)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -147,8 +137,7 @@ fn warm_up_reviews_bulk_impl(
     // The small model runs its streams' layers interleaved (LAYER_STEPS), so
     // a module can't run alone over the rows: all modules' layers run in
     // step order, over all rows (predictions) or chunk by chunk.
-    #[cfg(feature = "rwkv_small")]
-    if record_predictions {
+    if SMALL && record_predictions {
         run_layer_steps(
             &model,
             &inputs,
@@ -158,7 +147,7 @@ fn warm_up_reviews_bulk_impl(
             chunk_size,
             query_recurrence,
         );
-    } else {
+    } else if SMALL {
         for start in (0..rows).step_by(chunk_size) {
             let end = (start + chunk_size).min(rows);
             run_layer_steps(
@@ -171,9 +160,7 @@ fn warm_up_reviews_bulk_impl(
                 QueryRecurrence::Exact,
             );
         }
-    }
-    #[cfg(not(feature = "rwkv_small"))]
-    if record_predictions {
+    } else if record_predictions {
         for (module_id, module) in model.modules.iter().enumerate() {
             #[cfg(test)]
             let profile_started = rwkv_warmup_profile_start();
@@ -266,7 +253,6 @@ fn row(buffer: &[f32], index: usize) -> &[f32] {
     &buffer[index * D_MODEL..(index + 1) * D_MODEL]
 }
 
-#[cfg(not(feature = "rwkv_small"))]
 /// Runs state-only replay as a dependency-safe wavefront over review chunks
 /// and state-scope modules. Node `(chunk, module)` depends only on the previous
 /// module for the same chunk and the previous chunk for the same module, so all
@@ -336,7 +322,6 @@ fn run_state_only_module_wavefront(
     x
 }
 
-#[cfg(not(feature = "rwkv_small"))]
 fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewStateMaps {
     let mut module_states = ReviewStateMaps::default();
     match module_id {
@@ -350,7 +335,6 @@ fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewS
     module_states
 }
 
-#[cfg(not(feature = "rwkv_small"))]
 fn put_module_states(
     states: &mut ReviewStateMaps,
     module_id: usize,
@@ -558,7 +542,6 @@ impl ModuleWork {
     }
 }
 
-#[cfg(not(feature = "rwkv_small"))]
 #[allow(clippy::too_many_arguments)]
 fn run_module(
     module: &RwkvModule,
@@ -585,7 +568,6 @@ fn run_module(
 }
 
 /// Every module's layers over `inputs`, in [LAYER_STEPS] order.
-#[cfg(feature = "rwkv_small")]
 #[allow(clippy::too_many_arguments)]
 fn run_layer_steps(
     model: &SrsModel,
@@ -604,7 +586,7 @@ fn run_layer_steps(
             ModuleWork::take(module, module_id, inputs, states, x_query.is_some())
         })
         .collect();
-    for (module_id, layer_id) in LAYER_STEPS {
+    for &(module_id, layer_id) in LAYER_STEPS {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
         works[module_id].run_layer(
