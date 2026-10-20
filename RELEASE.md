@@ -36,7 +36,7 @@ repeated here unless they materially affect a fork feature.
 
 - **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.
 
-- **Choose the RWKV model for each profile.** Preferences → Review now offers Legacy and the smaller SM40 model independently of state storage precision. Existing profiles keep Legacy; newly created profiles start with SM40. Reopen the profile after changing models to rebuild its RWKV state from review history.
+- **Choose the RWKV model for each profile.** Preferences → Review now offers Legacy and the smaller SM40 model independently of state storage precision. SM40 is the default for new profiles and existing profiles without a saved model choice; explicit Legacy selections are preserved. Reopen the profile after changing models to rebuild its RWKV state from review history.
 
 - **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved and INT8 remains the default pending review; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 

@@ -66,11 +66,11 @@ model and the 331,511-parameter SM40 model are bundled. Only the selected model
 and its state are loaded.
 
 The profile key is `rwkvModel`, with `legacy` and `sm40` as supported values.
-Missing or unsupported values resolve to Legacy, preserving existing profiles.
-Profile creation explicitly stores `sm40`, so new profiles start with SM40 without
-changing the defaults of older profiles. Neither model choice nor state precision
-is synced. Saving a choice takes effect after reopening the profile; the active
-session, its cache identity and its background jobs keep using the current model.
+Missing or unsupported values resolve to SM40 in both existing and new profiles.
+Explicitly saved `legacy` and `sm40` choices are preserved. Profile creation also
+explicitly stores `sm40`. Neither model choice nor state precision is synced.
+Saving a choice takes effect after reopening the profile; the active session, its
+cache identity and its background jobs keep using the current model.
 Switching models reconstructs state from canonical retained review history and
 does not rewrite collection data or existing scheduling dates.
 

@@ -15,18 +15,21 @@ from aqt.rwkv_model import model_for_profile
 @pytest.mark.parametrize(
     "profile,expected",
     [
-        (None, "legacy"),
-        ({}, "legacy"),
-        ({"rwkvModel": "unknown"}, "legacy"),
+        (None, "sm40"),
+        ({}, "sm40"),
+        ({"rwkvModel": "unknown"}, "sm40"),
+        ({"rwkvModel": None}, "sm40"),
         ({"rwkvModel": "legacy"}, "legacy"),
         ({"rwkvModel": "sm40"}, "sm40"),
     ],
 )
-def test_model_for_profile_preserves_choices_and_existing_default(profile, expected):
+def test_model_for_profile_defaults_to_sm40_and_preserves_explicit_choices(
+    profile, expected
+):
     assert model_for_profile(profile) == expected
 
 
-def test_new_profiles_start_with_sm40_without_changing_existing_defaults():
+def test_new_profiles_save_sm40_without_rewriting_existing_profiles():
     manager = ProfileManager.__new__(ProfileManager)
     manager.db = MagicMock()
     manager.db.scalar.return_value = False
@@ -72,6 +75,8 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
         ("sm40", "legacy", True),
         ("legacy", "legacy", False),
         ("sm40", "sm40", False),
+        (None, "legacy", True),
+        (None, "sm40", False),
     ],
 )
 def test_profile_open_reuses_only_the_saved_model(
@@ -92,7 +97,10 @@ def test_profile_open_reuses_only_the_saved_model(
     monkeypatch.setattr(rwkv_scheduler, "set_reviewer_backend", replace)
     owner = SimpleNamespace(
         pm=SimpleNamespace(
-            profile={"rwkvModel": saved_model, "rwkvStatePrecision": "int8"}
+            profile={
+                "rwkvStatePrecision": "int8",
+                **({"rwkvModel": saved_model} if saved_model else {}),
+            }
         )
     )
     rwkv_scheduler.begin_rwkv_state_cache_startup(owner)
@@ -102,7 +110,7 @@ def test_profile_open_reuses_only_the_saved_model(
         replace.assert_not_called()
 
 
-@pytest.mark.parametrize("model", ["legacy", "sm40"])
+@pytest.mark.parametrize("model", [None, "legacy", "sm40"])
 @pytest.mark.parametrize("precision", ["f32", "int8", "int4"])
 def test_profile_model_and_precision_reach_the_native_backend(
     monkeypatch, model, precision
@@ -116,7 +124,10 @@ def test_profile_model_and_precision_reach_the_native_backend(
         "mw",
         SimpleNamespace(
             pm=SimpleNamespace(
-                profile={"rwkvModel": model, "rwkvStatePrecision": precision}
+                profile={
+                    "rwkvStatePrecision": precision,
+                    **({"rwkvModel": model} if model else {}),
+                }
             )
         ),
     )
@@ -128,7 +139,7 @@ def test_profile_model_and_precision_reach_the_native_backend(
     )
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
-    assert backend.model_name == model
+    assert backend.model_name == (model or "sm40")
     assert backend.state_precision == precision
 
 

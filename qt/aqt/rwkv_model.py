@@ -13,6 +13,6 @@ RWKV_MODEL_FILES = {
 
 
 def model_for_profile(profile: Mapping[str, object] | None) -> str:
-    # Missing keys belong to profiles created before model selection existed.
+    # Profiles without an explicit choice use the smaller bundled model.
     value = profile.get(RWKV_MODEL_KEY) if profile else None
-    return value if isinstance(value, str) and value in RWKV_MODELS else "legacy"
+    return value if isinstance(value, str) and value in RWKV_MODELS else "sm40"

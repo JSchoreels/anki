@@ -42,19 +42,19 @@ def test_rwkv_preferences_selector_saves_choice_for_next_restart(monkeypatch):
     monkeypatch.setattr(dialog, "update_network", lambda: None)
     dialog.setup_rwkv_precision()
     assert dialog.rwkv_precision.currentData() == "int8"
-    assert dialog.rwkv_model.currentData() == "legacy"
+    assert dialog.rwkv_model.currentData() == "sm40"
     dialog.show()
     application.processEvents()
-    QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_End)
+    QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_Home)
     assert dialog.rwkv_precision.itemText(2)
     QTest.keyClick(dialog.rwkv_precision, Qt.Key.Key_Home)
     dialog.update_profile()
     assert dialog.prof["rwkvStatePrecision"] == "f32"
-    assert dialog.prof["rwkvModel"] == "sm40"
-    QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_Home)
+    assert dialog.prof["rwkvModel"] == "legacy"
+    QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_End)
     QTest.keyClick(dialog.rwkv_precision, Qt.Key.Key_End)
     dialog.update_profile()
     assert dialog.prof["rwkvStatePrecision"] == "int4"
-    assert dialog.prof["rwkvModel"] == "legacy"
+    assert dialog.prof["rwkvModel"] == "sm40"
     dialog.deleteLater()
     application.processEvents()
