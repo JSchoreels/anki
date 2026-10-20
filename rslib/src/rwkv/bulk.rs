@@ -36,7 +36,12 @@ use super::*;
 /// card and note it touches (kuma3 keeps them as halves otherwise), so kuma3
 /// uses a quarter of the desktop bridge's 8192: a 203k-review replay on a PC
 /// peaked at 1.33 GB instead of 1.83 GB, and took 16.4 s instead of 14.7 s.
+#[cfg(not(feature = "rwkv_small"))]
 const BULK_CHUNK_ROWS: usize = 2_048;
+/// The small model's states are ~6x smaller and its layer steps run one after
+/// another, chunk by chunk: bigger chunks mean fewer waits between threads.
+#[cfg(feature = "rwkv_small")]
+const BULK_CHUNK_ROWS: usize = 16_384;
 
 #[derive(Clone, Copy)]
 #[cfg_attr(not(test), allow(dead_code))]
