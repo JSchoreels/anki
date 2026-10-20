@@ -359,6 +359,14 @@ rwkv-sm40-tests *args:
 rwkv-sm40-vectors package output limit='500' python='python3':
     {{ python }} qt/tools/rwkv_sm40_vectors.py '{{ package }}' '{{ output }}' --limit {{ limit }}
 
+# Export exact production features and Curve components for an explicit offline probe.
+rwkv-sm40-curve-trace request:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_CURVE_PROBE_REQUEST='" + request + "'; " } else { "ANKI_RWKV_CURVE_PROBE_REQUEST='" + request + "' " } }}cargo test -p anki --lib --release rwkv_sm40_curve_reference_trace -- --ignored --nocapture
+
+# Independently replay an exported trace with the release package's NumPy reference.
+rwkv-sm40-curve-reference package trace output python='python3':
+    {{ python }} qt/tools/rwkv_curve_reference_probe.py --package '{{ package }}' --trace '{{ trace }}' --output '{{ output }}'
+
 # Run native RWKV regressions for both bundled architectures.
 rwkv-model-tests *args:
     cargo test -p anki --lib rwkv:: {{ args }}
