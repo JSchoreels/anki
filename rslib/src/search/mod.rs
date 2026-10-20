@@ -1156,6 +1156,11 @@ mod test {
         assert!(!ids.contains(&too_high));
         assert!(!ids.contains(&not_numeric));
 
+        assert_eq!(
+            col.search_notes("Frequency=550", SortMode::NoOrder)?,
+            vec![in_range]
+        );
+
         let mut ids = col.search_notes("Frequency:[500,600]", SortMode::NoOrder)?;
         ids.sort();
         assert_eq!(ids, vec![lower_bound, in_range, upper_bound]);

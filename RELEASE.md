@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Preserve literal comparison characters in searches.** Escape `<`, `>`, or `=` to search for text such as `x\<5` without triggering a numeric field comparison. Numeric comparisons, including equality, and the existing bracket range syntax continue to work; normalizing a search preserves its meaning.
+
 - **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
 
 - **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now defaults to “int4 cards + int8 notes” storage for both Legacy and SM40 when no supported precision choice is saved. It reduces card state storage while keeping the shared note state at INT8. Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
