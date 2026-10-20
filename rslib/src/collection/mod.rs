@@ -141,6 +141,14 @@ pub struct CollectionState {
     pub(crate) deck_cache: HashMap<DeckId, Arc<Deck>>,
     pub(crate) scheduler_info: Option<SchedulerInfo>,
     pub(crate) card_queues: Option<CardQueues>,
+    /// kuma3: the card the reviewer shows (the last next-card fetch) and its
+    /// mtime then. Every queue build keeps it first while it is unchanged,
+    /// until it is answered: RWKV drops the queues when its scores change
+    /// (after every answer in an RWKV deck), and a retrievability sort rebuilds
+    /// them when a learning card comes due, which put another card on screen
+    /// (and on the new study screen, after the app was killed in the
+    /// background, that card's answer) and made Undo show another card.
+    pub(crate) shown_card: Option<(CardId, crate::timestamp::TimestampSecs)>,
     pub(crate) rwkv_retrievability_scores: Option<RwkvRetrievabilityScores>,
     /// Model state for RWKV-Instant on clients without the desktop's Python.
     pub(crate) rwkv_offline: Option<Box<crate::scheduler::rwkv::RwkvOfflineRuntime>>,

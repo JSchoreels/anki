@@ -31,6 +31,8 @@ impl Collection {
     pub(crate) fn undo_queue_change(&mut self, change: UndoableQueueChange) -> Result<()> {
         match change {
             UndoableQueueChange::CardAnswered(update) => {
+                // shown next, also when the queues were rebuilt since the answer
+                self.state.shown_card = Some((update.entry.card_id(), update.entry.mtime()));
                 if let Some(queues) = self.get_or_invalidate_queues(update.queue_build_time)? {
                     queues.restore_cutoff(&update.cutoff_snapshot);
                     if let Some(learning) = &update.learning_requeue {
@@ -57,6 +59,14 @@ impl Collection {
                 Ok(())
             }
             UndoableQueueChange::CardAnswerUndone(update) => {
+                // answered again (redo): not the card on screen any more
+                if self
+                    .state
+                    .shown_card
+                    .is_some_and(|(card_id, _)| card_id == update.entry.card_id())
+                {
+                    self.state.shown_card = None;
+                }
                 if let Some(queues) = self.get_or_invalidate_queues(update.queue_build_time)? {
                     queues.pop_entry(update.entry.card_id())?;
                     if let Some(learning) = update.learning_requeue {

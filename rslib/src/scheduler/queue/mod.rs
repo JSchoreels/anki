@@ -24,6 +24,7 @@ pub(crate) use main::MainQueueEntry;
 pub(crate) use main::MainQueueEntryKind;
 
 use self::rwkv::RwkvLearningRepeatGuards;
+use self::undo::CutoffSnapshot;
 use self::undo::QueueUpdate;
 use super::states::SchedulingStates;
 use super::timing::SchedTimingToday;
@@ -153,7 +154,11 @@ impl Collection {
             queues.iter().take(fetch_limit).collect()
         };
         if fetch_limit == 1 && !intraday_learning_only {
-            queues.mark_top_card_shown(entries.first().map(QueueEntry::card_id));
+            let shown = entries
+                .first()
+                .map(|entry| (entry.card_id(), entry.mtime()));
+            queues.mark_top_card_shown(shown.map(|(card_id, _)| card_id));
+            self.state.shown_card = shown;
         }
         let cards: Vec<_> = entries
             .into_iter()
@@ -394,12 +399,21 @@ impl Collection {
         card: &Card,
         timing: SchedTimingToday,
         is_finished_preview: bool,
+        entry_before: Option<QueueEntry>,
     ) -> Result<()> {
+        if self
+            .state
+            .shown_card
+            .is_some_and(|(card_id, _)| card_id == card.id)
+        {
+            self.state.shown_card = None;
+        }
         if let Some(queues) = &mut self.state.card_queues {
             let Ok(entry) = queues.pop_entry(card.id) else {
                 // kuma3: a card answered from outside the queue's top (kumapie rates a word's
                 // own cards wherever they are): the queue is built again when it's next needed.
                 self.clear_study_queues();
+                self.save_unqueued_answer_undo(entry_before);
                 return Ok(());
             };
             let requeued_learning = if is_finished_preview {
@@ -416,10 +430,30 @@ impl Collection {
                 cutoff_snapshot,
             }));
         } else {
-            // we currently allow the queues to be empty for unit tests
+            // we currently allow the queues to be empty for unit tests;
+            // kuma3: RWKV drops them when its scores change
+            self.save_unqueued_answer_undo(entry_before);
         }
 
         Ok(())
+    }
+
+    /// kuma3: an answer the queues could not record (RWKV had dropped them, or
+    /// the card was not on top): Undo still shows the card first
+    /// ([CollectionState::shown_card]). The build time matches no queue, so
+    /// Undo builds them again.
+    fn save_unqueued_answer_undo(&mut self, entry: Option<QueueEntry>) {
+        if let Some(entry) = entry {
+            self.save_queue_update_undo(Box::new(QueueUpdate {
+                entry,
+                learning_requeue: None,
+                queue_build_time: TimestampMillis(0),
+                cutoff_snapshot: CutoffSnapshot {
+                    learning_count: 0,
+                    learning_cutoff: TimestampSecs(0),
+                },
+            }));
+        }
     }
 
     /// Get the card queues, building if necessary.
@@ -438,11 +472,32 @@ impl Collection {
                 .unwrap_or(false)
         {
             self.rwkv_offline_before_queue_build(deck.id);
-            self.state.card_queues = Some(self.build_queues(deck.id)?);
+            let queues = match self.unchanged_shown_card()? {
+                Some(shown) => self
+                    .build_queues_with_current_card(deck.id, Some(&shown))
+                    .or_else(|err| {
+                        tracing::debug!(?err, "shown card not kept first");
+                        self.build_queues(deck.id)
+                    })?,
+                None => self.build_queues(deck.id)?,
+            };
+            self.state.card_queues = Some(queues);
         }
 
         self.refresh_rwkv_learning_repeat_guards(&deck)?;
         Ok(self.state.card_queues.as_mut().unwrap())
+    }
+
+    /// [CollectionState::shown_card] if it is still as it was shown: answered
+    /// elsewhere (kumapie, a sync), buried or suspended, it is not kept.
+    fn unchanged_shown_card(&mut self) -> Result<Option<Card>> {
+        let Some((card_id, mtime)) = self.state.shown_card else {
+            return Ok(None);
+        };
+        Ok(self
+            .storage
+            .get_card(card_id)?
+            .filter(|card| card.mtime == mtime))
     }
 
     /// kuma3: the cards [deck_id]'s study queue would show today (RWKV-Instant
@@ -487,6 +542,7 @@ impl Collection {
             .map(|q| q.is_stale(timing.days_elapsed))
             .unwrap_or(false);
         if day_rolled_over {
+            self.state.shown_card = None;
             self.discard_undo_and_study_queues();
             self.unbury_on_day_rollover(timing.days_elapsed)?;
         }

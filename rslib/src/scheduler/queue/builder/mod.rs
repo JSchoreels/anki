@@ -922,6 +922,68 @@ mod test {
         Ok(())
     }
 
+    /// kuma3: RWKV drops the queues when its scores change (after every
+    /// answer in an RWKV deck); the card on screen stays first, and Undo gets
+    /// the undone card back instead of the new top card.
+    #[test]
+    fn shown_card_stays_first_through_rwkv_rebuilds_and_undo() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_current_deck(deck.id)?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let timing = col.timing_today()?;
+        let add = |col: &mut Collection| {
+            add_memory_state_card(
+                col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )
+        };
+        let (current, next, last) = (add(&mut col)?, add(&mut col)?, add(&mut col)?);
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.10), (next, 0.20), (last, 0.30)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+
+        // new scores would put `next` first: the card on screen stays
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.80), (next, 0.10), (last, 0.20)]),
+        )?;
+        assert!(col.state.card_queues.is_none());
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+
+        // answered: the scores decide again
+        col.answer_good();
+        assert_eq!(col.queued_card_ids(1)?, vec![next]);
+
+        // Undo after the queues were dropped again shows the undone card
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.80), (next, 0.10), (last, 0.20)]),
+        )?;
+        col.undo()?;
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+
+        // RWKV dropped the queues between showing the card and its answer:
+        // the answer leaves no queue entry, Undo still shows the card
+        col.clear_study_queues();
+        col.answer_good();
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(current, 0.80), (next, 0.10), (last, 0.20)]),
+        )?;
+        assert_eq!(col.queued_card_ids(1)?, vec![next]);
+        col.undo()?;
+        assert_eq!(col.queued_card_ids(1)?, vec![current]);
+        Ok(())
+    }
+
     #[test]
     fn preserved_current_card_outside_selected_deck_is_ignored() -> Result<()> {
         let mut col = Collection::new();
@@ -3725,7 +3787,7 @@ mod test {
     }
 
     #[test]
-    fn rwkv_score_update_rebuilds_displayed_review_queue_head() -> Result<()> {
+    fn rwkv_score_update_keeps_the_shown_card_first() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_current_deck(deck.id)?;
@@ -3756,7 +3818,10 @@ mod test {
 
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.90), (second, 0.05)]))?;
 
-        assert_eq!(col.queued_card_ids(10)?, vec![second, first]);
+        // kuma3: the card on screen stays first (the desktop reviewer used to
+        // keep it with rebuild_queued_cards_preserving_current_card); the rest
+        // follow the new scores
+        assert_eq!(col.queued_card_ids(10)?, vec![first, second]);
         Ok(())
     }
 

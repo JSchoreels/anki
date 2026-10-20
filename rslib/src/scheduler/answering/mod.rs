@@ -16,6 +16,7 @@ use rand::rngs::StdRng;
 use revlog::RevlogEntryPartial;
 
 use super::queue::BuryMode;
+use super::queue::QueueEntry;
 use super::states::load_balancer::LoadBalancerContext;
 use super::states::steps::LearningSteps;
 use super::states::CardState;
@@ -545,6 +546,11 @@ impl Collection {
             card.validate_custom_data()?;
         }
 
+        // kuma3: what Undo shows again when the queues can't record the answer
+        let entry_before = answer
+            .from_queue
+            .then(|| QueueEntry::of_queued_card(&original))
+            .flatten();
         self.update_card_inner(&mut card, original, usn)?;
         if answer.new_state.leeched() {
             self.add_leech_tags(card.note_id, card.queue == CardQueue::Suspended)?;
@@ -575,6 +581,7 @@ impl Collection {
                         ..
                     }))
                 ),
+                entry_before,
             )?;
         }
 
