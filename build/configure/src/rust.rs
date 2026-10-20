@@ -203,7 +203,15 @@ pub fn check_rust(build: &mut Build) -> Result<()> {
                 "format:rwkv_engine"
             },
             RustFormatSource {
-                inputs: inputs.clone(),
+                // Both formatters may install the same pinned toolchain on first use.
+                inputs: inputs![
+                    inputs.clone(),
+                    if check_only {
+                        ":check:format:rust"
+                    } else {
+                        ":format:rust"
+                    }
+                ],
                 source: "../../rslib/src/rwkv/engine.rs",
                 check_only,
                 working_dir: "cargo/format",
