@@ -4,6 +4,8 @@ Both Legacy and SM40 are available in the same desktop build. Preferences → Re
 
 ## Profile behavior
 
+The policy below describes the initial integration. The current default is SM40 for profiles without a supported saved choice; explicitly saved Legacy selections are preserved. See [current profile behavior](rwkv.MD#bundled-rwkv-models).
+
 - Existing profiles without `rwkvModel` keep Legacy. Supported saved choices are preserved; unknown values also resolve to Legacy.
 - New profile creation explicitly saves `rwkvModel = sm40`. State precision continues to default to INT8, and existing precision choices are preserved.
 - Preferences saves the next profile-open choice. The current backend, background jobs and cache identity continue using the active model until the profile reopens.

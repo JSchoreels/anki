@@ -21217,7 +21217,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "device": "cpu",
             "dtype": "float",
             "state_precision": "int8",
-            "model": "legacy",
+            "model": "sm40",
         }
     ]
 
@@ -22354,7 +22354,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "device": "cpu",
             "dtype": "float",
             "state_precision": "int8",
-            "model": "legacy",
+            "model": "sm40",
         }
     ]
 
@@ -22428,7 +22428,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "device": "mps",
             "dtype": "bfloat16",
             "state_precision": "int8",
-            "model": "legacy",
+            "model": "sm40",
         }
     ]
 
