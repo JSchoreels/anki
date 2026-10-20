@@ -593,6 +593,55 @@ for (const refreshOnExit of [false, true]) {
     });
 }
 
+test("RWKV maintenance actions keep state building and calibration separate", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!;
+        config.config!.rwkvReviewEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    const requests: string[] = [];
+    await page.route("**/_anki/updateDeckConfigs", async (route) => {
+        requests.push("save");
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    let finishBuild!: () => void;
+    const buildFinished = new Promise<void>((resolve) => finishBuild = resolve);
+    await page.route("**/_anki/forceBuildRwkvStateCache", async (route) => {
+        requests.push("state");
+        await buildFinished;
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    let finishCalibration!: () => void;
+    const calibrationFinished = new Promise<void>((resolve) => finishCalibration = resolve);
+    await page.route("**/_anki/recomputeRwkvCalibrationData", async (route) => {
+        requests.push("calibration");
+        await calibrationFinished;
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    await page.goto("/deck-options/1");
+    const build = page.getByRole("button", { name: "Build Cache", exact: true });
+    const calibration = page.getByRole("button", { name: "Prepare Calibration Data", exact: true });
+    await build.click();
+    await expect.poll(() => requests).toEqual(["save", "state"]);
+    await expect(page.getByRole("button", { name: "Rebuilding RWKV State...", exact: true })).toBeDisabled();
+    await expect(calibration).toBeDisabled();
+    finishBuild();
+    await expect(build).toBeEnabled();
+    expect(requests).toEqual(["save", "state"]);
+
+    await calibration.click();
+    await expect.poll(() => requests).toEqual(["save", "state", "save", "calibration"]);
+    await expect(page.getByRole("button", { name: "Preparing Calibration Data...", exact: true })).toBeDisabled();
+    await expect(build).toBeDisabled();
+    finishCalibration();
+    await expect(calibration).toBeEnabled();
+    expect(requests).toEqual(["save", "state", "save", "calibration"]);
+});
+
 test("FSRS parameter unlock timing survives mounting and unmounting", async ({ page }) => {
     await page.clock.install();
     await page.goto("/deck-options/1");

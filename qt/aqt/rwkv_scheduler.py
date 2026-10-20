@@ -11531,18 +11531,44 @@ def ensure_rwkv_calibration_data(
         _release_rwkv_free_memory()
 
 
-def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
-    """Recompute RWKV calibration rows with a modal progress dialog."""
+def prepare_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> bool:
+    """Refresh both calibration datasets without rebuilding active RWKV state."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    col = _collection(reviewer)
+    if col is None:
+        return False
+    backend = getattr(col, "_backend")
+    _report_rwkv_state_cache_progress(
+        progress, "Clearing historical prediction caches..."
+    )
+    backend.clear_review_retrievability_cache()
+    cache_dir = _rwkv_state_cache_dir(reviewer)
+    if cache_dir is not None:
+        (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).unlink(missing_ok=True)
+    _report_rwkv_state_cache_progress(
+        progress, "Rebuilding FSRS calibration predictions..."
+    )
+    backend.rebuild_fsrs_review_retrievability_cache()
+    return recompute_rwkv_calibration_data(mw, progress=progress)
+
+
+def prepare_rwkv_calibration_data_with_progress(mw: object) -> None:
+    """Prepare FSRS and RWKV historical predictions with a progress dialog."""
 
     from aqt.utils import tooltip
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
-        recompute_rwkv_calibration_data(mw)
+        prepare_rwkv_calibration_data(mw)
         return
 
-    def start_recompute() -> None:
+    def start_preparation() -> None:
         parent = cast(QWidget | None, mw)
         start = time.monotonic()
 
@@ -11559,41 +11585,41 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
 
             _run_on_main(mw, update)
 
-        def recompute() -> bool:
-            return recompute_rwkv_calibration_data(mw, progress=progress)
+        def prepare() -> bool:
+            return prepare_rwkv_calibration_data(mw, progress=progress)
 
         def done(future: Future[bool]) -> None:
             try:
-                recomputed = future.result()
+                prepared = future.result()
             except Exception:
-                logger.exception("RWKV calibration data recompute failed")
-                tooltip("RWKV calibration data recompute failed.", parent=parent)
+                logger.exception("Calibration data preparation failed")
+                tooltip("Calibration data preparation failed.", parent=parent)
                 return
 
             elapsed_ms = (time.monotonic() - start) * 1000
-            if recomputed:
-                tooltip("RWKV calibration data recomputed.", parent=parent)
+            if prepared:
+                tooltip("Calibration data prepared.", parent=parent)
                 logger.debug(
-                    "RWKV calibration data recompute finished: elapsed_ms=%.1f",
+                    "Calibration data preparation finished: elapsed_ms=%.1f",
                     elapsed_ms,
                 )
             else:
                 tooltip(
-                    "RWKV calibration data could not be recomputed.",
+                    "Calibration data could not be prepared.",
                     parent=parent,
                 )
 
         with_progress(
-            recompute,
+            prepare,
             done,
             parent=parent,
-            label="Recomputing RWKV calibration data...",
+            label="Preparing calibration data...",
             immediate=True,
             uses_collection=True,
-            title="RWKV Calibration Data",
+            title="Calibration Data",
         )
 
-    _run_on_main(mw, start_recompute)
+    _run_on_main(mw, start_preparation)
 
 
 def compare_rwkv_first_review_elapsed_metrics(
@@ -12886,11 +12912,10 @@ def build_rwkv_state_cache_with_progress(
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
-    rebuild_retrievability_cache: bool = False,
     recovery_reason: str | None = None,
     on_done: Callable[[bool], None] | None = None,
 ) -> None:
-    """Build local RWKV state, optionally refreshing both historical caches."""
+    """Build local RWKV state without rebuilding historical calibration data."""
 
     if recovery_reason is None:
         _clear_rwkv_state_declined(mw)
@@ -12927,23 +12952,6 @@ def build_rwkv_state_cache_with_progress(
     ) -> _RwkvStateCacheBuildResult:
         persistence_error: Exception | None = None
 
-        if rebuild_retrievability_cache:
-            col = _collection(SimpleNamespace(mw=mw))
-            if col is None:
-                return _RwkvStateCacheBuildResult(ready=False)
-            backend = getattr(col, "_backend")
-            _report_rwkv_state_cache_progress(
-                progress, "Clearing historical prediction caches..."
-            )
-            backend.clear_review_retrievability_cache()
-            cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
-            if cache_dir is not None:
-                (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).unlink(missing_ok=True)
-            _report_rwkv_state_cache_progress(
-                progress, "Rebuilding FSRS calibration predictions..."
-            )
-            backend.rebuild_fsrs_review_retrievability_cache()
-
         def remember_persistence_error(error: Exception) -> None:
             nonlocal persistence_error
             persistence_error = error
@@ -12956,8 +12964,6 @@ def build_rwkv_state_cache_with_progress(
             progress=progress,
             on_cache_persistence_error=remember_persistence_error,
         )
-        if ready and rebuild_retrievability_cache:
-            ready = recompute_rwkv_calibration_data(mw, progress=progress)
         return _RwkvStateCacheBuildResult(
             ready=ready,
             persistence_error=persistence_error,
@@ -12996,8 +13002,6 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV review state recovered."
                 if recovery_reason is not None
-                else "RWKV state and historical prediction caches ready."
-                if rebuild_retrievability_cache
                 else "RWKV state cache ready.",
                 parent=parent,
             )
@@ -13011,8 +13015,6 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV state recovery failed."
                 if recovery_reason is not None
-                else "Cache rebuild failed. Run Build Cache again to retry."
-                if rebuild_retrievability_cache
                 else "RWKV state cache could not be built.",
                 parent=parent,
             )
@@ -13083,8 +13085,6 @@ def build_rwkv_state_cache_with_progress(
                 tooltip(
                     "RWKV state recovery failed."
                     if recovery_reason is not None
-                    else "Cache rebuild failed. Run Build Cache again to retry."
-                    if rebuild_retrievability_cache
                     else "RWKV state cache build failed.",
                     parent=parent,
                 )
@@ -13104,9 +13104,7 @@ def build_rwkv_state_cache_with_progress(
                 label=progress_label,
                 immediate=True,
                 uses_collection=True,
-                title="Cache Build"
-                if rebuild_retrievability_cache
-                else "RWKV State Cache",
+                title="RWKV State Cache",
             )
         except Exception:
             _set_rwkv_state_cache_recovery_failed(mw, True)

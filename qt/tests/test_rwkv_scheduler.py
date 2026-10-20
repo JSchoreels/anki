@@ -12343,38 +12343,23 @@ def test_rwkv_state_cache_build_skips_review_retrievability_cache_by_default(
     assert reviewer.mw.col.rwkv_retrievability_rows == []
 
 
-@pytest.mark.parametrize(
-    ("state_ready", "calibration_ready"), [(True, True), (True, False), (False, True)]
-)
-def test_manual_cache_build_refreshes_both_predictions_after_clearing(
-    monkeypatch,
-    tmp_path,
-    state_ready,
-    calibration_ready,
+@pytest.mark.parametrize("state_ready", [True, False])
+def test_manual_cache_build_preserves_historical_predictions(
+    monkeypatch, tmp_path, state_ready
 ) -> None:
-    steps: list[str] = []
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
     _attach_progress_taskman(reviewer.mw)
     cache_dir = tmp_path / "rwkv-state-cache"
     cache_dir.mkdir()
     epoch_path = cache_dir / rwkv_scheduler._RWKV_CALIBRATION_EPOCH_FILE
-    epoch_path.write_text("stale")
-    reviewer.mw.col._backend = SimpleNamespace(
-        clear_review_retrievability_cache=lambda: steps.append("clear"),
-        rebuild_fsrs_review_retrievability_cache=lambda: steps.append("fsrs"),
+    epoch_path.write_text("existing calibration")
+    prediction_backend = SimpleNamespace(
+        clear_review_retrievability_cache=MagicMock(),
+        rebuild_fsrs_review_retrievability_cache=MagicMock(),
     )
-
-    def warm_up(_mw, **kwargs):
-        assert kwargs["force_rebuild"] is True
-        assert kwargs["record_retrievability_cache"] is False
-        assert not epoch_path.exists()
-        steps.append("state")
-        return state_ready
-
-    def recompute(_mw, **_kwargs):
-        steps.append("rwkv")
-        return calibration_ready
-
+    reviewer.mw.col._backend = prediction_backend
+    warm_up = MagicMock(return_value=state_ready)
+    recompute = MagicMock()
     monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", warm_up)
     monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
     monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
@@ -12384,21 +12369,85 @@ def test_manual_cache_build_refreshes_both_predictions_after_clearing(
         lambda *args, **kwargs: None,
     )
 
-    rwkv_scheduler.build_rwkv_state_cache_with_progress(
-        reviewer.mw,
-        force_rebuild=True,
-        rebuild_retrievability_cache=True,
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(reviewer.mw, force_rebuild=True)
+
+    assert warm_up.call_args.kwargs["force_rebuild"] is True
+    assert warm_up.call_args.kwargs["record_retrievability_cache"] is False
+    prediction_backend.clear_review_retrievability_cache.assert_not_called()
+    prediction_backend.rebuild_fsrs_review_retrievability_cache.assert_not_called()
+    recompute.assert_not_called()
+    assert epoch_path.read_text() == "existing calibration"
+    assert not rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw)
+    assert reviewer.mw._rwkv_state_cache_recovery_failed is not state_ready
+
+
+@pytest.mark.parametrize("calibration_ready", [True, False])
+def test_calibration_preparation_refreshes_both_predictions_without_state_build(
+    monkeypatch, tmp_path, calibration_ready
+) -> None:
+    steps: list[str] = []
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    taskman, progress = _attach_progress_taskman(reviewer.mw)
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    epoch_path = cache_dir / rwkv_scheduler._RWKV_CALIBRATION_EPOCH_FILE
+    epoch_path.write_text("stale")
+    reviewer.mw.col._backend = SimpleNamespace(
+        clear_review_retrievability_cache=lambda: steps.append("clear"),
+        rebuild_fsrs_review_retrievability_cache=lambda: steps.append("fsrs"),
     )
 
-    assert steps == (
-        ["clear", "fsrs", "state", "rwkv"]
-        if state_ready
-        else ["clear", "fsrs", "state"]
+    def recompute(_mw, **_kwargs):
+        assert not epoch_path.exists()
+        steps.append("rwkv")
+        return calibration_ready
+
+    warm_up = MagicMock()
+    tooltips: list[str] = []
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", warm_up)
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
+    monkeypatch.setattr(
+        "aqt.utils.tooltip", lambda text, **kwargs: tooltips.append(text)
     )
-    assert not rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw)
-    assert reviewer.mw._rwkv_state_cache_recovery_failed is not (
-        state_ready and calibration_ready
+
+    rwkv_scheduler.prepare_rwkv_calibration_data_with_progress(reviewer.mw)
+
+    assert steps == ["clear", "fsrs", "rwkv"]
+    warm_up.assert_not_called()
+    assert taskman.with_progress_kwargs["title"] == "Calibration Data"
+    assert [update["label"] for update in progress] == [
+        "Clearing historical prediction caches...",
+        "Rebuilding FSRS calibration predictions...",
+    ]
+    assert tooltips == [
+        "Calibration data prepared."
+        if calibration_ready
+        else "Calibration data could not be prepared."
+    ]
+
+
+def test_calibration_preparation_stops_when_fsrs_rebuild_fails(
+    monkeypatch, tmp_path
+) -> None:
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    _attach_progress_taskman(reviewer.mw)
+    reviewer.mw.col._backend = SimpleNamespace(
+        clear_review_retrievability_cache=MagicMock(),
+        rebuild_fsrs_review_retrievability_cache=MagicMock(
+            side_effect=RuntimeError("FSRS failed")
+        ),
     )
+    recompute = MagicMock()
+    tooltips: list[str] = []
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
+    monkeypatch.setattr(
+        "aqt.utils.tooltip", lambda text, **kwargs: tooltips.append(text)
+    )
+
+    rwkv_scheduler.prepare_rwkv_calibration_data_with_progress(reviewer.mw)
+
+    recompute.assert_not_called()
+    assert tooltips == ["Calibration data preparation failed."]
 
 
 def test_rwkv_state_cache_build_warns_when_only_session_state_is_ready(
