@@ -10,5 +10,7 @@ RWKV_STATE_PRECISION_KEY = "rwkvStatePrecision"
 def state_precision_for_profile(profile: Mapping[str, object] | None) -> str:
     value = profile.get(RWKV_STATE_PRECISION_KEY) if profile else None
     return (
-        value if isinstance(value, str) and value in RWKV_STATE_PRECISIONS else "int8"
+        value
+        if isinstance(value, str) and value in RWKV_STATE_PRECISIONS
+        else "cards_int4_notes_int8"
     )

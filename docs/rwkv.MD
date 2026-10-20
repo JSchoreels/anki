@@ -77,7 +77,7 @@ does not rewrite collection data or existing scheduling dates.
 Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
-remains f32 and storage precision still defaults to INT8 card/note state. A custom
+remains f32 and storage precision defaults to INT4 cards and INT8 notes. A custom
 `ANKI_RWKV_MODEL_PATH` must match the selected architecture. SM40's optional
 `weights.int8.bin` container dequantizes once to f32; it reduces file size, not the
 resident compute representation.
@@ -167,11 +167,13 @@ sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Preferences → Review → RWKV selects storage precision for the whole local
-profile: `int8` (default), `f32` (the original full-precision fallback),
-`int4` (experimental, cards and notes), or `cards_int4_notes_int8` (experimental,
-INT4 cards + INT8 notes). Both models support all four modes. The profile key is
-`rwkvStatePrecision`; an absent or
-unsupported value defaults to `int8`. This choice is local and is not synced.
+profile: `cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
+(cards and notes), `f32` (the original full-precision fallback), or `int4`
+(experimental, cards and notes). Both models support all four modes. The profile
+key is `rwkvStatePrecision`; absent or unsupported values default to
+`cards_int4_notes_int8` in both new and existing profiles. Explicitly saved
+precision choices, including `int8`, are preserved. This choice is local and is
+not synced.
 Changes take effect after restarting Anki (or reopening the profile), and the
 next state preparation rebuilds from retained review history. Precision is part
 of the replay identity, so a checkpoint from another mode cannot satisfy either
@@ -192,8 +194,8 @@ batches or active replay streams. Bulk replay preserves the last answer's exact
 integer codes and scales, so checkpoint reloads do not add another quantization.
 The mixed mode uses the existing INT4 encoding for cards and INT8 encoding for
 notes, including during bulk replay and checkpoint continuation; no cache schema
-change is needed. Both modes using INT4 can change individual predictions and
-calibration, so they are offered as explicit experimental choices. The
+change is needed. The `int4` mode also quantizes notes and remains an
+experimental choice. The
 [legacy-model mixed-precision comparison](rwkv-hybrid-precision-2026-10-18.MD)
 measured a 24.29% smaller total serialized state payload versus INT8 on one
 collection; it does not establish SM40's accuracy tradeoff.
@@ -212,10 +214,10 @@ buffer-decoding rebuild penalty, but remains slower than current f32 weights;
 fresh-process RAM savings are small because recurrent state dominates memory.
 These kernels remain offline experiments.
 
-For the previous bundled model, the [recommended default](rwkv-runtime-precision-2026-10-14.MD#recommended-default)
-remains f32 weights with int8 card/note matrices and f32 deck/preset/global state.
-It gives the best tested memory, speed and quality balance: 61.1% less ready RAM
-than f32 state after fresh cache restore, with almost identical historical UM+.
+For the previous bundled model, the [earlier runtime comparison](rwkv-runtime-precision-2026-10-14.MD#recommended-default)
+recommended f32 weights with int8 card/note matrices and f32 deck/preset/global
+state. That configuration used 61.1% less ready RAM than f32 state after fresh
+cache restore, with almost identical historical UM+.
 F32 remains faster; further quantization trades quality or CPU work for additional
 storage or memory savings. This conclusion is scoped to the measured model,
 collection and machine.

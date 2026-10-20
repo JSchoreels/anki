@@ -79,8 +79,17 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
         (None, "sm40", False),
     ],
 )
-def test_profile_open_reuses_only_the_saved_model(
-    monkeypatch, saved_model, active_model, replace_expected
+@pytest.mark.parametrize(
+    "saved_precision, replace_for_precision",
+    [(None, True), ("int8", False), ("cards_int4_notes_int8", True)],
+)
+def test_profile_open_reuses_only_matching_model_and_precision(
+    monkeypatch,
+    saved_model,
+    active_model,
+    replace_expected,
+    saved_precision,
+    replace_for_precision,
 ):
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
@@ -98,20 +107,22 @@ def test_profile_open_reuses_only_the_saved_model(
     owner = SimpleNamespace(
         pm=SimpleNamespace(
             profile={
-                "rwkvStatePrecision": "int8",
+                **({"rwkvStatePrecision": saved_precision} if saved_precision else {}),
                 **({"rwkvModel": saved_model} if saved_model else {}),
             }
         )
     )
     rwkv_scheduler.begin_rwkv_state_cache_startup(owner)
-    if replace_expected:
+    if replace_expected or replace_for_precision:
         replace.assert_called_once_with(None)
     else:
         replace.assert_not_called()
 
 
 @pytest.mark.parametrize("model", [None, "legacy", "sm40"])
-@pytest.mark.parametrize("precision", ["f32", "int8", "int4"])
+@pytest.mark.parametrize(
+    "precision", [None, "f32", "int8", "int4", "cards_int4_notes_int8"]
+)
 def test_profile_model_and_precision_reach_the_native_backend(
     monkeypatch, model, precision
 ):
@@ -125,7 +136,7 @@ def test_profile_model_and_precision_reach_the_native_backend(
         SimpleNamespace(
             pm=SimpleNamespace(
                 profile={
-                    "rwkvStatePrecision": precision,
+                    **({"rwkvStatePrecision": precision} if precision else {}),
                     **({"rwkvModel": model} if model else {}),
                 }
             )
@@ -140,7 +151,7 @@ def test_profile_model_and_precision_reach_the_native_backend(
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
     assert backend.model_name == (model or "sm40")
-    assert backend.state_precision == precision
+    assert backend.state_precision == (precision or "cards_int4_notes_int8")
 
 
 def test_cache_replay_identity_tracks_active_model_until_profile_reopen(monkeypatch):
