@@ -1,9 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-//! The two verified architectures. SM40 is the desktop default; the legacy
-//! compilation is retained for reproducible offline comparisons.
-pub(super) const SMALL_MODEL: bool = cfg!(feature = "rwkv-sm40");
+//! Dimensions are constant for each specialized engine.
+use super::SMALL_MODEL;
 pub(super) const D_MODEL: usize = if SMALL_MODEL { 64 } else { 128 };
 pub(super) const HEAD_DIM: usize = if SMALL_MODEL { 128 } else { 512 };
 pub(super) const NUM_CURVES: usize = if SMALL_MODEL { 3 } else { 128 };

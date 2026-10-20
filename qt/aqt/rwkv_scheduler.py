@@ -221,7 +221,7 @@ _RWKV_CALIBRATION_EPOCH_KEYS = (
 )
 _EMBEDDED_RWKV_MODEL_FILENAME = "weights.f32.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 12
+_RWKV_STATE_CACHE_VERSION = 13
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 5
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
@@ -4082,6 +4082,7 @@ def configure_reviewer_backend_from_environment() -> bool:
                 device=device,
                 dtype=dtype,
                 state_precision=_rwkv_state_precision(),
+                model=_rwkv_model(),
             )
         )
         logger.debug(
@@ -4103,12 +4104,9 @@ def configure_reviewer_backend_from_environment() -> bool:
 
 
 def embedded_rwkv_model_path() -> Path | None:
-    path = (
-        Path(__file__).parent
-        / "rwkv_inference"
-        / "sm40v2"
-        / _EMBEDDED_RWKV_MODEL_FILENAME
-    )
+    from aqt.rwkv_model import RWKV_MODEL_FILES
+
+    path = Path(__file__).parent / "rwkv_inference" / RWKV_MODEL_FILES[_rwkv_model()]
     return path if path.exists() else None
 
 
@@ -12206,13 +12204,15 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
     """Invalidate resident state before startup sync can change the collection."""
 
     _invalidate_reviewer_backend_runtime_state_for_profile_open()
+    from aqt.rwkv_model import model_for_profile
     from aqt.rwkv_precision import state_precision_for_profile
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
     profile = getattr(getattr(mw, "pm", None), "profile", None)
-    if isinstance(
-        _reviewer_backend, EmbeddedRwkvReviewerBackend
-    ) and _reviewer_backend.state_precision != state_precision_for_profile(profile):
+    if isinstance(_reviewer_backend, EmbeddedRwkvReviewerBackend) and (
+        _reviewer_backend.state_precision != state_precision_for_profile(profile)
+        or _reviewer_backend.model_name != model_for_profile(profile)
+    ):
         set_reviewer_backend(None)
     _set_rwkv_state_cache_recovery_failed(mw, False)
     setattr(mw, "_rwkv_state_declined", False)
@@ -13485,6 +13485,7 @@ def _compute_rwkv_memorised_history(
         target_retention=_RWKV_DEFAULT_TARGET_RETENTION,
         max_interval_days=36_500,
         state_precision=_rwkv_state_precision(),
+        model=_rwkv_model(),
     )
     (
         review_index,
@@ -20361,6 +20362,18 @@ def _rwkv_first_review_elapsed_config_key(
     return sorted(key, key=lambda item: str(item[0]))
 
 
+def _rwkv_model() -> str:
+    # Preferences save the choice for the next profile open. Keep cache identity
+    # and background jobs on the model used by the current resident backend.
+    model = getattr(_reviewer_backend, "model_name", None)
+    if isinstance(model, str):
+        return model
+    from aqt import mw
+    from aqt.rwkv_model import model_for_profile
+
+    return model_for_profile(getattr(getattr(mw, "pm", None), "profile", None))
+
+
 def _rwkv_state_precision() -> str:
     # Keep the running session's precision stable if Preferences has saved a
     # different choice for the next restart. Background jobs share this mode.
@@ -20384,6 +20397,7 @@ def _rwkv_replay_semantics_key(
     payload: dict[str, object] = {
         "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "statePrecision": _rwkv_state_precision(),
+        "model": _rwkv_model(),
         "firstReviewElapsedSource": first_review_elapsed_source.value,
         "dynamicPresetReplay": dynamic_preset_replay,
         "presetOverlay": (

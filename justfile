@@ -359,6 +359,6 @@ rwkv-sm40-tests *args:
 rwkv-sm40-vectors package output limit='500' python='python3':
     {{ python }} qt/tools/rwkv_sm40_vectors.py '{{ package }}' '{{ output }}' --limit {{ limit }}
 
-# Run the complete native RWKV regression suite for the selected architecture.
+# Run native RWKV regressions for both bundled architectures.
 rwkv-model-tests *args:
     cargo test -p anki --lib rwkv:: {{ args }}

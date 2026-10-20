@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Choose the RWKV model for each profile.** Preferences → Review now offers Legacy and the smaller SM40 model independently of state storage precision. Existing profiles keep Legacy; newly created profiles start with SM40. Reopen the profile after changing models to rebuild its RWKV state from review history.
+
 - **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved and INT8 remains the default pending review; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 
 - **Correct dynamic FSRS presets during Deck Options recalculation.** Bulk memory-state updates now use each card's first matching Dynamic Preset Selection rule and its model parameters, retention settings, and history cutoff. Previously, every card used the home-deck preset. Optional rescheduling uses the same matched model; recalculating without rescheduling still preserves intervals and due dates.
@@ -63,7 +65,7 @@ repeated here unless they materially affect a fork feature.
 
 ### Technical details
 
-- Port the 331,511-parameter SM40 model to the native scalar, batched and bulk runtimes, including its interleaved layers, power-mixture curve, one-layer note state and exported f32/int8 weight containers. Keep the legacy native architecture for offline comparison, version curve/cache payloads, and verify both published reference users plus matched reconstruction, calibration and UM+ measurements. See [the SM40 report](docs/rwkv-sm40-2026-10-20.MD) for definitions, limits and provenance.
+- Port the 331,511-parameter SM40 model to the native scalar, batched and bulk runtimes, including its interleaved layers, power-mixture curve, one-layer note state and exported f32/int8 weight containers. Compile both specialized native architectures from shared engine source, dispatch per profile, tag cache and undo state by model, and verify both published reference users plus matched reconstruction, calibration and UM+ measurements. The Cargo feature only selects the primary offline benchmark architecture; desktop builds support both models. The [dual-model follow-up](docs/rwkv-dual-model-2026-10-20.MD) confirms bit-identical full-history predictions for all four model/precision combinations. See [the SM40 report](docs/rwkv-sm40-2026-10-20.MD) for definitions, limits and provenance.
 
 - **Deck Options FSRS routing:** resolve affected non-new cards in a batch before writes, then group them by the resolved preset for the existing memory-state replay and rescheduler. Preserve home-deck interval/fuzz limits, unmatched-card retention overrides, disable-FSRS behavior, transaction rollback, and undo/redo. Regression coverage mixes FSRS-6 and FSRS-7 overlays with overlapping interval rules and a home-deck fallback.
 

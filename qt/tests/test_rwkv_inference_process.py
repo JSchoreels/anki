@@ -490,14 +490,20 @@ def _import_rsbridge(root: Path) -> object:
     return module
 
 
-def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips() -> None:
+@pytest.mark.parametrize(
+    "model_name,filename",
+    [("sm40", "sm40v2/weights.f32.bin"), ("legacy", "RWKV_trained_on_5000_10000.bin")],
+)
+def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
+    model_name, filename
+) -> None:
     root = Path(__file__).resolve().parents[2]
-    model_path = root / "qt/aqt/rwkv_inference" / _RWKV_MODEL_FILENAME
+    model_path = root / "qt/aqt/rwkv_inference" / filename
     if not model_path.exists():
         pytest.skip(f"RWKV model is unavailable: {model_path}")
 
     rsbridge = _import_rsbridge(root)
-    runtime = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    runtime = rsbridge.RwkvInference(str(model_path), 0.9, 36500, model=model_name)
     card_states: dict[int, bytes] = {}
     note_states: dict[int, bytes] = {}
     deck_states: dict[int, bytes] = {}
@@ -672,7 +678,7 @@ def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips() -> No
         batch_inputs
     ) == pytest.approx(batch_expected, abs=_RWKV_ABS_TOL)
 
-    restored = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    restored = rsbridge.RwkvInference(str(model_path), 0.9, 36500, model=model_name)
     restored.restore_warm_up_snapshot(snapshot)
     restored.restore_cache_state(snapshot[5])
     assert restored.predict_retrievability_many_from_warm_up(

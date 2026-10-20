@@ -58,41 +58,54 @@ delays. Turning it on bypasses the delays without deleting the saved step lists;
 cards already graduated to Review do not automatically return to learning when
 it is turned off again.
 
-## Bundled SM40 Model
+## Bundled RWKV Models
 
-The experimental SM40 integration replaces the desktop's bundled 2.76M-parameter
-model with the 331,511-parameter `sm40v2` release. The current weights are
-`qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent architecture and
-manifest record the exact upstream export. This branch retains f32 weight
-computation and the existing INT8 card/note default. Loading the optional
-`weights.int8.bin` through `ANKI_RWKV_MODEL_PATH` dequantizes it once to f32;
-it reduces the weight file size, not the resident compute representation.
+Preferences → Review → RWKV offers a **Prediction model** selector for the entire
+local profile, independently of **Storage precision**. Both the original Legacy
+model and the 331,511-parameter SM40 model are bundled. Only the selected model
+and its state are loaded.
+
+The profile key is `rwkvModel`, with `legacy` and `sm40` as supported values.
+Missing or unsupported values resolve to Legacy, preserving existing profiles.
+Profile creation explicitly stores `sm40`, so new profiles start with SM40 without
+changing the defaults of older profiles. Neither model choice nor state precision
+is synced. Saving a choice takes effect after reopening the profile; the active
+session, its cache identity and its background jobs keep using the current model.
+Switching models reconstructs state from canonical retained review history and
+does not rewrite collection data or existing scheduling dates.
+
+Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
+SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
+architecture and manifest record the exact upstream export. Weight computation
+remains f32 and storage precision still defaults to INT8 card/note state. A custom
+`ANKI_RWKV_MODEL_PATH` must match the selected architecture. SM40's optional
+`weights.int8.bin` container dequantizes once to f32; it reduces file size, not the
+resident compute representation.
+
+The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for both
+fixed architectures and dispatches at its public operation boundary. Tensor loops
+retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
+engine used by the offline benchmark API, and `--no-default-features` selects
+Legacy for those comparisons; both models are available at runtime in either
+build. The standard format/check targets also cover the included engine source.
 
 SM40 has width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
-layer-zero value residual, and only four layers retain channel mixers. Input
+layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
-entity codes, canonical history and routing rules are unchanged. The curve
-head is a mixture of three learned power curves and the Instant head remains
-a four-rating classifier.
+entity codes, canonical history and routing rules are unchanged. Its Curve head
+is a mixture of three learned power curves and its Instant head remains a
+four-rating classifier.
 
-The verified architectures are fixed at compilation in
-`rslib/src/rwkv/architecture.rs`, with a test against the published JSON spec.
-Cargo enables `rwkv-sm40` by default. `--no-default-features` on the standalone
-native benchmark selects the legacy architecture and original weight file;
-it is an offline comparison configuration, not a second desktop model selector.
-A custom embedded weight file must match the compiled architecture.
+The selected model and content hash participate in cache/replay identity. Native
+state-store schema 5, model-tagged runtime marker `ARWKVPROCSTATE4` and desktop
+cache metadata version 13 reject incompatible snapshots. Undo state is also
+model-specific. The first open after this upgrade rebuilds the previous cache;
+subsequent profile opens can restore a valid cache for the selected model.
 
-The model content hash invalidates the previous local profile cache. Native
-state-store schema 5 and runtime-state marker `ARWKVPROCSTATE3` additionally
-separate the new curve payload from previous caches. The next state preparation
-reconstructs state from canonical retained history; collection data and synced
-deck settings do not migrate. Undo, temporary workload replays, compact state,
-checkpoints and fresh-process restoration retain the complete power curve.
-
-The [SM40 comparison](rwkv-sm40-2026-10-20.MD) records the matched full-history
-resource and quality measurements. Older dated performance/precision reports
-below concern the original model and are historical evidence, not SM40 results.
+The [initial SM40 comparison](rwkv-sm40-2026-10-20.MD) records the original matched
+full-history resource and quality measurements. The [dual-model follow-up](rwkv-dual-model-2026-10-20.MD) verifies identical predictions after runtime selection was added. Older dated reports below concern
+the original model and remain historical evidence.
 
 ## Settings And Storage
 
@@ -153,7 +166,7 @@ invalidates any cache checkpoint that still contains the older retained
 sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
-Preferences → Review → RWKV state selects storage precision for the whole local
+Preferences → Review → RWKV selects storage precision for the whole local
 profile: `int8` (default), `f32` (the original full-precision fallback), or
 `int4` (experimental). The profile key is `rwkvStatePrecision`; an absent or
 unsupported value defaults to `int8`. This choice is local and is not synced.

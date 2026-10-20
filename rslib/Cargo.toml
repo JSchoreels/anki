@@ -11,7 +11,7 @@ description = "Anki's Rust library code"
 
 [features]
 default = ["rwkv-sm40"]
-# Disable default features only for the offline legacy-model comparison.
+# Select the primary engine for offline comparisons; both models are always available at runtime.
 rwkv-sm40 = []
 bench = ["criterion"]
 rustls = ["reqwest/rustls-tls", "reqwest/rustls-tls-native-roots"]
