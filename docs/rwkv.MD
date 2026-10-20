@@ -1175,23 +1175,25 @@ require the same version. Integration tests write real native checkpoints for bo
 models, read and prune them through the desktop code, and restore the surviving
 state into a fresh native runtime.
 
-Automatic RWKV state recovery replays answers and persists recurrent state
-without computing a pre-answer prediction for every historical review. The manual
-**Build Cache** action in Deck Options clears both historical prediction tables,
-rebuilds FSRS predictions and validation folds for every deck preset using its
-current parameters, history cutoff, relearning steps, same-day optimization and
-scheduling-penalty settings, rebuilds RWKV recurrent state, then recomputes RWKV
-calibration predictions aligned to the rebuilt FSRS folds. It does not reschedule
-cards or change review history. These are separate state-only and prediction-recording
-RWKV replays, so the progress count starts again for calibration; the total action
-also includes the FSRS rebuild, input preparation, persistence and temporary-state
-snapshot/restore work. Standalone native state-reconstruction benchmark timings
-cover the state-only replay and final state cache, rather than this combined action.
-Replay logs report the active model and storage precision for each phase.
-A failed or interrupted rebuild can leave partial
-derived predictions; rerun **Build Cache** to complete it. Live review answers still
-write their pre-answer prediction with source `rwkv_review` and role
-`post_optimization`.
+Automatic RWKV state recovery and the manual **Build Cache** action in Deck
+Options replay answers and persist recurrent state without computing a pre-answer
+prediction for every historical review. **Build Cache** rebuilds only RWKV state;
+it does not clear or recompute the historical FSRS and RWKV calibration tables.
+The progress dialog therefore has one state-replay pass. Input preparation,
+recovery checkpoints, persistence and the following queue-count refresh still add
+work beyond a standalone native state-reconstruction benchmark.
+Replay logs report the active model and storage precision.
+
+**Prepare Calibration Data** is the separate manual refresh for historical graph
+data. It clears both derived prediction tables, rebuilds FSRS predictions and
+validation folds for every deck preset using its current parameters, history
+cutoff, relearning steps, same-day optimization and scheduling-penalty settings,
+then replays RWKV pre-answer queries aligned to those folds. The active RWKV
+review state is snapshotted and restored rather than rebuilt as a persistent
+cache. A failed or interrupted preparation can leave partial derived predictions;
+rerun **Prepare Calibration Data** to complete it. Neither maintenance action
+reschedules cards or changes review history. Live review answers still write their
+pre-answer prediction with source `rwkv_review` and role `post_optimization`.
 
 Historical calibration predictions live in the profile-local
 `search_stats_rwkv_review_retrievability` table, attached from
@@ -1204,9 +1206,11 @@ derived cache, separate from the recurrent state database and the
 short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 `fold_index`, and `source`.
 
-The deck options action **Calculate Calibration Graph Data** replays historical
-queries only for this derived table. When role-aware FSRS calibration data is
-available, RWKV copies the active FSRS `validation_fold` review ids and fold
+After FSRS preparation, **Prepare Calibration Data** replays historical RWKV
+queries into this derived table. The synchronous
+`recompute_rwkv_calibration_data()` and `ensure_rwkv_calibration_data()` APIs keep
+their existing RWKV-only behavior and reuse available FSRS validation folds.
+When role-aware FSRS calibration data is available, RWKV copies the active FSRS `validation_fold` review ids and fold
 indices into its `test_fold` rows. Other historical RWKV rows are written as
 `final_fit`, so comparison graphs evaluate both models on the same reviews.
 If FSRS validation data is unavailable, RWKV retains the chronological 70%

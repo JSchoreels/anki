@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
+
 - **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.
 
 - **Choose the RWKV model for each profile.** Preferences → Review now offers Legacy and the smaller SM40 model independently of state storage precision. SM40 is the default for new profiles and existing profiles without a saved model choice; explicit Legacy selections are preserved. Reopen the profile after changing models to rebuild its RWKV state from review history.
@@ -66,6 +68,8 @@ repeated here unless they materially affect a fork feature.
 - **Updated HTML sanitization dependency.** This build includes the patched Ammonia release for CSS URL escaping and SVG animation filtering.
 
 ### Technical details
+
+- Route both Deck Options state-cache endpoints through state-only preparation. Move historical cache clearing, FSRS prediction/fold rebuilding and RWKV calibration replay into the dedicated preparation action. Keep the synchronous RWKV-only calibration APIs unchanged and cover separate request routing, failure handling, cache preservation and browser interaction.
 
 - Align the desktop RWKV store reader with native schema 5. Add native-to-desktop checkpoint integration coverage for Legacy and SM40, including metadata, parent chains, orphan pruning and fresh-runtime prediction restoration.
 
