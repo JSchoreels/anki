@@ -4,6 +4,8 @@ Measured on October 20, 2026, with the dual-model integration at `66806e08b`. Th
 
 **SM40 substantially reduces grade-order conflicts at 75% desired retention and reduces the sustained inflation after many rapid Good answers. It does not fix the first-repeat jump or the very long low-retention tail. The first jump can be larger than Legacy's, including reaching the configured 36,500-day limit.** Both f32 and INT8 state reproduce this result.
 
+The subsequent [independent reference investigation](rwkv-sm40-reference-2026-10-20.MD) reproduces these SM40 trajectories with the released NumPy implementation, identifies the changing power-mixture tail, and isolates the card/note state contribution to the collapse.
+
 ## What was retested
 
 The earlier discussion identified two different problems:
