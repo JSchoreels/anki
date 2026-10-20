@@ -90,16 +90,13 @@ impl MetaExt for Meta {
         } else {
             // A modern package also contains a legacy dummy collection. Missing
             // metadata must not make that dummy look like a usable backup.
-            if archive
-                .file_names()
-                .any(|name| name == "collection.anki21b")
-            {
+            if archive.index_for_name("collection.anki21b").is_some() {
                 return Err(AnkiError::ImportError {
                     source: ImportError::Corrupt,
                 });
             }
             Meta {
-                version: if archive.file_names().any(|name| name == "collection.anki21") {
+                version: if archive.index_for_name("collection.anki21").is_some() {
                     Version::Legacy2
                 } else {
                     Version::Legacy1
