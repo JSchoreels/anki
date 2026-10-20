@@ -21,6 +21,7 @@ from aqt.utils import tr
         ({"rwkvStatePrecision": "unknown"}, "int8"),
         ({"rwkvStatePrecision": "f32"}, "f32"),
         ({"rwkvStatePrecision": "int4"}, "int4"),
+        ({"rwkvStatePrecision": "cards_int4_notes_int8"}, "cards_int4_notes_int8"),
     ],
 )
 def test_state_precision_for_profile_preserves_supported_choices(profile, expected):
@@ -54,7 +55,10 @@ def test_rwkv_preferences_selector_saves_choice_for_next_restart(monkeypatch):
     QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_End)
     QTest.keyClick(dialog.rwkv_precision, Qt.Key.Key_End)
     dialog.update_profile()
-    assert dialog.prof["rwkvStatePrecision"] == "int4"
+    assert dialog.prof["rwkvStatePrecision"] == "cards_int4_notes_int8"
     assert dialog.prof["rwkvModel"] == "sm40"
+    QTest.keyClick(dialog.rwkv_precision, Qt.Key.Key_Up)
+    dialog.update_profile()
+    assert dialog.prof["rwkvStatePrecision"] == "int4"
     dialog.deleteLater()
     application.processEvents()

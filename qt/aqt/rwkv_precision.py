@@ -3,7 +3,7 @@
 
 from collections.abc import Mapping
 
-RWKV_STATE_PRECISIONS = ("f32", "int8", "int4")
+RWKV_STATE_PRECISIONS = ("f32", "int8", "int4", "cards_int4_notes_int8")
 RWKV_STATE_PRECISION_KEY = "rwkvStatePrecision"
 
 

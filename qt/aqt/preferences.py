@@ -236,6 +236,7 @@ class Preferences(QDialog):
                 tr.preferences_rwkv_f32(),
                 tr.preferences_rwkv_int8(),
                 tr.preferences_rwkv_int4(),
+                tr.preferences_rwkv_int4_cards_int8_notes(),
             ),
         ):
             self.rwkv_precision.addItem(label, mode)

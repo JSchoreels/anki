@@ -4,10 +4,11 @@
 use super::state_scope_bench::load_for_scopes;
 use super::*;
 
-const PRECISIONS: [(StatePrecision, [bool; 3]); 4] = [
+const PRECISIONS: [(StatePrecision, [bool; 3]); 5] = [
     (StatePrecision::F32, [false; 3]),
     (StatePrecision::Int8, [false; 3]),
     (StatePrecision::Int4, [false; 3]),
+    (StatePrecision::Int4CardsInt8Notes, [false; 3]),
     (StatePrecision::Int8, [true; 3]),
 ];
 
@@ -58,6 +59,35 @@ pub(super) fn snapshot_bytes(inference: &RwkvInference) -> Vec<u8> {
     .unwrap();
     write_snapshot_optional_bytes(&mut out, Some(&inference.cache_state())).unwrap();
     out
+}
+
+#[test]
+fn rwkv_state_precision_mixed_packs_cards_as_int4_and_notes_as_int8() {
+    let precision = StatePrecision::parse("cards_int4_notes_int8").unwrap();
+    let mut mixed = runtime(precision, [false; 3]);
+    let mut int8 = runtime(StatePrecision::Int8, [false; 3]);
+    mixed.warm_up_reviews(reviews(14), false).unwrap();
+    int8.warm_up_reviews(reviews(14), false).unwrap();
+    for (&id, state) in &mixed.warm_up_states.card {
+        let bytes = state.packed.as_ref().unwrap();
+        assert_eq!(bytes[precision::MAGIC.len()], 4);
+        assert!(bytes.len() < int8.warm_up_states.card[&id].packed.as_ref().unwrap().len());
+    }
+    for (&id, state) in &mixed.warm_up_states.note {
+        let bytes = state.packed.as_ref().unwrap();
+        assert_eq!(bytes[precision::MAGIC.len()], 8);
+        assert_eq!(
+            bytes.len(),
+            int8.warm_up_states.note[&id].packed.as_ref().unwrap().len()
+        );
+    }
+    assert!(mixed
+        .warm_up_states
+        .deck
+        .values()
+        .chain(mixed.warm_up_states.preset.values())
+        .chain(&mixed.warm_up_states.global)
+        .all(|state| state.packed.is_none()));
 }
 
 #[test]

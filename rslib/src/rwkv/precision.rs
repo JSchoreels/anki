@@ -24,6 +24,8 @@ pub enum StatePrecision {
     F32,
     Int8,
     Int4,
+    /// Runtime policy; modules resolve this to Int4 cards and Int8 notes.
+    Int4CardsInt8Notes,
 }
 
 impl StatePrecision {
@@ -32,6 +34,7 @@ impl StatePrecision {
             "f32" => Ok(Self::F32),
             "int8" => Ok(Self::Int8),
             "int4" => Ok(Self::Int4),
+            "cards_int4_notes_int8" => Ok(Self::Int4CardsInt8Notes),
             _ => Err(invalid_state()),
         }
     }
@@ -40,7 +43,7 @@ impl StatePrecision {
         match self {
             Self::Int8 => 127.0,
             Self::Int4 => 7.0,
-            Self::F32 => unreachable!(),
+            Self::F32 | Self::Int4CardsInt8Notes => unreachable!(),
         }
     }
 
@@ -48,7 +51,7 @@ impl StatePrecision {
         4 + match self {
             Self::Int8 => HEAD_SIZE,
             Self::Int4 => HEAD_SIZE / 2,
-            Self::F32 => unreachable!(),
+            Self::F32 | Self::Int4CardsInt8Notes => unreachable!(),
         }
     }
 

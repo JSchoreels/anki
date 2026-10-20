@@ -68,6 +68,9 @@ impl RwkvRuntime {
                 StatePrecision::F32 => super::alternate::StatePrecision::F32,
                 StatePrecision::Int8 => super::alternate::StatePrecision::Int8,
                 StatePrecision::Int4 => super::alternate::StatePrecision::Int4,
+                StatePrecision::Int4CardsInt8Notes => {
+                    super::alternate::StatePrecision::Int4CardsInt8Notes
+                }
             };
             super::alternate::RwkvInference::load_with_precision(
                 path,
@@ -363,6 +366,7 @@ mod tests {
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4,
+            StatePrecision::Int4CardsInt8Notes,
         ] {
             let mut legacy = load(ModelKind::Legacy, precision);
             let mut small = load(ModelKind::Sm40, precision);
