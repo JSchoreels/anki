@@ -18,6 +18,7 @@ service BackendGithubService {
 
 message LatestReleaseRequest {
   bool include_prerelease = 1;
+  bool portable = 2;
 }
 
 message GithubRelease {

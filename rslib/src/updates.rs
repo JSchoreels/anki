@@ -24,10 +24,14 @@ pub struct DownloadUpdateProgress {
 }
 
 pub fn updates_dir() -> Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .or_invalid("Unable to determine data_dir")?
-        .join("AnkiProgramFiles")
-        .join("updates");
+    let base = if let Some(root) = std::env::var_os("ANKI_PORTABLE_ROOT") {
+        PathBuf::from(root).join("Anki Portable Data")
+    } else {
+        dirs::data_local_dir()
+            .or_invalid("Unable to determine data_dir")?
+            .join("AnkiProgramFiles")
+    };
+    let dir = base.join("updates");
     if !dir.exists() {
         create_dir_all(&dir)?;
     }

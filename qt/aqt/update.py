@@ -69,10 +69,10 @@ def check_for_update(*, parent: aqt.AnkiQt, manual: bool) -> None:
 
 
 def prompt_and_install_github_update(mw: aqt.AnkiQt, release: GithubRelease) -> None:
-    msg = (
-        tr.qt_misc_anki_updatedanki_has_been_released(val=release.tag_name)
-        + tr.qt_misc_would_you_like_to_download_it()
-    )
+    msg = tr.qt_misc_anki_updatedanki_has_been_released(val=release.tag_name)
+    if aqt.is_portable():
+        msg += tr.qt_misc_portable_update_download() + "<br><br>"
+    msg += tr.qt_misc_would_you_like_to_download_it()
 
     msgbox = QMessageBox(mw)
     msgbox.setStandardButtons(
@@ -96,7 +96,7 @@ def get_latest_release_op(
     return QueryOp(
         parent=parent,
         op=lambda col: col._backend.get_latest_release(
-            include_prerelease=include_prerelease
+            include_prerelease=include_prerelease, portable=aqt.is_portable()
         ),
         success=on_success,
     )
