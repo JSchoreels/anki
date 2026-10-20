@@ -57,6 +57,15 @@ qt-misc-unable-to-access-anki-media-folder = Unable to access Anki media folder.
 qt-misc-unexpected-response-code = Unexpected response code: { $val }
 qt-misc-would-you-like-to-download-it = Would you like to download it now?
 qt-misc-downloading-update = Downloading update: { $count }MB/{ $total }MB
+qt-misc-portable-update-download = This downloads a portable archive. After downloading, extract it outside your current “Anki Portable” folder, quit Anki, and move your existing “Anki Portable Data” folder into the new application folder.
+qt-misc-portable-update-ready =
+    The portable update has been downloaded to:
+    { $path }
+
+    1. Extract the archive outside your current “Anki Portable” folder.
+    2. Quit all copies of Anki using this portable data folder.
+    3. Move your existing “Anki Portable Data” folder into the new “Anki Portable” folder, replacing its empty data folder.
+    4. Open Anki from the new folder and confirm your profiles are present before deleting the old application folder.
 qt-misc-your-collection-file-appears-to-be = Your collection file appears to be corrupt. This can happen when the file is copied or moved while Anki is open, or when the collection is stored on a network or cloud drive. If problems persist after restarting your computer, please open an automatic backup from the profile screen.
 qt-misc-your-computers-storage-may-be-full = Your computer's storage may be full. Please delete some unneeded files, then try again.
 qt-misc-your-firewall-or-antivirus-program-is = Your firewall or antivirus program is preventing Anki from creating a connection to itself. Please add an exception for Anki.

@@ -14,7 +14,7 @@ from pathlib import Path
 from anki.collection import GithubRelease, Progress
 from anki.utils import is_mac, is_win
 from aqt.progress import ProgressUpdate
-from aqt.utils import openLink, tr
+from aqt.utils import openFolder, openLink, show_info, tr
 
 
 # ruff: noqa: F401
@@ -183,9 +183,12 @@ def _fix_win_taskbar_pinning() -> None:
 
 
 def download_github_update_and_install(release: GithubRelease) -> None:
-    from aqt import mw
+    from aqt import is_portable, mw
 
-    if release.filename.endswith(".msi"):
+    portable = is_portable()
+    if portable:
+        args = []
+    elif release.filename.endswith(".msi"):
         args = ["msiexec", "/i"]
     elif release.filename.endswith(".dmg"):
         args = ["open"]
@@ -194,6 +197,10 @@ def download_github_update_and_install(release: GithubRelease) -> None:
         return
 
     def on_success(output_path: str) -> None:
+        if portable:
+            openFolder(str(Path(output_path).parent))
+            show_info(tr.qt_misc_portable_update_ready(path=output_path), parent=mw)
+            return
         with contextlib.suppress(ResourceWarning):
             creationflags = 0
             if sys.platform == "win32":

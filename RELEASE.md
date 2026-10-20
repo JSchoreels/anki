@@ -36,6 +36,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 ### User facing changes
 
+- **Update notifications for portable builds.** Portable Anki now offers automatic notifications and Tools → Check for Updates. Accepting downloads the matching portable archive, verifies it, and shows how to retain the existing data folder when replacing the application. Older portable builds need one manual upgrade to gain this flow.
+
 - **Preserve literal comparison characters in searches.** Escape `<`, `>`, or `=` to search for text such as `x\<5` without triggering a numeric field comparison. Numeric comparisons, including equality, and the existing bracket range syntax continue to work; normalizing a search preserves its meaning.
 
 - **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
@@ -76,6 +78,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 - **Updated security dependencies.** This build includes patched HTML sanitization, TLS and ZIP libraries, addressing newly reported CSS URL filtering, TLS handling and archive extraction issues.
 
 ### Technical details
+
+- **Portable update routing:** add an opt-in portable asset selector to the release API, with installer behavior retained by default. Keep verified downloads and cleanup under the current portable data folder, and show replacement instructions without launching an installer or replacing a running app. Cover all six platform/architecture pairs, edition isolation, preferences, native download reuse, and Qt prompt acceptance/cancellation.
 
 - **Mixed RWKV state precision:** quantize card matrices at INT4 and note matrices at INT8, retain f16 shifts and f32 shared state, and reuse the existing state codec for both models. The timing comparison uses the same prepared history in three alternating fresh optimized processes per mode, measuring native replay plus the final durable cache save; it excludes history preparation, calibration and intermediate recovery checkpoints. These timings do not measure accuracy.
 
