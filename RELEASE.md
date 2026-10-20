@@ -36,7 +36,7 @@ repeated here unless they materially affect a fork feature.
 
 - **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
 
-- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now offers an experimental “int4 cards + int8 notes” storage mode for both Legacy and SM40. It reduces card state storage while keeping the shared note state at INT8. INT8 remains the default. Reopen the profile after changing precision to rebuild state from review history.
+- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now defaults to “int4 cards + int8 notes” storage for both Legacy and SM40 when no supported precision choice is saved. It reduces card state storage while keeping the shared note state at INT8. Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
 
 - **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
 
@@ -44,7 +44,7 @@ repeated here unless they materially affect a fork feature.
 
 - **Choose the RWKV model for each profile.** Preferences → Review now offers Legacy and the smaller SM40 model independently of state storage precision. SM40 is the default for new profiles and existing profiles without a saved model choice; explicit Legacy selections are preserved. Reopen the profile after changing models to rebuild its RWKV state from review history.
 
-- **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved and INT8 remains the default pending review; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
+- **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 
 - **Correct dynamic FSRS presets during Deck Options recalculation.** Bulk memory-state updates now use each card's first matching Dynamic Preset Selection rule and its model parameters, retention settings, and history cutoff. Previously, every card used the home-deck preset. Optional rescheduling uses the same matched model; recalculating without rescheduling still preserves intervals and due dates.
 

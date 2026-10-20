@@ -16,9 +16,12 @@ from aqt.utils import tr
 @pytest.mark.parametrize(
     "profile, expected",
     [
-        (None, "int8"),
-        ({}, "int8"),
-        ({"rwkvStatePrecision": "unknown"}, "int8"),
+        (None, "cards_int4_notes_int8"),
+        ({}, "cards_int4_notes_int8"),
+        ({"rwkvStatePrecision": "unknown"}, "cards_int4_notes_int8"),
+        ({"rwkvStatePrecision": None}, "cards_int4_notes_int8"),
+        ({"rwkvStatePrecision": 8}, "cards_int4_notes_int8"),
+        ({"rwkvStatePrecision": "int8"}, "int8"),
         ({"rwkvStatePrecision": "f32"}, "f32"),
         ({"rwkvStatePrecision": "int4"}, "int4"),
         ({"rwkvStatePrecision": "cards_int4_notes_int8"}, "cards_int4_notes_int8"),
@@ -28,7 +31,13 @@ def test_state_precision_for_profile_preserves_supported_choices(profile, expect
     assert state_precision_for_profile(profile) == expected
 
 
-def test_rwkv_preferences_selector_saves_choice_for_next_restart(monkeypatch):
+@pytest.mark.parametrize(
+    "profile, expected_precision",
+    [({}, "cards_int4_notes_int8"), ({"rwkvStatePrecision": "int8"}, "int8")],
+)
+def test_rwkv_preferences_selector_saves_choice_for_next_restart(
+    monkeypatch, profile, expected_precision
+):
     from PyQt6.QtTest import QTest
 
     # Exercise real widgets and the production save handler without an Anki
@@ -38,11 +47,11 @@ def test_rwkv_preferences_selector_saves_choice_for_next_restart(monkeypatch):
     monkeypatch.setattr(tr, "backend", weakref.ref(translations))
     dialog = Preferences.__new__(Preferences)
     QDialog.__init__(dialog)
-    dialog.prof = {"rwkvStatePrecision": "int8"}
+    dialog.prof = profile
     dialog.form = SimpleNamespace(review_options_layout=QVBoxLayout(dialog))
     monkeypatch.setattr(dialog, "update_network", lambda: None)
     dialog.setup_rwkv_precision()
-    assert dialog.rwkv_precision.currentData() == "int8"
+    assert dialog.rwkv_precision.currentData() == expected_precision
     assert dialog.rwkv_model.currentData() == "sm40"
     dialog.show()
     application.processEvents()
