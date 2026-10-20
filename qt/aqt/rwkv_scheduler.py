@@ -8098,6 +8098,7 @@ def rwkv_card_info_rows(
     card: object,
     fallback_source: str,
     include_after_review: bool = True,
+    request_retry: Callable[[], None] | None = None,
 ) -> list[tuple[str, str]]:
     card_id = _card_id(card)
     if not rwkv_review_active(reviewer, card):
@@ -8122,6 +8123,7 @@ def rwkv_card_info_rows(
         card,
         fallback_source=fallback_source,
         _candidate=candidate,
+        request_retry=request_retry,
     )
     if queried_diagnostics is None:
         diagnostics = RwkvReviewerDiagnostics(
@@ -8149,6 +8151,7 @@ def rwkv_card_info_rows(
                 reviewer,
                 card,
                 _candidate=candidate,
+                request_retry=request_retry,
             )
         )
     return rows
@@ -8279,6 +8282,7 @@ def rwkv_card_info_after_review_rows(
     card: object,
     *,
     _candidate: RwkvReviewCandidate | None = None,
+    request_retry: Callable[[], None] | None = None,
 ) -> list[tuple[str, str]]:
     try:
         backend = _reviewer_backend
@@ -8292,6 +8296,8 @@ def rwkv_card_info_after_review_rows(
             logger.debug(
                 "RWKV card info after-review prediction skipped: warm-up pending"
             )
+            if request_retry is not None:
+                request_retry()
             return _unavailable_rwkv_card_info_after_review_rows()
 
         card_id = _card_id(candidate.card)
@@ -8341,6 +8347,7 @@ def rwkv_card_info_after_review_rows(
             backend=backend,
             answer_inputs=answer_inputs,
             horizon_inputs=horizon_inputs,
+            request_retry=request_retry,
         )
         if score_batches is None or len(score_batches) != len(labeled_eases):
             return _unavailable_rwkv_card_info_after_review_rows()
@@ -8382,6 +8389,7 @@ def _rwkv_card_info_after_review_score_batches(
     backend: RwkvReviewerBackend,
     answer_inputs: Sequence[RwkvReviewInput],
     horizon_inputs: Sequence[tuple[int, RwkvReviewInput]],
+    request_retry: Callable[[], None] | None = None,
 ) -> Sequence[Sequence[tuple[int, float]]] | None:
     with _try_reviewer_backend_prediction_access(
         expected_backend=backend,
@@ -8391,6 +8399,8 @@ def _rwkv_card_info_after_review_score_batches(
                 "RWKV card info after-review prediction skipped: backend busy "
                 "or state changed"
             )
+            if request_retry is not None:
+                request_retry()
             return None
         predict_from_warm_up = getattr(
             current_backend,
@@ -8411,6 +8421,8 @@ def _rwkv_card_info_after_review_score_batches(
                     current_backend,
                     expected_state_generation=state_generation,
                 ) or not _reviewer_backend_warmed_up(reviewer):
+                    if request_retry is not None:
+                        request_retry()
                     return None
                 return score_batches
 
@@ -8436,6 +8448,8 @@ def _rwkv_card_info_after_review_score_batches(
             current_backend,
             expected_state_generation=state_generation,
         ) or not _reviewer_backend_warmed_up(reviewer):
+            if request_retry is not None:
+                request_retry()
             return None
         return score_batches
 
@@ -9375,6 +9389,7 @@ def _queried_card_info_diagnostics(
     *,
     fallback_source: str,
     _candidate: RwkvReviewCandidate | None = None,
+    request_retry: Callable[[], None] | None = None,
 ) -> RwkvReviewerDiagnostics | None:
     backend = _reviewer_backend
     if backend is None:
@@ -9388,17 +9403,23 @@ def _queried_card_info_diagnostics(
         review_enabled = rwkv_review_active(reviewer, card)
         if review_enabled and not _prepare_reviewer_backend_for_card_info(reviewer):
             logger.debug("RWKV card info prediction skipped: warm-up pending")
+            if request_retry is not None:
+                request_retry()
             return None
         state_token = _capture_reviewer_backend_prediction_state_token(
             reviewer,
             expected_backend=backend,
         )
         if state_token is None:
+            if request_retry is not None:
+                request_retry()
             return None
         with _try_reviewer_backend_prediction_access(
             expected_state_token=state_token,
         ) as current_backend:
             if current_backend is None:
+                if request_retry is not None:
+                    request_retry()
                 return None
             candidate = _candidate or _card_info_review_candidate(reviewer, card)
             review_enabled = rwkv_review_active(candidate.reviewer, candidate.card)
@@ -9436,6 +9457,8 @@ def _queried_card_info_diagnostics(
                     current_backend,
                     expected_state_token=state_token,
                 ):
+                    if request_retry is not None:
+                        request_retry()
                     return None
                 _set_rwkv_card_info_score(
                     reviewer,

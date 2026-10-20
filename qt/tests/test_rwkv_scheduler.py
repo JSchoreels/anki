@@ -20691,12 +20691,14 @@ def test_card_info_does_not_reinstall_score_after_answer_race(
         *,
         fallback_source: str,
         _candidate: RwkvReviewCandidate | None = None,
+        request_retry=None,
     ) -> rwkv_scheduler.RwkvReviewerDiagnostics | None:
         diagnostics = original(
             query_reviewer,
             query_card,
             fallback_source=fallback_source,
             _candidate=_candidate,
+            request_retry=request_retry,
         )
         record_reviewer_answer(reviewer, card, ease=3)
         return diagnostics

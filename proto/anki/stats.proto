@@ -133,6 +133,8 @@ message CardStatsResponse {
   optional float desired_retention = 23;
   repeated float fsrs_params = 24;
   repeated CardInfoRow extra_rows = 25;
+  // Desktop diagnostics may be temporarily busy or waiting for state recovery.
+  bool rwkv_retry_pending = 26;
 }
 
 message GraphsRequest {

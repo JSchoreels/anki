@@ -1372,10 +1372,16 @@ def card_stats() -> bytes:
     rows: list[CardInfoRow] = []
     if card is None:
         card = aqt.mw.col.get_card(CardId(response.card_id))
+
+    def request_rwkv_retry() -> None:
+        assert response is not None
+        response.rwkv_retry_pending = True
+
     for label, value in aqt.rwkv_scheduler.rwkv_card_info_rows(
         reviewer=reviewer,
         card=card,
         fallback_source=_card_stats_fallback_retrievability_source(response),
+        request_retry=request_rwkv_retry,
     ):
         rows.append(CardInfoRow(label=label, value=value))
 

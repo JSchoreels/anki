@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import socket
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -629,8 +630,12 @@ class TestCardStats:
             },
         ],
     )
+    @pytest.mark.parametrize("busy", [False, True])
     def test_card_info_includes_rwkv_diagnostics_without_reviewer_cache(
-        self, monkeypatch: pytest.MonkeyPatch, deck_config: dict[str, object]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        deck_config: dict[str, object],
+        busy: bool,
     ) -> None:
         import aqt
         from anki.stats_pb2 import CardStatsResponse
@@ -695,6 +700,17 @@ class TestCardStats:
         previous = set_reviewer_backend(Backend())
         try:
             monkeypatch.setattr(aqt, "mw", mw)
+            if busy:
+
+                @contextmanager
+                def busy_access(**_kwargs):
+                    yield None
+
+                monkeypatch.setattr(
+                    aqt.rwkv_scheduler,
+                    "_try_reviewer_backend_prediction_access",
+                    busy_access,
+                )
             with app.test_request_context(data=b""):
                 raw_output = card_stats()
         finally:
@@ -703,9 +719,10 @@ class TestCardStats:
         output = CardStatsResponse()
         output.ParseFromString(raw_output)
 
+        assert output.rwkv_retry_pending is busy
         assert [(row.label, row.value) for row in output.extra_rows] == [
-            ("RWKV computed R", "61%"),
-            ("Retrievability source", "RWKV"),
+            ("RWKV computed R", "Unavailable" if busy else "61%"),
+            ("Retrievability source", "SM2 (RWKV unavailable)" if busy else "RWKV"),
             *NEXT_S90_UNAVAILABLE_ROWS,
             *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
         ]
@@ -753,6 +770,7 @@ class TestCardStats:
         output = CardStatsResponse()
         output.ParseFromString(raw_output)
 
+        assert not output.rwkv_retry_pending
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "Unavailable"),
             ("Retrievability source", "FSRS (RWKV backend unavailable)"),
