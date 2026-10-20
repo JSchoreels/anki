@@ -76,7 +76,7 @@ def main() -> None:
     reference_runs = list(reference["runs"])
     if earlier := reference.get("reference_result"):
         reference_runs = json.loads(Path(earlier).read_text())["runs"] + reference_runs
-    model = root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
+    model = root / "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin"
     metadata: dict[str, Any] = {
         "provenance": provenance(root, output),
         "input_sha256": sha256(input_path),

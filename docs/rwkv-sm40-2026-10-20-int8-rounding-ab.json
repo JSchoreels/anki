@@ -1,0 +1,1073 @@
+{
+    "metadata": {
+        "input_sha256": "50d662f5c33e7a1e3b62fbfe105e504d4335c0f9aa2c8f1d146f28ba717d10b0",
+        "source_results_sha256": {
+            "baseline": "7138369b44af13e9f82c8d23e101efaa0485dd7e26b0a6556c6bd80c6991ae4e",
+            "fused": "5ad778419758723c70a3b82c878e9d6a690a361b0c8dc453c0d91ed43d3f8cba"
+        },
+        "executable_sha256": {
+            "baseline": {
+                "legacy": "1490d112d94db2374ba14d478b47b209dd2d3955d585f7c9ad29052fbb78ff6d",
+                "sm40": "960ead27bbff4cd96133545a477a1e746a6af61a7b2ff0cb7f12990dd1c6fe3d"
+            },
+            "fused": {
+                "legacy": "8e2c87b8adaa9310f50e9862768a4816d3c0b7d2212acd3320418da13b499360",
+                "sm40": "d2dd69a1907f8779c0b1ae2514906535053c67c2b6e5e9fafd40c3577ec11c53"
+            }
+        },
+        "recipe_sha256": "1ab4b58574e09bcc9d75cbfc0eec05c2c5bf3ecb3e7a56a2b973fb2a715eaf1d",
+        "rounds": 3
+    },
+    "runs": {
+        "baseline_legacy": [
+            {
+                "mode": "state_int8",
+                "round": 0,
+                "background_cpu_percent": 24.4,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8617984,
+                        "sampled_peak_rss_bytes": 198000640,
+                        "allocator_release_seconds": 2.8208e-05,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.029008999999999997,
+                        "user_cpu_seconds": 0.08174300000000001,
+                        "wall_seconds": 0.110833917,
+                        "end_rss_bytes": 198000640,
+                        "cpu_seconds": 0.110752
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 198000640,
+                        "sampled_peak_rss_bytes": 229982208,
+                        "allocator_release_seconds": 2.709e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0036320000000000033,
+                        "user_cpu_seconds": 0.00834,
+                        "wall_seconds": 0.011975666,
+                        "end_rss_bytes": 229982208,
+                        "cpu_seconds": 0.011972000000000003
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 229982208,
+                        "sampled_peak_rss_bytes": 1441824768,
+                        "allocator_release_seconds": 3.75e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 2.215696,
+                        "user_cpu_seconds": 62.806366,
+                        "wall_seconds": 10.327980416,
+                        "end_rss_bytes": 1441824768,
+                        "cpu_seconds": 65.02206199999999
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 1441824768,
+                        "sampled_peak_rss_bytes": 1443463168,
+                        "allocator_release_seconds": 3.75e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.15829700000000013,
+                        "user_cpu_seconds": 0.05873199999999912,
+                        "wall_seconds": 0.336447459,
+                        "end_rss_bytes": 1443463168,
+                        "cpu_seconds": 0.21702899999999925
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 215455455,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 1533356,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 69698,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 135756166,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 679614,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "a5d0e719d8267f82dbff93c6e4f685e68f0bc0cf49ce1b927f2313c324e457e8"
+                },
+                "reconstruction_total_seconds": 10.787237458000002,
+                "cache_file_bytes": 371589120
+            },
+            {
+                "mode": "state_int8",
+                "round": 1,
+                "background_cpu_percent": 22.8,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8617984,
+                        "sampled_peak_rss_bytes": 198017024,
+                        "allocator_release_seconds": 1.1875e-05,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.029287999999999998,
+                        "user_cpu_seconds": 0.083938,
+                        "wall_seconds": 0.1154315,
+                        "end_rss_bytes": 198017024,
+                        "cpu_seconds": 0.113226
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 198017024,
+                        "sampled_peak_rss_bytes": 229982208,
+                        "allocator_release_seconds": 2.417e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0031820000000000043,
+                        "user_cpu_seconds": 0.008306000000000008,
+                        "wall_seconds": 0.01148625,
+                        "end_rss_bytes": 229982208,
+                        "cpu_seconds": 0.011488000000000012
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 229982208,
+                        "sampled_peak_rss_bytes": 1661452288,
+                        "allocator_release_seconds": 4.208e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 2.3278610000000004,
+                        "user_cpu_seconds": 63.760982,
+                        "wall_seconds": 10.634241167,
+                        "end_rss_bytes": 1661452288,
+                        "cpu_seconds": 66.088843
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 1661452288,
+                        "sampled_peak_rss_bytes": 1663107072,
+                        "allocator_release_seconds": 3.25e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.15582600000000024,
+                        "user_cpu_seconds": 0.05980699999999928,
+                        "wall_seconds": 0.342483958,
+                        "end_rss_bytes": 1663107072,
+                        "cpu_seconds": 0.21563299999999952
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 215455455,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 1533356,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 69698,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 135756166,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 679614,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "a5d0e719d8267f82dbff93c6e4f685e68f0bc0cf49ce1b927f2313c324e457e8"
+                },
+                "reconstruction_total_seconds": 11.103642875,
+                "cache_file_bytes": 371589120
+            },
+            {
+                "mode": "state_int8",
+                "round": 2,
+                "background_cpu_percent": 21.1,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8617984,
+                        "sampled_peak_rss_bytes": 198017024,
+                        "allocator_release_seconds": 7.75e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.029611,
+                        "user_cpu_seconds": 0.082499,
+                        "wall_seconds": 0.112172542,
+                        "end_rss_bytes": 198017024,
+                        "cpu_seconds": 0.11211
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 198017024,
+                        "sampled_peak_rss_bytes": 230064128,
+                        "allocator_release_seconds": 2.541e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0035290000000000044,
+                        "user_cpu_seconds": 0.008624000000000007,
+                        "wall_seconds": 0.012227208,
+                        "end_rss_bytes": 230064128,
+                        "cpu_seconds": 0.012153000000000011
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 230064128,
+                        "sampled_peak_rss_bytes": 1510981632,
+                        "allocator_release_seconds": 3.792e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 2.315823,
+                        "user_cpu_seconds": 66.971353,
+                        "wall_seconds": 11.076296334,
+                        "end_rss_bytes": 1510981632,
+                        "cpu_seconds": 69.28717599999999
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 1510981632,
+                        "sampled_peak_rss_bytes": 1512685568,
+                        "allocator_release_seconds": 2.75e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.15487899999999977,
+                        "user_cpu_seconds": 0.06025100000000805,
+                        "wall_seconds": 0.336616416,
+                        "end_rss_bytes": 1512685568,
+                        "cpu_seconds": 0.21513000000000781
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 215455455,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 1533356,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 69698,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 135756166,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 679614,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "a5d0e719d8267f82dbff93c6e4f685e68f0bc0cf49ce1b927f2313c324e457e8"
+                },
+                "reconstruction_total_seconds": 11.5373125,
+                "cache_file_bytes": 371589120
+            }
+        ],
+        "baseline_sm40": [
+            {
+                "mode": "state_int8",
+                "round": 0,
+                "background_cpu_percent": 20.8,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8634368,
+                        "sampled_peak_rss_bytes": 198066176,
+                        "allocator_release_seconds": 1.575e-05,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.024342999999999997,
+                        "user_cpu_seconds": 0.08300500000000001,
+                        "wall_seconds": 0.108300458,
+                        "end_rss_bytes": 198066176,
+                        "cpu_seconds": 0.107348
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 198066176,
+                        "sampled_peak_rss_bytes": 201441280,
+                        "allocator_release_seconds": 1.166e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.000794000000000003,
+                        "user_cpu_seconds": 0.0011740000000000084,
+                        "wall_seconds": 0.001967375,
+                        "end_rss_bytes": 201441280,
+                        "cpu_seconds": 0.0019680000000000114
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 201441280,
+                        "sampled_peak_rss_bytes": 844464128,
+                        "allocator_release_seconds": 3.209e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 1.8078859999999999,
+                        "user_cpu_seconds": 14.938538,
+                        "wall_seconds": 3.426123375,
+                        "end_rss_bytes": 844464128,
+                        "cpu_seconds": 16.746423999999998
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 844480512,
+                        "sampled_peak_rss_bytes": 846266368,
+                        "allocator_release_seconds": 3.334e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.02990500000000007,
+                        "user_cpu_seconds": 0.03783999999999921,
+                        "wall_seconds": 0.103024709,
+                        "end_rss_bytes": 846266368,
+                        "cpu_seconds": 0.06774499999999928
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 41749299,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 395692,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 13110,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 20687534,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 170430,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "d3f2e0abb99ca089b944f0c2fdb10b876bd75f7cd9d8d69d0af42b44b78f47ba"
+                },
+                "reconstruction_total_seconds": 3.639415917,
+                "cache_file_bytes": 67436544
+            },
+            {
+                "mode": "state_int8",
+                "round": 1,
+                "background_cpu_percent": 36.9,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8650752,
+                        "sampled_peak_rss_bytes": 198082560,
+                        "allocator_release_seconds": 6.166e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.026807,
+                        "user_cpu_seconds": 0.09400599999999999,
+                        "wall_seconds": 0.120838083,
+                        "end_rss_bytes": 198082560,
+                        "cpu_seconds": 0.12081299999999999
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 198082560,
+                        "sampled_peak_rss_bytes": 201310208,
+                        "allocator_release_seconds": 1e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0005450000000000003,
+                        "user_cpu_seconds": 0.0011769999999999975,
+                        "wall_seconds": 0.001721458,
+                        "end_rss_bytes": 201310208,
+                        "cpu_seconds": 0.0017219999999999978
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 201310208,
+                        "sampled_peak_rss_bytes": 868089856,
+                        "allocator_release_seconds": 3.25e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 1.845983,
+                        "user_cpu_seconds": 14.933785,
+                        "wall_seconds": 3.318469292,
+                        "end_rss_bytes": 868089856,
+                        "cpu_seconds": 16.779768
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 868106240,
+                        "sampled_peak_rss_bytes": 869957632,
+                        "allocator_release_seconds": 3.625e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.028861000000000026,
+                        "user_cpu_seconds": 0.037216000000000804,
+                        "wall_seconds": 0.094002333,
+                        "end_rss_bytes": 869957632,
+                        "cpu_seconds": 0.06607700000000083
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 41749299,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 395692,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 13110,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 20687534,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 170430,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "d3f2e0abb99ca089b944f0c2fdb10b876bd75f7cd9d8d69d0af42b44b78f47ba"
+                },
+                "reconstruction_total_seconds": 3.535031166,
+                "cache_file_bytes": 67436544
+            },
+            {
+                "mode": "state_int8",
+                "round": 2,
+                "background_cpu_percent": 21.5,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8634368,
+                        "sampled_peak_rss_bytes": 198066176,
+                        "allocator_release_seconds": 0.000220125,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.026187000000000002,
+                        "user_cpu_seconds": 0.08232400000000001,
+                        "wall_seconds": 0.110754541,
+                        "end_rss_bytes": 198066176,
+                        "cpu_seconds": 0.10851100000000001
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 198066176,
+                        "sampled_peak_rss_bytes": 201392128,
+                        "allocator_release_seconds": 2.083e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0017639999999999947,
+                        "user_cpu_seconds": 0.0012899999999999995,
+                        "wall_seconds": 0.005587833,
+                        "end_rss_bytes": 201392128,
+                        "cpu_seconds": 0.0030539999999999942
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 201392128,
+                        "sampled_peak_rss_bytes": 800260096,
+                        "allocator_release_seconds": 3.375e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 1.789704,
+                        "user_cpu_seconds": 14.864087000000001,
+                        "wall_seconds": 3.464445583,
+                        "end_rss_bytes": 800260096,
+                        "cpu_seconds": 16.653791000000002
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 800276480,
+                        "sampled_peak_rss_bytes": 802095104,
+                        "allocator_release_seconds": 3.5e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.03117800000000015,
+                        "user_cpu_seconds": 0.037695000000001144,
+                        "wall_seconds": 0.107523708,
+                        "end_rss_bytes": 802095104,
+                        "cpu_seconds": 0.0688730000000013
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 41749299,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 395692,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 13110,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 20687534,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 170430,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "d3f2e0abb99ca089b944f0c2fdb10b876bd75f7cd9d8d69d0af42b44b78f47ba"
+                },
+                "reconstruction_total_seconds": 3.6883116649999996,
+                "cache_file_bytes": 67436544
+            }
+        ],
+        "fused_legacy": [
+            {
+                "mode": "state_int8",
+                "round": 0,
+                "background_cpu_percent": 21.9,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8536064,
+                        "sampled_peak_rss_bytes": 197951488,
+                        "allocator_release_seconds": 4.75e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.029360999999999998,
+                        "user_cpu_seconds": 0.08440299999999999,
+                        "wall_seconds": 0.113769042,
+                        "end_rss_bytes": 197951488,
+                        "cpu_seconds": 0.11376399999999999
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 197951488,
+                        "sampled_peak_rss_bytes": 229883904,
+                        "allocator_release_seconds": 2.167e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.003283000000000001,
+                        "user_cpu_seconds": 0.008360000000000006,
+                        "wall_seconds": 0.011642625,
+                        "end_rss_bytes": 229883904,
+                        "cpu_seconds": 0.011643000000000008
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 229883904,
+                        "sampled_peak_rss_bytes": 1700986880,
+                        "allocator_release_seconds": 4.584e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 2.213828,
+                        "user_cpu_seconds": 63.711687,
+                        "wall_seconds": 10.668705417,
+                        "end_rss_bytes": 1700986880,
+                        "cpu_seconds": 65.925515
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 1701003264,
+                        "sampled_peak_rss_bytes": 1702756352,
+                        "allocator_release_seconds": 3.791e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.15655099999999988,
+                        "user_cpu_seconds": 0.06057799999999958,
+                        "wall_seconds": 0.380885541,
+                        "end_rss_bytes": 1702756352,
+                        "cpu_seconds": 0.21712899999999946
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 215455455,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 1533356,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 69698,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 135756166,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 679614,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "a5d0e719d8267f82dbff93c6e4f685e68f0bc0cf49ce1b927f2313c324e457e8"
+                },
+                "reconstruction_total_seconds": 11.175002625,
+                "cache_file_bytes": 371589120
+            },
+            {
+                "mode": "state_int8",
+                "round": 1,
+                "background_cpu_percent": 22.1,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8536064,
+                        "sampled_peak_rss_bytes": 197951488,
+                        "allocator_release_seconds": 4.75e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.024437,
+                        "user_cpu_seconds": 0.08232400000000001,
+                        "wall_seconds": 0.106758042,
+                        "end_rss_bytes": 197951488,
+                        "cpu_seconds": 0.10676100000000001
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 197951488,
+                        "sampled_peak_rss_bytes": 229933056,
+                        "allocator_release_seconds": 2.458e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0031759999999999983,
+                        "user_cpu_seconds": 0.008323000000000011,
+                        "wall_seconds": 0.01149875,
+                        "end_rss_bytes": 229933056,
+                        "cpu_seconds": 0.01149900000000001
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 229933056,
+                        "sampled_peak_rss_bytes": 1723285504,
+                        "allocator_release_seconds": 4.166e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 2.2616460000000003,
+                        "user_cpu_seconds": 63.957623,
+                        "wall_seconds": 10.564002709,
+                        "end_rss_bytes": 1723285504,
+                        "cpu_seconds": 66.219269
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 1723301888,
+                        "sampled_peak_rss_bytes": 1725022208,
+                        "allocator_release_seconds": 3.209e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.15639800000000026,
+                        "user_cpu_seconds": 0.05960499999999058,
+                        "wall_seconds": 0.387348125,
+                        "end_rss_bytes": 1725022208,
+                        "cpu_seconds": 0.21600299999999084
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 215455455,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 1533356,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 69698,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 135756166,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 679614,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "a5d0e719d8267f82dbff93c6e4f685e68f0bc0cf49ce1b927f2313c324e457e8"
+                },
+                "reconstruction_total_seconds": 11.069607626,
+                "cache_file_bytes": 371589120
+            },
+            {
+                "mode": "state_int8",
+                "round": 2,
+                "background_cpu_percent": 0.0,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8536064,
+                        "sampled_peak_rss_bytes": 197935104,
+                        "allocator_release_seconds": 4.25e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.028007999999999998,
+                        "user_cpu_seconds": 0.08157600000000001,
+                        "wall_seconds": 0.1095815,
+                        "end_rss_bytes": 197935104,
+                        "cpu_seconds": 0.10958400000000001
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 197935104,
+                        "sampled_peak_rss_bytes": 229933056,
+                        "allocator_release_seconds": 4e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0032939999999999983,
+                        "user_cpu_seconds": 0.008345000000000005,
+                        "wall_seconds": 0.011637458,
+                        "end_rss_bytes": 229933056,
+                        "cpu_seconds": 0.011639000000000004
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 229933056,
+                        "sampled_peak_rss_bytes": 1715503104,
+                        "allocator_release_seconds": 5e-06,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 2.423223,
+                        "user_cpu_seconds": 70.68491399999999,
+                        "wall_seconds": 11.592002292,
+                        "end_rss_bytes": 1715503104,
+                        "cpu_seconds": 73.108137
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 1715519488,
+                        "sampled_peak_rss_bytes": 1717239808,
+                        "allocator_release_seconds": 3.666e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.1607470000000002,
+                        "user_cpu_seconds": 0.05984200000000328,
+                        "wall_seconds": 0.384259125,
+                        "end_rss_bytes": 1717239808,
+                        "cpu_seconds": 0.22058900000000348
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 215455455,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 1533356,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 69698,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 135756166,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 679614,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "a5d0e719d8267f82dbff93c6e4f685e68f0bc0cf49ce1b927f2313c324e457e8"
+                },
+                "reconstruction_total_seconds": 12.097480375,
+                "cache_file_bytes": 371589120
+            }
+        ],
+        "fused_sm40": [
+            {
+                "mode": "state_int8",
+                "round": 0,
+                "background_cpu_percent": 21.4,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8552448,
+                        "sampled_peak_rss_bytes": 197984256,
+                        "allocator_release_seconds": 7.792e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.030593000000000002,
+                        "user_cpu_seconds": 0.085955,
+                        "wall_seconds": 0.116707291,
+                        "end_rss_bytes": 197984256,
+                        "cpu_seconds": 0.11654800000000001
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 197984256,
+                        "sampled_peak_rss_bytes": 201211904,
+                        "allocator_release_seconds": 3.708e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0004909999999999984,
+                        "user_cpu_seconds": 0.0012069999999999997,
+                        "wall_seconds": 0.00169675,
+                        "end_rss_bytes": 201211904,
+                        "cpu_seconds": 0.0016979999999999981
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 201211904,
+                        "sampled_peak_rss_bytes": 733904896,
+                        "allocator_release_seconds": 1.2042e-05,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 1.6390789999999997,
+                        "user_cpu_seconds": 14.969244,
+                        "wall_seconds": 3.428725917,
+                        "end_rss_bytes": 733904896,
+                        "cpu_seconds": 16.608323
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 733904896,
+                        "sampled_peak_rss_bytes": 735592448,
+                        "allocator_release_seconds": 3e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.02878399999999992,
+                        "user_cpu_seconds": 0.037205000000000155,
+                        "wall_seconds": 0.100430417,
+                        "end_rss_bytes": 735592448,
+                        "cpu_seconds": 0.06598900000000008
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 41749299,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 395692,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 13110,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 20687534,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 170430,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "d3f2e0abb99ca089b944f0c2fdb10b876bd75f7cd9d8d69d0af42b44b78f47ba"
+                },
+                "reconstruction_total_seconds": 3.647560375,
+                "cache_file_bytes": 67436544
+            },
+            {
+                "mode": "state_int8",
+                "round": 1,
+                "background_cpu_percent": 21.5,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8536064,
+                        "sampled_peak_rss_bytes": 197984256,
+                        "allocator_release_seconds": 5.541e-06,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.02428,
+                        "user_cpu_seconds": 0.08749499999999999,
+                        "wall_seconds": 0.111804875,
+                        "end_rss_bytes": 197984256,
+                        "cpu_seconds": 0.11177499999999999
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 197984256,
+                        "sampled_peak_rss_bytes": 201195520,
+                        "allocator_release_seconds": 1.417e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.0006460000000000007,
+                        "user_cpu_seconds": 0.001244000000000009,
+                        "wall_seconds": 0.001889208,
+                        "end_rss_bytes": 201195520,
+                        "cpu_seconds": 0.0018900000000000097
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 201195520,
+                        "sampled_peak_rss_bytes": 648167424,
+                        "allocator_release_seconds": 1.1792e-05,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 1.664278,
+                        "user_cpu_seconds": 14.985443,
+                        "wall_seconds": 3.436268459,
+                        "end_rss_bytes": 648167424,
+                        "cpu_seconds": 16.649721
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 648167424,
+                        "sampled_peak_rss_bytes": 649904128,
+                        "allocator_release_seconds": 3.584e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.02859099999999981,
+                        "user_cpu_seconds": 0.037046000000000134,
+                        "wall_seconds": 0.103866417,
+                        "end_rss_bytes": 649904128,
+                        "cpu_seconds": 0.06563699999999995
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 41749299,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 395692,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 13110,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 20687534,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 170430,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "d3f2e0abb99ca089b944f0c2fdb10b876bd75f7cd9d8d69d0af42b44b78f47ba"
+                },
+                "reconstruction_total_seconds": 3.6538289589999997,
+                "cache_file_bytes": 67436544
+            },
+            {
+                "mode": "state_int8",
+                "round": 2,
+                "background_cpu_percent": 19.6,
+                "phases": {
+                    "input_preparation": {
+                        "start_rss_bytes": 8552448,
+                        "sampled_peak_rss_bytes": 197984256,
+                        "allocator_release_seconds": 0.000267334,
+                        "kind": "end",
+                        "phase": "input_preparation",
+                        "system_cpu_seconds": 0.030465,
+                        "user_cpu_seconds": 0.08545900000000001,
+                        "wall_seconds": 0.117908625,
+                        "end_rss_bytes": 197984256,
+                        "cpu_seconds": 0.115924
+                    },
+                    "model_load": {
+                        "start_rss_bytes": 197984256,
+                        "sampled_peak_rss_bytes": 201179136,
+                        "allocator_release_seconds": 2.209e-06,
+                        "kind": "end",
+                        "phase": "model_load",
+                        "system_cpu_seconds": 0.001348000000000002,
+                        "user_cpu_seconds": 0.0012849999999999945,
+                        "wall_seconds": 0.004477834,
+                        "end_rss_bytes": 201179136,
+                        "cpu_seconds": 0.0026329999999999965
+                    },
+                    "state_only_rebuild": {
+                        "start_rss_bytes": 201179136,
+                        "sampled_peak_rss_bytes": 637943808,
+                        "allocator_release_seconds": 2.8458e-05,
+                        "kind": "end",
+                        "phase": "state_only_rebuild",
+                        "system_cpu_seconds": 1.736404,
+                        "user_cpu_seconds": 14.899792,
+                        "wall_seconds": 3.330504041,
+                        "end_rss_bytes": 637943808,
+                        "cpu_seconds": 16.636195999999998
+                    },
+                    "cache_save": {
+                        "start_rss_bytes": 637943808,
+                        "sampled_peak_rss_bytes": 639713280,
+                        "allocator_release_seconds": 4.208e-06,
+                        "kind": "end",
+                        "phase": "cache_save",
+                        "system_cpu_seconds": 0.03737400000000024,
+                        "user_cpu_seconds": 0.0419810000000016,
+                        "wall_seconds": 0.109331458,
+                        "end_rss_bytes": 639713280,
+                        "cpu_seconds": 0.07935500000000184
+                    }
+                },
+                "summary": {
+                    "kind": "summary",
+                    "mode": "state_int8",
+                    "purpose": "cache_save",
+                    "scopes": {
+                        "card": {
+                            "serialized_bytes": 41749299,
+                            "states": 13977
+                        },
+                        "deck": {
+                            "serialized_bytes": 395692,
+                            "states": 22
+                        },
+                        "global": {
+                            "serialized_bytes": 13110,
+                            "states": 1
+                        },
+                        "note": {
+                            "serialized_bytes": 20687534,
+                            "states": 13202
+                        },
+                        "preset": {
+                            "serialized_bytes": 170430,
+                            "states": 13
+                        }
+                    },
+                    "state_blake3": "d3f2e0abb99ca089b944f0c2fdb10b876bd75f7cd9d8d69d0af42b44b78f47ba"
+                },
+                "reconstruction_total_seconds": 3.5622219580000003,
+                "cache_file_bytes": 67436544
+            }
+        ]
+    },
+    "medians": {
+        "baseline_legacy": {
+            "total_seconds": 11.103642875,
+            "replay_seconds": 10.634241167,
+            "replay_cpu_seconds": 66.088843
+        },
+        "baseline_sm40": {
+            "total_seconds": 3.639415917,
+            "replay_seconds": 3.426123375,
+            "replay_cpu_seconds": 16.746423999999998
+        },
+        "fused_legacy": {
+            "total_seconds": 11.175002625,
+            "replay_seconds": 10.668705417,
+            "replay_cpu_seconds": 66.219269
+        },
+        "fused_sm40": {
+            "total_seconds": 3.647560375,
+            "replay_seconds": 3.428725917,
+            "replay_cpu_seconds": 16.636195999999998
+        }
+    }
+}

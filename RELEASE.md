@@ -36,6 +36,16 @@ repeated here unless they materially affect a fork feature.
 
 - **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
 
+- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now defaults to “int4 cards + int8 notes” storage for both Legacy and SM40 when no supported precision choice is saved. It reduces card state storage while keeping the shared note state at INT8. Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
+
+- **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
+
+- **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.
+
+- **Choose the RWKV model for each profile.** Preferences → Review now offers Legacy and the smaller SM40 model independently of state storage precision. SM40 is the default for new profiles and existing profiles without a saved model choice; explicit Legacy selections are preserved. Reopen the profile after changing models to rebuild its RWKV state from review history.
+
+- **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
+
 - **Correct dynamic FSRS presets during Deck Options recalculation.** Bulk memory-state updates now use each card's first matching Dynamic Preset Selection rule and its model parameters, retention settings, and history cutoff. Previously, every card used the home-deck preset. Optional rescheduling uses the same matched model; recalculating without rescheduling still preserves intervals and due dates.
 
 - **Choose before a filtered deck needs a full RWKV state rebuild.** Building or rebuilding a filtered deck that needs RWKV scores when the state is not ready (for example, with no cache after cancelling the startup prompt) now asks first: build the RWKV state with a progress window and then the deck, build the deck now in FSRS order when RWKV is used only for sorting, or cancel. Before, Anki silently replayed the review history inside "Processing..." for minutes and looked frozen. After you cancel the startup prompt or choose FSRS order, Anki also stops starting the full rebuild on its own for the rest of the session (after deck changes, leaving the reviewer or opening a deck) until you build the state.
@@ -62,6 +72,12 @@ repeated here unless they materially affect a fork feature.
 - **Updated HTML sanitization dependency.** This build includes the patched Ammonia release for CSS URL escaping and SVG animation filtering.
 
 ### Technical details
+
+- Route both Deck Options state-cache endpoints through state-only preparation. Move historical cache clearing, FSRS prediction/fold rebuilding and RWKV calibration replay into the dedicated preparation action. Keep the synchronous RWKV-only calibration APIs unchanged and cover separate request routing, failure handling, cache preservation and browser interaction.
+
+- Align the desktop RWKV store reader with native schema 5. Add native-to-desktop checkpoint integration coverage for Legacy and SM40, including metadata, parent chains, orphan pruning and fresh-runtime prediction restoration.
+
+- Port the 331,511-parameter SM40 model to the native scalar, batched and bulk runtimes, including its interleaved layers, power-mixture curve, one-layer note state and exported f32/int8 weight containers. Compile both specialized native architectures from shared engine source, dispatch per profile, tag cache and undo state by model, and verify both published reference users plus matched reconstruction, calibration and UM+ measurements. The Cargo feature only selects the primary offline benchmark architecture; desktop builds support both models. The [dual-model follow-up](docs/rwkv-dual-model-2026-10-20.MD) confirms bit-identical full-history predictions for all four model/precision combinations. See [the SM40 report](docs/rwkv-sm40-2026-10-20.MD) for definitions, limits and provenance.
 
 - **Deck Options FSRS routing:** resolve affected non-new cards in a batch before writes, then group them by the resolved preset for the existing memory-state replay and rescheduler. Preserve home-deck interval/fuzz limits, unmatched-card retention overrides, disable-FSRS behavior, transaction rollback, and undo/redo. Regression coverage mixes FSRS-6 and FSRS-7 overlays with overlapping interval rules and a home-deck fallback.
 

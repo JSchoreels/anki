@@ -219,9 +219,9 @@ _RWKV_CALIBRATION_EPOCH_KEYS = (
     "snapshotSegmentId",
     "snapshotHistoryHash",
 )
-_EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
+_EMBEDDED_RWKV_MODEL_FILENAME = "weights.f32.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 12
+_RWKV_STATE_CACHE_VERSION = 13
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 5
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
@@ -236,7 +236,7 @@ _RWKV_STATE_CACHE_STORE_TEMP_FILE = ".state-v12-building.sqlite3"
 _RWKV_STATE_CACHE_STORE_COMPACT_FILE = ".state-v12-compacting.sqlite3"
 _RWKV_STATE_CACHE_COMPACT_MIN_FREE_BYTES = 64 * 1024 * 1024
 _RWKV_STATE_CACHE_STORE_KIND = "delta-sqlite-v1"
-_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
+_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 5
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
@@ -4082,6 +4082,7 @@ def configure_reviewer_backend_from_environment() -> bool:
                 device=device,
                 dtype=dtype,
                 state_precision=_rwkv_state_precision(),
+                model=_rwkv_model(),
             )
         )
         logger.debug(
@@ -4103,7 +4104,9 @@ def configure_reviewer_backend_from_environment() -> bool:
 
 
 def embedded_rwkv_model_path() -> Path | None:
-    path = Path(__file__).parent / "rwkv_inference" / _EMBEDDED_RWKV_MODEL_FILENAME
+    from aqt.rwkv_model import RWKV_MODEL_FILES
+
+    path = Path(__file__).parent / "rwkv_inference" / RWKV_MODEL_FILES[_rwkv_model()]
     return path if path.exists() else None
 
 
@@ -10544,10 +10547,13 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
         ):
             return False
         logger.debug(
-            "warmed RWKV reviewer state: reviews=%s restore_elapsed_ms=%.1f "
+            "warmed RWKV reviewer state: reviews=%s model=%s state_precision=%s "
+            "restore_elapsed_ms=%.1f "
             "history_elapsed_ms=%.1f warm_up_elapsed_ms=%.1f "
             "save_elapsed_ms=%.1f elapsed_ms=%.1f",
             len(history.reviews),
+            _rwkv_model(),
+            _rwkv_state_precision(),
             restore_elapsed_ms,
             history_elapsed_ms,
             warm_up_elapsed_ms,
@@ -11130,8 +11136,11 @@ def _recompute_rwkv_calibration_data(
                     raise _ReviewerBackendWarmupInvalidated
             operation.require_current()
             logger.debug(
-                "RWKV calibration recompute inputs prepared: reviews=%s",
+                "RWKV calibration recompute inputs prepared: reviews=%s "
+                "model=%s state_precision=%s",
                 len(history.reviews),
+                _rwkv_model(),
+                _rwkv_state_precision(),
             )
             with _rwkv_exclusive_replay():
                 reset_cache_snapshot()
@@ -11545,18 +11554,44 @@ def ensure_rwkv_calibration_data(
         _release_rwkv_free_memory()
 
 
-def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
-    """Recompute RWKV calibration rows with a modal progress dialog."""
+def prepare_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None = None,
+) -> bool:
+    """Refresh both calibration datasets without rebuilding active RWKV state."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    col = _collection(reviewer)
+    if col is None:
+        return False
+    backend = getattr(col, "_backend")
+    _report_rwkv_state_cache_progress(
+        progress, "Clearing historical prediction caches..."
+    )
+    backend.clear_review_retrievability_cache()
+    cache_dir = _rwkv_state_cache_dir(reviewer)
+    if cache_dir is not None:
+        (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).unlink(missing_ok=True)
+    _report_rwkv_state_cache_progress(
+        progress, "Rebuilding FSRS calibration predictions..."
+    )
+    backend.rebuild_fsrs_review_retrievability_cache()
+    return recompute_rwkv_calibration_data(mw, progress=progress)
+
+
+def prepare_rwkv_calibration_data_with_progress(mw: object) -> None:
+    """Prepare FSRS and RWKV historical predictions with a progress dialog."""
 
     from aqt.utils import tooltip
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
-        recompute_rwkv_calibration_data(mw)
+        prepare_rwkv_calibration_data(mw)
         return
 
-    def start_recompute() -> None:
+    def start_preparation() -> None:
         parent = cast(QWidget | None, mw)
         start = time.monotonic()
 
@@ -11573,41 +11608,41 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
 
             _run_on_main(mw, update)
 
-        def recompute() -> bool:
-            return recompute_rwkv_calibration_data(mw, progress=progress)
+        def prepare() -> bool:
+            return prepare_rwkv_calibration_data(mw, progress=progress)
 
         def done(future: Future[bool]) -> None:
             try:
-                recomputed = future.result()
+                prepared = future.result()
             except Exception:
-                logger.exception("RWKV calibration data recompute failed")
-                tooltip("RWKV calibration data recompute failed.", parent=parent)
+                logger.exception("Calibration data preparation failed")
+                tooltip("Calibration data preparation failed.", parent=parent)
                 return
 
             elapsed_ms = (time.monotonic() - start) * 1000
-            if recomputed:
-                tooltip("RWKV calibration data recomputed.", parent=parent)
+            if prepared:
+                tooltip("Calibration data prepared.", parent=parent)
                 logger.debug(
-                    "RWKV calibration data recompute finished: elapsed_ms=%.1f",
+                    "Calibration data preparation finished: elapsed_ms=%.1f",
                     elapsed_ms,
                 )
             else:
                 tooltip(
-                    "RWKV calibration data could not be recomputed.",
+                    "Calibration data could not be prepared.",
                     parent=parent,
                 )
 
         with_progress(
-            recompute,
+            prepare,
             done,
             parent=parent,
-            label="Recomputing RWKV calibration data...",
+            label="Preparing calibration data...",
             immediate=True,
             uses_collection=True,
-            title="RWKV Calibration Data",
+            title="Calibration Data",
         )
 
-    _run_on_main(mw, start_recompute)
+    _run_on_main(mw, start_preparation)
 
 
 def compare_rwkv_first_review_elapsed_metrics(
@@ -12224,13 +12259,15 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
     """Invalidate resident state before startup sync can change the collection."""
 
     _invalidate_reviewer_backend_runtime_state_for_profile_open()
+    from aqt.rwkv_model import model_for_profile
     from aqt.rwkv_precision import state_precision_for_profile
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
     profile = getattr(getattr(mw, "pm", None), "profile", None)
-    if isinstance(
-        _reviewer_backend, EmbeddedRwkvReviewerBackend
-    ) and _reviewer_backend.state_precision != state_precision_for_profile(profile):
+    if isinstance(_reviewer_backend, EmbeddedRwkvReviewerBackend) and (
+        _reviewer_backend.state_precision != state_precision_for_profile(profile)
+        or _reviewer_backend.model_name != model_for_profile(profile)
+    ):
         set_reviewer_backend(None)
     _set_rwkv_state_cache_recovery_failed(mw, False)
     setattr(mw, "_rwkv_state_declined", False)
@@ -12898,11 +12935,10 @@ def build_rwkv_state_cache_with_progress(
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
-    rebuild_retrievability_cache: bool = False,
     recovery_reason: str | None = None,
     on_done: Callable[[bool], None] | None = None,
 ) -> None:
-    """Build local RWKV state, optionally refreshing both historical caches."""
+    """Build local RWKV state without rebuilding historical calibration data."""
 
     if recovery_reason is None:
         _clear_rwkv_state_declined(mw)
@@ -12939,23 +12975,6 @@ def build_rwkv_state_cache_with_progress(
     ) -> _RwkvStateCacheBuildResult:
         persistence_error: Exception | None = None
 
-        if rebuild_retrievability_cache:
-            col = _collection(SimpleNamespace(mw=mw))
-            if col is None:
-                return _RwkvStateCacheBuildResult(ready=False)
-            backend = getattr(col, "_backend")
-            _report_rwkv_state_cache_progress(
-                progress, "Clearing historical prediction caches..."
-            )
-            backend.clear_review_retrievability_cache()
-            cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
-            if cache_dir is not None:
-                (cache_dir / _RWKV_CALIBRATION_EPOCH_FILE).unlink(missing_ok=True)
-            _report_rwkv_state_cache_progress(
-                progress, "Rebuilding FSRS calibration predictions..."
-            )
-            backend.rebuild_fsrs_review_retrievability_cache()
-
         def remember_persistence_error(error: Exception) -> None:
             nonlocal persistence_error
             persistence_error = error
@@ -12968,8 +12987,6 @@ def build_rwkv_state_cache_with_progress(
             progress=progress,
             on_cache_persistence_error=remember_persistence_error,
         )
-        if ready and rebuild_retrievability_cache:
-            ready = recompute_rwkv_calibration_data(mw, progress=progress)
         return _RwkvStateCacheBuildResult(
             ready=ready,
             persistence_error=persistence_error,
@@ -13008,8 +13025,6 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV review state recovered."
                 if recovery_reason is not None
-                else "RWKV state and historical prediction caches ready."
-                if rebuild_retrievability_cache
                 else "RWKV state cache ready.",
                 parent=parent,
             )
@@ -13023,8 +13038,6 @@ def build_rwkv_state_cache_with_progress(
             tooltip(
                 "RWKV state recovery failed."
                 if recovery_reason is not None
-                else "Cache rebuild failed. Run Build Cache again to retry."
-                if rebuild_retrievability_cache
                 else "RWKV state cache could not be built.",
                 parent=parent,
             )
@@ -13095,8 +13108,6 @@ def build_rwkv_state_cache_with_progress(
                 tooltip(
                     "RWKV state recovery failed."
                     if recovery_reason is not None
-                    else "Cache rebuild failed. Run Build Cache again to retry."
-                    if rebuild_retrievability_cache
                     else "RWKV state cache build failed.",
                     parent=parent,
                 )
@@ -13116,9 +13127,7 @@ def build_rwkv_state_cache_with_progress(
                 label=progress_label,
                 immediate=True,
                 uses_collection=True,
-                title="Cache Build"
-                if rebuild_retrievability_cache
-                else "RWKV State Cache",
+                title="RWKV State Cache",
             )
         except Exception:
             _set_rwkv_state_cache_recovery_failed(mw, True)
@@ -13503,6 +13512,7 @@ def _compute_rwkv_memorised_history(
         target_retention=_RWKV_DEFAULT_TARGET_RETENTION,
         max_interval_days=36_500,
         state_precision=_rwkv_state_precision(),
+        model=_rwkv_model(),
     )
     (
         review_index,
@@ -20379,6 +20389,18 @@ def _rwkv_first_review_elapsed_config_key(
     return sorted(key, key=lambda item: str(item[0]))
 
 
+def _rwkv_model() -> str:
+    # Preferences save the choice for the next profile open. Keep cache identity
+    # and background jobs on the model used by the current resident backend.
+    model = getattr(_reviewer_backend, "model_name", None)
+    if isinstance(model, str):
+        return model
+    from aqt import mw
+    from aqt.rwkv_model import model_for_profile
+
+    return model_for_profile(getattr(getattr(mw, "pm", None), "profile", None))
+
+
 def _rwkv_state_precision() -> str:
     # Keep the running session's precision stable if Preferences has saved a
     # different choice for the next restart. Background jobs share this mode.
@@ -20402,6 +20424,7 @@ def _rwkv_replay_semantics_key(
     payload: dict[str, object] = {
         "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "statePrecision": _rwkv_state_precision(),
+        "model": _rwkv_model(),
         "firstReviewElapsedSource": first_review_elapsed_source.value,
         "dynamicPresetReplay": dynamic_preset_replay,
         "presetOverlay": (

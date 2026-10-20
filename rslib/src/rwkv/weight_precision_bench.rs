@@ -284,8 +284,7 @@ fn rwkv_weight_precision_rejects_truncated_scales_codes_and_padding() {
 
 #[test]
 fn rwkv_weight_precision_native_model_loads_packed_round_trip() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let weights = WeightMap::load(&path).unwrap();
     let packed = encode(&weights);
     assert!(packed.len() < fs::metadata(&path).unwrap().len() as usize / 4);
@@ -357,8 +356,7 @@ fn rwkv_weight_precision_metrics() {
             enforce_grade_order: true,
         })
         .collect::<Vec<_>>();
-    let weights_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     assert_ne!(Path::new(&model_output), weights_path);
     let weights = WeightMap::load(&weights_path).unwrap();
     let original_bytes = fs::metadata(&weights_path).unwrap().len();

@@ -38,11 +38,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
 
     let forceBuildingRwkvStateCache = false;
-    let recomputingRwkvCalibrationData = false;
+    let preparingCalibrationData = false;
     let reschedulingRwkvReviewCards = false;
     $: rwkvActionInProgress =
         forceBuildingRwkvStateCache ||
-        recomputingRwkvCalibrationData ||
+        preparingCalibrationData ||
         reschedulingRwkvReviewCards;
 
     const settings = {
@@ -109,13 +109,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
-    async function recomputeRwkvCalibrationData(): Promise<void> {
-        recomputingRwkvCalibrationData = true;
+    async function prepareCalibrationData(): Promise<void> {
+        preparingCalibrationData = true;
         try {
             await saveRwkvDeckOptions();
             await postProto("recomputeRwkvCalibrationData", new Empty({}), Empty);
         } finally {
-            recomputingRwkvCalibrationData = false;
+            preparingCalibrationData = false;
         }
     }
 
@@ -268,10 +268,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         class="btn btn-outline-primary"
                         disabled={rwkvActionInProgress}
                         on:click={() => forceBuildRwkvStateCache()}
-                        title="Rebuild RWKV state and clear/rebuild historical RWKV and FSRS predictions."
+                        title="Rebuild RWKV review state from history."
                     >
                         {#if forceBuildingRwkvStateCache}
-                            Rebuilding Caches...
+                            Rebuilding RWKV State...
                         {:else}
                             Build Cache
                         {/if}
@@ -280,12 +280,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <button
                         class="btn btn-outline-primary"
                         disabled={rwkvActionInProgress}
-                        on:click={() => recomputeRwkvCalibrationData()}
+                        on:click={() => prepareCalibrationData()}
+                        title="Rebuild historical FSRS and RWKV predictions for calibration graphs."
                     >
-                        {#if recomputingRwkvCalibrationData}
-                            Calculating Calibration Graph Data...
+                        {#if preparingCalibrationData}
+                            Preparing Calibration Data...
                         {:else}
-                            Calculate Calibration Graph Data
+                            Prepare Calibration Data
                         {/if}
                     </button>
                 </div>
