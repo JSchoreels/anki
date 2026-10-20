@@ -61,19 +61,38 @@ NEXT_S90_UNAVAILABLE_ROWS = [
 ]
 
 
-def test_deck_options_cache_build_requests_both_historical_caches(monkeypatch) -> None:
+@pytest.mark.parametrize("force", [False, True])
+def test_deck_options_cache_build_requests_only_rwkv_state(monkeypatch, force) -> None:
     from aqt import mediasrv
 
     mw = object()
     monkeypatch.setattr("aqt.mw", mw)
     with mock.patch("aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress") as build:
-        assert mediasrv.force_build_rwkv_state_cache() == b""
+        action = (
+            mediasrv.force_build_rwkv_state_cache
+            if force
+            else mediasrv.build_rwkv_state_cache
+        )
+        assert action() == b""
     build.assert_called_once_with(
         mw,
-        force_rebuild=True,
+        **({"force_rebuild": True} if force else {}),
         record_retrievability_cache=False,
-        rebuild_retrievability_cache=True,
     )
+
+
+def test_deck_options_calibration_action_prepares_historical_predictions(
+    monkeypatch,
+) -> None:
+    from aqt import mediasrv
+
+    mw = object()
+    monkeypatch.setattr("aqt.mw", mw)
+    with mock.patch(
+        "aqt.rwkv_scheduler.prepare_rwkv_calibration_data_with_progress"
+    ) as prepare:
+        assert mediasrv.recompute_rwkv_calibration_data() == b""
+    prepare.assert_called_once_with(mw)
 
 
 def test_media_server_shutdown_closes_listener_and_client_buffers(

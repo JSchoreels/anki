@@ -16,6 +16,7 @@
         "**/*-lock.json",
         "docs/*.md",
         "qt/aqt/data/web/js/vendor/*.js",
+        "qt/aqt/rwkv_inference/sm40v2/**",
         "ftl/qt-repo",
         "ftl/core-repo",
         "ftl/usage",

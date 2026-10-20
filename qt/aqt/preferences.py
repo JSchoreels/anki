@@ -236,12 +236,26 @@ class Preferences(QDialog):
                 tr.preferences_rwkv_f32(),
                 tr.preferences_rwkv_int8(),
                 tr.preferences_rwkv_int4(),
+                tr.preferences_rwkv_int4_cards_int8_notes(),
             ),
         ):
             self.rwkv_precision.addItem(label, mode)
         self.rwkv_precision.setCurrentIndex(
             RWKV_STATE_PRECISIONS.index(state_precision_for_profile(self.prof))
         )
+        from aqt.rwkv_model import RWKV_MODELS, model_for_profile
+
+        self.rwkv_model = QComboBox(group)
+        for model, label in zip(
+            RWKV_MODELS,
+            (tr.preferences_rwkv_model_legacy(), tr.preferences_rwkv_model_sm40()),
+        ):
+            self.rwkv_model.addItem(label, model)
+        self.rwkv_model.setCurrentIndex(RWKV_MODELS.index(model_for_profile(self.prof)))
+        layout.addRow(tr.preferences_rwkv_model(), self.rwkv_model)
+        model_explanation = QLabel(tr.preferences_rwkv_model_explanation(), group)
+        model_explanation.setWordWrap(True)
+        layout.addRow(model_explanation)
         layout.addRow(tr.preferences_rwkv_precision(), self.rwkv_precision)
         explanation = QLabel(tr.preferences_rwkv_precision_explanation(), group)
         explanation.setWordWrap(True)
@@ -250,9 +264,11 @@ class Preferences(QDialog):
 
     def update_profile(self) -> None:
         self.update_network()
+        from aqt.rwkv_model import RWKV_MODEL_KEY
         from aqt.rwkv_precision import RWKV_STATE_PRECISION_KEY
 
         assert self.prof is not None
+        self.prof[RWKV_MODEL_KEY] = self.rwkv_model.currentData()
         self.prof[RWKV_STATE_PRECISION_KEY] = self.rwkv_precision.currentData()
 
     # Profile: network

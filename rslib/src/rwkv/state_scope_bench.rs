@@ -191,8 +191,7 @@ fn rwkv_state_scope_metrics() {
             enforce_grade_order: true,
         })
         .collect();
-    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let mut baseline = Vec::new();
     let mut results = Vec::new();
     for (name, precision, shared) in [

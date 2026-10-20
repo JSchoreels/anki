@@ -216,7 +216,7 @@ rwkv-review-performance-bench *args:
 
 # Measure RWKV review-type metrics on selected current deck ids in a copied collection.
 rwkv-review-type-metrics collection target-deck-ids:
-    {{ if os() == "windows" { "$env:ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "'; $env:ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "'; $env:ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin'; $env:ANKI_RWKV_STATE_COMPRESSION_LIMIT='0'; $env:ANKI_RWKV_STATE_COMPRESSION_CONFIGS='raw'; cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } else { "ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "' ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "' ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin' ANKI_RWKV_STATE_COMPRESSION_LIMIT=0 ANKI_RWKV_STATE_COMPRESSION_CONFIGS=raw cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } }}
+    {{ if os() == "windows" { "$env:ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "'; $env:ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "'; $env:ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/sm40v2/weights.f32.bin'; $env:ANKI_RWKV_STATE_COMPRESSION_LIMIT='0'; $env:ANKI_RWKV_STATE_COMPRESSION_CONFIGS='raw'; cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } else { "ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "' ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "' ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/sm40v2/weights.f32.bin' ANKI_RWKV_STATE_COMPRESSION_LIMIT=0 ANKI_RWKV_STATE_COMPRESSION_CONFIGS=raw cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } }}
 
 # Prepare canonical replay inputs from an explicit copied backup.
 rwkv-history-ablation-prepare *args:
@@ -346,3 +346,27 @@ yarn := if os() == "windows" { "out\\extracted\\node\\yarn.cmd" } else { "out/ex
 uv := env("UV_BINARY", if os() == "windows" { "out\\extracted\\uv\\uv" } else { "out/extracted/uv/uv" })
 python := if os() == "windows" { ".\\out\\pyenv\\Scripts\\python.exe" } else { "out/pyenv/bin/python" }
 export UV_PROJECT_ENVIRONMENT := if os() == "windows" { "out\\pyenv" } else { "out/pyenv" }
+
+# Compare the bundled legacy model and SM40 on the exact same copied history.
+rwkv-model-bench *args:
+    PYTHONPATH=qt {{ python }} qt/tools/rwkv_model_bench.py {{ args }}
+
+# Verify SM40 against the published recurrent test vectors.
+rwkv-sm40-tests *args:
+    cargo test -p anki --lib rwkv_sm40 {{ args }}
+
+# Convert the published NumPy vectors into portable native test fixtures.
+rwkv-sm40-vectors package output limit='500' python='python3':
+    {{ python }} qt/tools/rwkv_sm40_vectors.py '{{ package }}' '{{ output }}' --limit {{ limit }}
+
+# Export exact production features and Curve components for an explicit offline probe.
+rwkv-sm40-curve-trace request:
+    {{ if os() == "windows" { "$env:ANKI_RWKV_CURVE_PROBE_REQUEST='" + request + "'; " } else { "ANKI_RWKV_CURVE_PROBE_REQUEST='" + request + "' " } }}cargo test -p anki --lib --release rwkv_sm40_curve_reference_trace -- --ignored --nocapture
+
+# Independently replay an exported trace with the release package's NumPy reference.
+rwkv-sm40-curve-reference package trace output python='python3':
+    {{ python }} qt/tools/rwkv_curve_reference_probe.py --package '{{ package }}' --trace '{{ trace }}' --output '{{ output }}'
+
+# Run native RWKV regressions for both bundled architectures.
+rwkv-model-tests *args:
+    cargo test -p anki --lib rwkv:: {{ args }}

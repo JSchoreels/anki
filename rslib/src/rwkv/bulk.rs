@@ -136,7 +136,17 @@ fn warm_up_reviews_bulk_impl(
     #[cfg(test)]
     rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeatureMlp, profile_started);
 
-    if record_predictions {
+    if SMALL_MODEL {
+        run_interleaved(
+            &model,
+            &inputs,
+            &mut inference.warm_up_states,
+            &mut x,
+            x_query.as_deref_mut(),
+            chunk_size,
+            query_recurrence,
+        );
+    } else if record_predictions {
         for (module_id, module) in model.modules.iter().enumerate() {
             #[cfg(test)]
             let profile_started = rwkv_warmup_profile_start();
@@ -171,6 +181,16 @@ fn warm_up_reviews_bulk_impl(
     let mut last_row_by_card = HashMap::new();
     for (row, input) in inputs.iter().enumerate() {
         last_row_by_card.insert(input.card_id, row);
+    }
+    #[cfg(test)]
+    if let Some(captured) = &mut inference.captured_curves {
+        *captured = (0..rows)
+            .into_par_iter()
+            .map(|index| {
+                let prehead = model.prehead_norm.apply(row(&x, index));
+                model.curve_head(&prehead)
+            })
+            .collect();
     }
     let curves: Vec<(i64, ReviewCurve)> = last_row_by_card
         .into_par_iter()
@@ -211,6 +231,87 @@ fn module_profile_bucket(module_id: usize) -> RwkvWarmupProfileBucket {
         2 => RwkvWarmupProfileBucket::ModuleNote,
         3 => RwkvWarmupProfileBucket::ModulePreset,
         _ => RwkvWarmupProfileBucket::ModuleGlobal,
+    }
+}
+
+/// Preserve a separate layer-zero value residual for each interleaved stream.
+#[allow(clippy::too_many_arguments)]
+fn run_interleaved(
+    model: &SrsModel,
+    inputs: &[ReviewInput],
+    states: &mut ReviewStateMaps,
+    x: &mut [f32],
+    mut x_query: Option<&mut [f32]>,
+    chunk_size: usize,
+    query_recurrence: QueryRecurrence,
+) {
+    let rows = inputs.len();
+    let plans: Vec<_> = model
+        .modules
+        .iter()
+        .enumerate()
+        .map(|(id, module)| {
+            let mut plan = ModulePlan::build(id, inputs);
+            plan.precision = module.precision;
+            plan
+        })
+        .collect();
+    let mut layers: Vec<Vec<Vec<LayerState>>> = plans
+        .iter()
+        .enumerate()
+        .map(|(id, plan)| {
+            plan.streams
+                .iter()
+                .map(|stream| {
+                    layer_states(
+                        stream
+                            .key
+                            .and_then(|key| take_stream_state(states, id, key)),
+                        model.modules[id].layers.len(),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let mut v0: [Vec<f32>; 5] = std::array::from_fn(|_| vec![0.0; rows * D_MODEL]);
+    let mut v0_query: [Option<Vec<f32>>; 5] =
+        std::array::from_fn(|_| x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]));
+    for &(id, layer_id) in LAYER_STEPS {
+        run_layer_chunks(LayerChunks {
+            layer: &model.modules[id].layers[layer_id],
+            layer_id,
+            plan: &plans[id],
+            stream_layers: &mut layers[id],
+            rows,
+            chunk_size,
+            x,
+            v0: &mut v0[id],
+            x_query: x_query.as_deref_mut(),
+            v0_query: v0_query[id].as_deref_mut(),
+            query_recurrence,
+        });
+        if layer_id + 1 == model.modules[id].layers.len() {
+            for (stream, layers) in plans[id]
+                .streams
+                .iter()
+                .zip(std::mem::take(&mut layers[id]))
+            {
+                if let Some(key) = stream.key {
+                    put_stream_state(
+                        states,
+                        id,
+                        key,
+                        ModuleState {
+                            layers,
+                            packed: None,
+                        }
+                        .compact(model.modules[id].precision),
+                    );
+                }
+            }
+            v0[id] = Vec::new();
+            v0_query[id] = None;
+        }
     }
 }
 
@@ -926,7 +1027,14 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
 
     // Channel mixer. Shift states must stay pre-chunk until both lanes have
     // resolved their shifts.
-    let cm = &layer.channel_mixer;
+    let Some(cm) = &layer.channel_mixer else {
+        x[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL].copy_from_slice(&time_out);
+        if let (Some(x_query), Some(out)) = (x_query, time_out_query) {
+            x_query[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL]
+                .copy_from_slice(&out);
+        }
+        return;
+    };
     let cm_norm = normed_rows_from(&cm.layer_norm, &time_out, chunk_rows);
     let cm_norm_query = time_out_query
         .as_ref()
@@ -1265,7 +1373,7 @@ fn time_parts_block(
 
     fill_mixed(5, mixed);
     let mut g_hidden = [0.0f32; LINEAR_BLOCK_ROWS * 16];
-    let g_hidden = &mut g_hidden[..rows * 16];
+    let g_hidden = &mut g_hidden[..rows * mixer.lora_a_g.output];
     mixer.lora_a_g.apply_block_into(mixed, g_hidden, rows);
     sigmoid_in_place(g_hidden);
     mixer.lora_b_g.apply_block_into(g_hidden, block.g, rows);

@@ -1,3 +1,6 @@
 * text=auto eol=lf
 *.ftl -linguist-detectable
 cargo/remote/* linguist-vendored
+
+# Preserve the upstream model metadata bytes and their published hashes.
+qt/aqt/rwkv_inference/sm40v2/* -text whitespace=cr-at-eol linguist-vendored
