@@ -1170,6 +1170,10 @@ and operating-system error instead of reporting that the cache is ready. The use
 may be prompted to rebuild after the next restart; closing Anki and renaming the
 profile-local `rwkv-state-cache` folder before rebuilding clears stale derived
 cache files without changing the collection.
+Rust owns state-store schema 5; desktop metadata, parent-chain and pruning readers
+require the same version. Integration tests write real native checkpoints for both
+models, read and prune them through the desktop code, and restore the surviving
+state into a fresh native runtime.
 
 Automatic RWKV state recovery replays answers and persists recurrent state
 without computing a pre-answer prediction for every historical review. The manual
@@ -1178,7 +1182,13 @@ rebuilds FSRS predictions and validation folds for every deck preset using its
 current parameters, history cutoff, relearning steps, same-day optimization and
 scheduling-penalty settings, rebuilds RWKV recurrent state, then recomputes RWKV
 calibration predictions aligned to the rebuilt FSRS folds. It does not reschedule
-cards or change review history. A failed or interrupted rebuild can leave partial
+cards or change review history. These are separate state-only and prediction-recording
+RWKV replays, so the progress count starts again for calibration; the total action
+also includes the FSRS rebuild, input preparation, persistence and temporary-state
+snapshot/restore work. Standalone native state-reconstruction benchmark timings
+cover the state-only replay and final state cache, rather than this combined action.
+Replay logs report the active model and storage precision for each phase.
+A failed or interrupted rebuild can leave partial
 derived predictions; rerun **Build Cache** to complete it. Live review answers still
 write their pre-answer prediction with source `rwkv_review` and role
 `post_optimization`.
