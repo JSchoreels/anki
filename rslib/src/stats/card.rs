@@ -110,6 +110,7 @@ impl Collection {
             },
             desired_retention: card.desired_retention,
             extra_rows: vec![],
+            rwkv_retry_pending: false,
         })
     }
 

@@ -1168,6 +1168,12 @@ available. The desktop `rwkv_state_did_prepare(mw)` GUI hook reports successful
 state preparation on the main thread; Card Info subscribes only while its window
 is open. An enabled card can still show RWKV as unavailable while recovery is in
 progress or after recovery fails.
+Card Info marks temporary inference contention and state recovery separately
+from missing backends or prediction errors. Its current/previous-card pages
+retry temporary failures after 0.5, 1, 2, 4, and 8 seconds, stopping when values
+are ready, the card changes, or the page closes. Retries never wait for the
+inference lock on the UI thread. The state-ready hook still refreshes an open
+window after a longer recovery finishes.
 Before publication, Anki explicitly closes both the state-store writer and its
 cache-validation database readers. On Windows, publishing the rebuilt cache also
 retries transient file-sharing failures caused by another process briefly holding
