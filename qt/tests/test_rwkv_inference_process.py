@@ -494,6 +494,96 @@ def _import_rsbridge(root: Path) -> object:
     "model_name,filename",
     [("sm40", "sm40v2/weights.f32.bin"), ("legacy", "RWKV_trained_on_5000_10000.bin")],
 )
+def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
+    tmp_path, model_name, filename
+) -> None:
+    from aqt import rwkv_scheduler
+
+    root = Path(__file__).resolve().parents[2]
+    rsbridge = _import_rsbridge(root)
+    model_path = root / "qt/aqt/rwkv_inference" / filename
+    runtime = rsbridge.RwkvInference(
+        str(model_path), 0.9, 36500, state_precision="int8", model=model_name
+    )
+    reviews = [
+        (
+            *_rwkv_review_args(
+                review,
+                is_query=False,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
+        for review in _RWKV_REVIEWS[:3]
+    ]
+    runtime.warm_up_reviews(reviews, False)
+    query = (
+        *_rwkv_review_args(
+            _RWKV_REVIEWS[3],
+            is_query=True,
+            card_state=None,
+            note_state=None,
+            deck_state=None,
+            preset_state=None,
+            global_state=None,
+        )[:15],
+        True,
+    )
+    expected = runtime.predict_retrievability_many_from_warm_up([query])
+    path = tmp_path / "state.sqlite3"
+    encoded_map = rwkv_scheduler._encode_int_map_binary({})
+
+    def checkpoint(parent, full):
+        return runtime.write_warm_up_state_checkpoint(
+            str(path),
+            "generation",
+            parent,
+            3000,
+            len(reviews),
+            "a" * 64,
+            "replay",
+            encoded_map,
+            encoded_map,
+            encoded_map,
+            full,
+            True,
+        )
+
+    base = checkpoint(None, True)
+    orphan = checkpoint(None, True)
+    head = checkpoint(base, False)
+    runtime.finish_warm_up_state_checkpoints()
+
+    history = rwkv_scheduler._read_rwkv_state_cache_store_segment_history(
+        path, "generation", head
+    )
+    assert history.review_count == len(reviews)
+    assert history.last_review_id == 3000
+    assert history.history_hash == "a" * 64
+    assert history.replay_key == "replay"
+    assert rwkv_scheduler._rwkv_state_cache_store_segment_chain(
+        path, "generation", head
+    ) == [head, base]
+    assert rwkv_scheduler._prune_rwkv_state_cache_store(path, "generation", head) == 1
+    with pytest.raises(ValueError, match="missing RWKV state-cache segment"):
+        rwkv_scheduler._read_rwkv_state_cache_store_segment_history(
+            path, "generation", orphan
+        )
+    restored = rsbridge.RwkvInference(
+        str(model_path), 0.9, 36500, state_precision="int8", model=model_name
+    )
+    restored.restore_warm_up_state_checkpoint(str(path), "generation", head)
+    assert restored.predict_retrievability_many_from_warm_up([query]) == expected
+
+
+@pytest.mark.parametrize(
+    "model_name,filename",
+    [("sm40", "sm40v2/weights.f32.bin"), ("legacy", "RWKV_trained_on_5000_10000.bin")],
+)
 def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     model_name, filename
 ) -> None:

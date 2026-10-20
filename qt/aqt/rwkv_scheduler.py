@@ -236,7 +236,7 @@ _RWKV_STATE_CACHE_STORE_TEMP_FILE = ".state-v12-building.sqlite3"
 _RWKV_STATE_CACHE_STORE_COMPACT_FILE = ".state-v12-compacting.sqlite3"
 _RWKV_STATE_CACHE_COMPACT_MIN_FREE_BYTES = 64 * 1024 * 1024
 _RWKV_STATE_CACHE_STORE_KIND = "delta-sqlite-v1"
-_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
+_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 5
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
@@ -10524,10 +10524,13 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
         ):
             return False
         logger.debug(
-            "warmed RWKV reviewer state: reviews=%s restore_elapsed_ms=%.1f "
+            "warmed RWKV reviewer state: reviews=%s model=%s state_precision=%s "
+            "restore_elapsed_ms=%.1f "
             "history_elapsed_ms=%.1f warm_up_elapsed_ms=%.1f "
             "save_elapsed_ms=%.1f elapsed_ms=%.1f",
             len(history.reviews),
+            _rwkv_model(),
+            _rwkv_state_precision(),
             restore_elapsed_ms,
             history_elapsed_ms,
             warm_up_elapsed_ms,
@@ -11110,8 +11113,11 @@ def _recompute_rwkv_calibration_data(
                     raise _ReviewerBackendWarmupInvalidated
             operation.require_current()
             logger.debug(
-                "RWKV calibration recompute inputs prepared: reviews=%s",
+                "RWKV calibration recompute inputs prepared: reviews=%s "
+                "model=%s state_precision=%s",
                 len(history.reviews),
+                _rwkv_model(),
+                _rwkv_state_precision(),
             )
             with _rwkv_exclusive_replay():
                 reset_cache_snapshot()
