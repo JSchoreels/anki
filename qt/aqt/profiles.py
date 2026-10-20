@@ -244,7 +244,10 @@ class ProfileManager:
             self.db = None
 
     def create(self, name: str) -> None:
+        from aqt.rwkv_model import RWKV_MODEL_KEY
+
         prof = profileConf.copy()
+        prof[RWKV_MODEL_KEY] = "sm40"
         if self.db.scalar("select 1 from profiles where name = ? collate nocase", name):
             return
         self.db.execute(
