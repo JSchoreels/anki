@@ -8,8 +8,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import CardInfo from "../../CardInfo.svelte";
     import type { PageData } from "./$types";
     import { goto, invalidate } from "$app/navigation";
+    import { browser } from "$app/environment";
+    import { onDestroy } from "svelte";
+    import { createRwkvCardInfoRetry } from "../../rwkv-retry";
 
     export let data: PageData;
+
+    const retry = createRwkvCardInfoRetry(() => invalidate("anki:card-info"));
+    onDestroy(retry.stop);
+    $: if (browser) {
+        retry.update([data.currentInfo, data.previousInfo]);
+    }
 
     const showRevlog = page.url.searchParams.get("revlog") !== "0";
     const showCurve = page.url.searchParams.get("curve") !== "0";

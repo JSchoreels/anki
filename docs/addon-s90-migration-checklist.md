@@ -18,6 +18,9 @@ by scheduling math.
 - Treat Anki's existing scalar-stability FSRS helper APIs as compatibility
   approximations for FSRS-7; they assume difficulty 5 and equal stability
   traces.
+- Pass internal stability to `fsrs_interval_at_retrievability()`. The separate
+  `fsrs_next_interval()` API accepts displayed S90 on this fork; passing `s_int`
+  there can greatly extend rescheduled due dates.
 
 ## FSRS Helper
 
