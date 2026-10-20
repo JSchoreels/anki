@@ -2,7 +2,7 @@
 
 **The released, unmodified NumPy reference reproduces the jump and collapse.** An independent replay from empty state matches the native implementation across all 24 selected histories and both repeat spacings. The forward mechanism is a large change in the three-component forgetting curve: after the first extra Good, a very slow tail carries roughly half the curve's weight; after more Goods, the card/note recurrent state reduces that weight and makes the middle component decay faster. The 50% crossing can consequently move from decades to months while Instant confidence stays high.
 
-This follows the [Legacy/SM40 interval stress comparison](rwkv-curve-sm40-2026-10-20.MD). It adds diagnostics and reproducible offline tooling; it does not change scheduling behavior.
+This follows the [Legacy/SM40 interval stress comparison](rwkv-curve-sm40-2026-10-20.MD). It adds diagnostics and reproducible offline tooling; it does not change scheduling behavior. The [training audit and proposed experiments](rwkv-sm40-training-2026-10-20.MD) investigate the objective and data support behind this learned behavior.
 
 ## Independent verification
 
