@@ -16,7 +16,7 @@ use anki_io::new_tempfile_in_parent_of;
 use anki_io::open_file;
 use prost::Message;
 use tempfile::NamedTempFile;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 use zip::ZipWriter;
 use zstd::stream::raw::Encoder as RawEncoder;
@@ -153,12 +153,12 @@ pub(crate) fn export_collection(
     Ok(())
 }
 
-fn file_options_stored() -> FileOptions<'static, ()> {
-    FileOptions::<'static, ()>::default().compression_method(CompressionMethod::Stored)
+fn file_options_stored() -> SimpleFileOptions {
+    SimpleFileOptions::default().compression_method(CompressionMethod::Stored)
 }
 
-fn file_options_default() -> FileOptions<'static, ()> {
-    FileOptions::<'static, ()>::default()
+fn file_options_default() -> SimpleFileOptions {
+    SimpleFileOptions::default()
 }
 
 fn write_collection(

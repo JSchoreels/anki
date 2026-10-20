@@ -49,7 +49,7 @@ ninja_gen = { "path" = "build/ninja_gen" }
 unicase = "=2.6.0" # any changes could invalidate sqlite indexes
 
 # normal
-ammonia = "4.1.7"
+ammonia = "4.1.8"
 anyhow = "1.0.98"
 async-compression = { version = "0.4.24", features = ["zstd", "tokio"] }
 async-stream = "0.3.6"
@@ -146,7 +146,7 @@ winapi = { version = "0.3", features = ["wincon", "winreg"] }
 windows = { version = "0.61.3", features = ["Media_SpeechSynthesis", "Media_Core", "Foundation_Collections", "Storage_Streams", "Win32_System_Console", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_Foundation", "Win32_UI_Shell", "Wdk_System_SystemServices"] }
 wiremock = "0.6.3"
 xz2 = "0.1.7"
-zip = { version = "4.1.0", default-features = false, features = ["deflate", "time"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate", "time"] }
 zstd = { version = "0.13.3", features = ["zstdmt"] }
 
 # Apply mild optimizations to our dependencies in dev mode, which among other things

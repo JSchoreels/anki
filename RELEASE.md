@@ -32,13 +32,15 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+Changes since the last normal release, [build 102](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.102). The application version remains `26.09.3+fsrs7`.
+
 ### User facing changes
 
 - **Preserve literal comparison characters in searches.** Escape `<`, `>`, or `=` to search for text such as `x\<5` without triggering a numeric field comparison. Numeric comparisons, including equality, and the existing bracket range syntax continue to work; normalizing a search preserves its meaning.
 
 - **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
 
-- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now defaults to “int4 cards + int8 notes” storage for both Legacy and SM40 when no supported precision choice is saved. It reduces card state storage while keeping the shared note state at INT8. Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
+- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now defaults to “int4 cards + int8 notes” storage for both Legacy and SM40 when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
 
 - **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
 
@@ -71,9 +73,13 @@ repeated here unless they materially affect a fork feature.
 - **RWKV cache fixes: stale calibration data, corrupt cache file, slower startups over time.** After an RWKV model or precision change, the calibration graph, the FSRS-vs-RWKV comparison and Search Stats Extended now recompute their RWKV predictions instead of showing the previous model's. A damaged retrievability cache file no longer stops the profile from opening: it is recreated (a cache held by another running Anki still reports "Anki already open"). Startup no longer slows down as reviews pile up since the last full state save: once 10,000 reviews are waiting to be replayed, they are written into the state store (about 3.5s per 50,000 reviews before). FSRS calibration rows are rebuilt correctly when two presets share a name, and adding a preset no longer discards the RWKV Memorised history cache.
 
 - **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
-- **Updated HTML sanitization dependency.** This build includes the patched Ammonia release for CSS URL escaping and SVG animation filtering.
+- **Updated security dependencies.** This build includes patched HTML sanitization, TLS and ZIP libraries, addressing newly reported CSS URL filtering, TLS handling and archive extraction issues.
 
 ### Technical details
+
+- **Mixed RWKV state precision:** quantize card matrices at INT4 and note matrices at INT8, retain f16 shifts and f32 shared state, and reuse the existing state codec for both models. The timing comparison uses the same prepared history in three alternating fresh optimized processes per mode, measuring native replay plus the final durable cache save; it excludes history preparation, calibration and intermediate recovery checkpoints. These timings do not measure accuracy.
+
+- **Numeric search compatibility:** recognize an unescaped comparator only with a nonempty field and a finite numeric right-hand side. Preserve escaped literal comparators through search normalization, numeric equality, case-insensitive field matching, and the fork's bracket range syntax.
 
 - Route both Deck Options state-cache endpoints through state-only preparation. Move historical cache clearing, FSRS prediction/fold rebuilding and RWKV calibration replay into the dedicated preparation action. Keep the synchronous RWKV-only calibration APIs unchanged and cover separate request routing, failure handling, cache preservation and browser interaction.
 
@@ -93,7 +99,7 @@ repeated here unless they materially affect a fork feature.
 
 - **Intraday queue ordering:** group admitted due intraday cards before or after the remaining queue after exact scoring, daily-limit admission, and sibling selection; Mix keeps the shared ordering. Future steps still wait for their due timestamp. Store `intraday_learning_mix` in deck-config extra data under `jschoreels.deckoptions`, using the existing ReviewMix values and no new protobuf field. Earlier enabled toggles map to Before and migrate on the next Deck Options save. Regression coverage includes all three modes with FSRS 6/7, current-card preservation, limits, new-card mixing, opaque-client preset edits, sync round trips, and browser save/reload.
 - **Undo-restored reviewer card:** the reviewer snapshots the restored card's scheduling fields (deck, original deck, queue, type, due, original due, interval, remaining steps) and stops ignoring study-queue refreshes once they change; flag-only edits keep the card. The backend re-pins the shown card when it rebuilds an existing queue for a ready deferred RWKV review or an intraday re-sort, and `Scheduler.counts()` fetches counts only, so it no longer marks a different card as shown.
-- **Dependency security:** update Ammonia from 4.1.4 to 4.1.7 and raise the workspace minimum to the patched version, addressing [RUSTSEC-2021-0157](https://rustsec.org/advisories/RUSTSEC-2021-0157.html) and [RUSTSEC-2021-0158](https://rustsec.org/advisories/RUSTSEC-2021-0158.html). Anki's sanitization helpers use the default tag and attribute policy, without enabling the custom CSS/SVG features described in those advisories.
+- **Dependency security:** update Ammonia from 4.1.4 to 4.1.8, rustls from 0.23.45 to 0.23.46, and ZIP from 4.6.1 to 9.0.5. These include fixes for [Ammonia CSS URL matching](https://rustsec.org/advisories/RUSTSEC-2026-0373.html), [rustls session debug output](https://rustsec.org/advisories/RUSTSEC-2026-0346.html), [ECH rejection](https://rustsec.org/advisories/RUSTSEC-2026-0347.html), [certificate decompression](https://rustsec.org/advisories/RUSTSEC-2026-0348.html), [key-exchange downgrade](https://rustsec.org/advisories/RUSTSEC-2026-0349.html), and ZIP extraction [permission bits](https://rustsec.org/advisories/RUSTSEC-2026-0367.html), [symlink targets](https://rustsec.org/advisories/RUSTSEC-2026-0368.html) and [permission changes through symlinks](https://rustsec.org/advisories/RUSTSEC-2026-0369.html). Ammonia also includes the earlier [CSS URL escaping](https://rustsec.org/advisories/RUSTSEC-2021-0157.html) and [SVG animation filtering](https://rustsec.org/advisories/RUSTSEC-2021-0158.html) fixes. Anki's sanitization helpers retain the default tag and attribute policy.
 
 ## 26.09.3+fsrs7.build.102 — 2026-10-12
 
