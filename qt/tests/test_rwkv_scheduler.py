@@ -9938,7 +9938,7 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
 
 
-@pytest.mark.parametrize("next_mode", ["f32", "int4"])
+@pytest.mark.parametrize("next_mode", ["f32", "int4", "cards_int4_notes_int8"])
 def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
     monkeypatch, tmp_path, next_mode
 ) -> None:

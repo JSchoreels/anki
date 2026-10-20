@@ -115,13 +115,10 @@ fn latest_queries(rows: &[Row], limit: usize) -> Vec<ReviewInput> {
         .collect()
 }
 
-/// Offline comparison only: the production INT4 option still quantizes notes.
 fn hybrid_runtime() -> RwkvInference {
     let weights = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
-    let mut inference =
-        RwkvInference::load_with_precision(weights, 0.9, 36_500, StatePrecision::Int4).unwrap();
-    Arc::get_mut(&mut inference.model).unwrap().modules[2].precision = StatePrecision::Int8;
-    inference
+    RwkvInference::load_with_precision(weights, 0.9, 36_500, StatePrecision::Int4CardsInt8Notes)
+        .unwrap()
 }
 
 #[test]

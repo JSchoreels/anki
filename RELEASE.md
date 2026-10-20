@@ -34,6 +34,8 @@ repeated here unless they materially affect a fork feature.
 
 ### User facing changes
 
+- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now offers an experimental “int4 cards + int8 notes” storage mode for both Legacy and SM40. It reduces card state storage while keeping the shared note state at INT8. INT8 remains the default. Reopen the profile after changing precision to rebuild state from review history.
+
 - **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
 
 - **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.

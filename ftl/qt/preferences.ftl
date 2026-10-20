@@ -19,4 +19,5 @@ preferences-rwkv-model-explanation = Applies to this profile independently of st
 preferences-rwkv-f32 = f32 — full precision fallback
 preferences-rwkv-int8 = int8 — recommended
 preferences-rwkv-int4 = int4 — experimental, reduced accuracy
-preferences-rwkv-precision-explanation = Applies to card and note state in memory and on disk for this profile. Computation remains at full precision. Restart Anki after changing this setting; the next RWKV use rebuilds state from review history. int4 saves more memory but can noticeably change predictions.
+preferences-rwkv-int4-cards-int8-notes = int4 cards + int8 notes — experimental
+preferences-rwkv-precision-explanation = Applies to card and note state in memory and on disk for this profile. Computation remains at full precision. Restart Anki after changing this setting; the next RWKV use rebuilds state from review history. Both int4 options save more memory but can change predictions; int4 cards + int8 notes keeps note state at int8.

@@ -725,8 +725,12 @@ impl RwkvInference {
         max_interval_days: u32,
         precision: StatePrecision,
     ) -> Self {
-        model.modules[0].precision = precision;
-        model.modules[2].precision = precision;
+        let (card_precision, note_precision) = match precision {
+            StatePrecision::Int4CardsInt8Notes => (StatePrecision::Int4, StatePrecision::Int8),
+            precision => (precision, precision),
+        };
+        model.modules[0].precision = card_precision;
+        model.modules[2].precision = note_precision;
         Self {
             #[cfg(test)]
             captured_curves: None,

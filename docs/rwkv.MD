@@ -167,8 +167,10 @@ sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Preferences → Review → RWKV selects storage precision for the whole local
-profile: `int8` (default), `f32` (the original full-precision fallback), or
-`int4` (experimental). The profile key is `rwkvStatePrecision`; an absent or
+profile: `int8` (default), `f32` (the original full-precision fallback),
+`int4` (experimental, cards and notes), or `cards_int4_notes_int8` (experimental,
+INT4 cards + INT8 notes). Both models support all four modes. The profile key is
+`rwkvStatePrecision`; an absent or
 unsupported value defaults to `int8`. This choice is local and is not synced.
 Changes take effect after restarting Anki (or reopening the profile), and the
 next state preparation rebuilds from retained review history. Precision is part
@@ -179,7 +181,7 @@ There is no parallel full-precision backup cache.
 
 Compact modes pack only card and note recurrent matrices: symmetric signed
 `int8` (−127…127) or packed `int4` (−7…7), with one f32 absolute-maximum scale
-per model head row (16 elements for SM40; 32 for the legacy model) and round-to-nearest-even codes. Both compact modes store
+per model head row (16 elements for SM40; 32 for the legacy model) and round-to-nearest-even codes. All compact modes store
 time/channel shift vectors as IEEE f16 using the `half` crate. Matrices are
 quantized after each answer's f32 output is calculated, before the next answer
 reads them. Queries, preview answers, undo, workload simulation, historical
@@ -188,8 +190,13 @@ arithmetic, feature context, recall curves, and deck/preset/global state remain
 f32. The runtime retains packed card/note modules and decodes only bounded query
 batches or active replay streams. Bulk replay preserves the last answer's exact
 integer codes and scales, so checkpoint reloads do not add another quantization.
-`int4` can noticeably change individual predictions and calibration, so it is
-offered as an explicit experimental choice.
+The mixed mode uses the existing INT4 encoding for cards and INT8 encoding for
+notes, including during bulk replay and checkpoint continuation; no cache schema
+change is needed. Both modes using INT4 can change individual predictions and
+calibration, so they are offered as explicit experimental choices. The
+[legacy-model mixed-precision comparison](rwkv-hybrid-precision-2026-10-18.MD)
+measured a 24.29% smaller total serialized state payload versus INT8 on one
+collection; it does not establish SM40's accuracy tradeoff.
 See the [native precision benchmark](rwkv-state-precision-2026-10-10.MD) for
 measured rebuild, checkpoint, memory, and accuracy tradeoffs.
 An [offline shared-state int8 POC](rwkv-shared-state-int8-2026-10-14.MD) also
