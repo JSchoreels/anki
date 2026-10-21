@@ -243,6 +243,11 @@ scale to the complete rebuild history.
 Cache size scales with the number of reviewed cards and notes that have RWKV
 state, so it can be much larger than the embedded model file on large
 collections.
+The [lossless checkpoint compression benchmark](rwkv-checkpoint-zstd-2026-10-22.MD)
+measures zstd levels 1–3 without changing quantization. On the tested SM40
+collection, independently compressed blocks save 12.4–12.8% against matching
+raw blocks but increase save/restore time and use slightly more RAM; desktop
+checkpoints remain uncompressed.
 The cache also stores RWKV ID-feature encodings and the deterministic generator
 state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.

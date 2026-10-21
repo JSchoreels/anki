@@ -351,6 +351,14 @@ export UV_PROJECT_ENVIRONMENT := if os() == "windows" { "out\\pyenv" } else { "o
 rwkv-model-bench *args:
     PYTHONPATH=qt {{ python }} qt/tools/rwkv_model_bench.py {{ args }}
 
+# Compare lossless block compression of native checkpoints using copied backup inputs.
+rwkv-checkpoint-compression-bench *args:
+    {{ python }} qt/tools/rwkv_checkpoint_compression_bench.py {{ args }}
+
+# Build or test the offline checkpoint compression experiment.
+rwkv-checkpoint-compression-native *args:
+    cargo test -p anki --release --lib rwkv_checkpoint_compression {{ args }}
+
 # Verify SM40 against the published recurrent test vectors.
 rwkv-sm40-tests *args:
     cargo test -p anki --lib rwkv_sm40 {{ args }}
