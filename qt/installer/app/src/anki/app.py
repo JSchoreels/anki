@@ -56,8 +56,27 @@ def configure_portable_environment(
 
 
 def main():
+    # The updater runs from the staged application and must not open a profile.
+    if plan := os.environ.pop("ANKI_PORTABLE_UPDATE_PLAN", None):
+        import runpy
+
+        runpy.run_path(
+            str(Path(plan).parent / "helper.py"),
+            run_name="__main__",
+            init_globals={"update_plan_path": plan},
+        )
+        return
     configure_portable_environment()
 
     import aqt
 
+    if aqt.is_portable():
+        from aqt.portable_update import can_start_application
+
+        if not can_start_application():
+            return
+    if os.environ.get("ANKI_PORTABLE_UPDATE_ACK"):
+        from aqt.portable_update import acknowledge_startup
+
+        acknowledge_startup()
     aqt.run()

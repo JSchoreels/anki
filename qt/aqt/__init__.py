@@ -824,6 +824,10 @@ def _run(argv: list[str] | None = None, exec: bool = True) -> AnkiApp | None:
     import aqt.main
 
     mw = aqt.main.AnkiQt(app, pm, backend, opts, args)
+    if is_portable():
+        from aqt.portable_update import finish_startup
+
+        QTimer.singleShot(0, finish_startup)
     if exec:
         print("Starting main loop...")
         app.exec()
