@@ -610,21 +610,23 @@ impl Collection {
         let mut runtime = match self.state.rwkv_offline.take() {
             Some(runtime) if runtime.model == model => runtime,
             _ => {
-                // Built on its own thread; the next queue build or deck count
+                // Built on its own thread; `reviews_replayed` is then what it
+                // is replaying, and the next queue build or deck count
                 // installs it once done.
                 *REGISTERED_MODEL.lock().unwrap() = Some(model.clone());
-                self.rwkv_offline_start_build(model)?;
-                return Ok(RwkvPrepareOfflineResponse {});
+                let reviews_replayed = self.rwkv_offline_start_build(model)?;
+                return Ok(RwkvPrepareOfflineResponse { reviews_replayed });
             }
         };
         // On error the runtime is dropped, and the standard scheduler applies
         // until the next successful prepare.
-        if self.rwkv_offline_sync_history(&mut runtime)? > 0 {
+        let reviews_replayed = self.rwkv_offline_sync_history(&mut runtime)?;
+        if reviews_replayed > 0 {
             self.state.card_queues = None;
         }
         *REGISTERED_MODEL.lock().unwrap() = Some(runtime.model.clone());
         self.state.rwkv_offline = Some(runtime);
-        Ok(RwkvPrepareOfflineResponse {})
+        Ok(RwkvPrepareOfflineResponse { reviews_replayed })
     }
 
     /// Scores every Instant-enabled deck now and installs the deck count
@@ -1249,14 +1251,15 @@ impl Collection {
     /// thread, unless that is already under way for this collection: on a
     /// phone it takes seconds, and close to a minute for a full replay of a
     /// big history, which must not hold the collection. Until it is installed
-    /// (`rwkv_offline_take_built`) the standard order applies.
-    fn rwkv_offline_start_build(&mut self, model: OfflineModel) -> Result<()> {
+    /// (`rwkv_offline_take_built`) the standard order applies. Returns the
+    /// number of reviews it replays.
+    fn rwkv_offline_start_build(&mut self, model: OfflineModel) -> Result<u64> {
         let mut building = BUILDING.lock().unwrap();
         if building
             .as_ref()
             .is_some_and(|(path, _)| *path == self.col_path)
         {
-            return Ok(());
+            return Ok(0);
         }
         // Only the identity is read here; the states are loaded on the thread.
         let state_path = self.rwkv_offline_state_path();
@@ -1283,8 +1286,8 @@ impl Collection {
             reviews = history.rows.len(),
             "RWKV offline history read under the collection"
         );
-        // an estimate for the log: assumes the state file is a valid prefix;
-        // the walk on the thread decides
+        // ponytail: an estimate (for the app's message), assumes the state
+        // file is a valid prefix; the walk on the thread decides
         let replaying = (history.rows.len() as u64)
             .saturating_sub(planned_for.as_ref().map_or(0, |id| id.review_count));
         let handle = std::thread::spawn(move || -> Result<Box<RwkvOfflineRuntime>> {
@@ -1314,7 +1317,7 @@ impl Collection {
         // ponytail: a build for another collection is dropped, not stopped: it
         // runs on (memory) until done; join it first if profiles get switched a lot.
         *building = Some((self.col_path.clone(), handle));
-        Ok(())
+        Ok(replaying)
     }
 
     /// The runtime from `rwkv_offline_start_build`, once it is done.

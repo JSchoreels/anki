@@ -983,7 +983,11 @@ message RwkvPrepareOfflineRequest {
   string state_precision = 2;
 }
 
-message RwkvPrepareOfflineResponse {}
+message RwkvPrepareOfflineResponse {
+  // Reviews being replayed (an estimate when built in the background): the
+  // app's "Rebuilding RWKV" toast and its rebuild notification.
+  uint64 reviews_replayed = 1;
+}
 
 message RwkvOfflineInstantPassStepRequest {
   // "Rebuild RWKV State": throw the model state away and replay the whole
