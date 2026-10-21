@@ -384,7 +384,8 @@ fn instant_pass(col: &mut Col) -> anki::error::Result<Progress> {
     )
 }
 
-/// Answers `card_id` with `new_state` (`rating` 0 Again .. 3 Easy), 5 s taken, as the app does.
+/// Answers `card_id` with `new_state` (`rating` 0 Again .. 3 Easy), 5 s taken,
+/// as the app does.
 fn answer(
     col: &mut Col,
     card_id: i64,
