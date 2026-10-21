@@ -9,12 +9,13 @@ import contextlib
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
-from anki.collection import GithubRelease, Progress
+from anki.collection import Collection, GithubRelease, Progress
 from anki.utils import is_mac, is_win
 from aqt.progress import ProgressUpdate
-from aqt.utils import openFolder, openLink, show_info, tr
+from aqt.utils import openLink, tr
 
 
 # ruff: noqa: F401
@@ -186,6 +187,7 @@ def download_github_update_and_install(release: GithubRelease) -> None:
     from aqt import is_portable, mw
 
     portable = is_portable()
+    cancelled = threading.Event()
     if portable:
         args = []
     elif release.filename.endswith(".msi"):
@@ -198,8 +200,10 @@ def download_github_update_and_install(release: GithubRelease) -> None:
 
     def on_success(output_path: str) -> None:
         if portable:
-            openFolder(str(Path(output_path).parent))
-            show_info(tr.qt_misc_portable_update_ready(path=output_path), parent=mw)
+            if cancelled.is_set():
+                (Path(output_path).parent / "cancel").touch()
+                return
+            mw.close()
             return
         with contextlib.suppress(ResourceWarning):
             creationflags = 0
@@ -227,13 +231,30 @@ def download_github_update_and_install(release: GithubRelease) -> None:
             )
             update.value = download_update.downloaded_bytes
             update.max = download_update.total_bytes
+        elif portable:
+            update.label = tr.qt_misc_preparing_portable_update()
+            update.value = update.max = 0
         if update.user_wants_abort:
+            cancelled.set()
             update.abort = True
 
     from aqt.operations import QueryOp
 
+    def download_and_prepare(col: Collection) -> str:
+        path = col._backend.download_release(release)
+        if portable:
+            from aqt.portable_update import prepare_update
+
+            return prepare_update(
+                col._backend,
+                Path(path),
+                Path(os.environ["ANKI_PORTABLE_ROOT"]),
+                cancelled=cancelled.is_set,
+            )
+        return path
+
     QueryOp(
         parent=mw,
-        op=lambda col: col._backend.download_release(release),
+        op=download_and_prepare,
         success=on_success,
     ).with_backend_progress(update_progress).run_in_background()

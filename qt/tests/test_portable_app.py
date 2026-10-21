@@ -93,3 +93,60 @@ def test_unwritable_portable_location_has_actionable_error(
         module.configure_portable_environment(module_file, environ)
 
     assert environ == {"ANKI_BASE": "/main/Anki2"}
+
+
+def test_update_helper_bootstrap_does_not_open_an_anki_profile(tmp_path, monkeypatch):
+    module = load_portable_app_module()
+    plan = tmp_path / "plan.json"
+    monkeypatch.setenv("ANKI_PORTABLE_UPDATE_PLAN", str(plan))
+    calls = []
+    monkeypatch.setattr(
+        "runpy.run_path", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        module, "configure_portable_environment", lambda: pytest.fail("opened profile")
+    )
+
+    module.main()
+
+    assert calls == [
+        (
+            (str(tmp_path / "helper.py"),),
+            {"run_name": "__main__", "init_globals": {"update_plan_path": str(plan)}},
+        )
+    ]
+
+
+def test_restart_acknowledgement_precedes_anki_run_and_profile_setup(monkeypatch):
+    import aqt
+    import aqt.portable_update
+
+    module = load_portable_app_module()
+    calls = []
+    monkeypatch.setenv("ANKI_PORTABLE_UPDATE_ACK", "temporary-job/started")
+    monkeypatch.setattr(
+        module, "configure_portable_environment", lambda: calls.append("configure")
+    )
+    monkeypatch.setattr(
+        aqt.portable_update, "acknowledge_startup", lambda: calls.append("acknowledge")
+    )
+    monkeypatch.setattr(aqt, "run", lambda: calls.append("profile setup"))
+
+    module.main()
+
+    assert calls == ["configure", "acknowledge", "profile setup"]
+
+
+def test_manual_launch_during_update_does_not_open_profiles(monkeypatch):
+    import aqt
+    import aqt.portable_update
+
+    module = load_portable_app_module()
+    monkeypatch.setattr(module, "configure_portable_environment", lambda: None)
+    monkeypatch.setattr(aqt, "is_portable", lambda: True)
+    monkeypatch.setattr(aqt.portable_update, "can_start_application", lambda: False)
+    monkeypatch.setattr(
+        aqt, "run", lambda: pytest.fail("opened profiles during update")
+    )
+
+    module.main()

@@ -80,6 +80,17 @@ fn release_is_downloaded(filename: &str, checksum: &str) -> Result<bool> {
 }
 
 impl BackendGithubService for Backend {
+    fn extract_portable_update(
+        &self,
+        input: anki_proto::github::ExtractPortableUpdateRequest,
+    ) -> Result<()> {
+        crate::updates::extract_portable_update(
+            std::path::Path::new(&input.archive_path),
+            std::path::Path::new(&input.destination),
+            &mut self.new_progress_handler::<DownloadUpdateProgress>(),
+        )
+    }
+
     fn get_latest_release(&self, input: LatestReleaseRequest) -> Result<GithubRelease> {
         let no_updates_msg = self.tr.errors_no_updates_available();
         let suffix =
