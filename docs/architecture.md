@@ -282,10 +282,12 @@ selected sort within each group. By default, intraday cards retain their relativ
 with review cards, and new cards still follow New/review order. Intraday
 learning/review order defaults to Mix. Before and After instead prepend or append
 the admitted due intraday group, preserving its selected sort and leaving the
-interday/new/review mixing of the remaining cards intact. Intraday cards
-with a future timestamp remain hidden until their due time, at which point the
-queue is rebuilt so they can be inserted according to their current
-retrievability. The ordering key is
+interday/new/review mixing of the remaining cards intact. After the main queue
+is exhausted, future intraday learning/relearning cards within the configured
+Learn ahead limit can be shown early. A zero limit disables early reviews.
+This applies to both retrievability orders and Relative Overdueness. When an
+intraday card becomes due, the queue is rebuilt so it can be inserted according
+to its current sorting key. The ordering key is
 the card's current FSRS retrievability from its selected deck preset. Relative
 Overdueness uses the same shared gather path, with the model-independent key
 `-elapsed_days / interval_at_retrievability(full_state, desired_retention)`.

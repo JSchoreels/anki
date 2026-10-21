@@ -268,10 +268,6 @@ impl CardQueues {
             .then_some(())
             .into_iter()
             .flat_map(|_| self.intraday_now_iter().map(Into::into));
-        let intraday_ahead = (!self.non_news_sorted_by_retrievability)
-            .then_some(())
-            .into_iter()
-            .flat_map(|_| self.intraday_ahead_iter().map(Into::into));
         intraday_now
             .chain(
                 self.main
@@ -279,7 +275,7 @@ impl CardQueues {
                     .filter(|entry| !self.rwkv_blocks_learning_card(entry.id))
                     .map(Into::into),
             )
-            .chain(intraday_ahead)
+            .chain(self.intraday_ahead_iter().map(Into::into))
     }
 
     /// Remove the provided card from the top of the queues and
@@ -323,7 +319,7 @@ impl CardQueues {
     /// cutoff is updated to the current time first, and any newly-due learning
     /// cards are added to the counts.
     pub(crate) fn counts(&mut self) -> Counts {
-        if self.counts.all_zero() && !self.non_news_sorted_by_retrievability {
+        if self.counts.all_zero() {
             // we discard the returned undo information in this case
             self.update_learning_cutoff_and_count();
         }

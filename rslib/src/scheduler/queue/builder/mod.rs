@@ -411,6 +411,7 @@ impl QueueBuilder {
         let intraday_learning = sort_learning(self.learning);
         let now = TimestampSecs::now();
         let cutoff = now.adding_secs(learn_ahead_secs);
+        let intraday_learning_count = intraday_learning.iter().filter(|e| e.due <= cutoff).count();
         let shared_r_sort = self.context.non_news_sorted_by_retrievability();
         let r_sorted_learning_count = self
             .r_sorted_non_new
@@ -423,11 +424,12 @@ impl QueueBuilder {
             .filter(|card| matches!(card.kind, DueCardKind::Review))
             .count();
         let learn_count = if shared_r_sort {
-            r_sorted_learning_count
+            intraday_learning_count
+                + r_sorted_learning_count
                 + self.day_learning.len()
                 + self.r_sorted_intraday_learning.len()
         } else {
-            intraday_learning.iter().filter(|e| e.due <= cutoff).count() + self.day_learning.len()
+            intraday_learning_count + self.day_learning.len()
         };
 
         let review_count = if shared_r_sort {
@@ -1912,43 +1914,175 @@ mod test {
     }
 
     #[test]
-    fn fsrs_retrievability_order_excludes_future_intraday_learning() -> Result<()> {
-        let mut col = Collection::new();
-        col.set_config_bool(BoolKey::Fsrs, true, true)?;
-        let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
-        let mut config = col
-            .get_deck_config(deck.config_id().unwrap(), false)?
-            .unwrap();
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "jschoreels.deckoptions": {
-                "intraday_learning_mix": ReviewMix::AfterReviews as i32,
-            },
-        }))?;
-        col.add_or_update_deck_config(&mut config)?;
+    fn fsrs_review_orders_respect_learn_ahead_after_due_and_new_cards() -> Result<()> {
+        for version in [FsrsVersion::Six, FsrsVersion::Seven] {
+            for order in [
+                ReviewCardOrder::RetrievabilityAscending,
+                ReviewCardOrder::RetrievabilityDescending,
+                ReviewCardOrder::RelativeOverdueness,
+            ] {
+                for intraday_mix in [
+                    ReviewMix::BeforeReviews,
+                    ReviewMix::MixWithReviews,
+                    ReviewMix::AfterReviews,
+                ] {
+                    let mut col = Collection::new();
+                    col.set_config_bool(BoolKey::Fsrs, true, true)?;
+                    let mut deck = col.get_or_create_normal_deck("Default")?;
+                    col.set_deck_review_order(&mut deck, order);
+                    let mut config = col
+                        .get_deck_config(deck.config_id().unwrap(), false)?
+                        .unwrap();
+                    config.inner.fsrs_version = version as i32;
+                    config.inner.new_mix = ReviewMix::AfterReviews as i32;
+                    config.inner.other = serde_json::to_vec(&serde_json::json!({
+                        "jschoreels.deckoptions": {
+                            "intraday_learning_mix": intraday_mix as i32,
+                        },
+                    }))?;
+                    col.add_or_update_deck_config(&mut config)?;
+                    let timing = col.timing_today()?;
+                    let review = add_memory_state_card(
+                        &mut col,
+                        deck.id,
+                        CardQueue::Review,
+                        CardType::Review,
+                        timing.days_elapsed as i32,
+                        2 * 86_400,
+                        30.0,
+                    )?;
+                    let new_card = CardAdder::new().deck(deck.id).add(&mut col)[0].id;
+                    let relearning = add_memory_state_card(
+                        &mut col,
+                        deck.id,
+                        CardQueue::Learn,
+                        CardType::Relearn,
+                        (timing.now.0 + 60) as i32,
+                        6 * 86_400,
+                        30.0,
+                    )?;
+                    let learning = add_memory_state_card(
+                        &mut col,
+                        deck.id,
+                        CardQueue::Learn,
+                        CardType::Learn,
+                        (timing.now.0 + 90) as i32,
+                        86_400,
+                        30.0,
+                    )?;
 
-        let timing = col.timing_today()?;
-        let review = add_memory_state_card(
-            &mut col,
-            deck.id,
-            CardQueue::Review,
-            CardType::Review,
-            timing.days_elapsed as i32,
-            2 * 86_400,
-            30.0,
-        )?;
-        add_memory_state_card(
-            &mut col,
-            deck.id,
-            CardQueue::Learn,
-            CardType::Relearn,
-            (timing.now.0 + 60) as i32,
-            6 * 86_400,
-            30.0,
-        )?;
+                    for (ahead_secs, early) in [(0, false), (30, false), (240 * 60, true)] {
+                        col.set_learn_ahead_secs(ahead_secs)?;
+                        let mut builder = QueueBuilder::new(&mut col, deck.id)?;
+                        col.storage
+                            .update_active_decks(&builder.context.root_deck)?;
+                        // Keep both future cards intraday, even just before rollover.
+                        builder.context.timing.next_day_at = timing.now.adding_secs(86_400);
+                        builder.gather_cards(&mut col)?;
+                        let mut queues = builder.build(ahead_secs.into());
+                        let expected = if early {
+                            vec![review, new_card, relearning, learning]
+                        } else {
+                            vec![review, new_card]
+                        };
+                        assert_eq!(
+                            queues
+                                .iter()
+                                .map(|entry| entry.card_id())
+                                .collect::<Vec<_>>(),
+                            expected,
+                            "{version:?}, {order:?}, {intraday_mix:?}, ahead={ahead_secs}"
+                        );
+                        let counts = queues.counts();
+                        assert_eq!(
+                            [counts.new, counts.learning, counts.review],
+                            [1, if early { 2 } else { 0 }, 1],
+                            "{version:?}, {order:?}, {intraday_mix:?}, ahead={ahead_secs}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
-        assert_eq!(col.queue_as_ids(deck.id), vec![review]);
-        assert_eq!(col.counts(), [0, 0, 1]);
+    #[test]
+    fn fsrs_learn_ahead_refreshes_empty_queue_counts() -> Result<()> {
+        for order in [
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, true)?;
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_review_order(&mut deck, order);
+            let now = TimestampSecs::now();
+            let learning = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Learn,
+                CardType::Learn,
+                now.adding_secs(60).0 as i32,
+                60,
+                30.0,
+            )?;
+            let mut builder = QueueBuilder::new(&mut col, deck.id)?;
+            col.storage
+                .update_active_decks(&builder.context.root_deck)?;
+            builder.context.timing.next_day_at = now.adding_secs(86_400);
+            builder.gather_cards(&mut col)?;
+            let mut queues = builder.build(0);
+            assert_eq!(queues.counts.learning, 0);
+
+            let due = queues.intraday_learning[0].due;
+            queues.learn_ahead_secs = 30;
+            queues.current_learning_cutoff = due.adding_secs(-31);
+            assert!(queues.iter().next().is_none());
+            queues.current_learning_cutoff = due.adding_secs(-30);
+            assert_eq!(queues.iter().next().unwrap().card_id(), learning);
+
+            // Simulate an empty queue whose cutoff predates the card entering
+            // the learn-ahead window. Refreshing counts must also make it selectable.
+            queues.current_learning_cutoff = now.adding_secs(-120);
+            queues.learn_ahead_secs = 120;
+            assert_eq!(queues.counts().learning, 1);
+            assert_eq!(queues.iter().next().unwrap().card_id(), learning);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_learn_ahead_survives_answers_and_undo_redo() -> Result<()> {
+        for order in [
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, true)?;
+            col.set_learn_ahead_secs(240 * 60)?;
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_review_order(&mut deck, order);
+            col.set_deck_fsrs7_defaults(deck.id);
+            let card = CardAdder::new().deck(deck.id).add(&mut col)[0].id;
+
+            assert_eq!(col.answer_again().card_id, card);
+            assert_eq!(col.counts(), [0, 1, 0]);
+            assert_eq!(col.get_next_card()?.unwrap().card.id, card);
+            assert_eq!(col.answer_again().card_id, card);
+            assert_eq!(col.counts(), [0, 1, 0]);
+            assert_eq!(col.get_next_card()?.unwrap().card.reps, 2);
+
+            col.undo()?;
+            assert_eq!(col.counts(), [0, 1, 0]);
+            let restored = col.get_next_card()?.unwrap().card;
+            assert_eq!((restored.id, restored.reps), (card, 1));
+            col.redo()?;
+            assert_eq!(col.counts(), [0, 1, 0]);
+            let restored = col.get_next_card()?.unwrap().card;
+            assert_eq!((restored.id, restored.reps), (card, 2));
+        }
         Ok(())
     }
 
