@@ -46,6 +46,7 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use prost::Message;
 use rusqlite::OptionalExtension;
 
+use super::history::RWKV_COUNTED_REVIEW;
 use super::offline_engine::Engine;
 use super::offline_state;
 use super::*;
@@ -390,10 +391,17 @@ impl RwkvOfflineRuntime {
     }
 }
 
+/// Whether the deck named `name` is a descendant of `scope`.
+fn is_below(name: &str, scope: &Deck) -> bool {
+    name.strip_prefix(scope.name.as_native_str())
+        .is_some_and(|rest| rest.starts_with('\x1f'))
+}
+
 /// Hands the memory a big replay freed back to the system. Each review
 /// replaces a card's state with a new allocation, and the allocator keeps the
 /// freed ones: after a 1M-review replay 0.85 GB of the 2.3 GB were free but
-/// still held, and Android counts them against the app.
+/// still held, and Android counts them against the app. Android's purge is
+/// ours; glibc and macOS are the engine's own helper.
 fn release_freed_memory() {
     #[cfg(target_os = "android")]
     {
@@ -415,16 +423,7 @@ fn release_freed_memory() {
             }
         }
     }
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        extern "C" {
-            fn malloc_trim(pad: usize) -> i32;
-        }
-        // SAFETY: glibc's malloc_trim has no preconditions.
-        unsafe {
-            malloc_trim(0);
-        }
-    }
+    crate::rwkv::release_free_memory_to_os();
 }
 
 /// `Collection::rwkv_offline_history_plan` from a history already read: what
@@ -734,8 +733,7 @@ impl Collection {
     ) -> Result<()> {
         let mut decks = Vec::new();
         for scope in self.rwkv_offline_instant_scopes()? {
-            decks.extend(self.storage.child_decks(&scope)?);
-            decks.push(scope);
+            decks.extend(self.storage.deck_with_children(scope.id)?);
         }
         self.state.rwkv_count_cards.clear();
         let _ = self.deck_tree(Some(TimestampSecs::now()))?;
@@ -962,9 +960,11 @@ impl Collection {
             .storage
             .db
             .query_row(
-                "select id, ease, type from revlog where cid = ? \
-                 and ease between 1 and 4 and type in (0, 1, 2, 3, 4, 5) \
-                 and not (type = 3 and factor = 0) order by id desc limit 1",
+                &format!(
+                    "select r.id, r.ease, r.type from revlog r where r.cid = ? and {} \
+                     order by r.id desc limit 1",
+                    RWKV_COUNTED_REVIEW
+                ),
                 [card_id.0],
                 |row| {
                     Ok((
@@ -1546,8 +1546,7 @@ impl Collection {
         let deck_ids: Vec<_> = deck_ids.iter().map(|id| id.0.to_string()).collect();
         let sql = format!(
             "select r.cid from revlog r join cards c on c.id = r.cid \
-             where r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5) \
-             and not (r.type = 3 and r.factor = 0) \
+             where {RWKV_COUNTED_REVIEW} \
              and (case when c.odid != 0 then c.odid else c.did end) in ({}) \
              order by r.id desc, r.cid desc limit ?",
             deck_ids.join(",")
@@ -1561,14 +1560,11 @@ impl Collection {
     }
 
     fn rwkv_offline_deck_tree_ids(&mut self, deck: &Deck) -> Result<HashSet<DeckId>> {
-        let mut ids: HashSet<_> = self
+        Ok(self
             .storage
-            .child_decks(deck)?
+            .deck_id_with_children(deck)?
             .into_iter()
-            .map(|child| child.id)
-            .collect();
-        ids.insert(deck.id);
-        Ok(ids)
+            .collect())
     }
 
     /// The top-most Instant deck above `deck`, when it uses `deck`'s preset:
@@ -1579,12 +1575,7 @@ impl Collection {
         Ok(self
             .rwkv_offline_instant_scopes()?
             .into_iter()
-            .find(|scope| {
-                scope.config_id() == deck.config_id()
-                    && name
-                        .strip_prefix(scope.name.as_native_str())
-                        .is_some_and(|rest| rest.starts_with('\x1f'))
-            }))
+            .find(|scope| scope.config_id() == deck.config_id() && is_below(name, scope)))
     }
 
     /// The top-most Instant-enabled decks: each is scored with its children.
@@ -1598,12 +1589,9 @@ impl Collection {
                 .config_id()
                 .and_then(|config_id| configs.get(&config_id))
                 .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled);
-            let covered = scopes.iter().any(|scope| {
-                deck.name
-                    .as_native_str()
-                    .strip_prefix(scope.name.as_native_str())
-                    .is_some_and(|rest| rest.starts_with('\x1f'))
-            });
+            let covered = scopes
+                .iter()
+                .any(|scope| is_below(deck.name.as_native_str(), scope));
             if enabled && !covered {
                 scopes.push(deck);
             }

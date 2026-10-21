@@ -28,32 +28,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut col = CollectionBuilder::new(&args[1]).build()?;
 
     let start = Instant::now();
-    prepare_and_wait(
-        &mut col,
-        RwkvPrepareOfflineRequest {
-            model_path: args[2].clone(),
-            state_precision: state_precision(),
-            ..Default::default()
-        },
-    )?;
+    prepare_and_wait(&mut col, &args[2])?;
     println!("prepare: {} ms", start.elapsed().as_millis());
 
     let start = Instant::now();
-    prepare_and_wait(
-        &mut col,
-        RwkvPrepareOfflineRequest {
-            model_path: args[2].clone(),
-            state_precision: state_precision(),
-            ..Default::default()
-        },
-    )?;
+    prepare_and_wait(&mut col, &args[2])?;
     println!("prepare again: {} ms", start.elapsed().as_millis());
 
     let start = Instant::now();
-    let pass = SchedulerService::rwkv_offline_instant_pass_step(
-        &mut col,
-        RwkvOfflineInstantPassStepRequest::default(),
-    )?;
+    let pass = instant_pass(&mut col)?;
     println!(
         "instant pass: available={} scored={} in {} ms",
         pass.available,
@@ -79,24 +62,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &before_rebuild,
         &after_rebuild,
     );
-    let status = SchedulerService::rwkv_offline_instant_pass_step(
-        &mut col,
-        RwkvOfflineInstantPassStepRequest {
-            status_only: true,
-            ..Default::default()
-        },
-    )?;
+    let status = replay_status(&mut col)?;
     println!(
-        "rebuild: {} reviews replayed in {} ms, {} absorbed, {} scored; scores equal before/after: {}; status: {} absorbed, {} replayed",
+        "rebuild: {} reviews replayed in {} ms, {} absorbed, {} scored; status: {} absorbed, {} replayed",
         rebuilt.reviews_replayed,
         rebuilt.step_micros / 1000,
         rebuilt.reviews_absorbed,
         rebuilt.scored,
-        before_rebuild.len() == after_rebuild.len()
-            && before_rebuild
-                .iter()
-                .zip(&after_rebuild)
-                .all(|(a, b)| a.0 == b.0 && (a.1 - b.1).abs() < 1e-5),
         status.reviews_absorbed,
         status.reviews_replayed,
     );
@@ -106,45 +78,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and must give the same scores.
     let state_file = std::path::Path::new(&args[1]).with_extension("rwkv-offline");
     let before_reopen = {
-        SchedulerService::rwkv_offline_instant_pass_step(
-            &mut col,
-            RwkvOfflineInstantPassStepRequest::default(),
-        )?;
+        instant_pass(&mut col)?;
         all_scores(&mut col)?
     };
     col.close(None)?;
     let mut col = CollectionBuilder::new(&args[1]).build()?;
     let start = Instant::now();
-    prepare_and_wait(
-        &mut col,
-        RwkvPrepareOfflineRequest {
-            model_path: args[2].clone(),
-            state_precision: state_precision(),
-        },
-    )?;
+    prepare_and_wait(&mut col, &args[2])?;
     let prepare_ms = start.elapsed().as_millis();
     let after_reopen = {
-        SchedulerService::rwkv_offline_instant_pass_step(
-            &mut col,
-            RwkvOfflineInstantPassStepRequest::default(),
-        )?;
+        instant_pass(&mut col)?;
         all_scores(&mut col)?
     };
     println!(
-        "reopen: state file {} KB; prepare {} ms; {} scores, equal to before: {} (max difference {:.6})",
+        "reopen: state file {} KB; prepare {} ms",
         std::fs::metadata(&state_file).map_or(0, |m| m.len() / 1024),
         prepare_ms,
-        after_reopen.len(),
-        before_reopen.len() == after_reopen.len()
-            && before_reopen
-                .iter()
-                .zip(&after_reopen)
-                .all(|(a, b)| a.0 == b.0 && (a.1 - b.1).abs() < 1e-5),
-        before_reopen
-            .iter()
-            .zip(&after_reopen)
-            .map(|(a, b)| (a.1 - b.1).abs())
-            .fold(0.0f32, f32::max),
+    );
+    report(
+        "before reopen vs after reopen",
+        &before_reopen,
+        &after_reopen,
     );
 
     let now = std::time::SystemTime::now()
@@ -300,30 +254,20 @@ fn answer_check(
             1 => (states.hard.clone(), 1),
             _ => (states.good.clone(), 2),
         };
-        SchedulerService::answer_card(
+        answer(
             &mut col,
-            anki_proto::scheduler::CardAnswer {
-                card_id: *cid,
-                current_state: states.current.clone(),
-                new_state,
-                rating,
-                answered_at_millis: now * 1000 + index as i64,
-                milliseconds_taken: 5_000,
-                ..Default::default()
-            },
+            *cid,
+            &states,
+            new_state,
+            rating,
+            now * 1000 + index as i64,
         )?;
     }
-    let pass = SchedulerService::rwkv_offline_instant_pass_step(
-        &mut col,
-        RwkvOfflineInstantPassStepRequest::default(),
-    )?;
+    let pass = instant_pass(&mut col)?;
     DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
     let incremental = all_scores(&mut col)?;
     std::thread::sleep(std::time::Duration::from_secs(20));
-    SchedulerService::rwkv_offline_instant_pass_step(
-        &mut col,
-        RwkvOfflineInstantPassStepRequest::default(),
-    )?;
+    instant_pass(&mut col)?;
     DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
     report(
         "incremental vs itself 20 s later",
@@ -349,17 +293,8 @@ fn answer_check(
             std::fs::remove_file(&state_file)?;
         }
         let mut col = CollectionBuilder::new(col_path).build()?;
-        prepare_and_wait(
-            &mut col,
-            RwkvPrepareOfflineRequest {
-                model_path: model_path.into(),
-                state_precision: state_precision(),
-            },
-        )?;
-        SchedulerService::rwkv_offline_instant_pass_step(
-            &mut col,
-            RwkvOfflineInstantPassStepRequest::default(),
-        )?;
+        prepare_and_wait(&mut col, model_path)?;
+        instant_pass(&mut col)?;
         DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
         let other = all_scores(&mut col)?;
         report(&format!("incremental vs {label}"), &incremental, &other);
@@ -369,29 +304,19 @@ fn answer_check(
     // Undo of an answer: the history changed under the state, so it is
     // rebuilt on its own thread; the deck list must not wait for it.
     let mut col = CollectionBuilder::new(col_path).build()?;
-    prepare_and_wait(
-        &mut col,
-        RwkvPrepareOfflineRequest {
-            model_path: model_path.into(),
-            state_precision: state_precision(),
-        },
-    )?;
+    prepare_and_wait(&mut col, model_path)?;
     DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
     let before_answer = all_scores(&mut col)?;
     let cid = answered[0];
     let states =
         SchedulerService::get_scheduling_states(&mut col, anki_proto::cards::CardId { cid })?;
-    SchedulerService::answer_card(
+    answer(
         &mut col,
-        anki_proto::scheduler::CardAnswer {
-            card_id: cid,
-            current_state: states.current.clone(),
-            new_state: states.good.clone(),
-            rating: 2,
-            answered_at_millis: now * 1000 + 100,
-            milliseconds_taken: 5_000,
-            ..Default::default()
-        },
+        cid,
+        &states,
+        states.good.clone(),
+        2,
+        now * 1000 + 100,
     )?;
     DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
     col.undo()?;
@@ -399,17 +324,7 @@ fn answer_check(
     DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
     let undo_ms = started.elapsed().as_millis();
     let started = Instant::now();
-    while !SchedulerService::rwkv_offline_instant_pass_step(
-        &mut col,
-        RwkvOfflineInstantPassStepRequest {
-            status_only: true,
-            ..Default::default()
-        },
-    )?
-    .available
-    {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    wait_ready(&mut col)?;
     println!(
         "undo: deck list after {undo_ms} ms, rebuilt in the background in {} ms",
         started.elapsed().as_millis()
@@ -428,25 +343,69 @@ fn answer_check(
     Ok(())
 }
 
+type Col = anki::collection::Collection;
+type Progress = anki_proto::scheduler::RwkvOfflineInstantPassProgress;
+
 /// The prepare call returns while the runtime is still being built on its own
 /// thread (as on the phone); this waits for it, so the checks see RWKV scores.
-fn prepare_and_wait(
-    col: &mut anki::collection::Collection,
-    request: RwkvPrepareOfflineRequest,
-) -> anki::error::Result<anki_proto::scheduler::RwkvPrepareOfflineResponse> {
-    let prepared = SchedulerService::rwkv_prepare_offline(col, request)?;
-    while !SchedulerService::rwkv_offline_instant_pass_step(
+fn prepare_and_wait(col: &mut Col, model_path: &str) -> anki::error::Result<()> {
+    SchedulerService::rwkv_prepare_offline(
+        col,
+        RwkvPrepareOfflineRequest {
+            model_path: model_path.into(),
+            state_precision: state_precision(),
+        },
+    )?;
+    wait_ready(col)
+}
+
+/// Waits for a runtime being built on its own thread (after prepare or undo).
+fn wait_ready(col: &mut Col) -> anki::error::Result<()> {
+    while !replay_status(col)?.available {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+fn replay_status(col: &mut Col) -> anki::error::Result<Progress> {
+    SchedulerService::rwkv_offline_instant_pass_step(
         col,
         RwkvOfflineInstantPassStepRequest {
             status_only: true,
             ..Default::default()
         },
-    )?
-    .available
-    {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    Ok(prepared)
+    )
+}
+
+fn instant_pass(col: &mut Col) -> anki::error::Result<Progress> {
+    SchedulerService::rwkv_offline_instant_pass_step(
+        col,
+        RwkvOfflineInstantPassStepRequest::default(),
+    )
+}
+
+/// Answers `card_id` with `new_state` (`rating` 0 Again .. 3 Easy), 5 s taken, as the app does.
+fn answer(
+    col: &mut Col,
+    card_id: i64,
+    states: &anki_proto::scheduler::SchedulingStates,
+    new_state: Option<anki_proto::scheduler::SchedulingState>,
+    rating: i32,
+    answered_at_millis: i64,
+) -> anki::error::Result<()> {
+    SchedulerService::answer_card(
+        col,
+        anki_proto::scheduler::CardAnswer {
+            card_id,
+            current_state: states.current.clone(),
+            new_state,
+            rating,
+            answered_at_millis,
+            milliseconds_taken: 5_000,
+            ..Default::default()
+        },
+    )?;
+    Ok(())
 }
 
 /// How many cards differ between two score lists, and the worst ones.
@@ -515,17 +474,13 @@ fn lag_check(
         let card_id = card.card.as_ref().unwrap().id;
         let states = card.states.clone().unwrap();
         let start = Instant::now();
-        SchedulerService::answer_card(
+        answer(
             &mut col,
-            anki_proto::scheduler::CardAnswer {
-                card_id,
-                current_state: states.current.clone(),
-                new_state: states.good.clone(),
-                rating: 2,
-                answered_at_millis: (now + index) * 1000,
-                milliseconds_taken: 5_000,
-                ..Default::default()
-            },
+            card_id,
+            &states,
+            states.good.clone(),
+            2,
+            (now + index) * 1000,
         )?;
         println!(
             "LAG card {index}: fetch {fetch_ms} ms, answer {} ms (queue {})",
@@ -606,17 +561,13 @@ fn probe_check(
         } else {
             states.good.clone()
         };
-        SchedulerService::answer_card(
+        answer(
             &mut col,
-            anki_proto::scheduler::CardAnswer {
-                card_id: top.unwrap(),
-                current_state: states.current.clone(),
-                new_state,
-                rating: rating - 1,
-                answered_at_millis: anki::timestamp::TimestampMillis::now().0,
-                milliseconds_taken: 5_000,
-                ..Default::default()
-            },
+            top.unwrap(),
+            &states,
+            new_state,
+            rating - 1,
+            anki::timestamp::TimestampMillis::now().0,
         )?;
         std::thread::sleep(std::time::Duration::from_secs(2));
     }

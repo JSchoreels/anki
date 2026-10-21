@@ -9,6 +9,12 @@ use anki_proto::scheduler::RwkvHistoricalReviewMetadata;
 
 use super::*;
 
+/// The revlog rows (alias `r`) the model reads as reviews: rated, of a known
+/// kind, and not a manual reschedule.
+pub(crate) const RWKV_COUNTED_REVIEW: &str =
+    "r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5) \
+     and not (r.type = 3 and r.factor = 0)";
+
 impl Collection {
     pub(crate) fn rwkv_historical_review_inputs(
         &mut self,
@@ -116,9 +122,10 @@ impl Collection {
         };
         if review.row.is_learning_start {
             let earlier: i64 = self.storage.db.query_row(
-                "select count() from revlog where cid = ? and id < ?
-                   and ease between 1 and 4 and type in (0, 1, 2, 3, 4, 5)
-                   and not (type = 3 and factor = 0)",
+                &format!(
+                    "select count() from revlog r where r.cid = ? and r.id < ? and {}",
+                    RWKV_COUNTED_REVIEW
+                ),
                 [card_id.0, review.row.review_id],
                 |row| row.get(0),
             )?;
