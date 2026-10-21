@@ -611,23 +611,21 @@ impl Collection {
         let mut runtime = match self.state.rwkv_offline.take() {
             Some(runtime) if runtime.model == model => runtime,
             _ => {
-                // Built on its own thread; `reviews_replayed` is then what it
-                // is replaying, and the next queue build or deck count
+                // Built on its own thread; the next queue build or deck count
                 // installs it once done.
                 *REGISTERED_MODEL.lock().unwrap() = Some(model.clone());
-                let reviews_replayed = self.rwkv_offline_start_build(model)?;
-                return Ok(RwkvPrepareOfflineResponse { reviews_replayed });
+                self.rwkv_offline_start_build(model)?;
+                return Ok(RwkvPrepareOfflineResponse {});
             }
         };
         // On error the runtime is dropped, and the standard scheduler applies
         // until the next successful prepare.
-        let reviews_replayed = self.rwkv_offline_sync_history(&mut runtime)?;
-        if reviews_replayed > 0 {
+        if self.rwkv_offline_sync_history(&mut runtime)? > 0 {
             self.state.card_queues = None;
         }
         *REGISTERED_MODEL.lock().unwrap() = Some(runtime.model.clone());
         self.state.rwkv_offline = Some(runtime);
-        Ok(RwkvPrepareOfflineResponse { reviews_replayed })
+        Ok(RwkvPrepareOfflineResponse {})
     }
 
     /// Scores every Instant-enabled deck now and installs the deck count
@@ -810,7 +808,7 @@ impl Collection {
             .rows;
         let now = TimestampSecs::now().0;
         let cutoff = self.timing_today()?.next_day_at.0;
-        out.offsets_secs = input
+        let offsets: Vec<i64> = input
             .offsets_secs
             .iter()
             .map(|&secs| {
@@ -822,8 +820,8 @@ impl Collection {
             })
             .collect();
         let base: Vec<_> = rows.iter().map(query_input).collect();
-        let mut recall = vec![Vec::with_capacity(out.offsets_secs.len()); rows.len()];
-        for &secs in &out.offsets_secs {
+        let mut recall = vec![Vec::with_capacity(offsets.len()); rows.len()];
+        for &secs in &offsets {
             let at = now + secs;
             // day rollovers crossed (1 s of slack, as the desktop add-on)
             let days = if at < cutoff - 1 {
@@ -1251,15 +1249,14 @@ impl Collection {
     /// thread, unless that is already under way for this collection: on a
     /// phone it takes seconds, and close to a minute for a full replay of a
     /// big history, which must not hold the collection. Until it is installed
-    /// (`rwkv_offline_take_built`) the standard order applies. Returns the
-    /// number of reviews it replays.
-    fn rwkv_offline_start_build(&mut self, model: OfflineModel) -> Result<u64> {
+    /// (`rwkv_offline_take_built`) the standard order applies.
+    fn rwkv_offline_start_build(&mut self, model: OfflineModel) -> Result<()> {
         let mut building = BUILDING.lock().unwrap();
         if building
             .as_ref()
             .is_some_and(|(path, _)| *path == self.col_path)
         {
-            return Ok(0);
+            return Ok(());
         }
         // Only the identity is read here; the states are loaded on the thread.
         let state_path = self.rwkv_offline_state_path();
@@ -1286,8 +1283,8 @@ impl Collection {
             reviews = history.rows.len(),
             "RWKV offline history read under the collection"
         );
-        // ponytail: an estimate (for the app's message), assumes the state
-        // file is a valid prefix; the walk on the thread decides
+        // an estimate for the log: assumes the state file is a valid prefix;
+        // the walk on the thread decides
         let replaying = (history.rows.len() as u64)
             .saturating_sub(planned_for.as_ref().map_or(0, |id| id.review_count));
         let handle = std::thread::spawn(move || -> Result<Box<RwkvOfflineRuntime>> {
@@ -1317,7 +1314,7 @@ impl Collection {
         // ponytail: a build for another collection is dropped, not stopped: it
         // runs on (memory) until done; join it first if profiles get switched a lot.
         *building = Some((self.col_path.clone(), handle));
-        Ok(replaying)
+        Ok(())
     }
 
     /// The runtime from `rwkv_offline_start_build`, once it is done.

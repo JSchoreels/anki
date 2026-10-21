@@ -983,9 +983,7 @@ message RwkvPrepareOfflineRequest {
   string state_precision = 2;
 }
 
-message RwkvPrepareOfflineResponse {
-  uint64 reviews_replayed = 1;
-}
+message RwkvPrepareOfflineResponse {}
 
 message RwkvOfflineInstantPassStepRequest {
   // "Rebuild RWKV State": throw the model state away and replay the whole
@@ -1039,8 +1037,6 @@ message RwkvOfflineForecastResponse {
   // False until RwkvPrepareOffline has succeeded on this collection.
   bool available = 1;
   repeated Card cards = 2;
-  // The offsets used (the rollover resolved to seconds).
-  repeated int64 offsets_secs = 3;
   // At the next rollover (when a negative offset was asked for): the due
   // cards plus what "minimum reviews per day" adds then, as the deck list
   // would count them if you stop reviewing now.

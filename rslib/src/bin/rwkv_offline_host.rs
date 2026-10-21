@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut col = CollectionBuilder::new(&args[1]).build()?;
 
     let start = Instant::now();
-    let prepared = prepare_and_wait(
+    prepare_and_wait(
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: args[2].clone(),
@@ -36,14 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
     )?;
-    println!(
-        "prepare: {} reviews replayed in {} ms",
-        prepared.reviews_replayed,
-        start.elapsed().as_millis()
-    );
+    println!("prepare: {} ms", start.elapsed().as_millis());
 
     let start = Instant::now();
-    let again = prepare_and_wait(
+    prepare_and_wait(
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: args[2].clone(),
@@ -51,11 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
     )?;
-    println!(
-        "prepare again: {} reviews replayed in {} ms",
-        again.reviews_replayed,
-        start.elapsed().as_millis()
-    );
+    println!("prepare again: {} ms", start.elapsed().as_millis());
 
     let start = Instant::now();
     let pass = SchedulerService::rwkv_offline_instant_pass_step(
@@ -123,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     col.close(None)?;
     let mut col = CollectionBuilder::new(&args[1]).build()?;
     let start = Instant::now();
-    let reopened = prepare_and_wait(
+    prepare_and_wait(
         &mut col,
         RwkvPrepareOfflineRequest {
             model_path: args[2].clone(),
@@ -139,9 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         all_scores(&mut col)?
     };
     println!(
-        "reopen: state file {} KB; {} reviews replayed, prepare {} ms; {} scores, equal to before: {} (max difference {:.6})",
+        "reopen: state file {} KB; prepare {} ms; {} scores, equal to before: {} (max difference {:.6})",
         std::fs::metadata(&state_file).map_or(0, |m| m.len() / 1024),
-        reopened.reviews_replayed,
         prepare_ms,
         after_reopen.len(),
         before_reopen.len() == after_reopen.len()
@@ -200,10 +191,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_map(|c| installed.get(&c.card_id).map(|r| (r - c.recall[0]).abs()))
         .fold(0f32, f32::max);
     println!(
-        "forecast: available={} {} cards in {ms} ms, offsets {:?}; due now {} / 1 h {} / 3 h {} / tomorrow {}; max |now - installed| {max_diff:.6}",
+        "forecast: available={} {} cards in {ms} ms; due now {} / 1 h {} / 3 h {} / tomorrow {}; max |now - installed| {max_diff:.6}",
         forecast.available,
         forecast.cards.len(),
-        forecast.offsets_secs,
         due(0),
         due(1),
         due(2),
@@ -359,7 +349,7 @@ fn answer_check(
             std::fs::remove_file(&state_file)?;
         }
         let mut col = CollectionBuilder::new(col_path).build()?;
-        let prepared = prepare_and_wait(
+        prepare_and_wait(
             &mut col,
             RwkvPrepareOfflineRequest {
                 model_path: model_path.into(),
@@ -372,7 +362,6 @@ fn answer_check(
         )?;
         DecksService::deck_tree(&mut col, DeckTreeRequest { now })?;
         let other = all_scores(&mut col)?;
-        println!("{label}: {} reviews replayed", prepared.reviews_replayed);
         report(&format!("incremental vs {label}"), &incremental, &other);
         col.close(None)?;
     }
