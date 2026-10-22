@@ -61,14 +61,14 @@ it is turned off again.
 ## Bundled RWKV Models
 
 Preferences → Review → RWKV offers a **Prediction model** selector for the entire
-local profile, independently of **Storage precision**. Both the original Legacy
-model and the 331,511-parameter SM40 model are bundled. Only the selected model
-and its state are loaded.
+local profile, independently of **Storage precision**. The original Legacy
+model and the 331,511-parameter SM40 and SM36 Muon models are bundled. Only the
+selected model and its state are loaded.
 
-The profile key is `rwkvModel`, with `legacy` and `sm40` as supported values.
-Missing or unsupported values resolve to SM40 in both existing and new profiles.
-Explicitly saved `legacy` and `sm40` choices are preserved. Profile creation also
-explicitly stores `sm40`. Neither model choice nor state precision is synced.
+The profile key is `rwkvModel`, with `legacy`, `sm40` and `sm36` as supported
+values. Missing or unsupported values resolve to SM36 in existing and new profiles.
+All explicitly saved supported choices are preserved, including `sm40`. Profile
+creation explicitly stores `sm36`. Neither model choice nor state precision is synced.
 Saving a choice takes effect after reopening the profile; the active session, its
 cache identity and its background jobs keep using the current model.
 Switching models reconstructs state from canonical retained review history and
@@ -77,7 +77,12 @@ does not rewrite collection data or existing scheduling dates.
 Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
-remains f32 and storage precision defaults to INT4 cards and INT8 notes. A custom
+remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36
+weights and metadata are under `qt/aqt/rwkv_inference/sm36/`. Its architecture
+is byte-identical to SM40's export; the Muon checkpoint changes weights without
+changing feature construction, recurrent equations, curve evaluation or state
+encoding. The [SM36 integration report](rwkv-sm36-2026-10-22.MD) records package
+provenance, reference/native parity and the scope of the upstream quality evidence. A custom
 `ANKI_RWKV_MODEL_PATH` must match the selected architecture. SM40's optional
 `weights.int8.bin` container dequantizes once to f32; it reduces file size, not the
 resident compute representation.
@@ -86,10 +91,12 @@ The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for bot
 fixed architectures and dispatches at its public operation boundary. Tensor loops
 retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; both models are available at runtime in either
-build. The standard format/check targets also cover the included engine source.
+Legacy for those comparisons; all three models are available at runtime in
+either build. SM36 and SM40 share the small architecture's specialization, so a
+third engine is not compiled. The standard format/check targets also cover the
+included engine source.
 
-SM40 has width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40 and SM36 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
@@ -169,7 +176,7 @@ histories are transient and must not be written to the profile-local cache.
 Preferences → Review → RWKV selects storage precision for the whole local
 profile: `cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
 (cards and notes), `f32` (the original full-precision fallback), or `int4`
-(experimental, cards and notes). Both models support all four modes. The profile
+(experimental, cards and notes). All three models support all four modes. The profile
 key is `rwkvStatePrecision`; absent or unsupported values default to
 `cards_int4_notes_int8` in both new and existing profiles. Explicitly saved
 precision choices, including `int8`, are preserved. This choice is local and is
@@ -1299,7 +1306,7 @@ recompute, which starts a new epoch. On a 224,000-review copy the relabel took
 ## Inference Runtime
 
 Desktop RWKV inference uses Anki's embedded Rust inference-only runner and
-bundled SM40 checkpoint. `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
+selected bundled checkpoint (SM36 by default). `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
 weight file while keeping the embedded runner. `ANKI_RWKV_BENCHMARK_PATH` plus
 `ANKI_RWKV_MODEL_PATH` selects the legacy PyTorch-based `srs-benchmark` bridge
 for local development or retrained models.

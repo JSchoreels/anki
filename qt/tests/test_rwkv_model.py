@@ -2,6 +2,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import pickle
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -15,27 +16,30 @@ from aqt.rwkv_model import model_for_profile
 @pytest.mark.parametrize(
     "profile,expected",
     [
-        (None, "sm40"),
-        ({}, "sm40"),
-        ({"rwkvModel": "unknown"}, "sm40"),
-        ({"rwkvModel": None}, "sm40"),
+        (None, "sm36"),
+        ({}, "sm36"),
+        ({"rwkvModel": "unknown"}, "sm36"),
+        ({"rwkvModel": None}, "sm36"),
+        ({"rwkvModel": 36}, "sm36"),
         ({"rwkvModel": "legacy"}, "legacy"),
         ({"rwkvModel": "sm40"}, "sm40"),
+        ({"rwkvModel": "sm36"}, "sm36"),
     ],
 )
-def test_model_for_profile_defaults_to_sm40_and_preserves_explicit_choices(
+def test_model_for_profile_defaults_to_sm36_and_preserves_explicit_choices(
     profile, expected
 ):
     assert model_for_profile(profile) == expected
 
 
-def test_new_profiles_save_sm40_without_rewriting_existing_profiles():
+def test_new_profiles_save_sm36_without_rewriting_existing_profiles():
     manager = ProfileManager.__new__(ProfileManager)
     manager.db = MagicMock()
     manager.db.scalar.return_value = False
     manager.create("New profile")
     settings = pickle.loads(manager.db.execute.call_args.args[2])
-    assert model_for_profile(settings) == "sm40"
+    assert model_for_profile(settings) == "sm36"
+    assert settings["rwkvModel"] == "sm36"
     assert "rwkvModel" not in profileConf
     manager.db.reset_mock()
     manager.db.scalar.return_value = True
@@ -43,51 +47,61 @@ def test_new_profiles_save_sm40_without_rewriting_existing_profiles():
     manager.db.execute.assert_not_called()
 
 
+@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36"])
+@pytest.mark.parametrize(
+    "saved_model,filename",
+    [
+        ("legacy", "RWKV_trained_on_5000_10000.bin"),
+        ("sm40", "sm40v2/weights.f32.bin"),
+        ("sm36", "sm36/weights.f32.bin"),
+    ],
+)
 def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
-    monkeypatch,
+    monkeypatch, active_model, saved_model, filename
 ):
     import aqt
 
-    profile = {"rwkvModel": "sm40", "rwkvStatePrecision": "int4"}
+    profile = {"rwkvModel": saved_model, "rwkvStatePrecision": "int4"}
     monkeypatch.setattr(aqt, "mw", SimpleNamespace(pm=SimpleNamespace(profile=profile)))
     monkeypatch.setattr(
         rwkv_scheduler,
         "_reviewer_backend",
-        SimpleNamespace(model_name="legacy", state_precision="f32"),
+        SimpleNamespace(model_name=active_model, state_precision="f32"),
     )
-    assert rwkv_scheduler._rwkv_model() == "legacy"
+    assert rwkv_scheduler._rwkv_model() == active_model
     assert rwkv_scheduler._rwkv_state_precision() == "f32"
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
-    assert rwkv_scheduler._rwkv_model() == "sm40"
+    assert rwkv_scheduler._rwkv_model() == saved_model
     assert rwkv_scheduler._rwkv_state_precision() == "int4"
-    assert rwkv_scheduler.embedded_rwkv_model_path().name == "weights.f32.bin"
-    profile["rwkvModel"] = "legacy"
-    assert (
-        rwkv_scheduler.embedded_rwkv_model_path().name
-        == "RWKV_trained_on_5000_10000.bin"
-    )
+    root = Path(rwkv_scheduler.__file__).parent / "rwkv_inference"
+    assert rwkv_scheduler.embedded_rwkv_model_path() == root / filename
 
 
 @pytest.mark.parametrize(
-    "saved_model,active_model,replace_expected",
+    "saved_model,expected_model",
     [
-        ("legacy", "sm40", True),
-        ("sm40", "legacy", True),
-        ("legacy", "legacy", False),
-        ("sm40", "sm40", False),
-        (None, "legacy", True),
-        (None, "sm40", False),
+        (None, "sm36"),
+        ("legacy", "legacy"),
+        ("sm40", "sm40"),
+        ("sm36", "sm36"),
     ],
 )
+@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36"])
 @pytest.mark.parametrize(
     "saved_precision, replace_for_precision",
-    [(None, True), ("int8", False), ("cards_int4_notes_int8", True)],
+    [
+        (None, True),
+        ("f32", True),
+        ("int8", False),
+        ("int4", True),
+        ("cards_int4_notes_int8", True),
+    ],
 )
 def test_profile_open_reuses_only_matching_model_and_precision(
     monkeypatch,
     saved_model,
     active_model,
-    replace_expected,
+    expected_model,
     saved_precision,
     replace_for_precision,
 ):
@@ -113,13 +127,13 @@ def test_profile_open_reuses_only_matching_model_and_precision(
         )
     )
     rwkv_scheduler.begin_rwkv_state_cache_startup(owner)
-    if replace_expected or replace_for_precision:
+    if expected_model != active_model or replace_for_precision:
         replace.assert_called_once_with(None)
     else:
         replace.assert_not_called()
 
 
-@pytest.mark.parametrize("model", [None, "legacy", "sm40"])
+@pytest.mark.parametrize("model", [None, "legacy", "sm40", "sm36"])
 @pytest.mark.parametrize(
     "precision", [None, "f32", "int8", "int4", "cards_int4_notes_int8"]
 )
@@ -150,14 +164,18 @@ def test_profile_model_and_precision_reach_the_native_backend(
     )
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
-    assert backend.model_name == (model or "sm40")
+    assert backend.model_name == (model or "sm36")
     assert backend.state_precision == (precision or "cards_int4_notes_int8")
 
 
-def test_cache_replay_identity_tracks_active_model_until_profile_reopen(monkeypatch):
+@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36"])
+@pytest.mark.parametrize("saved_model", ["legacy", "sm40", "sm36"])
+def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
+    monkeypatch, active_model, saved_model
+):
     import aqt
 
-    profile = {"rwkvModel": "legacy", "rwkvStatePrecision": "int8"}
+    profile = {"rwkvModel": active_model, "rwkvStatePrecision": "int8"}
     monkeypatch.setattr(aqt, "mw", SimpleNamespace(pm=SimpleNamespace(profile=profile)))
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
     monkeypatch.setattr(
@@ -172,13 +190,13 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(monkeypa
             object(), first_review_elapsed_source=source
         )
 
-    legacy_key = key()
+    active_key = key()
     monkeypatch.setattr(
         rwkv_scheduler,
         "_reviewer_backend",
-        SimpleNamespace(model_name="legacy", state_precision="int8"),
+        SimpleNamespace(model_name=active_model, state_precision="int8"),
     )
-    profile["rwkvModel"] = "sm40"
-    assert key() == legacy_key
+    profile["rwkvModel"] = saved_model
+    assert key() == active_key
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
-    assert key() != legacy_key
+    assert (key() == active_key) == (saved_model == active_model)
