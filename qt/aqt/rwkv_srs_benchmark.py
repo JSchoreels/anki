@@ -1782,6 +1782,7 @@ def _duration_millis(review_input: RwkvReviewInput) -> float:
 
 
 _SUB_DAY_SEARCH_POINTS = (
+    1 / 86_400,
     1 / 1440,
     5 / 1440,
     10 / 1440,

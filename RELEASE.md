@@ -36,6 +36,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 ### User facing changes
 
+- **Remove the one-minute RWKV-Curve fallback.** When predicted recall is already at or below the target at one second, Curve now returns a one-second interval and S90 instead of one minute. This also prevents an immediately due answer from appearing later than another sub-minute answer. Configured minimum intervals and learning/relearning steps still apply.
+
 - **Keep RWKV model and storage settings together.** The RWKV card in Deck Options now contains the model and storage selectors, marked as applying to all decks in the local profile. It labels the original model “Legacy - Bigger Model” and SM55 “New - Smaller Model”, with links to the upstream Model Factory results and the matched backup comparison. SM40 and SM36 Muon remain selectable, and saved model choices and storage precision are preserved.
 
 - **SM55 is the default small RWKV model.** On the upstream matched 723-user comparison, it lowers Curve LogLoss by 0.00047 and Instant LogLoss by 0.00025 relative to SM36, bringing it within 0.49% / 0.53% of the big model. Deck Options → RWKV offers SM55 alongside Legacy, SM40 and SM36 Muon; explicitly saved choices and storage precision are preserved. Select SM55 and reopen the profile to use it when another model was already saved.
