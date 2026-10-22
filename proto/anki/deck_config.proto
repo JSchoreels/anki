@@ -295,6 +295,13 @@ message DeckConfigsForUpdate {
   float review_fuzz_factor_short = 18;
   float review_fuzz_factor_mid = 19;
   float review_fuzz_factor_long = 20;
+  // Desktop-local settings supplied by the GUI, never stored in the collection.
+  RwkvProfileSettings rwkv_profile_settings = 21;
+}
+
+message RwkvProfileSettings {
+  string model = 1;
+  string state_precision = 2;
 }
 
 enum UpdateDeckConfigsMode {
@@ -325,4 +332,6 @@ message UpdateDeckConfigsRequest {
   optional float review_fuzz_factor_short = 17;
   optional float review_fuzz_factor_mid = 18;
   optional float review_fuzz_factor_long = 19;
+  // Applied by the desktop GUI only after the deck configuration save succeeds.
+  RwkvProfileSettings rwkv_profile_settings = 20;
 }

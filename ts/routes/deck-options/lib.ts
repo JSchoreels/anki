@@ -13,6 +13,7 @@ import {
     DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate_CurrentDeck_Limits,
+    RwkvProfileSettings,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 import { updateDeckConfigs } from "@generated/backend";
@@ -75,10 +76,11 @@ type AllConfigs =
             | "reviewFuzzFactorLong"
         >
     >
-    & { currentConfig: DeckConfig_Config };
+    & { currentConfig: DeckConfig_Config; rwkvProfileSettings: RwkvProfileSettings };
 
 export class DeckOptionsState {
     readonly currentConfig: Writable<DeckConfig_Config>;
+    readonly rwkvProfileSettings: Writable<RwkvProfileSettings>;
     readonly currentAuxData: Writable<Record<string, unknown>>;
     readonly configList: Readable<ConfigListEntry[]>;
     readonly cardStateCustomizer: Writable<string>;
@@ -122,6 +124,12 @@ export class DeckOptionsState {
     constructor(targetDeckId: DeckOptionsId, data: DeckConfigsForUpdate) {
         this.targetDeckId = targetDeckId;
         this.currentDeck = data.currentDeck!;
+        this.rwkvProfileSettings = writable(
+            data.rwkvProfileSettings ?? new RwkvProfileSettings({
+                model: "sm55",
+                statePrecision: "cards_int4_notes_int8",
+            }),
+        );
         this.defaults = data.defaults!.config!;
         this.configs = data.allConfig.map((config) => {
             const configInner = config.config!;
@@ -388,6 +396,7 @@ export class DeckOptionsState {
         ];
         return {
             targetDeckId: this.targetDeckId,
+            rwkvProfileSettings: get(this.rwkvProfileSettings),
             removedConfigIds: this.removedConfigs,
             configs,
             mode,
@@ -512,6 +521,7 @@ export class DeckOptionsState {
             reviewFuzzFactorMid: get(this.reviewFuzzFactorMid),
             reviewFuzzFactorLong: get(this.reviewFuzzFactorLong),
             currentConfig: get(this.currentConfig),
+            rwkvProfileSettings: get(this.rwkvProfileSettings),
         });
     }
 

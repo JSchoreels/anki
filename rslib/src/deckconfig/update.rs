@@ -138,6 +138,7 @@ impl Collection {
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
+            rwkv_profile_settings: None,
         })
     }
 

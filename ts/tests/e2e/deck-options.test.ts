@@ -11,11 +11,67 @@ import {
     DeckConfigsForUpdate_ConfigWithExtra,
     DeckConfigsForUpdate_CurrentDeck_Limits,
     GetRetentionWorkloadResponse,
+    RwkvProfileSettings,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test("RWKV model and precision load local choices and only save on Save", async ({ page }, testInfo) => {
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        data.rwkvProfileSettings = new RwkvProfileSettings(
+            saved?.rwkvProfileSettings ?? {
+                model: "legacy",
+                statePrecision: "int8",
+            },
+        );
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const group = page.getByRole("region", { name: "Model and storage" });
+    const model = group.getByRole("combobox").nth(0);
+    const precision = group.getByRole("combobox").nth(1);
+    await expect(model).toHaveText("Legacy - Bigger Model");
+    await expect(precision).toHaveText("int8 — cards and notes");
+    await expect(group).toContainText("Applies to all decks in this profile on this computer");
+    await expect(group.getByRole("link", { name: "Model Factory results" })).toHaveAttribute(
+        "href",
+        "https://jschoreels.github.io/anki-rwkv/factory.html",
+    );
+    await expect(group.getByRole("link", { name: "Matched backup comparison" })).toHaveAttribute(
+        "href",
+        "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
+    );
+    await model.click();
+    await page.getByRole("option", { name: "New - Smaller Model", exact: true }).click();
+    expect(saved).toBeUndefined();
+    await page.reload();
+    await expect(model).toHaveText("Legacy - Bigger Model");
+    await model.click();
+    await page.getByRole("option", { name: "New - Smaller Model", exact: true }).click();
+    await expect(precision).toHaveText("int8 — cards and notes");
+    await precision.click();
+    await page.getByRole("option", { name: "int4 cards + int8 notes — default", exact: true }).click();
+    await group.screenshot({ path: testInfo.outputPath("rwkv-model-settings.png") });
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
+        model: "sm55",
+        statePrecision: "cards_int4_notes_int8",
+    });
+    await page.reload();
+    await expect(model).toHaveText("New - Smaller Model");
+    await expect(precision).toHaveText("int4 cards + int8 notes — default");
+});
 
 test("all intraday orders save and reload without changing descending R or other metadata", async ({ page }) => {
     let saved: UpdateDeckConfigsRequest | undefined;
