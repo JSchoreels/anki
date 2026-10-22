@@ -49,6 +49,20 @@ fn rwkv_sm36_matches_published_vectors() {
     check_published_vectors("sm36", &data);
 }
 
+#[test]
+fn rwkv_sm55_matches_published_vectors() {
+    let data = if let Ok(path) = std::env::var("ANKI_RWKV_SM55_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm55-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    };
+    check_published_vectors("sm55", &data);
+}
+
 fn check_published_vectors(package: &str, data: &[u8]) {
     let vectors: Vec<Vectors> = serde_json::from_slice(data).unwrap();
     for format in ["f32", "int8"] {
@@ -113,6 +127,7 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
     for source in [
         include_str!("../../../qt/aqt/rwkv_inference/sm40v2/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm36/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm55/architecture.json"),
     ] {
         check_compiled_architecture(source);
     }

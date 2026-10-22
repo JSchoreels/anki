@@ -13,6 +13,7 @@ pub enum ModelKind {
     Legacy,
     Sm40,
     Sm36,
+    Sm55,
 }
 
 impl ModelKind {
@@ -21,6 +22,7 @@ impl ModelKind {
             "legacy" => Ok(Self::Legacy),
             "sm40" => Ok(Self::Sm40),
             "sm36" => Ok(Self::Sm36),
+            "sm55" => Ok(Self::Sm55),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -57,7 +59,9 @@ impl RwkvRuntime {
         precision: StatePrecision,
         model: ModelKind,
     ) -> io::Result<Self> {
-        if matches!(model, ModelKind::Sm40 | ModelKind::Sm36) == super::SMALL_MODEL {
+        if matches!(model, ModelKind::Sm40 | ModelKind::Sm36 | ModelKind::Sm55)
+            == super::SMALL_MODEL
+        {
             super::RwkvInference::load_with_precision(
                 path,
                 target_retention,
@@ -359,6 +363,7 @@ mod tests {
             ModelKind::Legacy => "../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
             ModelKind::Sm40 => "../qt/aqt/rwkv_inference/sm40v2/weights.f32.bin",
             ModelKind::Sm36 => "../qt/aqt/rwkv_inference/sm36/weights.f32.bin",
+            ModelKind::Sm55 => "../qt/aqt/rwkv_inference/sm55/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -382,6 +387,7 @@ mod tests {
                 (ModelKind::Legacy, legacy),
                 (ModelKind::Sm40, small),
                 (ModelKind::Sm36, load(ModelKind::Sm36, precision)),
+                (ModelKind::Sm55, load(ModelKind::Sm55, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();

@@ -496,6 +496,7 @@ def _import_rsbridge(root: Path) -> object:
         ("sm40", "sm40v2/weights.f32.bin"),
         ("legacy", "RWKV_trained_on_5000_10000.bin"),
         ("sm36", "sm36/weights.f32.bin"),
+        ("sm55", "sm55/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize(
@@ -593,6 +594,7 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         ("sm40", "sm40v2/weights.f32.bin"),
         ("legacy", "RWKV_trained_on_5000_10000.bin"),
         ("sm36", "sm36/weights.f32.bin"),
+        ("sm55", "sm55/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize(

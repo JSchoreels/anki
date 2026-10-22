@@ -52,7 +52,7 @@ def test_rwkv_preferences_selector_saves_choice_for_next_restart(
     monkeypatch.setattr(dialog, "update_network", lambda: None)
     dialog.setup_rwkv_precision()
     assert dialog.rwkv_precision.currentData() == expected_precision
-    assert dialog.rwkv_model.currentData() == "sm36"
+    assert dialog.rwkv_model.currentData() == "sm55"
     dialog.show()
     application.processEvents()
     QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_Home)
@@ -65,11 +65,15 @@ def test_rwkv_preferences_selector_saves_choice_for_next_restart(
     dialog.update_profile()
     assert dialog.prof["rwkvModel"] == "sm40"
     assert dialog.prof["rwkvStatePrecision"] == "f32"
+    QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_Down)
+    dialog.update_profile()
+    assert dialog.prof["rwkvModel"] == "sm36"
+    assert dialog.prof["rwkvStatePrecision"] == "f32"
     QTest.keyClick(dialog.rwkv_model, Qt.Key.Key_End)
     QTest.keyClick(dialog.rwkv_precision, Qt.Key.Key_End)
     dialog.update_profile()
     assert dialog.prof["rwkvStatePrecision"] == "cards_int4_notes_int8"
-    assert dialog.prof["rwkvModel"] == "sm36"
+    assert dialog.prof["rwkvModel"] == "sm55"
     QTest.keyClick(dialog.rwkv_precision, Qt.Key.Key_Up)
     dialog.update_profile()
     assert dialog.prof["rwkvStatePrecision"] == "int4"
