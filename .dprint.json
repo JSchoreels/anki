@@ -18,6 +18,7 @@
         "qt/aqt/data/web/js/vendor/*.js",
         "qt/aqt/rwkv_inference/sm40v2/**",
         "qt/aqt/rwkv_inference/sm36/**",
+        "qt/aqt/rwkv_inference/sm55/**",
         "ftl/qt-repo",
         "ftl/core-repo",
         "ftl/usage",

@@ -16,30 +16,31 @@ from aqt.rwkv_model import model_for_profile
 @pytest.mark.parametrize(
     "profile,expected",
     [
-        (None, "sm36"),
-        ({}, "sm36"),
-        ({"rwkvModel": "unknown"}, "sm36"),
-        ({"rwkvModel": None}, "sm36"),
-        ({"rwkvModel": 36}, "sm36"),
+        (None, "sm55"),
+        ({}, "sm55"),
+        ({"rwkvModel": "unknown"}, "sm55"),
+        ({"rwkvModel": None}, "sm55"),
+        ({"rwkvModel": 36}, "sm55"),
         ({"rwkvModel": "legacy"}, "legacy"),
         ({"rwkvModel": "sm40"}, "sm40"),
         ({"rwkvModel": "sm36"}, "sm36"),
+        ({"rwkvModel": "sm55"}, "sm55"),
     ],
 )
-def test_model_for_profile_defaults_to_sm36_and_preserves_explicit_choices(
+def test_model_for_profile_defaults_to_sm55_and_preserves_explicit_choices(
     profile, expected
 ):
     assert model_for_profile(profile) == expected
 
 
-def test_new_profiles_save_sm36_without_rewriting_existing_profiles():
+def test_new_profiles_save_sm55_without_rewriting_existing_profiles():
     manager = ProfileManager.__new__(ProfileManager)
     manager.db = MagicMock()
     manager.db.scalar.return_value = False
     manager.create("New profile")
     settings = pickle.loads(manager.db.execute.call_args.args[2])
-    assert model_for_profile(settings) == "sm36"
-    assert settings["rwkvModel"] == "sm36"
+    assert model_for_profile(settings) == "sm55"
+    assert settings["rwkvModel"] == "sm55"
     assert "rwkvModel" not in profileConf
     manager.db.reset_mock()
     manager.db.scalar.return_value = True
@@ -47,13 +48,14 @@ def test_new_profiles_save_sm36_without_rewriting_existing_profiles():
     manager.db.execute.assert_not_called()
 
 
-@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36"])
+@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36", "sm55"])
 @pytest.mark.parametrize(
     "saved_model,filename",
     [
         ("legacy", "RWKV_trained_on_5000_10000.bin"),
         ("sm40", "sm40v2/weights.f32.bin"),
         ("sm36", "sm36/weights.f32.bin"),
+        ("sm55", "sm55/weights.f32.bin"),
     ],
 )
 def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
@@ -80,13 +82,14 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
 @pytest.mark.parametrize(
     "saved_model,expected_model",
     [
-        (None, "sm36"),
+        (None, "sm55"),
         ("legacy", "legacy"),
         ("sm40", "sm40"),
         ("sm36", "sm36"),
+        ("sm55", "sm55"),
     ],
 )
-@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36"])
+@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36", "sm55"])
 @pytest.mark.parametrize(
     "saved_precision, replace_for_precision",
     [
@@ -133,7 +136,7 @@ def test_profile_open_reuses_only_matching_model_and_precision(
         replace.assert_not_called()
 
 
-@pytest.mark.parametrize("model", [None, "legacy", "sm40", "sm36"])
+@pytest.mark.parametrize("model", [None, "legacy", "sm40", "sm36", "sm55"])
 @pytest.mark.parametrize(
     "precision", [None, "f32", "int8", "int4", "cards_int4_notes_int8"]
 )
@@ -164,12 +167,12 @@ def test_profile_model_and_precision_reach_the_native_backend(
     )
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
-    assert backend.model_name == (model or "sm36")
+    assert backend.model_name == (model or "sm55")
     assert backend.state_precision == (precision or "cards_int4_notes_int8")
 
 
-@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36"])
-@pytest.mark.parametrize("saved_model", ["legacy", "sm40", "sm36"])
+@pytest.mark.parametrize("active_model", ["legacy", "sm40", "sm36", "sm55"])
+@pytest.mark.parametrize("saved_model", ["legacy", "sm40", "sm36", "sm55"])
 def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
     monkeypatch, active_model, saved_model
 ):

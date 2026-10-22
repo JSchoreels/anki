@@ -252,6 +252,7 @@ class Preferences(QDialog):
                 tr.preferences_rwkv_model_legacy(),
                 tr.preferences_rwkv_model_sm40(),
                 tr.preferences_rwkv_model_sm36(),
+                tr.preferences_rwkv_model_sm55(),
             ),
         ):
             self.rwkv_model.addItem(label, model)

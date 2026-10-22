@@ -62,13 +62,13 @@ it is turned off again.
 
 Preferences → Review → RWKV offers a **Prediction model** selector for the entire
 local profile, independently of **Storage precision**. The original Legacy
-model and the 331,511-parameter SM40 and SM36 Muon models are bundled. Only the
+model and the 331,511-parameter SM40, SM36 Muon and SM55 models are bundled. Only the
 selected model and its state are loaded.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40` and `sm36` as supported
-values. Missing or unsupported values resolve to SM36 in existing and new profiles.
-All explicitly saved supported choices are preserved, including `sm40`. Profile
-creation explicitly stores `sm36`. Neither model choice nor state precision is synced.
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36` and `sm55` as supported
+values. Missing or unsupported values resolve to SM55 in existing and new profiles.
+All explicitly saved supported choices are preserved, including `sm36`. Profile
+creation explicitly stores `sm55`. Neither model choice nor state precision is synced.
 Saving a choice takes effect after reopening the profile; the active session, its
 cache identity and its background jobs keep using the current model.
 Switching models reconstructs state from canonical retained review history and
@@ -77,13 +77,16 @@ does not rewrite collection data or existing scheduling dates.
 Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
-remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36
-weights and metadata are under `qt/aqt/rwkv_inference/sm36/`. Its architecture
-is byte-identical to SM40's export; the Muon checkpoint changes weights without
-changing feature construction, recurrent equations, curve evaluation or state
-encoding. The [SM36 integration report](rwkv-sm36-2026-10-22.MD) records package
-provenance, reference/native parity and the scope of the upstream quality evidence. A custom
-`ANKI_RWKV_MODEL_PATH` must match the selected architecture. SM40's optional
+remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36 and
+SM55 weights and metadata are under `qt/aqt/rwkv_inference/sm36/` and
+`qt/aqt/rwkv_inference/sm55/`. Their architecture exports are byte-identical to
+SM40's. SM55 retains Muon and extends the final decay from 5,000 training users
+to 8,000; these checkpoints change weights without changing feature construction,
+recurrent equations, curve evaluation or state encoding. The
+[SM36 integration report](rwkv-sm36-2026-10-22.MD) and
+[SM55 integration report](rwkv-sm55-2026-10-22.MD) record package provenance,
+reference/native parity and the scope of the upstream quality evidence. A custom
+`ANKI_RWKV_MODEL_PATH` must match the selected architecture. The optional
 `weights.int8.bin` container dequantizes once to f32; it reduces file size, not the
 resident compute representation.
 
@@ -91,12 +94,12 @@ The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for bot
 fixed architectures and dispatches at its public operation boundary. Tensor loops
 retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; all three models are available at runtime in
-either build. SM36 and SM40 share the small architecture's specialization, so a
-third engine is not compiled. The standard format/check targets also cover the
+Legacy for those comparisons; all four models are available at runtime in
+either build. SM40, SM36 and SM55 share the small architecture's specialization;
+only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40 and SM36 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36 and SM55 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
@@ -1306,7 +1309,7 @@ recompute, which starts a new epoch. On a 224,000-review copy the relabel took
 ## Inference Runtime
 
 Desktop RWKV inference uses Anki's embedded Rust inference-only runner and
-selected bundled checkpoint (SM36 by default). `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
+selected bundled checkpoint (SM55 by default). `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
 weight file while keeping the embedded runner. `ANKI_RWKV_BENCHMARK_PATH` plus
 `ANKI_RWKV_MODEL_PATH` selects the legacy PyTorch-based `srs-benchmark` bridge
 for local development or retrained models.

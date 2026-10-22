@@ -1,0 +1,290 @@
+{
+    "release": {
+        "tagName": "small-model-sm55-2026-10-22",
+        "name": "Small model SM55 (331k parameters, trained on 8,000 users, within 0.6% of the big model)",
+        "publishedAt": "2026-10-22T10:07:22Z",
+        "targetCommitish": "1a1a5d4393ed90ac0f4953ad7b6824e2f98d0dd2",
+        "isDraft": false,
+        "url": "https://github.com/JSchoreels/anki-rwkv/releases/tag/small-model-sm55-2026-10-22"
+    },
+    "package_sha256": "3e7e43dbe7ef9d9e4d230c743695234964198b4ab7eb5d258a32d9cd932bd622",
+    "checkpoint": {
+        "path": "<workspace>/wt/sm55/artifacts/small-model/scale-w64kd-gate-sc-lanes-cont-decay1ep32k-muon-final8k/compact/E89-F65e-F77a/master.pth",
+        "bytes": 1489805,
+        "sha256": "72958ca077691c1ed359a79404e3c27a81ead4eb520875051df4e48014e60377"
+    },
+    "files": {
+        "architecture.json": {
+            "bytes": 16034,
+            "sha256": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3"
+        },
+        "master.pth": {
+            "bytes": 1489805,
+            "sha256": "72958ca077691c1ed359a79404e3c27a81ead4eb520875051df4e48014e60377"
+        },
+        "parity.json": {
+            "bytes": 3074,
+            "sha256": "9153d20a1adff14d878b92f65e0342d7ca247e6da186be238916cd9d5854ea30"
+        },
+        "weights.f32.bin": {
+            "bytes": 1351553,
+            "sha256": "dc8ef4e36d9df3e221c61f9c79238ad33f2c01e4db6e1a833d132f2715e90b38"
+        },
+        "weights.int8.bin": {
+            "bytes": 436391,
+            "sha256": "5e6a6ff69d9a3c0eba7dd167206c0a633d254cc5cad74e9bfb99b531d620a4be"
+        }
+    },
+    "export_provenance": {
+        "captured_utc": "2026-10-22T09:49:51.873452+00:00",
+        "git_commit": "9a2612ba269bbab641a0112d18daf6d6e769e534",
+        "git_dirty": false,
+        "git_status_porcelain_z": "",
+        "source_tree_sha256": "0656832eb167e269fa7fe1c05aaf635a291f9371f6f6c3c3c40bfcca1f5ed0d1",
+        "source_archive": "artifacts/sources/experiment-sources/0656832eb167e269fa7fe1c05aaf635a291f9371f6f6c3c3c40bfcca1f5ed0d1/source.zip",
+        "source_paths": [
+            "rwkv",
+            "compact",
+            "scripts",
+            "configs",
+            "pyproject.toml",
+            "uv.lock",
+            "justfile",
+            "upstream.json"
+        ]
+    },
+    "training": {
+        "parameters": 331511,
+        "status": "complete",
+        "training_users": 8000,
+        "review_presentations": 581942724,
+        "optimizer": "Muon (hybrid Muon/AdamW, outside-research recipe)",
+        "dataset_revision": "75299740cff05894ef42d7ad990666691efdd2da",
+        "source_provenance": {
+            "captured_utc": "2026-10-21T23:01:49.595610+00:00",
+            "git_commit": "401d758b2c8b607080ac1bdd40404861cb9e7ad7",
+            "git_dirty": true,
+            "git_status_porcelain_z": " M artifacts/small-model/runbook-2026-10-21-sm55b.log/u0000",
+            "source_tree_sha256": "7228097de27f1358ba5cc09a31d473c5e8ee3e16a55ac902d6db81bf04e8ae66",
+            "source_archive": "artifacts/sources/experiment-sources/7228097de27f1358ba5cc09a31d473c5e8ee3e16a55ac902d6db81bf04e8ae66/source.zip",
+            "source_paths": [
+                "rwkv",
+                "compact",
+                "scripts",
+                "configs",
+                "pyproject.toml",
+                "uv.lock",
+                "justfile",
+                "upstream.json"
+            ]
+        },
+        "teacher_sha256": "8fb7fea081b38623ffc0d84ed18303cf5d62b42b9105e91112264a34286beeeb",
+        "teacher_replay_manifest_sha256": "0a2e8be8b1c43582d0964454964505ac4a3b2c9ac2b39aeb34ea4df27c5899c4"
+    },
+    "upstream_quality": {
+        "mode": "w8+s8",
+        "weighting": "review-weighted; matched held-out users",
+        "users_723": {
+            "reviews": 30479310,
+            "sm55": {
+                "curve": 0.30286424560300085,
+                "instant": 0.27934225810262764
+            },
+            "big_model_rounded": {
+                "curve": 0.30139,
+                "instant": 0.27786
+            },
+            "relative_percent_vs_big_model_rounded": {
+                "curve": 0.49,
+                "instant": 0.53
+            },
+            "sm55_minus_sm36": {
+                "curve": {
+                    "delta": -0.00047,
+                    "paired_user_interval": [
+                        -0.00088,
+                        -0.00017
+                    ]
+                },
+                "instant": {
+                    "delta": -0.00025,
+                    "paired_user_interval": [
+                        -0.00029,
+                        -0.00022
+                    ]
+                }
+            }
+        },
+        "users_458": {
+            "sm55_rounded": {
+                "curve": 0.29741,
+                "instant": 0.27371
+            },
+            "big_model_rounded": {
+                "curve": 0.29584,
+                "instant": 0.27223
+            },
+            "sm55_minus_sm36": {
+                "curve": {
+                    "delta": -0.00063,
+                    "paired_user_interval": [
+                        -0.00127,
+                        -0.00019
+                    ]
+                },
+                "instant": {
+                    "delta": -0.00027,
+                    "paired_user_interval": [
+                        -0.00032,
+                        -0.00022
+                    ]
+                }
+            }
+        },
+        "remaining_long_users": 7,
+        "desktop_precision_many_user_evaluation": false
+    },
+    "native_parity": {
+        "users": 2,
+        "rows_per_weight_format": 14403,
+        "max_absolute_probability_error": {
+            "fp32": 2.8908253e-06,
+            "int8": 2.861023e-06
+        },
+        "tolerance": 1e-05,
+        "numpy_reference_result": "PASS",
+        "bounded_fixture_rows_per_user": 500
+    },
+    "backup_comparison": {
+        "input_sha256": "20d87d631758258cb5779c55d4a2e9484d0218d3b33ae8f291c6a02be2cef34c",
+        "backup_sha256": "915c25948b232a5673e65c3d0cf7928e8332b85fd3325ce16b5e1abcdcc7d57a",
+        "retained_answers": 224074,
+        "precision": "cards_int4_notes_int8",
+        "weights_precision": "f32",
+        "prediction_sha256": {
+            "sm40_curve": "fea93ae6158b0af53e2e0af7572cb8a244d768ec0db5bae7a6e770462437ce1b",
+            "sm40_instant": "9559e4544c62095d38ab0d69d248cc366bc37946cc544bb4a60dc30d7f60a739",
+            "sm36_curve": "766877641664c641e68b1a639155135a15f45be3c7d735dbd19df1bdcd2a5c98",
+            "sm36_instant": "ecd8a6ea87e3e481df0f973356bc2fc685928a899badc58973238a8a2a8758a9",
+            "sm55_curve": "1b2823991135a41f6780f5c6b1e8ffb7a0e9e7f4c4507abe5fd2f2b600857376",
+            "sm55_instant": "e90182557d080d0a4a7243391473792be5b45f037925f72923267a472fff76ca"
+        },
+        "reused_controls": "Verified SM40 and SM36 arrays from the prior matched comparison",
+        "comparison": {
+            "all_repeated": {
+                "reviews": 210097,
+                "curve": {
+                    "sm40": 0.4468047569245996,
+                    "sm36": 0.4462292798270087,
+                    "sm55": 0.44628331850899944,
+                    "delta_sm55_minus_sm36": 5.403868199072015e-05,
+                    "relative_percent_vs_sm36": 0.012110070861255344,
+                    "delta_sm55_minus_sm40": -0.0005214384156001506,
+                    "relative_percent_vs_sm40": -0.1167038639403174
+                },
+                "instant": {
+                    "sm40": 0.44229566244002166,
+                    "sm36": 0.4420228703082284,
+                    "sm55": 0.44199691142464265,
+                    "delta_sm55_minus_sm36": -2.5958883585752712e-05,
+                    "relative_percent_vs_sm36": -0.005872746712777834,
+                    "delta_sm55_minus_sm40": -0.0002987510153790174,
+                    "relative_percent_vs_sm40": -0.06754554492596455
+                }
+            },
+            "interday": {
+                "reviews": 176943,
+                "curve": {
+                    "sm40": 0.4610035129356464,
+                    "sm36": 0.46035113644799813,
+                    "sm55": 0.4604578374828445,
+                    "delta_sm55_minus_sm36": 0.00010670103484639037,
+                    "relative_percent_vs_sm36": 0.023178184302895376,
+                    "delta_sm55_minus_sm40": -0.0005456754528018748,
+                    "relative_percent_vs_sm40": -0.11836687519516757
+                },
+                "instant": {
+                    "sm40": 0.4562750916379212,
+                    "sm36": 0.4559999599691694,
+                    "sm55": 0.45604222195055205,
+                    "delta_sm55_minus_sm36": 4.226198138262971e-05,
+                    "relative_percent_vs_sm36": 0.009267979186990955,
+                    "delta_sm55_minus_sm40": -0.0002328696873691305,
+                    "relative_percent_vs_sm40": -0.051037124672570364
+                }
+            }
+        }
+    },
+    "verification": {
+        "native_rwkv_tests": {
+            "passed": 185,
+            "ignored": 34,
+            "full_sm55_vectors": true
+        },
+        "alternate_primary_architecture_restore_test": true,
+        "desktop_targeted_tests": {
+            "passed": 895,
+            "skipped": 4,
+            "skipped_reason": "optional legacy Torch reference tests"
+        },
+        "built_assets_byte_identical": true,
+        "production_math_and_state_codecs_unchanged": true,
+        "zstd_production_disabled": true,
+        "live_profile_unchanged": true,
+        "full_check": {
+            "command": "rtk proxy env TZ=UTC just check",
+            "passed": true,
+            "standard_cargo_and_uv_cache_access": true,
+            "disabled_targets": []
+        }
+    },
+    "private_evidence_directory": "/private/tmp/rwkv-sm55-integration-2026-10-22",
+    "integration_source": {
+        "head_before_commit": "3653b95fe2f4fdc530c1396f477f6a104c421471",
+        "dirty": true,
+        "source_sha256": {
+            "rslib/src/rwkv/alternate.rs": "6fbe84880b17fbf7be00ab37e3f4193ccbce14b73cf11c51b98de7e83c26e694",
+            "rslib/src/rwkv/api.rs": "1857a3bb510dcab76452754d7fb33dc51b65eb31356bffe4c611334ac64ed72a",
+            "rslib/src/rwkv/architecture.rs": "ce84094edbcbcfb5d5f74cefee0259be58064fb42d02da52c23f8e9bbd68e0cf",
+            "rslib/src/rwkv/bulk.rs": "09c61ddb49d8ded60e8de054471ddd255ace00cae12fd05a64c793a8869bc595",
+            "rslib/src/rwkv/checkpoint_compression_bench.rs": "159648919e4e79b0beaab9ee4d13871c4510c74b74d05504d476c92f91b30eec",
+            "rslib/src/rwkv/collection_benchmark.rs": "ce3c35d73399eaf3971604441fb360e50ab7994ae9df84d8ecea012f93f974cd",
+            "rslib/src/rwkv/curve_reference_probe.rs": "e8762758b6e9222b528ac65c009284a8aed4657d4123349bbdffe132c7a4a598",
+            "rslib/src/rwkv/engine.rs": "90d58772cb033a893822d4ffef72e78a5ee7285210dced24a045098dad6d9cfa",
+            "rslib/src/rwkv/fused_packed.rs": "514b1c71eda54707517b283142da3e0a46e47e1d058bc40a73c3cf1c55ba4988",
+            "rslib/src/rwkv/history_ablation_bench.rs": "c7974c82b8db43998ee49e8c538c707aa79deadf4324418efb10678b03d64b9a",
+            "rslib/src/rwkv/matmul.rs": "3bed3d28ca479f36f27e6c99b5dbe93db5b5cdf7faccbc06bc25d288449acc85",
+            "rslib/src/rwkv/mod.rs": "84e7b02e75a43f393c06fd3947352e36c022a9727c34b049232993fa3d7bbd43",
+            "rslib/src/rwkv/model_bench.rs": "98931b0d727add3125511c5c7c0453a3a8f1b8424cd00a7a76fbde01acccc280",
+            "rslib/src/rwkv/packed_weights.rs": "5771b4cf41a8696279a679502ca877209da3c3e2538fbcca3cbb967c1a4da9fe",
+            "rslib/src/rwkv/precision.rs": "d6e21887d0c5e180251f41e18d836cdeb97e151629e2845e57740a0c2280e950",
+            "rslib/src/rwkv/precision_tests.rs": "f3c577a6c4368990f3537f03104676b167740299417247760be5714e9c7947d8",
+            "rslib/src/rwkv/query_kernels.rs": "8fa967323681503b9f582040377af6fd78e7671d2579a3663d60cc4408c2bc71",
+            "rslib/src/rwkv/query_math_bench.rs": "d780f2cf0af58597ac5d672e7d5a57420693b5d3e9d6889812577884d61adb89",
+            "rslib/src/rwkv/review_order_bench.rs": "9baf0cef02b478aa4ba12ab61361461a71ef0605729b4b7753f0b46ab5ccbed8",
+            "rslib/src/rwkv/runtime.rs": "e76984c21f78b409c151fe40dee505e8cd6e2a1105c6ec7b9fe3f0f2d0f9e310",
+            "rslib/src/rwkv/runtime_precision_bench.rs": "52b706dca34f9731b37836c9cc950b0ffa46a0175aedfc64a07a3f10da2cc5d7",
+            "rslib/src/rwkv/sm40_tests.rs": "9422c74947700ef4c6c8e7ebc5a492a79c5a3a6722e228c1b721ab406d78ff3c",
+            "rslib/src/rwkv/state_scope_bench.rs": "e846e7589b0a69ecda2cd5b53a390d45b1d6cdec8d57d59c54418c6f512315d4",
+            "rslib/src/rwkv/weight_precision_bench.rs": "e2135a9d058f127767d86654778ebb52d0e2a20053c04c934428eeee56d331b3",
+            "Cargo.toml": "717bca3fff5e053af78a38281067b6b4a93f8b0378c0562ab65ff2948654779b",
+            "rslib/Cargo.toml": "05273f85a6fd35c0c380bf07c7a6217403a0ebfde2ee893081650a86572a92aa",
+            "Cargo.lock": "1e6bcdfafcef881b5f387b658b5c6bdb3786b946e2acd1b9179a20a88d40d830",
+            "qt/aqt/rwkv_model.py": "9485597202863bc461ffd0c78bb637f2d0c4e32dde4ed837f9c42196593724a2",
+            "qt/aqt/rwkv_scheduler.py": "d4e4f85523abb67ce5cc86faa098f22e5f0537deeeadace4a7e4c27abd07ad45",
+            "qt/aqt/rwkv_srs_benchmark.py": "a5131817f1b35346286a4a858de51cec0880d8d3c955dd411f78c962702a81c5",
+            "qt/aqt/profiles.py": "9758a079fd9388bb6892f6efb3a201b18600cd280410d1ed90b6e223680caa4d",
+            "qt/aqt/preferences.py": "7610966848cbf87407a41e281cb68ab512c17d5201c4b152b184f1e27080bce3",
+            "pylib/rsbridge/lib.rs": "08df4a4d45b703b75cdbe0dd8aa8367eece4ec2e9a05a160b0b38b7d4e7eba69",
+            "build/configure/src/aqt.rs": "985f737c407ffa5412d8e158f60320a1107d72fcc64905047bcd731ad6e69cf8",
+            "ftl/qt/preferences.ftl": "e49242ce61e60dc455d39d00fdae135e6e2a5972b15ea02805c823b9ad9f730a",
+            "qt/tests/test_rwkv_model.py": "07c15871593ed02fa04e629610f242c399f12bc7b0c04b521e7f54934ba7a7e0",
+            "qt/tests/test_rwkv_precision.py": "3b3f9cc812535558a2f8fac25ad7eaa128d803dbbddce3da7545d28b0b945e5a",
+            "qt/tests/test_rwkv_inference_process.py": "62a636cba26220ac884f734472101db46f08a5b0bebd7b5d36e4cfbcda580a36",
+            "qt/tests/test_rwkv_scheduler.py": "ebec8f0bcb6fd1d0c19558e82f512288b3e42ad05592eac65316fa912bb5db35",
+            "qt/tools/rwkv_model_bench.py": "e79cfdac420607b6496df5e261b3eb15e7a26a9c5717d2eda8a5e028b914396f",
+            "qt/tools/rwkv_sm40_vectors.py": "e3a5ac6266bb21db87aa8dfb8e108144a0907bbc4d9b9eebb1f0327773e9e969"
+        },
+        "source_archive_sha256": "a20b60921c840f2b6bd093f6159a3c6be9f933ac7e1439d49d4c8bcbc7dc25a8"
+    }
+}
