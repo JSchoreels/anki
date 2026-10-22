@@ -60,14 +60,14 @@ it is turned off again.
 
 ## Bundled RWKV Models
 
-Preferences → Review → RWKV offers a **Prediction model** selector for the entire
+Deck Options → RWKV → Model and storage offers a **Prediction model** selector for the entire
 local profile, independently of **Storage precision**. The original Legacy
 model and the 331,511-parameter SM40, SM36 Muon and SM55 models are bundled. Only the
 selected model and its state are loaded.
 
 The menu labels the original model **Legacy - Bigger Model** and SM55
 **New - Smaller Model**. SM40 and SM36 Muon remain available. Links below the
-selector open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
+controls open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched four-model backup comparison, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
@@ -75,6 +75,12 @@ The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36` and `sm55` as supp
 values. Missing or unsupported values resolve to SM55 in existing and new profiles.
 All explicitly saved supported choices are preserved, including `sm36`. Profile
 creation explicitly stores `sm55`. Neither model choice nor state precision is synced.
+These controls have moved from Preferences into the RWKV card in Deck Options.
+Use Save to keep changes; closing and discarding leaves both choices unchanged.
+The desktop attaches `rwkv_profile_settings` to the Deck Options response and save
+request, then updates the existing profile keys only after the configuration save
+succeeds. Failed saves and parameter-only optimization do not apply these choices.
+No collection configuration or synced state is added.
 Saving a choice takes effect after reopening the profile; the active session, its
 cache identity and its background jobs keep using the current model.
 Switching models reconstructs state from canonical retained review history and
@@ -185,10 +191,10 @@ invalidates any cache checkpoint that still contains the older retained
 sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
-Preferences → Review → RWKV selects storage precision for the whole local
+Deck Options → RWKV → Model and storage selects storage precision for the whole local
 profile: `cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
 (cards and notes), `f32` (the original full-precision fallback), or `int4`
-(experimental, cards and notes). All three models support all four modes. The profile
+(experimental, cards and notes). All four models support all four modes. The profile
 key is `rwkvStatePrecision`; absent or unsupported values default to
 `cards_int4_notes_int8` in both new and existing profiles. Explicitly saved
 precision choices, including `int8`, are preserved. This choice is local and is

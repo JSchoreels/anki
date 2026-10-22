@@ -36,9 +36,9 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 ### User facing changes
 
-- **Clearer RWKV model choices.** Preferences → Review labels the original model “Legacy - Bigger Model” and SM55 “New - Smaller Model”, with links to the upstream Model Factory results and the matched backup comparison. SM40 and SM36 Muon remain selectable, and saved model choices and storage precision are preserved.
+- **Keep RWKV model and storage settings together.** The RWKV card in Deck Options now contains the model and storage selectors, marked as applying to all decks in the local profile. It labels the original model “Legacy - Bigger Model” and SM55 “New - Smaller Model”, with links to the upstream Model Factory results and the matched backup comparison. SM40 and SM36 Muon remain selectable, and saved model choices and storage precision are preserved.
 
-- **SM55 is the default small RWKV model.** On the upstream matched 723-user comparison, it lowers Curve LogLoss by 0.00047 and Instant LogLoss by 0.00025 relative to SM36, bringing it within 0.49% / 0.53% of the big model. Preferences → Review offers SM55 alongside Legacy, SM40 and SM36 Muon; explicitly saved choices and storage precision are preserved. Select SM55 and reopen the profile to use it when another model was already saved.
+- **SM55 is the default small RWKV model.** On the upstream matched 723-user comparison, it lowers Curve LogLoss by 0.00047 and Instant LogLoss by 0.00025 relative to SM36, bringing it within 0.49% / 0.53% of the big model. Deck Options → RWKV offers SM55 alongside Legacy, SM40 and SM36 Muon; explicitly saved choices and storage precision are preserved. Select SM55 and reopen the profile to use it when another model was already saved.
 
 - **Learn ahead works with FSRS review sorting.** Relative Overdueness and ascending/descending retrievability now respect the Learn ahead limit for learning and relearning cards once no other cards remain to study. A limit of zero continues to require the full delay.
 
@@ -48,13 +48,13 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 - **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
 
-- **Store RWKV cards at INT4 while keeping notes at INT8.** Preferences → Review → RWKV now defaults to “int4 cards + int8 notes” storage for all four models when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
+- **Store RWKV cards at INT4 while keeping notes at INT8.** Deck Options → RWKV → Model and storage now defaults to “int4 cards + int8 notes” storage for all four models when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved. Reopen the profile after changing precision to rebuild state from review history.
 
 - **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
 
 - **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.
 
-- **Choose the RWKV model for each profile.** Preferences → Review offers Legacy, SM40, SM36 Muon and SM55 independently of state storage precision. SM55 is the default for new profiles and existing profiles without a saved model choice; explicit model selections are preserved. Reopen the profile after changing models to rebuild its RWKV state from review history.
+- **Choose the RWKV model for each profile.** Deck Options → RWKV offers Legacy, SM40, SM36 Muon and SM55 independently of state storage precision. SM55 is the default for new profiles and existing profiles without a saved model choice; explicit model selections are preserved. Reopen the profile after changing models to rebuild its RWKV state from review history.
 
 - **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 

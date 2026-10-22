@@ -21,6 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { commitEditing, type DeckOptionsState, fsrsParams } from "./lib";
     import RwkvRepeatSpacing from "./RwkvRepeatSpacing.svelte";
+    import RwkvModelOptions from "./RwkvModelOptions.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
@@ -157,6 +158,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }}
         />
         <DynamicallySlottable slotHost={Item} api={{}}>
+            <RwkvModelOptions {state} disabled={rwkvActionInProgress} />
             {#if $config.rwkvReviewInstantOrderEnabled}
                 <div class="rwkv-mode-heading">
                     <h2>RWKV-Instant</h2>

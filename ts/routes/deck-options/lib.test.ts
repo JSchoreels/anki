@@ -107,6 +107,27 @@ function startingState(): DeckOptionsState {
     return new DeckOptionsState(123n, new DeckConfigsForUpdate(exampleData));
 }
 
+test("RWKV model and storage are global pending changes, independent of the selected preset", async () => {
+    const state = startingState();
+    state.resolveOriginalConfigs();
+    expect(await state.isModified()).toBe(false);
+    state.rwkvProfileSettings.update((settings) => {
+        settings.model = "legacy";
+        settings.statePrecision = "int8";
+        return settings;
+    });
+    expect(await state.isModified()).toBe(true);
+    state.setCurrentIndex(1);
+    expect(get(state.rwkvProfileSettings).model).toBe("legacy");
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).rwkvProfileSettings).toMatchObject({
+        model: "legacy",
+        statePrecision: "int8",
+    });
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).configs.at(-1)?.config).not.toHaveProperty(
+        "rwkvProfileSettings",
+    );
+});
+
 test("start", () => {
     const state = startingState();
     expect(state.currentDeck.name).toBe("Default::\"child\"");

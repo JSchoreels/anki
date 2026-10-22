@@ -33,6 +33,7 @@ import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
 from anki import (
+    deck_config_pb2,
     decks_pb2,
     frontend_pb2,
     generic_pb2,
@@ -692,7 +693,30 @@ def congrats_info() -> bytes:
 
 
 def get_deck_configs_for_update() -> bytes:
-    return aqt.mw.col._backend.get_deck_configs_for_update_raw(request.data)
+    from aqt.rwkv_model import model_for_profile
+    from aqt.rwkv_precision import state_precision_for_profile
+
+    output = deck_config_pb2.DeckConfigsForUpdate()
+    output.ParseFromString(
+        aqt.mw.col._backend.get_deck_configs_for_update_raw(request.data)
+    )
+    output.rwkv_profile_settings.model = model_for_profile(aqt.mw.pm.profile)
+    output.rwkv_profile_settings.state_precision = state_precision_for_profile(
+        aqt.mw.pm.profile
+    )
+    return output.SerializeToString()
+
+
+def _validate_rwkv_profile_settings(input: UpdateDeckConfigs) -> None:
+    from aqt.rwkv_model import RWKV_MODELS
+    from aqt.rwkv_precision import RWKV_STATE_PRECISIONS
+
+    if input.HasField("rwkv_profile_settings"):
+        settings = input.rwkv_profile_settings
+        if settings.model not in RWKV_MODELS:
+            raise ValueError("Unsupported RWKV prediction model")
+        if settings.state_precision not in RWKV_STATE_PRECISIONS:
+            raise ValueError("Unsupported RWKV storage precision")
 
 
 def _on_update_deck_configs_success(
@@ -701,6 +725,15 @@ def _on_update_deck_configs_success(
     is_compute_all = (
         input.mode == UpdateDeckConfigsMode.UPDATE_DECK_CONFIGS_MODE_COMPUTE_ALL_PARAMS
     )
+    if not is_compute_all and input.HasField("rwkv_profile_settings"):
+        from aqt.rwkv_model import RWKV_MODEL_KEY
+        from aqt.rwkv_precision import RWKV_STATE_PRECISION_KEY
+
+        profile = aqt.mw.pm.profile
+        assert profile is not None
+        profile[RWKV_MODEL_KEY] = input.rwkv_profile_settings.model
+        profile[RWKV_STATE_PRECISION_KEY] = input.rwkv_profile_settings.state_precision
+        aqt.mw.pm.save()
     if not is_compute_all and isinstance(
         window := aqt.mw.app.activeModalWidget(), DeckOptionsDialog
     ):
@@ -717,6 +750,7 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
 
     input = UpdateDeckConfigs()
     input.ParseFromString(request.data)
+    _validate_rwkv_profile_settings(input)
     completed_preset_names: set[str] = set()
     preset_log: list[str] = []
     zero_review_skip_logged = False
