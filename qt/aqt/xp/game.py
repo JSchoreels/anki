@@ -17,8 +17,6 @@ from __future__ import annotations
 import copy
 import datetime
 import math
-import random
-import string
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -200,11 +198,8 @@ class Game:
     ) -> None:
         self.store = store
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
-        if not store.get("device"):
-            tail = "".join(
-                random.choice(string.ascii_lowercase + string.digits) for _ in range(6)
-            )
-            store["device"] = f"kuma3-desktop-{tail}"
+        # the add-on sets this PC's name first (review.py's load); only the self-check gets here without one
+        store.setdefault("device", "kuma3-desktop")
         store.setdefault("mine", {})
         store.setdefault("bosses", {})
         self.others: dict[str, dict] = {}
@@ -554,7 +549,7 @@ class Game:
 def _self_check() -> None:
     clock = [int(datetime.datetime(2026, 10, 15, 12).timestamp() * 1000)]
     g = Game({}, now_ms=lambda: clock[0])
-    assert g.device.startswith("kuma3-desktop-")
+    assert g.device == "kuma3-desktop"
     assert (
         level(0) == 0
         and level(99) == 0

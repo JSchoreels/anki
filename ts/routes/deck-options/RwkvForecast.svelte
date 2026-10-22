@@ -252,20 +252,25 @@ for a typed DR the minimum is estimated (see minimumAt).
         background: var(--canvas-elevated);
     }
 
+    /* one colour per kind: the column heading's text and its dots */
     .due {
-        color: #ef5350;
+        --kind: #ef5350;
     }
 
     .near {
-        color: #ffa726;
+        --kind: #ffa726;
     }
 
     .safe {
-        color: #66bb6a;
+        --kind: #66bb6a;
     }
 
     .minimum {
-        color: #42a5f5;
+        --kind: #42a5f5;
+    }
+
+    th {
+        color: var(--kind);
     }
 
     .bar {
@@ -280,22 +285,7 @@ for a typed DR the minimum is estimated (see minimumAt).
         height: 7px;
         border-radius: 50%;
         margin-left: -3.5px;
-    }
-
-    .dot.due {
-        background: #ef5350;
-    }
-
-    .dot.near {
-        background: #ffa726;
-    }
-
-    .dot.safe {
-        background: #66bb6a;
-    }
-
-    .dot.minimum {
-        background: #42a5f5;
+        background: var(--kind);
     }
 
     .target {

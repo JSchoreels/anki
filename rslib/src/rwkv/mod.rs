@@ -4740,12 +4740,6 @@ fn read_u64_le(input: &mut impl io::Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn read_u32_le(input: &mut impl io::Read) -> io::Result<u32> {
-    let mut bytes = [0_u8; 4];
-    input.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
 /// Reads what [SharedStateMap::write_file_state] wrote. Like
 /// [read_half_module_state], anything but the shape the model gives its
 /// states (`layers` layers of the model's sizes) is a damaged file.
@@ -4788,7 +4782,7 @@ fn read_half_module_state(
     fn damaged() -> io::Error {
         io::Error::new(io::ErrorKind::InvalidData, "damaged RWKV state")
     }
-    if read_u32_le(input)? as usize != layers {
+    if read_state_cache_u32(input)? as usize != layers {
         return Err(damaged());
     }
     fn read_values(
@@ -4804,7 +4798,7 @@ fn read_half_module_state(
         buffer: &mut Vec<u8>,
         want: usize,
     ) -> io::Result<Option<Vec<f32>>> {
-        let len = read_u32_le(input)? as usize;
+        let len = read_state_cache_u32(input)? as usize;
         if len == 0 {
             return Ok(None);
         }
