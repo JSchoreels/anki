@@ -65,6 +65,12 @@ local profile, independently of **Storage precision**. The original Legacy
 model and the 331,511-parameter SM40, SM36 Muon and SM55 models are bundled. Only the
 selected model and its state are loaded.
 
+The menu labels the original model **Legacy - Bigger Model** and SM55
+**New - Smaller Model**. SM40 and SM36 Muon remain available. Links below the
+selector open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
+and the matched four-model backup comparison, which uses f32 compute and mixed
+INT4-card/INT8-note storage.
+
 The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36` and `sm55` as supported
 values. Missing or unsupported values resolve to SM55 in existing and new profiles.
 All explicitly saved supported choices are preserved, including `sm36`. Profile
