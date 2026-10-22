@@ -18,13 +18,14 @@ import pytest
 from aqt import portable_update as update
 
 
-def make_app(root: Path, version: str) -> None:
-    resources = update.resources_path(root, sys.platform)
+def make_app(root: Path, version: str, *, system: str | None = None) -> None:
+    system = system or sys.platform
+    resources = update.resources_path(root, system)
     resources.mkdir(parents=True, exist_ok=True)
     (root / update.DATA_DIR).mkdir(exist_ok=True)
     (resources / "anki-portable").touch()
     shutil.copy2(Path(update.__file__), resources / update.HELPER)
-    launcher = root / update.launcher_path(sys.platform)
+    launcher = root / update.launcher_path(system)
     launcher.parent.mkdir(parents=True, exist_ok=True)
     launcher.write_text(
         f"#!{sys.executable}\n"
@@ -45,24 +46,24 @@ def make_app(root: Path, version: str) -> None:
     (root / ("old-runtime.dll" if version == "old" else "new-runtime.dll")).write_text(
         version
     )
-    update.write_manifest(root, sys.platform, platform.machine())
+    update.write_manifest(root, system, platform.machine())
 
 
-def make_job(tmp_path: Path, version="new"):
+def make_job(tmp_path: Path, version="new", *, system: str | None = None):
     root = tmp_path / "Anki Portable"
-    make_app(root, "old")
+    make_app(root, "old", system=system)
     data = root / update.DATA_DIR
     (data / "profiles").mkdir()
     (data / "profiles" / "keep.bin").write_bytes(b"opaque user collection and media")
     (root / "user-extra.txt").write_text("not application-owned")
     job = data / "updates" / "portable-update-test"
     staged = job / "payload" / "Anki Portable"
-    make_app(staged, version)
+    make_app(staged, version, system=system)
     plan = {
         "protocol": 1,
         "root": str(root),
         "pid": os.getpid(),
-        "system": sys.platform,
+        "system": system or sys.platform,
         "old_entries": update.read_manifest(root)["entries"],
         "new_entries": update.read_manifest(staged)["entries"],
     }
@@ -167,11 +168,15 @@ def test_update_archive_cannot_contain_user_data(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink fixture")
-def test_application_symlink_cannot_point_into_existing_user_data(tmp_path):
-    root, job, _plan = make_job(tmp_path)
+@pytest.mark.parametrize("system", ["darwin", "linux"])
+def test_application_symlink_cannot_point_into_existing_user_data(tmp_path, system):
+    root, job, _plan = make_job(tmp_path, system=system)
     staged = job / "payload" / "Anki Portable"
-    resources = update.resources_path(staged, sys.platform)
-    (resources / "outside-link").symlink_to(root / update.DATA_DIR)
+    resources = update.resources_path(staged, system)
+    application_files = resources / "app_packages"
+    application_files.mkdir()
+    update.write_manifest(staged, system, platform.machine())
+    (application_files / "outside-link").symlink_to(root / update.DATA_DIR)
 
     with pytest.raises(ValueError, match="link leaves the archive"):
         update.validate_payload(staged, update.read_manifest(staged))
