@@ -911,8 +911,10 @@ impl Collection {
     /// modification time before the answer). The answer goes into the model
     /// state now, as the desktop's `record_reviewer_answer` does, so the next
     /// queue build needn't check the whole review history. The retained queue
-    /// was ordered with scores that predate the answer, so the next fetch
-    /// rebuilds it.
+    /// keeps its order; only the answered card's score is patched, as the
+    /// desktop's `PatchAnsweredCardRwkvReviewQueueScore` does (rebuilding the
+    /// queue after every answer re-scored the scope: ~100 ms of each
+    /// Good → next card on a Tab S7+ with 9,900 due cards).
     pub(crate) fn rwkv_offline_after_answer(
         &mut self,
         card_id: CardId,
@@ -936,7 +938,35 @@ impl Collection {
         }
         let deck_id = self.get_current_deck_id();
         if matches!(self.rwkv_offline_deck_uses_instant(deck_id), Ok(true)) {
-            self.state.card_queues = None;
+            let started = Instant::now();
+            let patched = self.with_rwkv_offline_runtime("answer score", |col, runtime| {
+                let Some(deck) = col.storage.get_deck(deck_id)? else {
+                    return Ok(());
+                };
+                let rows = col
+                    .rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                        card_ids: vec![card_id.0],
+                        include_new_cards: true,
+                        ..Default::default()
+                    })?
+                    .rows;
+                let scored = score_rows(runtime, &rows)?;
+                let entry = col
+                    .rwkv_offline_score_entries(&deck, &scored)?
+                    .remove(&card_id);
+                // the other recently answered cards' repeat spacing moved by one
+                let intervening = col.rwkv_offline_intervening_reviews(&deck)?;
+                col.patch_answered_card_rwkv_review_queue_score_entry(deck_id, card_id, entry)?;
+                col.update_rwkv_review_queue_intervening_reviews(deck_id, intervening)
+            });
+            tracing::info!(
+                patched,
+                ms = started.elapsed().as_millis() as u64,
+                "RWKV answer score"
+            );
+            if !patched {
+                self.state.card_queues = None;
+            }
         }
     }
 
