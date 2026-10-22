@@ -12,6 +12,7 @@ use super::StatePrecision;
 pub enum ModelKind {
     Legacy,
     Sm40,
+    Sm36,
 }
 
 impl ModelKind {
@@ -19,6 +20,7 @@ impl ModelKind {
         match value {
             "legacy" => Ok(Self::Legacy),
             "sm40" => Ok(Self::Sm40),
+            "sm36" => Ok(Self::Sm36),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -55,7 +57,7 @@ impl RwkvRuntime {
         precision: StatePrecision,
         model: ModelKind,
     ) -> io::Result<Self> {
-        if (model == ModelKind::Sm40) == super::SMALL_MODEL {
+        if matches!(model, ModelKind::Sm40 | ModelKind::Sm36) == super::SMALL_MODEL {
             super::RwkvInference::load_with_precision(
                 path,
                 target_retention,
@@ -356,12 +358,13 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
             ModelKind::Legacy => "../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
             ModelKind::Sm40 => "../qt/aqt/rwkv_inference/sm40v2/weights.f32.bin",
+            ModelKind::Sm36 => "../qt/aqt/rwkv_inference/sm36/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
 
     #[test]
-    fn rwkv_runtime_keeps_both_models_isolated_at_each_precision() {
+    fn rwkv_runtime_restores_each_model_at_each_precision() {
         for precision in [
             StatePrecision::F32,
             StatePrecision::Int8,
@@ -375,7 +378,11 @@ mod tests {
             assert!(small.restore_cache_state(&legacy.cache_state()).is_err());
             assert!(legacy.restore_state(&small.state_for_card(100)).is_err());
             assert!(small.restore_state(&legacy.state_for_card(100)).is_err());
-            for (model, mut engine) in [(ModelKind::Legacy, legacy), (ModelKind::Sm40, small)] {
+            for (model, mut engine) in [
+                (ModelKind::Legacy, legacy),
+                (ModelKind::Sm40, small),
+                (ModelKind::Sm36, load(ModelKind::Sm36, precision)),
+            ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
                 let mut query = answers[0].clone();

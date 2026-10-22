@@ -492,9 +492,15 @@ def _import_rsbridge(root: Path) -> object:
 
 @pytest.mark.parametrize(
     "model_name,filename",
-    [("sm40", "sm40v2/weights.f32.bin"), ("legacy", "RWKV_trained_on_5000_10000.bin")],
+    [
+        ("sm40", "sm40v2/weights.f32.bin"),
+        ("legacy", "RWKV_trained_on_5000_10000.bin"),
+        ("sm36", "sm36/weights.f32.bin"),
+    ],
 )
-@pytest.mark.parametrize("state_precision", ["int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision", ["f32", "int8", "int4", "cards_int4_notes_int8"]
+)
 def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
     tmp_path, model_name, filename, state_precision
 ) -> None:
@@ -583,9 +589,15 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
 
 @pytest.mark.parametrize(
     "model_name,filename",
-    [("sm40", "sm40v2/weights.f32.bin"), ("legacy", "RWKV_trained_on_5000_10000.bin")],
+    [
+        ("sm40", "sm40v2/weights.f32.bin"),
+        ("legacy", "RWKV_trained_on_5000_10000.bin"),
+        ("sm36", "sm36/weights.f32.bin"),
+    ],
 )
-@pytest.mark.parametrize("state_precision", ["f32", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision", ["f32", "int8", "int4", "cards_int4_notes_int8"]
+)
 def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     model_name, filename, state_precision
 ) -> None:
@@ -737,6 +749,14 @@ def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     ):
         assert resident_batch == pytest.approx(snapshot_batch, abs=_RWKV_ABS_TOL)
     assert runtime.cache_state() == resident_state_before
+
+    undo_context = runtime.state_for_review(*query_input[:4])
+    undo_modules = runtime.warm_up_state(query_input)
+    runtime.warm_up_reviews([answer_inputs[2]], False)
+    assert runtime.cache_state() != resident_state_before
+    runtime.restore_state(undo_context)
+    runtime.restore_warm_up_state(*query_input[:4], *undo_modules)
+    assert runtime.warm_up_snapshot() == snapshot
 
     batch_inputs: list[tuple[object, ...]] = []
     batch_expected: list[float] = []

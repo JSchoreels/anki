@@ -32,10 +32,28 @@ fn rwkv_sm40_matches_published_vectors() {
             .unwrap();
         data
     };
-    let vectors: Vec<Vectors> = serde_json::from_slice(&data).unwrap();
+    check_published_vectors("sm40v2", &data);
+}
+
+#[test]
+fn rwkv_sm36_matches_published_vectors() {
+    let data = if let Ok(path) = std::env::var("ANKI_RWKV_SM36_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm36-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    };
+    check_published_vectors("sm36", &data);
+}
+
+fn check_published_vectors(package: &str, data: &[u8]) {
+    let vectors: Vec<Vectors> = serde_json::from_slice(data).unwrap();
     for format in ["f32", "int8"] {
         let model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "../qt/aqt/rwkv_inference/sm40v2/weights.{format}.bin"
+            "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
         )))
         .unwrap();
         let mut maximum = 0.0_f32;
@@ -84,16 +102,24 @@ fn rwkv_sm40_matches_published_vectors() {
                 }
             }
         }
-        println!("{format} published vectors: maximum absolute probability error {maximum}");
+        println!(
+            "{package} {format} published vectors: maximum absolute probability error {maximum}"
+        );
     }
 }
 
 #[test]
 fn rwkv_sm40_spec_matches_compiled_architecture() {
-    let spec: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../qt/aqt/rwkv_inference/sm40v2/architecture.json"
-    ))
-    .unwrap();
+    for source in [
+        include_str!("../../../qt/aqt/rwkv_inference/sm40v2/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm36/architecture.json"),
+    ] {
+        check_compiled_architecture(source);
+    }
+}
+
+fn check_compiled_architecture(source: &str) {
+    let spec: serde_json::Value = serde_json::from_str(source).unwrap();
     assert_eq!(spec["d_model"], D_MODEL);
     assert_eq!(spec["head_fc_dim"], HEAD_DIM);
     assert_eq!(spec["num_curves"], NUM_CURVES);

@@ -248,7 +248,11 @@ class Preferences(QDialog):
         self.rwkv_model = QComboBox(group)
         for model, label in zip(
             RWKV_MODELS,
-            (tr.preferences_rwkv_model_legacy(), tr.preferences_rwkv_model_sm40()),
+            (
+                tr.preferences_rwkv_model_legacy(),
+                tr.preferences_rwkv_model_sm40(),
+                tr.preferences_rwkv_model_sm36(),
+            ),
         ):
             self.rwkv_model.addItem(label, model)
         self.rwkv_model.setCurrentIndex(RWKV_MODELS.index(model_for_profile(self.prof)))

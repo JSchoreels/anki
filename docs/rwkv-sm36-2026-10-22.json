@@ -1,0 +1,216 @@
+{
+    "release": {
+        "tagName": "small-model-sm36-2026-10-22",
+        "name": "Small model SM36 (331k parameters, Muon decay, within 1% of the big model)",
+        "publishedAt": "2026-10-21T23:51:28Z",
+        "targetCommitish": "6a47017b59db4081166f27f90d972de199b61c2a",
+        "isDraft": false
+    },
+    "package_sha256": "866166e30bf76b8f40bfeaca4bcc0bc542983a6a8663c9d01f8a69cb225105a8",
+    "checkpoint": {
+        "path": "<workspace>/wt/sm42/artifacts/small-model/scale-w64kd-gate-sc-lanes-cont-decay1ep32k-muon/compact/E89-F65e-F77a/master.pth",
+        "bytes": 1489805,
+        "sha256": "e00000c02e3c6445c4693868e10d64de5ea5b6e9b8637960920dbce42e7303b8"
+    },
+    "files": {
+        "architecture.json": {
+            "bytes": 16034,
+            "sha256": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3"
+        },
+        "master.pth": {
+            "bytes": 1489805,
+            "sha256": "e00000c02e3c6445c4693868e10d64de5ea5b6e9b8637960920dbce42e7303b8"
+        },
+        "parity.json": {
+            "bytes": 3190,
+            "sha256": "003ad624b29ab3d40ee922d2f299f142ac9729f273c3fe855b001b3849146c04"
+        },
+        "weights.f32.bin": {
+            "bytes": 1351553,
+            "sha256": "38089bf527281c9d40d0175e580e630d970cd22e7cb852d7b325e2583e6f6141"
+        },
+        "weights.int8.bin": {
+            "bytes": 436391,
+            "sha256": "7712fb26569af70f592b05dee780c2caaab20bb6f0a26065e1262dd66399f2de"
+        }
+    },
+    "export_provenance": {
+        "captured_utc": "2026-10-21T23:40:29.739907+00:00",
+        "git_commit": "9a2612ba269bbab641a0112d18daf6d6e769e534",
+        "git_dirty": false,
+        "git_status_porcelain_z": "",
+        "source_tree_sha256": "0656832eb167e269fa7fe1c05aaf635a291f9371f6f6c3c3c40bfcca1f5ed0d1",
+        "source_archive": "artifacts/sources/experiment-sources/0656832eb167e269fa7fe1c05aaf635a291f9371f6f6c3c3c40bfcca1f5ed0d1/source.zip",
+        "source_paths": [
+            "rwkv",
+            "compact",
+            "scripts",
+            "configs",
+            "pyproject.toml",
+            "uv.lock",
+            "justfile",
+            "upstream.json"
+        ]
+    },
+    "upstream_729_users": {
+        "reviews_approx": 33300000,
+        "mode": "w8+s8",
+        "sm36": {
+            "curve": 0.30426,
+            "instant": 0.27915
+        },
+        "fork": {
+            "curve": 0.30215,
+            "instant": 0.27733
+        },
+        "sm36_minus_sm40": {
+            "curve": {
+                "delta": -7e-05,
+                "ci95": [
+                    -0.00028,
+                    0.0002
+                ]
+            },
+            "instant": {
+                "delta": -0.00016,
+                "ci95": [
+                    -0.00019,
+                    -0.00013
+                ]
+            }
+        }
+    },
+    "native_parity": {
+        "users": 2,
+        "rows_per_weight_format": 14403,
+        "max_absolute_probability_error": {
+            "fp32": 4.1127205e-06,
+            "int8": 2.9802322e-06
+        },
+        "tolerance": 1e-05,
+        "numpy_reference_result": "PASS"
+    },
+    "backup_comparison": {
+        "input_sha256": "20d87d631758258cb5779c55d4a2e9484d0218d3b33ae8f291c6a02be2cef34c",
+        "backup_sha256": "915c25948b232a5673e65c3d0cf7928e8332b85fd3325ce16b5e1abcdcc7d57a",
+        "retained_answers": 224074,
+        "precision": "cards_int4_notes_int8",
+        "weights_precision": "f32",
+        "prediction_sha256": {
+            "sm40_curve": "fea93ae6158b0af53e2e0af7572cb8a244d768ec0db5bae7a6e770462437ce1b",
+            "sm40_instant": "9559e4544c62095d38ab0d69d248cc366bc37946cc544bb4a60dc30d7f60a739",
+            "sm36_curve": "766877641664c641e68b1a639155135a15f45be3c7d735dbd19df1bdcd2a5c98",
+            "sm36_instant": "ecd8a6ea87e3e481df0f973356bc2fc685928a899badc58973238a8a2a8758a9"
+        },
+        "comparison": {
+            "all_repeated": {
+                "reviews": 210097,
+                "curve": {
+                    "sm40": 0.4468047569245996,
+                    "sm36": 0.4462292798270087,
+                    "delta_sm36_minus_sm40": -0.0005754770975908707,
+                    "relative_percent": -0.12879833723166145,
+                    "probability_absolute_delta": {
+                        "mean": 0.007784068117683728,
+                        "p99": 0.03714394569396973,
+                        "max": 0.11669164896011353
+                    }
+                },
+                "instant": {
+                    "sm40": 0.4422956624400217,
+                    "sm36": 0.44202287030822834,
+                    "delta_sm36_minus_sm40": -0.0002727921317933757,
+                    "relative_percent": -0.06167642031316145,
+                    "probability_absolute_delta": {
+                        "mean": 0.007373651494482679,
+                        "p99": 0.03495359420776367,
+                        "max": 0.2893255949020386
+                    }
+                }
+            },
+            "interday": {
+                "reviews": 176943,
+                "curve": {
+                    "sm40": 0.4610035129356464,
+                    "sm36": 0.460351136447998,
+                    "delta_sm36_minus_sm40": -0.0006523764876483762,
+                    "relative_percent": -0.14151225952576674,
+                    "probability_absolute_delta": {
+                        "mean": 0.008261612774418375,
+                        "p99": 0.03847336769104004,
+                        "max": 0.11669164896011353
+                    }
+                },
+                "instant": {
+                    "sm40": 0.4562750916379213,
+                    "sm36": 0.45599995996916953,
+                    "delta_sm36_minus_sm40": -0.0002751316687517602,
+                    "relative_percent": -0.06029951531303368,
+                    "probability_absolute_delta": {
+                        "mean": 0.007644946436864422,
+                        "p99": 0.03579270839691162,
+                        "max": 0.2893255949020386
+                    }
+                }
+            }
+        }
+    },
+    "private_evidence_directory": "/private/tmp/rwkv-sm36-integration-2026-10-22",
+    "verification": {
+        "full_check": {
+            "command": "rtk proxy env TZ=UTC just check",
+            "passed": true
+        },
+        "native_rwkv_tests": {
+            "passed": 184,
+            "ignored": 34,
+            "full_sm36_vectors": true
+        },
+        "alternate_primary_architecture_restore_test": true,
+        "qt_selector_and_native_bridge_tests": true,
+        "test_clock_workaround": {
+            "brussels_test_mode_reproducer_failed": true,
+            "utc_test_mode_reproducer_passed": true,
+            "production_clock_unchanged": true
+        }
+    },
+    "integration_source": {
+        "head_before_commit": "6a1df03d1fbc25b1ccba9ca3f1c8139d81fb0955",
+        "dirty": true,
+        "source_sha256": {
+            "rslib/src/rwkv/alternate.rs": "6fbe84880b17fbf7be00ab37e3f4193ccbce14b73cf11c51b98de7e83c26e694",
+            "rslib/src/rwkv/api.rs": "1857a3bb510dcab76452754d7fb33dc51b65eb31356bffe4c611334ac64ed72a",
+            "rslib/src/rwkv/architecture.rs": "ce84094edbcbcfb5d5f74cefee0259be58064fb42d02da52c23f8e9bbd68e0cf",
+            "rslib/src/rwkv/bulk.rs": "09c61ddb49d8ded60e8de054471ddd255ace00cae12fd05a64c793a8869bc595",
+            "rslib/src/rwkv/checkpoint_compression_bench.rs": "159648919e4e79b0beaab9ee4d13871c4510c74b74d05504d476c92f91b30eec",
+            "rslib/src/rwkv/collection_benchmark.rs": "ce3c35d73399eaf3971604441fb360e50ab7994ae9df84d8ecea012f93f974cd",
+            "rslib/src/rwkv/curve_reference_probe.rs": "e8762758b6e9222b528ac65c009284a8aed4657d4123349bbdffe132c7a4a598",
+            "rslib/src/rwkv/engine.rs": "90d58772cb033a893822d4ffef72e78a5ee7285210dced24a045098dad6d9cfa",
+            "rslib/src/rwkv/fused_packed.rs": "514b1c71eda54707517b283142da3e0a46e47e1d058bc40a73c3cf1c55ba4988",
+            "rslib/src/rwkv/history_ablation_bench.rs": "c7974c82b8db43998ee49e8c538c707aa79deadf4324418efb10678b03d64b9a",
+            "rslib/src/rwkv/matmul.rs": "3bed3d28ca479f36f27e6c99b5dbe93db5b5cdf7faccbc06bc25d288449acc85",
+            "rslib/src/rwkv/mod.rs": "84e7b02e75a43f393c06fd3947352e36c022a9727c34b049232993fa3d7bbd43",
+            "rslib/src/rwkv/model_bench.rs": "98931b0d727add3125511c5c7c0453a3a8f1b8424cd00a7a76fbde01acccc280",
+            "rslib/src/rwkv/packed_weights.rs": "5771b4cf41a8696279a679502ca877209da3c3e2538fbcca3cbb967c1a4da9fe",
+            "rslib/src/rwkv/precision.rs": "d6e21887d0c5e180251f41e18d836cdeb97e151629e2845e57740a0c2280e950",
+            "rslib/src/rwkv/precision_tests.rs": "f3c577a6c4368990f3537f03104676b167740299417247760be5714e9c7947d8",
+            "rslib/src/rwkv/query_kernels.rs": "8fa967323681503b9f582040377af6fd78e7671d2579a3663d60cc4408c2bc71",
+            "rslib/src/rwkv/query_math_bench.rs": "d780f2cf0af58597ac5d672e7d5a57420693b5d3e9d6889812577884d61adb89",
+            "rslib/src/rwkv/review_order_bench.rs": "9baf0cef02b478aa4ba12ab61361461a71ef0605729b4b7753f0b46ab5ccbed8",
+            "rslib/src/rwkv/runtime.rs": "e8ef619730fecfe702d4a69f36c9c59efeb1fb265d930ac79ced73ab3e81a490",
+            "rslib/src/rwkv/runtime_precision_bench.rs": "52b706dca34f9731b37836c9cc950b0ffa46a0175aedfc64a07a3f10da2cc5d7",
+            "rslib/src/rwkv/sm40_tests.rs": "02c73a5d2aedb6915e046bf20b1cff2d07d9cf515f216c5bf1484f9b8ca4e0f2",
+            "rslib/src/rwkv/state_scope_bench.rs": "e846e7589b0a69ecda2cd5b53a390d45b1d6cdec8d57d59c54418c6f512315d4",
+            "rslib/src/rwkv/weight_precision_bench.rs": "e2135a9d058f127767d86654778ebb52d0e2a20053c04c934428eeee56d331b3",
+            "qt/aqt/rwkv_model.py": "0263f439c9f4d78044c3b5b67443be6f689ebdff7044e367b9724894c65d0f21",
+            "qt/aqt/rwkv_srs_benchmark.py": "a5131817f1b35346286a4a858de51cec0880d8d3c955dd411f78c962702a81c5",
+            "qt/aqt/rwkv_scheduler.py": "d4e4f85523abb67ce5cc86faa098f22e5f0537deeeadace4a7e4c27abd07ad45",
+            "qt/aqt/preferences.py": "2464748ab8c202f62bd371be0fcc0334b0606f4257b17a6b4a159dd8c52ca86e",
+            "qt/aqt/profiles.py": "321ca96c0ded347bdc8fd48bb9922389c320373045bac6d9596fc9dba0c775f3",
+            "pylib/rsbridge/lib.rs": "08df4a4d45b703b75cdbe0dd8aa8367eece4ec2e9a05a160b0b38b7d4e7eba69",
+            "build/configure/src/aqt.rs": "7ab08c634f68fd3894e753c1e546f6604723195041791887376e2fd99a9fb097",
+            "ftl/qt/preferences.ftl": "292214fc2c4ce28b22b07a7b5cbe19b62f07ce5d70538473f50a69ec0f2f0250"
+        },
+        "source_archive_sha256": "98be5c077dd4ec5a49cefe85bc817b837fc09f8d1cd73dbccbdfd2137d408421"
+    }
+}
