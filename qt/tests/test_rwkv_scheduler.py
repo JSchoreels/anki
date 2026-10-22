@@ -21547,6 +21547,36 @@ def test_srs_benchmark_backend_uses_ahead_curve_for_interval_overrides() -> None
     )
 
 
+@pytest.mark.parametrize("recall", [0.8, 0.9])
+def test_srs_benchmark_curve_already_at_target_uses_one_second(recall: float) -> None:
+    from aqt.rwkv_srs_benchmark import SrsBenchmarkRwkvReviewerBackend
+
+    class Process:
+        def imm_predict(self, row: dict[str, object]) -> float:
+            return recall
+
+        def process_row(self, row: dict[str, object]) -> object:
+            return object()
+
+        def predict_func(self, curve: object, elapsed_seconds: float) -> float:
+            return recall
+
+    backend = SrsBenchmarkRwkvReviewerBackend(process=Process())
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    backend.review_answered(reviewer=reviewer, card=card, ease=1)
+
+    prediction = backend.predict_review(reviewer=reviewer, card=card)
+
+    assert prediction is not None
+    one_second = 1 / 86_400
+    assert prediction.current_s90 == pytest.approx(one_second)
+    assert prediction.interval_overrides == RwkvIntervalOverride(
+        again=one_second, hard=one_second, good=one_second, easy=one_second
+    )
+    assert prediction.s90_overrides == prediction.interval_overrides
+
+
 def test_srs_benchmark_backend_batches_predictions() -> None:
     from aqt.rwkv_srs_benchmark import SrsBenchmarkRwkvReviewerBackend
 

@@ -42,8 +42,11 @@ reschedule controls to update stored due dates for cards already scheduled.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
 the predicted curve. Curve crossings are refined on the curve itself rather
-than treated as straight lines between search points. Live answer scheduling
-then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
+than treated as straight lines between search points. Interval extraction starts
+at one second, the earliest supported model evaluation. If recall is already at
+or below the target there, Curve returns a one-second candidate for answer
+intervals and S90 instead of the former one-minute fallback. Live answer
+scheduling then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
 intraday seconds without fuzz only when **Allow same day review for
 (re)learning steps** is enabled and learning queues are enabled. Otherwise,
 generated intervals use day-based review states with a minimum of one day.
