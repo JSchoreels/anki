@@ -1,0 +1,196 @@
+{
+    "date": "2026-10-22",
+    "input_sha256": "20d87d631758258cb5779c55d4a2e9484d0218d3b33ae8f291c6a02be2cef34c",
+    "backup_sha256": "915c25948b232a5673e65c3d0cf7928e8332b85fd3325ce16b5e1abcdcc7d57a",
+    "backup_name": "backup-2026-10-21-23.46.14.colpkg",
+    "retained_answers": 224074,
+    "state_precision": "cards_int4_notes_int8",
+    "weights_precision": "f32",
+    "clipping": [
+        1e-06,
+        0.999999
+    ],
+    "model_files": {
+        "legacy": {
+            "path": "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
+            "sha256": "749ad1ad18d5b6ef8c4185802fa0c1e4a14e67cd7874f3efeaae355fffb1b9ec",
+            "bytes": 11082637
+        },
+        "sm40": {
+            "path": "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin",
+            "sha256": "a8d13b82b4e534e16bc5b3e5986c04cc52fc80ac36ddb9695049f5fa41d38a74",
+            "bytes": 1351553
+        },
+        "sm36": {
+            "path": "qt/aqt/rwkv_inference/sm36/weights.f32.bin",
+            "sha256": "38089bf527281c9d40d0175e580e630d970cd22e7cb852d7b325e2583e6f6141",
+            "bytes": 1351553
+        },
+        "sm55": {
+            "path": "qt/aqt/rwkv_inference/sm55/weights.f32.bin",
+            "sha256": "dc8ef4e36d9df3e221c61f9c79238ad33f2c01e4db6e1a833d132f2715e90b38",
+            "bytes": 1351553
+        }
+    },
+    "prediction_sha256": {
+        "legacy_curve": "dd016593b0ee4b6c57064e1f6e8d0274c7bfa7f83a5d89a7479e9e1f05660807",
+        "legacy_instant": "6cd4fd7b9056869099e0f57e5706e4729cb4a71c7bf5014c80a56f70db066cc4",
+        "sm40_curve": "fea93ae6158b0af53e2e0af7572cb8a244d768ec0db5bae7a6e770462437ce1b",
+        "sm40_instant": "9559e4544c62095d38ab0d69d248cc366bc37946cc544bb4a60dc30d7f60a739",
+        "sm36_curve": "766877641664c641e68b1a639155135a15f45be3c7d735dbd19df1bdcd2a5c98",
+        "sm36_instant": "ecd8a6ea87e3e481df0f973356bc2fc685928a899badc58973238a8a2a8758a9",
+        "sm55_curve": "1b2823991135a41f6780f5c6b1e8ffb7a0e9e7f4c4507abe5fd2f2b600857376",
+        "sm55_instant": "e90182557d080d0a4a7243391473792be5b45f037925f72923267a472fff76ca"
+    },
+    "comparison": {
+        "interday": {
+            "reviews": 176943,
+            "observed_recall": 0.7718813403186336,
+            "curve": {
+                "log_loss": {
+                    "legacy": 0.4609561605582173,
+                    "sm40": 0.4610035129356464,
+                    "sm36": 0.46035113644799813,
+                    "sm55": 0.4604578374828445
+                },
+                "small_minus_legacy": {
+                    "sm40": {
+                        "delta": 4.735237742908849e-05,
+                        "relative_percent": 0.01027264227724256
+                    },
+                    "sm36": {
+                        "delta": -0.0006050241102191767,
+                        "relative_percent": -0.1312541542966894
+                    },
+                    "sm55": {
+                        "delta": -0.0004983230753727863,
+                        "relative_percent": -0.10810639232358144
+                    }
+                },
+                "lowest_loss": "sm36"
+            },
+            "instant": {
+                "log_loss": {
+                    "legacy": 0.455985021968215,
+                    "sm40": 0.4562750916379212,
+                    "sm36": 0.4559999599691694,
+                    "sm55": 0.45604222195055205
+                },
+                "small_minus_legacy": {
+                    "sm40": {
+                        "delta": 0.0002900696697061833,
+                        "relative_percent": 0.06361385916890949
+                    },
+                    "sm36": {
+                        "delta": 1.4938000954423103e-05,
+                        "relative_percent": 0.003275985007133997
+                    },
+                    "sm55": {
+                        "delta": 5.719998233705281e-05,
+                        "relative_percent": 0.012544267811720466
+                    }
+                },
+                "lowest_loss": "legacy"
+            }
+        },
+        "all_repeated": {
+            "reviews": 210097,
+            "observed_recall": 0.7833857694303108,
+            "curve": {
+                "log_loss": {
+                    "legacy": 0.4468332845084817,
+                    "sm40": 0.4468047569245996,
+                    "sm36": 0.4462292798270087,
+                    "sm55": 0.44628331850899944
+                },
+                "small_minus_legacy": {
+                    "sm40": {
+                        "delta": -2.852758388210974e-05,
+                        "relative_percent": -0.006384390973357412
+                    },
+                    "sm36": {
+                        "delta": -0.0006040046814729805,
+                        "relative_percent": -0.13517450521560725
+                    },
+                    "sm55": {
+                        "delta": -0.0005499659994822603,
+                        "relative_percent": -0.12308080408272026
+                    }
+                },
+                "lowest_loss": "sm36"
+            },
+            "instant": {
+                "log_loss": {
+                    "legacy": 0.4413103644920405,
+                    "sm40": 0.44229566244002166,
+                    "sm36": 0.4420228703082284,
+                    "sm55": 0.44199691142464265
+                },
+                "small_minus_legacy": {
+                    "sm40": {
+                        "delta": 0.0009852979479811896,
+                        "relative_percent": 0.2232664417739949
+                    },
+                    "sm36": {
+                        "delta": 0.000712505816187925,
+                        "relative_percent": 0.16145231871180776
+                    },
+                    "sm55": {
+                        "delta": 0.0006865469326021723,
+                        "relative_percent": 0.15557009031328395
+                    }
+                },
+                "lowest_loss": "legacy"
+            }
+        }
+    },
+    "controls": "SM40, SM36 and SM55 arrays reused after hash and aggregate verification",
+    "source": {
+        "head": "49d92c9a8af7748c9ef1ae77d0d7dd2aa8d3df2c",
+        "source_sha256": {
+            "rslib/src/rwkv/alternate.rs": "6fbe84880b17fbf7be00ab37e3f4193ccbce14b73cf11c51b98de7e83c26e694",
+            "rslib/src/rwkv/api.rs": "1857a3bb510dcab76452754d7fb33dc51b65eb31356bffe4c611334ac64ed72a",
+            "rslib/src/rwkv/architecture.rs": "ce84094edbcbcfb5d5f74cefee0259be58064fb42d02da52c23f8e9bbd68e0cf",
+            "rslib/src/rwkv/bulk.rs": "09c61ddb49d8ded60e8de054471ddd255ace00cae12fd05a64c793a8869bc595",
+            "rslib/src/rwkv/checkpoint_compression_bench.rs": "159648919e4e79b0beaab9ee4d13871c4510c74b74d05504d476c92f91b30eec",
+            "rslib/src/rwkv/collection_benchmark.rs": "ce3c35d73399eaf3971604441fb360e50ab7994ae9df84d8ecea012f93f974cd",
+            "rslib/src/rwkv/curve_reference_probe.rs": "e8762758b6e9222b528ac65c009284a8aed4657d4123349bbdffe132c7a4a598",
+            "rslib/src/rwkv/engine.rs": "90d58772cb033a893822d4ffef72e78a5ee7285210dced24a045098dad6d9cfa",
+            "rslib/src/rwkv/fused_packed.rs": "514b1c71eda54707517b283142da3e0a46e47e1d058bc40a73c3cf1c55ba4988",
+            "rslib/src/rwkv/history_ablation_bench.rs": "c7974c82b8db43998ee49e8c538c707aa79deadf4324418efb10678b03d64b9a",
+            "rslib/src/rwkv/matmul.rs": "3bed3d28ca479f36f27e6c99b5dbe93db5b5cdf7faccbc06bc25d288449acc85",
+            "rslib/src/rwkv/mod.rs": "84e7b02e75a43f393c06fd3947352e36c022a9727c34b049232993fa3d7bbd43",
+            "rslib/src/rwkv/model_bench.rs": "98931b0d727add3125511c5c7c0453a3a8f1b8424cd00a7a76fbde01acccc280",
+            "rslib/src/rwkv/packed_weights.rs": "5771b4cf41a8696279a679502ca877209da3c3e2538fbcca3cbb967c1a4da9fe",
+            "rslib/src/rwkv/precision.rs": "d6e21887d0c5e180251f41e18d836cdeb97e151629e2845e57740a0c2280e950",
+            "rslib/src/rwkv/precision_tests.rs": "f3c577a6c4368990f3537f03104676b167740299417247760be5714e9c7947d8",
+            "rslib/src/rwkv/query_kernels.rs": "8fa967323681503b9f582040377af6fd78e7671d2579a3663d60cc4408c2bc71",
+            "rslib/src/rwkv/query_math_bench.rs": "d780f2cf0af58597ac5d672e7d5a57420693b5d3e9d6889812577884d61adb89",
+            "rslib/src/rwkv/review_order_bench.rs": "9baf0cef02b478aa4ba12ab61361461a71ef0605729b4b7753f0b46ab5ccbed8",
+            "rslib/src/rwkv/runtime.rs": "e76984c21f78b409c151fe40dee505e8cd6e2a1105c6ec7b9fe3f0f2d0f9e310",
+            "rslib/src/rwkv/runtime_precision_bench.rs": "52b706dca34f9731b37836c9cc950b0ffa46a0175aedfc64a07a3f10da2cc5d7",
+            "rslib/src/rwkv/sm40_tests.rs": "9422c74947700ef4c6c8e7ebc5a492a79c5a3a6722e228c1b721ab406d78ff3c",
+            "rslib/src/rwkv/state_scope_bench.rs": "e846e7589b0a69ecda2cd5b53a390d45b1d6cdec8d57d59c54418c6f512315d4",
+            "rslib/src/rwkv/weight_precision_bench.rs": "e2135a9d058f127767d86654778ebb52d0e2a20053c04c934428eeee56d331b3",
+            "Cargo.toml": "717bca3fff5e053af78a38281067b6b4a93f8b0378c0562ab65ff2948654779b",
+            "Cargo.lock": "1e6bcdfafcef881b5f387b658b5c6bdb3786b946e2acd1b9179a20a88d40d830",
+            "rslib/Cargo.toml": "05273f85a6fd35c0c380bf07c7a6217403a0ebfde2ee893081650a86572a92aa"
+        },
+        "source_archive_sha256": "a49b8f9783a43192021f52994c6c7148adc2d2f748571152d042709e301ec6e7"
+    },
+    "private_evidence_directory": "/private/tmp/rwkv-four-model-quality-2026-10-22",
+    "verification": {
+        "matched_input_hash": true,
+        "all_prediction_arrays_complete_finite_and_in_range": true,
+        "small_control_hashes_and_aggregate_losses_reproduced": true,
+        "numpy_and_independent_math_fsum_losses_agree": true,
+        "legacy_native_quality_case_passed": true,
+        "repository_check": {
+            "command": "rtk proxy env TZ=UTC just check",
+            "passed": true,
+            "unchanged_checks_cached": true
+        },
+        "legacy_quality_log_sha256": "8f1da52d7570a9a066539bcca5d8ff6c7df81287298c335ea0e90a25b1f51152",
+        "aggregation_script_sha256": "5181833b44c3bdcffc30a798f5625d250b813d451269ab3615b9087d2dccb5e9"
+    }
+}

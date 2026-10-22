@@ -85,7 +85,10 @@ to 8,000; these checkpoints change weights without changing feature construction
 recurrent equations, curve evaluation or state encoding. The
 [SM36 integration report](rwkv-sm36-2026-10-22.MD) and
 [SM55 integration report](rwkv-sm55-2026-10-22.MD) record package provenance,
-reference/native parity and the scope of the upstream quality evidence. A custom
+reference/native parity and the scope of the upstream quality evidence. The
+[four-model backup comparison](rwkv-four-model-quality-2026-10-22.MD) scores all
+four checkpoints on identical retained reviews with f32 compute weights and the
+default mixed state precision. A custom
 `ANKI_RWKV_MODEL_PATH` must match the selected architecture. The optional
 `weights.int8.bin` container dequantizes once to f32; it reduces file size, not the
 resident compute representation.
