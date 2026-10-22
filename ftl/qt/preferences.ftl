@@ -13,11 +13,13 @@ preferences-video-driver-default = default
 preferences-rwkv-state = RWKV
 preferences-rwkv-precision = Storage precision
 preferences-rwkv-model = Prediction model
-preferences-rwkv-model-legacy = Legacy — original model
+preferences-rwkv-model-legacy = Legacy - Bigger Model
 preferences-rwkv-model-sm40 = SM40 — smaller model
 preferences-rwkv-model-sm36 = SM36 Muon
-preferences-rwkv-model-sm55 = SM55 — default
-preferences-rwkv-model-explanation = Applies to this profile independently of storage precision. Reopen the profile after changing the model; RWKV state is rebuilt from review history. SM55 is the default; explicitly saved model selections are preserved.
+preferences-rwkv-model-sm55 = New - Smaller Model
+preferences-rwkv-model-explanation = Applies to this profile independently of storage precision. Reopen the profile after changing the model; RWKV state is rebuilt from review history. New - Smaller Model (SM55) is the default; explicitly saved model selections are preserved.
+# Preserve the links and URL variables.
+preferences-rwkv-model-results = Results: <a href="{ $factory }">Model Factory results</a> · <a href="{ $backup }">Matched backup comparison</a>
 preferences-rwkv-f32 = f32 — full precision fallback
 preferences-rwkv-int8 = int8 — cards and notes
 preferences-rwkv-int4 = int4 — experimental, reduced accuracy

@@ -261,6 +261,21 @@ class Preferences(QDialog):
         model_explanation = QLabel(tr.preferences_rwkv_model_explanation(), group)
         model_explanation.setWordWrap(True)
         layout.addRow(model_explanation)
+        model_results = QLabel(
+            anki.lang.without_unicode_isolation(
+                tr.preferences_rwkv_model_results(
+                    factory="https://jschoreels.github.io/anki-rwkv/factory.html",
+                    backup="https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
+                )
+            ),
+            group,
+        )
+        model_results.setWordWrap(True)
+        model_results.setOpenExternalLinks(True)
+        model_results.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+        )
+        layout.addRow(model_results)
         layout.addRow(tr.preferences_rwkv_precision(), self.rwkv_precision)
         explanation = QLabel(tr.preferences_rwkv_precision_explanation(), group)
         explanation.setWordWrap(True)

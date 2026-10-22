@@ -36,6 +36,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 ### User facing changes
 
+- **Clearer RWKV model choices.** Preferences → Review labels the original model “Legacy - Bigger Model” and SM55 “New - Smaller Model”, with links to the upstream Model Factory results and the matched backup comparison. SM40 and SM36 Muon remain selectable, and saved model choices and storage precision are preserved.
+
 - **SM55 is the default small RWKV model.** On the upstream matched 723-user comparison, it lowers Curve LogLoss by 0.00047 and Instant LogLoss by 0.00025 relative to SM36, bringing it within 0.49% / 0.53% of the big model. Preferences → Review offers SM55 alongside Legacy, SM40 and SM36 Muon; explicitly saved choices and storage precision are preserved. Select SM55 and reopen the profile to use it when another model was already saved.
 
 - **Learn ahead works with FSRS review sorting.** Relative Overdueness and ascending/descending retrievability now respect the Learn ahead limit for learning and relearning cards once no other cards remain to study. A limit of zero continues to require the full delay.
