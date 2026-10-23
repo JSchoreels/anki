@@ -18,60 +18,120 @@ import {
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
 
-test("RWKV model and precision load local choices and only save on Save", async ({ page }, testInfo) => {
-    let saved: UpdateDeckConfigsRequest | undefined;
-    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
-        const response = await route.fetch();
-        const data = DeckConfigsForUpdate.fromBinary(await response.body());
-        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
-        config.rwkvReviewInstantOrderEnabled = true;
-        data.rwkvProfileSettings = new RwkvProfileSettings(
-            saved?.rwkvProfileSettings ?? {
-                model: "legacy",
-                statePrecision: "int8",
-            },
+test(
+    "RWKV Advanced hides model, queue and comparison controls and preserves precision on Save",
+    async ({ page }, testInfo) => {
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!
+                .config!;
+            config.rwkvReviewInstantOrderEnabled = true;
+            config.rwkvReviewEnabled = true;
+            data.rwkvProfileSettings = new RwkvProfileSettings(
+                saved?.rwkvProfileSettings ?? {
+                    model: "legacy",
+                    statePrecision: "int8",
+                },
+            );
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+        await page.goto("/deck-options/1");
+        await page.addStyleTag({ url: "/_anki/css/webview.css" });
+        await page.addStyleTag({ content: "html { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }" });
+        const card = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+        const advanced = card.locator("details.rwkv-advanced");
+        const openAdvanced = advanced.locator("summary");
+        const group = advanced.getByRole("region", { name: "Prediction model", exact: true });
+        const model = group.getByRole("checkbox", { name: "Use Bigger and Slower model", exact: true });
+        const compare = advanced.getByRole("button", { name: "Compare RWKV with FSRS", exact: true });
+        await expect(model).toBeHidden();
+        await expect(compare).toBeHidden();
+        await expect(advanced.getByText("Use faster, approximate queue updates", { exact: true })).toBeHidden();
+        await expect(advanced.getByText("Update the RWKV queue every", { exact: true })).toBeHidden();
+        await expect(card.getByText("Storage precision", { exact: true })).toHaveCount(0);
+        await expect(card.getByRole("button", { name: "Build Cache", exact: true })).toBeVisible();
+        await card.screenshot({ path: testInfo.outputPath("rwkv-options-collapsed.png") });
+        await openAdvanced.focus();
+        await page.keyboard.press("Enter");
+        await expect(model).toBeChecked();
+        await expect(compare).toBeVisible();
+        await compare.click();
+        const comparison = page.getByRole("dialog").filter({
+            has: page.getByRole("heading", { name: "FSRS / RWKV Efficiency Comparison (Experimental)", exact: true }),
+        });
+        await expect(comparison).toBeVisible();
+        await comparison.getByRole("button", { name: "Close", exact: true }).click();
+        await expect(comparison).toBeHidden();
+        await group.getByRole("button", { name: "About prediction models", exact: true }).click();
+        await expect(group).toContainText("Applies to all decks in this profile on this computer");
+        await expect(group.getByRole("link", { name: "Model Factory results" })).toHaveAttribute(
+            "href",
+            "https://jschoreels.github.io/anki-rwkv/factory.html",
         );
-        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        await expect(group.getByRole("link", { name: "Matched backup comparison" })).toHaveAttribute(
+            "href",
+            "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
+        );
+        await model.uncheck();
+        expect(saved).toBeUndefined();
+        await page.reload();
+        await openAdvanced.click();
+        await expect(model).toBeChecked();
+        await model.uncheck();
+        await group.getByRole("button", { name: "About prediction models", exact: true }).click();
+        await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
+            model: "sm55",
+            statePrecision: "int8",
+        });
+        await page.reload();
+        await openAdvanced.click();
+        await expect(model).not.toBeChecked();
+        await expect(group).toContainText("New - Smaller Model");
+        await model.check();
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "legacy", statePrecision: "int8" });
+        await page.reload();
+        await openAdvanced.click();
+        await expect(model).toBeChecked();
+    },
+);
+
+for (const model of ["sm40", "sm36"]) {
+    test(`saving older RWKV model ${model} chooses SM55 without changing hidden precision`, async ({ page }) => {
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+                .config!.config!.rwkvReviewInstantOrderEnabled = true;
+            data.rwkvProfileSettings = new RwkvProfileSettings(
+                saved?.rwkvProfileSettings ?? { model, statePrecision: "f32" },
+            );
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+        await page.goto("/deck-options/1");
+        await page.reload();
+        expect(saved).toBeUndefined();
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm55", statePrecision: "f32" });
+        await page.reload();
+        await page.locator("details.rwkv-advanced summary").click();
+        await expect(page.getByRole("checkbox", { name: "Use Bigger and Slower model", exact: true })).not
+            .toBeChecked();
     });
-    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
-        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
-        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
-    });
-    await page.goto("/deck-options/1");
-    const group = page.getByRole("region", { name: "Model and storage" });
-    const model = group.getByRole("combobox").nth(0);
-    const precision = group.getByRole("combobox").nth(1);
-    await expect(model).toHaveText("Legacy - Bigger Model");
-    await expect(precision).toHaveText("int8 — cards and notes");
-    await expect(group).toContainText("Applies to all decks in this profile on this computer");
-    await expect(group.getByRole("link", { name: "Model Factory results" })).toHaveAttribute(
-        "href",
-        "https://jschoreels.github.io/anki-rwkv/factory.html",
-    );
-    await expect(group.getByRole("link", { name: "Matched backup comparison" })).toHaveAttribute(
-        "href",
-        "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
-    );
-    await model.click();
-    await page.getByRole("option", { name: "New - Smaller Model", exact: true }).click();
-    expect(saved).toBeUndefined();
-    await page.reload();
-    await expect(model).toHaveText("Legacy - Bigger Model");
-    await model.click();
-    await page.getByRole("option", { name: "New - Smaller Model", exact: true }).click();
-    await expect(precision).toHaveText("int8 — cards and notes");
-    await precision.click();
-    await page.getByRole("option", { name: "int4 cards + int8 notes — default", exact: true }).click();
-    await group.screenshot({ path: testInfo.outputPath("rwkv-model-settings.png") });
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
-        model: "sm55",
-        statePrecision: "cards_int4_notes_int8",
-    });
-    await page.reload();
-    await expect(model).toHaveText("New - Smaller Model");
-    await expect(precision).toHaveText("int4 cards + int8 notes — default");
-});
+}
 
 test("all intraday orders save and reload without changing descending R or other metadata", async ({ page }) => {
     let saved: UpdateDeckConfigsRequest | undefined;

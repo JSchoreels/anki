@@ -3,17 +3,14 @@
 
 import type { PlainMessage } from "@bufbuild/protobuf";
 import { OpChanges } from "@generated/anki/collection_pb";
-import type {
-    DeckConfigsForUpdate,
-    DeckConfigsForUpdate_CurrentDeck,
-    UpdateDeckConfigsMode,
-} from "@generated/anki/deck_config_pb";
+import type { DeckConfigsForUpdate, DeckConfigsForUpdate_CurrentDeck } from "@generated/anki/deck_config_pb";
 import {
     DeckConfig,
     DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate_CurrentDeck_Limits,
     RwkvProfileSettings,
+    UpdateDeckConfigsMode,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 import { updateDeckConfigs } from "@generated/backend";
@@ -394,9 +391,16 @@ export class DeckOptionsState {
             // current must come last, even if unmodified
             this.configs[this.selectedIdx].config,
         ];
+        const rwkvProfileSettings = new RwkvProfileSettings(get(this.rwkvProfileSettings));
+        if (
+            mode !== UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS
+            && (rwkvProfileSettings.model === "sm40" || rwkvProfileSettings.model === "sm36")
+        ) {
+            rwkvProfileSettings.model = "sm55";
+        }
         return {
             targetDeckId: this.targetDeckId,
-            rwkvProfileSettings: get(this.rwkvProfileSettings),
+            rwkvProfileSettings,
             removedConfigIds: this.removedConfigs,
             configs,
             mode,
