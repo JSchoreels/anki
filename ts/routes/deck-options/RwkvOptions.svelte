@@ -158,9 +158,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }}
         />
         <DynamicallySlottable slotHost={Item} api={{}}>
-            <RwkvModelOptions {state} disabled={rwkvActionInProgress} />
             {#if $config.rwkvReviewInstantOrderEnabled}
-                <div class="rwkv-mode-heading">
+                <div class="rwkv-mode-heading rwkv-instant-heading">
                     <h2>RWKV-Instant</h2>
                     <span class="rwkv-mode-badge">
                         {tr.deckConfigRwkvRecommended()}
@@ -169,7 +168,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         {tr.deckConfigRwkvInstantSubtitle()}
                     </span>
                 </div>
-                <p class="rwkv-description">{tr.deckConfigRwkvInstantDescription()}</p>
+                <p class="rwkv-description rwkv-instant-description">
+                    {tr.deckConfigRwkvInstantDescription()}
+                </p>
 
                 <p class="rwkv-recommendation">
                     {tr.deckConfigRwkvReviewInstantOrderRecommended()}
@@ -185,31 +186,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
                     >
                         {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-
-                <SwitchRow
-                    bind:value={$config.rwkvReviewCandidateRefreshEnabled}
-                    defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvCandidateRefresh")}
-                    >
-                        {tr.deckConfigRwkvReviewCandidateRefresh()}
-                    </SettingTitle>
-                </SwitchRow>
-
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewRefreshInterval}
-                    defaultValue={defaults.rwkvReviewRefreshInterval}
-                    min={1}
-                    max={10000}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvRefreshInterval")}
-                    >
-                        {tr.deckConfigRwkvReviewRefreshInterval()}
                     </SettingTitle>
                 </SpinBoxFloatRow>
 
@@ -292,9 +268,40 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         {/if}
                     </button>
                 </div>
+            {/if}
+
+            <details class="rwkv-advanced">
+                <summary>{tr.deckConfigAdvancedTitle()}</summary>
+                <RwkvModelOptions {state} disabled={rwkvActionInProgress} />
+
+                {#if $config.rwkvReviewInstantOrderEnabled}
+                    <h2 class="rwkv-subheading">RWKV-Instant</h2>
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewCandidateRefreshEnabled}
+                        defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvCandidateRefresh")}
+                        >
+                            {tr.deckConfigRwkvReviewCandidateRefresh()}
+                        </SettingTitle>
+                    </SwitchRow>
+                    <SpinBoxFloatRow
+                        bind:value={$config.rwkvReviewRefreshInterval}
+                        defaultValue={defaults.rwkvReviewRefreshInterval}
+                        min={1}
+                        max={10000}
+                        step={1}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvRefreshInterval")}
+                        >
+                            {tr.deckConfigRwkvReviewRefreshInterval()}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                {/if}
 
                 <h2 class="rwkv-subheading">Compare</h2>
-
                 <div class="d-flex flex-wrap gap-2">
                     <button
                         class="btn btn-outline-primary"
@@ -304,7 +311,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         Compare RWKV with FSRS
                     </button>
                 </div>
-            {/if}
+            </details>
         </DynamicallySlottable>
     </TitledContainer>
 {/if}
@@ -336,6 +343,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         font-weight: 600;
         line-height: 1.4;
         margin: 0;
+    }
+
+    .rwkv-instant-heading {
+        margin-top: 0;
+        margin-bottom: 0.25rem;
+    }
+
+    .rwkv-description.rwkv-instant-description {
+        margin-bottom: 0.375rem;
     }
 
     .rwkv-mode-subtitle {
@@ -378,6 +394,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         color: var(--fg-subtle);
         display: block;
         font-size: 0.875rem;
+        margin: 0 0 0.5rem;
+    }
+
+    .rwkv-advanced {
+        border-top: 1px solid var(--border-subtle);
+        margin-top: 1rem;
+        padding-top: 0.75rem;
+    }
+
+    .rwkv-advanced summary {
+        cursor: pointer;
+        font-weight: 600;
+        margin-bottom: 0.75rem;
     }
 
     .btn {

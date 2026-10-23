@@ -63,23 +63,27 @@ it is turned off again.
 
 ## Bundled RWKV Models
 
-Deck Options → RWKV → Model and storage offers a **Prediction model** selector for the entire
-local profile, independently of **Storage precision**. The original Legacy
+Deck Options → RWKV → **Advanced** offers **Use Bigger and Slower model** for the entire
+local profile. The original Legacy
 model and the 331,511-parameter SM40, SM36 Muon and SM55 models are bundled. Only the
 selected model and its state are loaded.
 
-The menu labels the original model **Legacy - Bigger Model** and SM55
-**New - Smaller Model**. SM40 and SM36 Muon remain available. Links below the
-controls open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
+The switch selects **Legacy - Bigger Model** when on and **New - Smaller Model**
+(SM55, the default) when off. SM40 and SM36 are no longer offered in the UI.
+The adjacent help button explains both choices and their profile-wide scope.
+Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched four-model backup comparison, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
 The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36` and `sm55` as supported
 values. Missing or unsupported values resolve to SM55 in existing and new profiles.
-All explicitly saved supported choices are preserved, including `sm36`. Profile
+Opening Deck Options does not change a saved choice. On a successful ordinary
+Deck Options save, older `sm40` and `sm36` choices switch to `sm55`; `legacy` and
+`sm55` are preserved. The older models remain supported by the runtime. Profile
 creation explicitly stores `sm55`. Neither model choice nor state precision is synced.
-These controls have moved from Preferences into the RWKV card in Deck Options.
-Use Save to keep changes; closing and discarding leaves both choices unchanged.
+The model control has moved from Preferences into Advanced in the RWKV card.
+Storage precision is hidden and keeps its saved value. Use Save to keep model
+changes; closing and discarding leaves both profile keys unchanged.
 The desktop attaches `rwkv_profile_settings` to the Deck Options response and save
 request, then updates the existing profile keys only after the configuration save
 succeeds. Failed saves and parameter-only optimization do not apply these choices.
@@ -160,6 +164,12 @@ The former `rwkv_review_allow_same_day_review` field is retained for storage
 compatibility but no longer affects scheduling or hides the repeat-spacing
 fields. The two spacing minimums appear in one row with units inside the fields.
 
+The RWKV card keeps minimum daily reviews, repeat spacing, Curve intervals and
+maintenance actions visible. Its initially collapsed **Advanced** section contains
+the profile-wide model switch and **Compare RWKV with FSRS**. With Instant enabled,
+it also contains **Use faster, approximate queue updates** and **Update the RWKV
+queue every**; these two settings still belong to the selected deck preset.
+
 Deck Options hides `rwkv_review_refresh_on_exit` while retaining its saved
 behavior. Creation-time prediction is always enabled; the retained
 `rwkv_review_first_review_elapsed_from_card_creation` field no longer disables
@@ -194,13 +204,14 @@ invalidates any cache checkpoint that still contains the older retained
 sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
-Deck Options → RWKV → Model and storage selects storage precision for the whole local
-profile: `cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
+Storage precision is a hidden setting for the whole local profile:
+`cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
 (cards and notes), `f32` (the original full-precision fallback), or `int4`
 (experimental, cards and notes). All four models support all four modes. The profile
 key is `rwkvStatePrecision`; absent or unsupported values default to
 `cards_int4_notes_int8` in both new and existing profiles. Explicitly saved
-precision choices, including `int8`, are preserved. This choice is local and is
+precision choices, including `int8`, are preserved when saving Deck Options or
+switching models. This choice is local and is
 not synced.
 Changes take effect after restarting Anki (or reopening the profile), and the
 next state preparation rebuilds from retained review history. Precision is part
