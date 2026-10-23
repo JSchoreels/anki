@@ -29,6 +29,7 @@ test(
                 .config!;
             config.rwkvReviewInstantOrderEnabled = true;
             config.rwkvReviewEnabled = true;
+            config.rwkvReviewMinimumReviewsPerDay = 100;
             data.rwkvProfileSettings = new RwkvProfileSettings(
                 saved?.rwkvProfileSettings ?? {
                     model: "legacy",
@@ -43,23 +44,30 @@ test(
         });
         await page.goto("/deck-options/1");
         await page.addStyleTag({ url: "/_anki/css/webview.css" });
-        await page.addStyleTag({ content: "html { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }" });
+        await page.addStyleTag({
+            content: "html, body { font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }",
+        });
         const card = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
         const advanced = card.locator("details.rwkv-advanced");
         const openAdvanced = advanced.locator("summary");
         const group = advanced.getByRole("region", { name: "Prediction model", exact: true });
-        const model = group.getByRole("checkbox", { name: "Use Bigger and Slower model", exact: true });
+        const model = group.getByRole("checkbox", { name: "Use Smaller Model", exact: true });
         const compare = advanced.getByRole("button", { name: "Compare RWKV with FSRS", exact: true });
         await expect(model).toBeHidden();
         await expect(compare).toBeHidden();
         await expect(advanced.getByText("Use faster, approximate queue updates", { exact: true })).toBeHidden();
         await expect(advanced.getByText("Update the RWKV queue every", { exact: true })).toBeHidden();
         await expect(card.getByText("Storage precision", { exact: true })).toHaveCount(0);
+        await expect(card.getByText("Recommended: Use Ascending Retrievability or Random", { exact: true }))
+            .toHaveCount(0);
         await expect(card.getByRole("button", { name: "Build Cache", exact: true })).toBeVisible();
+        await page.setViewportSize({ width: 736, height: 1000 });
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-collapsed.png") });
+        await page.setViewportSize({ width: 1280, height: 900 });
         await openAdvanced.focus();
         await page.keyboard.press("Enter");
-        await expect(model).toBeChecked();
+        await expect(model).not.toBeChecked();
+        await expect(group.getByText("Legacy - Bigger Model", { exact: true })).toHaveCount(0);
         await expect(compare).toBeVisible();
         await compare.click();
         const comparison = page.getByRole("dialog").filter({
@@ -78,12 +86,12 @@ test(
             "href",
             "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
         );
-        await model.uncheck();
+        await model.check();
         expect(saved).toBeUndefined();
         await page.reload();
         await openAdvanced.click();
-        await expect(model).toBeChecked();
-        await model.uncheck();
+        await expect(model).not.toBeChecked();
+        await model.check();
         await group.getByRole("button", { name: "About prediction models", exact: true }).click();
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -93,14 +101,13 @@ test(
         });
         await page.reload();
         await openAdvanced.click();
-        await expect(model).not.toBeChecked();
-        await expect(group).toContainText("New - Smaller Model");
-        await model.check();
+        await expect(model).toBeChecked();
+        await model.uncheck();
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "legacy", statePrecision: "int8" });
         await page.reload();
         await openAdvanced.click();
-        await expect(model).toBeChecked();
+        await expect(model).not.toBeChecked();
     },
 );
 
@@ -128,8 +135,7 @@ for (const model of ["sm40", "sm36"]) {
         await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm55", statePrecision: "f32" });
         await page.reload();
         await page.locator("details.rwkv-advanced summary").click();
-        await expect(page.getByRole("checkbox", { name: "Use Bigger and Slower model", exact: true })).not
-            .toBeChecked();
+        await expect(page.getByRole("checkbox", { name: "Use Smaller Model", exact: true })).toBeChecked();
     });
 }
 
@@ -694,7 +700,7 @@ for (const refreshOnExit of [false, true]) {
         await expect(page.getByRole("checkbox", { name: "Enforce Again ≤ Hard ≤ Good ≤ Easy intervals" }))
             .toBeVisible();
         await expect(page.getByText("Recommended: Use Ascending Retrievability or Random", { exact: true }))
-            .toBeVisible();
+            .toHaveCount(0);
         for (
             const name of [
                 "Update the RWKV queue after reviewing",

@@ -172,22 +172,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {tr.deckConfigRwkvInstantDescription()}
                 </p>
 
-                <p class="rwkv-recommendation">
-                    {tr.deckConfigRwkvReviewInstantOrderRecommended()}
-                </p>
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinimumReviewsPerDay}
-                    defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
-                    min={0}
-                    max={9999}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
+                <div class="rwkv-minimum-reviews">
+                    <SpinBoxFloatRow
+                        bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                        defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
+                        min={0}
+                        max={9999}
+                        step={1}
                     >
-                        {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
+                        >
+                            {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                </div>
 
                 <h2 class="rwkv-subheading">Same-Day Repeats</h2>
 
@@ -390,11 +389,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         margin: 1rem 0 0.25rem;
     }
 
-    .rwkv-recommendation {
-        color: var(--fg-subtle);
-        display: block;
-        font-size: 0.875rem;
-        margin: 0 0 0.5rem;
+    .rwkv-minimum-reviews {
+        --gutter-inline: 0;
+        margin-top: 0.75rem;
     }
 
     .rwkv-advanced {
