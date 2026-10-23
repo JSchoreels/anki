@@ -17,21 +17,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = state.rwkvProfileSettings;
     let showModelHelp = false;
-    $: useBiggerModel = $settings.model === "legacy";
+    $: useSmallerModel = $settings.model !== "legacy";
 
     function changeModel(event: Event): void {
         $settings.model = (event.target as HTMLInputElement).checked
-            ? "legacy"
-            : "sm55";
+            ? "sm55"
+            : "legacy";
     }
 </script>
 
 <section aria-label={tr.deckConfigRwkvModel()}>
     <div class="model-row">
-        <label for="rwkv-bigger-model">{tr.deckConfigRwkvUseBiggerModel()}</label>
+        <label for="rwkv-smaller-model">{tr.deckConfigRwkvUseSmallerModel()}</label>
         <Switch
-            id="rwkv-bigger-model"
-            value={useBiggerModel}
+            id="rwkv-smaller-model"
+            value={useSmallerModel}
             {disabled}
             on:input={changeModel}
         />
@@ -43,12 +43,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             aria-controls="rwkv-model-manual"
             on:click={() => (showModelHelp = !showModelHelp)}
         >
-            <Icon icon={infoCircle} />
+            <span aria-hidden="true"><Icon icon={infoCircle} /></span>
         </button>
     </div>
-    <p class="model-status" aria-live="polite">
-        {useBiggerModel ? tr.deckConfigRwkvModelLegacy() : tr.deckConfigRwkvModelSm55()}
-    </p>
     <aside
         id="rwkv-model-manual"
         hidden={!showModelHelp}
@@ -56,9 +53,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     >
         <h3>{tr.deckConfigRwkvModel()}</h3>
         <dl>
-            <dt>{tr.deckConfigRwkvModelOff()}</dt>
-            <dd>{tr.deckConfigRwkvModelSmallerDescription()}</dd>
             <dt>{tr.deckConfigRwkvModelOn()}</dt>
+            <dd>{tr.deckConfigRwkvModelSmallerDescription()}</dd>
+            <dt>{tr.deckConfigRwkvModelOff()}</dt>
             <dd>{tr.deckConfigRwkvModelBiggerDescription()}</dd>
         </dl>
         <p>{tr.deckConfigRwkvProfileSettingsScope()}</p>
@@ -95,10 +92,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         height: 1.75rem;
         padding: 0.25rem;
         width: 1.75rem;
-    }
-
-    .model-status {
-        margin: 0 0 0.5rem;
     }
 
     aside {

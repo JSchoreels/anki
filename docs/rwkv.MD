@@ -63,14 +63,16 @@ it is turned off again.
 
 ## Bundled RWKV Models
 
-Deck Options → RWKV → **Advanced** offers **Use Bigger and Slower model** for the entire
+Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
 local profile. The original Legacy
 model and the 331,511-parameter SM40, SM36 Muon and SM55 models are bundled. Only the
 selected model and its state are loaded.
 
-The switch selects **Legacy - Bigger Model** when on and **New - Smaller Model**
-(SM55, the default) when off. SM40 and SM36 are no longer offered in the UI.
-The adjacent help button explains both choices and their profile-wide scope.
+The switch is on by default and selects **New - Smaller Model** (SM55) when on
+and **Legacy - Bigger Model** when off. An explicitly saved Legacy selection
+loads with the switch off. SM40 and SM36 are no longer offered in the UI.
+The adjacent help button explains both choices and their profile-wide scope;
+model names are shown in that help entry instead of a separate status line.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched four-model backup comparison, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
