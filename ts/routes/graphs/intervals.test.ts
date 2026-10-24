@@ -67,3 +67,11 @@ test("prepareIntervalData exposes stability percentile rows in FSRS mode", () =>
         "P99 stability",
     ]);
 });
+
+test("prepareIntervalData shows FSRS stabilities rounded to 0 days as under 12 hours", () => {
+    const intervals = [0, 0, 0, 5, 40];
+    const [_histogram, tableData] = prepareIntervalData({ intervals }, IntervalRange.All, () => undefined, false, true);
+    expect(tableData[1].value).toBe(`< ${timeSpan(43200, false)}`);
+    expect(tableData[0].value).toBe(`< ${timeSpan(43200, false)}`);
+    expect(tableData[4].value.startsWith("<")).toBe(false);
+});

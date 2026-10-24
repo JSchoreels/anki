@@ -193,7 +193,10 @@ export function prepareIntervalData(
     }
 
     const percentiles = intervalPercentileSummary(allIntervals);
-    const spanForDays = (days: number): string => timeSpan(days * 86400, false);
+    // The backend rounds stability to whole days, so FSRS-7 learning cards (seconds to hours) arrive as 0:
+    // "< 12 hours", not "0 seconds".
+    const spanForDays = (days: number): string =>
+        fsrs && days === 0 ? `< ${timeSpan(43200, false)}` : timeSpan(days * 86400, false);
     const metricSuffix = fsrs ? "stability" : "interval";
     const tableData = [
         {
