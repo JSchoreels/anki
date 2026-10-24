@@ -292,5 +292,36 @@
         "state_precision_default": "cards_int4_notes_int8",
         "zstd_enabled": false
     },
-    "private_evidence_directory": "/private/tmp/rwkv-sm56-integration-2026-10-24"
+    "private_evidence_directory": "/private/tmp/rwkv-sm56-integration-2026-10-24",
+    "release_dependency_followup": {
+        "initial_ci_run": "https://github.com/JSchoreels/anki/actions/runs/40083332357",
+        "initial_candidate": "48d805b8c9f1f6a8fdfc5a2d3ff8e748000b08e9",
+        "failure": "Linux cargo-deny RUSTSEC-2026-0386; all build/test/e2e steps passed",
+        "tokio_before": "1.52.1",
+        "tokio_after": "1.53.3",
+        "workspace_minimum": "1.53.3",
+        "new_advisory_exceptions": [],
+        "cargo_deny_version": "0.20.2",
+        "cargo_deny_passed": true,
+        "cargo_deny_log_sha256": "44566f9c3b0b80d425ddf8bbc15cc7e5c537b8a5caf44fd62a0707cfc2a9fa50",
+        "post_update_verification": {
+            "repository_check": {
+                "command": "TZ=UTC just check",
+                "passed": true,
+                "log_sha256": "08ff96ac67776b78491081a8288c5506cdddc35c04c460d5b72e8272e569f170"
+            },
+            "browser_tests": {
+                "command": "TZ=UTC ANKI_SOFTWAREOPENGL=1 ANKI_API_PORT=40035 just test-e2e",
+                "passed": 57,
+                "skipped": 1,
+                "log_sha256": "a3ced1472626cab2bd15a4dd6e91906032205769ea1b9135a0e8d861e4e8128a"
+            },
+            "local_retry_context": [
+                "Concurrent builds initially raced over Svelte generated output; rerun serially",
+                "Generated license inventory updated with just fix-minilints",
+                "Briefcase stub download timed out once; full check subsequently passed unchanged",
+                "First browser run: existing editor chooser intercepted cleanup click (56 passed,1 failed,1 skipped); full repeat passed without source changes"
+            ]
+        }
+    }
 }
