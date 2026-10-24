@@ -158,9 +158,22 @@ class Overview:
         return self.mw.col.decks.current()["dyn"]
 
     def rebuild_current_filtered_deck(self) -> None:
-        rebuild_filtered_deck(
-            parent=self.mw, deck_id=self.mw.col.decks.selected()
-        ).run_in_background()
+        from aqt.rwkv_filtered_deck import run_filtered_deck_op_with_rwkv_check
+
+        deck_id = self.mw.col.decks.selected()
+        if not self.mw.col.decks.is_filtered(deck_id):
+            # The "r" shortcut also fires on normal decks; let the op report it.
+            rebuild_filtered_deck(parent=self.mw, deck_id=deck_id).run_in_background()
+            return
+        config = self.mw.col.sched.get_or_create_filtered_deck(deck_id=deck_id).config
+        run_filtered_deck_op_with_rwkv_check(
+            mw=self.mw,
+            parent=self.mw,
+            config=config,
+            make_op=lambda policy: rebuild_filtered_deck(
+                parent=self.mw, deck_id=deck_id, rwkv_policy=policy
+            ),
+        )
 
     def empty_current_filtered_deck(self) -> None:
         empty_filtered_deck(

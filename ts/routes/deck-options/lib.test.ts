@@ -11,6 +11,7 @@ import {
     DeckConfig_Config_LeechAction,
     DeckConfigsForUpdate,
     DeckConfigsForUpdate_CurrentDeck_Limits,
+    RwkvProfileSettings,
     UpdateDeckConfigsMode,
 } from "@generated/anki/deck_config_pb";
 import { get } from "svelte/store";
@@ -106,6 +107,46 @@ const exampleData = {
 function startingState(): DeckOptionsState {
     return new DeckOptionsState(123n, new DeckConfigsForUpdate(exampleData));
 }
+
+test.each([
+    ["legacy", "legacy"],
+    ["sm40", "sm56"],
+    ["sm36", "sm56"],
+    ["sm55", "sm56"],
+    ["sm56", "sm56"],
+])("saving RWKV model %s selects %s without changing precision or pending state", (model, expected) => {
+    const data = new DeckConfigsForUpdate(exampleData);
+    data.rwkvProfileSettings = new RwkvProfileSettings({ model, statePrecision: "int8" });
+    const state = new DeckOptionsState(123n, data);
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).rwkvProfileSettings).toMatchObject({
+        model: expected,
+        statePrecision: "int8",
+    });
+    expect(state.dataForSaving(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS).rwkvProfileSettings?.model).toBe(model);
+    expect(get(state.rwkvProfileSettings).model).toBe(model);
+    expect(data.rwkvProfileSettings.model).toBe(model);
+});
+
+test("RWKV model and storage are global pending changes, independent of the selected preset", async () => {
+    const state = startingState();
+    state.resolveOriginalConfigs();
+    expect(await state.isModified()).toBe(false);
+    state.rwkvProfileSettings.update((settings) => {
+        settings.model = "legacy";
+        settings.statePrecision = "int8";
+        return settings;
+    });
+    expect(await state.isModified()).toBe(true);
+    state.setCurrentIndex(1);
+    expect(get(state.rwkvProfileSettings).model).toBe("legacy");
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).rwkvProfileSettings).toMatchObject({
+        model: "legacy",
+        statePrecision: "int8",
+    });
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).configs.at(-1)?.config).not.toHaveProperty(
+        "rwkvProfileSettings",
+    );
+});
 
 test("start", () => {
     const state = startingState();

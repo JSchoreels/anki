@@ -171,7 +171,7 @@ class Scheduler(SchedulerBaseWithLegacy):
         return not self.get_queued_cards().cards
 
     def counts(self, card: Card | None = None) -> tuple[int, int, int]:
-        info = self.get_queued_cards()
+        info = self.get_queued_cards_without_states(fetch_limit=0)
         return (info.new_count, info.learning_count, info.review_count)
 
     @property

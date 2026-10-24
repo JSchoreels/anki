@@ -2,19 +2,19 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 //! The offline runtime's RWKV: the fork's 2.76M-parameter model
-//! (`crate::rwkv`) or JSchoreels' 331k-parameter one (`crate::rwkv_small`),
-//! picked by the model file the app passes (kuma3's Settings > RWKV model).
-//! Both engines take the same inputs; the small one gets copies of its own
-//! types.
+//! (`crate::rwkv`) or JSchoreels' 331k-parameter one (`crate::rwkv::alternate`,
+//! the fork's second compile of the engine), picked by the model file the app
+//! passes (kuma3's Settings > RWKV model). Both engines take the same inputs;
+//! the small one gets copies of its own types.
 
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
 use crate::rwkv;
+use crate::rwkv::alternate as rwkv_small;
 use crate::rwkv::ReviewInput;
 use crate::rwkv::StatePrecision;
-use crate::rwkv_small;
 
 pub(super) enum Engine {
     Big(rwkv::RwkvInference),
@@ -38,6 +38,7 @@ fn small_precision(precision: StatePrecision) -> rwkv_small::StatePrecision {
         StatePrecision::F32 => rwkv_small::StatePrecision::F32,
         StatePrecision::Int8 => rwkv_small::StatePrecision::Int8,
         StatePrecision::Int4 => rwkv_small::StatePrecision::Int4,
+        StatePrecision::Int4CardsInt8Notes => rwkv_small::StatePrecision::Int4CardsInt8Notes,
     }
 }
 

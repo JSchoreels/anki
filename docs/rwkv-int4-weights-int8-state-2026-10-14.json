@@ -1,0 +1,186 @@
+{
+    "backup_sha256": "d9b17439af4da9a47fc6e3163e3e42dde6c8dbda76afa3e24a88778090a87452",
+    "group_size": 32,
+    "input_blake3": "305507f2e39866e4420b13db1e60203ab4bc21114ee489c1566c4af7d9776b30",
+    "original_model_blake3": "95fde87baa38105eb9dd13c994f5532c6f51aa56d104d4f29741543f26177833",
+    "packed_model_blake3": "8cb808cebcaeb23e144e230ad53ab9f846915be5c30aadb3614c3872e93f72dc",
+    "quantized_parameters": 2719744,
+    "results": [
+        {
+            "accuracy_vs_current_int8": null,
+            "accuracy_vs_f32": {
+                "log_loss": 0.4558333942102822,
+                "max_abs_prediction_change": 0.0,
+                "mean_abs_prediction_change": 0.0,
+                "p99_abs_prediction_change": 0.0,
+                "reviews": 176835,
+                "rmse_bins": 0.01880903584994077
+            },
+            "combined_payload_bytes": 1203901683,
+            "mode": "f32_weights_f32_state",
+            "model_file_bytes": 11082637,
+            "prediction_replay_seconds": 22.3760915,
+            "scopes": {
+                "card": {
+                    "serialized_bytes": 730480494,
+                    "states": 13973
+                },
+                "deck": {
+                    "serialized_bytes": 1533356,
+                    "states": 22
+                },
+                "global": {
+                    "serialized_bytes": 69698,
+                    "states": 1
+                },
+                "note": {
+                    "serialized_bytes": 460055884,
+                    "states": 13198
+                },
+                "preset": {
+                    "serialized_bytes": 679614,
+                    "states": 13
+                }
+            },
+            "serialized_state_bytes": 1192819046
+        },
+        {
+            "accuracy_vs_current_int8": {
+                "log_loss": 0.4558322251799722,
+                "max_abs_prediction_change": 0.0,
+                "mean_abs_prediction_change": 0.0,
+                "p99_abs_prediction_change": 0.0,
+                "reviews": 176835,
+                "rmse_bins": 0.01881053788811538
+            },
+            "accuracy_vs_f32": {
+                "log_loss": 0.4558322251799722,
+                "max_abs_prediction_change": 0.006799459457397461,
+                "mean_abs_prediction_change": 0.00024618725607196775,
+                "p99_abs_prediction_change": 0.0014504790306091309,
+                "reviews": 176835,
+                "rmse_bins": 0.01881053788811538
+            },
+            "combined_payload_bytes": 364474134,
+            "mode": "f32_weights_int8_state",
+            "model_file_bytes": 11082637,
+            "prediction_replay_seconds": 60.052834375,
+            "scopes": {
+                "card": {
+                    "serialized_bytes": 215393795,
+                    "states": 13973
+                },
+                "deck": {
+                    "serialized_bytes": 1533356,
+                    "states": 22
+                },
+                "global": {
+                    "serialized_bytes": 69698,
+                    "states": 1
+                },
+                "note": {
+                    "serialized_bytes": 135715034,
+                    "states": 13198
+                },
+                "preset": {
+                    "serialized_bytes": 679614,
+                    "states": 13
+                }
+            },
+            "serialized_state_bytes": 353391497
+        },
+        {
+            "accuracy_vs_current_int8": {
+                "log_loss": 0.4564771967872735,
+                "max_abs_prediction_change": 0.13042956590652466,
+                "mean_abs_prediction_change": 0.01391174869453492,
+                "p99_abs_prediction_change": 0.06952166557312012,
+                "reviews": 176835,
+                "rmse_bins": 0.019610598929199297
+            },
+            "accuracy_vs_f32": {
+                "log_loss": 0.4564771967872735,
+                "max_abs_prediction_change": 0.13053900003433228,
+                "mean_abs_prediction_change": 0.01390703330294933,
+                "p99_abs_prediction_change": 0.06953465938568115,
+                "reviews": 176835,
+                "rmse_bins": 0.019610598929199297
+            },
+            "combined_payload_bytes": 1194741739,
+            "mode": "int4_weights_f32_state",
+            "model_file_bytes": 1922693,
+            "prediction_replay_seconds": 13.918584417,
+            "scopes": {
+                "card": {
+                    "serialized_bytes": 730480494,
+                    "states": 13973
+                },
+                "deck": {
+                    "serialized_bytes": 1533356,
+                    "states": 22
+                },
+                "global": {
+                    "serialized_bytes": 69698,
+                    "states": 1
+                },
+                "note": {
+                    "serialized_bytes": 460055884,
+                    "states": 13198
+                },
+                "preset": {
+                    "serialized_bytes": 679614,
+                    "states": 13
+                }
+            },
+            "serialized_state_bytes": 1192819046
+        },
+        {
+            "accuracy_vs_current_int8": {
+                "log_loss": 0.456478418222909,
+                "max_abs_prediction_change": 0.1305575966835022,
+                "mean_abs_prediction_change": 0.01390629785204539,
+                "p99_abs_prediction_change": 0.06952255964279175,
+                "reviews": 176835,
+                "rmse_bins": 0.019610098705479858
+            },
+            "accuracy_vs_f32": {
+                "log_loss": 0.456478418222909,
+                "max_abs_prediction_change": 0.13066703081130981,
+                "mean_abs_prediction_change": 0.01390377641967947,
+                "p99_abs_prediction_change": 0.06955039501190186,
+                "reviews": 176835,
+                "rmse_bins": 0.019610098705479858
+            },
+            "combined_payload_bytes": 355314190,
+            "mode": "int4_weights_int8_state",
+            "model_file_bytes": 1922693,
+            "prediction_replay_seconds": 15.725203167,
+            "scopes": {
+                "card": {
+                    "serialized_bytes": 215393795,
+                    "states": 13973
+                },
+                "deck": {
+                    "serialized_bytes": 1533356,
+                    "states": 22
+                },
+                "global": {
+                    "serialized_bytes": 69698,
+                    "states": 1
+                },
+                "note": {
+                    "serialized_bytes": 135715034,
+                    "states": 13198
+                },
+                "preset": {
+                    "serialized_bytes": 679614,
+                    "states": 13
+                }
+            },
+            "serialized_state_bytes": 353391497
+        }
+    ],
+    "retained_reviews": 223954,
+    "runtime_weights_dtype": "f32",
+    "total_parameters": 2762884
+}

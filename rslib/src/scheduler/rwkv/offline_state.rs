@@ -69,9 +69,10 @@ pub(super) fn header(model: &OfflineModel) -> io::Result<String> {
         }
     };
     // int4 keeps note states in int8 since kuma3 17: a file from before
-    // holds int4 note states and is rebuilt
+    // holds int4 note states and is rebuilt. Since the fork's build 107 that
+    // is its Int4CardsInt8Notes; the header stays, so no rebuild.
     let precision = match model.precision {
-        StatePrecision::Int4 => "Int4Int8Notes".to_string(),
+        StatePrecision::Int4CardsInt8Notes => "Int4Int8Notes".to_string(),
         other => format!("{other:?}"),
     };
     Ok(format!("state{STATE_VERSION} {precision} {hashed}"))

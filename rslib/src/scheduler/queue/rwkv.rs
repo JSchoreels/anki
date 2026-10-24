@@ -75,28 +75,43 @@ impl Collection {
             .storage
             .recent_rwkv_intervening_reviews(&deck_ids, guards.min_intervening_reviews)?;
         let now = TimestampSecs::now();
-        let blocked = cards
-            .into_iter()
-            .filter(|card| {
-                matches!(card.queue, CardQueue::Learn | CardQueue::DayLearn)
-                    && !matches!(
-                        rwkv_repeat_spacing_eligibility(
-                            card.last_review_time
-                                .map(|last| now.elapsed_secs_since_clamped(last)),
-                            guards.min_intervening_reviews,
-                            guards.min_elapsed_secs,
-                            intervening_reviews.get(&card.id).copied(),
-                        ),
-                        RwkvReviewScoreEligibility::Eligible
-                    )
+        let blocked_cards = |min_intervening_reviews| {
+            cards
+                .iter()
+                .filter(|card| {
+                    matches!(card.queue, CardQueue::Learn | CardQueue::DayLearn)
+                        && !matches!(
+                            rwkv_repeat_spacing_eligibility(
+                                card.last_review_time
+                                    .map(|last| now.elapsed_secs_since_clamped(last)),
+                                min_intervening_reviews,
+                                guards.min_elapsed_secs,
+                                intervening_reviews.get(&card.id).copied(),
+                            ),
+                            RwkvReviewScoreEligibility::Eligible
+                        )
+                })
+                .map(|card| card.id)
+                .collect()
+        };
+        let queues = self.state.card_queues.as_mut().unwrap();
+        queues.blocked_rwkv_learning_cards = blocked_cards(guards.min_intervening_reviews);
+        if !queues.blocked_rwkv_learning_cards.is_empty()
+            && queues.iter().all(|entry| {
+                queues.shown_top_card == Some(entry.card_id())
+                    && queues
+                        .blocked_rwkv_learning_cards
+                        .contains(&entry.card_id())
             })
-            .map(|card| card.id)
-            .collect();
-        self.state
-            .card_queues
-            .as_mut()
-            .unwrap()
-            .blocked_rwkv_learning_cards = blocked;
+        {
+            let blocked_count = queues.blocked_rwkv_learning_cards.len();
+            queues.blocked_rwkv_learning_cards = blocked_cards(0);
+            tracing::debug!(
+                relaxed = blocked_count - queues.blocked_rwkv_learning_cards.len(),
+                still_blocked = queues.blocked_rwkv_learning_cards.len(),
+                "Relaxed RWKV learning intervening-review minimum because no other card was selectable"
+            );
+        }
         Ok(())
     }
 }

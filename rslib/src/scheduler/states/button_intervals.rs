@@ -222,15 +222,17 @@ mod test {
     #[test]
     fn minimum_seconds_floors_sub_day_buttons() {
         let mut ctx = ctx();
-        ctx.fsrs_minimum_interval_secs = 600;
-        assert_eq!(
-            button_intervals(
-                &ctx,
-                [Some(0.000_01), None, None, None],
-                DayRule::Graduating
-            ),
-            [secs(600), None, None, None]
-        );
+        for minimum in [1, 5, 60, 600] {
+            ctx.fsrs_minimum_interval_secs = minimum;
+            assert_eq!(
+                button_intervals(
+                    &ctx,
+                    [Some(1.0 / 86_400.0), None, None, None],
+                    DayRule::Graduating
+                ),
+                [secs(minimum), None, None, None]
+            );
+        }
     }
 
     #[test]

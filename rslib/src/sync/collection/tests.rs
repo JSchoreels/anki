@@ -332,6 +332,84 @@ async fn sync_roundtrip() -> Result<()> {
     .await
 }
 
+#[tokio::test]
+async fn deck_options_metadata_syncs_after_opaque_client_edits() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        upload_download(&ctx).await?;
+        let mut desktop = ctx.col1();
+        let mut other_client = ctx.col2();
+        let mut config = DeckConfig {
+            name: "Custom display order".into(),
+            ..Default::default()
+        };
+        config.inner.review_order =
+            crate::deckconfig::ReviewCardOrder::RetrievabilityDescending as i32;
+        let metadata = json!({
+            "intraday_learning_mix": crate::deckconfig::ReviewMix::AfterReviews as i32,
+            "future_option": "preserve",
+        });
+        config.inner.other = serde_json::to_vec(&json!({
+            "jschoreels.deckoptions": metadata,
+        }))?;
+        desktop.transact_no_undo(|col| col.add_or_update_deck_config(&mut config))?;
+        let config_id = config.id;
+        ctx.normal_sync(&mut desktop).await;
+        assert!(
+            ctx.normal_sync(&mut other_client)
+                .await
+                .remote_collection_changed
+        );
+
+        // An unsupported client edits known preset settings without interpreting
+        // the namespaced options carried by the generic sync representation.
+        let original = other_client.get_deck_config(config_id, false)?.unwrap();
+        let original_collection_modified = other_client.sync_meta()?.modified;
+        let mut wire =
+            serde_json::to_value(crate::deckconfig::DeckConfSchema11::from(original.clone()))?;
+        assert_eq!(wire["jschoreels.deckoptions"], metadata);
+        wire["name"] = json!("Edited on another client");
+        wire["rev"]["perDay"] = json!(123);
+        // Preset conflict resolution uses seconds. Give this sequential edit an
+        // explicit later timestamp instead of depending on wall-clock rollover.
+        wire["mod"] = json!(original.mtime_secs.adding_secs(1).0);
+        let mut config =
+            DeckConfig::from(serde_json::from_value::<crate::deckconfig::DeckConfSchema11>(wire)?);
+        config.usn = other_client.usn()?;
+        other_client
+            .transact_no_undo(|col| col.update_deck_config_inner(&mut config, original, None))?;
+        // Normal sync also compares millisecond collection timestamps. Ensure
+        // this immediate test edit cannot equal the preceding sync timestamp.
+        other_client
+            .storage
+            .set_modified_time(TimestampMillis(original_collection_modified.0 + 1))?;
+        let edited = other_client.get_deck_config(config_id, false)?.unwrap();
+        assert_eq!(edited.name, "Edited on another client");
+        ctx.normal_sync(&mut other_client).await;
+        assert!(
+            ctx.normal_sync(&mut desktop)
+                .await
+                .remote_collection_changed
+        );
+
+        let config = desktop.get_deck_config(config_id, false)?.unwrap();
+        assert_eq!(
+            config.intraday_learning_mix(),
+            crate::deckconfig::ReviewMix::AfterReviews
+        );
+        assert_eq!(config.name, "Edited on another client");
+        assert_eq!(config.inner.reviews_per_day, 123);
+        assert_eq!(
+            config.inner.review_order,
+            crate::deckconfig::ReviewCardOrder::RetrievabilityDescending as i32
+        );
+        let wire = serde_json::to_value(crate::deckconfig::DeckConfSchema11::from(config))?;
+        assert_eq!(wire["jschoreels.deckoptions"], metadata);
+        Ok(())
+    })
+    .await
+}
+
 /// See issue #5109
 #[tokio::test]
 async fn new_empty_collection_should_not_require_full_sync() -> Result<()> {

@@ -244,7 +244,10 @@ class ProfileManager:
             self.db = None
 
     def create(self, name: str) -> None:
+        from aqt.rwkv_model import RWKV_MODEL_KEY
+
         prof = profileConf.copy()
+        prof[RWKV_MODEL_KEY] = "sm56"
         if self.db.scalar("select 1 from profiles where name = ? collate nocase", name):
             return
         self.db.execute(
@@ -671,7 +674,7 @@ create table if not exists profiles
         self.profile["hostNum"] = val or 0
 
     def check_for_updates(self) -> bool:
-        return not aqt.is_portable() and self.meta.get("check_for_updates", True)
+        return self.meta.get("check_for_updates", True)
 
     def set_update_check(self, on: bool) -> None:
         self.meta["check_for_updates"] = on

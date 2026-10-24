@@ -350,15 +350,18 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
         target_retention: float = 0.9,
         max_interval_days: int = 36500,
         state_precision: str = "f32",
+        model: str = "sm40",
     ) -> None:
         del device, dtype
         self.state_precision = state_precision
+        self.model_name = model
         super().__init__(
             _RustRwkvRuntime(
                 model_path=Path(model_path),
                 target_retention=target_retention,
                 max_interval_days=max_interval_days,
                 state_precision=state_precision,
+                model=model,
             ),
         )
 
@@ -373,6 +376,7 @@ class _RustRwkvRuntime:
         target_retention: float,
         max_interval_days: int,
         state_precision: str = "f32",
+        model: str = "sm40",
     ) -> None:
         from anki import _rsbridge
 
@@ -382,6 +386,7 @@ class _RustRwkvRuntime:
             target_retention,
             max_interval_days,
             state_precision,
+            model,
         )
         self._process_lock = threading.RLock()
 
@@ -1142,8 +1147,11 @@ class _RustRwkvRuntime:
         return output
 
     def snapshot(self, review_input: RwkvReviewInput) -> object:
+        identity = review_input.identity
         with self._locked_process():
-            return self._process.state_for_card(review_input.identity.card_id)
+            return self._process.state_for_review(
+                identity.card_id, identity.note_id, identity.deck_id, identity.preset_id
+            )
 
     def restore(self, state: object | None) -> None:
         if state is not None:
@@ -1774,6 +1782,7 @@ def _duration_millis(review_input: RwkvReviewInput) -> float:
 
 
 _SUB_DAY_SEARCH_POINTS = (
+    1 / 86_400,
     1 / 1440,
     5 / 1440,
     10 / 1440,

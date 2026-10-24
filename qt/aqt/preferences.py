@@ -219,41 +219,9 @@ class Preferences(QDialog):
     def setup_profile(self) -> None:
         "Setup options stored in the user profile."
         self.setup_network()
-        self.setup_rwkv_precision()
-
-    def setup_rwkv_precision(self) -> None:
-        from aqt.rwkv_precision import (
-            RWKV_STATE_PRECISIONS,
-            state_precision_for_profile,
-        )
-
-        group = QGroupBox(tr.preferences_rwkv_state(), self)
-        layout = QFormLayout(group)
-        self.rwkv_precision = QComboBox(group)
-        for mode, label in zip(
-            RWKV_STATE_PRECISIONS,
-            (
-                tr.preferences_rwkv_f32(),
-                tr.preferences_rwkv_int8(),
-                tr.preferences_rwkv_int4(),
-            ),
-        ):
-            self.rwkv_precision.addItem(label, mode)
-        self.rwkv_precision.setCurrentIndex(
-            RWKV_STATE_PRECISIONS.index(state_precision_for_profile(self.prof))
-        )
-        layout.addRow(tr.preferences_rwkv_precision(), self.rwkv_precision)
-        explanation = QLabel(tr.preferences_rwkv_precision_explanation(), group)
-        explanation.setWordWrap(True)
-        layout.addRow(explanation)
-        self.form.review_options_layout.insertWidget(1, group)
 
     def update_profile(self) -> None:
         self.update_network()
-        from aqt.rwkv_precision import RWKV_STATE_PRECISION_KEY
-
-        assert self.prof is not None
-        self.prof[RWKV_STATE_PRECISION_KEY] = self.rwkv_precision.currentData()
 
     # Profile: network
     ######################################################################
@@ -270,7 +238,6 @@ class Preferences(QDialog):
         self.form.network_timeout.setValue(self.mw.pm.network_timeout())
 
         self.form.check_for_updates.setChecked(self.mw.pm.check_for_updates())
-        self.form.check_for_updates.setEnabled(not aqt.is_portable())
         qconnect(self.form.check_for_updates.stateChanged, self.mw.pm.set_update_check)
 
         self.form.check_for_addon_updates.setChecked(

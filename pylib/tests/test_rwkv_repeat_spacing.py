@@ -121,6 +121,45 @@ def test_rwkv_learning_repeat_is_withheld_after_answer_and_redo(
     assert offered_ids(col) == []
 
 
+def test_rwkv_learning_repeat_relaxes_review_minimum_when_no_other_card_remains(
+    col: Collection,
+) -> None:
+    configure_repeat_guards(col, minimum_reviews=3, minimum_secs=0)
+    cards = [add_card(col), add_card(col)]
+    answer(col, CardAnswer.AGAIN)
+    answer(col, CardAnswer.AGAIN)
+
+    offered = offered_ids(col)
+    assert len(offered) == 1
+    assert offered[0] in {card.id for card in cards}
+    assert scheduler(col).get_queued_cards_without_states().learning_count == 2
+
+
+def test_rwkv_learning_repeat_keeps_elapsed_seconds_minimum_when_no_other_card_remains(
+    col: Collection,
+) -> None:
+    configure_repeat_guards(col, minimum_reviews=3, minimum_secs=90)
+    add_card(col)
+    add_card(col)
+    answer(col, CardAnswer.AGAIN)
+    answer(col, CardAnswer.AGAIN)
+
+    assert offered_ids(col) == []
+    assert scheduler(col).get_queued_cards_without_states().learning_count == 0
+
+
+def test_rwkv_learning_repeat_keeps_review_minimum_when_new_card_remains(
+    col: Collection,
+) -> None:
+    configure_repeat_guards(col, minimum_reviews=3, minimum_secs=0)
+    add_card(col)
+    new_card = add_card(col)
+    answer(col, CardAnswer.AGAIN)
+
+    assert offered_ids(col) == [new_card.id]
+    assert scheduler(col).get_queued_cards_without_states().learning_count == 0
+
+
 @pytest.mark.parametrize(
     ("queue", "card_type", "learn_ahead"),
     [
@@ -171,7 +210,10 @@ def test_rwkv_learning_repeat_counts_only_answers_in_selected_deck_tree(
     answer(col, CardAnswer.AGAIN)
     card.load()
     card.last_review_time = int_time() - 3600
+    card.due = int_time() - 1
     col.update_card(card)
+    # Keeps another card selectable so the no-other-card relaxation does not apply.
+    spare = add_card(col)
 
     outside = col.decks.add_normal_deck_with_name("Outside").id
     col.decks.set_current(DeckId(outside))
@@ -179,12 +221,14 @@ def test_rwkv_learning_repeat_counts_only_answers_in_selected_deck_tree(
         add_card(col, DeckId(outside))
         answer(col, CardAnswer.EASY)
     col.decks.set_current(DeckId(1))
-    assert offered_ids(col) == []
+    assert offered_ids(col) == [spare.id]
 
     child = col.decks.add_normal_deck_with_name("Default::Child").id
+    col.decks.set_current(DeckId(child))
     for _ in range(3):
         add_card(col, DeckId(child))
         answer(col, CardAnswer.EASY)
+    col.decks.set_current(DeckId(1))
     assert offered_ids(col) == [card.id]
 
 
@@ -213,8 +257,11 @@ def test_rwkv_learning_repeat_can_disable_each_minimum(
     answer(col, CardAnswer.AGAIN)
     card.load()
     card.last_review_time = int_time() + 3600
+    card.due = int_time() - 1
     col.update_card(card)
-    assert offered_ids(col) == []
+    # Keeps another card selectable so the no-other-card relaxation does not apply.
+    spare = add_card(col)
+    assert offered_ids(col) == [spare.id]
 
     if minimum_reviews:
         for _ in range(minimum_reviews):
@@ -259,6 +306,42 @@ def test_rwkv_learning_guards_preserve_an_already_displayed_card(
     assert offered_ids(col) == [other.id]
     answer(col, CardAnswer.EASY)
     assert offered_ids(col) == []
+
+
+def test_counts_keeps_displayed_card_answerable_when_intraday_learning_sorts_first(
+    col: Collection,
+) -> None:
+    configure_repeat_guards(col, minimum_reviews=0, minimum_secs=90)
+    card = add_card(col)
+    answer(col, CardAnswer.AGAIN)
+    card.load()
+    card.queue = QUEUE_TYPE_DAY_LEARN_RELEARN
+    card.due = scheduler(col).today
+    card.last_review_time = int_time() + 3600
+    col.update_card(card)
+
+    other = add_card(col)
+    other.queue = QUEUE_TYPE_LRN
+    other.type = CARD_TYPE_LRN
+    other.due = int_time() - 60
+    other.last_review_time = int_time() - 3600
+    col.update_card(other)
+
+    scheduler(col).rebuild_queued_cards_preserving_current_card(card.id)
+    assert scheduler(col).counts() == (0, 2, 0)
+
+    states = scheduler(col).get_scheduling_states(card.id)
+    scheduler(col).answer_card(
+        CardAnswer(
+            card_id=card.id,
+            current_state=states.current,
+            new_state=states.good,
+            rating=CardAnswer.GOOD,
+            answered_at_millis=int_time(1000),
+            milliseconds_taken=1000,
+        )
+    )
+    assert col.get_card(card.id).reps == 2
 
 
 def test_rwkv_learning_guards_follow_undo_and_redo_of_other_answers(

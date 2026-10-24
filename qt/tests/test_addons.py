@@ -3,21 +3,351 @@
 
 import io
 import os.path
+from collections.abc import Callable
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from typing import Any, cast
 from zipfile import ZipFile
 
 import pytest
 from mock import MagicMock
 
+import aqt.addons
+from anki.collection import AddonInfo
+from aqt import gui_hooks
 from aqt.addons import (
     AddonManager,
+    ChooseAddonsToUpdateDialog,
     DownloadError,
     DownloadOk,
     InstallOk,
+    check_and_prompt_for_updates,
     download_addon,
     download_and_install_addon,
     package_name_valid,
 )
+from aqt.main import AnkiQt
+from aqt.progress import ProgressManager
+from aqt.qt import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QEventLoop,
+    Qt,
+    QTimer,
+    QWidget,
+)
+from aqt.taskman import TaskManager
+
+
+@pytest.fixture
+def update_check(monkeypatch, addon_manager, app):
+    callbacks = []
+    timers = []
+    finished = []
+    addon_manager.mw = SimpleNamespace(
+        col=object(),
+        progress=SimpleNamespace(
+            single_shot=lambda _ms, callback, **_kwargs: timers.append(callback)
+        ),
+    )
+    monkeypatch.setattr(
+        aqt.addons,
+        "check_for_updates",
+        lambda _mgr, callback: callbacks.append(callback),
+    )
+    monkeypatch.setattr(QApplication, "activeModalWidget", lambda: None)
+    try:
+        yield addon_manager, callbacks, timers, finished
+    finally:
+        gui_hooks.profile_will_close()
+        app.processEvents()
+
+
+@pytest.fixture(scope="module")
+def app():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return QApplication.instance() or QApplication([])
+
+
+def test_update_check_does_not_repeat_while_waiting_for_a_prompt(
+    update_check, monkeypatch
+) -> None:
+    mgr, callbacks, timers, finished = update_check
+    prompts = []
+    monkeypatch.setattr(
+        aqt.addons,
+        "handle_update_info",
+        lambda _parent, _mgr, _items, on_done, _requested: prompts.append(on_done),
+    )
+    check_and_prompt_for_updates(
+        mgr.mw, mgr, lambda log: finished.append(("first", log))
+    )
+    check_and_prompt_for_updates(
+        mgr.mw, mgr, lambda log: finished.append(("second", log))
+    )
+    assert len(callbacks) == 1
+
+    callbacks[0]([])
+    assert prompts == []
+    timers.pop()()
+    check_and_prompt_for_updates(
+        mgr.mw, mgr, lambda log: finished.append(("third", log))
+    )
+    assert len(prompts) == 1
+    assert len(callbacks) == 1
+    assert finished == []
+
+    prompts[0]([])
+    prompts[0]([])
+    assert finished == [("first", []), ("second", []), ("third", [])]
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    assert len(callbacks) == 2
+
+
+def test_update_check_raises_visible_prompt(update_check, monkeypatch) -> None:
+    mgr, callbacks, _timers, finished = update_check
+    calls = []
+
+    class Prompt:
+        def isVisible(self) -> bool:
+            return True
+
+        def raise_(self) -> None:
+            calls.append("raise")
+
+        def activateWindow(self) -> None:
+            calls.append("activate")
+
+    monkeypatch.setattr(aqt.addons, "ChooseAddonsToUpdateDialog", Prompt)
+    monkeypatch.setattr(QApplication, "topLevelWidgets", lambda: [Prompt()])
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+
+    assert calls == ["raise", "activate"]
+    assert len(callbacks) == 1
+    assert finished == []
+
+
+@pytest.mark.parametrize("close_profile", [False, True])
+def test_update_check_skips_prompt_for_a_previous_collection(
+    update_check, monkeypatch, close_profile: bool
+) -> None:
+    mgr, callbacks, timers, finished = update_check
+    prompts = []
+    monkeypatch.setattr(
+        aqt.addons, "handle_update_info", lambda *args: prompts.append(args)
+    )
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    waiter_finished: list[list[aqt.addons.DownloadLogEntry]] = []
+    check_and_prompt_for_updates(mgr.mw, mgr, waiter_finished.append)
+    callbacks.pop()([])
+    if close_profile:
+        gui_hooks.profile_will_close()
+    mgr.mw.col = object()
+    timers.pop()()
+
+    assert prompts == []
+    assert finished == ([] if close_profile else [[]])
+    assert waiter_finished == ([] if close_profile else [[]])
+    assert mgr._update_check_waiters == []
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    assert len(callbacks) == 1
+
+
+def test_update_check_cancellation_preserves_other_profile_close_hooks(
+    update_check,
+) -> None:
+    mgr, _callbacks, _timers, finished = update_check
+    closed = []
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    on_close = lambda: closed.append(True)
+    gui_hooks.profile_will_close.append(on_close)
+    try:
+        gui_hooks.profile_will_close()
+        assert closed == [True]
+        assert not mgr._update_check_in_progress
+    finally:
+        gui_hooks.profile_will_close.remove(on_close)
+
+
+def test_update_check_started_before_profile_open_uses_the_opened_collection(
+    update_check, monkeypatch
+) -> None:
+    mgr, callbacks, timers, finished = update_check
+    mgr.mw.col = None
+    monkeypatch.setattr(
+        aqt.addons,
+        "handle_update_info",
+        lambda _parent, _mgr, _items, on_done, _requested: on_done([]),
+    )
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append)
+    mgr.mw.col = object()
+    callbacks.pop()([])
+    timers.pop()()
+
+    assert finished == [[]]
+    assert not mgr._update_check_in_progress
+
+
+def test_automatic_update_check_finishes_when_updates_are_disabled(
+    update_check,
+) -> None:
+    mgr, callbacks, timers, finished = update_check
+    mgr.get_updated_addons = lambda _items: [AddonInfo(id=123)]
+    mgr.addon_meta = lambda _id: SimpleNamespace(update_enabled=False)
+    check_and_prompt_for_updates(mgr.mw, mgr, finished.append, requested_by_user=False)
+    callbacks.pop()([])
+    timers.pop()()
+
+    assert finished == [[]]
+    assert not mgr._update_check_in_progress
+
+
+def _wait_for_ui(condition: Callable[[], bool]) -> None:
+    loop = QEventLoop()
+    poll = QTimer()
+    poll.timeout.connect(lambda: loop.quit() if condition() else None)
+    timeout = QTimer()
+    timeout.setSingleShot(True)
+    timeout.timeout.connect(loop.quit)
+    poll.start(10)
+    timeout.start(5_000)
+    try:
+        if not condition():
+            loop.exec()
+        assert condition(), "Qt did not reach the expected UI state"
+    finally:
+        poll.stop()
+        timeout.stop()
+
+
+@pytest.mark.parametrize("choice", ["accept", "cancel", "close"])
+def test_update_prompt_waits_for_rwkv_modals_and_closes_before_completion(
+    monkeypatch, addon_manager, app, choice: str
+) -> None:
+    from PyQt6.QtTest import QTest
+
+    mw = cast(Any, QWidget())
+    mw.app = app
+    mw.col = object()
+    mw.weakref = lambda: mw
+    mw.inMainThread = lambda: True
+    mw.progress = ProgressManager(mw)
+    mw.taskman = TaskManager(mw)
+    mw.show()
+    addon_manager.mw = mw
+    addon = AddonInfo(id=123, modified=1)
+    addon_manager.get_updated_addons = lambda _items: [addon]
+    addon_manager.update_supported_versions = lambda _items: None
+    addon_manager.addon_meta = lambda _id: SimpleNamespace(
+        update_enabled=True, human_name=lambda: "Test add-on"
+    )
+    addon_manager.write_addon_meta = lambda _meta: None
+    monkeypatch.setattr(aqt.addons, "restoreGeom", lambda *_args: None)
+    monkeypatch.setattr(aqt.addons, "saveGeom", lambda *_args: None)
+    monkeypatch.setattr(
+        aqt.addons,
+        "tr",
+        SimpleNamespace(
+            addons_choose_update_window_title=lambda: "Add-on Updates",
+            addons_the_following_addons_have_updates_available=lambda: (
+                "Updates available"
+            ),
+            addons_choose_update_update_all=lambda: "Update all",
+        ),
+    )
+    monkeypatch.setattr(
+        aqt.addons, "check_for_updates", lambda _mgr, callback: callback([addon])
+    )
+    finished = []
+
+    def visible_prompts() -> list[ChooseAddonsToUpdateDialog]:
+        return [
+            widget
+            for widget in app.topLevelWidgets()
+            if isinstance(widget, ChooseAddonsToUpdateDialog) and widget.isVisible()
+        ]
+
+    def download(_parent, _mgr, ids, on_done, _client) -> None:
+        assert ids == [123]
+        assert visible_prompts() == []
+        on_done([])
+
+    monkeypatch.setattr(aqt.addons, "download_addons", download)
+    scheduled = []
+    single_shot = mw.progress.single_shot
+
+    def observe_timer(ms, callback, requires_collection=True) -> None:
+        scheduled.append(callback)
+        single_shot(ms, callback, requires_collection)
+
+    monkeypatch.setattr(mw.progress, "single_shot", observe_timer)
+    rwkv_prompt = QDialog(mw)
+    rwkv_prompt.setWindowTitle("RWKV State Cache")
+    rwkv_prompt.setWindowModality(Qt.WindowModality.ApplicationModal)
+    rwkv_prompt.show()
+    try:
+        _wait_for_ui(lambda: app.activeModalWidget() is rwkv_prompt)
+        check_and_prompt_for_updates(mw, addon_manager, finished.append)
+        _wait_for_ui(lambda: len(scheduled) >= 2)
+        assert visible_prompts() == []
+
+        # Choosing a rebuild replaces the question with modal progress.
+        rwkv_prompt.reject()
+        progress = mw.progress.start(
+            parent=mw,
+            label="Building RWKV state cache...",
+            title="RWKV State Cache",
+            immediate=True,
+        )
+        # The offscreen platform has no native focus window for the show timer.
+        mw.progress._showWin()
+        _wait_for_ui(lambda: app.activeModalWidget() is progress)
+        assert visible_prompts() == []
+        mw.progress.finish()
+        _wait_for_ui(lambda: len(visible_prompts()) == 1)
+        dialog = visible_prompts()[0]
+        assert app.activeModalWidget() is None
+        if choice == "close":
+            dialog.close()
+        else:
+            buttons = dialog.findChild(QDialogButtonBox)
+            assert buttons is not None
+            button = buttons.button(
+                QDialogButtonBox.StandardButton.Ok
+                if choice == "accept"
+                else QDialogButtonBox.StandardButton.Cancel
+            )
+            assert button is not None
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        assert finished == [[]]
+        assert visible_prompts() == []
+        assert not addon_manager._update_check_in_progress
+
+        # A profile reload closes an unanswered prompt before another can open.
+        check_and_prompt_for_updates(mw, addon_manager, finished.append)
+        _wait_for_ui(lambda: len(visible_prompts()) == 1)
+        gui_hooks.profile_will_close()
+        mw.hide()
+        AnkiQt._checkForUnclosedWidgets(mw)
+        assert visible_prompts() == []
+        assert finished == [[]]
+        mw.col = object()
+        check_and_prompt_for_updates(mw, addon_manager, finished.append)
+        _wait_for_ui(lambda: len(visible_prompts()) == 1)
+    finally:
+        gui_hooks.profile_will_close()
+        for dialog in visible_prompts():
+            dialog.close()
+        rwkv_prompt.close()
+        if mw.progress.busy():
+            mw.progress.clear()
+            _wait_for_ui(lambda: not mw.progress.busy())
+        mw.taskman._collection_executor.shutdown()
+        mw.taskman._no_collection_executor.shutdown()
+        mw.close()
+        app.processEvents()
 
 
 def test_readMinimalManifest():

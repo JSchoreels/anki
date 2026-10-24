@@ -245,6 +245,15 @@ per-preset review counts and iteration progress.
 After deck-options Optimize All finishes parameter optimization, Anki reports a
 short per-preset save phase while writing the optimized deck configs. It then
 updates each affected preset's card memory state from the final saved config.
+Deck-options bulk memory-state updates resolve the current first matching overlay
+rule for each affected non-new card before changing any cards. Cards assigned to
+an overlay use its FSRS parameters, desired retention, historical retention, and
+review-history cutoff; unmatched cards keep the saved home-deck preset and any
+deck-specific retention override. Routing is fixed for the pass, including rules
+based on the stored interval, rather than being re-evaluated after rescheduling.
+Home-deck maximum intervals, review fuzz, and the rescheduling switch still apply.
+Without rescheduling, stored intervals, due dates, and review logs stay unchanged.
+
 If "Reschedule cards on change" is enabled, that same pass also updates due
 dates and writes rescheduled review-log entries. The progress payload includes
 the active preset name, preset index, and per-preset counts so the UI can show
@@ -315,6 +324,15 @@ fields.
 Desktop-only RWKV review settings are stored separately in deck config `other`
 under the `jschoreels.rwkv` key. See `rwkv.MD` for RWKV queue scoring, warm-up
 state, settings, inference runtime, and Rust/NEON parity coverage.
+
+General display-order settings use deck config `other["jschoreels.deckoptions"]`.
+`intraday_learning_mix` defaults to Mix (0), with After (1) and Before (2) placing
+due intraday learning/relearning after or before the remaining queue while
+retaining the selected review sort within each group. The earlier
+`intraday_learning_before_reviews: true` maps to Before when the new key is
+absent, and the UI replaces the old boolean on the next save. This
+namespace stays separate from FSRS/RWKV model settings and is preserved as opaque
+metadata by the existing preset storage and sync paths.
 
 When reading deck configs through the legacy Python `DeckConfigDict` API,
 fork-owned `other` entries may appear either under the `other` object or as

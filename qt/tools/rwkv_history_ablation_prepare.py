@@ -201,8 +201,7 @@ def main() -> None:
                     "decks": [deck.name for deck in decks],
                     "model_sha256": hashlib.sha256(
                         (
-                            workspace
-                            / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
+                            workspace / "qt/aqt/rwkv_inference/sm40v2/weights.f32.bin"
                         ).read_bytes()
                     ).hexdigest(),
                     **experiment,

@@ -441,7 +441,32 @@ def test_profile_load_marks_rwkv_startup_before_loading_collection(
     ]
 
 
-def test_profile_unload_cancels_rwkv_counts_before_closing_collection(
+def test_profile_close_sync_skips_rwkv_post_sync_refresh() -> None:
+    calls: list[object] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.closeAllWindows = lambda onsuccess: onsuccess()  # type: ignore[method-assign]
+    mw.setEnabled = lambda a0: None  # type: ignore[method-assign]
+
+    def sync(
+        after_sync: Callable[[bool], None],
+        *,
+        refresh_rwkv_state: bool = True,
+    ) -> None:
+        calls.append(("sync", refresh_rwkv_state))
+        after_sync(True)
+
+    mw.maybe_auto_sync_on_open_close = sync  # type: ignore[method-assign]
+    mw.media_syncer = SimpleNamespace(  # type: ignore[assignment]
+        show_diag_until_finished=lambda callback: callback()
+    )
+    mw._unloadCollection = lambda: calls.append("unload collection")  # type: ignore[method-assign]
+
+    mw.unloadCollection(lambda: calls.append("done"))
+
+    assert calls == [("sync", False), "unload collection", "done"]
+
+
+def test_profile_unload_cancels_rwkv_background_work_before_closing_collection(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
@@ -453,6 +478,16 @@ def test_profile_unload_cancels_rwkv_counts_before_closing_collection(
         "unload collection"
     )
     monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "cancel_rwkv_memorised_history",
+        lambda: calls.append("cancel rwkv memorised"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "cancel_rwkv_workload",
+        lambda: calls.append("cancel rwkv workload"),
+    )
+    monkeypatch.setattr(
         aqt.main.gui_hooks,
         "profile_will_close",
         lambda: calls.append("profile will close"),
@@ -462,6 +497,8 @@ def test_profile_unload_cancels_rwkv_counts_before_closing_collection(
 
     assert calls == [
         "cancel rwkv counts",
+        "cancel rwkv memorised",
+        "cancel rwkv workload",
         "profile will close",
         "unload collection",
     ]
