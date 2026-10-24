@@ -109,6 +109,7 @@ impl BuildAction for GenBuildInfo {
         build.add_inputs("script", inputs!["pylib/tools/genbuildinfo.py"]);
         build.add_inputs("version_file", inputs![".version"]);
         build.add_inputs("buildhash_file", inputs!["$builddir/buildhash"]);
+        build.add_inputs("", inputs!["$builddir/env"]);
         build.add_outputs("out", vec!["pylib/anki/buildinfo.py"]);
     }
 }

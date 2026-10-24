@@ -6,6 +6,12 @@ archive for the running application's platform and CPU architecture. Windows
 and macOS use ZIP; Linux uses `.tar.zst`. Installed builds retain their normal
 assets. Neither edition falls back to the other edition's download.
 
+Both editions compare the release tag with the full artifact version embedded at
+build time, including the fork build number. Automatic and manual checks offer
+only a newer version/build, so a newer draft does not prompt for an older
+published release. The displayed application version remains the base fork
+version.
+
 ## Download, stage, close, replace, restart
 
 After the user accepts the prompt, Anki downloads and verifies the archive with

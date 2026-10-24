@@ -36,6 +36,14 @@ Fork application versions add the local suffix `+fsrs7`, for example
 keeps the base fork version. The Actions run number is the monotonically
 increasing fork build number: never reset, reuse, or manually replace it.
 
+The release jobs pass the full tag through `ANKI_ARTIFACT_VERSION`. Python build
+metadata stores it as `anki.buildinfo.artifact_version`, separately from the base
+application version. Automatic and manual update checks compare this full version,
+including numeric build and retry suffixes, so running a draft cannot offer an
+older published build of the same application version. A matching release commit
+also suppresses the prompt. Local builds without `ANKI_ARTIFACT_VERSION` use the
+base application version for update comparisons.
+
 ## Synchronizing an upstream Anki release
 
 Use this process whenever this fork is aligned to a new official Anki release:
