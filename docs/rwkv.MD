@@ -71,8 +71,8 @@ selected model and its state are loaded.
 The switch is on by default and selects **New - Smaller Model** (SM56) when on
 and **Legacy - Bigger Model** when off. An explicitly saved Legacy selection
 loads with the switch off. SM40, SM36 and SM55 are no longer offered in the UI.
-The adjacent help button explains both choices and their profile-wide scope;
-model names are shown in that help entry instead of a separate status line.
+An inline legend directly below the switch explains both choices, their
+profile-wide scope and how to apply changes. It is visible whenever Advanced is open.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
