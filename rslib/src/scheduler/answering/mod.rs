@@ -307,6 +307,28 @@ impl Rating {
     }
 }
 
+/// An external scheduler's unrounded intervals in days (RWKV-Curve), one per
+/// answer button, in place of FSRS's; the state machine then applies the
+/// short-interval, fuzz and load-balance rules to them as usual.
+fn use_external_intervals(state_ctx: &mut StateContext, intervals: [Option<f32>; 4]) {
+    if let Some(states) = state_ctx.fsrs_next_states.as_mut() {
+        for (item, interval) in [
+            &mut states.again,
+            &mut states.hard,
+            &mut states.good,
+            &mut states.easy,
+        ]
+        .into_iter()
+        .zip(intervals)
+        {
+            if let Some(interval) = interval.filter(|days| days.is_finite() && *days > 0.0) {
+                item.interval = interval;
+            }
+        }
+        state_ctx.fsrs_fractional_intervals = true;
+    }
+}
+
 impl Collection {
     /// Return the next states that will be applied for each answer button.
     pub fn get_scheduling_states(&mut self, cid: CardId) -> Result<SchedulingStates> {
@@ -331,10 +353,31 @@ impl Collection {
         let note_id = card.note_id;
         let ctx = self.card_state_updater(card, desired_retention_override)?;
         let current = ctx.current_card_state();
+        // RWKV-Curve (a Curve preset, or Instant's Curve due dates) without the
+        // desktop's Python: the offline runtime gives the intervals its
+        // reviewer hands to `scheduling_states_with_intervals`. None (FSRS's
+        // intervals) when there is no offline runtime, e.g. on the desktop.
+        let curve = if ctx.config.inner.rwkv_review_enabled && ctx.fsrs_next_states.is_some() {
+            let targets = ctx
+                .dynamic_desired_retentions
+                .unwrap_or([ctx.desired_retention.unwrap_or(0.9); 4]);
+            self.rwkv_offline_curve(
+                ctx.card.id,
+                &current,
+                targets,
+                ctx.config.inner.rwkv_review_enforce_grade_order,
+                &ctx.timing,
+            )
+        } else {
+            None
+        };
 
         let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
 
-        let state_ctx = ctx.state_context(load_balancer_ctx)?;
+        let mut state_ctx = ctx.state_context(load_balancer_ctx)?;
+        if let Some(intervals) = curve {
+            use_external_intervals(&mut state_ctx, intervals);
+        }
         let mut states = current.next_states(&state_ctx);
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
@@ -378,22 +421,7 @@ impl Collection {
         let current = ctx.current_card_state();
         let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
         let mut state_ctx = ctx.state_context(load_balancer_ctx)?;
-        if let Some(states) = state_ctx.fsrs_next_states.as_mut() {
-            for (item, interval) in [
-                &mut states.again,
-                &mut states.hard,
-                &mut states.good,
-                &mut states.easy,
-            ]
-            .into_iter()
-            .zip(intervals)
-            {
-                if let Some(interval) = interval.filter(|days| days.is_finite() && *days > 0.0) {
-                    item.interval = interval;
-                }
-            }
-            state_ctx.fsrs_fractional_intervals = true;
-        }
+        use_external_intervals(&mut state_ctx, intervals);
         let mut states = current.next_states(&state_ctx);
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
@@ -479,6 +507,11 @@ impl Collection {
                 answer.answered_at,
                 &updater.timing,
             )?;
+        }
+        if answer.rwkv_s90.is_none() && updater.config.inner.rwkv_review_enabled {
+            // the S90 of the Curve answer shown, as the desktop's
+            // `set_answer_rwkv_metadata` sends it
+            answer.rwkv_s90 = self.rwkv_offline_curve_s90(answer.card_id, answer.rating.index());
         }
         if let Some(review_kind) = answer.rwkv_review_kind {
             require!(review_kind <= 3, "invalid RWKV review kind");

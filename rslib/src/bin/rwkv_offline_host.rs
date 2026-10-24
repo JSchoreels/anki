@@ -207,6 +207,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rating: i32 = args.get(6).map_or(Ok(3), |n| n.parse())?;
         return probe_check(col, deck, now, rating);
     }
+    if args.get(4).map(String::as_str) == Some("curve") {
+        let deck: i64 = args[5].parse()?;
+        let cards = args.get(6).map_or(Ok(10), |n| n.parse())?;
+        return curve_check(col, deck, now, cards);
+    }
     if args.get(4).map(String::as_str) == Some("answer") {
         answer_check(col, &args[1], &args[2], now)?;
     }
@@ -572,6 +577,89 @@ fn probe_check(
         )?;
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
+    Ok(())
+}
+
+/// RWKV-Curve on `deck`, its preset switched to Curve in this copy: the answer
+/// buttons of the first `cards` cards of its queue with FSRS and with Curve
+/// (and how long Curve's took), then a Good answer on the first, whose
+/// stability must be Curve's S90 for Good, not FSRS's.
+fn curve_check(
+    mut col: Col,
+    deck: i64,
+    now: i64,
+    cards: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use anki::services::CardsService;
+    use anki::services::DeckConfigService;
+    let deck_id = anki::decks::DeckId(deck);
+    col.set_current_deck(deck_id)?;
+    let dcid = col.get_deck(deck_id)?.unwrap().config_id().unwrap().0;
+    let set_curve = |col: &mut Col, on: bool| -> Result<(), Box<dyn std::error::Error>> {
+        let json = DeckConfigService::get_deck_config_legacy(
+            col,
+            anki_proto::deck_config::DeckConfigId { dcid },
+        )?;
+        let mut config: serde_json::Value = serde_json::from_slice(&json.json)?;
+        config["rwkvReviewEnabled"] = on.into();
+        config["rwkvReviewInstantOrderEnabled"] = false.into();
+        DeckConfigService::add_or_update_deck_config_legacy(
+            col,
+            anki_proto::generic::Json {
+                json: serde_json::to_vec(&config)?,
+            },
+        )?;
+        Ok(())
+    };
+    let queued = SchedulerService::get_queued_cards(
+        &mut col,
+        anki_proto::scheduler::GetQueuedCardsRequest {
+            fetch_limit: cards,
+            ..Default::default()
+        },
+    )?;
+    let ids: Vec<_> = queued
+        .cards
+        .iter()
+        .map(|c| anki::card::CardId(c.card.as_ref().unwrap().id))
+        .collect();
+    let labels = |col: &mut Col, cid| -> Result<(Vec<String>, u128), Box<dyn std::error::Error>> {
+        let start = Instant::now();
+        let states = col.get_scheduling_states(cid)?;
+        let ms = start.elapsed().as_millis();
+        Ok((col.describe_next_states(&states)?, ms))
+    };
+    // one switch per pass: a preset change makes the next RWKV call check the
+    // history, which isn't Curve's cost
+    set_curve(&mut col, false)?;
+    let fsrs: Vec<_> = ids
+        .iter()
+        .map(|&cid| labels(&mut col, cid))
+        .collect::<Result<_, _>>()?;
+    set_curve(&mut col, true)?;
+    labels(&mut col, ids[0])?;
+    for (&cid, (fsrs, _)) in ids.iter().zip(fsrs) {
+        let (curve, ms) = labels(&mut col, cid)?;
+        println!("CURVE {cid}: FSRS {fsrs:?} | Curve {curve:?} ({ms} ms)");
+    }
+    let Some(&cid) = ids.first() else {
+        return Ok(());
+    };
+    let stability = |col: &mut Col, set: bool| -> Result<f32, Box<dyn std::error::Error>> {
+        set_curve(col, set)?;
+        let states =
+            SchedulerService::get_scheduling_states(col, anki_proto::cards::CardId { cid: cid.0 })?;
+        answer(col, cid.0, &states, states.good.clone(), 2, now * 1000)?;
+        let card = CardsService::get_card(col, anki_proto::cards::CardId { cid: cid.0 })?;
+        let stability = card.memory_state.map_or(0.0, |m| m.stability);
+        col.undo()?;
+        Ok(stability)
+    };
+    // Curve first: the undo changes the history under the model state, which
+    // is then rebuilt in the background (Curve falls back to FSRS meanwhile)
+    let curve = stability(&mut col, true)?;
+    let fsrs = stability(&mut col, false)?;
+    println!("CURVE Good on {cid}: stability FSRS {fsrs:.3} d, Curve (S90) {curve:.3} d");
     Ok(())
 }
 

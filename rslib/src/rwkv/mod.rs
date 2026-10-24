@@ -5593,7 +5593,10 @@ fn unrounded_interval_for_curve(
     Some(crossing)
 }
 
-const SUB_DAY_SEARCH_POINTS: [f32; 14] = [
+const SUB_DAY_SEARCH_POINTS: [f32; 15] = [
+    // Already-at-target curves return this earliest supported model time
+    // (JSchoreels f8d185a9d: no one-minute fallback).
+    1.0 / SECONDS_PER_DAY as f32,
     1.0 / 1440.0,
     5.0 / 1440.0,
     10.0 / 1440.0,
@@ -11395,6 +11398,44 @@ order by e.id, e.cid
         assert!(fast > 0.03 && fast < 0.05, "{fast}");
         let slow = unrounded_interval_for_curve(&basis_curve(60), 0.9, 36_500).unwrap();
         assert!(slow > 1.0 && slow != slow.round(), "{slow}");
+    }
+
+    // From JSchoreels f8d185a9d (its power-curve case is the small model's
+    // head, which this shape doesn't build here).
+    #[test]
+    fn rwkv_crossings_already_at_target_use_one_second() {
+        if SMALL {
+            return; // the big model's 128-curve head
+        }
+        let curve = basis_curve(0);
+        let one_second = 1.0 / SECONDS_PER_DAY as f32;
+        for target in [0.9, predict_curve(&curve, 1.0)] {
+            assert_eq!(
+                unrounded_interval_for_curve(&curve, target, 36_500),
+                Some(one_second)
+            );
+            for enforce_grade_order in [false, true] {
+                assert_eq!(
+                    unrounded_intervals_for_answer_curves(
+                        [&curve; 4],
+                        [target; 4],
+                        36_500,
+                        enforce_grade_order,
+                    ),
+                    [Some(one_second); 4]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rwkv_subminute_crossings_keep_immediate_grade_before_later_grades() {
+        let intervals = crossings_on_grid(30, |days| {
+            [-1.0, 5.0, 15.0, 45.0].map(|seconds| seconds / SECONDS_PER_DAY as f32 - days)
+        });
+        for (days, expected_seconds) in intervals.into_iter().zip([1.0, 5.0, 15.0, 45.0]) {
+            assert!((days * SECONDS_PER_DAY as f32 - expected_seconds).abs() < 0.001);
+        }
     }
 
     #[test]

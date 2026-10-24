@@ -151,6 +151,32 @@ impl Engine {
         }
     }
 
+    /// RWKV-Curve for one card from its warm-up state: the four answers'
+    /// unrounded intervals in days at the input's target retentions, and
+    /// their S90s (the desktop's `predict_many`: a query pass plus one per
+    /// simulated answer).
+    pub(super) fn curve_from_warm_up(
+        &mut self,
+        input: ReviewInput,
+    ) -> io::Result<([Option<f32>; 4], [Option<f32>; 4])> {
+        Ok(match self {
+            Self::Big(engine) => {
+                let state = engine.warm_up_state(&input);
+                let out =
+                    engine.predict_many(vec![rwkv::ReviewPredictionRequest { input, state }])?;
+                out.first().map(|o| (o.intervals, o.s90s))
+            }
+            Self::Small(engine) => {
+                let input = small_inputs(vec![input]).remove(0);
+                let state = engine.warm_up_state(&input);
+                let out = engine
+                    .predict_many(vec![rwkv_small::ReviewPredictionRequest { input, state }])?;
+                out.first().map(|o| (o.intervals, o.s90s))
+            }
+        }
+        .unwrap_or_default())
+    }
+
     pub(super) fn predict_retrievability_many_from_warm_up(
         &mut self,
         inputs: Vec<ReviewInput>,

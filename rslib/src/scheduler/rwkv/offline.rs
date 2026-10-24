@@ -184,6 +184,10 @@ pub(crate) struct RwkvOfflineRuntime {
     saved_review_count: Option<u64>,
     /// The state file being written ([Self::save_state]).
     saving: Option<std::thread::JoinHandle<()>>,
+    /// The S90s of the RWKV-Curve answers last given to each card
+    /// ([Collection::rwkv_offline_curve]), for its answer: a queue fetch
+    /// gives the buttons of more than the card answered next.
+    curve_s90: HashMap<CardId, [Option<f32>; 4]>,
 }
 
 impl Drop for RwkvOfflineRuntime {
@@ -246,6 +250,7 @@ impl RwkvOfflineRuntime {
             scopes: HashMap::new(),
             saved_review_count: None,
             saving: None,
+            curve_s90: HashMap::new(),
         })
     }
 
@@ -1025,6 +1030,75 @@ impl Collection {
             (0 | 1 | 2 | 3, _) => Some(FILTERED),
             _ => None,
         })
+    }
+
+    /// RWKV-Curve's unrounded intervals in days for the card's four answers
+    /// at `targets`, as the desktop's reviewer computes them before it draws
+    /// the answer buttons (`update_reviewer_scheduling_states` and
+    /// `rwkv_review_input` in rwkv_scheduler.py); their S90s are kept for the
+    /// answer ([Self::rwkv_offline_curve_s90]). None, so FSRS's intervals
+    /// apply, while the model state isn't ready or the card can't be scored.
+    pub(crate) fn rwkv_offline_curve(
+        &mut self,
+        card_id: CardId,
+        current_state: &CardState,
+        targets: [f32; 4],
+        enforce_grade_order: bool,
+        timing: &SchedTimingToday,
+    ) -> Option<[Option<f32>; 4]> {
+        if !self.rwkv_offline_enabled() {
+            return None;
+        }
+        let mut curve = None;
+        self.with_rwkv_offline_runtime("curve", |col, runtime| {
+            col.rwkv_offline_sync_history(runtime)?;
+            let Some(row) = col
+                .rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                    card_ids: vec![card_id.0],
+                    include_new_cards: true,
+                    ..Default::default()
+                })?
+                .rows
+                .pop()
+            else {
+                return Ok(());
+            };
+            let mut input = query_input(&row);
+            // A review card answered earlier today is asked as the relearning
+            // or filtered review its answer will be recorded as (the desktop's
+            // `_rwkv_review_state_for_live_context`).
+            match col.rwkv_offline_same_day_review_kind(
+                card_id,
+                current_state,
+                true,
+                TimestampMillis::now(),
+                timing,
+            )? {
+                Some(2) => input.card_type = Some(3),
+                Some(3) => input.card_type = Some(4),
+                _ => {}
+            }
+            input.target_retentions = targets.map(Some);
+            input.enforce_grade_order = enforce_grade_order;
+            let (intervals, s90s) = runtime.inference.curve_from_warm_up(input)?;
+            if runtime.curve_s90.len() >= 64 {
+                runtime.curve_s90.clear(); // only the cards on screen matter
+            }
+            runtime.curve_s90.insert(card_id, s90s);
+            curve = Some(intervals);
+            Ok(())
+        });
+        curve
+    }
+
+    /// The S90 of `card_id`'s Curve answer `rating_index` (0 = Again), if
+    /// [Self::rwkv_offline_curve] gave its answer buttons.
+    pub(crate) fn rwkv_offline_curve_s90(
+        &self,
+        card_id: CardId,
+        rating_index: usize,
+    ) -> Option<f32> {
+        self.state.rwkv_offline.as_ref()?.curve_s90.get(&card_id)?[rating_index]
     }
 
     /// Called before deck counts are computed.
