@@ -10,6 +10,7 @@ use ninja_gen::cargo::CargoBuild;
 use ninja_gen::cargo::CargoClippy;
 use ninja_gen::cargo::CargoFormat;
 use ninja_gen::cargo::CargoTest;
+use ninja_gen::cargo::RustFormatSource;
 use ninja_gen::cargo::RustOutput;
 use ninja_gen::git::SyncSubmodule;
 use ninja_gen::glob;
@@ -193,6 +194,30 @@ pub fn check_rust(build: &mut Build) -> Result<()> {
             working_dir: Some("cargo/format"),
         },
     )?;
+
+    for check_only in [false, true] {
+        build.add_action(
+            if check_only {
+                "check:format:rwkv_engine"
+            } else {
+                "format:rwkv_engine"
+            },
+            RustFormatSource {
+                // Both formatters may install the same pinned toolchain on first use.
+                inputs: inputs![
+                    inputs.clone(),
+                    if check_only {
+                        ":check:format:rust"
+                    } else {
+                        ":format:rust"
+                    }
+                ],
+                source: "../../rslib/src/rwkv/engine.rs",
+                check_only,
+                working_dir: "cargo/format",
+            },
+        )?;
+    }
 
     let inputs = inputs![
         inputs,

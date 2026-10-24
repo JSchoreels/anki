@@ -1,0 +1,190 @@
+diff --git a/docs/rwkv.MD b/docs/rwkv.MD
+index 99dfaad10..8e920bca8 100644
+--- a/docs/rwkv.MD
++++ b/docs/rwkv.MD
+@@ -175,6 +175,12 @@ arithmetic, feature context, recall curves, and deck/preset/global state remain
+ f32. The runtime retains packed card/note modules and decodes only bounded query
+ batches or active replay streams. Bulk replay preserves the last answer's exact
+ integer codes and scales, so checkpoint reloads do not add another quantization.
++INT8 rounding encodes and restores each row together, retaining its codes in
++registers/local storage instead of decoding the complete byte buffer again.
++For normalized values clamped to −127…127, adding `1.5 * 2^23` rounds to nearest
++even and leaves the signed code in the low byte of the float's bits. The same
++encoder writes compact checkpoints. This preserves the existing scales, packed
++bytes and decoded values; no precision or cache-format change is involved.
+ `int4` can noticeably change individual predictions and calibration, so it is
+ offered as an explicit experimental choice.
+ See the [native precision benchmark](rwkv-state-precision-2026-10-10.MD) for
+diff --git a/rslib/src/rwkv/precision.rs b/rslib/src/rwkv/precision.rs
+index 26a4ce1d1..20bb322e5 100644
+--- a/rslib/src/rwkv/precision.rs
++++ b/rslib/src/rwkv/precision.rs
+@@ -62,8 +62,20 @@ impl StatePrecision {
+         });
+         packed.precision = self;
+         packed.bytes.clear();
+-        encode_matrix(self, values, &mut packed.bytes);
+-        decode_matrix(self, &packed.bytes, values);
++        if self == Self::Int8 {
++            packed
++                .bytes
++                .reserve(values.len() / HEAD_SIZE * self.row_bytes());
++            for row in values.chunks_exact_mut(HEAD_SIZE) {
++                let (scale, codes) = encode_int8_row(row, &mut packed.bytes);
++                for (value, code) in row.iter_mut().zip(codes) {
++                    *value = code as i8 as f32 * scale;
++                }
++            }
++        } else {
++            encode_matrix(self, values, &mut packed.bytes);
++            decode_matrix(self, &packed.bytes, values);
++        }
+     }
+
+     pub(super) fn round_shift(self, values: &mut [f32]) {
+@@ -228,9 +240,40 @@ pub(super) struct PackedMatrix {
+     bytes: Vec<u8>,
+ }
+
++/// Encode one row and retain its codes for immediate in-place rounding.
++#[inline(always)]
++fn encode_int8_row(row: &[f32], out: &mut Vec<u8>) -> (f32, [u8; HEAD_SIZE]) {
++    let maximum = row.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
++    let scale = if maximum == 0.0 {
++        1.0
++    } else {
++        (maximum / 127.0).max(f32::from_bits(1))
++    };
++    let mut codes = [0; HEAD_SIZE];
++    for (code, value) in codes.iter_mut().zip(row) {
++        let value = (value / scale).clamp(-127.0, 127.0);
++        // 1.5 * 2^23 has unit ULP and a zero low byte. Adding a value in
++        // [-127, 127] rounds to nearest-even; the low byte is its signed code.
++        // This avoids per-element rounding calls and saturating float casts.
++        let rounded = (value + 12_582_912.0).to_bits() as u8;
++        *code = if value.is_nan() {
++            0 // Match the previous saturating float-to-int cast.
++        } else {
++            rounded
++        };
++    }
++    out.extend_from_slice(&scale.to_le_bytes());
++    out.extend_from_slice(&codes);
++    (scale, codes)
++}
++
+ fn encode_matrix(precision: StatePrecision, values: &[f32], out: &mut Vec<u8>) {
+     out.reserve(values.len() / HEAD_SIZE * precision.row_bytes());
+     for row in values.chunks_exact(HEAD_SIZE) {
++        if precision == StatePrecision::Int8 {
++            encode_int8_row(row, out);
++            continue;
++        }
+         let maximum = row.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+         let scale = if maximum == 0.0 {
+             1.0
+@@ -243,14 +286,10 @@ fn encode_matrix(precision: StatePrecision, values: &[f32], out: &mut Vec<u8>) {
+                 .round_ties_even()
+                 .clamp(-precision.limit(), precision.limit()) as i8
+         });
+-        if precision == StatePrecision::Int8 {
+-            out.extend_from_slice(&codes.map(|code| code as u8));
+-        } else {
+-            let packed: [u8; HEAD_SIZE / 2] = std::array::from_fn(|index| {
+-                (codes[2 * index] as u8 & 15) | ((codes[2 * index + 1] as u8 & 15) << 4)
+-            });
+-            out.extend_from_slice(&packed);
+-        }
++        let packed: [u8; HEAD_SIZE / 2] = std::array::from_fn(|index| {
++            (codes[2 * index] as u8 & 15) | ((codes[2 * index + 1] as u8 & 15) << 4)
++        });
++        out.extend_from_slice(&packed);
+     }
+ }
+
+@@ -317,6 +356,85 @@ mod tests {
+         }
+     }
+
++    fn assert_int8_matches_reference(values: &[f32]) {
++        let mut expected = Vec::new();
++        for row in values.chunks_exact(HEAD_SIZE) {
++            let maximum = row.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
++            let scale = if maximum == 0.0 {
++                1.0
++            } else {
++                (maximum / 127.0).max(f32::from_bits(1))
++            };
++            expected.extend_from_slice(&scale.to_le_bytes());
++            for value in row {
++                let code = (value / scale).round_ties_even().clamp(-127.0, 127.0) as i8;
++                expected.push(code as u8);
++            }
++        }
++        let mut encoded = Vec::new();
++        encode_matrix(StatePrecision::Int8, values, &mut encoded);
++        assert_eq!(encoded, expected);
++        let mut expected_values = vec![0.0; values.len()];
++        decode_matrix(StatePrecision::Int8, &expected, &mut expected_values);
++        let mut rounded = values.to_vec();
++        let mut packed = None;
++        StatePrecision::Int8.round_matrix(&mut rounded, &mut packed);
++        assert_eq!(packed.unwrap().bytes, expected);
++        assert_eq!(
++            rounded.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
++            expected_values
++                .iter()
++                .map(|v| v.to_bits())
++                .collect::<Vec<_>>()
++        );
++    }
++
++    #[test]
++    fn rwkv_state_precision_int8_matches_reference_at_ties_and_extreme_scales() {
++        // A 127 anchor fixes scale=1. Test every half-integer and both adjacent
++        // floats, including negative ties and values that must round to zero.
++        for integer in -127..127 {
++            let tie = integer as f32 + 0.5;
++            for value in [tie.next_down(), tie, tie.next_up()] {
++                let mut row = [value; HEAD_SIZE];
++                row[0] = 127.0;
++                assert_int8_matches_reference(&row);
++            }
++        }
++        for maximum in [0.0, f32::from_bits(1), f32::MIN_POSITIVE, f32::MAX] {
++            let row = std::array::from_fn::<_, HEAD_SIZE, _>(|i| match i % 4 {
++                0 => maximum,
++                1 => -maximum,
++                2 => 0.0,
++                _ => -0.0,
++            });
++            assert_int8_matches_reference(&row);
++        }
++        // Exercise every finite exponent with signed, varied mantissas and
++        // multiple rows, using a reproducible integer sequence.
++        let mut seed = 42_u32;
++        for exponent in 0..255 {
++            let row: Vec<_> = (0..HEAD_SIZE * 3)
++                .map(|_| {
++                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
++                    f32::from_bits((seed & 0x807f_ffff) | (exponent << 23))
++                })
++                .collect();
++            assert_int8_matches_reference(&row);
++        }
++        // Preserve the previous cast's NaN-to-zero behavior, including payloads.
++        for value in [
++            f32::INFINITY,
++            f32::NEG_INFINITY,
++            f32::from_bits(0x7fc0_1234),
++        ] {
++            let mut row = [value; HEAD_SIZE];
++            row[0] = 127.0;
++            assert_int8_matches_reference(&row);
++        }
++        assert_int8_matches_reference(&[]);
++    }
++
+     #[test]
+     fn rwkv_state_precision_rejects_corrupt_lengths_scales_and_codes() {
+         let layer = LayerState {

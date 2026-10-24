@@ -80,14 +80,6 @@
     "repository": "https://github.com/dtolnay/anyhow"
   },
   {
-    "authors": "The Rust-Fuzz Project Developers|Nick Fitzgerald <fitzgen@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>|Simonas Kazlauskas <arbitrary@kazlauskas.me>|Brian L. Troutwine <brian@troutwine.us>|Corey Farwell <coreyf@rwell.org>",
-    "description": "The trait for generating structured data from unstructured data",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "arbitrary",
-    "repository": "https://github.com/rust-fuzz/arbitrary/"
-  },
-  {
     "authors": "David Roundy <roundyd@physics.oregonstate.edu>",
     "description": "Macros to take array references of slices",
     "license": "BSD-2-Clause",
@@ -536,14 +528,6 @@
     "repository": "https://github.com/jhpratt/deranged"
   },
   {
-    "authors": "The Rust-Fuzz Project Developers|Nick Fitzgerald <fitzgen@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>|Andre Bogus <bogusandre@gmail.com>|Corey Farwell <coreyf@rwell.org>",
-    "description": "Derives arbitrary traits",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "derive_arbitrary",
-    "repository": "https://github.com/rust-fuzz/arbitrary"
-  },
-  {
     "authors": "Dima Kudosh <dimakudosh@gmail.com>",
     "description": "Port of Python's difflib library to Rust.",
     "license": "MIT",
@@ -670,6 +654,14 @@
     "license_file": null,
     "name": "fastrand",
     "repository": "https://github.com/smol-rs/fastrand"
+  },
+  {
+    "authors": "Alex Crichton <alex@alexcrichton.com>",
+    "description": "Platform-agnostic accessors of timestamps in File metadata",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "filetime",
+    "repository": "https://github.com/alexcrichton/filetime"
   },
   {
     "authors": null,
@@ -1248,14 +1240,6 @@
     "repository": "https://github.com/rust-itertools/itertools"
   },
   {
-    "authors": "bluss",
-    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "itertools",
-    "repository": "https://github.com/rust-itertools/itertools"
-  },
-  {
     "authors": "David Tolnay <dtolnay@gmail.com>",
     "description": "Fast integer primitive to string conversion",
     "license": "Apache-2.0 OR MIT",
@@ -1494,6 +1478,14 @@
     "license_file": null,
     "name": "new_debug_unreachable",
     "repository": "https://github.com/mbrubeck/rust-debug-unreachable"
+  },
+  {
+    "authors": null,
+    "description": "Rust friendly bindings to *nix APIs",
+    "license": "MIT",
+    "license_file": null,
+    "name": "nix",
+    "repository": "https://github.com/nix-rust/nix"
   },
   {
     "authors": "contact@geoffroycouprie.com",
@@ -2648,6 +2640,14 @@
     "repository": "https://github.com/mullvad/system-configuration-rs"
   },
   {
+    "authors": "Alex Crichton <alex@alexcrichton.com>",
+    "description": "A Rust implementation of a TAR file reader and writer. This library does not currently handle compression, but it is abstract over all I/O readers and writers. Additionally, great lengths are taken to ensure that the entire contents are never required to be entirely resident in memory all at once.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "tar",
+    "repository": "https://github.com/composefs/tar-rs"
+  },
+  {
     "authors": "Steven Allen <steven@stebalien.com>|The Rust Project Developers|Ashley Mannix <ashleymannix@live.com.au>|Jason White <me@jasonwhite.io>",
     "description": "A library for managing temporary files and directories.",
     "license": "Apache-2.0 OR MIT",
@@ -2910,6 +2910,14 @@
     "license_file": null,
     "name": "type-map",
     "repository": "https://github.com/kardeiz/type-map"
+  },
+  {
+    "authors": "Chip Senkbeil <chip@senkbeil.org>",
+    "description": "Provides typed variants of Path and PathBuf for Unix and Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "typed-path",
+    "repository": "https://github.com/chipsenkbeil/typed-path"
   },
   {
     "authors": "Paho Lurie-Gregg <paho@paholg.com>|Andre Bogus <bogusandre@gmail.com>",
@@ -3400,6 +3408,14 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
+    "authors": "Microsoft",
+    "description": "Rust for Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-sys",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
     "authors": null,
     "description": "Rust for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -3640,6 +3656,14 @@
     "repository": "https://github.com/unicode-org/icu4x"
   },
   {
+    "authors": "Steven Allen <steven@stebalien.com>",
+    "description": "unix extended filesystem attributes",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "xattr",
+    "repository": "https://github.com/Stebalien/xattr"
+  },
+  {
     "authors": "Manish Goregaokar <manishsmail@gmail.com>",
     "description": "Abstraction allowing borrowed data to be carried along with the backing data it borrows from",
     "license": "Unicode-3.0",
@@ -3725,7 +3749,7 @@
     "license": "MIT",
     "license_file": null,
     "name": "zip",
-    "repository": "https://github.com/zip-rs/zip2.git"
+    "repository": "https://github.com/zip-rs/zip2"
   },
   {
     "authors": null,

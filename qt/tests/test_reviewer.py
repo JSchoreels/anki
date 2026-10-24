@@ -2283,6 +2283,98 @@ def test_study_queue_refresh_while_rwkv_undo_restored_card_is_active_is_ignored(
     assert dirty is False
 
 
+@pytest.mark.parametrize(("field", "value"), [("queue", -1), ("due", 20), ("did", 2)])
+def test_study_queue_refresh_advances_when_rwkv_undo_restored_card_schedule_changes(
+    monkeypatch, field: str, value: int
+) -> None:
+    calls: list[str] = []
+
+    def prepare_then_next(*args: object, **kwargs: object) -> None:
+        assert kwargs == {"fade_after": True, "show_next_card": True}
+        calls.append("prepare")
+        reviewer.nextCard()
+        reviewer.mw.fade_in_webview()
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(
+        id=456, did=1, odid=0, queue=2, type=2, due=10, odue=0, ivl=1, left=0
+    )
+    reviewer.card.load = lambda: setattr(reviewer.card, field, value)
+    reviewer._rwkv_undo_restored_card_state = (1, 0, 2, 2, 10, 0, 1, 0)
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._qa_transition_active = False
+    reviewer._qa_update_id = 0
+    reviewer._review_card_generation = 1
+    reviewer._rwkv_undo_restored_card_active = True
+    reviewer._show_answer_timer = None
+    reviewer._show_question_timer = None
+    reviewer.web = SimpleNamespace(eval=lambda script: calls.append(f"main:{script}"))
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: calls.append(f"bottom:{script}"))
+    )
+    reviewer.nextCard = lambda: calls.append("next")
+    reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
+    reviewer.mw = SimpleNamespace(fade_in_webview=lambda: calls.append("fade"))
+
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=False)
+
+    assert calls == [
+        "main:_setQAInteractionEnabled(false);",
+        "bottom:setReviewerTransitionActive(true);",
+        'main:_clearQAForTransition("transition:1:456");',
+        "prepare",
+        "next",
+        "fade",
+    ]
+    assert reviewer.state == "transition"
+    assert reviewer._rwkv_undo_restored_card_active is False
+    assert reviewer._refresh_needed is None
+    assert dirty is False
+
+
+def test_study_queue_refresh_is_ignored_when_rwkv_undo_restored_card_only_mod_changes(
+    monkeypatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a flag change should not advance the undo-restored card")
+
+    monkeypatch.setattr(aqt.rwkv_scheduler, "reviewer_queue_order_enabled", fail)
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(
+        id=456, did=1, odid=0, queue=2, type=2, due=10, odue=0, ivl=1, left=0, mod=1
+    )
+    reviewer.card.load = lambda: setattr(reviewer.card, "mod", 2)
+    reviewer._rwkv_undo_restored_card_state = (1, 0, 2, 2, 10, 0, 1, 0)
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._rwkv_undo_restored_card_active = True
+    reviewer.nextCard = fail
+    reviewer._begin_deleted_card_transition = fail
+    reviewer._prepare_rwkv_queue_order_then_next_card = fail
+    reviewer.mw = SimpleNamespace(fade_in_webview=fail)
+
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=False)
+
+    assert reviewer.card.mod == 2
+    assert reviewer.card.id == 456
+    assert reviewer.state == "question"
+    assert reviewer._rwkv_undo_restored_card_active is True
+    assert reviewer._refresh_needed is None
+    assert dirty is False
+
+
 def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
     monkeypatch,
 ) -> None:

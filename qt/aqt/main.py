@@ -675,6 +675,10 @@ class AnkiQt(QMainWindow):
             onsuccess()
 
         self.deckBrowser.cancel_rwkv_count_refresh()
+        from aqt import rwkv_scheduler
+
+        rwkv_scheduler.cancel_rwkv_memorised_history()
+        rwkv_scheduler.cancel_rwkv_workload()
         gui_hooks.profile_will_close()
         self.unloadCollection(callback)
 
@@ -850,7 +854,9 @@ class AnkiQt(QMainWindow):
 
         def before_sync() -> None:
             self.setEnabled(False)
-            self.maybe_auto_sync_on_open_close(after_sync)
+            # The next profile open reconciles RWKV state (finish_rwkv_state_cache_startup);
+            # a refresh here only delays closing and runs UI work after the collection closes.
+            self.maybe_auto_sync_on_open_close(after_sync, refresh_rwkv_state=False)
 
         self.closeAllWindows(before_sync)
 

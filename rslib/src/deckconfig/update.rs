@@ -138,6 +138,7 @@ impl Collection {
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
+            rwkv_profile_settings: None,
         })
     }
 
@@ -438,6 +439,7 @@ impl Collection {
                     })
                 })
                 .collect::<Result<_>>()?;
+            let input = self.resolve_memory_state_presets(input)?;
             self.update_memory_state(input)?;
         }
 
@@ -779,6 +781,225 @@ mod test {
         }))?;
 
         assert!(!fsrs7_enable_scheduling_penalties(&config));
+        Ok(())
+    }
+
+    #[test]
+    fn deck_options_recalculation_uses_matching_presets_for_each_card() -> Result<()> {
+        use crate::card::CardQueue;
+        use crate::card::CardType;
+        use crate::card::FsrsMemoryState;
+        use crate::revlog::RevlogEntry;
+        use crate::revlog::RevlogId;
+        use crate::revlog::RevlogReviewKind;
+        use crate::scheduler::fsrs::legacy_fsrs_params;
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+        use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
+        use crate::scheduler::states::fuzz::with_review_fuzz;
+
+        fn assert_state(actual: FsrsMemoryState, expected: FsrsMemoryState) {
+            for (actual, expected) in [
+                (actual.stability, expected.stability),
+                (actual.stability_internal, expected.stability_internal),
+                (
+                    actual.stability_fast.unwrap_or(actual.stability_internal),
+                    expected
+                        .stability_fast
+                        .unwrap_or(expected.stability_internal),
+                ),
+                (actual.difficulty, expected.difficulty),
+            ] {
+                assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+            }
+        }
+
+        for reschedule in [false, true] {
+            let mut col = Collection::new();
+            let timing = col.timing_today()?;
+            col.update_default_deck_config(|config| {
+                config.fsrs_version = FsrsVersion::Seven as i32;
+                config.desired_retention = 0.9;
+            });
+            let mut deck = col.get_deck(DeckId(1))?.unwrap().as_ref().clone();
+            deck.normal_mut()?.desired_retention = Some(0.94);
+            col.update_deck(&mut deck)?;
+            let mut six = fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec();
+            let mut seven = fsrs::DEFAULT_PARAMETERS.to_vec();
+            for value in &mut six[..4] {
+                *value *= 0.5;
+            }
+            for value in &mut seven[..4] {
+                *value *= 1.7;
+            }
+            col.set_config(
+                FSRS_PRESET_OVERLAY_CONFIG_KEY,
+                &FsrsPresetOverlay {
+                    presets: vec![
+                        AddonFsrsPreset {
+                            id: "addon:test:first".into(),
+                            name: "First match".into(),
+                            fsrs_version: AddonFsrsVersion::Six,
+                            params: six,
+                            desired_retention: 0.81,
+                            historical_retention: 0.71,
+                            ..Default::default()
+                        },
+                        AddonFsrsPreset {
+                            id: "addon:test:second".into(),
+                            name: "Second match".into(),
+                            fsrs_version: AddonFsrsVersion::Seven,
+                            params: seven,
+                            desired_retention: 0.86,
+                            historical_retention: 0.76,
+                            ignore_revlogs_before_date: chrono::DateTime::from_timestamp(
+                                timing.next_day_at.0 - 18 * 86_400,
+                                0,
+                            )
+                            .unwrap()
+                            .format("%Y-%m-%d")
+                            .to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    rules: vec![
+                        FsrsPresetRule {
+                            search: "Front:first prop:ivl=10".into(),
+                            preset_id: "addon:test:first".into(),
+                        },
+                        FsrsPresetRule {
+                            search: "(Front:first or Front:second)".into(),
+                            preset_id: "addon:test:second".into(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )?;
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            let mut originals = Vec::new();
+            let mut expected = Vec::new();
+            for (index, front) in ["first", "second", "fallback"].into_iter().enumerate() {
+                let mut note = nt.new_note();
+                note.set_field(0, front)?;
+                col.add_note(&mut note, DeckId(1))?;
+                let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
+                card.ctype = CardType::Review;
+                card.queue = CardQueue::Review;
+                card.reps = 3;
+                card.interval = 10;
+                card.due = timing.days_elapsed as i32 + 3;
+                col.storage.update_card(&card)?;
+                for (days_ago, kind, interval, previous) in [
+                    (20, RevlogReviewKind::Learning, 1, 0),
+                    (17, RevlogReviewKind::Review, 3, 1),
+                    (7, RevlogReviewKind::Review, 10, 3),
+                ] {
+                    col.storage.add_revlog_entry(
+                        &RevlogEntry {
+                            id: RevlogId(
+                                (timing.next_day_at.0 - days_ago * 86_400 - 3600) * 1000
+                                    + index as i64,
+                            ),
+                            cid: card.id,
+                            button_chosen: 3,
+                            review_kind: kind,
+                            interval,
+                            last_interval: previous,
+                            ease_factor: 2500,
+                            ..Default::default()
+                        },
+                        false,
+                    )?;
+                }
+                let preset = col.fsrs_preset_for_card(&card)?;
+                let computed = col.compute_memory_state(card.id)?;
+                let state: FsrsMemoryState = computed.state.unwrap().into();
+                expected.push((preset, state, computed.desired_retention, computed.decay));
+                originals.push(card);
+            }
+            // New cards never acquire a memory state during a bulk rewrite.
+            let mut new_note = nt.new_note();
+            col.add_note(&mut new_note, DeckId(1))?;
+            let new_card = col.storage.all_cards_of_note(new_note.id)?.remove(0);
+            let output = col.get_deck_configs_for_update(DeckId(1))?;
+            let review_fuzz_config = Default::default();
+            col.update_deck_configs(UpdateDeckConfigsRequest {
+                target_deck_id: DeckId(1),
+                configs: output
+                    .all_config
+                    .into_iter()
+                    .map(|c| c.config.unwrap().into())
+                    .collect(),
+                removed_config_ids: vec![],
+                mode: UpdateDeckConfigsMode::Normal,
+                card_state_customizer: String::new(),
+                limits: Limits {
+                    desired_retention: Some(0.94),
+                    ..Default::default()
+                },
+                new_cards_ignore_review_limit: false,
+                load_balancer_enabled: false,
+                fsrs_short_term_with_steps_enabled: false,
+                fsrs_learning_queues_disabled: false,
+                apply_all_parent_limits: false,
+                fsrs: true,
+                fsrs_reschedule: reschedule,
+                fsrs_health_check: true,
+                review_fuzz_config,
+            })?;
+            for (original, (preset, state, retention, decay)) in originals.iter().zip(&expected) {
+                let card = col.storage.get_card(original.id)?.unwrap();
+                assert_state(card.memory_state.unwrap(), *state);
+                assert_eq!(card.desired_retention, Some(*retention), "{}", preset.name);
+                assert!(
+                    (card.decay.unwrap() - decay).abs() < 0.001,
+                    "{}",
+                    preset.name
+                );
+                if reschedule {
+                    let model = fsrs::FSRS::new(legacy_fsrs_params(&preset.params))?;
+                    let interval = model.next_interval_for_state((*state).into(), *retention);
+                    let fuzz_config = review_fuzz_config.review_fuzz_config();
+                    let expected_interval = with_review_fuzz(
+                        original.get_fuzz_factor(true),
+                        interval,
+                        minimum_review_fuzz_interval(interval, 3, 36500, fuzz_config).max(1),
+                        36500,
+                        fuzz_config,
+                    );
+                    assert_eq!(card.interval, expected_interval, "{}", preset.name);
+                    assert_eq!(
+                        card.due,
+                        timing.days_elapsed as i32 - 7 + card.interval as i32
+                    );
+                } else {
+                    assert_eq!(card.interval, original.interval);
+                    assert_eq!(card.due, original.due);
+                    assert_eq!(col.storage.get_revlog_entries_for_card(card.id)?.len(), 3);
+                }
+            }
+            assert_eq!(col.storage.get_card(new_card.id)?.unwrap(), new_card);
+            col.undo()?;
+            for original in &originals {
+                assert_eq!(
+                    col.storage.get_card(original.id)?.unwrap().memory_state,
+                    original.memory_state
+                );
+                assert_eq!(
+                    col.storage.get_card(original.id)?.unwrap().interval,
+                    original.interval
+                );
+            }
+            col.redo()?;
+            for (original, (_, state, retention, _)) in originals.iter().zip(&expected) {
+                let card = col.storage.get_card(original.id)?.unwrap();
+                assert_state(card.memory_state.unwrap(), *state);
+                assert_eq!(card.desired_retention, Some(*retention));
+            }
+        }
         Ok(())
     }
 

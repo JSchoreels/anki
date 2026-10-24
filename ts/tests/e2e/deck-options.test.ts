@@ -6,15 +6,187 @@ import {
     DeckConfig,
     DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
+    DeckConfig_Config_ReviewMix as ReviewMix,
     DeckConfigsForUpdate,
     DeckConfigsForUpdate_ConfigWithExtra,
     DeckConfigsForUpdate_CurrentDeck_Limits,
     GetRetentionWorkloadResponse,
+    RwkvProfileSettings,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test(
+    "RWKV Advanced hides model, queue and comparison controls and preserves precision on Save",
+    async ({ page }, testInfo) => {
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!
+                .config!;
+            config.rwkvReviewInstantOrderEnabled = true;
+            config.rwkvReviewEnabled = true;
+            config.rwkvReviewMinimumReviewsPerDay = 100;
+            data.rwkvProfileSettings = new RwkvProfileSettings(
+                saved?.rwkvProfileSettings ?? {
+                    model: "legacy",
+                    statePrecision: "int8",
+                },
+            );
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+        await page.goto("/deck-options/1");
+        await page.addStyleTag({ url: "/_anki/css/webview.css" });
+        await page.addStyleTag({
+            content: "html, body { font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }",
+        });
+        const card = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+        const advanced = card.locator("details.rwkv-advanced");
+        const openAdvanced = advanced.locator("summary");
+        const group = advanced.getByRole("region", { name: "Prediction model", exact: true });
+        const model = group.getByRole("checkbox", { name: "Use Smaller Model", exact: true });
+        const compare = advanced.getByRole("button", { name: "Compare RWKV with FSRS", exact: true });
+        await expect(model).toBeHidden();
+        await expect(compare).toBeHidden();
+        await expect(advanced.getByText("Use faster, approximate queue updates", { exact: true })).toBeHidden();
+        await expect(advanced.getByText("Update the RWKV queue every", { exact: true })).toBeHidden();
+        await expect(card.getByText("Storage precision", { exact: true })).toHaveCount(0);
+        await expect(card.getByText("Recommended: Use Ascending Retrievability or Random", { exact: true }))
+            .toHaveCount(0);
+        await expect(card.getByRole("button", { name: "Build Cache", exact: true })).toBeVisible();
+        await page.setViewportSize({ width: 736, height: 1000 });
+        await card.screenshot({ path: testInfo.outputPath("rwkv-options-collapsed.png") });
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await openAdvanced.focus();
+        await page.keyboard.press("Enter");
+        await expect(model).not.toBeChecked();
+        await expect(group.getByText("Legacy - Bigger Model", { exact: true })).toHaveCount(0);
+        await expect(compare).toBeVisible();
+        await compare.click();
+        const comparison = page.getByRole("dialog").filter({
+            has: page.getByRole("heading", { name: "FSRS / RWKV Efficiency Comparison (Experimental)", exact: true }),
+        });
+        await expect(comparison).toBeVisible();
+        await comparison.getByRole("button", { name: "Close", exact: true }).click();
+        await expect(comparison).toBeHidden();
+        await group.getByRole("button", { name: "About prediction models", exact: true }).click();
+        await expect(group).toContainText("Applies to all decks in this profile on this computer");
+        await expect(group.getByRole("link", { name: "Model Factory results" })).toHaveAttribute(
+            "href",
+            "https://jschoreels.github.io/anki-rwkv/factory.html",
+        );
+        await expect(group.getByRole("link", { name: "Matched backup comparison" })).toHaveAttribute(
+            "href",
+            "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-sm56-2026-10-24.MD#matched-native-backup-check",
+        );
+        await model.check();
+        expect(saved).toBeUndefined();
+        await page.reload();
+        await openAdvanced.click();
+        await expect(model).not.toBeChecked();
+        await model.check();
+        await group.getByRole("button", { name: "About prediction models", exact: true }).click();
+        await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
+            model: "sm56",
+            statePrecision: "int8",
+        });
+        await page.reload();
+        await openAdvanced.click();
+        await expect(model).toBeChecked();
+        await model.uncheck();
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "legacy", statePrecision: "int8" });
+        await page.reload();
+        await openAdvanced.click();
+        await expect(model).not.toBeChecked();
+    },
+);
+
+for (const model of ["sm40", "sm36", "sm55"]) {
+    test(`saving older RWKV model ${model} chooses SM56 without changing hidden precision`, async ({ page }) => {
+        let saved: UpdateDeckConfigsRequest | undefined;
+        await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+            const response = await route.fetch();
+            const data = DeckConfigsForUpdate.fromBinary(await response.body());
+            data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+                .config!.config!.rwkvReviewInstantOrderEnabled = true;
+            data.rwkvProfileSettings = new RwkvProfileSettings(
+                saved?.rwkvProfileSettings ?? { model, statePrecision: "f32" },
+            );
+            await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+        });
+        await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+            saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+            await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+        });
+        await page.goto("/deck-options/1");
+        await page.reload();
+        expect(saved).toBeUndefined();
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm56", statePrecision: "f32" });
+        await page.reload();
+        await page.locator("details.rwkv-advanced summary").click();
+        await expect(page.getByRole("checkbox", { name: "Use Smaller Model", exact: true })).toBeChecked();
+    });
+}
+
+test("all intraday orders save and reload without changing descending R or other metadata", async ({ page }) => {
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!;
+        config.config!.rwkvReviewEnabled = false;
+        config.config!.rwkvReviewInstantOrderEnabled = false;
+        config.config!.reviewOrder = 11;
+        config.config!.other = saved?.configs.at(-1)?.config?.other ?? new TextEncoder().encode(JSON.stringify({
+            "jschoreels.deckoptions": { future_option: "preserve" },
+            addon: { value: 42 },
+        }));
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const selector = page.locator(".setting-title", { hasText: "Intraday learning/review order" })
+        .locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' row ')][1]")
+        .getByRole("combobox");
+    await expect(selector).toHaveText("Mix with reviews");
+    for (
+        const [mix, label] of [
+            [ReviewMix.BEFORE_REVIEWS, "Show before reviews"],
+            [ReviewMix.AFTER_REVIEWS, "Show after reviews"],
+            [ReviewMix.MIX_WITH_REVIEWS, "Mix with reviews"],
+        ] as const
+    ) {
+        await selector.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+        await page.getByRole("button", { name: "Save", exact: true }).click();
+        await expect.poll(() => {
+            const config = saved?.configs.at(-1)?.config;
+            return config && JSON.parse(new TextDecoder().decode(config.other))["jschoreels.deckoptions"];
+        }).toEqual({ future_option: "preserve", intraday_learning_mix: mix });
+        const config = saved!.configs.at(-1)!.config!;
+        expect(config.reviewOrder).toBe(11);
+        expect(JSON.parse(new TextDecoder().decode(config.other)).addon).toEqual({ value: 42 });
+        await page.reload();
+        await expect(selector).toHaveText(label);
+    }
+});
 
 test(
     "apply schedule dialog defaults to every category and only saves selected categories",
@@ -528,7 +700,7 @@ for (const refreshOnExit of [false, true]) {
         await expect(page.getByRole("checkbox", { name: "Enforce Again ≤ Hard ≤ Good ≤ Easy intervals" }))
             .toBeVisible();
         await expect(page.getByText("Recommended: Use Ascending Retrievability or Random", { exact: true }))
-            .toBeVisible();
+            .toHaveCount(0);
         for (
             const name of [
                 "Update the RWKV queue after reviewing",
@@ -542,6 +714,55 @@ for (const refreshOnExit of [false, true]) {
         await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewRefreshOnExit).toBe(refreshOnExit);
     });
 }
+
+test("RWKV maintenance actions keep state building and calibration separate", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.fsrs = true;
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!;
+        config.config!.rwkvReviewEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    const requests: string[] = [];
+    await page.route("**/_anki/updateDeckConfigs", async (route) => {
+        requests.push("save");
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    let finishBuild!: () => void;
+    const buildFinished = new Promise<void>((resolve) => finishBuild = resolve);
+    await page.route("**/_anki/forceBuildRwkvStateCache", async (route) => {
+        requests.push("state");
+        await buildFinished;
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    let finishCalibration!: () => void;
+    const calibrationFinished = new Promise<void>((resolve) => finishCalibration = resolve);
+    await page.route("**/_anki/recomputeRwkvCalibrationData", async (route) => {
+        requests.push("calibration");
+        await calibrationFinished;
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    await page.goto("/deck-options/1");
+    const build = page.getByRole("button", { name: "Build Cache", exact: true });
+    const calibration = page.getByRole("button", { name: "Prepare Calibration Data", exact: true });
+    await build.click();
+    await expect.poll(() => requests).toEqual(["save", "state"]);
+    await expect(page.getByRole("button", { name: "Rebuilding RWKV State...", exact: true })).toBeDisabled();
+    await expect(calibration).toBeDisabled();
+    finishBuild();
+    await expect(build).toBeEnabled();
+    expect(requests).toEqual(["save", "state"]);
+
+    await calibration.click();
+    await expect.poll(() => requests).toEqual(["save", "state", "save", "calibration"]);
+    await expect(page.getByRole("button", { name: "Preparing Calibration Data...", exact: true })).toBeDisabled();
+    await expect(build).toBeDisabled();
+    finishCalibration();
+    await expect(calibration).toBeEnabled();
+    expect(requests).toEqual(["save", "state", "save", "calibration"]);
+});
 
 test("FSRS parameter unlock timing survives mounting and unmounting", async ({ page }) => {
     await page.clock.install();

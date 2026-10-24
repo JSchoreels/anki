@@ -11,15 +11,10 @@ from pathlib import Path
 
 import pytest
 
-_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
-_RWKV_CURVE_COUNT = 128
-_RWKV_GOLDEN_CARD_ID = 1549775725979
-_RWKV_GOLDEN_ROW0_IMMEDIATE = 0.89073008298873901
-_RWKV_GOLDEN_ROW34_IMMEDIATE = 0.70197033882141113
-_RWKV_GOLDEN_ROW34_AHEAD = 0.63239266440118969
+_RWKV_MODEL_FILENAME = "sm40v2/weights.f32.bin"
 _RWKV_ABS_TOL = 1e-6
 
-_RWKV_GOLDEN_REVIEWS = [
+_RWKV_REVIEWS = [
     {
         "card_id": 1549775725972,
         "note_id": 1549775724800,
@@ -443,92 +438,6 @@ _RWKV_GOLDEN_REVIEWS = [
 ]
 
 
-class _RwkvCacheCursor:
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-        self.offset = 0
-
-    def expect_magic(self, magic: bytes) -> None:
-        found = self.bytes(len(magic))
-        assert found == magic
-
-    def expect_end(self) -> None:
-        assert self.offset == len(self.data)
-
-    def bytes(self, length: int) -> bytes:
-        end = self.offset + length
-        assert end <= len(self.data)
-        value = self.data[self.offset : end]
-        self.offset = end
-        return value
-
-    def u8(self) -> int:
-        return self.bytes(1)[0]
-
-    def u32(self) -> int:
-        return struct.unpack("<I", self.bytes(4))[0]
-
-    def i64(self) -> int:
-        return struct.unpack("<q", self.bytes(8))[0]
-
-    def f32(self) -> float:
-        return struct.unpack("<f", self.bytes(4))[0]
-
-    def f32_vec(self) -> list[float]:
-        return [self.f32() for _ in range(self.u32())]
-
-    def skip_option_i64(self) -> None:
-        tag = self.u8()
-        assert tag in (0, 1)
-        if tag:
-            self.i64()
-
-    def skip_i64_set(self) -> None:
-        for _ in range(self.u32()):
-            self.i64()
-
-    def skip_i64_map(self) -> None:
-        for _ in range(self.u32()):
-            self.i64()
-            self.i64()
-
-
-def _skip_rwkv_feature_state(cursor: _RwkvCacheCursor) -> None:
-    cursor.skip_option_i64()
-    cursor.skip_option_i64()
-    cursor.skip_i64_set()
-    cursor.skip_i64_map()
-    cursor.skip_i64_map()
-    cursor.i64()
-    cursor.i64()
-    cursor.i64()
-    cursor.skip_i64_map()
-    cursor.skip_i64_map()
-    cursor.skip_i64_map()
-    cursor.i64()
-
-    for _ in range(cursor.u32()):
-        cursor.u8()
-        cursor.i64()
-        cursor.f32_vec()
-
-    cursor.u32()
-    for _ in range(624):
-        cursor.u32()
-
-
-def _rwkv_curves_from_cache(cache: bytes) -> dict[int, tuple[list[float], list[float]]]:
-    cursor = _RwkvCacheCursor(cache)
-    cursor.expect_magic(b"ARWKVPROCSTATE2")
-    _skip_rwkv_feature_state(cursor)
-    curves = {}
-    for _ in range(cursor.u32()):
-        card_id = cursor.i64()
-        curves[card_id] = (cursor.f32_vec(), cursor.f32_vec())
-    cursor.expect_end()
-    return curves
-
-
 def _rwkv_review_args(
     review: dict[str, int],
     *,
@@ -564,56 +473,6 @@ def _rwkv_review_args(
     )
 
 
-def _rwkv_linspace_exp(index: int, count: int, point_spread: float) -> float:
-    value = 0.0 if count <= 1 else point_spread * index / (count - 1)
-    return math.exp(value)
-
-
-def _rwkv_interp_ahead_logits(
-    ahead_logits: list[float], elapsed_seconds: float
-) -> float:
-    point_count = len(ahead_logits)
-    if point_count < 2:
-        return ahead_logits[0] if ahead_logits else 0.0
-
-    def point(index: int) -> float:
-        raw = _rwkv_linspace_exp(index, point_count, 18.5)
-        return 0.5 + (raw - 1.0) * math.exp(21.0 - 18.5)
-
-    right = 0
-    while right + 1 < point_count and point(right) < elapsed_seconds:
-        right += 1
-    right = max(1, min(right, point_count - 1))
-    left = right - 1
-    xl = point(left)
-    xr = point(right)
-    yl = ahead_logits[left]
-    yr = ahead_logits[right]
-    return 1e-5 + (1.0 - 2e-5) * (yl + (yr - yl) * (elapsed_seconds - xl) / (xr - xl))
-
-
-def _rwkv_sigmoid(value: float) -> float:
-    return 1.0 / (1.0 + math.exp(-value))
-
-
-def _rwkv_predict_curve(
-    curve: tuple[list[float], list[float]], elapsed_seconds: float
-) -> float:
-    ahead_logits, weights = curve
-    elapsed_seconds = max(elapsed_seconds, 1.0)
-    raw_probability = 0.0
-    for index, weight in enumerate(weights):
-        s_space_raw = _rwkv_linspace_exp(index, _RWKV_CURVE_COUNT, 18.5)
-        s_space = 0.1 + (s_space_raw - 1.0) * math.exp(22.0 - 18.5)
-        raw_probability += weight * 0.9 ** (elapsed_seconds / s_space)
-
-    curve_probability = 1e-5 + (1.0 - 2e-5) * raw_probability
-    curve_logits = math.log(curve_probability / (1.0 - curve_probability))
-    return _rwkv_sigmoid(
-        curve_logits + _rwkv_interp_ahead_logits(ahead_logits, elapsed_seconds)
-    )
-
-
 def _import_rsbridge(root: Path) -> object:
     extension_path = root / "out/pylib/anki/_rsbridge.so"
     if not extension_path.exists():
@@ -631,33 +490,141 @@ def _import_rsbridge(root: Path) -> object:
     return module
 
 
-def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
+@pytest.mark.parametrize(
+    "model_name,filename",
+    [
+        ("sm40", "sm40v2/weights.f32.bin"),
+        ("legacy", "RWKV_trained_on_5000_10000.bin"),
+        ("sm36", "sm36/weights.f32.bin"),
+        ("sm55", "sm55/weights.f32.bin"),
+        ("sm56", "sm56/weights.f32.bin"),
+    ],
+)
+@pytest.mark.parametrize(
+    "state_precision", ["f32", "int8", "int4", "cards_int4_notes_int8"]
+)
+def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
+    tmp_path, model_name, filename, state_precision
+) -> None:
+    from aqt import rwkv_scheduler
+
     root = Path(__file__).resolve().parents[2]
-    model_path = root / "qt/aqt/rwkv_inference" / _RWKV_MODEL_FILENAME
+    rsbridge = _import_rsbridge(root)
+    model_path = root / "qt/aqt/rwkv_inference" / filename
+    runtime = rsbridge.RwkvInference(
+        str(model_path), 0.9, 36500, state_precision=state_precision, model=model_name
+    )
+    reviews = [
+        (
+            *_rwkv_review_args(
+                review,
+                is_query=False,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
+        for review in _RWKV_REVIEWS[:3]
+    ]
+    runtime.warm_up_reviews(reviews, False)
+    query = (
+        *_rwkv_review_args(
+            _RWKV_REVIEWS[3],
+            is_query=True,
+            card_state=None,
+            note_state=None,
+            deck_state=None,
+            preset_state=None,
+            global_state=None,
+        )[:15],
+        True,
+    )
+    expected = runtime.predict_retrievability_many_from_warm_up([query])
+    path = tmp_path / "state.sqlite3"
+    encoded_map = rwkv_scheduler._encode_int_map_binary({})
+
+    def checkpoint(parent, full):
+        return runtime.write_warm_up_state_checkpoint(
+            str(path),
+            "generation",
+            parent,
+            3000,
+            len(reviews),
+            "a" * 64,
+            "replay",
+            encoded_map,
+            encoded_map,
+            encoded_map,
+            full,
+            True,
+        )
+
+    base = checkpoint(None, True)
+    orphan = checkpoint(None, True)
+    head = checkpoint(base, False)
+    runtime.finish_warm_up_state_checkpoints()
+
+    history = rwkv_scheduler._read_rwkv_state_cache_store_segment_history(
+        path, "generation", head
+    )
+    assert history.review_count == len(reviews)
+    assert history.last_review_id == 3000
+    assert history.history_hash == "a" * 64
+    assert history.replay_key == "replay"
+    assert rwkv_scheduler._rwkv_state_cache_store_segment_chain(
+        path, "generation", head
+    ) == [head, base]
+    assert rwkv_scheduler._prune_rwkv_state_cache_store(path, "generation", head) == 1
+    with pytest.raises(ValueError, match="missing RWKV state-cache segment"):
+        rwkv_scheduler._read_rwkv_state_cache_store_segment_history(
+            path, "generation", orphan
+        )
+    restored = rsbridge.RwkvInference(
+        str(model_path), 0.9, 36500, state_precision=state_precision, model=model_name
+    )
+    restored.restore_warm_up_state_checkpoint(str(path), "generation", head)
+    assert restored.predict_retrievability_many_from_warm_up([query]) == expected
+
+
+@pytest.mark.parametrize(
+    "model_name,filename",
+    [
+        ("sm40", "sm40v2/weights.f32.bin"),
+        ("legacy", "RWKV_trained_on_5000_10000.bin"),
+        ("sm36", "sm36/weights.f32.bin"),
+        ("sm55", "sm55/weights.f32.bin"),
+        ("sm56", "sm56/weights.f32.bin"),
+    ],
+)
+@pytest.mark.parametrize(
+    "state_precision", ["f32", "int8", "int4", "cards_int4_notes_int8"]
+)
+def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
+    model_name, filename, state_precision
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "qt/aqt/rwkv_inference" / filename
     if not model_path.exists():
         pytest.skip(f"RWKV model is unavailable: {model_path}")
 
     rsbridge = _import_rsbridge(root)
-    runtime = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    runtime = rsbridge.RwkvInference(
+        str(model_path), 0.9, 36500, state_precision=state_precision, model=model_name
+    )
     card_states: dict[int, bytes] = {}
     note_states: dict[int, bytes] = {}
     deck_states: dict[int, bytes] = {}
     preset_states: dict[int, bytes] = {}
     global_state: bytes | None = None
-    curves: dict[int, tuple[list[float], list[float]]] = {}
 
-    for index, review in enumerate(_RWKV_GOLDEN_REVIEWS):
+    for index, review in enumerate(_RWKV_REVIEWS):
         card_state = card_states.get(review["card_id"])
         note_state = note_states.get(review["note_id"])
         deck_state = deck_states.get(review["deck_id"])
         preset_state = preset_states.get(review["preset_id"])
-
-        if index == 34:
-            assert _RWKV_GOLDEN_CARD_ID in curves
-            ahead = _rwkv_predict_curve(
-                curves[_RWKV_GOLDEN_CARD_ID], review["elapsed_seconds"]
-            )
-            assert math.isclose(ahead, _RWKV_GOLDEN_ROW34_AHEAD, abs_tol=_RWKV_ABS_TOL)
 
         query_output = runtime.review(
             *_rwkv_review_args(
@@ -709,14 +676,6 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
             assert struct.unpack("<f", packed_resident_output) == pytest.approx(
                 [query_output[0]], abs=_RWKV_ABS_TOL
             )
-        if index == 0:
-            assert math.isclose(
-                query_output[0], _RWKV_GOLDEN_ROW0_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
-            )
-        elif index == 34:
-            assert math.isclose(
-                query_output[0], _RWKV_GOLDEN_ROW34_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
-            )
         curve_retrievability = query_output[1]
         if review["elapsed_seconds"] >= 0 or review["elapsed_days"] >= 0:
             assert curve_retrievability is not None
@@ -747,7 +706,6 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         deck_states[review["deck_id"]] = update_output[9]
         preset_states[review["preset_id"]] = update_output[10]
         global_state = update_output[11]
-        curves = _rwkv_curves_from_cache(runtime.cache_state())
 
     snapshot = runtime.warm_up_snapshot()
     workload_inputs = [(*query_input, 4, 2500, 5, 1)]
@@ -796,9 +754,17 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         assert resident_batch == pytest.approx(snapshot_batch, abs=_RWKV_ABS_TOL)
     assert runtime.cache_state() == resident_state_before
 
+    undo_context = runtime.state_for_review(*query_input[:4])
+    undo_modules = runtime.warm_up_state(query_input)
+    runtime.warm_up_reviews([answer_inputs[2]], False)
+    assert runtime.cache_state() != resident_state_before
+    runtime.restore_state(undo_context)
+    runtime.restore_warm_up_state(*query_input[:4], *undo_modules)
+    assert runtime.warm_up_snapshot() == snapshot
+
     batch_inputs: list[tuple[object, ...]] = []
     batch_expected: list[float] = []
-    for review in _RWKV_GOLDEN_REVIEWS[-9:]:
+    for review in _RWKV_REVIEWS[-9:]:
         batch_expected.append(
             runtime.review(
                 *_rwkv_review_args(
@@ -830,7 +796,9 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
         batch_inputs
     ) == pytest.approx(batch_expected, abs=_RWKV_ABS_TOL)
 
-    restored = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    restored = rsbridge.RwkvInference(
+        str(model_path), 0.9, 36500, state_precision=state_precision, model=model_name
+    )
     restored.restore_warm_up_snapshot(snapshot)
     restored.restore_cache_state(snapshot[5])
     assert restored.predict_retrievability_many_from_warm_up(

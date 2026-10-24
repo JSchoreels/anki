@@ -239,13 +239,12 @@ fn rwkv_history_ablation_metrics() {
         .map(|row| seen.insert(row.1) && row.11)
         .collect::<Vec<_>>();
     assert!(all.iter().any(|&target| target));
-    let weights = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = Path::new(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     // Fix random ID features across conditions to isolate omitted review content.
     // Preassignment uses identities only, never answers or learned state.
     let mut features = FeatureState::default();
     for row in &rows {
-        features.features_for(&row.input());
+        features.assign_id_encodings(&row.input());
     }
     let mut baseline = Vec::new();
     let mut results = Vec::new();
@@ -398,12 +397,11 @@ fn rwkv_reset_history_metrics() {
         .iter()
         .map(|row| interday_ids.contains(&row.0))
         .collect::<Vec<_>>();
-    let weights = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin");
+    let weights = Path::new(env!("CARGO_MANIFEST_DIR")).join(MODEL_PATH);
     let mut features = FeatureState::default();
     for rows in [complete, fresh] {
         for row in rows {
-            features.features_for(&row.input());
+            features.assign_id_encodings(&row.input());
         }
     }
     assert_eq!(features.review_index, 0);

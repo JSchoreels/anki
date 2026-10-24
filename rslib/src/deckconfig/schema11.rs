@@ -881,12 +881,51 @@ static RESERVED_DECKCONF_LAPSE_KEYS: Set<&'static str> = phf_set! {
 #[cfg(test)]
 mod test {
     use itertools::Itertools;
+    use prost::Message;
     use serde::de::IntoDeserializer;
     use serde_json::json;
     use serde_json::Value;
 
     use super::*;
+    use crate::deckconfig::ReviewMix;
     use crate::prelude::*;
+
+    #[test]
+    fn deck_options_metadata_survives_unsupported_preset_edits() -> Result<()> {
+        for mix in [
+            ReviewMix::BeforeReviews,
+            ReviewMix::AfterReviews,
+            ReviewMix::MixWithReviews,
+        ] {
+            let metadata = json!({
+                "intraday_learning_mix": mix as i32,
+                "future_option": "preserve",
+            });
+            let mut wire = serde_json::to_value(DeckConfSchema11::default())?;
+            wire["jschoreels.deckoptions"] = metadata.clone();
+
+            // The sync-format reader has no field for these options: it carries
+            // them as opaque extra data, including when known settings are edited.
+            let mut unsupported: DeckConfSchema11 = serde_json::from_value(wire)?;
+            unsupported.name = "Edited on another client".into();
+            unsupported.rev.per_day = 123;
+            let wire = serde_json::to_value(unsupported)?;
+            assert_eq!(wire["jschoreels.deckoptions"], metadata);
+
+            let mut restored = DeckConfig::from(serde_json::from_value::<DeckConfSchema11>(wire)?);
+            restored.inner = DeckConfigInner::decode(
+                deck_config_inner_for_storage(&restored.inner)
+                    .encode_to_vec()
+                    .as_slice(),
+            )?;
+            assert_eq!(restored.intraday_learning_mix(), mix);
+            assert_eq!(restored.name, "Edited on another client");
+            assert_eq!(restored.inner.reviews_per_day, 123);
+            let wire = serde_json::to_value(DeckConfSchema11::from(restored))?;
+            assert_eq!(wire["jschoreels.deckoptions"], metadata);
+        }
+        Ok(())
+    }
 
     #[test]
     fn all_reserved_fields_are_removed() -> Result<()> {

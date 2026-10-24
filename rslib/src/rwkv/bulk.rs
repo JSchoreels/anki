@@ -31,7 +31,13 @@ use rayon::prelude::*;
 
 use super::*;
 
-// BULK_CHUNK_ROWS: rows per internal chunk, from the model's shape.
+/// Rows per bulk replay chunk (the fork: 8,192). kuma3: a chunk holds the f32
+/// states of every card and note it touches, so the big model uses a quarter
+/// (a 203k-review replay on a PC peaked at 1.33 GB instead of 1.83 GB, 16.4 s
+/// instead of 14.7 s). The small model's states are ~6x smaller and its
+/// per-chunk work dominated at 2,048 rows: a 203k-review rebuild on a Pixel 8a
+/// took 130 s, at 16,384 rows 50 s.
+const BULK_CHUNK_ROWS: usize = if SMALL_MODEL { 16_384 } else { 2_048 };
 
 #[derive(Clone, Copy)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -134,11 +140,8 @@ fn warm_up_reviews_bulk_impl(
     #[cfg(test)]
     rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeatureMlp, profile_started);
 
-    // The small model runs its streams' layers interleaved (LAYER_STEPS), so
-    // a module can't run alone over the rows: all modules' layers run in
-    // step order, over all rows (predictions) or chunk by chunk.
-    if SMALL && record_predictions {
-        run_layer_steps(
+    if SMALL_MODEL {
+        run_interleaved(
             &model,
             &inputs,
             &mut inference.warm_up_states,
@@ -147,19 +150,6 @@ fn warm_up_reviews_bulk_impl(
             chunk_size,
             query_recurrence,
         );
-    } else if SMALL {
-        for start in (0..rows).step_by(chunk_size) {
-            let end = (start + chunk_size).min(rows);
-            run_layer_steps(
-                &model,
-                &inputs[start..end],
-                &mut inference.warm_up_states,
-                &mut x[start * D_MODEL..end * D_MODEL],
-                None,
-                chunk_size,
-                QueryRecurrence::Exact,
-            );
-        }
     } else if record_predictions {
         for (module_id, module) in model.modules.iter().enumerate() {
             #[cfg(test)]
@@ -195,6 +185,16 @@ fn warm_up_reviews_bulk_impl(
     let mut last_row_by_card = HashMap::new();
     for (row, input) in inputs.iter().enumerate() {
         last_row_by_card.insert(input.card_id, row);
+    }
+    #[cfg(test)]
+    if let Some(captured) = &mut inference.captured_curves {
+        *captured = (0..rows)
+            .into_par_iter()
+            .map(|index| {
+                let prehead = model.prehead_norm.apply(row(&x, index));
+                model.curve_head(&prehead)
+            })
+            .collect();
     }
     let curves: Vec<(i64, ReviewCurve)> = last_row_by_card
         .into_par_iter()
@@ -235,6 +235,87 @@ pub(super) fn module_profile_bucket(module_id: usize) -> RwkvWarmupProfileBucket
         2 => RwkvWarmupProfileBucket::ModuleNote,
         3 => RwkvWarmupProfileBucket::ModulePreset,
         _ => RwkvWarmupProfileBucket::ModuleGlobal,
+    }
+}
+
+/// Preserve a separate layer-zero value residual for each interleaved stream.
+#[allow(clippy::too_many_arguments)]
+fn run_interleaved(
+    model: &SrsModel,
+    inputs: &[ReviewInput],
+    states: &mut ReviewStateMaps,
+    x: &mut [f32],
+    mut x_query: Option<&mut [f32]>,
+    chunk_size: usize,
+    query_recurrence: QueryRecurrence,
+) {
+    let rows = inputs.len();
+    let plans: Vec<_> = model
+        .modules
+        .iter()
+        .enumerate()
+        .map(|(id, module)| {
+            let mut plan = ModulePlan::build(id, inputs);
+            plan.precision = module.precision;
+            plan
+        })
+        .collect();
+    let mut layers: Vec<Vec<Vec<LayerState>>> = plans
+        .iter()
+        .enumerate()
+        .map(|(id, plan)| {
+            plan.streams
+                .iter()
+                .map(|stream| {
+                    layer_states(
+                        stream
+                            .key
+                            .and_then(|key| take_stream_state(states, id, key)),
+                        model.modules[id].layers.len(),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let mut v0: [Vec<f32>; 5] = std::array::from_fn(|_| vec![0.0; rows * D_MODEL]);
+    let mut v0_query: [Option<Vec<f32>>; 5] =
+        std::array::from_fn(|_| x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]));
+    for &(id, layer_id) in LAYER_STEPS {
+        run_layer_chunks(LayerChunks {
+            layer: &model.modules[id].layers[layer_id],
+            layer_id,
+            plan: &plans[id],
+            stream_layers: &mut layers[id],
+            rows,
+            chunk_size,
+            x,
+            v0: &mut v0[id],
+            x_query: x_query.as_deref_mut(),
+            v0_query: v0_query[id].as_deref_mut(),
+            query_recurrence,
+        });
+        if layer_id + 1 == model.modules[id].layers.len() {
+            for (stream, layers) in plans[id]
+                .streams
+                .iter()
+                .zip(std::mem::take(&mut layers[id]))
+            {
+                if let Some(key) = stream.key {
+                    put_stream_state(
+                        states,
+                        id,
+                        key,
+                        ModuleState {
+                            layers,
+                            packed: None,
+                        }
+                        .compact(model.modules[id].precision),
+                    );
+                }
+            }
+            v0[id] = Vec::new();
+            v0_query[id] = None;
+        }
     }
 }
 
@@ -565,44 +646,6 @@ fn run_module(
         );
     }
     work.put(module_id, states);
-}
-
-/// Every module's layers over `inputs`, in [LAYER_STEPS] order.
-#[allow(clippy::too_many_arguments)]
-fn run_layer_steps(
-    model: &SrsModel,
-    inputs: &[ReviewInput],
-    states: &mut ReviewStateMaps,
-    x: &mut [f32],
-    mut x_query: Option<&mut [f32]>,
-    chunk_size: usize,
-    query_recurrence: QueryRecurrence,
-) {
-    let mut works: Vec<ModuleWork> = model
-        .modules
-        .iter()
-        .enumerate()
-        .map(|(module_id, module)| {
-            ModuleWork::take(module, module_id, inputs, states, x_query.is_some())
-        })
-        .collect();
-    for &(module_id, layer_id) in LAYER_STEPS {
-        #[cfg(test)]
-        let profile_started = rwkv_warmup_profile_start();
-        works[module_id].run_layer(
-            &model.modules[module_id].layers[layer_id],
-            layer_id,
-            x,
-            x_query.as_deref_mut(),
-            chunk_size,
-            query_recurrence,
-        );
-        #[cfg(test)]
-        rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
-    }
-    for (module_id, work) in works.into_iter().enumerate() {
-        work.put(module_id, states);
-    }
 }
 
 struct LayerChunks<'a> {
@@ -1030,16 +1073,16 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
         )
     });
 
-    let chunk_range = chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL;
+    // Channel mixer. Shift states must stay pre-chunk until both lanes have
+    // resolved their shifts.
     let Some(cm) = &layer.channel_mixer else {
-        x[chunk_range.clone()].copy_from_slice(&time_out);
-        if let (Some(x_query), Some(time_out_query)) = (x_query, &time_out_query) {
-            x_query[chunk_range].copy_from_slice(time_out_query);
+        x[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL].copy_from_slice(&time_out);
+        if let (Some(x_query), Some(out)) = (x_query, time_out_query) {
+            x_query[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL]
+                .copy_from_slice(&out);
         }
         return;
     };
-    // Channel mixer. Shift states must stay pre-chunk until both lanes have
-    // resolved their shifts.
     let cm_norm = normed_rows_from(&cm.layer_norm, &time_out, chunk_rows);
     let cm_norm_query = time_out_query
         .as_ref()
@@ -1353,9 +1396,7 @@ fn time_parts_block(
             .apply_block_approx_into(mixed, block.v, rows, approximate_projections);
         block.next_v0.copy_from_slice(block.v);
     } else {
-        mixer
-            .v_lora()
-            .apply_sigmoid_block_into(mixed, block.v, rows);
+        mixer.v_lora.apply_sigmoid_block_into(mixed, block.v, rows);
         let mut w_v = [0.0f32; LINEAR_BLOCK_ROWS * D_MODEL];
         let w_v = &mut w_v[..rows * D_MODEL];
         mixer

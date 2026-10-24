@@ -606,9 +606,13 @@ impl Collection {
         require!(!input.model_path.is_empty(), "missing RWKV model path");
         let model = OfflineModel {
             path: PathBuf::from(input.model_path),
-            // empty: the fork's desktop default
+            // empty: int8 (the fork's desktop default until build 107, which
+            // moved to int4 cards + int8 notes). The app's "int4" is int4
+            // cards with int8 notes: a note's state takes every answer to all
+            // its cards, and int4 drift there overflowed on long histories.
             precision: match input.state_precision.as_str() {
                 "" => StatePrecision::Int8,
+                "int4" => StatePrecision::Int4CardsInt8Notes,
                 other => StatePrecision::parse(other)?,
             },
         };

@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import compileall
+import importlib.util
 import os
 import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Sequence
 
 sys.path.extend(["pylib", "out/pylib"])
@@ -24,6 +26,17 @@ PORTABLE_FORMAL_NAME = "Anki Portable"
 PORTABLE_BUNDLE = "net.ankiweb.portable"
 PORTABLE_MARKER = "anki-portable"
 PORTABLE_DATA_DIR = "Anki Portable Data"
+
+
+def portable_update_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "portable_update", Path("qt/aqt/portable_update.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # Anki disk-lang codes whose Chromium .pak filename differs from the disk lang.
 _CHROMIUM_PAK_LANG_REMAP = {"tl": "fil"}
@@ -373,6 +386,9 @@ def build(args: argparse.Namespace) -> None:
     if args.portable:
         resources = get_briefcase_sources_path(output_dir, portable=True)
         (resources / PORTABLE_MARKER).touch()
+        shutil.copy2(
+            "qt/aqt/portable_update.py", resources / "portable-update-helper.py"
+        )
     compile_sources(output_dir, version, portable=args.portable)
     if not args.skip_fcitx:
         bundle_fcitx(output_dir)  # pragma: no cover
@@ -428,6 +444,10 @@ def package_portable_archive(output_dir: Path, version: str) -> Path:
     shutil.rmtree(staging_dir, ignore_errors=True)
     distribution_dir.mkdir(parents=True)
     sources = get_briefcase_sources_path(output_dir, portable=True)
+    if not (sources / "portable-update-helper.py").is_file():
+        raise RuntimeError(
+            "Portable update helper missing; rebuild the portable app first."
+        )
     if sys.platform == "darwin":
         app_bundle = sources.parents[1]
         shutil.copytree(
@@ -447,6 +467,9 @@ def package_portable_archive(output_dir: Path, version: str) -> Path:
     (distribution_dir / PORTABLE_DATA_DIR).mkdir()
     shutil.copy2(installer_dir / "portable-readme.txt", distribution_dir / "README.txt")
     shutil.copy2("LICENSE", distribution_dir / "LICENSE.txt")
+    portable_update_module().write_manifest(
+        distribution_dir, sys.platform, platform.machine()
+    )
 
     for artifact in generated_artifacts:
         if artifact.is_dir():

@@ -227,6 +227,32 @@ impl BuildAction for CargoFormat {
     }
 }
 
+/// Cargo fmt does not traverse sources shared through include!().
+pub struct RustFormatSource {
+    pub inputs: BuildInput,
+    pub source: &'static str,
+    pub check_only: bool,
+    pub working_dir: &'static str,
+}
+
+impl BuildAction for RustFormatSource {
+    fn command(&self) -> &str {
+        "rustfmt --edition 2021 $mode $source"
+    }
+
+    fn files(&mut self, build: &mut impl FilesHandle) {
+        build.add_inputs("", &self.inputs);
+        build.add_variable("mode", if self.check_only { "--check" } else { "" });
+        build.add_variable("source", self.source);
+        build.set_working_dir(self.working_dir);
+        build.add_output_stamp(format!(
+            "tests/rustfmt_{}.{}",
+            self.source.replace('/', "_"),
+            if self.check_only { "check" } else { "fmt" }
+        ));
+    }
+}
+
 /// Use Cargo to download and build a Rust binary. If `binary_name` is `foo`, a
 /// `$foo` variable will be defined with the path to the binary.
 pub struct CargoInstall {

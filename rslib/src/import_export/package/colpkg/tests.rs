@@ -168,7 +168,7 @@ fn modern_package_without_metadata_is_not_a_legacy_backup() -> Result<()> {
     let mut writer = zip::ZipWriter::new(std::fs::File::create(&path)?);
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
-        if file.name() != "meta" {
+        if file.name().unwrap() != "meta" {
             writer.raw_copy_file(file)?;
         }
     }
@@ -204,7 +204,7 @@ fn unreadable_legacy_collection_does_not_fall_back_to_dummy() -> Result<()> {
     let mut writer = zip::ZipWriter::new(std::fs::File::create(&path)?);
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
-        if file.name() != "meta" {
+        if file.name().unwrap() != "meta" {
             writer.raw_copy_file(file)?;
         }
     }

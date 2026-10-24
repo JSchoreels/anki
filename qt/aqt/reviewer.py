@@ -69,6 +69,13 @@ logger = logging.getLogger(__name__)
 UNDO_RESTORED_CARD_ANSWER_UNBLOCK_DELAY_MS = 100
 
 
+def _card_scheduling_state(card: Card) -> tuple[int | None, ...]:
+    return tuple(
+        getattr(card, name, None)
+        for name in ("did", "odid", "queue", "type", "due", "odue", "ivl", "left")
+    )
+
+
 class RefreshNeeded(Enum):
     NOTE_TEXT = auto()
     QUEUES = auto()
@@ -235,6 +242,7 @@ class Reviewer:
         self._rwkv_empty_queue_recovery_attempted = False
         self._rwkv_after_question_shown_callbacks: list[Callable[[], None]] = []
         self._rwkv_undo_restored_card_active = False
+        self._rwkv_undo_restored_card_state: tuple[int | None, ...] | None = None
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
         self._scheduling_states_pending = False
         self.bottom = BottomBar(mw, mw.bottomWeb)
@@ -312,22 +320,35 @@ class Reviewer:
                 self._refresh_needed = None
             else:
                 undo_restored_card = self._current_card_is_rwkv_undo_restored()
-                current_card_was_deleted = bool(
-                    self.card is not None
-                    and undo_restored_card
-                    and self._current_card_was_deleted()
-                )
+                current_card_invalidated = False
+                if undo_restored_card and self.card is not None:
+                    current_card_invalidated = self._current_card_was_deleted()
+                    restored_state = getattr(
+                        self, "_rwkv_undo_restored_card_state", None
+                    )
+                    if (
+                        not current_card_invalidated
+                        and restored_state is not None
+                        and restored_state != _card_scheduling_state(self.card)
+                    ):
+                        current_card_invalidated = True
+                        logger.debug(
+                            "advancing past modified RWKV undo-restored card: card_id=%s",
+                            self.card.id,
+                        )
+                    if current_card_invalidated:
+                        self._rwkv_undo_restored_card_active = False
 
-                if undo_restored_card and not current_card_was_deleted:
+                if undo_restored_card and not current_card_invalidated:
                     logger.debug(
                         "ignored study queue refresh while RWKV undo-restored card is active: card_id=%s",
                         self.card.id if self.card else None,
                     )
                     self._refresh_needed = None
                 elif aqt.rwkv_scheduler.reviewer_queue_order_enabled(self):
-                    if self.card is not None and not current_card_was_deleted:
-                        current_card_was_deleted = self._current_card_was_deleted()
-                    if current_card_was_deleted:
+                    if self.card is not None and not current_card_invalidated:
+                        current_card_invalidated = self._current_card_was_deleted()
+                    if current_card_invalidated:
                         self._begin_deleted_card_transition()
                     self._refresh_needed = None
                     if aqt.rwkv_scheduler.consume_reviewer_pruned_queue_scores(self):
@@ -683,6 +704,7 @@ class Reviewer:
                 continue
 
             self._rwkv_undo_restored_card_active = True
+            self._rwkv_undo_restored_card_state = _card_scheduling_state(self.card)
             logger.debug(
                 "reviewer restored RWKV undone card on rebuilt queue: "
                 "card_id=%s counts=(new:%s learning:%s review:%s)",

@@ -6,6 +6,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         DeckConfig_Config_NewCardGatherPriority as GatherOrder,
         DeckConfig_Config_NewCardSortOrder as SortOrder,
+        DeckConfig_Config_ReviewMix as ReviewMix,
     } from "@generated/anki/deck_config_pb";
     import * as tr from "@generated/ftl";
     import { HelpPage } from "@tslib/help-page";
@@ -26,6 +27,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reviewMixChoices,
         reviewOrderChoices,
     } from "./choices";
+    import {
+        readDisplayOrderSettings,
+        withDisplayOrderSettings,
+    } from "./display-order-settings";
     import type { DeckOptionsState } from "./lib";
 
     export let state: DeckOptionsState;
@@ -34,6 +39,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    const auxData = state.currentAuxData;
+
+    let intradayLearningMix = ReviewMix.MIX_WITH_REVIEWS;
+    $: intradayLearningMix = readDisplayOrderSettings($auxData).intradayLearningMix;
+    $: {
+        const updated = withDisplayOrderSettings($auxData, {
+            intradayLearningMix,
+        });
+        if (updated) {
+            auxData.set(updated);
+        }
+    }
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
 
@@ -91,6 +108,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         interdayStepPriority: {
             title: tr.deckConfigInterdayStepPriority(),
             help: tr.deckConfigInterdayStepPriorityTooltip() + currentDeck,
+        },
+        intradayStepPriority: {
+            title: tr.deckConfigIntradayStepPriority(),
+            help: tr.deckConfigIntradayStepPriorityTooltip() + currentDeck,
         },
         reviewSortOrder: {
             title: tr.deckConfigReviewSortOrder(),
@@ -185,6 +206,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         )}
                 >
                     {settings.interdayStepPriority.title}
+                </SettingTitle>
+            </EnumSelectorRow>
+        </Item>
+
+        <Item>
+            <EnumSelectorRow
+                bind:value={intradayLearningMix}
+                defaultValue={ReviewMix.MIX_WITH_REVIEWS}
+                choices={reviewMixChoices()}
+            >
+                <SettingTitle
+                    on:click={() =>
+                        openHelpModal(
+                            Object.keys(settings).indexOf("intradayStepPriority"),
+                        )}
+                >
+                    {settings.intradayStepPriority.title}
                 </SettingTitle>
             </EnumSelectorRow>
         </Item>

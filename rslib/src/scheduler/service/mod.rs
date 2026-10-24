@@ -1270,37 +1270,42 @@ fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
     }
 }
 
+fn fsrs_calibration_search_for_config(
+    decks: &[Deck],
+    config_id: DeckConfigId,
+) -> Option<SearchNode> {
+    let deck_ids = decks
+        .iter()
+        .filter(|deck| deck.config_id() == Some(config_id))
+        .map(|deck| deck.id.to_string())
+        .collect::<Vec<_>>();
+    (!deck_ids.is_empty()).then(|| SearchNode::DeckIdsWithoutChildren(deck_ids.join(",")))
+}
+
 impl crate::services::BackendSchedulerService for Backend {
     fn rebuild_fsrs_review_retrievability_cache(&self) -> Result<generic::UInt32> {
         let (requests, session) = self.with_col(|col| {
-            let requests = col
-                .storage
-                .all_deck_config()?
-                .into_iter()
-                .map(|config| {
-                    Ok(
-                        scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
-                            search: SearchNode::Preset(config.name.clone())
-                                .try_into_search()?
-                                .to_string(),
-                            params: config.fsrs_params().to_vec(),
-                            ignore_revlogs_before_ms: ignore_revlogs_before_ms_from_config(
-                                &config,
-                            )?
-                            .0,
-                            num_of_relearning_steps: config.inner.relearn_steps.len() as u32,
-                            include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(
-                                &config,
-                            ),
-                            fsrs_version: Some(config.inner.fsrs_version),
-                            include_validation_folds: true,
-                            enable_scheduling_penalties: Some(fsrs7_enable_scheduling_penalties(
-                                &config,
-                            )),
-                        },
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let decks = col.storage.get_all_decks()?;
+            let mut requests = Vec::new();
+            for config in col.storage.all_deck_config()? {
+                let Some(search) = fsrs_calibration_search_for_config(&decks, config.id) else {
+                    continue;
+                };
+                requests.push(
+                    scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest {
+                        search: search.try_into_search()?.to_string(),
+                        params: config.fsrs_params().to_vec(),
+                        ignore_revlogs_before_ms: ignore_revlogs_before_ms_from_config(&config)?.0,
+                        num_of_relearning_steps: config.inner.relearn_steps.len() as u32,
+                        include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(&config),
+                        fsrs_version: Some(config.inner.fsrs_version),
+                        include_validation_folds: true,
+                        enable_scheduling_penalties: Some(fsrs7_enable_scheduling_penalties(
+                            &config,
+                        )),
+                    },
+                );
+            }
             Ok((requests, col.session_id.clone()))
         })?;
         let mut count = 0;
@@ -1490,6 +1495,40 @@ mod tests {
     use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
     use crate::scheduler::fsrs::preset::FsrsPreset;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
+
+    #[test]
+    fn fsrs_calibration_search_isolates_presets_with_duplicate_names() -> crate::prelude::Result<()>
+    {
+        use super::*;
+
+        let mut col = Collection::new();
+        let mut first_config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        first_config.name = "Shared name".into();
+        col.add_or_update_deck_config(&mut first_config)?;
+        let mut second_config = first_config.clone();
+        second_config.id = DeckConfigId(0);
+        col.add_or_update_deck_config(&mut second_config)?;
+        assert_ne!(first_config.id, second_config.id);
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut expected = Vec::new();
+        for (name, config) in [("First", &first_config), ("Second", &second_config)] {
+            let mut deck = col.get_or_create_normal_deck(name)?;
+            deck.normal_mut().unwrap().config_id = config.id.0;
+            col.add_or_update_deck(&mut deck)?;
+            let mut note = nt.new_note();
+            col.add_note(&mut note, deck.id)?;
+            let cards = col.search_cards(format!("did:{}", deck.id).as_str(), SortMode::NoOrder)?;
+            assert_eq!(cards.len(), 1);
+            expected.push((config.id, cards));
+        }
+        let decks = col.storage.get_all_decks()?;
+        for (config_id, cards) in expected {
+            let search = fsrs_calibration_search_for_config(&decks, config_id).unwrap();
+            assert_eq!(col.search_cards(search, SortMode::NoOrder)?, cards);
+        }
+        assert!(fsrs_calibration_search_for_config(&decks, DeckConfigId(-1)).is_none());
+        Ok(())
+    }
 
     #[test]
     fn calibration_save_stops_between_batches_on_cancel_or_reopen() -> crate::prelude::Result<()> {

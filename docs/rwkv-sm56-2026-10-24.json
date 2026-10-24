@@ -1,0 +1,327 @@
+{
+    "date": "2026-10-24",
+    "release": {
+        "id": 422634987,
+        "tag_name": "small-model-sm56-2026-10-24",
+        "target_commitish": "1d088d9c8208bbceff23f89ddb7f7bcc6f3de024",
+        "published_at": "2026-10-24T09:26:36Z",
+        "draft": false,
+        "html_url": "https://github.com/JSchoreels/anki-rwkv/releases/tag/small-model-sm56-2026-10-24"
+    },
+    "package": {
+        "name": "sm56-package.zip",
+        "bytes": 5581795,
+        "sha256": "7b1790f49fdabf1279510247cc9bc3bf3ac461b67cf0135ab8e51589b5efe71a"
+    },
+    "checkpoint": {
+        "path": "<workspace>/wt/sm56/artifacts/small-model/scale-w64kd-final-sc-lanes-dec10-1ep32k-muon/compact/E89-F65e-F77a/master.pth",
+        "bytes": 1489805,
+        "sha256": "e03f52576e99e7a2880db574f59ca20f77af51f7d624a0f252c69fdd662dc00e"
+    },
+    "export_provenance": {
+        "captured_utc": "2026-10-24T08:49:46.322153+00:00",
+        "git_commit": "1a1653bb6933c22e0f981a58f510b7a62d15f89e",
+        "git_dirty": false,
+        "git_status_porcelain_z": "",
+        "source_tree_sha256": "5ac91ddb76e0637057e39520978578d449c4599d3228db14ed3ced3dc2390772",
+        "source_archive": "artifacts/sources/experiment-sources/5ac91ddb76e0637057e39520978578d449c4599d3228db14ed3ced3dc2390772/source.zip",
+        "source_paths": [
+            "rwkv",
+            "compact",
+            "scripts",
+            "configs",
+            "pyproject.toml",
+            "uv.lock",
+            "justfile",
+            "upstream.json"
+        ]
+    },
+    "training_source": {
+        "captured_utc": "2026-10-24T00:01:21.478414+00:00",
+        "git_commit": "67711f87c706054292f5b80175aac9a186f76eb5",
+        "git_dirty": true,
+        "git_status_porcelain_z": " M artifacts/small-model/sm56/smoke-prep/decay.json\u0000",
+        "source_tree_sha256": "9ef85812e23c1ea684385e33dd3ee2c0c7698fd56737473869a39d66321643e1",
+        "source_archive": "artifacts/sources/experiment-sources/9ef85812e23c1ea684385e33dd3ee2c0c7698fd56737473869a39d66321643e1/source.zip",
+        "source_paths": [
+            "rwkv",
+            "compact",
+            "scripts",
+            "configs",
+            "pyproject.toml",
+            "uv.lock",
+            "justfile",
+            "upstream.json"
+        ]
+    },
+    "runtime_files": {
+        "weights.f32.bin": {
+            "size": 1351553,
+            "sha256": "4388a5d11d4ebae5b29d63dc1b49eac3c537b1514673d89bd31ae944db226750"
+        },
+        "weights.int8.bin": {
+            "size": 436391,
+            "sha256": "479b3e2bc6a1c900ba8a4a45d629965c6df2a20cc8ff294583f5aeaeea3b4fdd"
+        },
+        "architecture.json": {
+            "size": 16034,
+            "sha256": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3"
+        },
+        "manifest.json": {
+            "size": 21883,
+            "sha256": "1836a7145758e23fd2f9cf8e3650f3ef797c1a68b56650bb87875a564bb601ac"
+        }
+    },
+    "reference_files_identical_to_sm55": {
+        "reference/weights_io.py": true,
+        "reference/run_reference.py": true,
+        "reference/small_model_numpy.py": true,
+        "reference/small_model_recurrent.py": true,
+        "testvectors/check_testvectors.py": true
+    },
+    "upstream": {
+        "precision": "per-channel INT8 weights + INT8 card/note state; f32 shared state",
+        "users": 723,
+        "reviews": 30479310,
+        "log_loss": {
+            "curve": 0.30241756651134816,
+            "instant": 0.279171665067057
+        },
+        "sm55_matched_log_loss": {
+            "curve": 0.30286424560300085,
+            "instant": 0.27934225810262764
+        },
+        "sm56_minus_sm55_paired_intervals_723": {
+            "curve": [
+                -0.00045,
+                -0.00079,
+                -0.00017
+            ],
+            "instant": [
+                -0.00017,
+                -0.00023,
+                -0.00011
+            ]
+        },
+        "desktop_exact_precision_many_user_evaluation": false,
+        "relative_percent_vs_sm55": {
+            "curve": -0.14748492043468175,
+            "instant": -0.06106954126073871
+        }
+    },
+    "backup": {
+        "input_sha256": "20d87d631758258cb5779c55d4a2e9484d0218d3b33ae8f291c6a02be2cef34c",
+        "backup_sha256": "915c25948b232a5673e65c3d0cf7928e8332b85fd3325ce16b5e1abcdcc7d57a",
+        "backup_name": "backup-2026-10-21-23.46.14.colpkg",
+        "retained_answers": 224074,
+        "state_precision": "cards_int4_notes_int8",
+        "weights_precision": "f32",
+        "clipping": [
+            1e-06,
+            0.999999
+        ],
+        "prediction_sha256": {
+            "legacy_curve": "dd016593b0ee4b6c57064e1f6e8d0274c7bfa7f83a5d89a7479e9e1f05660807",
+            "legacy_instant": "6cd4fd7b9056869099e0f57e5706e4729cb4a71c7bf5014c80a56f70db066cc4",
+            "sm40_curve": "fea93ae6158b0af53e2e0af7572cb8a244d768ec0db5bae7a6e770462437ce1b",
+            "sm40_instant": "9559e4544c62095d38ab0d69d248cc366bc37946cc544bb4a60dc30d7f60a739",
+            "sm36_curve": "766877641664c641e68b1a639155135a15f45be3c7d735dbd19df1bdcd2a5c98",
+            "sm36_instant": "ecd8a6ea87e3e481df0f973356bc2fc685928a899badc58973238a8a2a8758a9",
+            "sm55_curve": "1b2823991135a41f6780f5c6b1e8ffb7a0e9e7f4c4507abe5fd2f2b600857376",
+            "sm55_instant": "e90182557d080d0a4a7243391473792be5b45f037925f72923267a472fff76ca",
+            "sm56_curve": "f36600e940278b93c3cc3d485cded43941c1e724e991fdb93c9c5f253aeeac31",
+            "sm56_instant": "332aa30f526d850d1efe77f04cb5ee7db49075e0b96af3e548d4a1f298a77a1a"
+        },
+        "comparison": {
+            "interday": {
+                "reviews": 176943,
+                "curve": {
+                    "log_loss": {
+                        "legacy": 0.4609561605582173,
+                        "sm40": 0.4610035129356464,
+                        "sm36": 0.46035113644799813,
+                        "sm55": 0.4604578374828445,
+                        "sm56": 0.4606932550141069
+                    },
+                    "relative_percent_vs_legacy": {
+                        "legacy": 0.0,
+                        "sm40": 0.01027264227724256,
+                        "sm36": -0.1312541542966894,
+                        "sm55": -0.10810639232358144,
+                        "sm56": -0.05703482599994647
+                    },
+                    "sm56_relative_percent": {
+                        "legacy": -0.05703482599994647,
+                        "sm40": -0.06730055473195273,
+                        "sm36": 0.07431687227894557,
+                        "sm55": 0.051126837703385775
+                    }
+                },
+                "instant": {
+                    "log_loss": {
+                        "legacy": 0.455985021968215,
+                        "sm40": 0.4562750916379212,
+                        "sm36": 0.4559999599691694,
+                        "sm55": 0.45604222195055205,
+                        "sm56": 0.4559820831076859
+                    },
+                    "relative_percent_vs_legacy": {
+                        "legacy": 0.0,
+                        "sm40": 0.06361385916890949,
+                        "sm36": 0.003275985007133997,
+                        "sm55": 0.012544267811720466,
+                        "sm56": -0.0006445081280115339
+                    },
+                    "sm56_relative_percent": {
+                        "legacy": -0.0006445081280115339,
+                        "sm40": -0.06421751605669712,
+                        "sm36": -0.003920364704579349,
+                        "sm55": -0.013187121711877303
+                    }
+                }
+            },
+            "all_repeated": {
+                "reviews": 210097,
+                "curve": {
+                    "log_loss": {
+                        "legacy": 0.4468332845084817,
+                        "sm40": 0.4468047569245996,
+                        "sm36": 0.4462292798270087,
+                        "sm55": 0.44628331850899944,
+                        "sm56": 0.44653648860661316
+                    },
+                    "relative_percent_vs_legacy": {
+                        "legacy": 0.0,
+                        "sm40": -0.006384390973357412,
+                        "sm36": -0.13517450521560725,
+                        "sm55": -0.12308080408272026,
+                        "sm56": -0.06642206660925076
+                    },
+                    "sm56_relative_percent": {
+                        "legacy": -0.06642206660925076,
+                        "sm40": -0.06004150892057192,
+                        "sm36": 0.06884550017056679,
+                        "sm55": 0.05672855944056643
+                    }
+                },
+                "instant": {
+                    "log_loss": {
+                        "legacy": 0.4413103644920405,
+                        "sm40": 0.44229566244002166,
+                        "sm36": 0.4420228703082284,
+                        "sm55": 0.44199691142464265,
+                        "sm56": 0.4419730081569029
+                    },
+                    "relative_percent_vs_legacy": {
+                        "legacy": 0.0,
+                        "sm40": 0.2232664417739949,
+                        "sm36": 0.16145231871180776,
+                        "sm55": 0.15557009031328395,
+                        "sm56": 0.15015366014010656
+                    },
+                    "sm56_relative_percent": {
+                        "legacy": 0.15015366014010656,
+                        "sm40": -0.07294990896785647,
+                        "sm36": -0.011280446030037528,
+                        "sm55": -0.005408016916386149
+                    }
+                }
+            }
+        },
+        "reused_controls": "All four control arrays verified against their committed hashes and aggregate losses; NumPy and independent math.fsum agree within 1e-12"
+    },
+    "verification": {
+        "manifest_files_verified": 5,
+        "numpy_checker": "PASS; both users, f32/int8, recurrent/parallel, tolerance 1e-5",
+        "native": {
+            "passed": 190,
+            "ignored": 34,
+            "full_rows_per_format": 14403,
+            "max_absolute_probability_error": {
+                "f32": 2.7418137e-06,
+                "int8": 2.9802322e-06
+            },
+            "tolerance": 1e-05
+        },
+        "alternate_runtime_restore": {
+            "passed": true,
+            "models": 5,
+            "precisions": 4
+        },
+        "desktop_tests": {
+            "passed": 1015,
+            "skipped": 4,
+            "skips": "Optional Legacy Torch references: Torch is absent"
+        },
+        "browser_tests": {
+            "passed": 57,
+            "skipped": 1,
+            "deck_options_cases": 18
+        },
+        "built_asset_sha256": {
+            "weights.f32.bin": "4388a5d11d4ebae5b29d63dc1b49eac3c537b1514673d89bd31ae944db226750",
+            "architecture.json": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3",
+            "manifest.json": "1836a7145758e23fd2f9cf8e3650f3ef797c1a68b56650bb87875a564bb601ac"
+        },
+        "repository_check": {
+            "command": "rtk proxy env TZ=UTC just check",
+            "passed": true,
+            "log_sha256": "b9d20695b4c4b1c5763abe7b8778548258f690efe2e0e2becc937251b86f45dd"
+        },
+        "logs_sha256": {
+            "numpy-check.log": "c2a0a88a919c822a8711fadfb30ce30c980f86c9eeee18d3ed56b0e732479a7f",
+            "native-primary.log": "141ee2b96ff992dc1365753766fcf521ab46b62141dca65a6c8795650998441f",
+            "native-alternate.log": "58533a449e463fc790d6928923af8b4c249ecf3009174e0f9b406f101642d9a6",
+            "desktop-tests.log": "42c07b30d58b30313af740a66d20f8498f7d591cdc11b9bdbb05cfb2bba1f674",
+            "browser-tests.log": "badc1ee60123300d2735f65e42141512e6e5f29c82ddd7b222654f3884965845",
+            "quality-sm56.log": "2ac2a6b2baa0d0e41816e839fcd9dfad7d787d0a3cb892d5a613f65ae7e49994"
+        }
+    },
+    "settings": {
+        "default": "sm56",
+        "smaller_toggle_on": "sm56",
+        "smaller_toggle_off": "legacy",
+        "successful_ordinary_save_upgrade": [
+            "sm40",
+            "sm36",
+            "sm55"
+        ],
+        "apply_after_profile_reopen": true,
+        "precision_preserved": true,
+        "compute": "f32",
+        "state_precision_default": "cards_int4_notes_int8",
+        "zstd_enabled": false
+    },
+    "private_evidence_directory": "/private/tmp/rwkv-sm56-integration-2026-10-24",
+    "release_dependency_followup": {
+        "initial_ci_run": "https://github.com/JSchoreels/anki/actions/runs/40083332357",
+        "initial_candidate": "48d805b8c9f1f6a8fdfc5a2d3ff8e748000b08e9",
+        "failure": "Linux cargo-deny RUSTSEC-2026-0386; all build/test/e2e steps passed",
+        "tokio_before": "1.52.1",
+        "tokio_after": "1.53.3",
+        "workspace_minimum": "1.53.3",
+        "new_advisory_exceptions": [],
+        "cargo_deny_version": "0.20.2",
+        "cargo_deny_passed": true,
+        "cargo_deny_log_sha256": "44566f9c3b0b80d425ddf8bbc15cc7e5c537b8a5caf44fd62a0707cfc2a9fa50",
+        "post_update_verification": {
+            "repository_check": {
+                "command": "TZ=UTC just check",
+                "passed": true,
+                "log_sha256": "08ff96ac67776b78491081a8288c5506cdddc35c04c460d5b72e8272e569f170"
+            },
+            "browser_tests": {
+                "command": "TZ=UTC ANKI_SOFTWAREOPENGL=1 ANKI_API_PORT=40035 just test-e2e",
+                "passed": 57,
+                "skipped": 1,
+                "log_sha256": "a3ced1472626cab2bd15a4dd6e91906032205769ea1b9135a0e8d861e4e8128a"
+            },
+            "local_retry_context": [
+                "Concurrent builds initially raced over Svelte generated output; rerun serially",
+                "Generated license inventory updated with just fix-minilints",
+                "Briefcase stub download timed out once; full check subsequently passed unchanged",
+                "First browser run: existing editor chooser intercepted cleanup click (56 passed,1 failed,1 skipped); full repeat passed without source changes"
+            ]
+        }
+    }
+}

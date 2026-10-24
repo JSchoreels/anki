@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import socket
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -60,19 +61,38 @@ NEXT_S90_UNAVAILABLE_ROWS = [
 ]
 
 
-def test_deck_options_cache_build_requests_both_historical_caches(monkeypatch) -> None:
+@pytest.mark.parametrize("force", [False, True])
+def test_deck_options_cache_build_requests_only_rwkv_state(monkeypatch, force) -> None:
     from aqt import mediasrv
 
     mw = object()
     monkeypatch.setattr("aqt.mw", mw)
     with mock.patch("aqt.rwkv_scheduler.build_rwkv_state_cache_with_progress") as build:
-        assert mediasrv.force_build_rwkv_state_cache() == b""
+        action = (
+            mediasrv.force_build_rwkv_state_cache
+            if force
+            else mediasrv.build_rwkv_state_cache
+        )
+        assert action() == b""
     build.assert_called_once_with(
         mw,
-        force_rebuild=True,
+        **({"force_rebuild": True} if force else {}),
         record_retrievability_cache=False,
-        rebuild_retrievability_cache=True,
     )
+
+
+def test_deck_options_calibration_action_prepares_historical_predictions(
+    monkeypatch,
+) -> None:
+    from aqt import mediasrv
+
+    mw = object()
+    monkeypatch.setattr("aqt.mw", mw)
+    with mock.patch(
+        "aqt.rwkv_scheduler.prepare_rwkv_calibration_data_with_progress"
+    ) as prepare:
+        assert mediasrv.recompute_rwkv_calibration_data() == b""
+    prepare.assert_called_once_with(mw)
 
 
 def test_media_server_shutdown_closes_listener_and_client_buffers(
@@ -629,8 +649,12 @@ class TestCardStats:
             },
         ],
     )
+    @pytest.mark.parametrize("busy", [False, True])
     def test_card_info_includes_rwkv_diagnostics_without_reviewer_cache(
-        self, monkeypatch: pytest.MonkeyPatch, deck_config: dict[str, object]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        deck_config: dict[str, object],
+        busy: bool,
     ) -> None:
         import aqt
         from anki.stats_pb2 import CardStatsResponse
@@ -695,6 +719,17 @@ class TestCardStats:
         previous = set_reviewer_backend(Backend())
         try:
             monkeypatch.setattr(aqt, "mw", mw)
+            if busy:
+
+                @contextmanager
+                def busy_access(**_kwargs):
+                    yield None
+
+                monkeypatch.setattr(
+                    aqt.rwkv_scheduler,
+                    "_try_reviewer_backend_prediction_access",
+                    busy_access,
+                )
             with app.test_request_context(data=b""):
                 raw_output = card_stats()
         finally:
@@ -703,9 +738,10 @@ class TestCardStats:
         output = CardStatsResponse()
         output.ParseFromString(raw_output)
 
+        assert output.rwkv_retry_pending is busy
         assert [(row.label, row.value) for row in output.extra_rows] == [
-            ("RWKV computed R", "61%"),
-            ("Retrievability source", "RWKV"),
+            ("RWKV computed R", "Unavailable" if busy else "61%"),
+            ("Retrievability source", "SM2 (RWKV unavailable)" if busy else "RWKV"),
             *NEXT_S90_UNAVAILABLE_ROWS,
             *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
         ]
@@ -753,6 +789,7 @@ class TestCardStats:
         output = CardStatsResponse()
         output.ParseFromString(raw_output)
 
+        assert not output.rwkv_retry_pending
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "Unavailable"),
             ("Retrievability source", "FSRS (RWKV backend unavailable)"),

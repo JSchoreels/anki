@@ -4,6 +4,7 @@
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -442,6 +443,7 @@ def test_package_portable_archive_macos(monkeypatch, mocker, tmp_path: Path) -> 
     resources = get_briefcase_sources_path(tmp_path, portable=True)
     resources.mkdir(parents=True)
     (resources / PORTABLE_MARKER).touch()
+    (resources / "portable-update-helper.py").touch()
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
     generated_dmg = dist_dir / "generated.dmg"
@@ -473,6 +475,7 @@ def test_package_portable_archive_windows(monkeypatch, tmp_path: Path) -> None:
     sources = get_briefcase_sources_path(tmp_path, portable=True)
     sources.mkdir(parents=True)
     (sources / PORTABLE_MARKER).touch()
+    (sources / "portable-update-helper.py").touch()
     (sources / f"{PORTABLE_FORMAL_NAME}.exe").touch()
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
@@ -498,6 +501,7 @@ def test_package_portable_archive_linux(monkeypatch, mocker, tmp_path: Path) -> 
     sources = get_briefcase_sources_path(tmp_path, portable=True)
     sources.mkdir(parents=True)
     (sources / PORTABLE_MARKER).touch()
+    (sources / "portable-update-helper.py").touch()
     (sources / "anki").touch()
 
     def create_archive(command: list[str]) -> None:
@@ -513,6 +517,40 @@ def test_package_portable_archive_linux(monkeypatch, mocker, tmp_path: Path) -> 
     assert archive.exists()
     assert not (tmp_path / "portable-package").exists()
     assert tar.call_args.args[0][0] == "tar"
+
+
+def test_compiled_portable_app_runs_update_helper_before_profile_setup(
+    out_dir: Path, cmd_args: argparse.Namespace, monkeypatch
+) -> None:
+    cmd_args.portable = True
+    build(cmd_args)
+    resources = get_briefcase_sources_path(out_dir / "portable", portable=True)
+    if sys.platform == "darwin":
+        root = resources.parents[2]
+        launcher = root / "Anki Portable.app/Contents/MacOS/Anki Portable"
+    else:
+        root = resources
+        launcher = root / ("Anki Portable.exe" if sys.platform == "win32" else "anki")
+    assert (resources / "portable-update-helper.py").read_bytes() == Path(
+        "qt/aqt/portable_update.py"
+    ).read_bytes()
+    job = out_dir / "helper-smoke"
+    job.mkdir()
+    marker = job / "executed.txt"
+    plan = job / "plan.json"
+    plan.write_text("{}")
+    (job / "helper.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('bundled runtime helper')\n"
+    )
+    env = os.environ.copy()
+    env["ANKI_PORTABLE_UPDATE_PLAN"] = str(plan)
+
+    result = subprocess.run([str(launcher)], env=env, capture_output=True, timeout=30)
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert marker.read_text() == "bundled runtime helper"
+    assert not (root / PORTABLE_DATA_DIR).exists()
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux"])

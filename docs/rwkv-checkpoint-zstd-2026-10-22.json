@@ -1,0 +1,1116 @@
+{
+    "metadata": {
+        "input_sha256": "20d87d631758258cb5779c55d4a2e9484d0218d3b33ae8f291c6a02be2cef34c",
+        "weights_sha256": "a8d13b82b4e534e16bc5b3e5986c04cc52fc80ac36ddb9695049f5fa41d38a74",
+        "git_commit": "e3599ef5c3cbbea8b3c3ccbb6dc6fb01a3fd58aa",
+        "working_tree_status": "M justfile\n M rslib/src/rwkv/mod.rs\n M rslib/src/rwkv/review_order_bench.rs\n?? qt/tools/rwkv_checkpoint_compression_bench.py\n?? rslib/src/rwkv/checkpoint_compression_bench.rs",
+        "source_sha256": {
+            "rslib/src/rwkv/runtime.rs": "f7b2d577cc90184bc75c3efe8e0803a7ae55b96fe3f3ac111d9e23c728330698",
+            "rslib/src/rwkv/runtime_precision_bench.rs": "52b706dca34f9731b37836c9cc950b0ffa46a0175aedfc64a07a3f10da2cc5d7",
+            "rslib/src/rwkv/curve_reference_probe.rs": "e8762758b6e9222b528ac65c009284a8aed4657d4123349bbdffe132c7a4a598",
+            "rslib/src/rwkv/bulk.rs": "09c61ddb49d8ded60e8de054471ddd255ace00cae12fd05a64c793a8869bc595",
+            "rslib/src/rwkv/precision_tests.rs": "f3c577a6c4368990f3537f03104676b167740299417247760be5714e9c7947d8",
+            "rslib/src/rwkv/checkpoint_compression_bench.rs": "159648919e4e79b0beaab9ee4d13871c4510c74b74d05504d476c92f91b30eec",
+            "rslib/src/rwkv/review_order_bench.rs": "9baf0cef02b478aa4ba12ab61361461a71ef0605729b4b7753f0b46ab5ccbed8",
+            "rslib/src/rwkv/alternate.rs": "6fbe84880b17fbf7be00ab37e3f4193ccbce14b73cf11c51b98de7e83c26e694",
+            "rslib/src/rwkv/fused_packed.rs": "514b1c71eda54707517b283142da3e0a46e47e1d058bc40a73c3cf1c55ba4988",
+            "rslib/src/rwkv/query_kernels.rs": "8fa967323681503b9f582040377af6fd78e7671d2579a3663d60cc4408c2bc71",
+            "rslib/src/rwkv/model_bench.rs": "98931b0d727add3125511c5c7c0453a3a8f1b8424cd00a7a76fbde01acccc280",
+            "rslib/src/rwkv/matmul.rs": "3bed3d28ca479f36f27e6c99b5dbe93db5b5cdf7faccbc06bc25d288449acc85",
+            "rslib/src/rwkv/mod.rs": "84e7b02e75a43f393c06fd3947352e36c022a9727c34b049232993fa3d7bbd43",
+            "rslib/src/rwkv/history_ablation_bench.rs": "c7974c82b8db43998ee49e8c538c707aa79deadf4324418efb10678b03d64b9a",
+            "rslib/src/rwkv/collection_benchmark.rs": "ce3c35d73399eaf3971604441fb360e50ab7994ae9df84d8ecea012f93f974cd",
+            "rslib/src/rwkv/sm40_tests.rs": "3095bc1f54c677d0215782cc6a70fa1169edcb73f00a539f8c8fed64eb31044c",
+            "rslib/src/rwkv/architecture.rs": "ce84094edbcbcfb5d5f74cefee0259be58064fb42d02da52c23f8e9bbd68e0cf",
+            "rslib/src/rwkv/precision.rs": "d6e21887d0c5e180251f41e18d836cdeb97e151629e2845e57740a0c2280e950",
+            "rslib/src/rwkv/api.rs": "1857a3bb510dcab76452754d7fb33dc51b65eb31356bffe4c611334ac64ed72a",
+            "rslib/src/rwkv/packed_weights.rs": "5771b4cf41a8696279a679502ca877209da3c3e2538fbcca3cbb967c1a4da9fe",
+            "rslib/src/rwkv/weight_precision_bench.rs": "e2135a9d058f127767d86654778ebb52d0e2a20053c04c934428eeee56d331b3",
+            "rslib/src/rwkv/engine.rs": "90d58772cb033a893822d4ffef72e78a5ee7285210dced24a045098dad6d9cfa",
+            "rslib/src/rwkv/state_scope_bench.rs": "e846e7589b0a69ecda2cd5b53a390d45b1d6cdec8d57d59c54418c6f512315d4",
+            "rslib/src/rwkv/query_math_bench.rs": "d780f2cf0af58597ac5d672e7d5a57420693b5d3e9d6889812577884d61adb89",
+            "qt/tools/rwkv_checkpoint_compression_bench.py": "0eb2879ded150127bb8a6cbdb91fc5fc96248d69a904575e38d2b04ac03cf94d",
+            "justfile": "7e89a06c7c826cfe1aa86f41ccdff0ed26c9953f225c1611b5978ee57c5c784b",
+            "Cargo.toml": "717bca3fff5e053af78a38281067b6b4a93f8b0378c0562ab65ff2948654779b",
+            "Cargo.lock": "1e6bcdfafcef881b5f387b658b5c6bdb3786b946e2acd1b9179a20a88d40d830",
+            "rslib/Cargo.toml": "05273f85a6fd35c0c380bf07c7a6217403a0ebfde2ee893081650a86572a92aa"
+        },
+        "source_archive_sha256": "fc31bada92d3bf826a9b4023f1fe9781f5b14a8ce0051a83f647ca1f16ef670c",
+        "platform": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "load_average": [
+            34.15673828125,
+            16.40087890625,
+            12.2919921875
+        ],
+        "precision": "cards_int4_notes_int8",
+        "model": "sm40",
+        "weights_precision": "f32",
+        "block_bytes": 1048576,
+        "rounds": 5,
+        "cache_policy": "Fresh process per operation; filesystem cache is warm; no cache eviction.",
+        "memory_policy": "Whole child-process RSS sampled every 2 ms with boundary handshakes; parent/build excluded.",
+        "timing_policy": "Target save/restore only, including file flush/sync on save; input preparation/model loading/hash verification excluded.",
+        "executable_sha256": "97b618f537474784c0fcf888af7fc2f5a4cf0871a14225c7c15a43ed681ab593",
+        "all_byte_checks_passed": true
+    },
+    "prepared": {
+        "action": "prepare",
+        "block_bytes": 1048576,
+        "codec": "sqlite",
+        "entities": {
+            "cards": 13977,
+            "decks": 22,
+            "global": 1,
+            "notes": 13202,
+            "presets": 13
+        },
+        "file_bytes": 53084160,
+        "kind": "summary",
+        "payload_bytes": 52802106,
+        "reviews": 224074,
+        "runtime_blake3": "74505f599274cb31d901a5aeb63cd03ec856ec6dc3ec3cc2f924f2bb8374bc28",
+        "state_blake3": "0956e4d32f9fa84502b06d27657b676dbe22503f812a408c26431c356fa6aad5"
+    },
+    "hashes": {
+        "state_blake3": "0956e4d32f9fa84502b06d27657b676dbe22503f812a408c26431c356fa6aad5",
+        "runtime_blake3": "74505f599274cb31d901a5aeb63cd03ec856ec6dc3ec3cc2f924f2bb8374bc28"
+    },
+    "summary": {
+        "raw": {
+            "file_bytes": 52802550,
+            "rounds": 5,
+            "save": {
+                "wall_seconds": 0.060565334,
+                "start_rss_bytes": 86310912,
+                "sampled_peak_rss_bytes": 88899584,
+                "end_rss_bytes": 88899584,
+                "sampled_peak_increase_bytes": 2473984,
+                "process_peak_rss_bytes": 88866816,
+                "wall_seconds_samples": [
+                    0.060565334,
+                    0.077571208,
+                    0.102369959,
+                    0.05197375,
+                    0.049401667
+                ]
+            },
+            "restore": {
+                "wall_seconds": 0.079719917,
+                "start_rss_bytes": 13467648,
+                "sampled_peak_rss_bytes": 80003072,
+                "end_rss_bytes": 80003072,
+                "sampled_peak_increase_bytes": 66551808,
+                "process_peak_rss_bytes": 79937536,
+                "wall_seconds_samples": [
+                    0.079682167,
+                    0.082501,
+                    0.079719917,
+                    0.079137959,
+                    0.082515291
+                ]
+            }
+        },
+        "zstd1": {
+            "file_bytes": 46250670,
+            "rounds": 5,
+            "save": {
+                "wall_seconds": 0.131721666,
+                "start_rss_bytes": 86753280,
+                "sampled_peak_rss_bytes": 90505216,
+                "end_rss_bytes": 90505216,
+                "sampled_peak_increase_bytes": 3440640,
+                "process_peak_rss_bytes": 90472448,
+                "wall_seconds_samples": [
+                    0.131721666,
+                    0.145969334,
+                    0.18235125,
+                    0.113618125,
+                    0.119543959
+                ]
+            },
+            "restore": {
+                "wall_seconds": 0.123672625,
+                "start_rss_bytes": 13418496,
+                "sampled_peak_rss_bytes": 81281024,
+                "end_rss_bytes": 81281024,
+                "sampled_peak_increase_bytes": 67895296,
+                "process_peak_rss_bytes": 81215488,
+                "wall_seconds_samples": [
+                    0.122409416,
+                    0.124902958,
+                    0.122133458,
+                    0.123672625,
+                    0.125281417
+                ]
+            }
+        },
+        "zstd2": {
+            "file_bytes": 46147737,
+            "rounds": 5,
+            "save": {
+                "wall_seconds": 0.135365542,
+                "start_rss_bytes": 86327296,
+                "sampled_peak_rss_bytes": 90488832,
+                "end_rss_bytes": 90488832,
+                "sampled_peak_increase_bytes": 4227072,
+                "process_peak_rss_bytes": 90456064,
+                "wall_seconds_samples": [
+                    0.154282083,
+                    0.134968959,
+                    0.135365542,
+                    0.132917625,
+                    0.138137292
+                ]
+            },
+            "restore": {
+                "wall_seconds": 0.124799708,
+                "start_rss_bytes": 13500416,
+                "sampled_peak_rss_bytes": 81379328,
+                "end_rss_bytes": 81379328,
+                "sampled_peak_increase_bytes": 67584000,
+                "process_peak_rss_bytes": 81313792,
+                "wall_seconds_samples": [
+                    0.122908958,
+                    0.129525584,
+                    0.124799708,
+                    0.121188916,
+                    0.132006
+                ]
+            }
+        },
+        "zstd3": {
+            "file_bytes": 46029013,
+            "rounds": 5,
+            "save": {
+                "wall_seconds": 0.210703541,
+                "start_rss_bytes": 87048192,
+                "sampled_peak_rss_bytes": 90718208,
+                "end_rss_bytes": 90718208,
+                "sampled_peak_increase_bytes": 3948544,
+                "process_peak_rss_bytes": 90685440,
+                "wall_seconds_samples": [
+                    0.210703541,
+                    0.223144291,
+                    0.19624725,
+                    0.1978525,
+                    0.370103333
+                ]
+            },
+            "restore": {
+                "wall_seconds": 0.125620916,
+                "start_rss_bytes": 13484032,
+                "sampled_peak_rss_bytes": 81068032,
+                "end_rss_bytes": 81068032,
+                "sampled_peak_increase_bytes": 67698688,
+                "process_peak_rss_bytes": 81002496,
+                "wall_seconds_samples": [
+                    0.124556958,
+                    0.129249791,
+                    0.125394,
+                    0.125620916,
+                    0.129011084
+                ]
+            }
+        },
+        "sqlite": {
+            "file_bytes": 53084160,
+            "rounds": 5,
+            "save": {
+                "wall_seconds": 0.091686083,
+                "start_rss_bytes": 86523904,
+                "sampled_peak_rss_bytes": 90324992,
+                "end_rss_bytes": 90324992,
+                "sampled_peak_increase_bytes": 3915776,
+                "process_peak_rss_bytes": 90292224,
+                "wall_seconds_samples": [
+                    0.10782725,
+                    0.108999291,
+                    0.083525584,
+                    0.079052291,
+                    0.091686083
+                ]
+            },
+            "restore": {
+                "wall_seconds": 0.087595583,
+                "start_rss_bytes": 13467648,
+                "sampled_peak_rss_bytes": 86458368,
+                "end_rss_bytes": 86458368,
+                "sampled_peak_increase_bytes": 72957952,
+                "process_peak_rss_bytes": 86425600,
+                "wall_seconds_samples": [
+                    0.08788025,
+                    0.088247417,
+                    0.08358725,
+                    0.087595583,
+                    0.081775625
+                ]
+            }
+        }
+    },
+    "backup": {
+        "filename": "backup-2026-10-21-23.46.14.colpkg",
+        "sha256": "915c25948b232a5673e65c3d0cf7928e8332b85fd3325ce16b5e1abcdcc7d57a"
+    },
+    "private_evidence_directory": "/private/tmp/rwkv-checkpoint-zstd-2026-10-22/benchmark",
+    "runs": [
+        {
+            "name": "0-raw-save",
+            "action": "save",
+            "codec": "raw",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86310912,
+                    "sampled_peak_rss_bytes": 89243648,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 89210880,
+                    "wall_seconds": 0.060565334,
+                    "end_rss_bytes": 89243648,
+                    "sampled_peak_increase_bytes": 2932736
+                }
+            }
+        },
+        {
+            "name": "0-raw-restore",
+            "action": "restore",
+            "codec": "raw",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13484032,
+                    "sampled_peak_rss_bytes": 79708160,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 79642624,
+                    "wall_seconds": 0.079682167,
+                    "end_rss_bytes": 79708160,
+                    "sampled_peak_increase_bytes": 66224128
+                }
+            }
+        },
+        {
+            "name": "0-zstd1-save",
+            "action": "save",
+            "codec": "zstd1",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 87392256,
+                    "sampled_peak_rss_bytes": 89899008,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 89866240,
+                    "wall_seconds": 0.131721666,
+                    "end_rss_bytes": 89899008,
+                    "sampled_peak_increase_bytes": 2506752
+                }
+            }
+        },
+        {
+            "name": "0-zstd1-restore",
+            "action": "restore",
+            "codec": "zstd1",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13385728,
+                    "sampled_peak_rss_bytes": 81739776,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81674240,
+                    "wall_seconds": 0.122409416,
+                    "end_rss_bytes": 81739776,
+                    "sampled_peak_increase_bytes": 68354048
+                }
+            }
+        },
+        {
+            "name": "0-zstd2-save",
+            "action": "save",
+            "codec": "zstd2",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86851584,
+                    "sampled_peak_rss_bytes": 89030656,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 88997888,
+                    "wall_seconds": 0.154282083,
+                    "end_rss_bytes": 89030656,
+                    "sampled_peak_increase_bytes": 2179072
+                }
+            }
+        },
+        {
+            "name": "0-zstd2-restore",
+            "action": "restore",
+            "codec": "zstd2",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13500416,
+                    "sampled_peak_rss_bytes": 81739776,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81674240,
+                    "wall_seconds": 0.122908958,
+                    "end_rss_bytes": 81739776,
+                    "sampled_peak_increase_bytes": 68239360
+                }
+            }
+        },
+        {
+            "name": "0-zstd3-save",
+            "action": "save",
+            "codec": "zstd3",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86589440,
+                    "sampled_peak_rss_bytes": 90537984,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90505216,
+                    "wall_seconds": 0.210703541,
+                    "end_rss_bytes": 90537984,
+                    "sampled_peak_increase_bytes": 3948544
+                }
+            }
+        },
+        {
+            "name": "0-zstd3-restore",
+            "action": "restore",
+            "codec": "zstd3",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13352960,
+                    "sampled_peak_rss_bytes": 81051648,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 80986112,
+                    "wall_seconds": 0.124556958,
+                    "end_rss_bytes": 81051648,
+                    "sampled_peak_increase_bytes": 67698688
+                }
+            }
+        },
+        {
+            "name": "0-sqlite-save",
+            "action": "save",
+            "codec": "sqlite",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86523904,
+                    "sampled_peak_rss_bytes": 90324992,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90292224,
+                    "wall_seconds": 0.10782725,
+                    "end_rss_bytes": 90324992,
+                    "sampled_peak_increase_bytes": 3801088
+                }
+            }
+        },
+        {
+            "name": "0-sqlite-restore",
+            "action": "restore",
+            "codec": "sqlite",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13697024,
+                    "sampled_peak_rss_bytes": 86458368,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 86425600,
+                    "wall_seconds": 0.08788025,
+                    "end_rss_bytes": 86458368,
+                    "sampled_peak_increase_bytes": 72761344
+                }
+            }
+        },
+        {
+            "name": "1-raw-save",
+            "action": "save",
+            "codec": "raw",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 87392256,
+                    "sampled_peak_rss_bytes": 89522176,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 89489408,
+                    "wall_seconds": 0.077571208,
+                    "end_rss_bytes": 89522176,
+                    "sampled_peak_increase_bytes": 2129920
+                }
+            }
+        },
+        {
+            "name": "1-raw-restore",
+            "action": "restore",
+            "codec": "raw",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13484032,
+                    "sampled_peak_rss_bytes": 79855616,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 79790080,
+                    "wall_seconds": 0.082501,
+                    "end_rss_bytes": 79855616,
+                    "sampled_peak_increase_bytes": 66371584
+                }
+            }
+        },
+        {
+            "name": "1-sqlite-save",
+            "action": "save",
+            "codec": "sqlite",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86573056,
+                    "sampled_peak_rss_bytes": 90963968,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90931200,
+                    "wall_seconds": 0.108999291,
+                    "end_rss_bytes": 90963968,
+                    "sampled_peak_increase_bytes": 4390912
+                }
+            }
+        },
+        {
+            "name": "1-sqlite-restore",
+            "action": "restore",
+            "codec": "sqlite",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13484032,
+                    "sampled_peak_rss_bytes": 87261184,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 87228416,
+                    "wall_seconds": 0.088247417,
+                    "end_rss_bytes": 87261184,
+                    "sampled_peak_increase_bytes": 73777152
+                }
+            }
+        },
+        {
+            "name": "1-zstd3-save",
+            "action": "save",
+            "codec": "zstd3",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 87048192,
+                    "sampled_peak_rss_bytes": 91947008,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 91914240,
+                    "wall_seconds": 0.223144291,
+                    "end_rss_bytes": 91947008,
+                    "sampled_peak_increase_bytes": 4898816
+                }
+            }
+        },
+        {
+            "name": "1-zstd3-restore",
+            "action": "restore",
+            "codec": "zstd3",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13484032,
+                    "sampled_peak_rss_bytes": 81068032,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81002496,
+                    "wall_seconds": 0.129249791,
+                    "end_rss_bytes": 81068032,
+                    "sampled_peak_increase_bytes": 67584000
+                }
+            }
+        },
+        {
+            "name": "1-zstd2-save",
+            "action": "save",
+            "codec": "zstd2",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86327296,
+                    "sampled_peak_rss_bytes": 91504640,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 91471872,
+                    "wall_seconds": 0.134968959,
+                    "end_rss_bytes": 91504640,
+                    "sampled_peak_increase_bytes": 5177344
+                }
+            }
+        },
+        {
+            "name": "1-zstd2-restore",
+            "action": "restore",
+            "codec": "zstd2",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13795328,
+                    "sampled_peak_rss_bytes": 81379328,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81313792,
+                    "wall_seconds": 0.129525584,
+                    "end_rss_bytes": 81379328,
+                    "sampled_peak_increase_bytes": 67584000
+                }
+            }
+        },
+        {
+            "name": "1-zstd1-save",
+            "action": "save",
+            "codec": "zstd1",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86753280,
+                    "sampled_peak_rss_bytes": 90570752,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90537984,
+                    "wall_seconds": 0.145969334,
+                    "end_rss_bytes": 90570752,
+                    "sampled_peak_increase_bytes": 3817472
+                }
+            }
+        },
+        {
+            "name": "1-zstd1-restore",
+            "action": "restore",
+            "codec": "zstd1",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 81412096,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81346560,
+                    "wall_seconds": 0.124902958,
+                    "end_rss_bytes": 81412096,
+                    "sampled_peak_increase_bytes": 67993600
+                }
+            }
+        },
+        {
+            "name": "2-zstd2-save",
+            "action": "save",
+            "codec": "zstd2",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 87441408,
+                    "sampled_peak_rss_bytes": 91668480,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 91635712,
+                    "wall_seconds": 0.135365542,
+                    "end_rss_bytes": 91668480,
+                    "sampled_peak_increase_bytes": 4227072
+                }
+            }
+        },
+        {
+            "name": "2-zstd2-restore",
+            "action": "restore",
+            "codec": "zstd2",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 80936960,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 80871424,
+                    "wall_seconds": 0.124799708,
+                    "end_rss_bytes": 80936960,
+                    "sampled_peak_increase_bytes": 67518464
+                }
+            }
+        },
+        {
+            "name": "2-zstd3-save",
+            "action": "save",
+            "codec": "zstd3",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86294528,
+                    "sampled_peak_rss_bytes": 90505216,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90472448,
+                    "wall_seconds": 0.19624725,
+                    "end_rss_bytes": 90505216,
+                    "sampled_peak_increase_bytes": 4210688
+                }
+            }
+        },
+        {
+            "name": "2-zstd3-restore",
+            "action": "restore",
+            "codec": "zstd3",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13484032,
+                    "sampled_peak_rss_bytes": 80953344,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 80887808,
+                    "wall_seconds": 0.125394,
+                    "end_rss_bytes": 80953344,
+                    "sampled_peak_increase_bytes": 67469312
+                }
+            }
+        },
+        {
+            "name": "2-sqlite-save",
+            "action": "save",
+            "codec": "sqlite",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86294528,
+                    "sampled_peak_rss_bytes": 90193920,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90161152,
+                    "wall_seconds": 0.083525584,
+                    "end_rss_bytes": 90193920,
+                    "sampled_peak_increase_bytes": 3899392
+                }
+            }
+        },
+        {
+            "name": "2-sqlite-restore",
+            "action": "restore",
+            "codec": "sqlite",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13467648,
+                    "sampled_peak_rss_bytes": 86343680,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 86310912,
+                    "wall_seconds": 0.08358725,
+                    "end_rss_bytes": 86343680,
+                    "sampled_peak_increase_bytes": 72876032
+                }
+            }
+        },
+        {
+            "name": "2-raw-save",
+            "action": "save",
+            "codec": "raw",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86294528,
+                    "sampled_peak_rss_bytes": 88899584,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 88866816,
+                    "wall_seconds": 0.102369959,
+                    "end_rss_bytes": 88899584,
+                    "sampled_peak_increase_bytes": 2605056
+                }
+            }
+        },
+        {
+            "name": "2-raw-restore",
+            "action": "restore",
+            "codec": "raw",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13451264,
+                    "sampled_peak_rss_bytes": 80003072,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 79937536,
+                    "wall_seconds": 0.079719917,
+                    "end_rss_bytes": 80003072,
+                    "sampled_peak_increase_bytes": 66551808
+                }
+            }
+        },
+        {
+            "name": "2-zstd1-save",
+            "action": "save",
+            "codec": "zstd1",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86261760,
+                    "sampled_peak_rss_bytes": 90505216,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90472448,
+                    "wall_seconds": 0.18235125,
+                    "end_rss_bytes": 90505216,
+                    "sampled_peak_increase_bytes": 4243456
+                }
+            }
+        },
+        {
+            "name": "2-zstd1-restore",
+            "action": "restore",
+            "codec": "zstd1",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13434880,
+                    "sampled_peak_rss_bytes": 81264640,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81199104,
+                    "wall_seconds": 0.122133458,
+                    "end_rss_bytes": 81264640,
+                    "sampled_peak_increase_bytes": 67829760
+                }
+            }
+        },
+        {
+            "name": "3-zstd2-save",
+            "action": "save",
+            "codec": "zstd2",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86327296,
+                    "sampled_peak_rss_bytes": 89571328,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 89538560,
+                    "wall_seconds": 0.132917625,
+                    "end_rss_bytes": 89571328,
+                    "sampled_peak_increase_bytes": 3244032
+                }
+            }
+        },
+        {
+            "name": "3-zstd2-restore",
+            "action": "restore",
+            "codec": "zstd2",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 80936960,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 80871424,
+                    "wall_seconds": 0.121188916,
+                    "end_rss_bytes": 80936960,
+                    "sampled_peak_increase_bytes": 67518464
+                }
+            }
+        },
+        {
+            "name": "3-zstd1-save",
+            "action": "save",
+            "codec": "zstd1",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86278144,
+                    "sampled_peak_rss_bytes": 89522176,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 89489408,
+                    "wall_seconds": 0.113618125,
+                    "end_rss_bytes": 89522176,
+                    "sampled_peak_increase_bytes": 3244032
+                }
+            }
+        },
+        {
+            "name": "3-zstd1-restore",
+            "action": "restore",
+            "codec": "zstd1",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13385728,
+                    "sampled_peak_rss_bytes": 81281024,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81215488,
+                    "wall_seconds": 0.123672625,
+                    "end_rss_bytes": 81281024,
+                    "sampled_peak_increase_bytes": 67895296
+                }
+            }
+        },
+        {
+            "name": "3-raw-save",
+            "action": "save",
+            "codec": "raw",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86343680,
+                    "sampled_peak_rss_bytes": 88817664,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 88784896,
+                    "wall_seconds": 0.05197375,
+                    "end_rss_bytes": 88817664,
+                    "sampled_peak_increase_bytes": 2473984
+                }
+            }
+        },
+        {
+            "name": "3-raw-restore",
+            "action": "restore",
+            "codec": "raw",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13467648,
+                    "sampled_peak_rss_bytes": 80658432,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 80592896,
+                    "wall_seconds": 0.079137959,
+                    "end_rss_bytes": 80658432,
+                    "sampled_peak_increase_bytes": 67190784
+                }
+            }
+        },
+        {
+            "name": "3-sqlite-save",
+            "action": "save",
+            "codec": "sqlite",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86556672,
+                    "sampled_peak_rss_bytes": 90783744,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90750976,
+                    "wall_seconds": 0.079052291,
+                    "end_rss_bytes": 90783744,
+                    "sampled_peak_increase_bytes": 4227072
+                }
+            }
+        },
+        {
+            "name": "3-sqlite-restore",
+            "action": "restore",
+            "codec": "sqlite",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 87228416,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 87195648,
+                    "wall_seconds": 0.087595583,
+                    "end_rss_bytes": 87228416,
+                    "sampled_peak_increase_bytes": 73809920
+                }
+            }
+        },
+        {
+            "name": "3-zstd3-save",
+            "action": "save",
+            "codec": "zstd3",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 87441408,
+                    "sampled_peak_rss_bytes": 90718208,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90685440,
+                    "wall_seconds": 0.1978525,
+                    "end_rss_bytes": 90718208,
+                    "sampled_peak_increase_bytes": 3276800
+                }
+            }
+        },
+        {
+            "name": "3-zstd3-restore",
+            "action": "restore",
+            "codec": "zstd3",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 82640896,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 82575360,
+                    "wall_seconds": 0.125620916,
+                    "end_rss_bytes": 82640896,
+                    "sampled_peak_increase_bytes": 69222400
+                }
+            }
+        },
+        {
+            "name": "4-sqlite-save",
+            "action": "save",
+            "codec": "sqlite",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86294528,
+                    "sampled_peak_rss_bytes": 90210304,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90177536,
+                    "wall_seconds": 0.091686083,
+                    "end_rss_bytes": 90210304,
+                    "sampled_peak_increase_bytes": 3915776
+                }
+            }
+        },
+        {
+            "name": "4-sqlite-restore",
+            "action": "restore",
+            "codec": "sqlite",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 86376448,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 86343680,
+                    "wall_seconds": 0.081775625,
+                    "end_rss_bytes": 86376448,
+                    "sampled_peak_increase_bytes": 72957952
+                }
+            }
+        },
+        {
+            "name": "4-raw-save",
+            "action": "save",
+            "codec": "raw",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86294528,
+                    "sampled_peak_rss_bytes": 88768512,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 88735744,
+                    "wall_seconds": 0.049401667,
+                    "end_rss_bytes": 88768512,
+                    "sampled_peak_increase_bytes": 2473984
+                }
+            }
+        },
+        {
+            "name": "4-raw-restore",
+            "action": "restore",
+            "codec": "raw",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13451264,
+                    "sampled_peak_rss_bytes": 80887808,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 80822272,
+                    "wall_seconds": 0.082515291,
+                    "end_rss_bytes": 80887808,
+                    "sampled_peak_increase_bytes": 67436544
+                }
+            }
+        },
+        {
+            "name": "4-zstd1-save",
+            "action": "save",
+            "codec": "zstd1",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 87982080,
+                    "sampled_peak_rss_bytes": 91422720,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 91389952,
+                    "wall_seconds": 0.119543959,
+                    "end_rss_bytes": 91422720,
+                    "sampled_peak_increase_bytes": 3440640
+                }
+            }
+        },
+        {
+            "name": "4-zstd1-restore",
+            "action": "restore",
+            "codec": "zstd1",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13418496,
+                    "sampled_peak_rss_bytes": 81149952,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81084416,
+                    "wall_seconds": 0.125281417,
+                    "end_rss_bytes": 81149952,
+                    "sampled_peak_increase_bytes": 67731456
+                }
+            }
+        },
+        {
+            "name": "4-zstd2-save",
+            "action": "save",
+            "codec": "zstd2",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 86261760,
+                    "sampled_peak_rss_bytes": 90488832,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 90456064,
+                    "wall_seconds": 0.138137292,
+                    "end_rss_bytes": 90488832,
+                    "sampled_peak_increase_bytes": 4227072
+                }
+            }
+        },
+        {
+            "name": "4-zstd2-restore",
+            "action": "restore",
+            "codec": "zstd2",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13500416,
+                    "sampled_peak_rss_bytes": 82427904,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 82362368,
+                    "wall_seconds": 0.132006,
+                    "end_rss_bytes": 82427904,
+                    "sampled_peak_increase_bytes": 68927488
+                }
+            }
+        },
+        {
+            "name": "4-zstd3-save",
+            "action": "save",
+            "codec": "zstd3",
+            "phases": {
+                "save": {
+                    "start_rss_bytes": 88014848,
+                    "sampled_peak_rss_bytes": 91340800,
+                    "kind": "end",
+                    "phase": "save",
+                    "process_peak_rss_bytes": 91308032,
+                    "wall_seconds": 0.370103333,
+                    "end_rss_bytes": 91340800,
+                    "sampled_peak_increase_bytes": 3325952
+                }
+            }
+        },
+        {
+            "name": "4-zstd3-restore",
+            "action": "restore",
+            "codec": "zstd3",
+            "phases": {
+                "restore": {
+                    "start_rss_bytes": 13647872,
+                    "sampled_peak_rss_bytes": 81756160,
+                    "kind": "end",
+                    "phase": "restore",
+                    "process_peak_rss_bytes": 81690624,
+                    "wall_seconds": 0.129011084,
+                    "end_rss_bytes": 81756160,
+                    "sampled_peak_increase_bytes": 68108288
+                }
+            }
+        }
+    ],
+    "post_measurement_changes": {
+        "file": "qt/tools/rwkv_checkpoint_compression_bench.py",
+        "description": "Replace hashlib.file_digest with equivalent bounded streaming SHA-256 for repository typing compatibility; outside all measured child-process operations.",
+        "measured_sha256": "0eb2879ded150127bb8a6cbdb91fc5fc96248d69a904575e38d2b04ac03cf94d",
+        "final_sha256": "ba26afd3754be8718b5dcc0d6964ccbffef433407be1ec9c8577b4a6179d404a",
+        "hash_method_equality_checked_files": 31,
+        "native_sources_unchanged": true
+    }
+}

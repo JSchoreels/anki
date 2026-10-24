@@ -1,0 +1,810 @@
+{
+ "label": "s-w64kd-gate-sc-lanes-dec12-1ep32k",
+ "created": "2026-10-19 10:08:46",
+ "checkpoint": {
+  "path": "<workspace>/wt/sm21v2/artifacts/small-model/scale-w64kd-gate-sc-lanes-cont-decay1ep32k/compact/E89-F65e-F77a/master.pth",
+  "bytes": 1489805,
+  "sha256": "9c98f2ca37aa25439169e10e423349ba076c72ca6f26ea9206612b5e528a2634"
+ },
+ "parameters": 331511,
+ "architecture": {
+  "format": "anki-rwkv small-model export",
+  "spec_version": 1,
+  "architecture": "w64",
+  "d_model": 64,
+  "card_features": 92,
+  "features_fc_dim": 128,
+  "head_fc_dim": 128,
+  "curve_head": "power_mixture",
+  "num_curves": 3,
+  "num_points": 128,
+  "ahead_residual": false,
+  "zero_features": [
+   22
+  ],
+  "layer_schedule": "interleaved",
+  "layer_steps": [
+   [
+    0,
+    0
+   ],
+   [
+    1,
+    0
+   ],
+   [
+    2,
+    0
+   ],
+   [
+    3,
+    0
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    0,
+    1
+   ],
+   [
+    1,
+    1
+   ],
+   [
+    3,
+    1
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    4,
+    2
+   ],
+   [
+    1,
+    3
+   ]
+  ],
+  "streams": [
+   {
+    "name": "card_id",
+    "n_layers": 2,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "deck_id",
+    "n_layers": 4,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "note_id",
+    "n_layers": 1,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "preset_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "user_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   }
+  ],
+  "constants": {
+   "layer_norm_eps": 1e-05,
+   "group_norm_eps": 0.00064,
+   "normalize_eps": 1e-12,
+   "softplus_threshold": 20.0,
+   "prob_clamp": 1e-05,
+   "s_point_spread": 18.5,
+   "s_max": 22.0,
+   "s_min": 0.1,
+   "curve_base": 0.9,
+   "point_spread": 18.5,
+   "max_e": 21.0,
+   "point_min": 0.5,
+   "power_clamp": 25.0,
+   "power_s_eps": 1e-07,
+   "min_elapsed_seconds": 1.0
+  },
+  "inputs": {
+   "streams_order": [
+    "card_id",
+    "deck_id",
+    "note_id",
+    "preset_id",
+    "user_id"
+   ],
+   "features": "92 card features of rwkv.prepare_batch / rwkv.data_processing (the same input layout and normalization the fork's 2.76M model uses: rslib/src/rwkv/mod.rs CARD_FEATURES)",
+   "label_elapsed_seconds": "curve query time in seconds (labels[..., 0])"
+  },
+  "outputs": {
+   "p_curve": "recall probability at the queried elapsed time (ahead / curve head)",
+   "p_imm": "1 - P(again) of the 4-rating head (instant head), clamped to [1e-5, 1 - 1e-5]",
+   "p_rating": "softmax over again/hard/good/easy"
+  }
+ },
+ "training": {
+  "checkpoint_folder_result": {
+   "model": "compact",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64",
+    "distillation": {
+     "teacher": "<workspace>/anki/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/fork-fp32-gate5k"
+    },
+    "chunk_reviews": 32768,
+    "training_seed": 2025,
+    "state_carry": {
+     "lanes": "strided"
+    }
+   },
+   "config": {
+    "MODEL": "compact",
+    "DTYPE": "bfloat16",
+    "WKV_BACKEND": "nvrtc",
+    "SEED": 2025,
+    "BATCH_CHUNKS": 1,
+    "CHUNK_REVIEWS": 32768,
+    "PREFETCH_WORKERS": 5,
+    "PREFETCH_BATCHES": 10,
+    "CPU_THREADS": 4,
+    "EPOCHS": 1,
+    "DATA_PATH": "<workspace>/anki-rwkv/data/anki-revlogs-10k-original-20261011",
+    "DATASET_REVISION": "75299740cff05894ef42d7ad990666691efdd2da",
+    "GPU_MEMORY_FRACTION": 0.8,
+    "PEAK_LR": 0.0007,
+    "WARMUP_STEPS": 5
+   },
+   "torch": "2.9.1+cu128",
+   "cuda": "12.8",
+   "gpu": "NVIDIA GeForce RTX 5080",
+   "training_dropout": "enabled",
+   "device_used_at_start_mib": 1290.4375,
+   "master_dtype": "float32",
+   "float32_matmul_precision": "highest",
+   "cuda_matmul_allow_tf32": false,
+   "rss_sampling": "process tree at user transitions; sampled maximum, not continuous peak",
+   "provenance": {
+    "captured_utc": "2026-10-18T22:31:55.303826+00:00",
+    "git_commit": "338249e94b59f11f586135e6f73081e97901cc0d",
+    "git_dirty": false,
+    "git_status_porcelain_z": "",
+    "source_tree_sha256": "a94817e7ecae9da4e0e8b3a6ee172536e2f00b12b80f71660a71ddf7c342ecfa",
+    "source_archive": "artifacts/sources/experiment-sources/a94817e7ecae9da4e0e8b3a6ee172536e2f00b12b80f71660a71ddf7c342ecfa/source.zip",
+    "source_paths": [
+     "rwkv",
+     "compact",
+     "scripts",
+     "configs",
+     "pyproject.toml",
+     "uv.lock",
+     "justfile",
+     "upstream.json"
+    ]
+   },
+   "status": "complete",
+   "smoke_only": false,
+   "implementation_sha256": "6794e8f188f32bdeabe357f01ee01149c78bb8e24d526ef65d20daf08d375d40",
+   "started_utc": "2026-10-18T22:31:56.417822+00:00",
+   "training_users": 5000,
+   "evaluation_users": 0,
+   "progress_users": 5000,
+   "updates": 13964,
+   "review_presentations": 369477375,
+   "training_curve_labels": 321470304,
+   "training_instant_labels": 321470304,
+   "hierarchical_padded_positions": 4879764538,
+   "peak_process_tree_rss_mib": 9177.73046875,
+   "gpu_copy_milliseconds": 11207.095703125,
+   "gpu_copy_overlap_training_milliseconds": 304.412841796875,
+   "initial_parameter_sha256": "bf98d96064e9a279bcd4195b65eb5f3f33fc2befe52bd956bdead26629188b45",
+   "catch_up": {
+    "keys": [
+     "architecture",
+     "distillation"
+    ],
+    "architecture": {
+     "name": "w64",
+     "parameters": 331511
+    },
+    "lr_schedule": {
+     "decay_start": 0.0,
+     "decay_end": 1.0,
+     "shape": "one_minus_sin",
+     "final": 0.0,
+     "total_reviews": 369477375
+    },
+    "distillation": {
+     "teacher": "<workspace>/anki/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.pth",
+     "teacher_sha256": "8fb7fea081b38623ffc0d84ed18303cf5d62b42b9105e91112264a34286beeeb",
+     "teacher_parameters": null,
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/fork-fp32-gate5k",
+     "replay_manifest_sha256": "0a2e8be8b1c43582d0964454964505ac4a3b2c9ac2b39aeb34ea4df27c5899c4",
+     "replay_teacher_precision": "float32 weights, float32 state (compress_quant fork path, state_bits 0)"
+    },
+    "state_carry": {
+     "precision": "deploy",
+     "carry": true,
+     "lanes": "strided",
+     "mode": "strided lanes (v2): update u holds window u of every lane; lane starts from zero",
+     "stats": {
+      "users": 5000,
+      "updates": 13964,
+      "streams_calls": 13964,
+      "peak_table_bytes": 682120344
+     }
+    }
+   },
+   "discarded_primer_seconds": 13.021194700006163,
+   "model_setup_seconds": 3.435806599998614,
+   "warmup_job_workers": 1,
+   "prestarted_worker_pids": [
+    18204,
+    19760,
+    25484,
+    34224,
+    38532
+   ],
+   "prestarted_workers": 5,
+   "pool_ready_wait_seconds": 0.00029609998455271125,
+   "pool_prestart_seconds": 13.071095699997386,
+   "host_placement": {
+    "mode": "physical",
+    "main_process_cpus": [
+     2,
+     3,
+     6,
+     7,
+     10,
+     11
+    ],
+    "worker_cpus": [
+     0,
+     4,
+     8,
+     14,
+     12
+    ],
+    "workers": 5,
+    "physical_cores": 8,
+    "main_core_scheduling_classes": [
+     6,
+     6,
+     5
+    ],
+    "restored_main_process_cpus": 16
+   },
+   "process_qos": {
+    "mode": "above_normal_unthrottled",
+    "processes": [
+     {
+      "pid": 4676,
+      "role": "main",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 18204,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 19760,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 25484,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 34224,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 38532,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     }
+    ],
+    "timer_resolution_100ns": {
+     "coarsest": 156250,
+     "finest": 5000,
+     "current": 5000
+    }
+   },
+   "training_started_utc": "2026-10-18T22:32:11.668533+00:00",
+   "nvrtc_max_timesteps": 131072,
+   "deferred_read_depth": 2,
+   "lean_step_reset": {
+    "master_parameters": 420,
+    "child_parameters": 420
+   },
+   "bookkeeping_stride": 8,
+   "rss_sampling_skipped_processes": 0,
+   "training_elapsed_seconds": 17364.95176290002,
+   "training_seconds": 17380.458747900004,
+   "training_gc": {
+    "generation_0": {
+     "collections": 57111,
+     "seconds": 3.3290660009661224
+    },
+    "generation_1": {
+     "collections": 5192,
+     "seconds": 1.5682506000157446
+    },
+    "generation_2": {
+     "collections": 119,
+     "seconds": 9.829877899755957
+    }
+   },
+   "cold_training_seconds": 17380.458747900004,
+   "reviews_per_second": 21258.20614744373,
+   "cold_reviews_per_second": 21258.20614744373,
+   "coverage": "<5000 entries omitted>",
+   "peak_allocated_mib": 7200.1689453125,
+   "peak_reserved_mib": 11294.0,
+   "allocator_stats": {
+    "num_alloc_retries": 0,
+    "num_ooms": 0,
+    "num_device_alloc": 722,
+    "num_device_free": 56
+   },
+   "trained_parameter_sha256": "4bc03bd75476ace7612440af298de10076d1c7a82a1cb396f96a02fda323b988",
+   "update_offset_end": 181532,
+   "case_elapsed_seconds": 17397.197156299982
+  },
+  "decay_dir": "<workspace>/wt/sm21v2/artifacts/small-model/scale-w64kd-gate-sc-lanes-cont-decay1ep32k",
+  "decay": {
+   "created_utc": "2026-10-18T22:31:16.391130+00:00",
+   "source_run": "<workspace>/wt/sm21v2/artifacts/accuracy/experiments/scale-w64kd-gate-sc-lanes-cont/run",
+   "source_epoch": 12,
+   "source_case": "<workspace>/wt/sm21v2/artifacts/accuracy/experiments/scale-w64kd-gate-sc-lanes-cont/run/epoch-12/compact/E89-F65e-F77a",
+   "source_update_offset_end": 167568,
+   "model": "compact",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64",
+    "distillation": {
+     "teacher": "<workspace>/anki/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/fork-fp32-gate5k"
+    },
+    "chunk_reviews": 32768,
+    "training_seed": 2025,
+    "state_carry": {
+     "lanes": "strided"
+    }
+   },
+   "dropped_width32_options": [
+    "exact_group_norm",
+    "exact_index",
+    "native_glue",
+    "native_group_norm",
+    "native_index",
+    "native_wkv",
+    "prefetch_rows",
+    "row_tiles_exact",
+    "skip_padding_sources",
+    "wkv_tile"
+   ],
+   "fraction_of_epoch_reviews": 1.0,
+   "training_users": 5000,
+   "training_reviews": 369477375,
+   "shuffle_seed": 1,
+   "lr": "7e-4 -> 0, shape one_minus_sin, over all 369,477,375 reviews",
+   "evaluation_set": "none",
+   "evaluation_users": 0,
+   "control": "epoch-12 scores of the same users in <workspace>/wt\\sm21v2\\artifacts\\accuracy\\experiments\\scale-w64kd-gate-sc-lanes-cont\\run\\epoch-12\\compact\\E89-F65e-F77a\\result.json"
+  },
+  "decay_protocol_full_run": {
+   "epoch": 12,
+   "evaluate": false,
+   "init_master": "<workspace>/wt/sm21v2/artifacts/accuracy/experiments/scale-w64kd-gate-sc-lanes-cont/run/epoch-12/compact/E89-F65e-F77a/master.pth",
+   "init_optimizer": "<workspace>/wt/sm21v2/artifacts/accuracy/experiments/scale-w64kd-gate-sc-lanes-cont/run/epoch-12/compact/E89-F65e-F77a/optimizer.pth",
+   "update_offset": 167568,
+   "lr_schedule": {
+    "decay_start": 0.0,
+    "decay_end": 1.0,
+    "shape": "one_minus_sin",
+    "final": 0.0
+   },
+   "benchmark_db": "<workspace>/wt/sm21v2/artifacts/accuracy/experiments/scale-w64kd-gate-sc-lanes-cont/run/label-db",
+   "evaluation_set": "none"
+  }
+ },
+ "evaluation": {
+  "heldout": "<workspace>/wt/sm21v2/artifacts/small-model/heldout-sm40v2.jsonl (branch sm21v2) + fork/w8+s8 rows of <workspace>/wt/state-carry/artifacts/small-model/heldout.jsonl",
+  "reference": "fork/w8+s8",
+  "labels": {
+   "s-w64kd-gate-sc-lanes-dec12-1ep32k/w8+s8": {
+    "checkpoint": "<workspace>/wt/sm21v2/artifacts/small-model/scale-w64kd-gate-sc-lanes-cont-decay1ep32k/compact/E89-F65e-F77a/master.pth",
+    "alone": {
+     "users": 464,
+     "ahead": {
+      "users": 464,
+      "reviews": 22656735,
+      "LogLoss": {
+       "weighted": 0.30004467978638577,
+       "user_average": 0.3046383728448276
+      },
+      "RMSE(bins)": {
+       "weighted": 0.03979455607460651,
+       "user_average": 0.05636108405172414
+      },
+      "AUC": {
+       "weighted": 0.8018155146196325,
+       "user_average": 0.7961530777537797
+      },
+      "RMSE": {
+       "weighted": 0.29011582735310276,
+       "user_average": 0.29109667672413786
+      }
+     },
+     "instant": {
+      "users": 464,
+      "reviews": 22656735,
+      "LogLoss": {
+       "weighted": 0.27415902903551637,
+       "user_average": 0.2732709051724138
+      },
+      "RMSE(bins)": {
+       "weighted": 0.021368042385189218,
+       "user_average": 0.033795989224137936
+      },
+      "AUC": {
+       "weighted": 0.8405573581227822,
+       "user_average": 0.8440361598272138
+      },
+      "RMSE": {
+       "weighted": 0.27614487466331755,
+       "user_average": 0.27411196982758623
+      }
+     }
+    },
+    "vs_reference": {
+     "shared_users": 464,
+     "delta": {
+      "ahead LogLoss": {
+       "value": 0.30004467978638577,
+       "reference": 0.2976559827704654,
+       "delta_pct": 0.8025026050836654
+      },
+      "ahead RMSE(bins)": {
+       "value": 0.03979455607460651,
+       "reference": 0.03867366371324024,
+       "delta_pct": 2.8983350780456885
+      },
+      "instant LogLoss": {
+       "value": 0.27415902903551637,
+       "reference": 0.27216076150270546,
+       "delta_pct": 0.7342232296006566
+      },
+      "instant RMSE(bins)": {
+       "value": 0.021368042385189218,
+       "reference": 0.02084454407000832,
+       "delta_pct": 2.5114404681756466
+      }
+     }
+    }
+   }
+  },
+  "heldout_report_rows": []
+ },
+ "parity": {
+  "checkpoint": "<workspace>/wt/sm21v2/artifacts/small-model/scale-w64kd-gate-sc-lanes-cont-decay1ep32k/compact/E89-F65e-F77a/master.pth",
+  "users": [
+   4676,
+   1745,
+   516
+  ],
+  "dtype": "float32",
+  "variants": {
+   "fp32": {
+    "max_abs_dp_labelled": {
+     "p_curve": 8.344650268554688e-07,
+     "p_imm": 2.384185791015625e-06,
+     "p_rating": 3.1888484954833984e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 2.98,
+      "numpy_seconds": 1.84,
+      "p_curve": 4.76837158203125e-07,
+      "p_curve_all_positions": 4.76837158203125e-07,
+      "p_imm": 3.5762786865234375e-07,
+      "p_imm_all_positions": 7.748603820800781e-07,
+      "p_rating": 1.9073486328125e-06,
+      "p_rating_all_positions": 1.9073486328125e-06
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 3.14,
+      "numpy_seconds": 1.89,
+      "p_curve": 7.450580596923828e-07,
+      "p_curve_all_positions": 7.450580596923828e-07,
+      "p_imm": 9.5367431640625e-07,
+      "p_imm_all_positions": 1.5497207641601562e-06,
+      "p_rating": 2.8312206268310547e-06,
+      "p_rating_all_positions": 3.725290298461914e-06
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 2.72,
+      "numpy_seconds": 2.06,
+      "p_curve": 8.344650268554688e-07,
+      "p_curve_all_positions": 8.344650268554688e-07,
+      "p_imm": 2.384185791015625e-06,
+      "p_imm_all_positions": 2.384185791015625e-06,
+      "p_rating": 3.1888484954833984e-06,
+      "p_rating_all_positions": 3.1888484954833984e-06
+     }
+    ],
+    "pass_1e-5": true
+   },
+   "w8": {
+    "max_abs_dp_labelled": {
+     "p_curve": 8.940696716308594e-07,
+     "p_imm": 1.6689300537109375e-06,
+     "p_rating": 3.039836883544922e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 2.39,
+      "numpy_seconds": 1.68,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 5.364418029785156e-07,
+      "p_imm_all_positions": 1.1324882507324219e-06,
+      "p_rating": 2.7418136596679688e-06,
+      "p_rating_all_positions": 2.7418136596679688e-06
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 3.12,
+      "numpy_seconds": 1.93,
+      "p_curve": 8.940696716308594e-07,
+      "p_curve_all_positions": 8.940696716308594e-07,
+      "p_imm": 1.1920928955078125e-06,
+      "p_imm_all_positions": 1.3113021850585938e-06,
+      "p_rating": 2.682209014892578e-06,
+      "p_rating_all_positions": 2.7418136596679688e-06
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 2.75,
+      "numpy_seconds": 1.85,
+      "p_curve": 8.940696716308594e-07,
+      "p_curve_all_positions": 8.940696716308594e-07,
+      "p_imm": 1.6689300537109375e-06,
+      "p_imm_all_positions": 1.6689300537109375e-06,
+      "p_rating": 3.039836883544922e-06,
+      "p_rating_all_positions": 3.2186508178710938e-06
+     }
+    ],
+    "pass_1e-5": true
+   }
+  }
+ },
+ "files": {
+  "architecture.json": {
+   "bytes": 16034,
+   "sha256": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3"
+  },
+  "INTEGRATION.md": {
+   "bytes": 55087,
+   "sha256": "72b6a2c3980e6f5d0ac33f17e5207e8360dd4d551b8806d03cc33c83b97fd352"
+  },
+  "master.pth": {
+   "bytes": 1489805,
+   "sha256": "9c98f2ca37aa25439169e10e423349ba076c72ca6f26ea9206612b5e528a2634"
+  },
+  "parity.json": {
+   "bytes": 3181,
+   "sha256": "f75af08097d9e5c3da2e3a30ef5a4a7a4d55c3b95952e94bf297dbbe18f6b80f"
+  },
+  "weights.f32.bin": {
+   "bytes": 1351553,
+   "sha256": "a8d13b82b4e534e16bc5b3e5986c04cc52fc80ac36ddb9695049f5fa41d38a74"
+  },
+  "weights.int8.bin": {
+   "bytes": 436391,
+   "sha256": "6196c5fadd611827123102563639393fdcea99bfca83e3fb336fae1cd4bfc7c8"
+  }
+ },
+ "provenance": {
+  "captured_utc": "2026-10-19T08:08:47.083726+00:00",
+  "git_commit": "010152e0d93836d7173c2e7b6ebff78eca492dee",
+  "git_dirty": true,
+  "git_status_porcelain_z": " M artifacts/small-model/heldout-pools.jsonl\u0000",
+  "source_tree_sha256": "f02bb4ce6460f92e95e480b2f853883de727d31ac7bc2d259283f505dfea2b91",
+  "source_archive": "artifacts/sources/experiment-sources/f02bb4ce6460f92e95e480b2f853883de727d31ac7bc2d259283f505dfea2b91/source.zip",
+  "source_paths": [
+   "rwkv",
+   "compact",
+   "scripts",
+   "configs",
+   "pyproject.toml",
+   "uv.lock",
+   "justfile",
+   "upstream.json"
+  ],
+  "naming": "In recorded training paths and settings, the folder of the small-model code and the model kind are shown as 'compact'."
+ }
+}

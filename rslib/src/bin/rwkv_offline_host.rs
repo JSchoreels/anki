@@ -368,8 +368,15 @@ fn prepare_and_wait(col: &mut Col, model_path: &str) -> anki::error::Result<()> 
 }
 
 /// Waits for a runtime being built on its own thread (after prepare or undo).
+/// A model that fails to load disables RWKV without a status of its own: give
+/// up after 10 minutes instead of waiting forever.
 fn wait_ready(col: &mut Col) -> anki::error::Result<()> {
+    let started = Instant::now();
     while !replay_status(col)?.available {
+        assert!(
+            started.elapsed().as_secs() < 600,
+            "RWKV not ready after 10 minutes (did the model load?)"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     Ok(())

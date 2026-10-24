@@ -42,8 +42,11 @@ reschedule controls to update stored due dates for cards already scheduled.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
 the predicted curve. Curve crossings are refined on the curve itself rather
-than treated as straight lines between search points. Live answer scheduling
-then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
+than treated as straight lines between search points. Interval extraction starts
+at one second, the earliest supported model evaluation. If recall is already at
+or below the target there, Curve returns a one-second candidate for answer
+intervals and S90 instead of the former one-minute fallback. Live answer
+scheduling then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
 intraday seconds without fuzz only when **Allow same day review for
 (re)learning steps** is enabled and learning queues are enabled. Otherwise,
 generated intervals use day-based review states with a minimum of one day.
@@ -57,6 +60,88 @@ defaults to off. Leave queue skipping off to use manual learning/relearning
 delays. Turning it on bypasses the delays without deleting the saved step lists;
 cards already graduated to Review do not automatically return to learning when
 it is turned off again.
+
+## Bundled RWKV Models
+
+Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
+local profile. The original Legacy
+model and the 331,511-parameter SM40, SM36 Muon, SM55 and SM56 models are bundled. Only the
+selected model and its state are loaded.
+
+The switch is on by default and selects **New - Smaller Model** (SM56) when on
+and **Legacy - Bigger Model** when off. An explicitly saved Legacy selection
+loads with the switch off. SM40, SM36 and SM55 are no longer offered in the UI.
+The adjacent help button explains both choices and their profile-wide scope;
+model names are shown in that help entry instead of a separate status line.
+Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
+and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
+INT4-card/INT8-note storage.
+
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55` and `sm56` as supported
+values. Missing or unsupported values resolve to SM56 in existing and new profiles.
+Opening Deck Options does not change a saved choice. On a successful ordinary
+Deck Options save, older `sm40`, `sm36` and `sm55` choices switch to `sm56`; `legacy` and
+`sm56` are preserved. The older models remain supported by the runtime. Profile
+creation explicitly stores `sm56`. Neither model choice nor state precision is synced.
+The model control has moved from Preferences into Advanced in the RWKV card.
+Storage precision is hidden and keeps its saved value. Use Save to keep model
+changes; closing and discarding leaves both profile keys unchanged.
+The desktop attaches `rwkv_profile_settings` to the Deck Options response and save
+request, then updates the existing profile keys only after the configuration save
+succeeds. Failed saves and parameter-only optimization do not apply these choices.
+No collection configuration or synced state is added.
+Saving a choice takes effect after reopening the profile; the active session, its
+cache identity and its background jobs keep using the current model.
+Switching models reconstructs state from canonical retained review history and
+does not rewrite collection data or existing scheduling dates.
+
+Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
+SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
+architecture and manifest record the exact upstream export. Weight computation
+remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55 and
+SM56 weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
+`qt/aqt/rwkv_inference/sm55/` and `qt/aqt/rwkv_inference/sm56/`. Their architecture exports are byte-identical to
+SM40's. SM55 retains Muon and extends the final decay from 5,000 training users
+to 8,000. SM56 also trains its ten base epochs on all 8,000 users before the
+8,000-user Muon decay; these checkpoints change weights without changing feature construction,
+recurrent equations, curve evaluation or state encoding. The
+[SM36 integration report](rwkv-sm36-2026-10-22.MD),
+[SM55 integration report](rwkv-sm55-2026-10-22.MD) and
+[SM56 integration report](rwkv-sm56-2026-10-24.MD) record package provenance,
+reference/native parity and the scope of the upstream quality evidence. The
+[four-model backup comparison](rwkv-four-model-quality-2026-10-22.MD) scores all
+four checkpoints on identical retained reviews with f32 compute weights and the
+default mixed state precision. A custom
+`ANKI_RWKV_MODEL_PATH` must match the selected architecture. The optional
+`weights.int8.bin` container dequantizes once to f32; it reduces file size, not the
+resident compute representation.
+
+The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for both
+fixed architectures and dispatches at its public operation boundary. Tensor loops
+retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
+engine used by the offline benchmark API, and `--no-default-features` selects
+Legacy for those comparisons; all five models are available at runtime in
+either build. SM40, SM36, SM55 and SM56 share the small architecture's specialization;
+only two engines are compiled. The standard format/check targets also cover the
+included engine source.
+
+SM40, SM36, SM55 and SM56 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
+layer-zero value residual, and only four layers retain channel mixers. Its input
+feature 22 is zeroed in every inference path. The feature builder's timing,
+entity codes, canonical history and routing rules are unchanged. Its Curve head
+is a mixture of three learned power curves and its Instant head remains a
+four-rating classifier.
+
+The selected model and content hash participate in cache/replay identity. Native
+state-store schema 5, model-tagged runtime marker `ARWKVPROCSTATE4` and desktop
+cache metadata version 13 reject incompatible snapshots. Undo state is also
+model-specific. The first open after this upgrade rebuilds the previous cache;
+subsequent profile opens can restore a valid cache for the selected model.
+
+The [initial SM40 comparison](rwkv-sm40-2026-10-20.MD) records the original matched
+full-history resource and quality measurements. The [dual-model follow-up](rwkv-dual-model-2026-10-20.MD) verifies identical predictions after runtime selection was added. Older dated reports below concern
+the original model and remain historical evidence.
 
 ## Settings And Storage
 
@@ -82,6 +167,12 @@ Deck Options shows this switch when either FSRS or RWKV-Instant is enabled.
 The former `rwkv_review_allow_same_day_review` field is retained for storage
 compatibility but no longer affects scheduling or hides the repeat-spacing
 fields. The two spacing minimums appear in one row with units inside the fields.
+
+The RWKV card keeps minimum daily reviews, repeat spacing, Curve intervals and
+maintenance actions visible. Its initially collapsed **Advanced** section contains
+the profile-wide model switch and **Compare RWKV with FSRS**. With Instant enabled,
+it also contains **Use faster, approximate queue updates** and **Update the RWKV
+queue every**; these two settings still belong to the selected deck preset.
 
 Deck Options hides `rwkv_review_refresh_on_exit` while retaining its saved
 behavior. Creation-time prediction is always enabled; the retained
@@ -117,10 +208,15 @@ invalidates any cache checkpoint that still contains the older retained
 sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
-Preferences → Review → RWKV state selects storage precision for the whole local
-profile: `int8` (default), `f32` (the original full-precision fallback), or
-`int4` (experimental). The profile key is `rwkvStatePrecision`; an absent or
-unsupported value defaults to `int8`. This choice is local and is not synced.
+Storage precision is a hidden setting for the whole local profile:
+`cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
+(cards and notes), `f32` (the original full-precision fallback), or `int4`
+(experimental, cards and notes). All four models support all four modes. The profile
+key is `rwkvStatePrecision`; absent or unsupported values default to
+`cards_int4_notes_int8` in both new and existing profiles. Explicitly saved
+precision choices, including `int8`, are preserved when saving Deck Options or
+switching models. This choice is local and is
+not synced.
 Changes take effect after restarting Anki (or reopening the profile), and the
 next state preparation rebuilds from retained review history. Precision is part
 of the replay identity, so a checkpoint from another mode cannot satisfy either
@@ -130,7 +226,7 @@ There is no parallel full-precision backup cache.
 
 Compact modes pack only card and note recurrent matrices: symmetric signed
 `int8` (−127…127) or packed `int4` (−7…7), with one f32 absolute-maximum scale
-per 32-element row and round-to-nearest-even codes. Both compact modes store
+per model head row (16 elements for SM40; 32 for the legacy model) and round-to-nearest-even codes. All compact modes store
 time/channel shift vectors as IEEE f16 using the `half` crate. Matrices are
 quantized after each answer's f32 output is calculated, before the next answer
 reads them. Queries, preview answers, undo, workload simulation, historical
@@ -139,10 +235,35 @@ arithmetic, feature context, recall curves, and deck/preset/global state remain
 f32. The runtime retains packed card/note modules and decodes only bounded query
 batches or active replay streams. Bulk replay preserves the last answer's exact
 integer codes and scales, so checkpoint reloads do not add another quantization.
-`int4` can noticeably change individual predictions and calibration, so it is
-offered as an explicit experimental choice.
+The mixed mode uses the existing INT4 encoding for cards and INT8 encoding for
+notes, including during bulk replay and checkpoint continuation; no cache schema
+change is needed. The `int4` mode also quantizes notes and remains an
+experimental choice. The
+[legacy-model mixed-precision comparison](rwkv-hybrid-precision-2026-10-18.MD)
+measured a 24.29% smaller total serialized state payload versus INT8 on one
+collection; it does not establish SM40's accuracy tradeoff.
 See the [native precision benchmark](rwkv-state-precision-2026-10-10.MD) for
 measured rebuild, checkpoint, memory, and accuracy tradeoffs.
+An [offline shared-state int8 POC](rwkv-shared-state-int8-2026-10-14.MD) also
+measures deck/preset/global compression. It saves only 0.46% of the final state
+payload on the tested collection and substantially worsens calibration, so these
+shared scopes continue to use f32.
+The [int4-weight/int8-state POC](rwkv-int4-weights-int8-state-2026-10-14.MD)
+measures a separate model-storage and accuracy tradeoff. Its experimental
+projection weights decode to f32 before inference; production weights remain f32.
+The [runtime and UM+ follow-up](rwkv-runtime-precision-2026-10-14.MD) tests
+resident packed weights and a fused NEON projection kernel. Fusing reduces the
+buffer-decoding rebuild penalty, but remains slower than current f32 weights;
+fresh-process RAM savings are small because recurrent state dominates memory.
+These kernels remain offline experiments.
+
+For the previous bundled model, the [earlier runtime comparison](rwkv-runtime-precision-2026-10-14.MD#recommended-default)
+recommended f32 weights with int8 card/note matrices and f32 deck/preset/global
+state. That configuration used 61.1% less ready RAM than f32 state after fresh
+cache restore, with almost identical historical UM+.
+F32 remains faster; further quantization trades quality or CPU work for additional
+storage or memory savings. This conclusion is scoped to the measured model,
+collection and machine.
 
 Reinstalling or moving the app does not invalidate the cache when the bundled
 RWKV weights are unchanged.
@@ -165,6 +286,11 @@ scale to the complete rebuild history.
 Cache size scales with the number of reviewed cards and notes that have RWKV
 state, so it can be much larger than the embedded model file on large
 collections.
+The [lossless checkpoint compression benchmark](rwkv-checkpoint-zstd-2026-10-22.MD)
+measures zstd levels 1–3 without changing quantization. On the tested SM40
+collection, independently compressed blocks save 12.4–12.8% against matching
+raw blocks but increase save/restore time and use slightly more RAM; desktop
+checkpoints remain uncompressed.
 The cache also stores RWKV ID-feature encodings and the deterministic generator
 state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.
@@ -172,7 +298,11 @@ While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
 the recurrent state. Before applying that answer, Anki falls back to canonical
 recovery if an unmarked new learning start replaces older retained history or
-if the answer changed dynamic preset routing. A Forget review-log
+if the answer changed dynamic preset routing. With dynamic preset replay, the
+answer is applied under the preset historical replay would choose for it. Anki
+recovers for replay preset routing only if that choice cannot be computed. Answers
+recorded as cramming rows (Filtered with factor 0, such as preview-only filtered
+decks) leave the resident state unchanged, matching replay. A Forget review-log
 entry excludes the card's earlier reviews immediately, even when the card has
 not yet been reviewed after the reset. This lets a rebuild prepare the correct
 state before relearning begins, so the first new answer does not require another
@@ -324,6 +454,8 @@ mutation, instead of copying the persistent card type. When RWKV synthesizes a
 same-day state outside Anki's learning queues, Qt places the corresponding raw
 kind on `CardAnswer`; the Rust answer transaction validates and writes that kind
 to the revlog, so undo and redo keep the card update and review type atomic.
+In a rescheduling filtered deck, a learning answer that has no FSRS memory state
+keeps Anki's Learning kind, because a factor-0 Filtered row would be excluded as cramming.
 Histories without a Learning answer, such as cards introduced through Grade
 Now, begin with their actual recorded Review, Relearning, Filtered, Manual, or
 Rescheduled state; replay does not synthesize state `0`.
@@ -404,8 +536,17 @@ after every answer. Later startup loads restore the effective state-store
 segment, replay any delta-log reviews, then replay newer revlogs from the
 collection. Those newer revlogs are appended to the delta log as well: only a
 checkpoint recovery writes a state-store segment during a restore, because only
-recovery adopts that segment as the effective state. Replaying the log is cheap
-(about 60 µs per review on Apple Silicon). Earlier versions also wrote an
+recovery adopts that segment as the effective state. Replaying the log costs
+about 60-70 µs per review on Apple Silicon at every startup, and the log used to
+grow until the next full build: on a copy of a 283k-review collection, replaying
+10k, 25k and 50k reviews took 2.8s, 7.7s and 9.4s on a heavily loaded machine
+(load average 80-100), about 3.5s for 50k when idle. At about 300 reviews a day
+the log reaches 50k reviews in six months. Once the log holds 10,000 reviews, a
+restore therefore takes the checkpoint-recovery path from the effective segment
+instead: it replays the same reviews, writes the eight-day recovery root and the
+current delta, empties the log and prunes the old chain. The replayed history
+is unchanged, so a calibration epoch that matched before the fold is carried to
+the new segment. Earlier versions also wrote an
 unreferenced delta segment on every restore that found newer revlogs, so one
 desktop store had grown to 3.06 GB, 1.7 GB of it unreachable. The next restore
 that keeps the manifest's segment removes such segments and, when that frees at
@@ -419,10 +560,13 @@ restored state are unchanged.
 The manifest in `state-v1.meta.json` records the base segment, its
 store generation, the latest effective revlog id, and the historical recovery
 base. It also records a chained SHA-256 identity of the canonical replay
-inputs plus a replay-semantics identity covering first-review elapsed-time
-settings, deck-to-preset routing, and the dynamic preset overlay. Filtered cards
-use their original deck as the effective historical deck, matching normal
-review after they leave the filtered deck.
+inputs plus a replay-semantics identity covering state precision, the first-review
+elapsed source, the dynamic preset replay flag, and the dynamic preset overlay
+when enabled. Per-review deck and preset ids are covered by the chained history
+hash instead, so adding, deleting, or re-routing never-reviewed decks and adding
+presets keeps the cache. Moving a reviewed deck to another preset still
+invalidates it. Filtered cards use their original deck as the effective
+historical deck, matching normal review after they leave the filtered deck.
 Note and tag edits re-resolve only the affected note's cards when an add-on
 preset overlay is active. If those cards remain in the same presets, Anki keeps
 the resident recurrent state and refreshes only content-dependent queue inputs.
@@ -531,7 +675,12 @@ to `0` removes that minimum.
 While RWKV-Instant is enabled for the selected deck, these same spacing guards
 also apply to learning and relearning cards in that deck tree. They are checked
 when selecting cards, including already-due steps and cards pulled forward by
-Learn ahead, and the reviewer learning count excludes withheld cards. Each
+Learn ahead, and the reviewer learning count excludes withheld cards. When the
+intervening-review minimum alone would withhold every remaining learning card,
+because no new, review, or other learning card can be shown, that minimum is
+dropped for the selection so the last learning cards are not withheld
+indefinitely; the elapsed-seconds minimum still applies, and the counts include
+the cards admitted this way. Each
 selection reads the latest answer time and recent answered reviews, so answers,
 undo, redo, and elapsed time update eligibility without changing stored due
 times or step lists. These guards do not apply Instant's recall threshold to
@@ -828,10 +977,11 @@ When RWKV-Curve is enabled and the desktop RWKV backend is available, the
 reviewer computes each answer button by simulating that rating from the current
 RWKV state. The embedded runtime evaluates the current query plus hypothetical
 Again, Hard, Good, and Easy answer states. Each hypothetical answer state
-returns an RWKV-Curve. Anki evaluates its monotonic exponential-mixture base and
-uses that curve to find the interval at the target retention for that grade.
-The model's experimental piecewise `ahead_logits` correction is deliberately
-ignored because it can make predicted retrievability increase with elapsed
+returns an RWKV-Curve. Anki evaluates SM40's monotonic power-mixture curve and
+uses it to find the interval at the target retention for that grade. SM40 has
+no learned ahead correction; its constant 1e-5 logit residual is applied as in
+the published reference. The legacy comparison continues to ignore its learned
+piecewise `ahead_logits`, which can make retrievability increase with elapsed
 time. The interval is the first sampled downward crossing of the target; if the
 curve never reaches the target, the configured maximum interval is used.
 
@@ -1046,6 +1196,11 @@ finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
 to the cache, elapsed time, and estimated time remaining.
 
+Add-on update prompts wait until the RWKV startup question and modal progress
+operation have closed. Only one add-on update check or prompt is active at a
+time. Closing a profile cancels its pending update prompt and closes any visible
+update window, so a later profile load does not retain an old blocked window.
+
 RWKV switches apply to each card's own deck preset, including the original deck
 of a filtered card. Enabling RWKV on a parent does not override a different
 subdeck preset. Saving deck or preset changes invalidates dependent predictions
@@ -1063,6 +1218,12 @@ available. The desktop `rwkv_state_did_prepare(mw)` GUI hook reports successful
 state preparation on the main thread; Card Info subscribes only while its window
 is open. An enabled card can still show RWKV as unavailable while recovery is in
 progress or after recovery fails.
+Card Info marks temporary inference contention and state recovery separately
+from missing backends or prediction errors. Its current/previous-card pages
+retry temporary failures after 0.5, 1, 2, 4, and 8 seconds, stopping when values
+are ready, the card changes, or the page closes. Retries never wait for the
+inference lock on the UI thread. The state-ready hook still refreshes an open
+window after a longer recovery finishes.
 Before publication, Anki explicitly closes both the state-store writer and its
 cache-validation database readers. On Windows, publishing the rebuilt cache also
 retries transient file-sharing failures caused by another process briefly holding
@@ -1072,18 +1233,30 @@ and operating-system error instead of reporting that the cache is ready. The use
 may be prompted to rebuild after the next restart; closing Anki and renaming the
 profile-local `rwkv-state-cache` folder before rebuilding clears stale derived
 cache files without changing the collection.
+Rust owns state-store schema 5; desktop metadata, parent-chain and pruning readers
+require the same version. Integration tests write real native checkpoints for both
+models, read and prune them through the desktop code, and restore the surviving
+state into a fresh native runtime.
 
-Automatic RWKV state recovery replays answers and persists recurrent state
-without computing a pre-answer prediction for every historical review. The manual
-**Build Cache** action in Deck Options clears both historical prediction tables,
-rebuilds FSRS predictions and validation folds for every deck preset using its
-current parameters, history cutoff, relearning steps, same-day optimization and
-scheduling-penalty settings, rebuilds RWKV recurrent state, then recomputes RWKV
-calibration predictions aligned to the rebuilt FSRS folds. It does not reschedule
-cards or change review history. A failed or interrupted rebuild can leave partial
-derived predictions; rerun **Build Cache** to complete it. Live review answers still
-write their pre-answer prediction with source `rwkv_review` and role
-`post_optimization`.
+Automatic RWKV state recovery and the manual **Build Cache** action in Deck
+Options replay answers and persist recurrent state without computing a pre-answer
+prediction for every historical review. **Build Cache** rebuilds only RWKV state;
+it does not clear or recompute the historical FSRS and RWKV calibration tables.
+The progress dialog therefore has one state-replay pass. Input preparation,
+recovery checkpoints, persistence and the following queue-count refresh still add
+work beyond a standalone native state-reconstruction benchmark.
+Replay logs report the active model and storage precision.
+
+**Prepare Calibration Data** is the separate manual refresh for historical graph
+data. It clears both derived prediction tables, rebuilds FSRS predictions and
+validation folds for every deck preset using its current parameters, history
+cutoff, relearning steps, same-day optimization and scheduling-penalty settings,
+then replays RWKV pre-answer queries aligned to those folds. The active RWKV
+review state is snapshotted and restored rather than rebuilt as a persistent
+cache. A failed or interrupted preparation can leave partial derived predictions;
+rerun **Prepare Calibration Data** to complete it. Neither maintenance action
+reschedules cards or changes review history. Live review answers still write their
+pre-answer prediction with source `rwkv_review` and role `post_optimization`.
 
 Historical calibration predictions live in the profile-local
 `search_stats_rwkv_review_retrievability` table, attached from
@@ -1096,9 +1269,11 @@ derived cache, separate from the recurrent state database and the
 short-lived in-memory query memo. Rows are keyed by `revlog_id`, `sample_role`,
 `fold_index`, and `source`.
 
-The deck options action **Calculate Calibration Graph Data** replays historical
-queries only for this derived table. When role-aware FSRS calibration data is
-available, RWKV copies the active FSRS `validation_fold` review ids and fold
+After FSRS preparation, **Prepare Calibration Data** replays historical RWKV
+queries into this derived table. The synchronous
+`recompute_rwkv_calibration_data()` and `ensure_rwkv_calibration_data()` APIs keep
+their existing RWKV-only behavior and reuse available FSRS validation folds.
+When role-aware FSRS calibration data is available, RWKV copies the active FSRS `validation_fold` review ids and fold
 indices into its `test_fold` rows. Other historical RWKV rows are written as
 `final_fit`, so comparison graphs evaluate both models on the same reviews.
 If FSRS validation data is unavailable, RWKV retains the chronological 70%
@@ -1167,7 +1342,7 @@ recompute, which starts a new epoch. On a 224,000-review copy the relabel took
 ## Inference Runtime
 
 Desktop RWKV inference uses Anki's embedded Rust inference-only runner and
-default RWKV checkpoint. `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
+selected bundled checkpoint (SM55 by default). `ANKI_RWKV_MODEL_PATH` overrides the embedded Rust
 weight file while keeping the embedded runner. `ANKI_RWKV_BENCHMARK_PATH` plus
 `ANKI_RWKV_MODEL_PATH` selects the legacy PyTorch-based `srs-benchmark` bridge
 for local development or retrained models.
@@ -1335,6 +1510,8 @@ serializing the warm-up snapshot, so Python-side work such as UI progress
 updates no longer stalls behind multi-second replay calls.
 
 ### RWKV Performance Investigation Notes
+
+These measurements predate SM40 and use the original width-128 model.
 
 For review-time overhead, run the following against an extracted collection
 backup, never the live profile database:

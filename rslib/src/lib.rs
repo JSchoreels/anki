@@ -35,10 +35,6 @@ pub mod prelude;
 mod progress;
 pub mod revlog;
 pub mod rwkv;
-// the shape of crate::rwkv's model
-#[path = "rwkv/shape_big.rs"]
-mod rwkv_shape;
-pub mod rwkv_small;
 pub mod scheduler;
 pub mod search;
 pub mod serde;

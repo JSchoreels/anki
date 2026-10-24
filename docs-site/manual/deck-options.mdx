@@ -304,9 +304,27 @@ With FSRS **Ascending retrievability**, **Descending retrievability**, or
 reviews** place interday learning cards before or after the other due cards.
 The selected sort order is preserved within each group. **Mix with reviews**
 keeps all due cards in the shared sorted order. This setting moves only interday
-learning cards; intraday learning cards retain their relative order with reviews,
+learning cards; by default, intraday learning cards retain their relative order with reviews,
 and new cards follow **New/Review Order**. Daily limits still determine which
 cards are available before these display priorities are applied.
+
+### Intraday Learning/Review Order
+
+With **Ascending retrievability**, **Descending retrievability**, or **Relative
+overdueness**, choose **Show before reviews**, **Mix with reviews**, or **Show
+after reviews** for due same-day learning and relearning cards. Before and After
+place those cards before or after the remaining queue, with each group keeping
+the selected sort order. Mix keeps them in the shared sorted ordering.
+Future learning steps still wait until their due time. Interday learning cards
+continue to follow **Interday Learning/Review Order**, and the remaining new and
+review cards follow **New/Review Order**. Daily-limit admission and sibling
+burying do not change.
+
+The option defaults to Mix and uses the preset of the deck you select to study. It
+syncs with that preset between supported builds. Clients that do not support the
+option carry it as extra preset data without applying it. With other review
+sort orders, due intraday learning cards already have priority. Presets with the
+earlier same-day priority toggle enabled use Show before reviews.
 
 ### Review Sort Order
 

@@ -273,10 +273,6 @@ impl CardQueues {
             .then_some(())
             .into_iter()
             .flat_map(|_| self.intraday_now_iter().map(Into::into));
-        let intraday_ahead = (!self.non_news_sorted_by_retrievability)
-            .then_some(())
-            .into_iter()
-            .flat_map(|_| self.intraday_ahead_iter().map(Into::into));
         intraday_now
             .chain(
                 self.main
@@ -284,7 +280,7 @@ impl CardQueues {
                     .filter(|entry| !self.rwkv_blocks_learning_card(entry.id))
                     .map(Into::into),
             )
-            .chain(intraday_ahead)
+            .chain(self.intraday_ahead_iter().map(Into::into))
     }
 
     /// Remove the provided card from the top of the queues and
@@ -328,7 +324,7 @@ impl CardQueues {
     /// cutoff is updated to the current time first, and any newly-due learning
     /// cards are added to the counts.
     pub(crate) fn counts(&mut self) -> Counts {
-        if self.counts.all_zero() && !self.non_news_sorted_by_retrievability {
+        if self.counts.all_zero() {
             // we discard the returned undo information in this case
             self.update_learning_cutoff_and_count();
         }
@@ -472,7 +468,20 @@ impl Collection {
                 .unwrap_or(false)
         {
             self.rwkv_offline_before_queue_build(deck.id);
-            let queues = match self.unchanged_shown_card()? {
+            // A card the fork pinned (rebuild_queued_cards_preserving_current_card)
+            // stays first; else kuma3's shown card, if unchanged since shown.
+            let pinned = self
+                .state
+                .card_queues
+                .as_ref()
+                .and_then(|queues| queues.shown_top_card);
+            let shown = match (pinned, self.state.shown_card) {
+                (Some(pinned), shown) if shown.is_none_or(|(id, _)| id != pinned) => {
+                    self.storage.get_card(pinned)?
+                }
+                _ => self.unchanged_shown_card()?,
+            };
+            let queues = match shown {
                 Some(shown) => self
                     .build_queues_with_current_card(deck.id, Some(&shown))
                     .or_else(|err| {
@@ -563,6 +572,40 @@ impl Collection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::NoteAdder;
+
+    #[test]
+    fn get_queues_keeps_pinned_card_first_when_rebuilding_for_ready_deferred_review() -> Result<()>
+    {
+        let mut col = Collection::new();
+        let first_note = NoteAdder::basic(&mut col).add(&mut col);
+        let first_card = col.storage.card_ids_of_notes(&[first_note.id])?[0];
+        let pinned_note = NoteAdder::basic(&mut col).add(&mut col);
+        let pinned_card = col.storage.card_ids_of_notes(&[pinned_note.id])?[0];
+        assert_eq!(
+            col.get_queued_cards(1, false, true)?.cards[0].card.id,
+            first_card
+        );
+
+        col.rebuild_queued_cards_preserving_current_card(pinned_card)?;
+        col.state.card_queues.as_mut().unwrap().defer_rwkv_review(
+            first_card,
+            DeferredRwkvReview {
+                required_intervening_reviews: None,
+                intervening_reviews: None,
+                eligible_at: None,
+            },
+        );
+
+        let queued = col.get_queued_cards(1, false, true)?;
+
+        assert_eq!(queued.cards[0].card.id, pinned_card);
+        assert_eq!(
+            col.state.card_queues.as_ref().unwrap().shown_top_card,
+            Some(pinned_card)
+        );
+        Ok(())
+    }
 
     #[test]
     fn deferred_rwkv_review_requires_every_guard_to_be_ready() {

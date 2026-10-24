@@ -1,0 +1,341 @@
+{
+    "source_commit": "338249e94b59f11f586135e6f73081e97901cc0d",
+    "source_zip_sha256": "9a209ba1892d0562bccfaf76dbf5ffb9a35693bc2641910abd5dab8659e1c8a6",
+    "source_files_sha256": {
+        "expertium/model/variant_model.py": "994bf33eeddc6c3171855530a40dc0694d4b4dbc5825593291167f239b935d4a",
+        "expertium/variants.py": "bbd069052f2e750855d5978df22fdb0d2c70a94b561390971140888f13613ff8",
+        "rwkv/data_processing.py": "3da4058dd7cff55765cb6c19362fadffb82fa48dab5838492ecabcc595d84c70",
+        "scripts/expertium_options.py": "352226a8106d9440c7546bb3716d094b5fc9b0a16c1f86b67845d47ca2d60242",
+        "scripts/sm11_replay_export.py": "1a9c36fb87fa82f299ee0bb4703bdb82f8a44347f566724d83779b06c6459381",
+        "scripts/state_carry_train.py": "ad5bda65de548442cf0e43ffb28e7c7d551fc77b816c4d61f38ccf98e8bfb286",
+        "docs/EXPERTIUM_CATCH_UP.md": "914e90e69ae1495c7cb4788486332ca422590f71ba1792808a78ae56ff8b406c",
+        "docs/SMALL_MODEL.md": "1f45d1b304cd6a448e00789cef810648781869ab9a9f2f14f467bb32f6881757"
+    },
+    "release_manifest_sha256": "fecac29a3f2f0010106b5bff018c651da1028a759362f89ff1a93c08949e3d76",
+    "reference_json_sha256": "24cfd9ba073f8e8093a20fd866d133ae7272e5abc959b4343ed7f2f6a0366df8",
+    "dataset_scope": "64 hashed users from the recorded 5000-user training cohort; local public original-layout Parquet files; every review count matches the run manifest, content identity to the remote training copy is not independently certified",
+    "training_sample": {
+        "users": [
+            282,
+            379,
+            495,
+            821,
+            942,
+            1029,
+            1030,
+            1149,
+            1268,
+            1338,
+            2027,
+            2166,
+            2175,
+            2429,
+            2432,
+            2811,
+            3013,
+            3217,
+            3264,
+            3464,
+            3619,
+            3660,
+            4021,
+            4053,
+            4108,
+            4419,
+            4468,
+            4478,
+            4559,
+            4570,
+            4606,
+            4644,
+            4722,
+            4857,
+            4907,
+            4918,
+            4951,
+            5239,
+            5328,
+            5447,
+            5657,
+            5691,
+            6104,
+            6166,
+            6400,
+            6458,
+            6683,
+            6808,
+            6903,
+            6933,
+            6982,
+            7044,
+            7167,
+            7213,
+            7404,
+            7454,
+            7580,
+            9158,
+            9165,
+            9186,
+            9417,
+            9738,
+            9951,
+            9996
+        ],
+        "reviews": 4552017,
+        "slices": {
+            "all_labelled_curves": {
+                "count": 4048005,
+                "next_at_most_600s": 480425,
+                "next_less_1d": 1284106,
+                "next_at_least_30d": 772779,
+                "next_at_least_365d": 56065,
+                "next_at_least_3650d": 124,
+                "next_calendar_same_day": 978495
+            },
+            "after_rapid_good_pair": {
+                "count": 72594,
+                "next_at_most_600s": 4653,
+                "next_less_1d": 35587,
+                "next_at_least_30d": 1806,
+                "next_at_least_365d": 395,
+                "next_at_least_3650d": 0,
+                "next_calendar_same_day": 9160
+            },
+            "after_globally_adjacent_rapid_good_pair": {
+                "count": 1102,
+                "next_at_most_600s": 39,
+                "next_less_1d": 494,
+                "next_at_least_30d": 21,
+                "next_at_least_365d": 6,
+                "next_at_least_3650d": 0,
+                "next_calendar_same_day": 68
+            }
+        },
+        "bursts": {
+            "card_rapid_good": {
+                "length_at_least_2": {
+                    "reviews": 78281,
+                    "with_next_label": 72594,
+                    "with_next_label_at_least_365d": 395,
+                    "following_anchor_gap_at_least_30d": 476
+                },
+                "length_at_least_3": {
+                    "reviews": 4089,
+                    "with_next_label": 4019,
+                    "with_next_label_at_least_365d": 0,
+                    "following_anchor_gap_at_least_30d": 0
+                },
+                "length_at_least_11": {
+                    "reviews": 0,
+                    "with_next_label": 0,
+                    "with_next_label_at_least_365d": 0,
+                    "following_anchor_gap_at_least_30d": 0
+                }
+            },
+            "globally_adjacent_rapid_good": {
+                "length_at_least_2": {
+                    "reviews": 1161,
+                    "with_next_label": 1102,
+                    "with_next_label_at_least_365d": 6,
+                    "following_anchor_gap_at_least_30d": 7
+                },
+                "length_at_least_3": {
+                    "reviews": 29,
+                    "with_next_label": 28,
+                    "with_next_label_at_least_365d": 0,
+                    "following_anchor_gap_at_least_30d": 0
+                },
+                "length_at_least_11": {
+                    "reviews": 0,
+                    "with_next_label": 0,
+                    "with_next_label_at_least_365d": 0,
+                    "following_anchor_gap_at_least_30d": 0
+                }
+            }
+        }
+    },
+    "identifiability_example": {
+        "case": 3,
+        "stage": "first extra Good, three-second branch",
+        "hypothetical_observation_seconds": 86400.0,
+        "description": "Change only the slow component scale/decay while preserving its value at one hypothetical one-day label. This is a per-output identifiability construction, not a retrained network or an observed future outcome.",
+        "equivalent_curves": [
+            {
+                "scale_factor": 0.01,
+                "scale_days": 7.005372851643485,
+                "decay": 0.0005142931373055163,
+                "probability_at_one_day": 0.8662834791290006,
+                "good_bce": 0.14354308087968545,
+                "mixed_bce_example_target_0_9": 0.33039209637011424,
+                "interval_50_days_uncapped": 884836251.2146282,
+                "probability_at_36500_days": 0.5569930538693916,
+                "weights": [
+                    0.1151752844452858,
+                    0.38967475295066833,
+                    0.49514997005462646
+                ],
+                "scales_raw": [
+                    2.508512020111084,
+                    12.2477388381958,
+                    13.313420359666205
+                ],
+                "decays_raw": [
+                    -1.102642297744751,
+                    -1.6714545488357544,
+                    -7.572717149029935
+                ]
+            },
+            {
+                "scale_factor": 0.1,
+                "scale_days": 70.05372851643486,
+                "decay": 0.004841666523791476,
+                "probability_at_one_day": 0.8662834791290006,
+                "good_bce": 0.14354308087968545,
+                "mixed_bce_example_target_0_9": 0.33039209637011424,
+                "interval_50_days_uncapped": 2353993.6569867227,
+                "probability_at_36500_days": 0.5443910189727893,
+                "weights": [
+                    0.1151752844452858,
+                    0.38967475295066833,
+                    0.49514997005462646
+                ],
+                "scales_raw": [
+                    2.508512020111084,
+                    12.2477388381958,
+                    15.616005452660252
+                ],
+                "decays_raw": [
+                    -1.102642297744751,
+                    -1.6714545488357544,
+                    -5.330496294421778
+                ]
+            },
+            {
+                "scale_factor": 1.0,
+                "scale_days": 700.5372851643485,
+                "decay": 0.04810865527343349,
+                "probability_at_one_day": 0.8662834791290006,
+                "good_bce": 0.14354308087968545,
+                "mixed_bce_example_target_0_9": 0.33039209637011424,
+                "interval_50_days_uncapped": 15936.43229816648,
+                "probability_at_36500_days": 0.47303862016591464,
+                "weights": [
+                    0.1151752844452858,
+                    0.38967475295066833,
+                    0.49514997005462646
+                ],
+                "scales_raw": [
+                    2.508512020111084,
+                    12.2477388381958,
+                    17.918590545654297
+                ],
+                "decays_raw": [
+                    -1.102642297744751,
+                    -1.6714545488357544,
+                    -3.0342931747436523
+                ]
+            },
+            {
+                "scale_factor": 10.0,
+                "scale_days": 7005.372851643485,
+                "decay": 0.48077782112365086,
+                "probability_at_one_day": 0.8662834791290006,
+                "good_bce": 0.14354308087968545,
+                "mixed_bce_example_target_0_9": 0.33039209637011424,
+                "interval_50_days_uncapped": 3802.9867393461423,
+                "probability_at_36500_days": 0.26981395206227227,
+                "weights": [
+                    0.1151752844452858,
+                    0.38967475295066833,
+                    0.49514997005462646
+                ],
+                "scales_raw": [
+                    2.508512020111084,
+                    12.2477388381958,
+                    20.221175638648344
+                ],
+                "decays_raw": [
+                    -1.102642297744751,
+                    -1.6714545488357544,
+                    -0.7323500259356625
+                ]
+            },
+            {
+                "scale_factor": 100.0,
+                "scale_days": 70053.72851643486,
+                "decay": 4.807469406947737,
+                "probability_at_one_day": 0.8662834791290006,
+                "good_bce": 0.14354308087968545,
+                "mixed_bce_example_target_0_9": 0.33039209637011424,
+                "interval_50_days_uncapped": 3222.958603048508,
+                "probability_at_36500_days": 0.12996007973108675,
+                "weights": [
+                    0.1151752844452858,
+                    0.38967475295066833,
+                    0.49514997005462646
+                ],
+                "scales_raw": [
+                    2.508512020111084,
+                    12.2477388381958,
+                    22.523760731642387
+                ],
+                "decays_raw": [
+                    -1.102642297744751,
+                    -1.6714545488357544,
+                    1.5701708348511347
+                ]
+            }
+        ]
+    },
+    "slow_log_decay_sensitivity": [
+        {
+            "time_seconds": 3.0,
+            "probability": 0.9919313471168829,
+            "dp_d_slow_log_decay": -1.1796119636642288e-09
+        },
+        {
+            "time_seconds": 600.0,
+            "probability": 0.916069103192039,
+            "dp_d_slow_log_decay": -2.3613000443845067e-07
+        },
+        {
+            "time_seconds": 86400.0,
+            "probability": 0.8662834791290006,
+            "dp_d_slow_log_decay": -3.3976392810330935e-05
+        },
+        {
+            "time_seconds": 2592000.0,
+            "probability": 0.7352534021935868,
+            "dp_d_slow_log_decay": -0.0009968406716742706
+        },
+        {
+            "time_seconds": 31536000.0,
+            "probability": 0.637627710730253,
+            "dp_d_slow_log_decay": -0.009790447009772052
+        }
+    ],
+    "verification": {
+        "users": 64,
+        "count_fields": 2880,
+        "curves": 5,
+        "status": "pass",
+        "repository_checks": {
+            "initial_command": "RELEASE=1 just check",
+            "initial_result": "failed: sync::http_client::io_monitor::test::fails_when_data_stops_moving",
+            "isolated_test": "pass: cargo test -p anki --release --locked --lib sync::http_client::io_monitor::test::fails_when_data_stops_moving -- --exact",
+            "final_command": "RELEASE=1 NEXTEST_TEST_THREADS=2 just check",
+            "final_result": "pass",
+            "logs_sha256": {
+                "just-check.log": "e161e3aa3743c2298e24e96947d143f0fd7ed409082d4fd648358b53307547a5",
+                "sync-timeout-cargo-test.log": "2ae614552e5c8223822054cd0f6c5ab8d74cc5bce7a5a909f346875c59007393",
+                "just-check-retry.log": "3ef5d5b60e18b8ce3db2b5614d077c5faf3ef43e7aad2dc35830b8fcb0a38bc3"
+            }
+        }
+    },
+    "audit_scripts_sha256": {
+        "/private/tmp/sm40_training_audit.py": "54bc1fd1cdad32219a58b8b446aa20e35985ec5c5734d86ceb1356a776e7b618",
+        "/private/tmp/sm40_training_audit_verify.py": "f0d673f2397ccc9ba1e6426a5b4a4c6e094d5bf2949936309cf9633c823f333b",
+        "/private/tmp/sm40_training_plot.py": "84e19e4053e810bbe9b9957d4301d02978982ee8d1b1cef5f661f75b27ebd16a"
+    },
+    "per_user_public_data_hashes_sha256": "a96372afd1f9f0258dfdbdd2f0d9373a98433644042cbdd81743cad8f4156d37"
+}
