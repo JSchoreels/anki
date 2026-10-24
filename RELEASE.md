@@ -10,7 +10,7 @@ repeated here unless they materially affect a fork feature.
 - Add user-visible fork changes to **Unreleased** in the same commit as the
   change.
 - Split each release into **User facing changes** and **Technical details**.
-  Group **User facing changes** under **New Features** and **Fixes**; keep historical model benchmarks and implementation details in **Technical details**.
+  Group **User facing changes** under **New Features** and **Fixes**; keep storage optimizations, historical model benchmarks and implementation details in **Technical details**.
   Describe practical outcomes in the first section. Put implementation context,
   upstream references, compatibility notes, measurements, and verification in
   the second section.
@@ -46,8 +46,6 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 - **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
 
 - **Automatic updates for portable builds.** Portable Anki now offers automatic notifications and Tools → Check for Updates. Accepting downloads and prepares the matching archive, closes Anki normally, replaces the application, and restarts it with the existing data folder in place. Failed installation or early bootstrap restores the previous application. Older portable builds need one manual upgrade to gain this flow.
-
-- **Store RWKV cards at INT4 while keeping notes at INT8.** RWKV defaults to “int4 cards + int8 notes” storage for all five bundled models when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved; the storage selector is now hidden.
 
 - **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
 
@@ -92,6 +90,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 - **Updated security dependencies.** This build includes patched HTML sanitization, asynchronous I/O, TLS and ZIP libraries, addressing newly reported CSS URL filtering, Unix file-descriptor handling, TLS handling, distrusted certificate authorities and archive extraction issues.
 
 ### Technical details
+
+- **Mixed RWKV storage and cache size:** RWKV defaults to “int4 cards + int8 notes” storage for all five bundled models when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved; the storage selector is now hidden.
 
 - **Earlier SM40 measurements:** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 
