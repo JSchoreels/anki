@@ -1167,6 +1167,13 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<anki_proto::scheduler::RwkvOfflineForecastResponse> {
         Collection::rwkv_offline_forecast(self, input)
     }
+
+    fn rwkv_offline_curve_reschedule(
+        &mut self,
+        input: anki_proto::decks::DeckId,
+    ) -> Result<anki_proto::collection::OpChangesWithCount> {
+        Collection::rwkv_offline_curve_reschedule(self, input.did.into()).map(Into::into)
+    }
 }
 
 fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: bool) -> bool {

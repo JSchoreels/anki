@@ -1080,7 +1080,15 @@ impl Collection {
             }
             input.target_retentions = targets.map(Some);
             input.enforce_grade_order = enforce_grade_order;
+            // KUMA3_CURVE_DEBUG: the query and its answers, to compare with
+            // the desktop's (kuma3_curve_plan.md)
+            let debug = std::env::var_os("KUMA3_CURVE_DEBUG")
+                .is_some()
+                .then(|| format!("{input:?}"));
             let (intervals, s90s) = runtime.inference.curve_from_warm_up(input)?;
+            if let Some(input) = debug {
+                eprintln!("CURVEDEBUG {input} intervals {intervals:?} s90s {s90s:?}");
+            }
             if runtime.curve_s90.len() >= 64 {
                 runtime.curve_s90.clear(); // only the cards on screen matter
             }
@@ -1099,6 +1107,72 @@ impl Collection {
         rating_index: usize,
     ) -> Option<f32> {
         self.state.rwkv_offline.as_ref()?.curve_s90.get(&card_id)?[rating_index]
+    }
+
+    /// "Reschedule Cards with RWKV-Curve Intervals" without the desktop's
+    /// Python (`reschedule_rwkv_review_cards` in rwkv_scheduler.py): each
+    /// review card under `deck_id` whose preset uses RWKV-Curve gets the
+    /// whole-day interval where its current curve meets its target, counted
+    /// from its last review, and that curve's S90 as stability. As on the
+    /// desktop, no fuzz or load balancing.
+    pub(crate) fn rwkv_offline_curve_reschedule(
+        &mut self,
+        deck_id: DeckId,
+    ) -> Result<OpOutput<usize>> {
+        let mut items = None;
+        self.with_rwkv_offline_runtime("curve reschedule", |col, runtime| {
+            col.rwkv_offline_sync_history(runtime)?;
+            let decks = col.storage.get_decks_map()?;
+            let configs = col.storage.get_deck_config_map()?;
+            let uses_curve = |deck: i64| {
+                decks
+                    .get(&DeckId(deck))
+                    .and_then(|deck| deck.config_id())
+                    .and_then(|id| configs.get(&id))
+                    .is_some_and(|config| config.inner.rwkv_review_enabled)
+            };
+            let rows: Vec<_> = col
+                .rwkv_review_input_rows_for_deck_review_queue(
+                    RwkvReviewInputRowsForDeckReviewQueueRequest {
+                        deck_id: deck_id.0,
+                        include_new_cards: false,
+                        ..Default::default()
+                    },
+                )?
+                .rows
+                .into_iter()
+                .filter(|row| uses_curve(row.deck_id))
+                .collect();
+            // ponytail: the preset's desired retention, not dynamic DR (the
+            // desktop resolves that per card); add it if a Curve user needs it
+            let mut found = Vec::with_capacity(rows.len());
+            for rows in rows.chunks(DEFAULT_REVIEW_BATCH_SIZE as usize) {
+                let current = runtime
+                    .inference
+                    .curve_current_many(rows.iter().map(query_input).collect())?;
+                for (row, (interval, s90)) in rows.iter().zip(current) {
+                    if let (Some(interval_days @ 1..), Some(s90), Some(elapsed_days)) = (
+                        interval,
+                        s90.filter(|s90| s90.is_finite() && *s90 > 0.0),
+                        row.current_elapsed_days,
+                    ) {
+                        found.push(RwkvReviewRescheduleItem {
+                            card_id: CardId(row.card_id),
+                            interval_days,
+                            elapsed_days,
+                            s90,
+                            target_retention: valid_probability(row.target_retention),
+                        });
+                    }
+                }
+            }
+            items = Some(found);
+            Ok(())
+        });
+        let Some(items) = items else {
+            invalid_input!("RWKV is still getting ready: try again in a moment")
+        };
+        self.apply_rwkv_review_reschedule(items)
     }
 
     /// Called before deck counts are computed.

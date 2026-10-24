@@ -212,6 +212,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cards = args.get(6).map_or(Ok(10), |n| n.parse())?;
         return curve_check(col, deck, now, cards);
     }
+    if args.get(4).map(String::as_str) == Some("curve-reschedule") {
+        return curve_reschedule_check(col, args[5].parse()?);
+    }
     if args.get(4).map(String::as_str) == Some("answer") {
         answer_check(col, &args[1], &args[2], now)?;
     }
@@ -591,26 +594,8 @@ fn curve_check(
     cards: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use anki::services::CardsService;
-    use anki::services::DeckConfigService;
-    let deck_id = anki::decks::DeckId(deck);
-    col.set_current_deck(deck_id)?;
-    let dcid = col.get_deck(deck_id)?.unwrap().config_id().unwrap().0;
-    let set_curve = |col: &mut Col, on: bool| -> Result<(), Box<dyn std::error::Error>> {
-        let json = DeckConfigService::get_deck_config_legacy(
-            col,
-            anki_proto::deck_config::DeckConfigId { dcid },
-        )?;
-        let mut config: serde_json::Value = serde_json::from_slice(&json.json)?;
-        config["rwkvReviewEnabled"] = on.into();
-        config["rwkvReviewInstantOrderEnabled"] = false.into();
-        DeckConfigService::add_or_update_deck_config_legacy(
-            col,
-            anki_proto::generic::Json {
-                json: serde_json::to_vec(&config)?,
-            },
-        )?;
-        Ok(())
-    };
+    col.set_current_deck(anki::decks::DeckId(deck))?;
+    let set_curve = |col: &mut Col, on: bool| use_curve(col, deck, on);
     let queued = SchedulerService::get_queued_cards(
         &mut col,
         anki_proto::scheduler::GetQueuedCardsRequest {
@@ -660,6 +645,75 @@ fn curve_check(
     let curve = stability(&mut col, true)?;
     let fsrs = stability(&mut col, false)?;
     println!("CURVE Good on {cid}: stability FSRS {fsrs:.3} d, Curve (S90) {curve:.3} d");
+    Ok(())
+}
+
+/// Switches `deck`'s preset to RWKV-Curve (or back to FSRS) in this copy.
+fn use_curve(col: &mut Col, deck: i64, on: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use anki::services::DeckConfigService;
+    let dcid = col
+        .get_deck(anki::decks::DeckId(deck))?
+        .unwrap()
+        .config_id()
+        .unwrap()
+        .0;
+    let json = DeckConfigService::get_deck_config_legacy(
+        col,
+        anki_proto::deck_config::DeckConfigId { dcid },
+    )?;
+    let mut config: serde_json::Value = serde_json::from_slice(&json.json)?;
+    config["rwkvReviewEnabled"] = on.into();
+    config["rwkvReviewInstantOrderEnabled"] = false.into();
+    DeckConfigService::add_or_update_deck_config_legacy(
+        col,
+        anki_proto::generic::Json {
+            json: serde_json::to_vec(&config)?,
+        },
+    )?;
+    Ok(())
+}
+
+/// "Reschedule Cards with RWKV-Curve Intervals" on `deck` (switched to
+/// Curve in this copy): how many cards changed, and a few of them before and
+/// after (interval, due day, stability).
+fn curve_reschedule_check(mut col: Col, deck: i64) -> Result<(), Box<dyn std::error::Error>> {
+    use anki::services::CardsService;
+    use_curve(&mut col, deck, true)?;
+    let ids: Vec<i64> = col
+        .search_cards(
+            &format!("did:{deck} is:review -is:learn -is:suspended"),
+            anki::search::SortMode::NoOrder,
+        )?
+        .into_iter()
+        .take(6)
+        .map(|cid| cid.0)
+        .collect();
+    let show = |col: &mut Col, cid: i64| -> Result<String, Box<dyn std::error::Error>> {
+        let card = CardsService::get_card(col, anki_proto::cards::CardId { cid })?;
+        Ok(format!(
+            "ivl {} due {} stability {:.2}",
+            card.interval,
+            card.due,
+            card.memory_state.map_or(0.0, |m| m.stability)
+        ))
+    };
+    let before: Vec<_> = ids
+        .iter()
+        .map(|&cid| show(&mut col, cid))
+        .collect::<Result<_, _>>()?;
+    let start = Instant::now();
+    let changed = SchedulerService::rwkv_offline_curve_reschedule(
+        &mut col,
+        anki_proto::decks::DeckId { did: deck },
+    )?;
+    println!(
+        "RESCHEDULE {} cards in {} ms",
+        changed.count,
+        start.elapsed().as_millis()
+    );
+    for (cid, before) in ids.iter().zip(before) {
+        println!("RESCHEDULE {cid}: {before} -> {}", show(&mut col, *cid)?);
+    }
     Ok(())
 }
 

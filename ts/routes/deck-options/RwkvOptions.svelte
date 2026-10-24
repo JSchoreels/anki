@@ -3,6 +3,7 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
+    import { OpChangesWithCount } from "@generated/anki/collection_pb";
     import { DeckId } from "@generated/anki/decks_pb";
     import { UpdateDeckConfigsMode } from "@generated/anki/deck_config_pb";
     import { Empty } from "@generated/anki/generic_pb";
@@ -176,15 +177,30 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
+    // Phones: the backend reschedules itself (offline.rs rwkv_offline_curve_reschedule).
+    let curveRescheduleStatus = "";
+
     async function rescheduleRwkvReviewCards(): Promise<void> {
         reschedulingRwkvReviewCards = true;
+        curveRescheduleStatus = "";
         try {
             await saveRwkvDeckOptions();
-            await postProto(
-                "rescheduleRwkvReviewCards",
-                new DeckId({ did: state.getTargetDeckId() }),
-                Empty,
-            );
+            const deck = new DeckId({ did: state.getTargetDeckId() });
+            if (isDesktop()) {
+                await postProto("rescheduleRwkvReviewCards", deck, Empty);
+            } else {
+                const changes = await postProto(
+                    "rwkvOfflineCurveReschedule",
+                    deck,
+                    OpChangesWithCount,
+                );
+                curveRescheduleStatus = `Rescheduled ${changes.count.toLocaleString()} cards.`;
+            }
+        } catch (error) {
+            curveRescheduleStatus = `${error}`;
+            if (isDesktop()) {
+                throw error;
+            }
         } finally {
             reschedulingRwkvReviewCards = false;
         }
@@ -304,18 +320,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     </SwitchRow>
                 </Item>
 
-                {#if isDesktop()}
-                    <button
-                        class="btn btn-outline-primary"
-                        disabled={rwkvActionInProgress}
-                        on:click={() => rescheduleRwkvReviewCards()}
-                    >
-                        {#if reschedulingRwkvReviewCards}
-                            Rescheduling Cards with RWKV-Curve Intervals...
-                        {:else}
-                            Reschedule Cards with RWKV-Curve Intervals
-                        {/if}
-                    </button>
+                <button
+                    class="btn btn-outline-primary"
+                    disabled={rwkvActionInProgress}
+                    on:click={() => rescheduleRwkvReviewCards()}
+                >
+                    {#if reschedulingRwkvReviewCards}
+                        Rescheduling Cards with RWKV-Curve Intervals...
+                    {:else}
+                        Reschedule Cards with RWKV-Curve Intervals
+                    {/if}
+                </button>
+                {#if curveRescheduleStatus}
+                    <p class="mt-2 mb-0">{curveRescheduleStatus}</p>
                 {/if}
             {/if}
 

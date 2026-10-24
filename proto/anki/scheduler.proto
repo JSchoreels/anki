@@ -167,6 +167,11 @@ service SchedulerService {
   // now" (kuma3's version of the desktop rwkv_forecast add-on).
   rpc RwkvOfflineForecast(RwkvOfflineForecastRequest)
       returns (RwkvOfflineForecastResponse);
+  // "Reschedule Cards with RWKV-Curve Intervals" for clients without the
+  // desktop's Python: the deck's review cards in Curve presets get their
+  // current curve's interval and S90 (as ApplyRwkvReviewReschedule).
+  rpc RwkvOfflineCurveReschedule(decks.DeckId)
+      returns (collection.OpChangesWithCount);
   // Deletes calibration rows that a completed RWKV calibration recompute
   // superseded.
   rpc PruneRwkvReviewRetrievabilityCacheRows(

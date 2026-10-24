@@ -177,6 +177,47 @@ impl Engine {
         .unwrap_or_default())
     }
 
+    /// RWKV-Curve's current curve of each card from its warm-up state: the
+    /// whole-day interval where it meets the input's Good target, and its
+    /// S90 (what "Reschedule Cards with RWKV-Curve Intervals" applies).
+    pub(super) fn curve_current_many(
+        &mut self,
+        inputs: Vec<ReviewInput>,
+    ) -> io::Result<Vec<(Option<u32>, Option<f32>)>> {
+        // ponytail: predict_many runs the 4 answer passes too; a query-only
+        // variant if a big deck is slow to reschedule
+        Ok(match self {
+            Self::Big(engine) => {
+                let requests = inputs
+                    .into_iter()
+                    .map(|input| {
+                        let state = engine.warm_up_state(&input);
+                        rwkv::ReviewPredictionRequest { input, state }
+                    })
+                    .collect();
+                engine
+                    .predict_many(requests)?
+                    .into_iter()
+                    .map(|o| (o.current_interval, o.current_s90))
+                    .collect()
+            }
+            Self::Small(engine) => {
+                let requests = small_inputs(inputs)
+                    .into_iter()
+                    .map(|input| {
+                        let state = engine.warm_up_state(&input);
+                        rwkv_small::ReviewPredictionRequest { input, state }
+                    })
+                    .collect();
+                engine
+                    .predict_many(requests)?
+                    .into_iter()
+                    .map(|o| (o.current_interval, o.current_s90))
+                    .collect()
+            }
+        })
+    }
+
     pub(super) fn predict_retrievability_many_from_warm_up(
         &mut self,
         inputs: Vec<ReviewInput>,
