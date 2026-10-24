@@ -349,15 +349,16 @@ deck-config-rwkv-model = Prediction model
 deck-config-rwkv-model-legacy = Legacy - Bigger Model
 deck-config-rwkv-model-sm40 = SM40 — smaller model
 deck-config-rwkv-model-sm36 = SM36 Muon
-deck-config-rwkv-model-sm55 = New - Smaller Model
+deck-config-rwkv-model-sm55 = SM55 — previous smaller model
+deck-config-rwkv-model-sm56 = New - Smaller Model
 deck-config-rwkv-use-smaller-model = Use Smaller Model
 deck-config-rwkv-model-help = About prediction models
 deck-config-rwkv-model-off = Off — Legacy - Bigger Model
 deck-config-rwkv-model-on = On — New - Smaller Model
-deck-config-rwkv-model-smaller-description = SM55, the default smaller model.
+deck-config-rwkv-model-smaller-description = SM56, the default smaller model.
 deck-config-rwkv-model-bigger-description = The original model. Uses more memory and takes longer.
-deck-config-rwkv-model-migration = Previously saved SM40 and SM36 choices switch to SM55 when you save.
-deck-config-rwkv-model-explanation = New - Smaller Model (SM55) is the default; explicitly saved model selections are preserved.
+deck-config-rwkv-model-migration = Previously saved SM40, SM36 and SM55 choices switch to SM56 when you save.
+deck-config-rwkv-model-explanation = New - Smaller Model (SM56) is the default. Saved Legacy choices are preserved; older small models switch to SM56 on Save.
 # Preserve the links and URL variables.
 deck-config-rwkv-model-results = Results: <a href="{ $factory }">Model Factory results</a> · <a href="{ $backup }">Matched backup comparison</a>
 deck-config-rwkv-f32 = f32 — full precision fallback

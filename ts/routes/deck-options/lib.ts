@@ -123,7 +123,7 @@ export class DeckOptionsState {
         this.currentDeck = data.currentDeck!;
         this.rwkvProfileSettings = writable(
             data.rwkvProfileSettings ?? new RwkvProfileSettings({
-                model: "sm55",
+                model: "sm56",
                 statePrecision: "cards_int4_notes_int8",
             }),
         );
@@ -394,9 +394,9 @@ export class DeckOptionsState {
         const rwkvProfileSettings = new RwkvProfileSettings(get(this.rwkvProfileSettings));
         if (
             mode !== UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS
-            && (rwkvProfileSettings.model === "sm40" || rwkvProfileSettings.model === "sm36")
+            && ["sm40", "sm36", "sm55"].includes(rwkvProfileSettings.model)
         ) {
-            rwkvProfileSettings.model = "sm55";
+            rwkvProfileSettings.model = "sm56";
         }
         return {
             targetDeckId: this.targetDeckId,

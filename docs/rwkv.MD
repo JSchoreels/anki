@@ -65,24 +65,24 @@ it is turned off again.
 
 Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
 local profile. The original Legacy
-model and the 331,511-parameter SM40, SM36 Muon and SM55 models are bundled. Only the
+model and the 331,511-parameter SM40, SM36 Muon, SM55 and SM56 models are bundled. Only the
 selected model and its state are loaded.
 
-The switch is on by default and selects **New - Smaller Model** (SM55) when on
+The switch is on by default and selects **New - Smaller Model** (SM56) when on
 and **Legacy - Bigger Model** when off. An explicitly saved Legacy selection
-loads with the switch off. SM40 and SM36 are no longer offered in the UI.
+loads with the switch off. SM40, SM36 and SM55 are no longer offered in the UI.
 The adjacent help button explains both choices and their profile-wide scope;
 model names are shown in that help entry instead of a separate status line.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
-and the matched four-model backup comparison, which uses f32 compute and mixed
+and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36` and `sm55` as supported
-values. Missing or unsupported values resolve to SM55 in existing and new profiles.
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55` and `sm56` as supported
+values. Missing or unsupported values resolve to SM56 in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40` and `sm36` choices switch to `sm55`; `legacy` and
-`sm55` are preserved. The older models remain supported by the runtime. Profile
-creation explicitly stores `sm55`. Neither model choice nor state precision is synced.
+Deck Options save, older `sm40`, `sm36` and `sm55` choices switch to `sm56`; `legacy` and
+`sm56` are preserved. The older models remain supported by the runtime. Profile
+creation explicitly stores `sm56`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
 changes; closing and discarding leaves both profile keys unchanged.
@@ -98,14 +98,16 @@ does not rewrite collection data or existing scheduling dates.
 Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
-remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36 and
-SM55 weights and metadata are under `qt/aqt/rwkv_inference/sm36/` and
-`qt/aqt/rwkv_inference/sm55/`. Their architecture exports are byte-identical to
+remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55 and
+SM56 weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
+`qt/aqt/rwkv_inference/sm55/` and `qt/aqt/rwkv_inference/sm56/`. Their architecture exports are byte-identical to
 SM40's. SM55 retains Muon and extends the final decay from 5,000 training users
-to 8,000; these checkpoints change weights without changing feature construction,
+to 8,000. SM56 also trains its ten base epochs on all 8,000 users before the
+8,000-user Muon decay; these checkpoints change weights without changing feature construction,
 recurrent equations, curve evaluation or state encoding. The
-[SM36 integration report](rwkv-sm36-2026-10-22.MD) and
-[SM55 integration report](rwkv-sm55-2026-10-22.MD) record package provenance,
+[SM36 integration report](rwkv-sm36-2026-10-22.MD),
+[SM55 integration report](rwkv-sm55-2026-10-22.MD) and
+[SM56 integration report](rwkv-sm56-2026-10-24.MD) record package provenance,
 reference/native parity and the scope of the upstream quality evidence. The
 [four-model backup comparison](rwkv-four-model-quality-2026-10-22.MD) scores all
 four checkpoints on identical retained reviews with f32 compute weights and the
@@ -118,12 +120,12 @@ The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for bot
 fixed architectures and dispatches at its public operation boundary. Tensor loops
 retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; all four models are available at runtime in
-either build. SM40, SM36 and SM55 share the small architecture's specialization;
+Legacy for those comparisons; all five models are available at runtime in
+either build. SM40, SM36, SM55 and SM56 share the small architecture's specialization;
 only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40, SM36 and SM55 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36, SM55 and SM56 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,

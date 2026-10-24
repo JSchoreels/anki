@@ -21268,7 +21268,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "device": "cpu",
             "dtype": "float",
             "state_precision": "cards_int4_notes_int8",
-            "model": "sm55",
+            "model": "sm56",
         }
     ]
 
@@ -22435,7 +22435,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "device": "cpu",
             "dtype": "float",
             "state_precision": "cards_int4_notes_int8",
-            "model": "sm55",
+            "model": "sm56",
         }
     ]
 
@@ -22509,7 +22509,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "device": "mps",
             "dtype": "bfloat16",
             "state_precision": "cards_int4_notes_int8",
-            "model": "sm55",
+            "model": "sm56",
         }
     ]
 
