@@ -33,23 +33,56 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+### SM56: a new small RWKV model
+
+SM56 is the new default small RWKV model in this release: **331,511 parameters, 8.3× fewer than the big model**, with both RWKV-Curve and RWKV-Instant. Its LogLoss is within **0.5% of the big model on 723 held-out users**; Legacy remains available.
+
+**Matched benchmark: 723 held-out users from the 732-user standard set. Lower LogLoss is better.**
+
+| Model                      |        Curve LogLoss |      Instant LogLoss |
+| -------------------------- | -------------------: | -------------------: |
+| Big model (same 723 users) |              0.30139 |              0.27786 |
+| **SM56 small model**       | **0.30242 (+0.34%)** | **0.27917 (+0.47%)** |
+
+Relative percentages are versus the big model on those same 723 users, as reported upstream. These results use INT8 weights and INT8 card/note state (w8+s8). Desktop Anki keeps f32 weights and your saved state precision; the table does not measure every desktop precision mode.
+
+[Model Factory: results and comparisons](https://jschoreels.github.io/anki-rwkv/factory.html) · [anki-rwkv project](https://github.com/JSchoreels/anki-rwkv) · [SM56 upstream release](https://github.com/JSchoreels/anki-rwkv/releases/tag/small-model-sm56-2026-10-24)
+
 Changes since the last normal release, [build 102](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.102). The application version remains `26.09.3+fsrs7`.
 
 ### User facing changes
 
 #### New Features
 
-- **SM56 is the default small RWKV model, with all four state-storage modes.** SM56 powers both RWKV-Instant and RWKV-Curve with f32, INT8, INT4, or mixed INT4 cards + INT8 notes (the default). Saved storage precision is preserved; weights and computation remain f32. On the upstream matched 723-user comparison, Curve / Instant LogLoss is 0.148% / 0.061% lower than SM55, within 0.34% / 0.47% of the big model. These many-user figures use upstream INT8 weights and INT8 states, rather than evaluating each desktop precision. Turn on “Use Smaller Model” in Deck Options → RWKV → Advanced, save and reopen the profile to switch to SM56; turning it off keeps Legacy available.
+- **SM56 is the default small RWKV model.**
+  - Powers both RWKV-Instant and RWKV-Curve, with f32, INT8, INT4, or mixed INT4 cards + INT8 notes (the default).
+  - Preserves saved storage precision; weights and computation remain f32.
+  - On the upstream matched 723-user benchmark, Curve / Instant LogLoss is **0.148% / 0.061% lower than SM55**. The comparison uses INT8 weights and states, as in the table above.
+  - In Deck Options → RWKV → Advanced, turn on **Use Smaller Model** for SM56 or turn it off for Legacy.
 
-- **Simpler RWKV Deck Options.** A collapsed Advanced section now groups the “Use Smaller Model” switch, approximate queue updates, queue refresh frequency and comparison controls. The switch is on by default for SM56; turning it off selects Legacy. A compact legend directly below the switch explains both models and links to the Model Factory results and matched backup comparison, replacing the help button and separate model-name line. Instant descriptions use tighter spacing, the minimum-reviews row aligns with the other controls, and the sorting recommendation line is removed. Storage precision is hidden and preserved. Previously saved SM40, SM36 or SM55 choices become SM56 after a successful Deck Options save; discarding leaves them unchanged.
+- **Simpler RWKV Deck Options.**
+  - A collapsed **Advanced** section groups the model switch, approximate queue updates, queue refresh frequency and comparison controls.
+  - A compact legend below the model switch explains both models and links to the Model Factory results and matched backup comparison.
+  - Tighter Instant descriptions and an aligned minimum-reviews row reduce clutter. The sorting recommendation is removed; storage precision is hidden and preserved.
+  - A successful Save upgrades previously selected SM40, SM36 or SM55 to SM56. Discard leaves the saved model unchanged.
 
-- **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
+- **Choose when due same-day learning appears.**
+  - Deck Options → Display Order offers **Show before reviews**, **Mix with reviews**, or **Show after reviews**.
+  - Before and After move due learning/relearning cards as a group, preserving retrievability or Relative Overdueness sorting within each group.
+  - Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
 
-- **Automatic updates for portable builds.** Portable Anki now offers automatic notifications and Tools → Check for Updates. Accepting downloads and prepares the matching archive, closes Anki normally, replaces the application, and restarts it with the existing data folder in place. Failed installation or early bootstrap restores the previous application. Older portable builds need one manual upgrade to gain this flow.
+- **Automatic updates for portable builds.**
+  - Receive automatic update notifications or use **Tools → Check for Updates**.
+  - Accept an update to download the matching archive, close Anki, replace the application and restart with the existing data folder.
+  - Failed installation or early startup restores the previous application. Older portable builds need one manual upgrade to gain this flow.
 
-- **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
+- **Separate RWKV state rebuilding from calibration preparation.**
+  - **Build Cache** rebuilds review state only, avoiding a second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuilding.
+  - **Prepare Calibration Data** refreshes both models’ historical predictions and validation folds while preserving the active RWKV review state.
 
-- **Choose the RWKV model for each profile.** The model switch in Deck Options → RWKV → Advanced applies to all decks in the local profile and does not sync. Reopen the profile after saving a different model to rebuild RWKV state from review history.
+- **Choose the RWKV model for each profile.**
+  - The model switch applies to all decks in the local profile and does not sync.
+  - After saving a different model, reopen the profile to rebuild RWKV state from review history.
 
 #### Fixes
 
