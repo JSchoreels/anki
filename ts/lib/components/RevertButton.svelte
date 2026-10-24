@@ -53,6 +53,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <Badge
             iconSize={85}
             class="p-1"
+            tooltip={tr.deckConfigRevertButtonTooltip()}
             on:click={() => {
                 if (modified) {
                     showFloating = !showFloating;
