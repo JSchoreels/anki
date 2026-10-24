@@ -10,6 +10,7 @@ repeated here unless they materially affect a fork feature.
 - Add user-visible fork changes to **Unreleased** in the same commit as the
   change.
 - Split each release into **User facing changes** and **Technical details**.
+  Group **User facing changes** under **New Features** and **Fixes**; keep historical model benchmarks and implementation details in **Technical details**.
   Describe practical outcomes in the first section. Put implementation context,
   upstream references, compatibility notes, measurements, and verification in
   the second section.
@@ -36,31 +37,35 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 ### User facing changes
 
-- **Draft builds no longer offer older published updates.** Automatic checks and Tools → Check for Updates now compare the full fork build number, preventing a newer draft from prompting to install an older or equal published build with the same application version. Newer builds continue to be offered.
+#### New Features
 
 - **SM56 is the default small RWKV model, with all four state-storage modes.** SM56 powers both RWKV-Instant and RWKV-Curve with f32, INT8, INT4, or mixed INT4 cards + INT8 notes (the default). Saved storage precision is preserved; weights and computation remain f32. On the upstream matched 723-user comparison, Curve / Instant LogLoss is 0.148% / 0.061% lower than SM55, within 0.34% / 0.47% of the big model. These many-user figures use upstream INT8 weights and INT8 states, rather than evaluating each desktop precision. Turn on “Use Smaller Model” in Deck Options → RWKV → Advanced, save and reopen the profile to switch to SM56; turning it off keeps Legacy available.
 
-- **Remove the one-minute RWKV-Curve fallback.** When predicted recall is already at or below the target at one second, Curve now returns a one-second interval and S90 instead of one minute. This also prevents an immediately due answer from appearing later than another sub-minute answer. Configured minimum intervals and learning/relearning steps still apply.
-
 - **Simpler RWKV Deck Options.** A collapsed Advanced section now groups the “Use Smaller Model” switch, approximate queue updates, queue refresh frequency and comparison controls. The switch is on by default for SM56; turning it off selects Legacy. A compact legend directly below the switch explains both models and links to the Model Factory results and matched backup comparison, replacing the help button and separate model-name line. Instant descriptions use tighter spacing, the minimum-reviews row aligns with the other controls, and the sorting recommendation line is removed. Storage precision is hidden and preserved. Previously saved SM40, SM36 or SM55 choices become SM56 after a successful Deck Options save; discarding leaves them unchanged.
 
-- **Learn ahead works with FSRS review sorting.** Relative Overdueness and ascending/descending retrievability now respect the Learn ahead limit for learning and relearning cards once no other cards remain to study. A limit of zero continues to require the full delay.
+- **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
 
 - **Automatic updates for portable builds.** Portable Anki now offers automatic notifications and Tools → Check for Updates. Accepting downloads and prepares the matching archive, closes Anki normally, replaces the application, and restarts it with the existing data folder in place. Failed installation or early bootstrap restores the previous application. Older portable builds need one manual upgrade to gain this flow.
-
-- **Preserve literal comparison characters in searches.** Escape `<`, `>`, or `=` to search for text such as `x\<5` without triggering a numeric field comparison. Numeric comparisons, including equality, and the existing bracket range syntax continue to work; normalizing a search preserves its meaning.
-
-- **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
 
 - **Store RWKV cards at INT4 while keeping notes at INT8.** RWKV defaults to “int4 cards + int8 notes” storage for all five bundled models when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved; the storage selector is now hidden.
 
 - **Separate RWKV state rebuilding from calibration preparation.** Build Cache now rebuilds only RWKV review state, avoiding the second historical prediction replay (21.1 s in the observed run) and FSRS calibration rebuild. Use Prepare Calibration Data to refresh both models’ historical predictions and validation folds; it preserves the active RWKV review state.
 
-- **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.
-
 - **Choose the RWKV model for each profile.** The model switch in Deck Options → RWKV → Advanced applies to all decks in the local profile and does not sync. Reopen the profile after saving a different model to rebuild RWKV state from review history.
 
-- **Smaller, faster bundled RWKV model.** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
+#### Fixes
+
+- **Draft builds no longer offer older published updates.** Automatic checks and Tools → Check for Updates now compare the full fork build number, preventing a newer draft from prompting to install an older or equal published build with the same application version. Newer builds continue to be offered.
+
+- **Remove the one-minute RWKV-Curve fallback.** When predicted recall is already at or below the target at one second, Curve now returns a one-second interval and S90 instead of one minute. This also prevents an immediately due answer from appearing later than another sub-minute answer. Configured minimum intervals and learning/relearning steps still apply.
+
+- **Learn ahead works with FSRS review sorting.** Relative Overdueness and ascending/descending retrievability now respect the Learn ahead limit for learning and relearning cards once no other cards remain to study. A limit of zero continues to require the full delay.
+
+- **Preserve literal comparison characters in searches.** Escape `<`, `>`, or `=` to search for text such as `x\<5` without triggering a numeric field comparison. Numeric comparisons, including equality, and the existing bracket range syntax continue to work; normalizing a search preserves its meaning.
+
+- **Card Info recovers from a busy RWKV backend.** Temporarily unavailable RWKV values retry automatically with bounded delays, so reopening the window is no longer needed after background inference finishes.
+
+- **Restore rebuilt RWKV caches correctly.** Desktop cache validation now accepts the schema written by both native models, fixing the “state-cache store identity mismatch” warning and avoiding needless rebuilds after reopening a profile. Rebuild logs also identify the active model and state precision during state and calibration replay.
 
 - **Correct dynamic FSRS presets during Deck Options recalculation.** Bulk memory-state updates now use each card's first matching Dynamic Preset Selection rule and its model parameters, retention settings, and history cutoff. Previously, every card used the home-deck preset. Optional rescheduling uses the same matched model; recalculating without rescheduling still preserves intervals and due dates.
 
@@ -84,10 +89,11 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 - **RWKV cache fixes: stale calibration data, corrupt cache file, slower startups over time.** After an RWKV model or precision change, the calibration graph, the FSRS-vs-RWKV comparison and Search Stats Extended now recompute their RWKV predictions instead of showing the previous model's. A damaged retrievability cache file no longer stops the profile from opening: it is recreated (a cache held by another running Anki still reports "Anki already open"). Startup no longer slows down as reviews pile up since the last full state save: once 10,000 reviews are waiting to be replayed, they are written into the state store (about 3.5s per 50,000 reviews before). FSRS calibration rows are rebuilt correctly when two presets share a name, and adding a preset no longer discards the RWKV Memorised history cache.
 
-- **Choose when due same-day learning appears without changing review sorting.** Deck Options → Display Order now offers Intraday learning/review order with Show before reviews, Mix with reviews, and Show after reviews. Before and After move due same-day learning/relearning as a group while retaining ascending/descending retrievability or Relative Overdueness within each group. Mix preserves the shared sorted order and is the default. The choice syncs with the deck preset.
 - **Updated security dependencies.** This build includes patched HTML sanitization, asynchronous I/O, TLS and ZIP libraries, addressing newly reported CSS URL filtering, Unix file-descriptor handling, TLS handling, distrusted certificate authorities and archive extraction issues.
 
 ### Technical details
+
+- **Earlier SM40 measurements:** The experimental SM40 integration rebuilds the complete native state and final cache for the measured 224,022-answer collection in 3.64 s with f32 state versus 10.86 s for the legacy model with f32 state (11.92 s with legacy INT8); cache size falls from 1211.6 MB to 192.0 MB. Existing profile precision choices are preserved; SM40 INT8 uses a 67.4 MB cache and rebuilds in 3.91 s. Instant log loss is 0.060% higher than legacy f32 on matched interday reviews, with improved ordinary calibration; the legacy model still wins the paired UM+ comparisons.
 
 - **Tokio security update:** raise the workspace minimum and lock Tokio from 1.52.1 to 1.53.3, addressing [RUSTSEC-2026-0386](https://github.com/RustSec/advisory-db/blob/main/crates/tokio/RUSTSEC-2026-0386.md). The Linux release CI detected the unsafe file-descriptor constructor advisory during `cargo deny check`; retain the audit policy and all existing checks.
 
