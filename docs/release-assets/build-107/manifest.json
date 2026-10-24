@@ -1,0 +1,44 @@
+{
+    "application_commit": "95396c9ca1ae570601e977e851f2ab82e5d2fc98",
+    "capture_checkout": "f1f8f307c647300e81e2319ae0a2d09dac5d89d1",
+    "theme": "dark",
+    "viewport_css_pixels": [
+        1440,
+        1400
+    ],
+    "device_scale_factor": 2,
+    "temporary_profile": true,
+    "live_collection_accessed": false,
+    "capture_case_passed": true,
+    "visually_reviewed": true,
+    "retouched": false,
+    "example_settings": {
+        "rwkv_instant": true,
+        "rwkv_curve": true,
+        "minimum_reviews_per_day": 100,
+        "intervening_reviews": 3,
+        "repeat_seconds": 90,
+        "model": "sm56",
+        "state_precision": "cards_int4_notes_int8"
+    },
+    "files": {
+        "intraday-learning-order.png": {
+            "bytes": 86905,
+            "width": 1332,
+            "height": 890,
+            "sha256": "0651818e4a86b5475953607ee3691b5d09344bff4f0459e880ac5dcbb7c8b8f0"
+        },
+        "rwkv-settings.png": {
+            "bytes": 121499,
+            "width": 1300,
+            "height": 1154,
+            "sha256": "9e19dc1b4626d314f3af1e51330303b72347a1ed82586d9e9983c737d218cb5f"
+        },
+        "sm56-advanced.png": {
+            "bytes": 116211,
+            "width": 1208,
+            "height": 1100,
+            "sha256": "962695b3ce8be44f5d1c29e72e17a26b8af5cbee134bae5ef0a4cb7e05b79a38"
+        }
+    }
+}
