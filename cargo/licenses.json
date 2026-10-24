@@ -3408,6 +3408,14 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
+    "authors": "Microsoft",
+    "description": "Rust for Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-sys",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
     "authors": null,
     "description": "Rust for Windows",
     "license": "Apache-2.0 OR MIT",
