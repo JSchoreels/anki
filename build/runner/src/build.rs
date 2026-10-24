@@ -196,7 +196,8 @@ fn maybe_update_env_file(build_root: &Utf8Path) {
     let build_root_env = env::var("BUILD_ROOT").unwrap_or_default();
     let release = env::var("RELEASE").unwrap_or_default();
     let other_watched_env = env::var("RECONFIGURE_KEY").unwrap_or_default();
-    let current_env = format!("{build_root_env};{release};{other_watched_env}");
+    let artifact_version = env::var("ANKI_ARTIFACT_VERSION").unwrap_or_default();
+    let current_env = format!("{build_root_env};{release};{other_watched_env};{artifact_version}");
 
     write_if_changed(&env_file, &current_env);
 }

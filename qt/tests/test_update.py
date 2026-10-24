@@ -77,6 +77,53 @@ def test_release_is_newer_uses_version_and_release_commit() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "tag, target, expected",
+    [
+        ("26.09.3+fsrs7.build.102", "bbbbbbbb1234", False),
+        ("26.09.3+fsrs7.build.107", "bbbbbbbb1234", False),
+        ("26.09.3+fsrs7.build.108", "bbbbbbbb1234", True),
+        ("26.09.3+fsrs7.build.107.2", "bbbbbbbb1234", True),
+        ("26.09.3+fsrs7.build.108", "aaaaaaaa1234", False),
+        ("26.09.3+fsrs7", "bbbbbbbb1234", False),
+        ("26.09.4+fsrs7.build.108", "bbbbbbbb1234", True),
+        ("26.09.2+fsrs7.build.108", "bbbbbbbb1234", False),
+    ],
+)
+def test_fork_update_requires_a_newer_version_or_build(tag, target, expected):
+    assert (
+        _release_is_newer(
+            release(tag, target),
+            current_version="26.09.3+fsrs7.build.107",
+            current_buildhash="aaaaaaaa",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize("manual", [False, True])
+@pytest.mark.parametrize("build", [102, 107, 108])
+def test_update_check_compares_the_packaged_build(
+    manual, build, monkeypatch, query_op, translations
+):
+    monkeypatch.setattr(aqt.update, "artifact_version", "26.09.3+fsrs7.build.107")
+    monkeypatch.setattr(aqt.update, "version_str", "26.09.3+fsrs7")
+    prompt = MagicMock()
+    monkeypatch.setattr(aqt.update, "prompt_and_install_github_update", prompt)
+    tooltip = MagicMock()
+    monkeypatch.setattr(aqt.update, "tooltip", tooltip)
+    update = release(f"26.09.3+fsrs7.build.{build}", "bbbbbbbb1234")
+
+    aqt.update.check_for_update(parent=None, manual=manual)
+    query_op.call_args.kwargs["success"](update)
+
+    if build > 107:
+        prompt.assert_called_once_with(None, update)
+    else:
+        prompt.assert_not_called()
+    assert tooltip.call_count == int(manual and build <= 107)
+
+
 @pytest.mark.parametrize("portable", [False, True])
 def test_update_lookup_requests_current_edition(portable, monkeypatch, query_op):
     monkeypatch.setattr(aqt, "is_portable", lambda: portable)

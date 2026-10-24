@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Callable
 
 import aqt
-from anki.buildinfo import buildhash
+from anki.buildinfo import artifact_version, buildhash
 from anki.buildinfo import version as version_str
 from anki.collection import GithubRelease
 from aqt.operations import QueryOp
@@ -20,7 +20,7 @@ from aqt.utils import show_warning, tooltip, tr
 def _release_is_newer(
     release: GithubRelease,
     *,
-    current_version: str = version_str,
+    current_version: str,
     current_buildhash: str = buildhash,
 ) -> bool:
     from packaging.version import Version
@@ -38,7 +38,7 @@ def _release_is_newer(
     if target and installed_hash and target.startswith(installed_hash):
         return False
 
-    return release_version > installed_version or len(target) >= 8
+    return release_version > installed_version
 
 
 def check_for_update(*, parent: aqt.AnkiQt, manual: bool) -> None:
@@ -47,7 +47,7 @@ def check_for_update(*, parent: aqt.AnkiQt, manual: bool) -> None:
     version = Version(version_str)
 
     def on_success(release: GithubRelease) -> None:
-        if _release_is_newer(release):
+        if _release_is_newer(release, current_version=artifact_version):
             prompt_and_install_github_update(parent, release)
         elif manual:
             tooltip(tr.addons_no_updates_available(), parent=parent)
