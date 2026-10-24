@@ -84,7 +84,7 @@ test(
         );
         await expect(group.getByRole("link", { name: "Matched backup comparison" })).toHaveAttribute(
             "href",
-            "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
+            "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-sm56-2026-10-24.MD#matched-native-backup-check",
         );
         await model.check();
         expect(saved).toBeUndefined();
@@ -96,7 +96,7 @@ test(
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
-            model: "sm55",
+            model: "sm56",
             statePrecision: "int8",
         });
         await page.reload();
@@ -111,8 +111,8 @@ test(
     },
 );
 
-for (const model of ["sm40", "sm36"]) {
-    test(`saving older RWKV model ${model} chooses SM55 without changing hidden precision`, async ({ page }) => {
+for (const model of ["sm40", "sm36", "sm55"]) {
+    test(`saving older RWKV model ${model} chooses SM56 without changing hidden precision`, async ({ page }) => {
         let saved: UpdateDeckConfigsRequest | undefined;
         await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
             const response = await route.fetch();
@@ -132,7 +132,7 @@ for (const model of ["sm40", "sm36"]) {
         await page.reload();
         expect(saved).toBeUndefined();
         await page.getByRole("button", { name: "Save", exact: true }).click();
-        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm55", statePrecision: "f32" });
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm56", statePrecision: "f32" });
         await page.reload();
         await page.locator("details.rwkv-advanced summary").click();
         await expect(page.getByRole("checkbox", { name: "Use Smaller Model", exact: true })).toBeChecked();

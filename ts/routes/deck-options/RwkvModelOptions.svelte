@@ -21,7 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function changeModel(event: Event): void {
         $settings.model = (event.target as HTMLInputElement).checked
-            ? "sm55"
+            ? "sm56"
             : "legacy";
     }
 </script>
@@ -64,7 +64,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {@html withoutUnicodeIsolation(
                 tr.deckConfigRwkvModelResults({
                     factory: "https://jschoreels.github.io/anki-rwkv/factory.html",
-                    backup: "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-four-model-quality-2026-10-22.MD",
+                    backup: "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-sm56-2026-10-24.MD#matched-native-backup-check",
                 }),
             )}
         </p>
