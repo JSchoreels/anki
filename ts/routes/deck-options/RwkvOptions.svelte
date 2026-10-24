@@ -50,7 +50,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let rebuildingOfflineRwkvState = false;
     let offlineRwkvStatus = "";
 
-    async function offlineRwkvStep(restart: boolean): Promise<RwkvOfflineInstantPassProgress> {
+    async function offlineRwkvStep(
+        restart: boolean,
+    ): Promise<RwkvOfflineInstantPassProgress> {
         return await postProto(
             "rwkvOfflineInstantPassStep",
             new RwkvOfflineInstantPassStepRequest({ restart, statusOnly: !restart }),
@@ -185,17 +187,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reschedulingRwkvReviewCards = true;
         curveRescheduleStatus = "";
         try {
-            await saveRwkvDeckOptions();
             const deck = new DeckId({ did: state.getTargetDeckId() });
             if (isDesktop()) {
+                await saveRwkvDeckOptions();
                 await postProto("rescheduleRwkvReviewCards", deck, Empty);
             } else {
+                // Saving closes this page on phones (the request below was
+                // lost), so the saved presets are rescheduled.
                 const changes = await postProto(
                     "rwkvOfflineCurveReschedule",
                     deck,
                     OpChangesWithCount,
                 );
-                curveRescheduleStatus = `Rescheduled ${changes.count.toLocaleString()} cards.`;
+                curveRescheduleStatus = changes.count
+                    ? `Rescheduled ${changes.count.toLocaleString()} cards.`
+                    : "No cards rescheduled: save this preset with RWKV-Curve first, then open the options again and tap this.";
             }
         } catch (error) {
             curveRescheduleStatus = `${error}`;
