@@ -76,7 +76,9 @@ test(
         await expect(comparison).toBeVisible();
         await comparison.getByRole("button", { name: "Close", exact: true }).click();
         await expect(comparison).toBeHidden();
-        await group.getByRole("button", { name: "About prediction models", exact: true }).click();
+        await expect(group.getByRole("button", { name: "About prediction models", exact: true })).toHaveCount(0);
+        await expect(group.getByText("On — New - Smaller Model", { exact: true })).toBeVisible();
+        await expect(group.getByText("Off — Legacy - Bigger Model", { exact: true })).toBeVisible();
         await expect(group).toContainText("Applies to all decks in this profile on this computer");
         await expect(group.getByRole("link", { name: "Model Factory results" })).toHaveAttribute(
             "href",
@@ -87,13 +89,16 @@ test(
             "https://github.com/JSchoreels/anki/blob/main/docs/rwkv-sm56-2026-10-24.MD#matched-native-backup-check",
         );
         await model.check();
+        await page.setViewportSize({ width: 736, height: 1000 });
+        await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
+        await page.evaluate(() => document.documentElement.classList.add("night-mode"));
+        await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced-dark.png") });
+        await group.screenshot({ path: testInfo.outputPath("rwkv-model-legend-dark.png") });
         expect(saved).toBeUndefined();
         await page.reload();
         await openAdvanced.click();
         await expect(model).not.toBeChecked();
         await model.check();
-        await group.getByRole("button", { name: "About prediction models", exact: true }).click();
-        await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
             model: "sm56",

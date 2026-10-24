@@ -6,8 +6,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import * as tr from "@generated/ftl";
     import { withoutUnicodeIsolation } from "@tslib/i18n";
 
-    import Icon from "$lib/components/Icon.svelte";
-    import { infoCircle } from "$lib/components/icons";
     import Switch from "$lib/components/Switch.svelte";
 
     import type { DeckOptionsState } from "./lib";
@@ -16,7 +14,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let disabled: boolean = false;
 
     const settings = state.rwkvProfileSettings;
-    let showModelHelp = false;
     $: useSmallerModel = $settings.model !== "legacy";
 
     function changeModel(event: Event): void {
@@ -35,28 +32,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {disabled}
             on:input={changeModel}
         />
-        <button
-            type="button"
-            class="model-help"
-            aria-label={tr.deckConfigRwkvModelHelp()}
-            aria-expanded={showModelHelp}
-            aria-controls="rwkv-model-manual"
-            on:click={() => (showModelHelp = !showModelHelp)}
-        >
-            <span aria-hidden="true"><Icon icon={infoCircle} /></span>
-        </button>
     </div>
-    <aside
-        id="rwkv-model-manual"
-        hidden={!showModelHelp}
-        aria-label={tr.deckConfigRwkvModelHelp()}
-    >
-        <h3>{tr.deckConfigRwkvModel()}</h3>
+    <div class="model-description">
         <dl>
-            <dt>{tr.deckConfigRwkvModelOn()}</dt>
-            <dd>{tr.deckConfigRwkvModelSmallerDescription()}</dd>
-            <dt>{tr.deckConfigRwkvModelOff()}</dt>
-            <dd>{tr.deckConfigRwkvModelBiggerDescription()}</dd>
+            <div class="model-choice">
+                <dt>{tr.deckConfigRwkvModelOn()}</dt>
+                <dd>{tr.deckConfigRwkvModelSmallerDescription()}</dd>
+            </div>
+            <div class="model-choice">
+                <dt>{tr.deckConfigRwkvModelOff()}</dt>
+                <dd>{tr.deckConfigRwkvModelBiggerDescription()}</dd>
+            </div>
         </dl>
         <p>{tr.deckConfigRwkvProfileSettingsScope()}</p>
         <p>{tr.deckConfigRwkvModelMigration()}</p>
@@ -68,7 +54,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 }),
             )}
         </p>
-    </aside>
+    </div>
 </section>
 
 <style>
@@ -84,38 +70,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         margin: 0;
     }
 
-    .model-help {
-        background: transparent;
-        border: none;
-        color: var(--fg);
-        flex-shrink: 0;
-        height: 1.75rem;
-        padding: 0.25rem;
-        width: 1.75rem;
-    }
-
-    aside {
-        background: var(--canvas-inset);
-        border-radius: 0.5rem;
-        font-size: 0.85rem;
-        margin-top: 0.75rem;
-        padding: 1rem;
-    }
-
-    h3 {
-        font-size: 0.9rem;
-        font-weight: 600;
-        margin: 0 0 0.75rem;
+    .model-description {
+        color: var(--fg-subtle);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        margin-top: 0.25rem;
     }
 
     p {
-        color: var(--fg-subtle);
-        font-size: 0.85rem;
-        margin: 0.5rem 0;
+        margin: 0.375rem 0 0;
     }
 
     dl {
-        margin-bottom: 0.75rem;
+        margin: 0;
+    }
+
+    .model-choice {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 0.375rem;
     }
 
     dt {
@@ -123,7 +96,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     dd {
-        color: var(--fg-subtle);
-        margin: 0.125rem 0 0.75rem;
+        margin: 0;
     }
 </style>
