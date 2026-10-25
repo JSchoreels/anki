@@ -86,6 +86,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 #### Fixes
 
+- **New cards stay mixed with RWKV reviews.** Queue refreshes now preserve progress through **Mix with reviews**, preventing new cards from being repeatedly postponed behind the cards added to meet **Minimum reviews per day**.
+
 - **Draft builds no longer offer older published updates.** Automatic checks and Tools → Check for Updates now compare the full fork build number, preventing a newer draft from prompting to install an older or equal published build with the same application version. Newer builds continue to be offered.
 
 - **Remove the one-minute RWKV-Curve fallback.** When predicted recall is already at or below the target at one second, Curve now returns a one-second interval and S90 instead of one minute. This also prevents an immediately due answer from appearing later than another sub-minute answer. Configured minimum intervals and learning/relearning steps still apply.
