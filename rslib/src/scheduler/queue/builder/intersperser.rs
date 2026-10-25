@@ -21,14 +21,20 @@ where
     I2: ExactSizeIterator<Item = I::Item>,
 {
     pub fn new(one: I, two: I2) -> Self {
-        let one_len = one.len();
-        let two_len = two.len();
+        Self::with_progress(one, two, 0, 0)
+    }
+
+    /// Resume mixing after entries from either source have already been
+    /// answered.
+    pub fn with_progress(one: I, two: I2, one_answered: usize, two_answered: usize) -> Self {
+        let one_len = one.len() + one_answered;
+        let two_len = two.len() + two_answered;
         let ratio = (one_len + 1) as f32 / (two_len + 1) as f32;
         Intersperser {
             one,
             two,
-            one_idx: 0,
-            two_idx: 0,
+            one_idx: one_answered,
+            two_idx: two_answered,
             one_len,
             two_len,
             ratio,
@@ -129,5 +135,26 @@ mod test {
 
         let b = &[];
         assert_eq!(&intersperse(a, b), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn resumed_mixing_preserves_the_remaining_order() {
+        for (one_count, two_count) in [(20, 1), (20, 4), (2, 6)] {
+            let one: Vec<_> = (1..=one_count).collect();
+            let two: Vec<_> = (101..101 + two_count).collect();
+            let expected = intersperse(&one, &two);
+            for answered in 0..=expected.len() {
+                let one_answered = expected[..answered].iter().filter(|&&id| id < 100).count();
+                let two_answered = answered - one_answered;
+                let remaining = Intersperser::with_progress(
+                    one[one_answered..].iter().copied(),
+                    two[two_answered..].iter().copied(),
+                    one_answered,
+                    two_answered,
+                );
+                assert_eq!(remaining.len(), expected.len() - answered);
+                assert_eq!(remaining.collect::<Vec<_>>(), expected[answered..]);
+            }
+        }
     }
 }

@@ -739,10 +739,17 @@ adjustments likewise ignore scored cards that no longer belong to the declared
 deck tree.
 
 Installing RWKV queue scores or clearing an existing queue score map invalidates
-the study queue. An empty update with no installed queue score map retains the
-queue, including progress through the new/review mix. Queue preparation still
-clears the count-only cache. This also applies when RWKV-Instant ordering is
-disabled.
+the study queue. With RWKV-Instant ordering enabled, score-driven rebuilds
+preserve how many cards from each side of the new/review mix have already been
+answered in the selected deck and scheduler day. Fresh scores still determine
+eligibility and ordering within each side, but repeated refreshes do not restart
+the mix and postpone new cards behind the minimum daily reviews. This also
+applies when an answered-card score patch or a newly satisfied repeat guard
+requires a rebuild. Mixing progress is transient and resets when the study queue
+is otherwise cleared, including deck changes and non-answer queue mutations.
+An empty update with no installed queue score map retains the queue. Queue
+preparation still clears the count-only cache, including when RWKV-Instant
+ordering is disabled.
 
 When a review-time queue refresh runs after the next question is displayed,
 the reviewer temporarily shows an ellipsis for the review due count. After the

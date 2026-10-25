@@ -49,9 +49,19 @@ pub(crate) struct CardQueues {
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     rwkv_learning_repeat_guards: Option<RwkvLearningRepeatGuards>,
     blocked_rwkv_learning_cards: HashSet<CardId>,
+    new_review_mix_progress: NewReviewMixProgress,
     pub(crate) load_balancer: Option<LoadBalancer>,
     pub(crate) fsrs_enabled: bool,
     pub(crate) fsrs_short_term_with_steps: bool,
+}
+
+/// Session-only mixing progress, carried across RWKV score-driven rebuilds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NewReviewMixProgress {
+    deck_id: DeckId,
+    day: u32,
+    new_answered: usize,
+    review_answered: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -362,6 +372,7 @@ impl Collection {
             .or_not_found(current_card_id)?;
         let queues = self.build_queues_with_current_card(deck.id, Some(&card))?;
         self.state.card_queues = Some(queues);
+        self.state.pending_new_review_mix = None;
         self.refresh_rwkv_learning_repeat_guards(&deck)?;
         let counts = self.state.card_queues.as_mut().unwrap().counts();
         Ok(QueuedCards {
@@ -377,11 +388,18 @@ impl Collection {
     /// transaction, you probably don't need this.
     pub(crate) fn clear_study_queues(&mut self) {
         self.state.card_queues = None;
+        self.state.pending_new_review_mix = None;
+    }
+
+    pub(crate) fn invalidate_rwkv_review_queue(&mut self) {
+        if let Some(queues) = self.state.card_queues.take() {
+            self.state.pending_new_review_mix = Some(queues.new_review_mix_progress);
+        }
     }
 
     pub(crate) fn maybe_clear_study_queues_after_op(&mut self, op: &OpChanges) {
         if op.op != Op::AnswerCard && op.requires_study_queue_rebuild() {
-            self.state.card_queues = None;
+            self.clear_study_queues();
         }
     }
 
@@ -453,6 +471,7 @@ impl Collection {
                 self.build_queues(deck.id)?
             };
             self.state.card_queues = Some(queues);
+            self.state.pending_new_review_mix = None;
         }
 
         self.refresh_rwkv_learning_repeat_guards(&deck)?;
