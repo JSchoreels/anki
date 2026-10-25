@@ -160,6 +160,7 @@ pub(super) struct QueueSortOptions {
     pub(super) day_learn_mix: ReviewMix,
     pub(super) intraday_learn_mix: ReviewMix,
     pub(super) new_review_mix: ReviewMix,
+    pub(super) reviews_per_new_card: Option<u32>,
     pub(super) rwkv_review_enabled: bool,
     pub(super) rwkv_review_instant_order_enabled: bool,
     pub(super) rwkv_review_min_intervening_reviews: u32,
@@ -463,10 +464,17 @@ impl QueueBuilder {
             .r_sorted_intraday_learning
             .into_iter()
             .map(MainQueueEntry::from);
+        let (new_done, reviews_done) = self
+            .context
+            .root_deck
+            .new_rev_counts(self.context.timing.days_elapsed);
         let main_iter = merge_new(
             with_interday_learn,
             self.new,
             self.context.sort_options.new_review_mix,
+            self.context.sort_options.reviews_per_new_card,
+            reviews_done.max(0) as usize,
+            new_done.max(0) as usize,
         );
         let main_iter: Box<dyn ExactSizeIterator<Item = MainQueueEntry>> =
             match self.context.sort_options.intraday_learn_mix {
@@ -564,6 +572,7 @@ fn sort_options(deck: &Deck, config_map: &HashMap<DeckConfigId, DeckConfig>) -> 
             day_learn_mix: config.inner.interday_learning_mix(),
             intraday_learn_mix: config.intraday_learning_mix(),
             new_review_mix: config.inner.new_mix(),
+            reviews_per_new_card: config.reviews_per_new_card(),
             rwkv_review_enabled: config.inner.rwkv_review_enabled,
             rwkv_review_instant_order_enabled: config.inner.rwkv_review_instant_order_enabled,
             rwkv_review_min_intervening_reviews: config.inner.rwkv_review_min_intervening_reviews,
@@ -597,13 +606,22 @@ fn merge_new(
     review_iter: impl ExactSizeIterator<Item = MainQueueEntry> + 'static,
     new: Vec<NewCard>,
     mode: ReviewMix,
+    reviews_per_new_card: Option<u32>,
+    reviews_done: usize,
+    new_done: usize,
 ) -> Box<dyn ExactSizeIterator<Item = MainQueueEntry>> {
     let new_iter = new.into_iter().map(Into::into);
 
     match mode {
         ReviewMix::BeforeReviews => Box::new(SizedChain::new(new_iter, review_iter)),
         ReviewMix::AfterReviews => Box::new(SizedChain::new(review_iter, new_iter)),
-        ReviewMix::MixWithReviews => Box::new(Intersperser::new(review_iter, new_iter)),
+        ReviewMix::MixWithReviews => Box::new(Intersperser::resumed(
+            review_iter,
+            new_iter,
+            reviews_per_new_card,
+            reviews_done,
+            new_done,
+        )),
     }
 }
 
@@ -1127,6 +1145,38 @@ mod test {
         col.answer_good();
         let next_card = col.get_queued_cards(1, false, true)?;
         assert_eq!(next_card.cards[0].card.id, first_review);
+        Ok(())
+    }
+
+    #[test]
+    fn new_cards_stay_mixed_when_the_queue_is_rebuilt_after_every_answer() -> Result<()> {
+        for (reviews_per_new_card, expected) in [(None, "RRNRRRNRRR"), (Some(3), "RRRNRRRNRR")] {
+            let mut col = Collection::new();
+            for _ in 0..8 {
+                CardAdder::new().due_dates(["0"]).add(&mut col);
+            }
+            CardAdder::new().add(&mut col);
+            CardAdder::new().add(&mut col);
+            if let Some(n) = reviews_per_new_card {
+                let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+                config.inner.other = serde_json::to_vec(
+                    &serde_json::json!({"kuma3.deckoptions": {"reviews_per_new_card": n}}),
+                )?;
+                col.add_or_update_deck_config(&mut config)?;
+            }
+            let mut order = String::new();
+            while let Some(card) = col.get_queued_cards(1, false, true)?.cards.first() {
+                order.push(if card.card.queue == CardQueue::New {
+                    'N'
+                } else {
+                    'R'
+                });
+                col.answer_easy();
+                // RWKV-Instant rebuilds the queue after most answers
+                col.clear_study_queues();
+            }
+            assert_eq!(order, expected, "{reviews_per_new_card:?}");
+        }
         Ok(())
     }
 

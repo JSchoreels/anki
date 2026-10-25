@@ -32,6 +32,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         withDisplayOrderSettings,
     } from "./display-order-settings";
     import type { DeckOptionsState } from "./lib";
+    import SpinBoxRow from "./SpinBoxRow.svelte";
 
     export let state: DeckOptionsState;
     export let api: Record<string, never>;
@@ -50,6 +51,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (updated) {
             auxData.set(updated);
         }
+    }
+
+    // kuma3: kept in the preset's extra JSON, like the intraday mix above
+    const KUMA3_KEY = "kuma3.deckoptions";
+    function kuma3Options(aux: Record<string, unknown>): Record<string, unknown> {
+        const value = aux[KUMA3_KEY];
+        return typeof value === "object" && value !== null && !Array.isArray(value)
+            ? (value as Record<string, unknown>)
+            : {};
+    }
+    const storedReviewsPerNewCard = (aux: Record<string, unknown>) =>
+        Number(kuma3Options(aux).reviews_per_new_card) || 0;
+    let reviewsPerNewCard = 0;
+    $: reviewsPerNewCard = storedReviewsPerNewCard($auxData);
+    $: if (storedReviewsPerNewCard($auxData) !== reviewsPerNewCard) {
+        auxData.set({
+            ...$auxData,
+            [KUMA3_KEY]: {
+                ...kuma3Options($auxData),
+                reviews_per_new_card: reviewsPerNewCard,
+            },
+        });
     }
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
@@ -104,6 +127,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         newReviewPriority: {
             title: tr.deckConfigNewReviewPriority(),
             help: tr.deckConfigNewReviewPriorityTooltip() + currentDeck,
+        },
+        reviewsPerNewCard: {
+            title: tr.deckConfigReviewsPerNewCard(),
+            help: tr.deckConfigReviewsPerNewCardTooltip() + currentDeck,
         },
         interdayStepPriority: {
             title: tr.deckConfigInterdayStepPriority(),
@@ -192,6 +219,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </EnumSelectorRow>
         </Item>
+
+        {#if $config.newMix === ReviewMix.MIX_WITH_REVIEWS}
+            <Item>
+                <SpinBoxRow bind:value={reviewsPerNewCard} defaultValue={0}>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("reviewsPerNewCard"),
+                            )}
+                    >
+                        {settings.reviewsPerNewCard.title}
+                    </SettingTitle>
+                </SpinBoxRow>
+            </Item>
+        {/if}
 
         <Item>
             <EnumSelectorRow

@@ -182,6 +182,18 @@ impl DeckConfig {
         }
     }
 
+    /// kuma3: with new cards mixed into reviews, one new card after this many
+    /// reviews; None spreads them evenly (Anki's mix).
+    pub(crate) fn reviews_per_new_card(&self) -> Option<u32> {
+        serde_json::from_slice::<serde_json::Value>(&self.inner.other)
+            .ok()?
+            .get("kuma3.deckoptions")?
+            .get("reviews_per_new_card")?
+            .as_u64()
+            .filter(|&n| n > 0)
+            .map(|n| n.min(9999) as u32)
+    }
+
     fn params_usable_in_current_fsrs(params: &[f32]) -> bool {
         matches!(params.len(), 17 | 19 | 21 | 34) && params.iter().all(|w| w.is_finite())
     }
