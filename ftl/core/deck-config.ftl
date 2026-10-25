@@ -187,6 +187,10 @@ deck-config-new-card-sort-order-tooltip-2 =
     `Random`: Shows cards in a random order.
 deck-config-new-review-priority = New/review order
 deck-config-new-review-priority-tooltip = When to show new cards in relation to review cards.
+deck-config-reviews-per-new-card = Reviews per new card
+deck-config-reviews-per-new-card-tooltip =
+    When new cards are mixed with reviews, show one new card after this many reviews.
+    0 spreads today's new cards evenly over the reviews.
 deck-config-interday-step-priority = Interday learning/review order
 deck-config-interday-step-priority-tooltip =
     When to show (re)learning cards that cross a day boundary.

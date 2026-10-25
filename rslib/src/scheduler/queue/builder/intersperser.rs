@@ -13,6 +13,7 @@ where
     one_len: usize,
     two_len: usize,
     ratio: f32,
+    head_start: f32,
 }
 
 impl<I, I2> Intersperser<I, I2>
@@ -21,9 +22,26 @@ where
     I2: ExactSizeIterator<Item = I::Item>,
 {
     pub fn new(one: I, two: I2) -> Self {
+        Self::resumed(one, two, None, 0, 0)
+    }
+
+    /// kuma3: `ones_per_two` fixes the spacing (else even, as [Self::new]).
+    /// `ones_done`/`twos_done` were already shown today: the ones shown since
+    /// the last two (estimated, at most one gap) bring the first two forward,
+    /// so a queue rebuilt after every answer (RWKV-Instant) still mixes.
+    pub fn resumed(
+        one: I,
+        two: I2,
+        ones_per_two: Option<u32>,
+        ones_done: usize,
+        twos_done: usize,
+    ) -> Self {
         let one_len = one.len();
         let two_len = two.len();
-        let ratio = (one_len + 1) as f32 / (two_len + 1) as f32;
+        let ratio = ones_per_two
+            .map(|ratio| ratio as f32)
+            .unwrap_or((one_len + 1) as f32 / (two_len + 1) as f32);
+        let head_start = (ones_done as f32 - twos_done as f32 * ratio).clamp(0.0, ratio);
         Intersperser {
             one,
             two,
@@ -32,6 +50,7 @@ where
             one_len,
             two_len,
             ratio,
+            head_start,
         }
     }
 
@@ -72,7 +91,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         match (self.one_idx(), self.two_idx()) {
             (Some(idx1), Some(idx2)) => {
-                let relative_idx2 = (idx2 + 1) as f32 * self.ratio;
+                let relative_idx2 = (idx2 + 1) as f32 * self.ratio - self.head_start;
                 if relative_idx2 < (idx1 + 1) as f32 {
                     self.next_two()
                 } else {
@@ -129,5 +148,30 @@ mod test {
 
         let b = &[];
         assert_eq!(&intersperse(a, b), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn resumed_interspersing() {
+        let resumed = |ratio, ones_done, twos_done| -> Vec<u32> {
+            Intersperser::resumed(
+                [1, 2, 3, 4, 5, 6, 7].into_iter(),
+                [11, 22].into_iter(),
+                ratio,
+                ones_done,
+                twos_done,
+            )
+            .collect()
+        };
+        // one two after every 3 ones
+        assert_eq!(resumed(Some(3), 0, 0), [1, 2, 3, 11, 4, 5, 6, 22, 7]);
+        // 2 ones shown since the last two: one more first
+        assert_eq!(resumed(Some(3), 5, 1), [1, 11, 2, 3, 4, 22, 5, 6, 7]);
+        // a long run of ones gives one two now, not a burst
+        assert_eq!(resumed(Some(3), 100, 0), [11, 1, 2, 3, 22, 4, 5, 6, 7]);
+        // twos shown elsewhere don't hold the next one back past a gap
+        assert_eq!(resumed(Some(3), 0, 20), [1, 2, 3, 11, 4, 5, 6, 22, 7]);
+        // even spacing (ratio 8/3) resumes too
+        assert_eq!(resumed(None, 0, 0), [1, 2, 11, 3, 4, 5, 22, 6, 7]);
+        assert_eq!(resumed(None, 2, 0), [11, 1, 2, 3, 22, 4, 5, 6, 7]);
     }
 }
