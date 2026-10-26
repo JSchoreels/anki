@@ -267,7 +267,10 @@ fn calibration_check(
     let mut col = CollectionBuilder::new(col_path).build()?;
     prepare_and_wait(&mut col, model_path)?;
     let first = calibration(&mut col, ids.clone())?;
-    assert!(first.available, "calibration file not loaded with the state");
+    assert!(
+        first.available,
+        "calibration file not loaded with the state"
+    );
     let ease: std::collections::HashMap<i64, i64> = answers.into_iter().collect();
     let loss = first
         .review_ids
@@ -298,16 +301,28 @@ fn calibration_check(
     let before = millis();
     let cards = col.search_cards("is:review -is:suspended", anki::search::SortMode::NoOrder)?;
     for (index, cid) in cards.iter().take(3).enumerate() {
-        let states =
-            SchedulerService::get_scheduling_states(&mut col, anki_proto::cards::CardId { cid: cid.0 })?;
-        answer(&mut col, cid.0, &states, states.good.clone(), 2, before + index as i64)?;
+        let states = SchedulerService::get_scheduling_states(
+            &mut col,
+            anki_proto::cards::CardId { cid: cid.0 },
+        )?;
+        answer(
+            &mut col,
+            cid.0,
+            &states,
+            states.good.clone(),
+            2,
+            before + index as i64,
+        )?;
     }
     // the answers' revlog ids are the time they were saved
     let mut asked = ids;
     asked.extend(before..=millis() + 1000);
     let after = calibration(&mut col, asked.clone())?;
     assert_eq!(after.predictions.len(), first.predictions.len() + 3);
-    assert_eq!(after.predictions[..first.predictions.len()], first.predictions[..]);
+    assert_eq!(
+        after.predictions[..first.predictions.len()],
+        first.predictions[..]
+    );
 
     SchedulerService::rwkv_offline_instant_pass_step(
         &mut col,
@@ -317,8 +332,11 @@ fn calibration_check(
         },
     )?;
     let rebuilt = calibration(&mut col, asked)?;
-    let rebuilt: std::collections::HashMap<_, _> =
-        rebuilt.review_ids.into_iter().zip(rebuilt.predictions).collect();
+    let rebuilt: std::collections::HashMap<_, _> = rebuilt
+        .review_ids
+        .into_iter()
+        .zip(rebuilt.predictions)
+        .collect();
     let worst = after
         .review_ids
         .iter()

@@ -36,8 +36,8 @@ use anki_proto::scheduler::rwkv_historical_review_inputs_response::Review;
 use anki_proto::scheduler::rwkv_offline_forecast_response::Card as ForecastCard;
 use anki_proto::scheduler::rwkv_review_input_rows_for_cards_response::Row;
 use anki_proto::scheduler::RwkvHistoricalReviewIdentity;
-use anki_proto::scheduler::RwkvOfflineForecastRequest;
 use anki_proto::scheduler::RwkvOfflineCalibrationResponse;
+use anki_proto::scheduler::RwkvOfflineForecastRequest;
 use anki_proto::scheduler::RwkvOfflineForecastResponse;
 use anki_proto::scheduler::RwkvOfflineInstantPassProgress;
 use anki_proto::scheduler::RwkvOfflineInstantPassStepRequest;
@@ -296,10 +296,13 @@ impl RwkvOfflineRuntime {
         let identity = RwkvHistoricalReviewIdentity::decode(identity.as_slice())
             .map_err(std::io::Error::other)?;
         self.saved_review_count = Some(identity.review_count);
-        self.calibration =
-            offline_state::read_calibration(&calibration_path(path), &header, &identity.encode_to_vec())
-                .ok()
-                .map(|(from, predictions)| Calibration { from, predictions });
+        self.calibration = offline_state::read_calibration(
+            &calibration_path(path),
+            &header,
+            &identity.encode_to_vec(),
+        )
+        .ok()
+        .map(|(from, predictions)| Calibration { from, predictions });
         self.identity = Some(identity);
         self.checked_at_mod = None;
         self.state_changed();
