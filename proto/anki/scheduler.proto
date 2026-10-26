@@ -167,6 +167,11 @@ service SchedulerService {
   // now" (kuma3's version of the desktop rwkv_forecast add-on).
   rpc RwkvOfflineForecast(RwkvOfflineForecastRequest)
       returns (RwkvOfflineForecastResponse);
+  // The recall RWKV predicted just before the given answers (the desktop's
+  // calibration data, for kuma3's Search Stats Extended graphs); the first
+  // call starts recording it with a full replay in the background.
+  rpc RwkvOfflineCalibration(RwkvOfflineCalibrationRequest)
+      returns (RwkvOfflineCalibrationResponse);
   // "Reschedule Cards with RWKV-Curve Intervals" for clients without the
   // desktop's Python: the deck's review cards in Curve presets get their
   // current curve's interval and S90 (as ApplyRwkvReviewReschedule).
@@ -1015,6 +1020,24 @@ message RwkvOfflineInstantPassProgress {
   uint64 reviews_replayed = 5;
   // While not available: the background replay's progress (reviews done of
   // total; total 0 when none is under way), for the app's progress bar.
+  uint64 replay_done = 6;
+  uint64 replay_total = 7;
+}
+
+message RwkvOfflineCalibrationRequest {
+  repeated int64 review_ids = 1;
+}
+
+message RwkvOfflineCalibrationResponse {
+  // The data is there (the asked-for answers it has are below).
+  bool available = 1;
+  // The answers among those asked for that it has (the newest 30% of the
+  // history at its replay, and every answer since), and RWKV's predictions.
+  repeated int64 review_ids = 2;
+  repeated float predictions = 3;
+  // Being recorded by a replay in the background (started: by this call).
+  bool computing = 4;
+  bool started = 5;
   uint64 replay_done = 6;
   uint64 replay_total = 7;
 }

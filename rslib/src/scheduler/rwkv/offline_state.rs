@@ -138,6 +138,67 @@ fn read_head(input: &mut impl Read, header: &str) -> io::Result<Vec<u8>> {
     get_bytes(input, 1 << 20)
 }
 
+const CALIBRATION_MAGIC: &[u8] = b"KUMA3RWKVCALIBRATION1\n";
+
+/// The stats page's calibration data (`offline::Calibration`): `from` and the
+/// (review id, prediction) pairs, for the state file of the same `header` and
+/// `identity` (written next to it, at the same time).
+pub(super) fn write_calibration(
+    path: &Path,
+    header: &str,
+    identity: &[u8],
+    from: u64,
+    predictions: &[(i64, f32)],
+) -> io::Result<()> {
+    let mut temporary = tempfile::Builder::new()
+        .suffix(".rwkv-calibration.tmp")
+        .tempfile_in(path.parent().unwrap_or(Path::new(".")))?;
+    let mut out = BufWriter::with_capacity(BUFFER, temporary.as_file_mut());
+    out.write_all(CALIBRATION_MAGIC)?;
+    put_bytes(&mut out, header.as_bytes())?;
+    put_bytes(&mut out, identity)?;
+    out.write_all(&from.to_le_bytes())?;
+    out.write_all(&(predictions.len() as u64).to_le_bytes())?;
+    for (review_id, prediction) in predictions {
+        out.write_all(&review_id.to_le_bytes())?;
+        out.write_all(&prediction.to_le_bytes())?;
+    }
+    out.into_inner().map_err(|err| err.into_error())?.sync_all()?;
+    temporary.persist(path).map(drop).map_err(|err| err.error)
+}
+
+/// What [write_calibration] wrote, if it was for this `header` and `identity`.
+pub(super) fn read_calibration(
+    path: &Path,
+    header: &str,
+    identity: &[u8],
+) -> io::Result<(u64, Vec<(i64, f32)>)> {
+    let mut input = BufReader::with_capacity(BUFFER, fs::File::open(path)?);
+    let mut magic = [0_u8; CALIBRATION_MAGIC.len()];
+    input.read_exact(&mut magic)?;
+    if magic != CALIBRATION_MAGIC
+        || get_bytes(&mut input, 4096)? != header.as_bytes()
+        || get_bytes(&mut input, 1 << 20)? != identity
+    {
+        return Err(invalid("calibration of another state"));
+    }
+    let mut word = [0_u8; 8];
+    input.read_exact(&mut word)?;
+    let from = u64::from_le_bytes(word);
+    input.read_exact(&mut word)?;
+    let count = u64::from_le_bytes(word);
+    let mut predictions = Vec::new();
+    let mut pair = [0_u8; 12];
+    for _ in 0..count {
+        input.read_exact(&mut pair)?;
+        predictions.push((
+            i64::from_le_bytes(pair[..8].try_into().unwrap()),
+            f32::from_le_bytes(pair[8..].try_into().unwrap()),
+        ));
+    }
+    Ok((from, predictions))
+}
+
 fn put_bytes(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     out.write_all(&(bytes.len() as u64).to_le_bytes())?;
     out.write_all(bytes)

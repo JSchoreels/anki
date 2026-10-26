@@ -37,6 +37,7 @@ use anki_proto::scheduler::rwkv_offline_forecast_response::Card as ForecastCard;
 use anki_proto::scheduler::rwkv_review_input_rows_for_cards_response::Row;
 use anki_proto::scheduler::RwkvHistoricalReviewIdentity;
 use anki_proto::scheduler::RwkvOfflineForecastRequest;
+use anki_proto::scheduler::RwkvOfflineCalibrationResponse;
 use anki_proto::scheduler::RwkvOfflineForecastResponse;
 use anki_proto::scheduler::RwkvOfflineInstantPassProgress;
 use anki_proto::scheduler::RwkvOfflineInstantPassStepRequest;
@@ -133,6 +134,8 @@ struct HistoryPlan {
     /// In chunks of [REPLAY_CHUNK_REVIEWS], each freed once replayed: one list
     /// held ~0.6 GB for the whole replay of a 3.7M-review history.
     reviews: Vec<Vec<ReviewInput>>,
+    /// Their revlog ids, in the same order (for [Calibration]).
+    review_ids: Vec<i64>,
     /// The history identity once replayed.
     identity: RwkvHistoricalReviewIdentity,
     collection_mod: TimestampMillis,
@@ -188,6 +191,23 @@ pub(crate) struct RwkvOfflineRuntime {
     /// ([Collection::rwkv_offline_curve]), for its answer: a queue fetch
     /// gives the buttons of more than the card answered next.
     curve_s90: HashMap<CardId, [Option<f32>; 4]>,
+    /// Once asked for ([Collection::rwkv_offline_calibration]); kept up to
+    /// date by every later replay and saved with the state.
+    calibration: Option<Calibration>,
+}
+
+/// The recall the model predicted just before each answer, for the stats
+/// page's calibration graphs. Only the newest 30% of the history at the full
+/// replay that started it, plus every answer since: the desktop scores that
+/// part (its test fold without FSRS validation folds), and recording costs a
+/// query pass per review (a recorded replay of 3.5M reviews took 2.6x a plain
+/// one on the PC).
+#[derive(Default)]
+struct Calibration {
+    /// The first history position recorded.
+    from: u64,
+    /// (review id, prediction), oldest first.
+    predictions: Vec<(i64, f32)>,
 }
 
 impl Drop for RwkvOfflineRuntime {
@@ -251,6 +271,7 @@ impl RwkvOfflineRuntime {
             saved_review_count: None,
             saving: None,
             curve_s90: HashMap::new(),
+            calibration: None,
         })
     }
 
@@ -275,6 +296,10 @@ impl RwkvOfflineRuntime {
         let identity = RwkvHistoricalReviewIdentity::decode(identity.as_slice())
             .map_err(std::io::Error::other)?;
         self.saved_review_count = Some(identity.review_count);
+        self.calibration =
+            offline_state::read_calibration(&calibration_path(path), &header, &identity.encode_to_vec())
+                .ok()
+                .map(|(from, predictions)| Calibration { from, predictions });
         self.identity = Some(identity);
         self.checked_at_mod = None;
         self.state_changed();
@@ -295,15 +320,29 @@ impl RwkvOfflineRuntime {
             Err(err) => return tracing::warn!(?err, "RWKV offline state not saved"),
         };
         let state = self.inference.state_snapshot();
+        let calibration = self
+            .calibration
+            .as_ref()
+            .map(|calibration| (calibration.from, calibration.predictions.clone()));
         let path = path.to_owned();
         self.saved_review_count = Some(identity.review_count);
         // the previous save first, so the newest state is the one left
         self.finish_saving();
         self.saving = Some(std::thread::spawn(move || {
-            if let Err(err) =
-                offline_state::write(&path, &header, &identity.encode_to_vec(), &state)
-            {
+            let identity = identity.encode_to_vec();
+            if let Err(err) = offline_state::write(&path, &header, &identity, &state) {
                 tracing::warn!(?err, "RWKV offline state not saved");
+            }
+            if let Some((from, predictions)) = calibration {
+                if let Err(err) = offline_state::write_calibration(
+                    &calibration_path(&path),
+                    &header,
+                    &identity,
+                    from,
+                    &predictions,
+                ) {
+                    tracing::warn!(?err, "RWKV calibration not saved");
+                }
             }
         }));
     }
@@ -319,10 +358,19 @@ impl RwkvOfflineRuntime {
     /// Replays what `plan` says (the CPU part of a history sync; it needs no
     /// collection). Returns the number of reviews replayed.
     fn apply_history_plan(&mut self, plan: HistoryPlan, state_path: &Path) -> Result<u64> {
+        let replayed = plan.reviews.iter().map(Vec::len).sum::<usize>() as u64;
         if plan.reset {
             self.reset()?;
+            if let Some(calibration) = &mut self.calibration {
+                *calibration = Calibration {
+                    from: replayed * 7 / 10,
+                    predictions: Vec::new(),
+                };
+            }
         }
-        let replayed = plan.reviews.iter().map(Vec::len).sum::<usize>() as u64;
+        // the history position of the next review replayed
+        let mut position = self.identity.as_ref().map_or(0, |id| id.review_count);
+        let mut review_ids = plan.review_ids.into_iter();
         // only a partial replay keeps scores (below)
         let answered: Vec<_> = if plan.reset {
             Vec::new()
@@ -340,7 +388,22 @@ impl RwkvOfflineRuntime {
         let result = (|| {
             for chunk in plan.reviews {
                 let len = chunk.len() as u64;
-                self.inference.warm_up_reviews(chunk, false)?;
+                let ids: Vec<i64> = review_ids.by_ref().take(chunk.len()).collect();
+                let record = self
+                    .calibration
+                    .as_ref()
+                    .is_some_and(|calibration| position + len > calibration.from);
+                let predictions = self.inference.warm_up_reviews(chunk, record)?;
+                if let Some(calibration) = &mut self.calibration {
+                    for (index, prediction) in predictions {
+                        if position + index as u64 >= calibration.from {
+                            if let Some(prediction) = valid_probability(prediction) {
+                                calibration.predictions.push((ids[index], prediction));
+                            }
+                        }
+                    }
+                }
+                position += len;
                 REPLAY_DONE.fetch_add(len, Ordering::Relaxed);
                 // after every full chunk, not only at the end: on a Pixel 8a
                 // the freed states held grew the heap 0.9 GB over the last
@@ -353,6 +416,10 @@ impl RwkvOfflineRuntime {
         })();
         REPLAY_TOTAL.store(0, Ordering::Relaxed);
         result?;
+        // looked up by review id; answers after this one come in order
+        if let Some(calibration) = self.calibration.as_mut().filter(|_| plan.reset) {
+            calibration.predictions.sort_unstable_by_key(|(id, _)| *id);
+        }
         if replayed >= REPLAY_CHUNK_REVIEWS as u64 {
             release_freed_memory();
         }
@@ -441,16 +508,16 @@ fn history_plan(
 ) -> Result<Option<HistoryPlan>> {
     let expected = history.input.expected_identity.clone();
     let mut reviews: Vec<Vec<ReviewInput>> = Vec::new();
+    let mut review_ids = Vec::new();
     let mut total = 0;
     let fingerprint = history.walk(|review, _, _| {
         if total % REPLAY_CHUNK_REVIEWS == 0 {
             reviews.push(Vec::with_capacity(REPLAY_CHUNK_REVIEWS));
         }
         total += 1;
-        reviews
-            .last_mut()
-            .unwrap()
-            .push(answered_input(&super::history::historical_review(&review)))
+        let review = super::history::historical_review(&review);
+        review_ids.push(review.review_id);
+        reviews.last_mut().unwrap().push(answered_input(&review))
     })?;
     if fingerprint.history_is_valid {
         return Ok(None);
@@ -467,9 +534,11 @@ fn history_plan(
     if let Some(first) = reviews.first_mut() {
         first.drain(..kept % REPLAY_CHUNK_REVIEWS);
     }
+    review_ids.drain(..kept);
     Ok(Some(HistoryPlan {
         reset: kept == 0,
         reviews,
+        review_ids,
         identity: RwkvHistoricalReviewIdentity {
             last_review_id: fingerprint.last_review_id,
             review_count: fingerprint.review_count,
@@ -623,7 +692,7 @@ impl Collection {
                 // is replaying, and the next queue build or deck count
                 // installs it once done.
                 *REGISTERED_MODEL.lock().unwrap() = Some(model.clone());
-                let reviews_replayed = self.rwkv_offline_start_build(model)?;
+                let reviews_replayed = self.rwkv_offline_start_build(model, false)?;
                 return Ok(RwkvPrepareOfflineResponse { reviews_replayed });
             }
         };
@@ -703,6 +772,59 @@ impl Collection {
             reviews_replayed,
             ..Default::default()
         })
+    }
+
+    /// The recall the model predicted just before each of `review_ids` (the
+    /// desktop's RWKV calibration data, for the stats page's calibration and
+    /// comparison graphs), for those in the [Calibration]. Without one, the
+    /// runtime is rebuilt on its own thread with a full replay that records it
+    /// (as after an undo: the standard order applies meanwhile; the old
+    /// runtime is dropped first, two don't fit a phone with a big history),
+    /// and `computing` is set until it is done.
+    pub(crate) fn rwkv_offline_calibration(
+        &mut self,
+        review_ids: Vec<i64>,
+    ) -> Result<RwkvOfflineCalibrationResponse> {
+        let mut out = RwkvOfflineCalibrationResponse::default();
+        if self.state.rwkv_offline.is_none() {
+            self.state.rwkv_offline = self.rwkv_offline_take_built();
+        }
+        let Some(mut runtime) = self.state.rwkv_offline.take() else {
+            out.replay_done = REPLAY_DONE.load(Ordering::Relaxed);
+            out.replay_total = REPLAY_TOTAL.load(Ordering::Relaxed);
+            out.computing = registered_model().is_some();
+            return Ok(out);
+        };
+        if runtime.calibration.is_none() {
+            let model = runtime.model.clone();
+            drop(runtime);
+            release_freed_memory();
+            self.state.card_queues = None;
+            out.replay_total = self.rwkv_offline_start_build(model, true)?;
+            out.computing = true;
+            out.started = true;
+            return Ok(out);
+        }
+        if let Err(err) = self.rwkv_offline_sync_history(&mut runtime) {
+            // the history changed under it (an undo): rebuilt without calibration
+            tracing::warn!(?err, "RWKV calibration not read");
+            out.computing = true;
+        } else if let Some(calibration) = &runtime.calibration {
+            out.available = true;
+            for review_id in review_ids {
+                if let Ok(index) = calibration
+                    .predictions
+                    .binary_search_by_key(&review_id, |(id, _)| *id)
+                {
+                    out.review_ids.push(review_id);
+                    out.predictions.push(calibration.predictions[index].1);
+                }
+            }
+        }
+        if runtime.identity.is_some() {
+            self.state.rwkv_offline = Some(runtime);
+        }
+        Ok(out)
     }
 
     /// Recall of review cards at later times. The model state is not
@@ -1217,7 +1339,7 @@ impl Collection {
                 match self.rwkv_offline_take_built() {
                     Some(runtime) => runtime,
                     None => {
-                        if let Err(err) = self.rwkv_offline_start_build(model) {
+                        if let Err(err) = self.rwkv_offline_start_build(model, false) {
                             tracing::warn!(?err, "RWKV offline build not started");
                         }
                         return true;
@@ -1277,7 +1399,7 @@ impl Collection {
                 // minute on a big one. The runtime without identity is dropped by
                 // the caller and rebuilt on its own thread.
                 runtime.identity = None;
-                self.rwkv_offline_start_build(runtime.model.clone())?;
+                self.rwkv_offline_start_build(runtime.model.clone(), false)?;
                 invalid_input!("RWKV history changed; rebuilding in the background")
             }
             Some(plan) => runtime.apply_history_plan(plan, &self.rwkv_offline_state_path()),
@@ -1404,6 +1526,7 @@ impl Collection {
             HistoryPlan {
                 reset: false,
                 reviews: vec![vec![answered_input(&review)]],
+                review_ids: vec![review.review_id],
                 identity,
                 collection_mod,
                 stamp: runtime
@@ -1434,8 +1557,9 @@ impl Collection {
     /// phone it takes seconds, and close to a minute for a full replay of a
     /// big history, which must not hold the collection. Until it is installed
     /// (`rwkv_offline_take_built`) the standard order applies. Returns the
-    /// number of reviews it replays.
-    fn rwkv_offline_start_build(&mut self, model: OfflineModel) -> Result<u64> {
+    /// number of reviews it replays. With `calibrate`, the state file is not
+    /// used: the whole history is replayed, recording a [Calibration].
+    fn rwkv_offline_start_build(&mut self, model: OfflineModel, calibrate: bool) -> Result<u64> {
         let mut building = BUILDING.lock().unwrap();
         if building
             .as_ref()
@@ -1448,7 +1572,8 @@ impl Collection {
         let planned_for = offline_state::header(&model)
             .and_then(|header| offline_state::read_identity(&state_path, &header))
             .ok()
-            .and_then(|bytes| RwkvHistoricalReviewIdentity::decode(bytes.as_slice()).ok());
+            .and_then(|bytes| RwkvHistoricalReviewIdentity::decode(bytes.as_slice()).ok())
+            .filter(|_| !calibrate);
         let collection_mod = self.storage.get_collection_timestamps()?.collection_change;
         // Only reading the history needs the collection. Walking it (the
         // check against the state file, the replay inputs) is done on the
@@ -1475,7 +1600,13 @@ impl Collection {
         let handle = std::thread::spawn(move || -> Result<Box<RwkvOfflineRuntime>> {
             let started = Instant::now();
             let plan = history_plan(history, collection_mod, stamp)?;
-            let mut runtime = RwkvOfflineRuntime::load_with_saved_state(model, &state_path)?;
+            let mut runtime = if calibrate {
+                let mut runtime = RwkvOfflineRuntime::load(model)?;
+                runtime.calibration = Some(Calibration::default());
+                runtime
+            } else {
+                RwkvOfflineRuntime::load_with_saved_state(model, &state_path)?
+            };
             // A file that changed since the plan was made is left to the
             // history sync after install.
             if runtime.identity == planned_for {
@@ -1519,7 +1650,7 @@ impl Collection {
                 // ponytail: the old build runs to its end first; cancel it if
                 // changes during long replays matter
                 if let Some(model) = registered_model().filter(|model| *model != runtime.model) {
-                    if let Err(err) = self.rwkv_offline_start_build(model) {
+                    if let Err(err) = self.rwkv_offline_start_build(model, false) {
                         tracing::warn!(?err, "RWKV offline build not started");
                     }
                     return None;
@@ -1545,7 +1676,14 @@ impl Collection {
     fn rwkv_offline_state_path(&self) -> PathBuf {
         self.col_path.with_extension("rwkv-offline")
     }
+}
 
+/// The [Calibration] file next to the state file at `state_path`.
+fn calibration_path(state_path: &Path) -> PathBuf {
+    state_path.with_extension("rwkv-calibration")
+}
+
+impl Collection {
     /// Current retrievability of the scoreable cards in `deck` and its
     /// children.
     ///
