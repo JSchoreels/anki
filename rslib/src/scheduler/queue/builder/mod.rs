@@ -483,13 +483,26 @@ impl QueueBuilder {
                 ReviewMix::MixWithReviews => main_iter,
             };
 
+        let main: VecDeque<MainQueueEntry> = main_iter.collect();
+        // kuma3: one line per build, to see in logcat how the new cards are spread
+        tracing::info!(
+            new = new_count,
+            review = review_count,
+            learning = learn_count,
+            new_done,
+            reviews_done,
+            reviews_per_new_card = ?self.context.sort_options.reviews_per_new_card,
+            next_new_at = ?main.iter().position(|entry| entry.kind == MainQueueEntryKind::New),
+            "queue built"
+        );
+
         CardQueues {
             counts: Counts {
                 new: new_count,
                 review: review_count,
                 learning: learn_count,
             },
-            main: main_iter.collect(),
+            main,
             intraday_learning,
             learn_ahead_secs,
             current_day: self.context.timing.days_elapsed,
