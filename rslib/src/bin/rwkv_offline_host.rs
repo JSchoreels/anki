@@ -30,6 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     prepare_and_wait(&mut col, &args[2])?;
     println!("prepare: {} ms", start.elapsed().as_millis());
+    if args.get(4).map(String::as_str) == Some("calibration") {
+        return calibration_check(col, &args[1], &args[2]);
+    }
 
     let start = Instant::now();
     prepare_and_wait(&mut col, &args[2])?;
@@ -218,6 +221,113 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(4).map(String::as_str) == Some("answer") {
         answer_check(col, &args[1], &args[2], now)?;
     }
+    Ok(())
+}
+
+/// The stats page's RWKV calibration data: the first call starts a recording
+/// replay in the background; it is saved with the state and loaded with it by
+/// the next start; answers extend it; "Rebuild RWKV State" records the same
+/// numbers again. Prints its log loss against the answers.
+fn calibration_check(
+    mut col: Col,
+    col_path: &str,
+    model_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let calibration = |col: &mut Col, review_ids: Vec<i64>| -> anki::error::Result<_> {
+        let started = Instant::now();
+        let out = SchedulerService::rwkv_offline_calibration(
+            col,
+            anki_proto::scheduler::RwkvOfflineCalibrationRequest { review_ids },
+        )?;
+        println!(
+            "calibration: available={} computing={} started={} {} predictions in {} ms",
+            out.available,
+            out.computing,
+            out.started,
+            out.predictions.len(),
+            started.elapsed().as_millis()
+        );
+        Ok(out)
+    };
+    let started = Instant::now();
+    assert!(calibration(&mut col, vec![])?.started);
+    while !calibration(&mut col, vec![])?.available {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    println!("recorded in {} s", started.elapsed().as_secs());
+    col.close(None)?;
+
+    let answers: Vec<(i64, i64)> = {
+        let db = rusqlite::Connection::open(col_path)?;
+        let mut query = db.prepare("select id, ease from revlog order by id")?;
+        let rows = query.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let ids: Vec<i64> = answers.iter().map(|(id, _)| *id).collect();
+    let mut col = CollectionBuilder::new(col_path).build()?;
+    prepare_and_wait(&mut col, model_path)?;
+    let first = calibration(&mut col, ids.clone())?;
+    assert!(first.available, "calibration file not loaded with the state");
+    let ease: std::collections::HashMap<i64, i64> = answers.into_iter().collect();
+    let loss = first
+        .review_ids
+        .iter()
+        .zip(&first.predictions)
+        .map(|(id, p)| {
+            let p = (*p as f64).clamp(1e-6, 1.0 - 1e-6);
+            if ease[id] > 1 {
+                -p.ln()
+            } else {
+                -(1.0 - p).ln()
+            }
+        })
+        .sum::<f64>();
+    println!(
+        "{} of {} reviews; log loss {:.4}",
+        first.predictions.len(),
+        ids.len(),
+        loss / first.predictions.len() as f64
+    );
+
+    let millis = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    };
+    let before = millis();
+    let cards = col.search_cards("is:review -is:suspended", anki::search::SortMode::NoOrder)?;
+    for (index, cid) in cards.iter().take(3).enumerate() {
+        let states =
+            SchedulerService::get_scheduling_states(&mut col, anki_proto::cards::CardId { cid: cid.0 })?;
+        answer(&mut col, cid.0, &states, states.good.clone(), 2, before + index as i64)?;
+    }
+    // the answers' revlog ids are the time they were saved
+    let mut asked = ids;
+    asked.extend(before..=millis() + 1000);
+    let after = calibration(&mut col, asked.clone())?;
+    assert_eq!(after.predictions.len(), first.predictions.len() + 3);
+    assert_eq!(after.predictions[..first.predictions.len()], first.predictions[..]);
+
+    SchedulerService::rwkv_offline_instant_pass_step(
+        &mut col,
+        RwkvOfflineInstantPassStepRequest {
+            restart: true,
+            ..Default::default()
+        },
+    )?;
+    let rebuilt = calibration(&mut col, asked)?;
+    let rebuilt: std::collections::HashMap<_, _> =
+        rebuilt.review_ids.into_iter().zip(rebuilt.predictions).collect();
+    let worst = after
+        .review_ids
+        .iter()
+        .zip(&after.predictions)
+        .filter_map(|(id, p)| rebuilt.get(id).map(|q| (p - q).abs()))
+        .fold(0.0, f32::max);
+    println!("incremental vs rebuilt: worst difference {worst:.6}");
+    assert!(worst < 1e-3);
+    println!("*** calibration ok");
     Ok(())
 }
 

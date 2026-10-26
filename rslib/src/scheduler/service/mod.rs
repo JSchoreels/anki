@@ -1168,6 +1168,13 @@ impl crate::services::SchedulerService for Collection {
         Collection::rwkv_offline_forecast(self, input)
     }
 
+    fn rwkv_offline_calibration(
+        &mut self,
+        input: anki_proto::scheduler::RwkvOfflineCalibrationRequest,
+    ) -> Result<anki_proto::scheduler::RwkvOfflineCalibrationResponse> {
+        Collection::rwkv_offline_calibration(self, input.review_ids)
+    }
+
     fn rwkv_offline_curve_reschedule(
         &mut self,
         input: anki_proto::decks::DeckId,
