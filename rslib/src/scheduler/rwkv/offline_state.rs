@@ -163,7 +163,9 @@ pub(super) fn write_calibration(
         out.write_all(&review_id.to_le_bytes())?;
         out.write_all(&prediction.to_le_bytes())?;
     }
-    out.into_inner().map_err(|err| err.into_error())?.sync_all()?;
+    out.into_inner()
+        .map_err(|err| err.into_error())?
+        .sync_all()?;
     temporary.persist(path).map(drop).map_err(|err| err.error)
 }
 
