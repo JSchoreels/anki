@@ -86,6 +86,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Stop repeated RWKV recovery after re-importing a deck as new.** Cache preparation now accounts for new cards that reuse IDs with old review logs, so their first Pass or Fail answers do not each rebuild the collection's review state. Existing caches rebuild once to adopt the corrected preparation; genuine history and preset-routing changes still recover safely.
+
 - **New cards stay mixed with RWKV reviews.** Queue refreshes now preserve progress through **Mix with reviews**, preventing new cards from being repeatedly postponed behind the cards added to meet **Minimum reviews per day**.
 
 - **Draft builds no longer offer older published updates.** Automatic checks and Tools → Check for Updates now compare the full fork build number, preventing a newer draft from prompting to install an older or equal published build with the same application version. Newer builds continue to be offered.

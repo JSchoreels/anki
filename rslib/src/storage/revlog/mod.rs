@@ -789,6 +789,25 @@ order by r.id"
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        // A new card whose last eligible answer was not Learning will start a
+        // fresh sequence. Omit that old sequence now, so preparing the cache
+        // before answering does not immediately require another full replay.
+        let new_card_ids = self
+            .db
+            .prepare("select id from cards where type = 0 and odid = 0")?
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<std::result::Result<HashSet<_>, _>>()?;
+        let mut latest_kinds = HashMap::new();
+        for row in &rows {
+            if new_card_ids.contains(&row.card_id) {
+                latest_kinds.insert(row.card_id, row.review_kind);
+            }
+        }
+        rows.retain(|row| {
+            latest_kinds
+                .get(&row.card_id)
+                .map_or(true, |kind| *kind == 0)
+        });
         // A cutoff needs a retained prefix to preserve. A legacy cutoff before
         // Forget must not turn the first post-reset Learning answer into a
         // continuation of the discarded sequence.
@@ -1811,6 +1830,12 @@ with latest_resets as (
     and not (r.type = 3 and r.factor = 0)
     and r.id > coalesce(resets.reset_id, 0)
     {ignored_clause}
+), pending_restarts as (
+  select e.cid
+  from eligible e
+  join cards c on c.id = e.cid
+  where c.type = 0 and c.odid = 0 and e.type != 0
+    and e.id = (select max(id) from eligible where cid = e.cid)
 ), retained_starts as (
   select
     cid,
@@ -1819,6 +1844,7 @@ with latest_resets as (
       min(id)
     ) as start_id
   from eligible
+  where cid not in (select cid from pending_restarts)
   group by cid
 )
 select e.id, e.cid, e.nid, e.deck_id, e.ease, e.time, e.type, e.interval_days,

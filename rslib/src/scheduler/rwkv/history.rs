@@ -92,9 +92,76 @@ mod tests {
     use crate::revlog::RevlogReviewKind;
 
     #[test]
+    fn historical_inputs_prepare_new_cards_with_old_review_logs() -> Result<()> {
+        let mut col = Collection::new();
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        col.add_card(&mut card)?;
+        let start = 1_700_000_000_000;
+        for (offset, kind) in [RevlogReviewKind::Learning, RevlogReviewKind::Review]
+            .into_iter()
+            .enumerate()
+        {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: RevlogId(start + offset as i64),
+                    cid: card.id,
+                    button_chosen: 3,
+                    interval: 1,
+                    ease_factor: 2_500,
+                    review_kind: kind,
+                    ..Default::default()
+                },
+                false,
+            )?;
+        }
+
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        assert_eq!(
+            col.rwkv_historical_review_fingerprint(Default::default())?
+                .review_count,
+            0
+        );
+        // Excluding the Review row leaves a continuing Learning sequence.
+        let history = col.rwkv_historical_review_inputs(RwkvHistoricalReviewInputsRequest {
+            history: Some(scheduler::RwkvHistoricalReviewFingerprintRequest {
+                ignored_review_ids: vec![start + 1],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })?;
+        assert_eq!(history.reviews.len(), 1);
+        assert_eq!(history.reviews[0].review_id, start);
+
+        // Reinstating scheduling makes the old history relevant again.
+        card.ctype = CardType::Review;
+        col.storage.update_card(&card)?;
+        assert_eq!(
+            col.rwkv_historical_review_inputs(Default::default())?
+                .reviews
+                .len(),
+            2
+        );
+        // A borrowed filtered-deck card follows its filtered answer semantics.
+        card.ctype = CardType::New;
+        card.original_deck_id = DeckId(1);
+        col.storage.update_card(&card)?;
+        assert_eq!(
+            col.rwkv_historical_review_inputs(Default::default())?
+                .reviews
+                .len(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
     fn historical_inputs_use_forget_boundary_before_relearning() -> Result<()> {
         let mut col = Collection::new();
         let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        card.ctype = CardType::Review;
         col.add_card(&mut card)?;
         let start = 1_700_000_000_000;
         let add_review = |col: &mut Collection, offset, kind, button, factor| {
@@ -174,6 +241,8 @@ mod tests {
         let mut col = Collection::new();
         let mut first = Card::new(NoteId(10), 0, DeckId(1), 0);
         let mut second = Card::new(NoteId(20), 0, DeckId(1), 0);
+        first.ctype = CardType::Review;
+        second.ctype = CardType::Review;
         col.add_card(&mut first)?;
         col.add_card(&mut second)?;
         let day = 86_400_000;
