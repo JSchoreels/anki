@@ -2824,6 +2824,25 @@ def test_rwkv_workload_fallback_grade_probabilities_shift_with_retrievability() 
     assert high[3] > low[3]
 
 
+def test_comparison_input_preserves_fsrs_internal_memory() -> None:
+    row = scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row(
+        card_id=1,
+        note_id=2,
+        deck_id=3,
+        fsrs_memory_state=cards_pb2.FsrsMemoryState(
+            stability=11.0, difficulty=5.0, stability_internal=10.0, stability_fast=6.0
+        ),
+        fsrs_parameters=[1.0, 2.0],
+        fsrs_historical_retention=0.85,
+    )
+
+    review = rwkv_scheduler._rwkv_review_input_from_backend_proto_row(row)
+
+    assert review.fsrs_memory_state == pytest.approx((10.0, 5.0, 6.0))
+    assert review.fsrs_parameters == (1.0, 2.0)
+    assert review.fsrs_historical_retention == pytest.approx(0.85)
+
+
 def test_rwkv_workload_review_model_populates_time_matrix_from_cache() -> None:
     rows = [
         (retrievability, ease, int((base_seconds + ease) * 1000))
@@ -2898,24 +2917,6 @@ def test_rwkv_workload_simulation_inputs_include_new_and_eligible_review_cards()
         (1, review, 64),
         (4, new, 64),
     ]
-
-
-def test_rwkv_workload_review_counts_are_monotonic_by_dr() -> None:
-    response = scheduler_pb2.SimulateFsrsWorkloadResponse()
-    response.review_count[30] = 10
-    response.review_count[31] = 8
-    response.review_count[33] = 12
-    response.review_count[34] = 11
-    preset = response.preset_workload.add()
-    preset.name = "Preset"
-    preset.review_count[30] = 5
-    preset.review_count[31] = 3
-    preset.review_count[33] = 7
-
-    rwkv_scheduler._enforce_monotonic_rwkv_workload_review_counts(response)
-
-    assert dict(response.review_count) == {30: 10, 31: 10, 33: 12, 34: 12}
-    assert dict(preset.review_count) == {30: 5, 31: 5, 33: 7}
 
 
 def test_rwkv_workload_review_order_uses_shared_request_order() -> None:
@@ -3090,7 +3091,9 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
         31: pytest.approx(9.0),
         32: pytest.approx(13.0),
     }
-    assert dict(response.review_count) == {30: 6, 31: 6, 32: 10}
+    # A higher target can produce fewer reviews in a particular simulation.
+    # Report the actual counts, so they remain consistent with its costs.
+    assert dict(response.review_count) == {30: 6, 31: 4, 32: 10}
     assert response.review_time_r_bucket_count == 2
     assert response.review_time_s_bucket_count == 1
     assert list(response.review_time_again_seconds) == pytest.approx([11.0, 12.0])
@@ -3133,6 +3136,102 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
     ]
     assert progress_updates == [(0, 0), (0, 71), (5, 71), (71, 71)]
     assert key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
+
+
+def test_comparison_returns_paired_results_for_the_same_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviews = [
+        replace(
+            _rwkv_review_input(card_id=card_id, note_id=card_id + 100),
+            fsrs_memory_state=(12.0, 5.0, 8.0),
+        )
+        for card_id in (1, 2)
+    ]
+    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={
+            64: [(review.identity.card_id, review) for review in reviews]
+        },
+        loaded_rows=2,
+        parsed_cards=2,
+        cards_with_state=2,
+        disabled_config_cards=0,
+        eligible_cards=2,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def supports_resident_workload_simulation(self) -> bool:
+            return True
+
+        def restore_cache_snapshot(self, _snapshot: object) -> None:
+            raise AssertionError("resident state must not be restored")
+
+        def compare_workloads(self, **kwargs: object) -> object:
+            progress = cast(Callable[[int, int], None], kwargs.pop("progress"))
+            progress(3, 17)
+            self.calls.append(kwargs)
+            return (
+                (1.0, 0.5, [(90, 1.5, 0.7, 20.0, 3)]),
+                (1.0, 0.5, [(90, 1.7, 0.8, 18.0, 2)]),
+                1,
+            )
+
+    backend = Backend()
+    mw = SimpleNamespace(col=SimpleNamespace(db=SimpleNamespace()))
+    set_reviewer_backend(backend)
+    rwkv_scheduler._reviewer_backend_warmup_states[(id(backend), id(mw.col))] = (
+        _rwkv_resident_identity()
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_warmed_up", lambda _: True)
+    captured: list[dict[str, object]] = []
+
+    def load_inputs(**kwargs: object) -> rwkv_scheduler.RwkvReviewInputBatchBuild:
+        captured.append(kwargs)
+        return input_build
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_input_batches_for_search", load_inputs
+    )
+    model = rwkv_scheduler._RwkvSimulatorReviewModel(
+        grade_seconds=(1.0, 2.0, 3.0, 4.0), bucket_probabilities={}
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_simulator_review_model", lambda _: model)
+    request = scheduler_pb2.SimulateFsrsReviewRequest(
+        search="deck:current",
+        days_to_simulate=9,
+        review_limit=20,
+        rwkv_workload_sample_limit=1,
+        rwkv_workload_target_step=10,
+        rwkv_comparison=scheduler_pb2.RwkvComparisonOptions(
+            learner=scheduler_pb2.RwkvComparisonOptions.RWKV,
+            scenario=scheduler_pb2.RwkvComparisonOptions.TEMPORARY_DROP,
+            repetitions=1,
+        ),
+    )
+
+    response = rwkv_scheduler.compare_rwkv_and_fsrs_workload(request, mw=mw)
+
+    assert response.total_cards == 2
+    assert response.sampled_cards == 1
+    assert response.estimated_fsrs_states == 1
+    assert dict(response.fsrs.review_count) == {90: 3}
+    assert dict(response.rwkv.review_count) == {90: 2}
+    assert (
+        response.fsrs.reviewless_end_memorized == response.rwkv.reviewless_end_memorized
+    )
+    assert captured[0]["include_comparison_data"] is True
+    assert backend.calls[0]["input_scale"] == 2.0
+    assert len(cast(Sequence[object], backend.calls[0]["inputs"])) == 1
 
 
 def test_reviewer_answer_during_workload_simulation_invalidates_temporary_state(

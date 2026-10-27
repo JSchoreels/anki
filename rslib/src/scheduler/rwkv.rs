@@ -348,8 +348,11 @@ impl Collection {
             timing,
             &decks_by_id,
             &configs_by_id,
-            input.include_suspended_review,
-            input.include_disabled_decks,
+            RwkvReviewInputRowOptions {
+                include_suspended_review: input.include_suspended_review,
+                include_disabled_decks: input.include_disabled_decks,
+                include_comparison_data: false,
+            },
         )?;
         response.searched_cards = card_ids.len() as u32;
         Ok(response)
@@ -384,8 +387,11 @@ impl Collection {
             timing,
             &decks_by_id,
             &configs_by_id,
-            input.include_suspended_review,
-            input.include_disabled_decks,
+            RwkvReviewInputRowOptions {
+                include_suspended_review: input.include_suspended_review,
+                include_disabled_decks: input.include_disabled_decks,
+                include_comparison_data: input.include_comparison_data,
+            },
         )?;
         response.searched_cards = searched_cards;
         Ok(response)
@@ -417,8 +423,11 @@ impl Collection {
             timing,
             &decks_by_id,
             &configs_by_id,
-            false,
-            input.include_disabled_decks,
+            RwkvReviewInputRowOptions {
+                include_suspended_review: false,
+                include_disabled_decks: input.include_disabled_decks,
+                include_comparison_data: false,
+            },
         )?;
         response.searched_cards = searched_cards;
         Ok(response)
@@ -430,8 +439,7 @@ impl Collection {
         timing: SchedTimingToday,
         decks_by_id: &HashMap<DeckId, Deck>,
         configs_by_id: &HashMap<DeckConfigId, DeckConfig>,
-        include_suspended_review: bool,
-        include_disabled_decks: bool,
+        options: RwkvReviewInputRowOptions,
     ) -> Result<RwkvReviewInputRowsForCardsResponse> {
         self.populate_rwkv_last_review_times(&mut cards)?;
 
@@ -442,8 +450,12 @@ impl Collection {
         let loaded_cards = cards.len() as u32;
 
         for card in cards {
-            let Some(state) =
-                self.rwkv_review_input_state(&card, timing, include_suspended_review, true)?
+            let Some(state) = self.rwkv_review_input_state(
+                &card,
+                timing,
+                options.include_suspended_review,
+                true,
+            )?
             else {
                 continue;
             };
@@ -460,7 +472,7 @@ impl Collection {
             let Some(config) = configs_by_id.get(&config_id) else {
                 continue;
             };
-            if !rwkv_config_active(config) && !include_disabled_decks {
+            if !rwkv_config_active(config) && !options.include_disabled_decks {
                 disabled_config_cards += 1;
                 continue;
             }
@@ -503,6 +515,18 @@ impl Collection {
                     target_retention: valid_rwkv_target_retention(partial.target_retention),
                     batch_size: partial.batch_size,
                     enforce_grade_order: Some(partial.enforce_grade_order),
+                    fsrs_memory_state: options
+                        .include_comparison_data
+                        .then(|| partial.card.memory_state.map(Into::into))
+                        .flatten(),
+                    fsrs_parameters: if options.include_comparison_data {
+                        preset.params.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    fsrs_historical_retention: options
+                        .include_comparison_data
+                        .then_some(preset.historical_retention),
                 })
             })
             .collect();
@@ -1142,6 +1166,12 @@ fn rwkv_history_hash_hex(hash: [u8; 32]) -> String {
         })
 }
 
+struct RwkvReviewInputRowOptions {
+    include_suspended_review: bool,
+    include_disabled_decks: bool,
+    include_comparison_data: bool,
+}
+
 #[derive(Debug)]
 struct RwkvReviewInputRowPartial {
     card: Card,
@@ -1757,6 +1787,12 @@ mod test {
         review_card.ctype = CardType::Review;
         review_card.queue = CardQueue::Review;
         review_card.interval = 4;
+        review_card.memory_state = Some(FsrsMemoryState {
+            stability: 11.0,
+            stability_internal: 10.0,
+            stability_fast: Some(6.0),
+            difficulty: 5.0,
+        });
         review_card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
         col.add_card(&mut review_card)?;
         let mut new_card = Card::new(NoteId(20), 0, DeckId(1), timing.days_elapsed as i32);
@@ -1768,6 +1804,7 @@ mod test {
                 include_suspended_review: false,
                 include_disabled_decks: false,
                 include_new_cards: false,
+                include_comparison_data: false,
             })?;
 
         assert_eq!(response.searched_cards, 2);
@@ -1775,6 +1812,21 @@ mod test {
         assert_eq!(response.cards_with_supported_state, 1);
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].card_id, review_card.id.0);
+        assert!(response.rows[0].fsrs_memory_state.is_none());
+
+        let comparison =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{}", review_card.id.0),
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+                include_comparison_data: true,
+            })?;
+        let memory = comparison.rows[0].fsrs_memory_state.as_ref().unwrap();
+        assert_eq!(memory.stability_internal, Some(10.0));
+        assert_eq!(memory.stability_fast, Some(6.0));
+        assert_eq!(memory.difficulty, 5.0);
+        assert!(comparison.rows[0].fsrs_historical_retention.is_some());
 
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
@@ -1782,6 +1834,7 @@ mod test {
                 include_suspended_review: false,
                 include_disabled_decks: false,
                 include_new_cards: false,
+                include_comparison_data: false,
             })?;
 
         assert_eq!(response.searched_cards, 1);
@@ -1801,6 +1854,7 @@ mod test {
                 include_suspended_review: false,
                 include_disabled_decks: false,
                 include_new_cards: false,
+                include_comparison_data: false,
             })?;
 
         assert_eq!(response.searched_cards, 0);
@@ -1812,6 +1866,7 @@ mod test {
                 include_suspended_review: false,
                 include_disabled_decks: false,
                 include_new_cards: false,
+                include_comparison_data: false,
             })?;
 
         assert_eq!(response.searched_cards, 1);
@@ -1824,6 +1879,7 @@ mod test {
                 include_suspended_review: false,
                 include_disabled_decks: false,
                 include_new_cards: false,
+                include_comparison_data: false,
             })?;
 
         assert_eq!(response.searched_cards, 1);

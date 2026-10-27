@@ -7,12 +7,16 @@ import math
 import subprocess
 import sys
 import types
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from anki import scheduler_pb2
 from aqt import rwkv_srs_benchmark
+from aqt.rwkv_scheduler import RwkvReviewIdentity, RwkvReviewInput
 
 
 def test_review_performance_benchmark_starts_in_fresh_interpreter() -> None:
@@ -24,6 +28,79 @@ def test_review_performance_benchmark_starts_in_fresh_interpreter() -> None:
         check=True,
     )
     assert "--collection-copy" in result.stdout
+
+
+@pytest.mark.parametrize("learner", [0, 1])
+def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
+    learner: int,
+) -> None:
+    model = (
+        Path(__file__).parents[1]
+        / "aqt"
+        / "rwkv_inference"
+        / "sm56"
+        / "weights.f32.bin"
+    )
+    runtime = rwkv_srs_benchmark._RustRwkvRuntime(
+        model_path=model,
+        target_retention=0.9,
+        max_interval_days=36500,
+        state_precision="cards_int4_notes_int8",
+        model="sm56",
+    )
+    answer = RwkvReviewInput(
+        identity=RwkvReviewIdentity(card_id=100, note_id=101, deck_id=1, preset_id=1),
+        is_query=False,
+        ease=3,
+        duration_millis=8000,
+        card_type=2,
+        card_queue=2,
+        card_due=100,
+        interval_days=5,
+        ease_factor=2500,
+        reps=2,
+        lapses=0,
+        day_offset=100,
+        current_state_kind="normal",
+        current_normal_state_kind="review",
+        current_elapsed_days=5,
+        current_elapsed_seconds=432000,
+    )
+    runtime.warm_up_reviews([answer], return_snapshot=False)
+    query = replace(
+        answer,
+        is_query=True,
+        ease=None,
+        duration_millis=None,
+        fsrs_memory_state=(10.0, 5.0, 10.0),
+        fsrs_historical_retention=0.9,
+    )
+    request = scheduler_pb2.SimulateFsrsReviewRequest(
+        days_to_simulate=3,
+        review_limit=10,
+        max_interval=36500,
+        rwkv_workload_target_step=70,
+        rwkv_comparison=scheduler_pb2.RwkvComparisonOptions(
+            learner=learner,
+            scenario=1,
+            repetitions=1,
+        ),
+    )
+
+    fsrs, rwkv, estimated = runtime.compare_workloads(
+        inputs=[(100, query, 64)],
+        request=request,
+        input_scale=1.0,
+        review_model=SimpleNamespace(
+            grade_seconds=(12.0, 9.0, 7.0, 5.0), bucket_probabilities={}
+        ),
+    )
+
+    assert fsrs[0] == pytest.approx(rwkv[0])
+    assert [point[0] for point in fsrs[2]] == [30, 99]
+    assert [point[0] for point in rwkv[2]] == [30, 99]
+    assert all(point[4] > 0 for point in fsrs[2] + rwkv[2])
+    assert estimated == 0
 
 
 def test_srs_benchmark_loader_enables_eval_mode(

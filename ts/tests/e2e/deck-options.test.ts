@@ -14,9 +14,81 @@ import {
     RwkvProfileSettings,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
+import {
+    RwkvComparisonOptions_Learner,
+    RwkvComparisonOptions_PerformanceScenario,
+    RwkvComparisonResponse,
+    SimulateFsrsReviewRequest,
+    SimulateFsrsWorkloadResponse,
+} from "@generated/anki/scheduler_pb";
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test("RWKV comparison sends the selected shared learner and scenario", async ({ page }) => {
+    let submitted: SimulateFsrsReviewRequest | undefined;
+    let noRwkvReviews = false;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!.rwkvReviewEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/startRwkvWorkload", async (route) => {
+        submitted = decodeRequestBody(route.request(), SimulateFsrsReviewRequest);
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    await page.route("**/_anki/rwkvWorkloadResult", async (route) => {
+        const comparison = new RwkvComparisonResponse({
+            fsrs: new SimulateFsrsWorkloadResponse({
+                memorized: { 90: 1.5 },
+                cost: { 90: 20 },
+                reviewCount: { 90: 3 },
+                reviewlessEndMemorized: 1,
+            }),
+            rwkv: new SimulateFsrsWorkloadResponse({
+                memorized: { 90: 1.7 },
+                cost: { 90: noRwkvReviews ? 0 : 18 },
+                reviewCount: { 90: noRwkvReviews ? 0 : 2 },
+                reviewlessEndMemorized: 1,
+            }),
+            sampledCards: 1,
+            totalCards: 2,
+            estimatedFsrsStates: 1,
+        });
+        await route.fulfill({ body: Buffer.from(comparison.toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const card = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+    await card.locator("details.rwkv-advanced summary").click();
+    await card.getByRole("button", { name: "Compare RWKV with FSRS", exact: true }).click();
+    const comparison = page.getByRole("dialog").filter({
+        has: page.getByRole("heading", { name: "FSRS / RWKV Efficiency Comparison (Experimental)", exact: true }),
+    });
+    await comparison.getByLabel("Simulated learner").selectOption(String(RwkvComparisonOptions_Learner.RWKV));
+    await comparison.getByLabel("Performance scenario").selectOption(
+        String(RwkvComparisonOptions_PerformanceScenario.TEMPORARY_DROP),
+    );
+    await comparison.getByRole("button", { name: "Simulate", exact: true }).click();
+    await expect.poll(() => submitted?.rwkvComparison?.learner).toBe(RwkvComparisonOptions_Learner.RWKV);
+    expect(submitted?.rwkvComparison?.scenario).toBe(RwkvComparisonOptions_PerformanceScenario.TEMPORARY_DROP);
+    expect(submitted?.rwkvComparison?.repetitions).toBe(1);
+    expect(submitted?.rwkvWorkloadSampleLimit).toBe(250);
+    expect(submitted?.rwkvWorkloadTargetStep).toBe(10);
+    await expect(comparison.getByText(/1.*of.*2.*cards simulated/)).toBeVisible();
+    await expect(comparison.getByText(/run 1\): RWKV time saving/)).toBeVisible();
+    await comparison.getByLabel("Performance scenario").selectOption(
+        String(RwkvComparisonOptions_PerformanceScenario.STEADY),
+    );
+    await comparison.getByRole("button", { name: "Simulate", exact: true }).click();
+    await expect(comparison.getByText(/Run .*2.*RWKV-based learner.*steady/)).toBeVisible();
+    await expect(comparison.getByText(/Run .*1.*RWKV-based learner.*temporary drop/)).toBeVisible();
+    noRwkvReviews = true;
+    await comparison.getByRole("button", { name: "Simulate", exact: true }).click();
+    const noReviewsRow = comparison.getByText(/run 3\): RWKV time saving/).locator("..");
+    await expect(noReviewsRow).toContainText("100.0%");
+});
 
 test(
     "RWKV Advanced hides model, queue and comparison controls and preserves precision on Save",

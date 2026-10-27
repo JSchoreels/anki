@@ -737,6 +737,35 @@ deck-config-fsrs-simulator-ratio-tooltip2 = { $time } net memorized cards per ho
 deck-config-fsrs-simulator-weighted-memorized-tooltip = { $memorized } R*f(S)
 deck-config-fsrs-simulator-weighted-ratio-tooltip = { $time } net R*f(S) per hour
 
+## Experimental FSRS/RWKV shared-learner comparison.
+
+deck-config-rwkv-comparison-learner = Simulated learner
+deck-config-rwkv-comparison-learner-fsrs = FSRS-based learner
+deck-config-rwkv-comparison-learner-rwkv = RWKV-based learner
+deck-config-rwkv-comparison-scenario = Performance scenario
+deck-config-rwkv-comparison-steady = Steady
+deck-config-rwkv-comparison-temporary-drop = Temporary drop: −15 points in the middle third
+deck-config-rwkv-comparison-persistent-drop = Persistent drop: −15 points after the first third
+deck-config-rwkv-comparison-temporary-improvement = Temporary improvement: +10 points in the middle third
+deck-config-rwkv-comparison-steady-short = steady
+deck-config-rwkv-comparison-temporary-drop-short = temporary drop
+deck-config-rwkv-comparison-persistent-drop-short = persistent drop
+deck-config-rwkv-comparison-temporary-improvement-short = temporary improvement
+deck-config-rwkv-comparison-sample = Sampled cards (0 for all)
+deck-config-rwkv-comparison-step = Retention step (percentage points)
+deck-config-rwkv-comparison-runs = Paired simulation runs
+deck-config-rwkv-comparison-assumptions =
+    Both schedulers use the same eligible RWKV-enabled cards, starting due dates, simulated learner and average time per grade.
+    The chosen learner can favor its own model, and sampled results are estimates. One paired run can be noisy; increase the number of runs to reduce random variation.
+    More cards, finer steps and more runs take longer, especially at high retention. Review ordering is approximated.
+    The day-level comparison excludes learning and relearning steps, easy days, dynamic retention, preset switching, reviews outside the selected cards and the RWKV-Instant queue.
+deck-config-rwkv-comparison-run-details = Run { $run }, { $preset }, { $learner }, { $scenario }: { $sampled } of { $total } cards simulated; { $estimated } sampled cards used estimated FSRS states; { $days } days, { $runs } paired runs, { $step }-point retention step.
+deck-config-rwkv-comparison-matched-memory-help =
+    The chart compares the same requested retention, which can produce different simulated memory.
+    Below, each FSRS point is matched with the cheapest RWKV point on the tested grid with at least as much simulated memory.
+    Negative savings mean RWKV took more time; unmatched targets are excluded. Selecting the cheapest point can make savings look optimistic when runs are noisy.
+deck-config-rwkv-comparison-no-memory-match = No tested points matched in simulated memory.
+
 ## Messages related to the FSRS scheduler’s health check. The health check determines whether the correlation between FSRS predictions and your memory is good or bad. It can be optionally triggered as part of the "Optimize" function.
 
 # Checkbox

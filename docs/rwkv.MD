@@ -1068,64 +1068,64 @@ recomputed from the card's last review day. New, learning,
 relearning, suspended, and filtered cards are not changed by this maintenance
 action.
 
-Deck Options also exposes an experimental RWKV Desired Retention "Help Me
-Decide" workload simulator. It is desktop-only and requires a usable local RWKV
-state cache. The Deck Options action opens an FSRS/RWKV comparison that overlays
-both curves in one chart. FSRS and RWKV use distinct colors, and the chart hover
-reports both values plus RWKV's relative performance. Both runs are built from
-the same exact per-preset request, including days, new cards/day, reviews/day,
-maximum interval, review order, whether new cards ignore the review limit, and
-leech suspension. The simulator runs a fixed target-retention sweep over RWKV-enabled
-new and review cards matched by the selected deck/preset search, snapshots and
-restores the recurrent RWKV state for each target, and reports the result through the
-same workload chart shape as the FSRS Help Me Decide tool. The embedded Rust
-runtime runs the whole sweep behind one bridge call, directly from its resident
-warmed state: it copies only the card, note, deck, and preset streams of the
-simulated cards plus the global stream, gives each target its own copy of that
-subset, predicts due reviews from borrowed states, chooses deterministic
-simulated grades, and applies answer-state transitions sequentially inside each
-target. Nothing else can influence a simulated card, so the results are
-identical to replaying every target on a full copy of the state. The resident
-state itself is left unchanged, so the simulation no longer serializes the whole
-state to Python first. Targets run concurrently while their copies fit a 1 GiB
-budget; a sampled simulation needs a few tens of MB per target, while an exact
-simulation of a large deck falls back to one target at a time. On a
-13,864-card desktop collection with default settings (250 sampled cards, 365
-days, DR step 1), a release build measured 120.2s and 5.5 GB peak memory before
-these changes and 46.8s and 2.3 GB after, with identical output.
-Development backends without that embedded simulator fall back to the older
-Python loop.
-Simulated grade sampling uses the same deterministic per-card quantiles across
-target retentions, and reported review counts are normalized to be nondecreasing
-as target retention rises, reducing adjacent-DR sawtooth noise in the Reviews
-view.
-The Efficiency view reports net memorized gain per hour relative to the
-reviewless baseline, so it can be negative when simulated reviews leave the
-final predicted retrievability sum below the no-review trajectory.
-When Smooth graph is enabled, RWKV workload curves use a centered moving window
-over neighboring target-retention points to reduce approximate-simulation noise.
-While the sweep is running, Deck Options polls a desktop-local progress value
-that advances over the reviewless baseline and each target-retention point.
-For large collections, the RWKV simulator exposes approximate controls: the
-sample cap limits how many active review cards are simulated and scales the
-result back up, the DR step skips intermediate target-retention points, and the
-state stride updates the simulated recurrent RWKV state only every Nth simulated
-review. When sampling is active, the daily review limit is scaled down for the
-sample before results are scaled back up, and reported review totals are capped
-at the configured daily limit multiplied by the simulated day count. The
-standalone RWKV workload form defaults to a sample cap of `250`, a DR step of
-`1`, a max target retention of `99%`, and a state stride of `10`. The
-combined comparison defaults to exact settings so its RWKV and FSRS curves
-cover the same target-retention points without sampling or skipped state
-updates.
-Exact mode is still available by setting the sample cap to `0`, DR step to `1`,
-and state stride to `1`.
-Existing new cards are introduced up to the shared daily limit and transition
-to review scheduling after their first simulated answer. The RWKV path does not
-simulate separate learning/relearning steps, additional synthetic new cards,
-Dynamic DR/ADR, or easy days. It uses cached historical RWKV retrievability
-samples when available to estimate grade mix and review time, with a
-deterministic fallback model otherwise.
+Deck Options exposes an experimental desktop-only FSRS/RWKV workload comparison
+that requires a usable local RWKV state cache. Both schedulers begin with the
+same eligible RWKV-enabled new and review cards from the selected search,
+including their current due dates, FSRS parameters, and memory states. The
+comparison runs each scheduler separately against an independently maintained
+simulated learner, using the same learner model for both. Choose an FSRS-based
+or RWKV-based learner: each is a model of recall, not a measurement of the
+future, and a learner may favor the scheduler based on its own model. Review
+both learner choices before drawing conclusions. Missing or invalid FSRS memory
+states are estimated from the card's SM-2 interval and, where supported, ease; the interface
+reports how many sampled cards required estimates.
+
+The steady scenario uses the learner's predicted recall. Other scenarios adjust
+that recall probability for both schedulers: a temporary 15-percentage-point drop
+or 10-point improvement during the middle third of the simulation, or a
+15-point drop from the end of the first third onward. Probabilities are clamped
+to 0–100%. These are illustrative changes in performance, not calibrated
+predictions. An answer's success or failure follows the adjusted learner
+probability, with the Hard/Good/Easy mix and average time per grade derived
+from historical data where available. A new card's first answer uses an 85%
+baseline before the scenario adjustment. The same card and review ordinal use
+the same random quantile in both simulations even if review dates differ; each
+additional paired run uses a different seed. RWKV updates its recurrent state
+after every simulated answer, and the resident state is never changed.
+
+The comparison defaults to a 250-card sample, a 10-percentage-point retention
+step from 30% through 99%, and one paired run. Sample selection is deterministic
+and results are scaled to the eligible population; scaled fractional daily
+limits are distributed over days. Use sample cap `0` for all eligible cards,
+step `1` for every retention point, or more paired runs to reduce random noise;
+these settings can take substantially longer. The graph can still be jagged:
+review counts are actual simulated counts, not forced to rise with retention.
+Graph hover comparisons use the same requested retention, which can yield
+different simulated memory. A separate time-saving range matches each FSRS point
+to the cheapest tested RWKV point with at least as much simulated memory; it
+excludes unmatched targets and does not interpolate between tested retentions.
+Choosing the cheapest point can make this range optimistic when runs are noisy.
+The Efficiency view measures memorized gain per hour relative to a shared
+reviewless baseline and can be negative.
+
+This is a day-level approximation over the selected cards, using the same review
+and new-card limits, approximated review order, maximum interval, leech setting,
+and grade costs for both policies. New cards are introduced after reviews each
+day, without modeling the new/review mixing setting. It does not model separate learning or relearning
+steps, easy days, additional synthetic new cards, dynamic desired retention,
+changes of preset, reviews outside the selected cards, or the live
+RWKV-Instant queue. Intervals are rounded to whole days without live scheduling
+fuzz. The comparison does not establish which scheduler performs better for a
+real learner.
+
+The standalone RWKV workload simulator remains available. Its sample cap
+defaults to `250`, its retention step to `1`, and its state stride to `1` so it
+updates recurrent state after every answer. Larger strides can be selected for
+faster approximate runs, but can substantially alter results. Its embedded Rust
+runtime operates from resident warmed state, and a development backend without
+that simulator falls back to the Python loop. Optional smoothing applies a
+centered moving window to neighboring retention points. Both simulator paths
+report progress while running.
 
 After an answer is applied on desktop, the reviewer updates the in-memory RWKV
 state. Every `rwkv_review_refresh_interval` answered reviews, it refreshes the

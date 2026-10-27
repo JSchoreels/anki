@@ -38,6 +38,8 @@ use architecture::*;
 mod model_bench;
 #[path = "precision.rs"]
 mod precision;
+#[path = "workload_comparison.rs"]
+mod workload_comparison;
 pub use precision::StatePrecision;
 #[cfg(test)]
 #[path = "collection_benchmark.rs"]
@@ -1762,7 +1764,7 @@ insert into segments (
         progress(1, total_steps)?;
 
         let target_state_len = base_state.state_len_for(&StreamIds::for_workload_inputs(&inputs));
-        let mut points = self.simulate_workload_targets(
+        let points = self.simulate_workload_targets(
             RwkvWorkloadTargetSweep {
                 inputs,
                 base_state,
@@ -1782,8 +1784,6 @@ insert into segments (
             },
             progress,
         )?;
-        enforce_monotonic_workload_review_counts(&mut points);
-
         Ok(RwkvWorkloadSimulationOutput {
             reviewless_end_memorized,
             reviewless_end_weighted_memorized,
@@ -2108,7 +2108,15 @@ insert into segments (
         let answer_inputs = inputs
             .iter()
             .zip(eases)
-            .map(|(input, ease)| simulated_answer_input(input, *ease))
+            .flat_map(|(input, ease)| {
+                if input.enforce_grade_order {
+                    ANSWER_EASES.to_vec()
+                } else {
+                    vec![*ease]
+                }
+                .into_iter()
+                .map(|ease| simulated_answer_input(input, ease))
+            })
             .collect::<Vec<_>>();
         let work_items = answer_inputs
             .iter()
@@ -2119,12 +2127,39 @@ insert into segments (
             .collect::<Vec<_>>();
         let (default_retention, max_interval_days) =
             (self.target_retention, self.max_interval_days);
-        self.model
-            .review_many_borrowed(&work_items, |index, heads| {
-                let target_retention = inputs[index].target_retentions[(eases[index] - 1) as usize]
-                    .unwrap_or(default_retention);
-                interval_for_curve(&heads.curve, target_retention, max_interval_days)
+        let curves = self
+            .model
+            .review_many_borrowed(&work_items, |_, heads| heads.curve);
+        let mut next = 0;
+        inputs
+            .iter()
+            .zip(eases)
+            .map(|(input, ease)| {
+                let grade = (*ease - 1) as usize;
+                if input.enforce_grade_order {
+                    let answer_curves = std::array::from_fn(|index| &curves[next + index]);
+                    next += ANSWER_EASES.len();
+                    let targets = input
+                        .target_retentions
+                        .map(|target| target.unwrap_or(default_retention));
+                    unrounded_intervals_for_answer_curves(
+                        answer_curves,
+                        targets,
+                        max_interval_days,
+                        true,
+                    )[grade]
+                        .map(|days| clamped_interval_days(days, max_interval_days))
+                } else {
+                    let curve = &curves[next];
+                    next += 1;
+                    interval_for_curve(
+                        curve,
+                        input.target_retentions[grade].unwrap_or(default_retention),
+                        max_interval_days,
+                    )
+                }
             })
+            .collect()
     }
 
     fn apply_simulation_answer(
@@ -2530,17 +2565,6 @@ fn simulation_grade(probabilities: [f32; 4], card_id: i64, day: i64, reps: i64) 
         }
     }
     4
-}
-
-fn enforce_monotonic_workload_review_counts(points: &mut [(u32, RwkvWorkloadSimulationPoint)]) {
-    let mut indexes: Vec<_> = (0..points.len()).collect();
-    indexes.sort_by_key(|index| points[*index].0);
-
-    let mut running = 0;
-    for index in indexes {
-        running = running.max(points[index].1.review_count);
-        points[index].1.review_count = running;
-    }
 }
 
 fn simulation_unit_hash(card_id: i64, day: i64, reps: i64) -> f64 {
@@ -11898,6 +11922,45 @@ order by e.id, e.cid
     }
 
     #[test]
+    fn workload_intervals_honor_grade_order() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        inference
+            .warm_up_reviews(bulk_parity_reviews(60), false)
+            .unwrap();
+        let mut query = bulk_parity_reviews(1).remove(0);
+        query.is_query = true;
+        query.ease = None;
+        query.duration_millis = None;
+        query.target_retentions = [Some(0.3), Some(0.99), Some(0.3), Some(0.99)];
+        query.enforce_grade_order = true;
+
+        let states = SimulationStates::new(&inference.warm_up_states);
+        let mut worker = inference.workload_worker(inference.features.clone(), HashMap::new());
+        let heads: [ReviewHeads; 4] = ANSWER_EASES.map(|ease| {
+            worker
+                .review_heads_for_state(
+                    &simulated_answer_input(&query, ease),
+                    states.state_ref(&query),
+                )
+                .unwrap()
+        });
+        let (ordered, _) = worker.answer_intervals(&query, &heads);
+        let mut without_order = query.clone();
+        without_order.enforce_grade_order = false;
+        let (unordered, _) = worker.answer_intervals(&without_order, &heads);
+        assert_ne!(ordered, unordered, "fixture must exercise grade ordering");
+
+        let inputs = vec![query; 4];
+        let actual = worker.selected_answer_intervals_for_inputs(&inputs, &states, &ANSWER_EASES);
+        let expected = ordered.map(|days| days.map(|days| clamped_interval_days(days, 36_500)));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn workload_simulation_matches_full_state_sequential_reference() {
         let Some(weights) = embedded_weights_path() else {
             eprintln!("skipping: embedded RWKV weights not found");
@@ -11966,7 +12029,7 @@ order by e.id, e.cid
             )
             .unwrap();
         let reference_config = config();
-        let mut points = target_drs(70, 95, 5)
+        let points = target_drs(70, 95, 5)
             .into_iter()
             .map(|dr| {
                 let mut worker =
@@ -11993,7 +12056,6 @@ order by e.id, e.cid
                 (dr, point)
             })
             .collect::<Vec<_>>();
-        enforce_monotonic_workload_review_counts(&mut points);
         let reference = RwkvWorkloadSimulationOutput {
             reviewless_end_memorized,
             reviewless_end_weighted_memorized,
@@ -12046,32 +12108,6 @@ order by e.id, e.cid
             progress_steps,
             (0..=7).map(|step| (step, 7)).collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn workload_review_counts_are_monotonic_by_target_dr() {
-        fn point(review_count: u32) -> RwkvWorkloadSimulationPoint {
-            RwkvWorkloadSimulationPoint {
-                memorized: 0.0,
-                weighted_memorized: 0.0,
-                cost: 0.0,
-                review_count,
-            }
-        }
-
-        let mut points = vec![
-            (31, point(8)),
-            (30, point(10)),
-            (34, point(12)),
-            (33, point(11)),
-        ];
-
-        enforce_monotonic_workload_review_counts(&mut points);
-
-        assert_eq!(points[0].1.review_count, 10);
-        assert_eq!(points[1].1.review_count, 10);
-        assert_eq!(points[2].1.review_count, 12);
-        assert_eq!(points[3].1.review_count, 11);
     }
 
     #[test]
