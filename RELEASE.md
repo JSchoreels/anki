@@ -51,6 +51,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **Draft builds no longer offer older published updates.** Automatic checks and Tools → Check for Updates compare the full fork build number, preventing a newer draft from prompting to install an older or equal published build with the same application version. Newer builds continue to be offered.
 
+- **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
+
 ### Technical details
 
 - **RWKV re-import reset boundaries:** A versioned collection-config mirror protects each boundary when an older client rewrites card data. On normal sync, newer clients reconcile a stale mirror and upload the result; scheduled exports include the effective boundary, and import, undo and redo preserve the intended history. Boundaries already stored only in card data are mirrored when the collection opens. Full-sync replacement and packages exported directly from older clients still follow those clients' normal data-retention behavior. Genuine history and preset-routing changes continue to trigger safe recovery.
@@ -58,6 +60,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **RWKV post-answer replay:** Packed, batched zero-elapsed predictions after each historical answer do not advance the recurrent state for the query. A separate pre-answer pass lets compatible add-ons compare both values in an isolated runtime. Native tests cover both engine families, all state precisions and chunk boundaries; synthetic tests across the five embedded models matched scalar queries within 0.000003.
 
 - **RWKV queue mixing:** Queue refreshes retain the new/review mixing progress, including when the minimum-review queue is extended.
+
+- **Zstandard security update:** Update `zstd` to 0.14.3, `zstd-safe` to 8.2.0 and `zstd-sys` to 2.1.2, together with `async-compression` 0.4.51 and `compression-codecs` 0.4.46. This addresses [RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391), [RUSTSEC-2026-0398](https://rustsec.org/advisories/RUSTSEC-2026-0398), [RUSTSEC-2026-0403](https://rustsec.org/advisories/RUSTSEC-2026-0403) and [RUSTSEC-2026-0410](https://rustsec.org/advisories/RUSTSEC-2026-0410), which were detected by the Linux CI dependency audit.
 
 ## 26.09.3+fsrs7.build.107 — 2026-10-24
 
