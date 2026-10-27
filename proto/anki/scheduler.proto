@@ -1032,6 +1032,8 @@ message RwkvOfflineCalibrationRequest {
   // Record the whole history, not only its newest 30% (for FSRS's
   // validation folds, which cover most of it).
   bool all_reviews = 2;
+  // Only report: never start the replay that records them.
+  bool check_only = 3;
 }
 
 message RwkvOfflineCalibrationResponse {

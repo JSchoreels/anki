@@ -241,6 +241,7 @@ fn calibration_check(
                 anki_proto::scheduler::RwkvOfflineCalibrationRequest {
                     review_ids,
                     all_reviews,
+                    check_only: false,
                 },
             )?;
             println!(
