@@ -39,7 +39,7 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### New Features
 
-- **Faster RWKV review-gain statistics for compatible add-ons.** A batched native replay API lets Search Stats Extended compare recall immediately before and after reviews without querying each answer separately.
+- **Faster RWKV review statistics for compatible add-ons.** A batched native replay API lets Search Stats Extended compare recall with and without each review immediately or at a chosen later time without querying each answer separately.
 
 - **Clearer RWKV model help.** The model descriptions and links now appear directly below **Use Smaller Model** in Deck Options → RWKV → Advanced.
 
@@ -57,7 +57,7 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **RWKV re-import reset boundaries:** A versioned collection-config mirror protects each boundary when an older client rewrites card data. On normal sync, newer clients reconcile a stale mirror and upload the result; scheduled exports include the effective boundary, and import, undo and redo preserve the intended history. Boundaries already stored only in card data are mirrored when the collection opens. Full-sync replacement and packages exported directly from older clients still follow those clients' normal data-retention behavior. Genuine history and preset-routing changes continue to trigger safe recovery.
 
-- **RWKV post-answer replay:** Packed, batched zero-elapsed predictions after each historical answer do not advance the recurrent state for the query. A separate pre-answer pass lets compatible add-ons compare both values in an isolated runtime. Native tests cover both engine families, all state precisions and chunk boundaries; synthetic tests across the five embedded models matched scalar queries within 0.000003.
+- **RWKV review replay:** Packed, batched queries can use per-answer elapsed times and scheduler days before or after each historical answer without advancing recurrent state for the query. Scope and query inputs are validated before replay. Native tests compare both engine families with independent frozen-state queries across state precisions and chunk boundaries.
 
 - **RWKV queue mixing:** Queue refreshes retain the new/review mixing progress, including when the minimum-review queue is extended.
 

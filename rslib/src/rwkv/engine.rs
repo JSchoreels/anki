@@ -1103,6 +1103,15 @@ impl RwkvInference {
         bulk::warm_up_reviews_post_bulk(self, reviews)
     }
 
+    pub fn warm_up_reviews_query(
+        &mut self,
+        reviews: Vec<ReviewInput>,
+        queries: Vec<ReviewInput>,
+        after: bool,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        bulk::warm_up_reviews_query_bulk(self, reviews, queries, after)
+    }
+
     /// The per-review reference implementation of `warm_up_reviews`. The bulk
     /// path must match it bit-for-bit; parity tests compare the two.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -10171,6 +10180,130 @@ order by e.id, e.cid
             .map(|(index, _)| reviews[*index].ease != Some(1))
             .collect::<Vec<_>>();
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
+    }
+
+    #[test]
+    fn bulk_future_queries_match_independent_frozen_state_queries() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut reviews = bulk_parity_reviews(42);
+        let mut seen_cards = std::collections::HashSet::new();
+        for review in &mut reviews {
+            if review.ease.is_none() {
+                continue;
+            }
+            if seen_cards.insert(review.card_id) {
+                review.card_type = Some(0);
+                review.current_elapsed_days = Some(0);
+                review.current_elapsed_seconds = Some(0);
+            } else {
+                review.card_type = Some(2);
+                review.current_elapsed_days = review.current_elapsed_days.map(|days| days.max(0));
+                review.current_elapsed_seconds =
+                    review.current_elapsed_seconds.map(|seconds| seconds.max(0));
+            }
+        }
+        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+            for after in [false, true] {
+                let queries: Vec<_> = reviews
+                    .iter()
+                    .enumerate()
+                    .map(|(index, input)| {
+                        let mut query = input.clone();
+                        query.is_query = true;
+                        query.ease = None;
+                        query.duration_millis = None;
+                        let seconds = [0, 600, 3600, 86400][index % 4];
+                        let day_delta = if index % 3 == 0 || seconds == 86400 {
+                            1
+                        } else {
+                            0
+                        };
+                        query.day_offset = input.day_offset.map(|day| day + day_delta);
+                        query.current_elapsed_days = Some(if after {
+                            day_delta
+                        } else {
+                            input.current_elapsed_days.unwrap_or(0).max(0) + day_delta
+                        });
+                        query.current_elapsed_seconds = Some(if after {
+                            seconds
+                        } else {
+                            input.current_elapsed_seconds.unwrap_or(0).max(0) + seconds
+                        });
+                        query
+                    })
+                    .collect();
+                let mut reference =
+                    RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                        .unwrap();
+                let mut expected = Vec::new();
+                for (index, (review, query)) in reviews.iter().zip(&queries).enumerate() {
+                    if review.ease.is_none() {
+                        continue;
+                    }
+                    if after {
+                        reference
+                            .warm_up_reviews(vec![review.clone()], false)
+                            .unwrap();
+                    }
+                    let prediction = reference
+                        .predict_retrievability_many_from_warm_up(vec![query.clone()])
+                        .unwrap()[0];
+                    expected.push((index, prediction));
+                    if !after {
+                        reference
+                            .warm_up_reviews(vec![review.clone()], false)
+                            .unwrap();
+                    }
+                }
+                let mut bulk =
+                    RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                        .unwrap();
+                let mut actual = Vec::new();
+                for offset in (0..reviews.len()).step_by(13) {
+                    let end = (offset + 13).min(reviews.len());
+                    actual.extend(
+                        bulk.warm_up_reviews_query(
+                            reviews[offset..end].to_vec(),
+                            queries[offset..end].to_vec(),
+                            after,
+                        )
+                        .unwrap()
+                        .into_iter()
+                        .map(|(index, value)| (offset + index, value)),
+                    );
+                }
+                assert_prediction_close(&expected, &actual, 1e-5);
+                assert_warm_up_parity(&reference, &bulk);
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_future_queries_reject_mismatched_scope_before_mutating_state() {
+        let Some(weights) = embedded_weights_path() else {
+            return;
+        };
+        let reviews = bulk_parity_reviews(2);
+        let mut queries = reviews.clone();
+        for query in &mut queries {
+            query.is_query = true;
+            query.ease = None;
+            query.duration_millis = None;
+        }
+        queries[1].card_id += 1;
+        let mut inference = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let fresh = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        assert_eq!(
+            inference
+                .warm_up_reviews_query(reviews, queries, false)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_warm_up_parity(&fresh, &inference);
     }
 
     #[test]
