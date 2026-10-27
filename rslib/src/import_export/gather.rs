@@ -53,6 +53,9 @@ impl ExchangeData {
         let allow_filtered = self.enables_filtered_decks();
 
         if with_scheduling {
+            for card in &mut self.cards {
+                guard.col.storage.populate_rwkv_history_reset(card)?;
+            }
             self.revlog = guard.col.gather_revlog()?;
             if !allow_filtered {
                 self.restore_cards_from_filtered_decks();

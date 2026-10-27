@@ -28,9 +28,14 @@ pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 const REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER: &str =
     "reviewRetrievabilityCacheCleanupFullSync";
 const REVIEW_RETRIEVABILITY_CACHE_WRITE_SAVEPOINT: &str = "review_retrievability_cache_write";
-const RWKV_HISTORY_RESET_AFTER_SQL: &str = "case when json_valid(c.data) then \
-    case when json_type(c.data, '$.rwkv_reset_after') = 'integer' \
-    then max(json_extract(c.data, '$.rwkv_reset_after'), 0) else 0 end else 0 end";
+const RWKV_HISTORY_RESET_AFTER_SQL: &str = "coalesce(
+    (select case when json_valid(cast(val as text)) then
+       case when json_type(cast(val as text), '$.after') = 'integer'
+       then max(json_extract(cast(val as text), '$.after'), 0) end end
+     from config where key = 'rwkvHistoryReset_' || c.id),
+    case when json_valid(c.data) then
+      case when json_type(c.data, '$.rwkv_reset_after') = 'integer'
+      then max(json_extract(c.data, '$.rwkv_reset_after'), 0) else 0 end else 0 end)";
 const FSRS_REVIEW_RETRIEVABILITY_SAMPLE_ROLES: &str =
     "'final_fit', 'validation_fold', 'post_optimization'";
 const RWKV_REVIEW_RETRIEVABILITY_SAMPLE_ROLES: &str =

@@ -2,6 +2,8 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use super::ConfigEntry;
+use super::RwkvHistoryResetMirror;
+use super::RWKV_HISTORY_RESET_CONFIG_PREFIX;
 use crate::prelude::*;
 
 #[derive(Debug)]
@@ -34,6 +36,17 @@ impl Collection {
 
     pub(crate) fn undo_config_change(&mut self, change: UndoableConfigChange) -> Result<()> {
         match change {
+            UndoableConfigChange::Added(entry)
+                if entry.key.starts_with(RWKV_HISTORY_RESET_CONFIG_PREFIX) =>
+            {
+                self.undo_rwkv_history_reset(&entry.key, None)
+            }
+            UndoableConfigChange::Updated(entry) | UndoableConfigChange::Removed(entry)
+                if entry.key.starts_with(RWKV_HISTORY_RESET_CONFIG_PREFIX) =>
+            {
+                let previous: RwkvHistoryResetMirror = serde_json::from_slice(&entry.value)?;
+                self.undo_rwkv_history_reset(&entry.key, Some(previous))
+            }
             UndoableConfigChange::Added(entry) => self.remove_config_undoable(&entry.key),
             UndoableConfigChange::Updated(entry) => {
                 let current = self
@@ -45,6 +58,23 @@ impl Collection {
             }
             UndoableConfigChange::Removed(entry) => self.add_config_entry_undoable(entry),
         }
+    }
+
+    /// Undo/redo is a new boundary decision, not an older sync update. Keep a
+    /// timestamped fallback marker when undoing the original mirror creation.
+    fn undo_rwkv_history_reset(
+        &mut self,
+        key: &str,
+        previous: Option<RwkvHistoryResetMirror>,
+    ) -> Result<()> {
+        let current: Option<RwkvHistoryResetMirror> = self.storage.get_config_value(key)?;
+        let latest = match (current, previous) {
+            (Some(a), Some(b)) => Some(if a.updated >= b.updated { a } else { b }),
+            (a, b) => a.or(b),
+        };
+        let restored = RwkvHistoryResetMirror::new(previous.and_then(|p| p.after), latest);
+        self.set_config(key, &restored)?;
+        Ok(())
     }
 
     /// True if added, or value changed.

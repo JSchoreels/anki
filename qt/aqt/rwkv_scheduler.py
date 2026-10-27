@@ -277,10 +277,14 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
 def _rwkv_history_reset_after_sql(card_alias: str = "c") -> str:
     data = f"{card_alias}.data"
     return (
+        "coalesce((select case when json_valid(cast(val as text)) then "
+        "case when json_type(cast(val as text), '$.after') = 'integer' "
+        "then max(json_extract(cast(val as text), '$.after'), 0) end end "
+        f"from config where key = 'rwkvHistoryReset_' || {card_alias}.id), "
         f"case when json_valid({data}) then "
         f"case when json_type({data}, '$.rwkv_reset_after') = 'integer' "
         f"then max(json_extract({data}, '$.rwkv_reset_after'), 0) "
-        "else 0 end else 0 end"
+        "else 0 end else 0 end)"
     )
 
 
@@ -25100,7 +25104,8 @@ def _rwkv_card_rows_for_ids(
         )
         rows = all_rows(
             f"""
-select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data
+select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data,
+       ({_rwkv_history_reset_after_sql("cards")})
 from cards
 where cards.id in {ids2str(card_ids)}
 {_rwkv_supported_state_sql_filter() if supported_state_filter else ""}
@@ -25267,7 +25272,7 @@ group by r.cid
 def _stats_graph_card_fields_from_row(
     row: Sequence[object],
 ) -> RwkvStatsGraphCardFields | None:
-    if len(row) != 13:
+    if len(row) not in (13, 14):
         return None
 
     (
@@ -25284,7 +25289,8 @@ def _stats_graph_card_fields_from_row(
         reps,
         lapses,
         data,
-    ) = row
+    ) = row[:13]
+    reset_after = row[13] if len(row) == 14 else None
     int_values = (
         card_id,
         note_id,
@@ -25315,7 +25321,7 @@ def _stats_graph_card_fields_from_row(
         factor=cast(int, ease_factor),
         reps=cast(int, reps),
         lapses=cast(int, lapses),
-        last_review_time=_stats_graph_last_review_time(data),
+        last_review_time=_stats_graph_last_review_time(data, reset_after),
     )
 
 
@@ -25341,14 +25347,20 @@ def _stats_graph_card_from_row(row: Sequence[object]) -> RwkvStatsGraphCard | No
     )
 
 
-def _stats_graph_last_review_time(data: object) -> int | None:
+def _stats_graph_last_review_time(
+    data: object, effective_reset_after: object = None
+) -> int | None:
     if not isinstance(data, str) or not data:
         return None
 
     try:
         card_data = json.loads(data)
         value = card_data.get("lrt")
-        reset_after = card_data.get("rwkv_reset_after")
+        reset_after = (
+            effective_reset_after
+            if effective_reset_after is not None
+            else card_data.get("rwkv_reset_after")
+        )
     except (AttributeError, json.JSONDecodeError, TypeError):
         return None
 

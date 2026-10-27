@@ -169,6 +169,7 @@ impl CardContext<'_> {
                 .map(|id| id.0);
         }
         self.target_col.add_card_if_unique_undoable(card)?;
+        self.target_col.mirror_rwkv_history_reset(card)?;
         self.existing_card_ids.insert(card.id);
         self.imported_cards.insert(old_id, card.id);
 

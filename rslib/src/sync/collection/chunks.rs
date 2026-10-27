@@ -33,6 +33,9 @@ pub(in crate::sync) struct AppliedChunk {
     /// A card was added, or moved to another note or effective deck, which
     /// changes the identity of its reviews.
     pub card_identity_changed: bool,
+    /// A card-only boundary from an earlier build needs to be sent back in
+    /// collection config before an older client can strip the card field.
+    pub rwkv_mirror_added: bool,
 }
 
 pub(in crate::sync) struct ChunkableIds {
@@ -124,10 +127,13 @@ impl NormalSyncer<'_> {
 
             let done = chunk.done;
             let applied = self.col.apply_chunk(chunk, state.pending_usn)?;
+            self.rwkv_mirrors_need_upload |= applied.rwkv_mirror_added;
             // Reviews rewrite their card's scheduling fields, which is not a
             // change to the history the reviews belong to.
             self.mark_remote_non_review_collection_changed(
-                applied.card_identity_changed || !applied.note_ids.is_empty(),
+                applied.card_identity_changed
+                    || applied.rwkv_mirror_added
+                    || !applied.note_ids.is_empty(),
             );
 
             self.progress.check_cancelled()?;
@@ -202,7 +208,7 @@ impl Collection {
         Ok(())
     }
 
-    fn merge_cards(&self, entries: Vec<CardEntry>, pending_usn: Usn) -> Result<AppliedChunk> {
+    fn merge_cards(&mut self, entries: Vec<CardEntry>, pending_usn: Usn) -> Result<AppliedChunk> {
         let mut applied = AppliedChunk::default();
         for entry in entries {
             let existing_card = self.storage.get_card(entry.id)?;
@@ -213,6 +219,17 @@ impl Collection {
                 continue;
             }
             let card: Card = entry.into();
+            if !self.server && card.rwkv_history_reset_after.is_some_and(|after| after > 0) {
+                let key = crate::config::rwkv_history_reset_config_key(card.id);
+                if self
+                    .storage
+                    .get_config_value::<crate::config::RwkvHistoryResetMirror>(&key)?
+                    .is_none()
+                {
+                    self.mirror_rwkv_card_only_reset(&card)?;
+                    applied.rwkv_mirror_added = true;
+                }
+            }
             applied.card_identity_changed |= existing_card.map_or(true, |existing_card| {
                 existing_card.note_id != card.note_id
                     || existing_card.original_or_current_deck_id()
@@ -495,6 +512,43 @@ mod test {
             received.rwkv_history_reset_after,
             card.rwkv_history_reset_after
         );
+    }
+
+    #[test]
+    fn card_only_boundary_received_by_sync_is_mirrored_before_legacy_edits() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut source = col.get_first_card();
+        source.mtime = source.mtime.adding_secs(1);
+        source.rwkv_history_reset_after = Some(1_700_000_000_123);
+        let applied = col.apply_chunk(
+            Chunk {
+                cards: vec![source.clone().into()],
+                ..Default::default()
+            },
+            Usn(-1),
+        )?;
+        assert!(applied.rwkv_mirror_added);
+
+        // A later client can save the same card without knowing the field.
+        source.mtime = source.mtime.adding_secs(1);
+        source.rwkv_history_reset_after = None;
+        let applied = col.apply_chunk(
+            Chunk {
+                cards: vec![source.clone().into()],
+                ..Default::default()
+            },
+            Usn(-1),
+        )?;
+        assert!(!applied.rwkv_mirror_added);
+        assert_eq!(
+            col.storage
+                .get_card(source.id)?
+                .unwrap()
+                .rwkv_history_reset_after,
+            Some(1_700_000_000_123)
+        );
+        Ok(())
     }
 
     #[test]

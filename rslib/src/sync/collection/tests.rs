@@ -24,6 +24,7 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 
 use crate::card::CardQueue;
+use crate::card::CardType;
 use crate::collection::Collection;
 use crate::collection::CollectionBuilder;
 use crate::deckconfig::DeckConfig;
@@ -408,6 +409,133 @@ async fn deck_options_metadata_syncs_after_opaque_client_edits() -> Result<()> {
         Ok(())
     })
     .await
+}
+
+fn update_rwkv_sync_test_card(
+    col: &mut Collection,
+    card_id: CardId,
+    boundary: Option<i64>,
+) -> Result<()> {
+    col.transact(Op::UpdateCard, |col| {
+        let original = col.storage.get_card(card_id)?.unwrap();
+        let mut card = original.clone();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.rwkv_history_reset_after = boundary;
+        col.mirror_rwkv_history_reset(&card)?;
+        col.update_card_inner(&mut card, original, col.usn()?)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+async fn stale_legacy_card_edit_preserves_rwkv_boundary(
+    initial_boundary: Option<i64>,
+    final_boundary: Option<i64>,
+) -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        upload_download(&ctx).await?;
+        let mut desktop = ctx.col1();
+        let mut legacy = ctx.col2();
+        let card_id = *desktop.storage.get_all_card_ids()?.iter().next().unwrap();
+        desktop.transact(Op::UpdateCard, |col| {
+            for review_id in [1_700_000_000_000, 1_700_000_001_000] {
+                col.add_revlog_entry_undoable(RevlogEntry {
+                    id: RevlogId(review_id),
+                    cid: card_id,
+                    usn: col.usn()?,
+                    button_chosen: 3,
+                    interval: 1,
+                    ease_factor: 2_500,
+                    ..Default::default()
+                })?;
+            }
+            Ok(())
+        })?;
+
+        if initial_boundary.is_some() {
+            update_rwkv_sync_test_card(&mut desktop, card_id, initial_boundary)?;
+            ctx.normal_sync(&mut desktop).await;
+            ctx.normal_sync(&mut legacy).await;
+        }
+        update_rwkv_sync_test_card(&mut desktop, card_id, final_boundary)?;
+        ctx.normal_sync(&mut desktop).await;
+        let server_mtime = desktop.sync_meta()?.modified.0;
+        let card_mtime = desktop.storage.get_card(card_id)?.unwrap().mtime.0;
+
+        // The older client was offline during the new boundary decision. Its
+        // card edit discards the unknown field and syncs its stale config.
+        while TimestampMillis::now().0 <= server_mtime || TimestampSecs::now().0 <= card_mtime {
+            tokio::task::yield_now().await;
+        }
+        legacy.transact(Op::UpdateCard, |col| {
+            let original = col.storage.get_card(card_id)?.unwrap();
+            let mut card = original.clone();
+            card.rwkv_history_reset_after = None;
+            card.flags = 1;
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            col.update_card_inner(&mut card, original, col.usn()?)?;
+            Ok(())
+        })?;
+        ctx.normal_sync(&mut legacy).await;
+        let stale: Option<crate::config::RwkvHistoryResetMirror> = legacy
+            .storage
+            .get_config_value(&crate::config::rwkv_history_reset_config_key(card_id))?;
+        assert_eq!(stale.and_then(|mirror| mirror.after), initial_boundary);
+        let synced = ctx.normal_sync(&mut desktop).await;
+        assert_eq!(synced.required, SyncActionRequired::NoChanges);
+        let card = desktop.storage.get_card(card_id)?.unwrap();
+        assert_eq!(card.flags, 1);
+        assert_eq!(card.rwkv_history_reset_after, final_boundary);
+        let expected_reviews = if final_boundary.is_some() { 1 } else { 2 };
+        assert_eq!(
+            desktop
+                .rwkv_historical_review_inputs(Default::default())?
+                .reviews
+                .len(),
+            expected_reviews
+        );
+        assert!(!desktop
+            .storage
+            .get_collection_timestamps()?
+            .collection_changed_since_sync());
+
+        // A fresh device must get the reconciled boundary from the server in
+        // the same sync, with no local copy to rescue it.
+        let third_path = ctx.folder.path().join("third.anki2");
+        let third = CollectionBuilder::new(&third_path).build()?;
+        ctx.full_download(third).await;
+        let mut third = CollectionBuilder::new(&third_path).build()?;
+        assert_eq!(
+            third
+                .storage
+                .get_card(card_id)?
+                .unwrap()
+                .rwkv_history_reset_after,
+            final_boundary
+        );
+        assert_eq!(
+            third
+                .rwkv_historical_review_inputs(Default::default())?
+                .reviews
+                .len(),
+            expected_reviews
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn rwkv_boundary_survives_older_client_stale_sync() -> Result<()> {
+    stale_legacy_card_edit_preserves_rwkv_boundary(None, Some(1_700_000_000_123)).await
+}
+
+#[tokio::test]
+async fn rwkv_scheduled_restore_survives_older_client_stale_sync() -> Result<()> {
+    stale_legacy_card_edit_preserves_rwkv_boundary(Some(1_700_000_000_123), None).await
 }
 
 /// See issue #5109
