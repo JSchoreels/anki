@@ -233,22 +233,27 @@ fn calibration_check(
     col_path: &str,
     model_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let calibration = |col: &mut Col, review_ids: Vec<i64>| -> anki::error::Result<_> {
-        let started = Instant::now();
-        let out = SchedulerService::rwkv_offline_calibration(
-            col,
-            anki_proto::scheduler::RwkvOfflineCalibrationRequest { review_ids },
-        )?;
-        println!(
-            "calibration: available={} computing={} started={} {} predictions in {} ms",
-            out.available,
-            out.computing,
-            out.started,
-            out.predictions.len(),
-            started.elapsed().as_millis()
-        );
-        Ok(out)
-    };
+    let calibration_of =
+        |col: &mut Col, review_ids: Vec<i64>, all_reviews: bool| -> anki::error::Result<_> {
+            let started = Instant::now();
+            let out = SchedulerService::rwkv_offline_calibration(
+                col,
+                anki_proto::scheduler::RwkvOfflineCalibrationRequest {
+                    review_ids,
+                    all_reviews,
+                },
+            )?;
+            println!(
+                "calibration: available={} computing={} started={} {} predictions in {} ms",
+                out.available,
+                out.computing,
+                out.started,
+                out.predictions.len(),
+                started.elapsed().as_millis()
+            );
+            Ok(out)
+        };
+    let calibration = |col: &mut Col, review_ids| calibration_of(col, review_ids, false);
     let started = Instant::now();
     assert!(calibration(&mut col, vec![])?.started);
     while !calibration(&mut col, vec![])?.available {
@@ -331,7 +336,7 @@ fn calibration_check(
             ..Default::default()
         },
     )?;
-    let rebuilt = calibration(&mut col, asked)?;
+    let rebuilt = calibration(&mut col, asked.clone())?;
     let rebuilt: std::collections::HashMap<_, _> = rebuilt
         .review_ids
         .into_iter()
@@ -344,6 +349,36 @@ fn calibration_check(
         .filter_map(|(id, p)| rebuilt.get(id).map(|q| (p - q).abs()))
         .fold(0.0, f32::max);
     println!("incremental vs rebuilt: worst difference {worst:.6}");
+    assert!(worst < 1e-3);
+
+    // the whole history (for FSRS's validation folds): recorded again from
+    // the start; the newest 30% must come out the same
+    let started = Instant::now();
+    assert!(calibration_of(&mut col, vec![], true)?.started);
+    while !calibration_of(&mut col, vec![], true)?.available {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    println!(
+        "whole history recorded in {} s",
+        started.elapsed().as_secs()
+    );
+    let all = calibration_of(&mut col, asked.clone(), true)?;
+    // a plain request is answered from it without a new replay
+    assert!(calibration(&mut col, vec![])?.available);
+    let all: std::collections::HashMap<_, _> =
+        all.review_ids.into_iter().zip(all.predictions).collect();
+    assert!(all.len() > after.predictions.len() * 2);
+    let worst = after
+        .review_ids
+        .iter()
+        .zip(&after.predictions)
+        .map(|(id, p)| (p - all[id]).abs())
+        .fold(0.0, f32::max);
+    println!(
+        "whole history: {} of {} reviews; newest 30% worst difference {worst:.6}",
+        all.len(),
+        asked.len()
+    );
     assert!(worst < 1e-3);
     println!("*** calibration ok");
     Ok(())
