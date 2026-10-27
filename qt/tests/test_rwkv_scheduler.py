@@ -111,6 +111,9 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_revalidation_candidates = dict(
         rwkv_scheduler._reviewer_backend_revalidation_candidates
     )
+    previous_prepared_restarts = dict(
+        rwkv_scheduler._reviewer_backend_prepared_learning_restarts
+    )
     previous_pending_generations = dict(
         rwkv_scheduler._reviewer_backend_warmup_pending_generations
     )
@@ -185,6 +188,10 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._reviewer_backend_revalidation_candidates.clear()
         rwkv_scheduler._reviewer_backend_revalidation_candidates.update(
             previous_revalidation_candidates
+        )
+        rwkv_scheduler._reviewer_backend_prepared_learning_restarts.clear()
+        rwkv_scheduler._reviewer_backend_prepared_learning_restarts.update(
+            previous_prepared_restarts
         )
         rwkv_scheduler._reviewer_backend_warmup_generations.clear()
         rwkv_scheduler._reviewer_backend_warmup_generations.update(
@@ -2155,7 +2162,12 @@ def test_deck_deletion_keeps_rwkv_state_through_undo_and_redo(
         col.close()
 
 
-def test_live_learning_restart_requires_canonical_recovery() -> None:
+@pytest.mark.parametrize(
+    "boundary", ["absent", "prepared", "stale", "invalidated", "backend-replaced"]
+)
+def test_live_learning_restart_recovers_unless_its_boundary_was_prepared(
+    boundary: str,
+) -> None:
     class DB:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
             assert "r.cid in (1)" in sql
@@ -2168,6 +2180,19 @@ def test_live_learning_restart_requires_canonical_recovery() -> None:
     reviewer = _rwkv_reviewer()
     reviewer.mw.col.db = DB()
     reviewer.mw.col.get_config = lambda _key: {}
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    if boundary != "absent":
+        rwkv_scheduler._reviewer_backend_prepared_learning_restarts[key] = {
+            1: 500 if boundary == "stale" else 1_000
+        }
+    if boundary == "invalidated":
+        rwkv_scheduler._invalidate_reviewer_backend_state(
+            reviewer, reason="history changed after preparation"
+        )
+    elif boundary == "backend-replaced":
+        set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
     review_input = replace(
         _rwkv_review_input(card_id=1, note_id=10),
         is_query=False,
@@ -2187,13 +2212,14 @@ def test_live_learning_restart_requires_canonical_recovery() -> None:
         ),
     )
 
-    assert (
-        rwkv_scheduler._rwkv_live_answer_canonical_recovery_reason(
-            reviewer,
-            _rwkv_card(card_id=1, note_id=10, duration_millis=0),
-            3,
-        )
-        == "review answer replaced retained learning history"
+    assert rwkv_scheduler._rwkv_live_answer_canonical_recovery_reason(
+        reviewer,
+        _rwkv_card(card_id=1, note_id=10, duration_millis=0),
+        3,
+    ) == (
+        None
+        if boundary == "prepared"
+        else "review answer replaced retained learning history"
     )
 
 
@@ -11498,6 +11524,8 @@ def _reviewed_rwkv_pair(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     native_history: bool,
+    *,
+    learning_only: bool = False,
 ) -> Iterator[
     tuple[
         SimpleNamespace,
@@ -11525,7 +11553,7 @@ def _reviewed_rwkv_pair(
             col.add_note(note, DeckId(1))
             card = note.cards()[0]
             card_ids.append(card.id)
-            for ease in (4, 3):
+            for ease in (4,) if learning_only else (4, 3):
                 card = col.get_card(card.id)
                 card.start_timer()
                 col.sched.answerCard(card, ease)
@@ -11566,6 +11594,222 @@ def _reviewed_rwkv_pair(
         yield reviewer, backend, timers, card_ids
     finally:
         col.close()
+
+
+@pytest.mark.parametrize("ease", [1, 3])
+def test_queued_reviewer_answers_keep_rwkv_state_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    ease: int,
+) -> None:
+    from aqt.main import AnkiQt
+    from aqt.operations.scheduling import answer_card
+
+    with _reviewed_rwkv_pair(monkeypatch, tmp_path, native_history=True) as setup:
+        reviewer, backend, timers, card_ids = setup
+        mw = reviewer.mw
+        col = mw.col
+        col.sched.set_due_date(card_ids, "0")
+        mw.state = "review"
+        reviewer.op_executed = lambda *_args: False
+        runtime = cast(_CacheRuntime, backend._runtime)
+        previous_answers = len(runtime.answered_inputs)
+
+        with caplog.at_level("DEBUG", logger="aqt.rwkv_scheduler"):
+            for index in range(2):
+                queued = col.sched.get_queued_cards()
+                assert queued is not None and queued.cards
+                queued_card = queued.cards[0]
+                card = col.get_card(queued_card.card.id)
+                card.start_timer()
+                reviewer._v3.states = queued_card.states
+                answer = col.sched.build_answer(
+                    card=card,
+                    states=queued_card.states,
+                    rating=(
+                        scheduler_pb2.CardAnswer.AGAIN
+                        if ease == 1
+                        else scheduler_pb2.CardAnswer.GOOD
+                    ),
+                )
+                rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease)
+                changes = answer_card(
+                    parent=mw,
+                    answer=answer,
+                    after_answer=lambda: record_reviewer_answer(reviewer, card, ease),
+                )._op(col)
+
+                assert changes.deck
+                assert changes.study_queues
+                assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+                assert len(runtime.answered_inputs) == previous_answers + index + 1
+                AnkiQt.on_operation_did_execute(mw, changes, reviewer)
+
+                assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+                assert timers == []
+
+        assert "RWKV resident state invalidated" not in caplog.text
+        assert "RWKV state recovery scheduled" not in caplog.text
+
+
+@pytest.mark.parametrize("native_history", [True, False])
+@pytest.mark.parametrize(
+    ("learning_only", "force_rebuild"), [(False, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("ease", [1, 3])
+def test_reimported_new_cards_do_not_recover_rwkv_after_each_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    native_history: bool,
+    learning_only: bool,
+    force_rebuild: bool,
+    ease: int,
+) -> None:
+    from anki.collection import DeckIdLimit
+    from anki.import_export_pb2 import (
+        ExportAnkiPackageOptions,
+        ImportAnkiPackageRequest,
+    )
+    from aqt.main import AnkiQt
+
+    with _reviewed_rwkv_pair(
+        monkeypatch, tmp_path, native_history, learning_only=learning_only
+    ) as setup:
+        reviewer, _backend, timers, card_ids = setup
+        mw = reviewer.mw
+        col = mw.col
+        package = tmp_path / "deck.apkg"
+        col.export_anki_package(
+            out_path=str(package),
+            options=ExportAnkiPackageOptions(with_scheduling=False),
+            limit=DeckIdLimit(DeckId(1)),
+        )
+        col.decks.remove([DeckId(1)])
+        col.import_anki_package(ImportAnkiPackageRequest(package_path=str(package)))
+        assert set(col.find_cards("is:new")) == set(card_ids)
+        assert all(
+            len(col.get_review_logs(card_id)) == (1 if learning_only else 2)
+            for card_id in card_ids
+        )
+        runtime = _CacheRuntime()
+        backend = RwkvStatefulReviewerBackend(runtime)
+        set_reviewer_backend(backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(
+            reviewer, force_rebuild=force_rebuild
+        )
+        if not force_rebuild:
+            runtime = _CacheRuntime()
+            backend = RwkvStatefulReviewerBackend(runtime)
+            set_reviewer_backend(backend)
+            assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+            assert runtime.restored_cache_states == [b"runtime-cache"]
+        initial = backend.cache_snapshot()
+        assert set(initial.card_states) == (set(card_ids) if learning_only else set())
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == (
+            2 if learning_only else 0
+        )
+
+        for index, _ in enumerate(card_ids):
+            queued = col.sched.get_queued_cards().cards[0]
+            card = col.get_card(queued.card.id)
+            card.start_timer()
+            reviewer._v3.states = queued.states
+            answer = col.sched.build_answer(
+                card=card,
+                states=queued.states,
+                rating=(
+                    scheduler_pb2.CardAnswer.AGAIN
+                    if ease == 1
+                    else scheduler_pb2.CardAnswer.GOOD
+                ),
+            )
+            rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease)
+            changes = col.sched.answer_card(answer)
+            record_reviewer_answer(reviewer, card, ease)
+            AnkiQt.on_operation_did_execute(mw, changes, reviewer)
+
+            assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+            assert timers == []
+            if index == 0:
+                before_undo = backend.cache_snapshot()
+                undone = col.undo()
+                rwkv_scheduler.queue_reviewer_undo_card_ids(
+                    reviewer, record_collection_undo(undone)
+                )
+                AnkiQt.on_operation_did_execute(mw, undone.changes, None)
+                assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+                assert backend.cache_snapshot().card_states.get(card.id) == (
+                    initial.card_states.get(card.id)
+                )
+                redone = col.redo()
+                rwkv_scheduler.apply_reviewer_redo_card_ids(
+                    reviewer, record_collection_redo(redone)
+                )
+                AnkiQt.on_operation_did_execute(mw, redone.changes, None)
+                assert rwkv_scheduler._rwkv_resident_state_ready(mw)
+                assert backend.cache_snapshot() == before_undo
+                assert timers == []
+
+        answers = runtime.answered_inputs[-len(card_ids) :]
+        assert [review.identity.card_id for review in answers] == list(card_ids)
+        assert [review.card_type for review in answers] == [
+            RwkvReviewState.LEARNING if learning_only else RwkvReviewState.LEARN_START
+        ] * len(card_ids)
+        replay_backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+        set_reviewer_backend(replay_backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(
+            reviewer, force_rebuild=learning_only
+        )
+        assert replay_backend.cache_snapshot() == backend.cache_snapshot()
+
+
+@pytest.mark.parametrize("native_history", [True, False])
+@pytest.mark.parametrize("action", ["grade-now", "set-due-date"])
+def test_external_scheduling_changes_recover_prepared_new_card_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    native_history: bool,
+    action: str,
+) -> None:
+    with _reviewed_rwkv_pair(monkeypatch, tmp_path, native_history) as setup:
+        reviewer, _backend, _timers, card_ids = setup
+        col = reviewer.mw.col
+        col._backend.schedule_cards_as_new(
+            scheduler_pb2.ScheduleCardsAsNewRequest(card_ids=card_ids, log=False)
+        )
+        backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+        set_reviewer_backend(backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+        assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 0
+        if action == "grade-now":
+            reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(
+                reviewer, card_ids
+            )
+            assert reconciliation is not None
+            col._backend.grade_now(
+                card_ids=card_ids, rating=scheduler_pb2.CardAnswer.GOOD, card_options=[]
+            )
+            assert not rwkv_scheduler.record_grade_now_answers(reconciliation)
+            assert (
+                rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count
+                == 2
+            )
+        else:
+            mutation = rwkv_scheduler.prepare_collection_mutation_reconciliation(
+                reviewer, card_ids
+            )
+            assert mutation is not None
+            col.sched.set_due_date(card_ids, "0")
+            assert not rwkv_scheduler.record_collection_mutation_reconciliation(
+                mutation
+            )
+            assert (
+                rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count
+                == 4
+            )
+        assert not rwkv_scheduler._rwkv_resident_state_ready(reviewer.mw)
+        assert backend.cache_snapshot().card_states == {}
 
 
 @pytest.mark.parametrize("native_history", [True, False])
