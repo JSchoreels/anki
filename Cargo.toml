@@ -51,7 +51,7 @@ unicase = "=2.6.0" # any changes could invalidate sqlite indexes
 # normal
 ammonia = "4.1.8"
 anyhow = "1.0.98"
-async-compression = { version = "0.4.24", features = ["zstd", "tokio"] }
+async-compression = { version = "0.4.51", features = ["zstd", "tokio"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 axum = { version = "0.8.4", features = ["multipart", "macros"] }
@@ -147,7 +147,7 @@ windows = { version = "0.61.3", features = ["Media_SpeechSynthesis", "Media_Core
 wiremock = "0.6.3"
 xz2 = "0.1.7"
 zip = { version = "9.0.0", default-features = false, features = ["deflate", "time"] }
-zstd = { version = "0.13.3", features = ["zstdmt"] }
+zstd = { version = "0.14.3", features = ["zstdmt"] }
 
 # Apply mild optimizations to our dependencies in dev mode, which among other things
 # improves sha2 performance by about 21x. Opt 1 chosen due to
