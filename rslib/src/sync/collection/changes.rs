@@ -14,6 +14,8 @@ use serde_tuple::Serialize_tuple;
 use tracing::debug;
 use tracing::trace;
 
+use crate::config::RwkvHistoryResetMirror;
+use crate::config::RWKV_HISTORY_RESET_CONFIG_PREFIX;
 use crate::deckconfig::DeckConfSchema11;
 use crate::decks::DeckSchema11;
 use crate::error::SyncErrorKind;
@@ -50,6 +52,49 @@ pub struct UnchunkedChanges {
 pub struct DecksAndConfig {
     decks: Vec<DeckSchema11>,
     config: Vec<DeckConfSchema11>,
+}
+
+#[derive(Default)]
+pub(in crate::sync) struct RwkvMirrorSyncChanges {
+    changed: bool,
+    needs_upload: bool,
+}
+
+/// Older clients can sync a collection-wide config snapshot from before a
+/// reset. Merge only our independently versioned boundaries; all other config
+/// keeps Anki's usual last-writer behavior.
+fn merge_rwkv_history_reset_mirrors(
+    local: &HashMap<String, Value>,
+    remote: &mut HashMap<String, Value>,
+) -> RwkvMirrorSyncChanges {
+    let keys = local
+        .keys()
+        .chain(remote.keys())
+        .filter(|key| key.starts_with(RWKV_HISTORY_RESET_CONFIG_PREFIX))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut result = RwkvMirrorSyncChanges::default();
+    for key in keys {
+        let parse = |value: Option<&Value>| {
+            value.and_then(|value| {
+                serde_json::from_value::<RwkvHistoryResetMirror>(value.clone()).ok()
+            })
+        };
+        let local_mirror = parse(local.get(&key));
+        let remote_mirror = parse(remote.get(&key));
+        if local_mirror.is_some_and(|left| {
+            remote_mirror.map_or(true, |right| {
+                (left.updated, left.after) > (right.updated, right.after)
+            })
+        }) {
+            remote.insert(key.clone(), local[&key].clone());
+            result.needs_upload = true;
+        }
+        let merged_mirror = parse(remote.get(&key));
+        result.changed |= local_mirror.and_then(|mirror| mirror.after)
+            != merged_mirror.and_then(|mirror| mirror.after);
+    }
+    result
 }
 
 impl NormalSyncer<'_> {
@@ -108,7 +153,9 @@ impl NormalSyncer<'_> {
                 + remote.tags.len();
         })?;
 
-        self.col.apply_changes(remote, state.server_usn)?;
+        let rwkv = self.col.apply_changes(remote, state.server_usn)?;
+        self.rwkv_mirrors_need_upload |= rwkv.needs_upload;
+        self.mark_remote_non_review_collection_changed(rwkv.changed);
         self.progress.check_cancelled()?;
         Ok(())
     }
@@ -242,7 +289,8 @@ impl Collection {
         &mut self,
         remote: UnchunkedChanges,
         latest_usn: Usn,
-    ) -> Result<()> {
+    ) -> Result<RwkvMirrorSyncChanges> {
+        let mut rwkv = RwkvMirrorSyncChanges::default();
         if !remote.notetypes.is_empty()
             || !remote.decks_and_config.decks.is_empty()
             || !remote.decks_and_config.config.is_empty()
@@ -258,8 +306,11 @@ impl Collection {
         if let Some(crt) = remote.creation_stamp {
             self.set_creation_stamp(crt)?;
         }
-        if let Some(config) = remote.config {
+        if let Some(mut config) = remote.config {
             let previous = self.storage.get_all_config()?;
+            if !self.server {
+                rwkv = merge_rwkv_history_reset_mirrors(&previous, &mut config);
+            }
             let changed_keys = previous
                 .keys()
                 .chain(config.keys())
@@ -273,7 +324,7 @@ impl Collection {
             }
         }
 
-        Ok(())
+        Ok(rwkv)
     }
 
     fn merge_notetypes(&mut self, notetypes: Vec<NotetypeSchema11>, latest_usn: Usn) -> Result<()> {
@@ -356,4 +407,61 @@ pub fn server_apply_changes(
     trace!(?req.changes, ?server_changes);
     col.apply_changes(req.changes, state.server_usn)?;
     Ok(server_changes)
+}
+
+#[cfg(test)]
+mod rwkv_mirror_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn newest_boundary_decision_wins_including_clear_and_undo() {
+        let key = "rwkvHistoryReset_42".to_string();
+        let cases = [
+            (json!({"after": 500, "updated": 1000}), None, true, false),
+            (
+                json!({"after": 500, "updated": 1000}),
+                Some(json!({"after": 0, "updated": 2000})),
+                false,
+                true,
+            ),
+            (
+                json!({"after": 0, "updated": 3000}),
+                Some(json!({"after": 500, "updated": 2000})),
+                true,
+                false,
+            ),
+            (
+                json!({"after": 500, "updated": 3000}),
+                Some(json!({"after": 0, "updated": 2000})),
+                true,
+                false,
+            ),
+            (
+                json!({"after": null, "updated": 3000}),
+                Some(json!({"after": 500, "updated": 2000})),
+                true,
+                false,
+            ),
+        ];
+        for (local_value, remote_value, needs_upload, changed) in cases {
+            let local = HashMap::from([(key.clone(), local_value.clone())]);
+            let mut remote = HashMap::new();
+            if let Some(value) = remote_value.clone() {
+                remote.insert(key.clone(), value);
+            }
+            let result = merge_rwkv_history_reset_mirrors(&local, &mut remote);
+            assert_eq!(result.needs_upload, needs_upload);
+            assert_eq!(result.changed, changed);
+            assert_eq!(
+                remote[&key],
+                if needs_upload {
+                    local_value
+                } else {
+                    remote_value.unwrap()
+                }
+            );
+        }
+    }
 }

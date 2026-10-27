@@ -10134,6 +10134,7 @@ def test_historical_rwkv_review_rows_limits_reset_scan_to_requested_cards() -> N
         connection.executescript(
             """
 create table cards (id integer, nid integer, did integer, odid integer, data text default '');
+create table config (key text primary key, val blob);
 create table revlog (
   id integer, cid integer, ease integer, time integer,
   type integer, ivl integer, factor integer
@@ -12135,6 +12136,10 @@ def test_scheduled_reimport_restores_history_after_a_previous_new_reimport(
         col.decks.remove([DeckId(1)])
         col.import_anki_package(ImportAnkiPackageRequest(package_path=str(new)))
         assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 0
+        previous = {
+            card_id: col.get_config(f"rwkvHistoryReset_{card_id}")
+            for card_id in card_ids
+        }
         col.decks.remove([DeckId(1)])
         col.import_anki_package(
             ImportAnkiPackageRequest(
@@ -12144,6 +12149,205 @@ def test_scheduled_reimport_restores_history_after_a_previous_new_reimport(
         )
         history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
         assert history.review_count_by_card == {card_id: 2 for card_id in card_ids}
+        cleared = {
+            card_id: col.get_config(f"rwkvHistoryReset_{card_id}")
+            for card_id in card_ids
+        }
+        assert all(
+            cleared[card_id]["after"] == 0
+            and cleared[card_id]["updated"] > previous[card_id]["updated"]
+            for card_id in card_ids
+        )
+        col.undo()
+        undone = {
+            card_id: col.get_config(f"rwkvHistoryReset_{card_id}")
+            for card_id in card_ids
+        }
+        assert all(
+            undone[card_id]["after"] == previous[card_id]["after"]
+            and undone[card_id]["updated"] > cleared[card_id]["updated"]
+            for card_id in card_ids
+        )
+        col.redo()
+        assert all(
+            col.get_config(f"rwkvHistoryReset_{card_id}")["after"] == 0
+            and col.get_config(f"rwkvHistoryReset_{card_id}")["updated"]
+            > undone[card_id]["updated"]
+            for card_id in card_ids
+        )
+        assert rwkv_scheduler._historical_rwkv_review_inputs(
+            reviewer
+        ).review_count_by_card == {card_id: 2 for card_id in card_ids}
+
+
+@pytest.mark.parametrize("native_history", [True, False])
+def test_older_client_card_edit_keeps_learning_reset_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, native_history: bool
+) -> None:
+    from anki.collection import DeckIdLimit
+    from anki.import_export_pb2 import (
+        ExportAnkiPackageOptions,
+        ImportAnkiPackageRequest,
+    )
+
+    with _reviewed_rwkv_pair(
+        monkeypatch, tmp_path, native_history, learning_only=True
+    ) as setup:
+        reviewer, _backend, timers, (card_id, _other) = setup
+        col = reviewer.mw.col
+        package = tmp_path / "new.apkg"
+        col.export_anki_package(
+            out_path=str(package),
+            options=ExportAnkiPackageOptions(with_scheduling=False),
+            limit=DeckIdLimit(DeckId(1)),
+        )
+        col.decks.remove([DeckId(1)])
+        col.import_anki_package(ImportAnkiPackageRequest(package_path=str(package)))
+        card = col.get_card(card_id)
+        cutoff = card.rwkv_history_reset_after
+        assert cutoff is not None
+        card.start_timer()
+        col.sched.answerCard(card, 1)
+
+        # Older clients discard the unknown card-data field when saving a card.
+        card = col.get_card(card_id)
+        reps = card.reps
+        card.rwkv_history_reset_after = None
+        card.flags = 1
+        col.update_card(card)
+
+        assert col.get_card(card_id).rwkv_history_reset_after == cutoff
+        assert col.get_card(card_id).reps == reps
+        assert len(col.get_review_logs(card_id)) == 2
+        assert (
+            rwkv_scheduler._historical_rwkv_review_inputs(
+                reviewer
+            ).review_count_by_card[card_id]
+            == 1
+        )
+        backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+        set_reviewer_backend(backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+        reviewer.mw.state = "review"
+        reviewer.op_executed = lambda *_args: False
+        _answer_rwkv_test_card(reviewer, card_id, 3)
+        assert rwkv_scheduler._rwkv_resident_state_ready(reviewer.mw)
+        assert timers == []
+        assert (
+            rwkv_scheduler._historical_rwkv_review_inputs(
+                reviewer
+            ).review_count_by_card[card_id]
+            == 2
+        )
+
+
+@pytest.mark.parametrize("native_history", [True, False])
+def test_scheduled_export_keeps_boundary_after_older_client_edit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, native_history: bool
+) -> None:
+    from anki.collection import Collection, DeckIdLimit
+    from anki.import_export_pb2 import (
+        ExportAnkiPackageOptions,
+        ImportAnkiPackageOptions,
+        ImportAnkiPackageRequest,
+    )
+
+    with _reviewed_rwkv_pair(
+        monkeypatch, tmp_path, native_history, learning_only=True
+    ) as setup:
+        reviewer, _backend, _timers, (card_id, _other) = setup
+        col = reviewer.mw.col
+        new = tmp_path / "new.apkg"
+        scheduled = tmp_path / "scheduled.apkg"
+        col.export_anki_package(
+            out_path=str(new),
+            options=ExportAnkiPackageOptions(with_scheduling=False),
+            limit=DeckIdLimit(DeckId(1)),
+        )
+        col.decks.remove([DeckId(1)])
+        col.import_anki_package(ImportAnkiPackageRequest(package_path=str(new)))
+        card = col.get_card(card_id)
+        cutoff = card.rwkv_history_reset_after
+        card.start_timer()
+        col.sched.answerCard(card, 1)
+        card = col.get_card(card_id)
+        card.rwkv_history_reset_after = None
+        col.update_card(card)
+        col.export_anki_package(
+            out_path=str(scheduled),
+            options=ExportAnkiPackageOptions(with_scheduling=True),
+            limit=DeckIdLimit(DeckId(1)),
+        )
+
+        destination = Collection(str(tmp_path / "destination.anki2"))
+        try:
+            destination.import_anki_package(
+                ImportAnkiPackageRequest(
+                    package_path=str(scheduled),
+                    options=ImportAnkiPackageOptions(with_scheduling=True),
+                )
+            )
+            reviewer.mw.col = destination
+            if not native_history:
+                monkeypatch.setattr(
+                    destination._backend, "rwkv_historical_review_inputs", None
+                )
+            assert cutoff is not None
+            assert destination.get_card(card_id).rwkv_history_reset_after == cutoff
+            assert len(destination.get_review_logs(card_id)) == 2
+            assert (
+                rwkv_scheduler._historical_rwkv_review_inputs(
+                    reviewer
+                ).review_count_by_card[card_id]
+                == 1
+            )
+        finally:
+            reviewer.mw.col = col
+            destination.close()
+
+
+@pytest.mark.parametrize("native_history", [True, False])
+def test_existing_card_boundaries_are_mirrored_when_collection_is_reopened(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, native_history: bool
+) -> None:
+    from anki.collection import Collection
+
+    with _reviewed_rwkv_pair(
+        monkeypatch, tmp_path, native_history, learning_only=True
+    ) as setup:
+        reviewer, _backend, _timers, (card_id, other_card_id) = setup
+        col = reviewer.mw.col
+        latest = rwkv_scheduler._latest_eligible_review_for_card(reviewer, card_id)
+        assert latest is not None
+        cutoff = latest[0]
+        # A collection can already contain a mirror when another card receives
+        # a card-only boundary from an older build.
+        col.set_config(
+            f"rwkvHistoryReset_{other_card_id}", {"after": cutoff, "updated": 1}
+        )
+        card = col.get_card(card_id)
+        card.rwkv_history_reset_after = cutoff
+        col.update_card(card)
+        assert col.get_config(f"rwkvHistoryReset_{card_id}") is None
+
+    col = Collection(str(tmp_path / "collection.anki2"))
+    try:
+        reviewer.mw.col = col
+        if not native_history:
+            monkeypatch.setattr(col._backend, "rwkv_historical_review_inputs", None)
+        assert col.get_config(f"rwkvHistoryReset_{card_id}")["after"] == cutoff
+        card = col.get_card(card_id)
+        card.rwkv_history_reset_after = None
+        col.update_card(card)
+        assert col.get_card(card_id).rwkv_history_reset_after == cutoff
+        assert (
+            card_id
+            not in rwkv_scheduler._historical_rwkv_review_inputs(
+                reviewer
+            ).review_count_by_card
+        )
+    finally:
+        col.close()
 
 
 @pytest.mark.parametrize("native_history", [True, False])
@@ -12240,6 +12444,12 @@ def test_reimported_new_cards_keep_reset_after_set_due_date(
         col.decks.remove([DeckId(1)])
         col.import_anki_package(ImportAnkiPackageRequest(package_path=str(package)))
         col.sched.set_due_date(card_ids, "0")
+        for card_id in card_ids:
+            card = col.get_card(card_id)
+            assert card.rwkv_history_reset_after is not None
+            card.last_review_time = card.rwkv_history_reset_after // 1000
+            card.rwkv_history_reset_after = None
+            col.update_card(card)
         assert all(col.get_card(card_id).type != 0 for card_id in card_ids)
         assert rwkv_scheduler._historical_rwkv_review_inputs(reviewer).review_count == 0
         assert rwkv_scheduler._elapsed_since_card_last_review(

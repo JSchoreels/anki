@@ -72,7 +72,7 @@ impl CollectionBuilder {
         let media_folder = self.media_folder.clone().unwrap_or_default();
         let media_db = self.media_db.clone().unwrap_or_default();
         let storage = SqliteStorage::open_or_create(&col_path, &tr, server, self.check_integrity)?;
-        let col = Collection {
+        let mut col = Collection {
             storage,
             session_id: Arc::new(()),
             col_path,
@@ -86,6 +86,9 @@ impl CollectionBuilder {
             },
         };
 
+        if !server {
+            col.migrate_rwkv_history_reset_mirrors()?;
+        }
         Ok(col)
     }
 

@@ -300,16 +300,30 @@ the recurrent state. A new card starts a fresh RWKV history, including when its
 old history ends in Learning. Deleting and re-importing a deck without its
 scheduling can reuse card IDs with old review logs. In that case the imported
 card records the last old review ID as `rwkv_reset_after` in its synced card
-data. RWKV replay excludes reviews through that boundary while retaining the
+data and in a separate, versioned `rwkvHistoryReset_<card id>` collection-config
+entry. RWKV replay excludes reviews through that boundary while retaining the
 underlying logs. Importing with scheduling keeps any source review history and
 its boundary; an unscheduled source still starts fresh if the import option is
 enabled. For new cards imported by older builds without a boundary, preparation
 excludes their old history; the first non-preview answer or Set Due Date stores
 the boundary with the card in the operation's undoable transaction. New cards in filtered,
 suspended, or buried queues follow the same reset rule. Preview-only answers do
-not establish a learning history. The boundary follows normal card sync and
-scheduled package export; clients that drop unknown card-data fields when they
-rewrite a card can remove it and allow old reviews back into RWKV replay.
+not establish a learning history. The config mirror survives ordinary card edits
+by clients that discard unknown card-data fields. Newer clients reconcile newer
+per-card mirror decisions when normal sync receives a stale config snapshot and
+send the merged settings back during that sync. Import, undo and redo assign
+new versions to boundary decisions, including a cleared boundary when a scheduled
+import restores earlier history. Scheduled exports from this fork carry the
+effective boundary even after an older client stripped it from the card. On
+opening a collection, card-only boundaries from the previous implementation are
+mirrored before further edits.
+
+Anki's whole-collection full sync can replace a newer mirror, and an older
+client exporting a scheduled package after stripping the card field cannot put
+the boundary back into that package. If a stale client overwrites the server's
+settings, a newer client that still has the boundary must sync before a fresh
+device can receive it; a device that has never received the boundary cannot
+reconstruct it from the old logs or repetition count alone.
 Before applying an answer, Anki falls back to canonical
 recovery if an unprepared new learning start replaces older retained history or
 if the answer changed dynamic preset routing. With dynamic preset replay, the
