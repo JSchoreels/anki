@@ -86,7 +86,7 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 #### Fixes
 
-- **Stop repeated RWKV recovery after re-importing a deck as new.** Cache preparation now accounts for new cards that reuse IDs with old review logs, so their first Pass or Fail answers do not each rebuild the collection's review state. Existing caches rebuild once to adopt the corrected preparation; genuine history and preset-routing changes still recover safely.
+- **Stop repeated RWKV recovery after re-importing a deck as new.** Re-imported new cards start fresh in RWKV, including cards whose old history ended in Learning, while the old review logs remain available. Imports with scheduling retain their source history. Existing caches rebuild once; genuine history and preset-routing changes still recover safely.
 
 - **New cards stay mixed with RWKV reviews.** Queue refreshes now preserve progress through **Mix with reviews**, preventing new cards from being repeatedly postponed behind the cards added to meet **Minimum reviews per day**.
 
@@ -127,6 +127,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 - **Updated security dependencies.** This build includes patched HTML sanitization, asynchronous I/O, TLS and ZIP libraries, addressing newly reported CSS URL filtering, Unix file-descriptor handling, TLS handling, distrusted certificate authorities and archive extraction issues.
 
 ### Technical details
+
+- **RWKV re-import reset boundaries:** the optional boundary is stored with the synced card and preserved by scheduled package export and undo. Clients that discard unknown card-data fields when rewriting an affected card can remove the boundary and make its old reviews eligible for RWKV replay again.
 
 - **Mixed RWKV storage and cache size:** RWKV defaults to “int4 cards + int8 notes” storage for all five bundled models when no supported precision choice is saved. On the measured 224,022-answer collection, the SM40 cache shrank from 67.4 MB with INT8 to 53.1 MB with mixed storage (21% smaller), while rebuilding and saving took about the same time (2.96 s versus 2.92 s). Explicitly saved precision choices are preserved; the storage selector is now hidden.
 

@@ -124,7 +124,7 @@ mod tests {
                 .review_count,
             0
         );
-        // Excluding the Review row leaves a continuing Learning sequence.
+        // A Learning-only history is also excluded for a new card.
         let history = col.rwkv_historical_review_inputs(RwkvHistoricalReviewInputsRequest {
             history: Some(scheduler::RwkvHistoricalReviewFingerprintRequest {
                 ignored_review_ids: vec![start + 1],
@@ -132,8 +132,7 @@ mod tests {
             }),
             ..Default::default()
         })?;
-        assert_eq!(history.reviews.len(), 1);
-        assert_eq!(history.reviews[0].review_id, start);
+        assert!(history.reviews.is_empty());
 
         // Reinstating scheduling makes the old history relevant again.
         card.ctype = CardType::Review;
@@ -144,7 +143,12 @@ mod tests {
                 .len(),
             2
         );
-        // A borrowed filtered-deck card follows its filtered answer semantics.
+        card.rwkv_history_reset_after = Some(start);
+        col.storage.update_card(&card)?;
+        let retained = col.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(retained.reviews.len(), 1);
+        assert_eq!(retained.reviews[0].review_id, start + 1);
+        // Borrowing a new card into a filtered deck does not restore old history.
         card.ctype = CardType::New;
         card.original_deck_id = DeckId(1);
         col.storage.update_card(&card)?;
@@ -152,7 +156,7 @@ mod tests {
             col.rwkv_historical_review_inputs(Default::default())?
                 .reviews
                 .len(),
-            2
+            0
         );
         Ok(())
     }

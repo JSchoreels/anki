@@ -97,6 +97,7 @@ fn row_to_card(row: &Row) -> result::Result<Card, rusqlite::Error> {
         desired_retention: data.fsrs_desired_retention,
         decay: data.decay,
         last_review_time: data.last_review_time,
+        rwkv_history_reset_after: data.rwkv_history_reset_after,
         custom_data: data.custom_data,
     })
 }

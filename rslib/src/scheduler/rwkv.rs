@@ -605,19 +605,42 @@ impl Collection {
         Ok(card.last_review_time)
     }
 
+    /// Keep older, unlogged new-card resets when a scheduling operation makes
+    /// the card non-new. The card update and boundary share the operation's
+    /// undo.
+    pub(crate) fn prepare_rwkv_new_card_reset(&self, card: &mut Card) -> Result<()> {
+        if card.ctype == CardType::New {
+            if let Some(previous) = self.storage.last_unreset_review(card.id)? {
+                card.rwkv_history_reset_after = Some(
+                    card.rwkv_history_reset_after
+                        .unwrap_or_default()
+                        .max(previous.0),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn populate_rwkv_last_review_times(&self, cards: &mut [Card]) -> Result<()> {
+        let needs_review_time = |card: &Card| {
+            card.last_review_time.is_none()
+                || card.rwkv_history_reset_after.is_some_and(|cutoff| {
+                    card.last_review_time
+                        .is_some_and(|time| time.0.saturating_mul(1000) <= cutoff)
+                })
+        };
         let missing_card_ids: Vec<_> = cards
             .iter()
-            .filter(|card| card.last_review_time.is_none())
+            .filter(|card| needs_review_time(card))
             .map(|card| card.id)
             .collect();
         if missing_card_ids.is_empty() {
             return Ok(());
         }
 
-        let review_times = self.storage.times_of_last_review(&missing_card_ids)?;
+        let review_times = self.storage.rwkv_times_of_last_review(&missing_card_ids)?;
         for card in cards {
-            if card.last_review_time.is_none() {
+            if needs_review_time(card) {
                 card.last_review_time = review_times.get(&card.id).copied();
             }
         }
