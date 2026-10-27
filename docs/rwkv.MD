@@ -1072,8 +1072,9 @@ Deck Options exposes an experimental desktop-only FSRS/RWKV workload comparison
 that requires a usable local RWKV state cache. Both schedulers begin with the
 same eligible RWKV-enabled new and review cards from the selected search,
 including their current due dates, FSRS parameters, and memory states. The
-comparison runs each scheduler separately against an independently maintained
-simulated learner, using the same learner model for both. Choose an FSRS-based
+comparison runs each scheduler separately against its own simulated learner,
+using the same learner model for both. When the scheduler and learner use the
+same model, their identical state is shared within that run. Choose an FSRS-based
 or RWKV-based learner: each is a model of recall, not a measurement of the
 future, and a learner may favor the scheduler based on its own model. Review
 both learner choices before drawing conclusions. Missing or invalid FSRS memory
@@ -1107,6 +1108,14 @@ excludes unmatched targets and does not interpolate between tested retentions.
 Choosing the cheapest point can make this range optimistic when runs are noisy.
 The Efficiency view measures memorized gain per hour relative to a shared
 reviewless baseline and can be negative.
+
+Independent retention and seed runs may execute concurrently, up to four at a
+time. The concurrency limit uses a conservative 256 MiB estimate for the
+workers' copied features and recurrent states, including full-precision state
+for new cards, and falls back to one run when the estimate is larger. This is
+not a cap on total process memory: the resident model and state, temporary
+inference allocations, and estimate error are additional. Results are combined
+in a fixed order, and the progress callback can still cancel a running comparison.
 
 This is a day-level approximation over the selected cards, using the same review
 and new-card limits, approximated review order, maximum interval, leech setting,

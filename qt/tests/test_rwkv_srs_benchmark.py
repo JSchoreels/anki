@@ -67,6 +67,7 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
         current_elapsed_seconds=432000,
     )
     runtime.warm_up_reviews([answer], return_snapshot=False)
+    initial_cache = runtime.cache_state()
     query = replace(
         answer,
         is_query=True,
@@ -75,6 +76,7 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
         fsrs_memory_state=(10.0, 5.0, 10.0),
         fsrs_historical_retention=0.9,
     )
+    initial_warm_state = runtime.warm_up_state(query)
     request = scheduler_pb2.SimulateFsrsReviewRequest(
         days_to_simulate=3,
         review_limit=10,
@@ -101,6 +103,29 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
     assert [point[0] for point in rwkv[2]] == [30, 99]
     assert all(point[4] > 0 for point in fsrs[2] + rwkv[2])
     assert estimated == 0
+    assert runtime.cache_state() == initial_cache
+    assert runtime.warm_up_state(query) == initial_warm_state
+
+    calls = 0
+
+    def cancel_after_workers_start(_current: int, _total: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("comparison cancelled by test")
+
+    with pytest.raises(Exception, match="comparison cancelled by test"):
+        runtime.compare_workloads(
+            inputs=[(100, query, 64)],
+            request=request,
+            input_scale=1.0,
+            review_model=SimpleNamespace(
+                grade_seconds=(12.0, 9.0, 7.0, 5.0), bucket_probabilities={}
+            ),
+            progress=cancel_after_workers_start,
+        )
+    assert runtime.cache_state() == initial_cache
+    assert runtime.warm_up_state(query) == initial_warm_state
 
 
 def test_srs_benchmark_loader_enables_eval_mode(
