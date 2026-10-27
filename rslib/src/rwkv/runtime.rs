@@ -217,6 +217,15 @@ impl RwkvRuntime {
         )
     }
 
+    /// Replay answers and return each answer's immediate post-review
+    /// prediction.
+    pub fn warm_up_reviews_post(
+        &mut self,
+        reviews: Vec<ReviewInput>,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        dispatch!(self, engine, engine.warm_up_reviews_post(reviews))
+    }
+
     pub fn warm_up_snapshot(&self) -> RwkvWarmUpSnapshot {
         dispatch!(self, engine, engine.warm_up_snapshot())
     }
