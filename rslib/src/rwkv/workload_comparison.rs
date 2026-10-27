@@ -3,9 +3,9 @@
 
 //! Compare two scheduling policies against the same simulated learner.
 //!
-//! The learner owns its own state. Each scheduler sees only its own answers,
-//! and paired runs use the same per-card/repetition random quantiles even if
-//! the schedulers review that card on different days.
+//! Each run maintains its own learner state. Each scheduler sees only its own
+//! answers, and paired runs use the same per-card/repetition random quantiles
+//! even if the schedulers review that card on different days.
 
 use std::sync::Arc;
 
@@ -33,6 +33,15 @@ enum Scheduler {
     Fsrs,
     Rwkv,
 }
+
+enum ComparisonEvent {
+    Progress,
+    Finished(usize, io::Result<RwkvWorkloadSimulationPoint>),
+}
+
+// The estimate covers copies owned by concurrent runs, not the resident model.
+const COMPARISON_WORKER_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+const COMPARISON_MAX_WORKERS: usize = 4;
 
 impl RwkvInference {
     pub fn compare_workloads_from_warm_up(
@@ -63,24 +72,19 @@ impl RwkvInference {
         progress(0, total)?;
         let baseline = self.comparison_reviewless(&prepared, &config)?;
         progress(1, total)?;
-        let mut completed = 1;
+        let points = self.compare_targets(&prepared, &config, &targets, total, progress)?;
         let mut fsrs_points = Vec::with_capacity(targets.len());
         let mut rwkv_points = Vec::with_capacity(targets.len());
+        let mut points = points.into_iter();
         for dr in targets {
             let mut sums = [(0.0f64, 0.0f64, 0.0f64, 0u64); 2];
-            for seed in 0..config.repetitions {
-                for (index, scheduler) in [Scheduler::Fsrs, Scheduler::Rwkv].into_iter().enumerate()
-                {
-                    let point =
-                        self.compare_target(&prepared, &config, dr, seed, scheduler, &mut || {
-                            progress(completed, total)
-                        })?;
-                    sums[index].0 += f64::from(point.memorized);
-                    sums[index].1 += f64::from(point.weighted_memorized);
-                    sums[index].2 += f64::from(point.cost);
-                    sums[index].3 += u64::from(point.review_count);
-                    completed += 1;
-                    progress(completed, total)?;
+            for _ in 0..config.repetitions {
+                for sum in &mut sums {
+                    let point = points.next().expect("every comparison run completed");
+                    sum.0 += f64::from(point.memorized);
+                    sum.1 += f64::from(point.weighted_memorized);
+                    sum.2 += f64::from(point.cost);
+                    sum.3 += u64::from(point.review_count);
                 }
             }
             let average = |(memorized, weighted, cost, count): (f64, f64, f64, u64)| {
@@ -107,6 +111,116 @@ impl RwkvInference {
             rwkv: output(rwkv_points),
             estimated_fsrs_states,
         })
+    }
+
+    fn compare_targets(
+        &self,
+        prepared: &[PreparedCard],
+        config: &RwkvComparisonConfig,
+        targets: &[u32],
+        total: u32,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<Vec<RwkvWorkloadSimulationPoint>> {
+        let mut jobs = Vec::with_capacity((total - 1) as usize);
+        for (target_index, &dr) in targets.iter().enumerate() {
+            for seed in 0..config.repetitions {
+                for (scheduler_index, scheduler) in
+                    [Scheduler::Fsrs, Scheduler::Rwkv].into_iter().enumerate()
+                {
+                    let index = (target_index * config.repetitions as usize + seed as usize) * 2
+                        + scheduler_index;
+                    jobs.push((index, dr, seed, scheduler));
+                }
+            }
+        }
+        // High-retention runs generally take longest; start them first while
+        // storing results in their original order for deterministic averages.
+        jobs.sort_by_key(|(_, dr, _, _)| std::cmp::Reverse(*dr));
+        let worker_bytes = estimated_comparison_worker_bytes(prepared, &self.features);
+        let workers =
+            comparison_worker_count(worker_bytes, jobs.len(), rayon::current_num_threads());
+        let next_job = AtomicUsize::new(0);
+        let stopped = AtomicBool::new(false);
+        let progress_pending = AtomicBool::new(false);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut points = (0..jobs.len()).map(|_| None).collect::<Vec<_>>();
+        std::thread::scope(|scope| {
+            let (jobs, next_job, stopped, progress_pending) =
+                (&jobs, &next_job, &stopped, &progress_pending);
+            scope.spawn(move || {
+                rayon::scope(|scope| {
+                    for _ in 0..workers {
+                        let sender = sender.clone();
+                        scope.spawn(move |_| {
+                            while !stopped.load(Ordering::Relaxed) {
+                                let Some(&(index, dr, seed, scheduler)) =
+                                    jobs.get(next_job.fetch_add(1, Ordering::Relaxed))
+                                else {
+                                    break;
+                                };
+                                let result = self.compare_target(
+                                    prepared,
+                                    config,
+                                    dr,
+                                    seed,
+                                    scheduler,
+                                    &mut || {
+                                        if stopped.load(Ordering::Relaxed) {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::Interrupted,
+                                                "comparison cancelled",
+                                            ));
+                                        }
+                                        // At most one progress check needs to
+                                        // wait for the calling thread.
+                                        if !progress_pending.swap(true, Ordering::AcqRel) {
+                                            sender.send(ComparisonEvent::Progress).map_err(
+                                                |_| {
+                                                    io::Error::new(
+                                                        io::ErrorKind::Interrupted,
+                                                        "comparison cancelled",
+                                                    )
+                                                },
+                                            )?;
+                                        }
+                                        Ok(())
+                                    },
+                                );
+                                if sender
+                                    .send(ComparisonEvent::Finished(index, result))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+            let mut completed = 1;
+            for event in receiver {
+                let result = match event {
+                    ComparisonEvent::Progress => {
+                        progress_pending.store(false, Ordering::Release);
+                        progress(completed, total)
+                    }
+                    ComparisonEvent::Finished(index, result) => result.and_then(|point| {
+                        points[index] = Some(point);
+                        completed += 1;
+                        progress(completed, total)
+                    }),
+                };
+                if let Err(err) = result {
+                    stopped.store(true, Ordering::Relaxed);
+                    return Err(err);
+                }
+            }
+            Ok(())
+        })?;
+        Ok(points
+            .into_iter()
+            .map(|point| point.expect("every comparison run completed"))
+            .collect())
     }
 
     fn comparison_reviewless(
@@ -137,10 +251,10 @@ impl RwkvInference {
     ) -> io::Result<RwkvWorkloadSimulationPoint> {
         let retention = dr as f32 / 100.0;
         let mut cards = initial_cards(prepared);
-        let mut scheduler_worker = self.workload_worker(self.features.clone(), HashMap::new());
-        let mut scheduler_states = SimulationStates::new(&self.warm_up_states);
-        let mut learner_worker = self.workload_worker(self.features.clone(), HashMap::new());
-        let mut learner_states = SimulationStates::new(&self.warm_up_states);
+        // If both roles use RWKV, their state starts equal and receives the
+        // same answers. Queries do not advance it, so one copy serves both.
+        let mut worker = self.workload_worker(self.features.clone(), HashMap::new());
+        let mut states = SimulationStates::new(&self.warm_up_states);
         let mut cost = 0.0;
         let mut review_count = 0u32;
 
@@ -165,8 +279,8 @@ impl RwkvInference {
                 let predictions = scheduler_predictions(
                     &cards,
                     &due,
-                    &mut scheduler_worker,
-                    &scheduler_states,
+                    &mut worker,
+                    &states,
                     retention,
                     day,
                     scheduler,
@@ -213,8 +327,7 @@ impl RwkvInference {
                     // baseline is intentionally distinct from model forecasts.
                     0.85
                 } else {
-                    learner_prediction(card, &mut learner_worker, &learner_states, config, &query)?
-                        .0
+                    learner_retrievability(card, &mut worker, &states, config, &query)?
                 };
                 let actual_r = performance_probability(learner_r, day, config);
                 let ease = paired_grade(
@@ -240,9 +353,9 @@ impl RwkvInference {
                         card.scheduler_memory = Some(next.memory);
                         clamped_interval_days(next.interval, config.max_interval.max(1))
                     }
-                    Scheduler::Rwkv => scheduler_worker.selected_answer_intervals_for_inputs(
+                    Scheduler::Rwkv => worker.selected_answer_intervals_for_inputs(
                         std::slice::from_ref(&query),
-                        &scheduler_states,
+                        &states,
                         &[ease],
                     )[0]
                     .unwrap_or(1)
@@ -256,12 +369,16 @@ impl RwkvInference {
                     ease,
                     (seconds * 1000.0).round().max(1.0) as i64,
                 );
-                if scheduler == Scheduler::Rwkv {
-                    scheduler_worker.apply_simulation_answer(&answer, &mut scheduler_states)?;
+                if scheduler == Scheduler::Rwkv || config.learner == RwkvComparisonLearner::Rwkv {
+                    worker.apply_simulation_answer(&answer, &mut states)?;
                 }
-                match config.learner {
-                    RwkvComparisonLearner::Fsrs => {
-                        card.learner_memory = Some(
+                if config.learner == RwkvComparisonLearner::Fsrs {
+                    // Both FSRS states also start equal and see the same
+                    // answers when FSRS is the scheduling policy.
+                    card.learner_memory = if scheduler == Scheduler::Fsrs {
+                        card.scheduler_memory
+                    } else {
+                        Some(
                             fsrs_answer(
                                 &card.model,
                                 card.learner_memory,
@@ -270,11 +387,8 @@ impl RwkvInference {
                                 ease,
                             )?
                             .memory,
-                        );
-                    }
-                    RwkvComparisonLearner::Rwkv => {
-                        learner_worker.apply_simulation_answer(&answer, &mut learner_states)?;
-                    }
+                        )
+                    };
                 }
                 card.card.last_review_day = day;
                 card.card.due_day = day + i64::from(interval);
@@ -297,8 +411,8 @@ impl RwkvInference {
         }
         let (memorized, weighted_memorized) = comparison_memorized(
             &cards,
-            &mut learner_worker,
-            &learner_states,
+            &mut worker,
+            &states,
             config,
             i64::from(config.days_to_simulate),
         )?;
@@ -309,6 +423,39 @@ impl RwkvInference {
             review_count,
         })
     }
+}
+
+fn estimated_comparison_worker_bytes(prepared: &[PreparedCard], features: &FeatureState) -> usize {
+    let mut ids = StreamIds::default();
+    for card in prepared {
+        let input = &card.input.input.review_input;
+        ids.card.insert(input.card_id);
+        ids.note.extend(input.note_id);
+        ids.deck.extend(input.deck_id);
+        ids.preset.extend(input.preset_id);
+    }
+    // Assume full-precision state even if the resident state is compressed or
+    // absent. New cards can create streams during the simulation.
+    let layers = ids
+        .card
+        .len()
+        .saturating_mul(MODULE_LAYERS[0])
+        .saturating_add(ids.deck.len().saturating_mul(MODULE_LAYERS[1]))
+        .saturating_add(ids.note.len().saturating_mul(MODULE_LAYERS[2]))
+        .saturating_add(ids.preset.len().saturating_mul(MODULE_LAYERS[3]))
+        .saturating_add(MODULE_LAYERS[4]);
+    let bytes_per_layer = 4 * (HEADS * HEAD_SIZE * HEAD_SIZE + 2 * D_MODEL) + 512;
+    features
+        .cache_state_len()
+        .saturating_mul(2) // Hash map and allocation overhead
+        .saturating_add(layers.saturating_mul(bytes_per_layer))
+        .saturating_add(prepared.len().saturating_mul(1024))
+}
+
+fn comparison_worker_count(worker_bytes: usize, jobs: usize, threads: usize) -> usize {
+    (COMPARISON_WORKER_MEMORY_BUDGET / worker_bytes.max(1))
+        .clamp(1, COMPARISON_MAX_WORKERS.min(threads.max(1)))
+        .min(jobs.max(1))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -453,32 +600,30 @@ fn scheduler_predictions(
     }
 }
 
-fn learner_prediction(
+fn learner_retrievability(
     card: &ComparisonCard,
     worker: &mut RwkvInference,
     states: &SimulationStates<'_>,
     config: &RwkvComparisonConfig,
     query: &ReviewInput,
-) -> io::Result<(f32, Option<f32>)> {
+) -> io::Result<f32> {
     let result = match config.learner {
         RwkvComparisonLearner::Fsrs => {
             let memory = card
                 .learner_memory
                 .ok_or_else(|| invalid("missing FSRS learner state"))?;
-            (
-                card.model
-                    .current_retrievability(memory, input_elapsed_days(query) as f32),
-                Some(card.model.s90(memory)),
-            )
+            card.model
+                .current_retrievability(memory, input_elapsed_days(query) as f32)
         }
         RwkvComparisonLearner::Rwkv => {
             // The per-answer draw needs recall only; the final S90 weight is
             // calculated separately when the memorized total is computed.
-            let heads = worker.review_heads_for_state(query, states.state_ref(query))?;
-            (heads.retrievability, None)
+            worker
+                .review_heads_for_state(query, states.state_ref(query))?
+                .retrievability
         }
     };
-    if valid_probability(result.0) {
+    if valid_probability(result) {
         Ok(result)
     } else {
         Err(invalid("learner produced an invalid recall probability"))
@@ -513,7 +658,13 @@ fn comparison_memorized(
             .iter()
             .map(|card| {
                 let query = simulation_query_input_for_card(&card.card, S90_TARGET_RETENTION, day);
-                learner_prediction(card, worker, states, config, &query)
+                let memory = card
+                    .learner_memory
+                    .ok_or_else(|| invalid("missing FSRS learner state"))?;
+                Ok((
+                    learner_retrievability(card, worker, states, config, &query)?,
+                    Some(card.model.s90(memory)),
+                ))
             })
             .collect::<io::Result<Vec<_>>>()?
     };
@@ -611,6 +762,15 @@ mod tests {
     }
 
     #[test]
+    fn comparison_limits_parallelism_for_large_worker_states() {
+        assert_eq!(comparison_worker_count(1, 20, 8), 4);
+        assert_eq!(comparison_worker_count(128 * 1024 * 1024, 20, 8), 2);
+        assert_eq!(comparison_worker_count(512 * 1024 * 1024, 20, 8), 1);
+        assert_eq!(comparison_worker_count(1, 2, 8), 2);
+        assert_eq!(comparison_worker_count(1, 20, 1), 1);
+    }
+
+    #[test]
     fn performance_scenarios_change_only_the_intended_days() {
         let mut config = test_config();
         config.scenario = RwkvPerformanceScenario::TemporaryDrop;
@@ -639,15 +799,14 @@ mod tests {
         assert!(low > high);
     }
 
-    #[test]
-    fn both_schedulers_use_the_same_learner_and_keep_resident_state() {
+    fn comparison_fixture() -> Option<(RwkvInference, Vec<RwkvComparisonCard>)> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if SMALL_MODEL {
             "../qt/aqt/rwkv_inference/sm40v2/weights.f32.bin"
         } else {
             "../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"
         });
         if !path.exists() {
-            return;
+            return None;
         }
         let mut inference = RwkvInference::load(path, 0.9, 36500).unwrap();
         let mut inputs = Vec::new();
@@ -688,6 +847,154 @@ mod tests {
                 historical_retention: 0.9,
             });
         }
+        Some((inference, inputs))
+    }
+
+    #[test]
+    fn shared_rwkv_state_matches_independent_scheduler_and_learner() {
+        let Some((inference, inputs)) = comparison_fixture() else {
+            return;
+        };
+        let (prepared, _) = prepare_cards(inputs).unwrap();
+        let cards = initial_cards(&prepared);
+        let mut queries = cards
+            .iter()
+            .map(|card| simulation_query_input_for_card(&card.card, 0.9, 0))
+            .collect::<Vec<_>>();
+        let mut new_card = queries[0].clone();
+        new_card.card_id = 999;
+        new_card.note_id = Some(999);
+        new_card.card_type = Some(CardType::New as i64);
+        queries.push(new_card);
+        // A shared RWKV state must behave exactly like independent scheduler
+        // and learner states, even when cards share note and deck streams.
+        let mut shared_worker =
+            inference.workload_worker(inference.features.clone(), HashMap::new());
+        let mut shared_states = SimulationStates::new(&inference.warm_up_states);
+        let mut scheduler_worker =
+            inference.workload_worker(inference.features.clone(), HashMap::new());
+        let mut scheduler_states = SimulationStates::new(&inference.warm_up_states);
+        let mut learner_worker =
+            inference.workload_worker(inference.features.clone(), HashMap::new());
+        let mut learner_states = SimulationStates::new(&inference.warm_up_states);
+        for (index, day, ease) in [(0, 0, 4), (1, 0, 1), (0, 4, 2), (1, 5, 3), (2, 7, 3)] {
+            let mut query = queries[index].clone();
+            if index < 2 {
+                query.note_id = Some(101);
+            }
+            query.day_offset = Some(100 + day);
+            query.current_elapsed_days = Some(day + 2);
+            query.current_elapsed_seconds = None;
+            let shared_r = shared_worker
+                .review_heads_for_state(&query, shared_states.state_ref(&query))
+                .unwrap()
+                .retrievability;
+            let learner_r = learner_worker
+                .review_heads_for_state(&query, learner_states.state_ref(&query))
+                .unwrap()
+                .retrievability;
+            assert_eq!(shared_r.to_bits(), learner_r.to_bits());
+            let shared_interval = shared_worker.selected_answer_intervals_for_inputs(
+                std::slice::from_ref(&query),
+                &shared_states,
+                &[ease],
+            );
+            let scheduler_interval = scheduler_worker.selected_answer_intervals_for_inputs(
+                std::slice::from_ref(&query),
+                &scheduler_states,
+                &[ease],
+            );
+            assert_eq!(shared_interval, scheduler_interval);
+            let mut answer = simulated_answer_input(&query, ease);
+            answer.duration_millis = Some(5000 + i64::from(ease) * 1000);
+            shared_worker
+                .apply_simulation_answer(&answer, &mut shared_states)
+                .unwrap();
+            scheduler_worker
+                .apply_simulation_answer(&answer, &mut scheduler_states)
+                .unwrap();
+            learner_worker
+                .apply_simulation_answer(&answer, &mut learner_states)
+                .unwrap();
+            assert_eq!(shared_worker.cache_state(), scheduler_worker.cache_state());
+            assert_eq!(shared_worker.cache_state(), learner_worker.cache_state());
+            let shared = shared_states.state_ref(&query);
+            let reference = learner_states.state_ref(&query);
+            for (actual, expected) in [
+                (shared.card, reference.card),
+                (shared.note, reference.note),
+                (shared.deck, reference.deck),
+                (shared.preset, reference.preset),
+                (shared.global, reference.global),
+            ] {
+                assert_eq!(
+                    actual.map(serialize_module_state),
+                    expected.map(serialize_module_state)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_comparisons_match_sequential_runs_when_performance_changes() {
+        let Some((inference, inputs)) = comparison_fixture() else {
+            return;
+        };
+        let (prepared, _) = prepare_cards(inputs).unwrap();
+        for learner in [RwkvComparisonLearner::Fsrs, RwkvComparisonLearner::Rwkv] {
+            for scenario in [
+                RwkvPerformanceScenario::TemporaryDrop,
+                RwkvPerformanceScenario::PersistentDrop,
+            ] {
+                let mut config = test_config();
+                config.learner = learner;
+                config.scenario = scenario;
+                config.repetitions = 2;
+                let targets = [80, 90];
+                let total = 1 + targets.len() as u32 * config.repetitions * 2;
+                let mut progress = Vec::new();
+                let parallel = inference
+                    .compare_targets(&prepared, &config, &targets, total, &mut |current, _| {
+                        progress.push(current);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(progress.last(), Some(&total));
+                assert!(progress.windows(2).all(|pair| pair[0] <= pair[1]));
+                let mut parallel = parallel.into_iter();
+                for dr in targets {
+                    for seed in 0..config.repetitions {
+                        for scheduler in [Scheduler::Fsrs, Scheduler::Rwkv] {
+                            let sequential = inference
+                                .compare_target(
+                                    &prepared,
+                                    &config,
+                                    dr,
+                                    seed,
+                                    scheduler,
+                                    &mut || Ok(()),
+                                )
+                                .unwrap();
+                            let actual = parallel.next().unwrap();
+                            assert_eq!(actual.memorized.to_bits(), sequential.memorized.to_bits());
+                            assert_eq!(
+                                actual.weighted_memorized.to_bits(),
+                                sequential.weighted_memorized.to_bits()
+                            );
+                            assert_eq!(actual.cost.to_bits(), sequential.cost.to_bits());
+                            assert_eq!(actual.review_count, sequential.review_count);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_schedulers_use_the_same_learner_and_keep_resident_state() {
+        let Some((inference, inputs)) = comparison_fixture() else {
+            return;
+        };
         let cache = inference.cache_state();
         let mut missing_memory = inputs.clone();
         missing_memory[0].fsrs_memory = None;

@@ -41,6 +41,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **Compare RWKV and FSRS with a shared simulated learner.** The comparison starts both schedulers from the same cards and due dates, offers FSRS-based and RWKV-based learners, and can simulate temporary or persistent changes in performance. It shows matched-memory time estimates and lets you increase the sample size, retention resolution and number of paired runs.
 
+- **Faster RWKV/FSRS comparisons.** In one measured run, the simulation phase of a one-year comparison of 250 synthetic cards took 14.1 seconds instead of 39.7 with the FSRS-based learner, and 17.2 seconds instead of 62.0 with the RWKV-based learner on the same Mac. Actual times depend on the collection and computer.
+
 - **Faster RWKV review statistics for compatible add-ons.** A batched native replay API lets Search Stats Extended compare recall with and without each review immediately or at a chosen later time without querying each answer separately.
 
 - **Clearer RWKV model help.** The model descriptions and links now appear directly below **Use Smaller Model** in Deck Options → RWKV → Advanced.
@@ -60,6 +62,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 ### Technical details
 
 - **Shared-learner workload comparison:** Both policies use the same learner assumptions, grade costs, limits and per-card random quantiles; the simulator reports sampling and estimated FSRS states. Simulated memory remains model-dependent, and the day-level comparison omits learning steps, easy days, dynamic retention and the live RWKV-Instant queue.
+
+- **Comparison performance:** Independent runs execute concurrently within an estimated worker-memory budget, and identical scheduler/learner state is reused within a run. The measurements above use the SM56 model, a 10-point retention step, one paired run and a synthetic 250-card sample scaled to 10,000 cards. Each baseline included an eight-second CPU profile; all reported output values matched the sequential implementation exactly.
 
 - **RWKV re-import reset boundaries:** A versioned collection-config mirror protects each boundary when an older client rewrites card data. On normal sync, newer clients reconcile a stale mirror and upload the result; scheduled exports include the effective boundary, and import, undo and redo preserve the intended history. Boundaries already stored only in card data are mirrored when the collection opens. Full-sync replacement and packages exported directly from older clients still follow those clients' normal data-retention behavior. Genuine history and preset-routing changes continue to trigger safe recovery.
 
