@@ -370,6 +370,7 @@ impl From<CardEntry> for Card {
             desired_retention: data.fsrs_desired_retention,
             decay: data.decay,
             last_review_time: data.last_review_time,
+            rwkv_history_reset_after: data.rwkv_history_reset_after,
             custom_data: data.custom_data,
         }
     }
@@ -481,6 +482,20 @@ mod test {
     use crate::scheduler::fsrs::preset::FsrsPresetId;
     use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
     use crate::tests::NoteAdder;
+
+    #[test]
+    fn card_sync_roundtrip_preserves_rwkv_history_reset_boundary() {
+        let card = Card {
+            rwkv_history_reset_after: Some(1_700_000_000_123),
+            ..Default::default()
+        };
+        let entry: CardEntry = card.clone().into();
+        let received = Card::from(entry);
+        assert_eq!(
+            received.rwkv_history_reset_after,
+            card.rwkv_history_reset_after
+        );
+    }
 
     #[test]
     fn fsrs6_sync_preserves_the_winning_state_and_schedule_without_repair_uploads() -> Result<()> {

@@ -296,15 +296,20 @@ state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.
 While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
-the recurrent state. Cache preparation also recognizes new cards whose last
-eligible answer was not Learning. Deleting and re-importing a deck without its
-scheduling can reuse card IDs with old review logs; preparing those pending
-learning restarts excludes their old sequences before the first answer. Each
-prepared restart is tied to its preceding review ID, so its first answer can
-advance the resident state without another full recovery. A later reset or
-history mutation cannot reuse a different boundary. New cards whose latest
-eligible answer is already Learning retain their existing learning sequence;
-borrowed filtered-deck cards continue to follow their filtered scheduling state.
+the recurrent state. A new card starts a fresh RWKV history, including when its
+old history ends in Learning. Deleting and re-importing a deck without its
+scheduling can reuse card IDs with old review logs. In that case the imported
+card records the last old review ID as `rwkv_reset_after` in its synced card
+data. RWKV replay excludes reviews through that boundary while retaining the
+underlying logs. Importing with scheduling keeps any source review history and
+its boundary; an unscheduled source still starts fresh if the import option is
+enabled. For new cards imported by older builds without a boundary, preparation
+excludes their old history; the first non-preview answer or Set Due Date stores
+the boundary with the card in the operation's undoable transaction. New cards in filtered,
+suspended, or buried queues follow the same reset rule. Preview-only answers do
+not establish a learning history. The boundary follows normal card sync and
+scheduled package export; clients that drop unknown card-data fields when they
+rewrite a card can remove it and allow old reviews back into RWKV replay.
 Before applying an answer, Anki falls back to canonical
 recovery if an unprepared new learning start replaces older retained history or
 if the answer changed dynamic preset routing. With dynamic preset replay, the
@@ -318,8 +323,8 @@ state before relearning begins, so the first new answer does not require another
 collection-wide recovery. Anki's Forget operation does not delete the underlying
 review log. Normal preparation, recovery, restart, and **Build Cache** all apply
 the same reset boundary. The former profile-local preservation markers are no
-longer read or written. Replay semantics version 6 invalidates caches built before
-pending learning restarts were prepared; the next preparation rebuilds them once. Undoing
+longer read or written. Replay semantics version 7 invalidates caches built before
+these reset boundaries were applied; the next preparation rebuilds them once. Undoing
 Forget removes its boundary through Anki's normal undo operation, restoring the
 eligible history on the next replay. The state-store schema
 remains version 12. Append-only **Grade Now** batches apply

@@ -158,6 +158,7 @@ impl Collection {
                     }
                 };
                 let original = card.clone();
+                col.prepare_rwkv_new_card_reset(&mut card)?;
                 let days_from_today = distribution.sample(&mut rng);
                 card.set_due_date(
                     today,

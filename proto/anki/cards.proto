@@ -52,6 +52,7 @@ message Card {
   optional float desired_retention = 21;
   optional float decay = 22;
   optional int64 last_review_time_secs = 23;
+  optional int64 rwkv_history_reset_after = 24;
   string custom_data = 19;
 }
 
