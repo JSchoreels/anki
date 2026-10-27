@@ -1172,7 +1172,7 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: anki_proto::scheduler::RwkvOfflineCalibrationRequest,
     ) -> Result<anki_proto::scheduler::RwkvOfflineCalibrationResponse> {
-        Collection::rwkv_offline_calibration(self, input.review_ids)
+        Collection::rwkv_offline_calibration(self, input.review_ids, input.all_reviews)
     }
 
     fn rwkv_offline_curve_reschedule(
@@ -1289,8 +1289,14 @@ fn fsrs_calibration_search_for_config(
     (!deck_ids.is_empty()).then(|| SearchNode::DeckIdsWithoutChildren(deck_ids.join(",")))
 }
 
-impl crate::services::BackendSchedulerService for Backend {
-    fn rebuild_fsrs_review_retrievability_cache(&self) -> Result<generic::UInt32> {
+impl Backend {
+    /// kuma3: the fork's cache rebuild, also without the validation folds
+    /// (only each preset's current parameters over the whole history: one
+    /// pass instead of training FSRS once per fold).
+    fn rebuild_fsrs_review_retrievability_cache_with(
+        &self,
+        include_validation_folds: bool,
+    ) -> Result<generic::UInt32> {
         let (requests, session) = self.with_col(|col| {
             let decks = col.storage.get_all_decks()?;
             let mut requests = Vec::new();
@@ -1306,7 +1312,7 @@ impl crate::services::BackendSchedulerService for Backend {
                         num_of_relearning_steps: config.inner.relearn_steps.len() as u32,
                         include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(&config),
                         fsrs_version: Some(config.inner.fsrs_version),
-                        include_validation_folds: true,
+                        include_validation_folds,
                         enable_scheduling_penalties: Some(fsrs7_enable_scheduling_penalties(
                             &config,
                         )),
@@ -1324,11 +1330,22 @@ impl crate::services::BackendSchedulerService for Backend {
                 );
                 Ok(())
             })?;
-            count += self
-                .compute_fsrs_review_retrievability_calibration(request)?
-                .val;
+            count += crate::services::BackendSchedulerService::compute_fsrs_review_retrievability_calibration(
+                self, request,
+            )?
+            .val;
         }
         Ok(generic::UInt32 { val: count })
+    }
+}
+
+impl crate::services::BackendSchedulerService for Backend {
+    fn rebuild_fsrs_review_retrievability_cache(&self) -> Result<generic::UInt32> {
+        self.rebuild_fsrs_review_retrievability_cache_with(true)
+    }
+
+    fn fsrs_calibration_final_fit(&self) -> Result<generic::UInt32> {
+        self.rebuild_fsrs_review_retrievability_cache_with(false)
     }
 
     fn compute_fsrs_review_retrievability_calibration(

@@ -190,6 +190,9 @@ service BackendSchedulerService {
   // preset.
   rpc RebuildFsrsReviewRetrievabilityCache(generic.Empty)
       returns (generic.UInt32);
+  // kuma3: the same without the validation folds: each preset's current
+  // parameters over the whole history (rows of role final_fit), one pass.
+  rpc FsrsCalibrationFinalFit(generic.Empty) returns (generic.UInt32);
   rpc ComputeFsrsReviewRetrievabilityCalibration(
       ComputeFsrsReviewRetrievabilityCalibrationRequest)
       returns (generic.UInt32);
@@ -1026,13 +1029,17 @@ message RwkvOfflineInstantPassProgress {
 
 message RwkvOfflineCalibrationRequest {
   repeated int64 review_ids = 1;
+  // Record the whole history, not only its newest 30% (for FSRS's
+  // validation folds, which cover most of it).
+  bool all_reviews = 2;
 }
 
 message RwkvOfflineCalibrationResponse {
   // The data is there (the asked-for answers it has are below).
   bool available = 1;
   // The answers among those asked for that it has (the newest 30% of the
-  // history at its replay, and every answer since), and RWKV's predictions.
+  // history at its replay, or all of it, and every answer since), and RWKV's
+  // predictions.
   repeated int64 review_ids = 2;
   repeated float predictions = 3;
   // Being recorded by a replay in the background (started: by this call).
