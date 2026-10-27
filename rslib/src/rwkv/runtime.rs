@@ -226,6 +226,19 @@ impl RwkvRuntime {
         dispatch!(self, engine, engine.warm_up_reviews_post(reviews))
     }
 
+    pub fn warm_up_reviews_query(
+        &mut self,
+        reviews: Vec<ReviewInput>,
+        queries: Vec<ReviewInput>,
+        after: bool,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        dispatch!(
+            self,
+            engine,
+            engine.warm_up_reviews_query(reviews, queries, after)
+        )
+    }
+
     pub fn warm_up_snapshot(&self) -> RwkvWarmUpSnapshot {
         dispatch!(self, engine, engine.warm_up_snapshot())
     }

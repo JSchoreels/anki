@@ -1421,6 +1421,14 @@ state snapshots match the current warmed state. Requests for another snapshot,
 and full answer-state predictions that need interval and S90 heads, retain the
 serialized path.
 
+For historical review comparisons, the embedded runtime accepts packed answer
+and matching query rows. Each query can use a later scheduler day and elapsed
+time, and reads either the state before or immediately after its corresponding
+answer without advancing that state. Answer and query identity scopes must
+match; invalid requests fail before replay changes state. This permits an add-on
+to compare review and no-review projections at the same future time using two
+bounded replay passes, including non-monotonic RWKV-Instant predictions.
+
 The embedded runner also exposes a native after-review R-only path for exact
 post-answer queue preparation. It restores a supplied snapshot into a temporary
 worker, applies one answer state to that worker, and scores the requested query

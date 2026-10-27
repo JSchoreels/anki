@@ -65,6 +65,7 @@ pub(super) fn warm_up_reviews_bulk(
         record_predictions,
         BULK_CHUNK_ROWS,
         QueryRecurrence::Fast,
+        None,
     )
 }
 
@@ -78,6 +79,45 @@ pub(super) fn warm_up_reviews_post_bulk(
         true,
         BULK_CHUNK_ROWS,
         QueryRecurrence::FastAfter,
+        None,
+    )
+}
+
+/// Replay actual answers, evaluating an independent query at each answer's
+/// pre-answer or post-answer state. Validation precedes any state changes.
+pub(super) fn warm_up_reviews_query_bulk(
+    inference: &mut RwkvInference,
+    reviews: Vec<ReviewInput>,
+    queries: Vec<ReviewInput>,
+    after: bool,
+) -> io::Result<Vec<(usize, f32)>> {
+    if reviews.len() != queries.len()
+        || reviews.iter().zip(&queries).any(|(answer, query)| {
+            !query.is_query
+                || query.ease.is_some()
+                || query.duration_millis.is_some()
+                || query.card_id != answer.card_id
+                || query.note_id != answer.note_id
+                || query.deck_id != answer.deck_id
+                || query.preset_id != answer.preset_id
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid replay queries",
+        ));
+    }
+    warm_up_reviews_bulk_impl(
+        inference,
+        reviews,
+        true,
+        BULK_CHUNK_ROWS,
+        if after {
+            QueryRecurrence::FastAfter
+        } else {
+            QueryRecurrence::Fast
+        },
+        Some(&queries),
     )
 }
 
@@ -93,6 +133,7 @@ pub(super) fn warm_up_reviews_post_bulk_chunked(
         true,
         chunk_rows.max(1),
         QueryRecurrence::FastAfter,
+        None,
     )
 }
 
@@ -111,6 +152,7 @@ pub(super) fn warm_up_reviews_bulk_chunked(
         record_predictions,
         chunk_rows.max(1),
         QueryRecurrence::Exact,
+        None,
     )
 }
 
@@ -127,6 +169,7 @@ pub(super) fn warm_up_reviews_bulk_fast_query_chunked(
         record_predictions,
         chunk_rows.max(1),
         QueryRecurrence::Fast,
+        None,
     )
 }
 
@@ -136,6 +179,7 @@ fn warm_up_reviews_bulk_impl(
     record_predictions: bool,
     chunk_size: usize,
     query_recurrence: QueryRecurrence,
+    custom_queries: Option<&[ReviewInput]>,
 ) -> io::Result<Vec<(usize, f32)>> {
     // Feature prepass, in review order. Query features are assigned before
     // answer features for each review so first-seen ID encodings keep the
@@ -149,7 +193,8 @@ fn warm_up_reviews_bulk_impl(
             continue;
         }
         if record_predictions && !query_recurrence.after() {
-            let mut query_input = input.clone();
+            let mut query_input =
+                custom_queries.map_or_else(|| input.clone(), |queries| queries[index].clone());
             query_input.is_query = true;
             query_input.ease = None;
             query_input.duration_millis = None;
@@ -158,12 +203,15 @@ fn warm_up_reviews_bulk_impl(
         answer_features.extend(inference.features.features_for(&input));
         inference.features.store_review(&input);
         if record_predictions && query_recurrence.after() {
-            let mut query_input = input.clone();
+            let mut query_input =
+                custom_queries.map_or_else(|| input.clone(), |queries| queries[index].clone());
             query_input.is_query = true;
             query_input.ease = None;
             query_input.duration_millis = None;
-            query_input.current_elapsed_days = Some(0);
-            query_input.current_elapsed_seconds = Some(0);
+            if custom_queries.is_none() {
+                query_input.current_elapsed_days = Some(0);
+                query_input.current_elapsed_seconds = Some(0);
+            }
             query_features.extend(inference.features.features_for(&query_input));
         }
         original_indices.push(index);
