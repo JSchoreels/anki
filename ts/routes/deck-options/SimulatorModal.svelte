@@ -18,13 +18,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         SimulateWorkloadSubgraph,
         renderSimulationChart,
         renderWorkloadChart,
+        rwkvSameMemorizedSavings,
         smoothPointsByLabel,
         type Point,
         type WorkloadComparisonEngine,
         type WorkloadPoint,
         workloadSameMemorizedSavings,
     } from "../graphs/simulator";
-    import { SimulateFsrsWorkloadResponse } from "@generated/anki/scheduler_pb";
+    import {
+        RwkvComparisonOptions,
+        RwkvComparisonOptions_Learner,
+        RwkvComparisonOptions_PerformanceScenario,
+        RwkvComparisonResponse,
+        SimulateFsrsWorkloadResponse,
+    } from "@generated/anki/scheduler_pb";
     import type {
         ComputeOptimalRetentionResponse,
         SimulateFsrsReviewResponse,
@@ -112,9 +119,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     const RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT = 250;
     const RWKV_WORKLOAD_TARGET_STEP_DEFAULT = 1;
-    const RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT = 10;
+    const RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT = 1;
+    const COMPARISON_SAMPLE_LIMIT_DEFAULT = 250;
+    const COMPARISON_TARGET_STEP_DEFAULT = 10;
     const RWKV_WORKLOAD_RESULT_POLL_MS = 500;
-    let smooth = true;
+    let smooth = !compareWorkloads;
+    let comparisonLearner = RwkvComparisonOptions_Learner.FSRS;
+    let comparisonScenario = RwkvComparisonOptions_PerformanceScenario.STEADY;
+    let comparisonRepetitions = 1;
+    let comparisonNotes: { run: number; text: string }[] = [];
     let suspendLeeches = $config.leechAction == DeckConfig_Config_LeechAction.SUSPEND;
     let leechThreshold = $config.leechThreshold;
 
@@ -134,10 +147,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let splitWorkloadByPreset = simulateFsrsRequest.splitWorkloadByPreset;
     let rwkvWorkloadSampleLimit =
         simulateFsrsRequest.rwkvWorkloadSampleLimit ||
-        (rwkvWorkload && !compareWorkloads ? RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT : 0);
+        (rwkvWorkload ? RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT : 0);
     let rwkvWorkloadTargetStep =
         simulateFsrsRequest.rwkvWorkloadTargetStep ||
-        (rwkvWorkload ? RWKV_WORKLOAD_TARGET_STEP_DEFAULT : 1);
+        (compareWorkloads
+            ? COMPARISON_TARGET_STEP_DEFAULT
+            : RWKV_WORKLOAD_TARGET_STEP_DEFAULT);
     let rwkvWorkloadStateUpdateInterval =
         simulateFsrsRequest.rwkvWorkloadStateUpdateInterval ||
         (rwkvWorkload && !compareWorkloads
@@ -159,6 +174,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ...fsrsComparisonRenderPoints,
         ...rwkvComparisonRenderPoints,
     ];
+    $: comparisonSavings = rwkvSameMemorizedSavings([
+        ...fsrsComparisonPoints,
+        ...rwkvComparisonPoints,
+    ]);
 
     function smoothingWindowSize(): number {
         if (rwkvWorkload) {
@@ -205,6 +224,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsRequest.rwkvWorkloadStateUpdateInterval = rwkvWorkload
             ? rwkvWorkloadStateUpdateInterval
             : 1;
+        simulateFsrsRequest.rwkvComparison = compareWorkloads
+            ? new RwkvComparisonOptions({
+                  learner: comparisonLearner,
+                  scenario: comparisonScenario,
+                  repetitions: comparisonRepetitions,
+              })
+            : undefined;
     }
 
     function subtreeConfigs(): DeckConfig[] {
@@ -433,11 +459,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                       (comparisonEngine === "rwkv" ? 1 : 0)
                     : runNumber * 1000 + labelOffset;
                 const comparisonLabel = comparisonEngine
-                    ? workload.name.replace(/\s+\((?:Fixed DR|RWKV)\)(\))?$/, "$1")
+                    ? `${workload.name.replace(/\s+\((?:Fixed DR|RWKV)\)(\))?$/, "$1")} (run ${runNumber})`
                     : undefined;
                 return Object.entries(workload.memorized)
                     .filter(
                         ([dr]) =>
+                            comparisonEngine !== undefined ||
                             workload.reviewCount[dr] ||
                             workload.learnCount[dr] ||
                             workload.cost[dr],
@@ -457,7 +484,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             (workload.reviewCount[dr] ?? 0) +
                             (workload.learnCount[dr] ?? 0),
                         label,
-                        labelName: workload.name,
+                        labelName: comparisonEngine
+                            ? `${workload.name} (run ${runNumber})`
+                            : workload.name,
                         learnSpan: simulateFsrsRequest.daysToSimulate,
                         comparisonEngine,
                         comparisonKey: comparisonEngine
@@ -480,17 +509,55 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     simulating = true;
                     workloadProgress = undefined;
                     if (compareWorkloads) {
-                        for (const { name, request } of workloadRequests("fsrs")) {
-                            fsrsResponses.push({
-                                name,
-                                response: await simulateFsrsWorkload(request),
-                            });
-                        }
                         for (const { name, request } of workloadRequests("rwkv")) {
+                            const result = await simulateRwkvComparison(request);
+                            if (!result.fsrs || !result.rwkv) {
+                                throw new Error(
+                                    "Comparison did not return both schedulers",
+                                );
+                            }
+                            fsrsResponses.push({
+                                name: name.replace(/\s+\(RWKV\)$/, " (Fixed DR)"),
+                                response: result.fsrs,
+                            });
                             rwkvResponses.push({
                                 name,
-                                response: await simulateRwkvWorkload(request),
+                                response: result.rwkv,
                             });
+                            const learner =
+                                request.rwkvComparison?.learner ===
+                                RwkvComparisonOptions_Learner.RWKV
+                                    ? tr.deckConfigRwkvComparisonLearnerRwkv()
+                                    : tr.deckConfigRwkvComparisonLearnerFsrs();
+                            const scenarios = [
+                                tr.deckConfigRwkvComparisonSteadyShort(),
+                                tr.deckConfigRwkvComparisonTemporaryDropShort(),
+                                tr.deckConfigRwkvComparisonPersistentDropShort(),
+                                tr.deckConfigRwkvComparisonTemporaryImprovementShort(),
+                            ];
+                            const scenario =
+                                scenarios[request.rwkvComparison?.scenario ?? 0] ??
+                                scenarios[0];
+                            comparisonNotes = [
+                                ...comparisonNotes,
+                                {
+                                    run: simulationNumber + 1,
+                                    text: tr.deckConfigRwkvComparisonRunDetails({
+                                        run: String(simulationNumber + 1),
+                                        preset: name,
+                                        learner,
+                                        scenario,
+                                        sampled: String(result.sampledCards),
+                                        total: result.totalCards,
+                                        estimated: String(result.estimatedFsrsStates),
+                                        days: request.daysToSimulate,
+                                        runs: String(
+                                            request.rwkvComparison?.repetitions ?? 1,
+                                        ),
+                                        step: String(request.rwkvWorkloadTargetStep),
+                                    }),
+                                },
+                            ];
                         }
                     } else {
                         for (const { name, request } of workloadRequests()) {
@@ -574,11 +641,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function simulateRwkvWorkload(
         request: SimulateFsrsReviewRequest,
     ): Promise<SimulateFsrsWorkloadResponse> {
+        return SimulateFsrsWorkloadResponse.fromBinary(
+            await runRwkvWorkloadJob(request),
+        );
+    }
+
+    async function simulateRwkvComparison(
+        request: SimulateFsrsReviewRequest,
+    ): Promise<RwkvComparisonResponse> {
+        return RwkvComparisonResponse.fromBinary(await runRwkvWorkloadJob(request));
+    }
+
+    async function runRwkvWorkloadJob(
+        request: SimulateFsrsReviewRequest,
+    ): Promise<Uint8Array> {
         try {
             await postProto("startRwkvWorkload", request, Empty, {
                 alertOnError: false,
             });
-            let response: SimulateFsrsWorkloadResponse | undefined = undefined;
+            let response: Uint8Array | undefined = undefined;
             while (!response) {
                 await delay(RWKV_WORKLOAD_RESULT_POLL_MS);
                 response = await fetchRwkvWorkloadResult();
@@ -597,9 +678,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    async function fetchRwkvWorkloadResult(): Promise<
-        SimulateFsrsWorkloadResponse | undefined
-    > {
+    async function fetchRwkvWorkloadResult(): Promise<Uint8Array | undefined> {
         const result = await fetch("/_anki/rwkvWorkloadResult", {
             method: "POST",
             headers: {
@@ -619,13 +698,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }
             throw new Error(`${result.status}: ${msg}`);
         }
-        return SimulateFsrsWorkloadResponse.fromBinary(
-            new Uint8Array(await result.arrayBuffer()),
-        );
+        return new Uint8Array(await result.arrayBuffer());
     }
 
     function clearSimulation() {
         if (compareWorkloads) {
+            comparisonNotes = comparisonNotes.filter(
+                (note) => note.run !== simulationNumber,
+            );
             fsrsComparisonPoints = fsrsComparisonPoints.filter(
                 (point) => Math.floor(point.label / 1000) !== simulationNumber,
             );
@@ -1076,12 +1156,83 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </SettingTitle>
                     </SpinBoxRow>
 
-                    {#if rwkvWorkload && !compareWorkloads}
+                    {#if compareWorkloads}
+                        <label>
+                            {tr.deckConfigRwkvComparisonLearner()}
+                            <select class="form-select" bind:value={comparisonLearner}>
+                                <option value={RwkvComparisonOptions_Learner.FSRS}>
+                                    {tr.deckConfigRwkvComparisonLearnerFsrs()}
+                                </option>
+                                <option value={RwkvComparisonOptions_Learner.RWKV}>
+                                    {tr.deckConfigRwkvComparisonLearnerRwkv()}
+                                </option>
+                            </select>
+                        </label>
+                        <label>
+                            {tr.deckConfigRwkvComparisonScenario()}
+                            <select class="form-select" bind:value={comparisonScenario}>
+                                <option
+                                    value={RwkvComparisonOptions_PerformanceScenario.STEADY}
+                                >
+                                    {tr.deckConfigRwkvComparisonSteady()}
+                                </option>
+                                <option
+                                    value={RwkvComparisonOptions_PerformanceScenario.TEMPORARY_DROP}
+                                >
+                                    {tr.deckConfigRwkvComparisonTemporaryDrop()}
+                                </option>
+                                <option
+                                    value={RwkvComparisonOptions_PerformanceScenario.PERSISTENT_DROP}
+                                >
+                                    {tr.deckConfigRwkvComparisonPersistentDrop()}
+                                </option>
+                                <option
+                                    value={RwkvComparisonOptions_PerformanceScenario.TEMPORARY_IMPROVEMENT}
+                                >
+                                    {tr.deckConfigRwkvComparisonTemporaryImprovement()}
+                                </option>
+                            </select>
+                        </label>
                         <SpinBoxRow
                             bind:value={rwkvWorkloadSampleLimit}
-                            defaultValue={compareWorkloads
-                                ? 0
-                                : RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT}
+                            defaultValue={COMPARISON_SAMPLE_LIMIT_DEFAULT}
+                            min={0}
+                            max={100000}
+                        >
+                            <SettingTitle>
+                                {tr.deckConfigRwkvComparisonSample()}
+                            </SettingTitle>
+                        </SpinBoxRow>
+                        <SpinBoxRow
+                            bind:value={rwkvWorkloadTargetStep}
+                            defaultValue={COMPARISON_TARGET_STEP_DEFAULT}
+                            min={1}
+                            max={70}
+                        >
+                            <SettingTitle>
+                                {tr.deckConfigRwkvComparisonStep()}
+                            </SettingTitle>
+                        </SpinBoxRow>
+                        <SpinBoxRow
+                            bind:value={comparisonRepetitions}
+                            defaultValue={1}
+                            min={1}
+                            max={100}
+                        >
+                            <SettingTitle>
+                                {tr.deckConfigRwkvComparisonRuns()}
+                            </SettingTitle>
+                        </SpinBoxRow>
+                        <p class="text-muted">
+                            {tr.deckConfigRwkvComparisonAssumptions()}
+                        </p>
+                        {#each comparisonNotes as note}
+                            <div class="text-muted">{note.text}</div>
+                        {/each}
+                    {:else if rwkvWorkload}
+                        <SpinBoxRow
+                            bind:value={rwkvWorkloadSampleLimit}
+                            defaultValue={RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT}
                             min={0}
                             max={100000}
                         >
@@ -1107,9 +1258,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                         <SpinBoxRow
                             bind:value={rwkvWorkloadStateUpdateInterval}
-                            defaultValue={compareWorkloads
-                                ? 1
-                                : RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT}
+                            defaultValue={RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT}
                             min={1}
                             max={1000}
                         >
@@ -1174,7 +1323,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 </SettingTitle>
                             </SwitchRow>
 
-                            <SwitchRow bind:value={smooth} defaultValue={true}>
+                            <SwitchRow
+                                bind:value={smooth}
+                                defaultValue={!compareWorkloads}
+                            >
                                 <SettingTitle
                                     on:click={() => openHelpModal("simulateFsrsReview")}
                                 >
@@ -1436,6 +1588,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             points={comparisonRenderPoints}
                             subgraph={simulateWorkloadSubgraph}
                         />
+                        {#if comparisonRenderPoints.length}
+                            <p class="text-muted">
+                                {tr.deckConfigRwkvComparisonMatchedMemoryHelp()}
+                            </p>
+                            {#if comparisonSavings.length}
+                                <TableData tableData={comparisonSavings} />
+                            {:else}
+                                <p class="text-muted">
+                                    {tr.deckConfigRwkvComparisonNoMemoryMatch()}
+                                </p>
+                            {/if}
+                        {/if}
                     {:else}
                         <div class="svg-container">
                             <svg

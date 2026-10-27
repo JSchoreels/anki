@@ -125,3 +125,50 @@ pub struct RwkvWorkloadSimulationConfig {
     pub state_update_interval: u32,
     pub review_model: RwkvWorkloadReviewModel,
 }
+
+#[derive(Clone)]
+pub struct RwkvComparisonCard {
+    pub input: RwkvWorkloadSimulationInput,
+    pub due_day: i64,
+    pub fsrs_memory: Option<(f32, f32, f32)>,
+    pub fsrs_parameters: Vec<f32>,
+    pub historical_retention: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RwkvComparisonLearner {
+    Fsrs,
+    Rwkv,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RwkvPerformanceScenario {
+    Steady,
+    TemporaryDrop,
+    PersistentDrop,
+    TemporaryImprovement,
+}
+
+pub struct RwkvComparisonConfig {
+    pub min_dr: u32,
+    pub max_dr: u32,
+    pub target_dr_step: u32,
+    pub days_to_simulate: u32,
+    pub review_limit: f32,
+    pub new_limit: f32,
+    pub new_cards_ignore_review_limit: bool,
+    pub max_interval: u32,
+    pub review_order: ReviewCardOrder,
+    pub suspend_after_lapses: Option<u32>,
+    pub learner: RwkvComparisonLearner,
+    pub scenario: RwkvPerformanceScenario,
+    pub repetitions: u32,
+    pub output_scale: f32,
+    pub review_model: RwkvWorkloadReviewModel,
+}
+
+pub struct RwkvComparisonOutput {
+    pub fsrs: RwkvWorkloadSimulationOutput,
+    pub rwkv: RwkvWorkloadSimulationOutput,
+    pub estimated_fsrs_states: u32,
+}

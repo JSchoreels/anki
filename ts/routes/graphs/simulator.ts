@@ -50,7 +50,6 @@ export type WorkloadPoint = Point & {
 export type WorkloadComparisonEngine = "fsrs" | "rwkv";
 
 export interface RwkvRelativePerformance {
-    multiplier: number;
     change: number;
 }
 
@@ -74,20 +73,18 @@ type WorkloadComparisonMode = "fixed" | "adr";
 export function rwkvRelativePerformance(
     fsrs: number,
     rwkv: number,
-    higherIsBetter: boolean,
 ): RwkvRelativePerformance | undefined {
     if (
         !Number.isFinite(fsrs)
         || !Number.isFinite(rwkv)
         || fsrs <= 0
-        || rwkv <= 0
+        || rwkv < 0
     ) {
         return undefined;
     }
 
     return {
-        multiplier: higherIsBetter ? rwkv / fsrs : fsrs / rwkv,
-        change: higherIsBetter ? (rwkv - fsrs) / fsrs : (fsrs - rwkv) / fsrs,
+        change: (rwkv - fsrs) / fsrs,
     };
 }
 
@@ -257,6 +254,61 @@ export function workloadSameMemorizedSavings(data: WorkloadPoint[]): TableDatum[
     ];
 }
 
+/** Compare only sampled points within the same paired run and preset. */
+export function rwkvSameMemorizedSavings(data: WorkloadPoint[]): TableDatum[] {
+    const curves = new Map<string, {
+        name: string;
+        fsrs: WorkloadPoint[];
+        rwkv: WorkloadPoint[];
+    }>();
+    for (const point of data) {
+        if (!point.comparisonKey || !point.comparisonEngine) {
+            continue;
+        }
+        const curve = curves.get(point.comparisonKey) ?? {
+            name: point.comparisonLabel ?? "Comparison",
+            fsrs: [],
+            rwkv: [],
+        };
+        curve[point.comparisonEngine].push(point);
+        curves.set(point.comparisonKey, curve);
+    }
+
+    const formatter = createLocaleNumberFormat({
+        style: "percent",
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+    });
+    return Array.from(curves.values()).flatMap((curve) => {
+        const targets = curve.fsrs.filter((point) =>
+            Number.isFinite(point.memorized)
+            && Number.isFinite(point.timeCost)
+            && point.timeCost > 0
+        );
+        const savings = targets.flatMap((target) => {
+            const cost = min(
+                curve.rwkv.filter((point) =>
+                    Number.isFinite(point.memorized)
+                    && point.memorized >= target.memorized
+                    && Number.isFinite(point.timeCost)
+                    && point.timeCost >= 0
+                ),
+                (point) => point.timeCost,
+            );
+            return cost === undefined ? [] : [(target.timeCost - cost) / target.timeCost];
+        });
+        if (!savings.length) {
+            return [];
+        }
+        return [{
+            label: `${curve.name}: RWKV time saving`,
+            value: `${formatter.format(min(savings)!)} to ${
+                formatter.format(max(savings)!)
+            } (${savings.length}/${targets.length} FSRS targets matched)`,
+        }];
+    });
+}
+
 export function renderWorkloadChart(
     svgElem: SVGElement,
     bounds: GraphBounds,
@@ -311,7 +363,7 @@ export function renderWorkloadChart(
                 ...d,
                 y: d.weightedMemorized,
             })),
-        }[subgraph].filter((point) => point !== undefined);
+        }[subgraph].filter((point) => point !== undefined && Number.isFinite(point.y));
     }
 
     const subgraph_data = subgraphData(validData);
@@ -669,11 +721,13 @@ function _renderSimulationChart<
         const groupData: { [key: string]: number } = {};
 
         groups.forEach((groupPoints, key) => {
-            const bisect = bisector((d: number[]) => x.invert(d[0])).left;
-            const index = bisect(groupPoints, date);
+            const isComparison = Boolean(groupComparisonMetadata.get(key)?.key);
+            const index = isComparison
+                ? bisector((point: number[]) => point[0]).center(groupPoints, d[0])
+                : bisector((point: number[]) => x.invert(point[0])).left(groupPoints, date);
             const dataPoint = groupPoints[index];
 
-            if (dataPoint) {
+            if (dataPoint && (!isComparison || Math.abs(dataPoint[0] - d[0]) < 0.001)) {
                 groupData[key] = y.invert(dataPoint[1]);
             }
         });
@@ -720,22 +774,17 @@ function _renderSimulationChart<
                 const relativePerformance = rwkvRelativePerformance(
                     comparison.fsrs,
                     comparison.rwkv,
-                    comparisonHigherIsBetter,
                 );
                 if (!relativePerformance) {
                     continue;
                 }
                 const sign = relativePerformance.change > 0 ? "+" : "";
                 const label = comparison.label ? ` (${comparison.label})` : "";
-                tooltipContent += `<strong>RWKV vs FSRS${label}: ${
-                    relativePerformance.multiplier.toFixed(
-                        2,
-                    )
-                }× (${sign}${
+                tooltipContent += `<strong>RWKV vs FSRS${label}: ${sign}${
                     (relativePerformance.change * 100).toFixed(
                         1,
                     )
-                }%)</strong><br>`;
+                }%</strong><br>`;
             }
         }
 

@@ -718,6 +718,100 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn compare_workloads_from_warm_up(
+        &self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+        min_dr: u32,
+        max_dr: u32,
+        target_dr_step: u32,
+        days_to_simulate: u32,
+        review_limit: f32,
+        new_limit: f32,
+        new_cards_ignore_review_limit: bool,
+        max_interval: u32,
+        review_order: i32,
+        suspend_after_lapses: Option<u32>,
+        learner: i32,
+        scenario: i32,
+        repetitions: u32,
+        output_scale: f32,
+        grade_seconds: &Bound<'_, PyAny>,
+        bucket_probabilities: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(RwkvWorkloadOutput, RwkvWorkloadOutput, u32)> {
+        let mut parsed_inputs = Vec::new();
+        for value in inputs.try_iter()? {
+            let value = value?;
+            let tuple = value.cast::<PyTuple>()?;
+            if tuple.len() != 5 {
+                return Err(PyException::new_err(
+                    "RWKV comparison input must contain 5 fields",
+                ));
+            }
+            parsed_inputs.push(rwkv::RwkvComparisonCard {
+                input: parse_rwkv_workload_simulation_input(&tuple.get_item(0)?)?,
+                due_day: tuple.get_item(1)?.extract()?,
+                fsrs_memory: tuple.get_item(2)?.extract()?,
+                fsrs_parameters: tuple.get_item(3)?.extract()?,
+                historical_retention: tuple.get_item(4)?.extract()?,
+            });
+        }
+        let learner = match learner {
+            0 => rwkv::RwkvComparisonLearner::Fsrs,
+            1 => rwkv::RwkvComparisonLearner::Rwkv,
+            _ => return Err(PyException::new_err("invalid comparison learner")),
+        };
+        let scenario = match scenario {
+            0 => rwkv::RwkvPerformanceScenario::Steady,
+            1 => rwkv::RwkvPerformanceScenario::TemporaryDrop,
+            2 => rwkv::RwkvPerformanceScenario::PersistentDrop,
+            3 => rwkv::RwkvPerformanceScenario::TemporaryImprovement,
+            _ => return Err(PyException::new_err("invalid performance scenario")),
+        };
+        let config = rwkv::RwkvComparisonConfig {
+            min_dr,
+            max_dr,
+            target_dr_step,
+            days_to_simulate,
+            review_limit,
+            new_limit,
+            new_cards_ignore_review_limit,
+            max_interval,
+            review_order: review_order
+                .try_into()
+                .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
+            suspend_after_lapses,
+            learner,
+            scenario,
+            repetitions,
+            output_scale,
+            review_model: rwkv::RwkvWorkloadReviewModel {
+                grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
+                bucket_probabilities: parse_rwkv_workload_bucket_probabilities(
+                    bucket_probabilities,
+                )?,
+            },
+        };
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback = |current: u32, total: u32| {
+            report_rwkv_workload_progress(progress.as_ref(), current, total)
+        };
+        py.detach(|| {
+            self.inner
+                .compare_workloads_from_warm_up(parsed_inputs, config, &mut progress_callback)
+        })
+        .map(|output| {
+            (
+                rwkv_workload_output(output.fsrs),
+                rwkv_workload_output(output.rwkv),
+                output.estimated_fsrs_states,
+            )
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn reset_warm_up_state(&mut self) {
         self.inner.reset_warm_up_state();
     }

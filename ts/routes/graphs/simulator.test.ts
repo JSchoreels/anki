@@ -9,6 +9,7 @@ import {
     centeredMovingAverage,
     renderWorkloadChart,
     rwkvRelativePerformance,
+    rwkvSameMemorizedSavings,
     SimulateWorkloadSubgraph,
     smoothPointsByLabel,
     type WorkloadPoint,
@@ -166,16 +167,17 @@ test("renderWorkloadChart uses stable colors for FSRS and RWKV", () => {
     ).toStrictEqual(["#1f77b4", "#ff7f0e"]);
 });
 
-test("rwkvRelativePerformance handles benefit direction by metric", () => {
-    expect(rwkvRelativePerformance(100, 120, true)).toStrictEqual({
-        multiplier: 1.2,
+test("rwkvRelativePerformance reports the actual change from FSRS", () => {
+    expect(rwkvRelativePerformance(100, 120)).toStrictEqual({
         change: 0.2,
     });
-    expect(rwkvRelativePerformance(100, 80, false)).toStrictEqual({
-        multiplier: 1.25,
-        change: 0.2,
+    expect(rwkvRelativePerformance(100, 80)).toStrictEqual({
+        change: -0.2,
     });
-    expect(rwkvRelativePerformance(0, 80, false)).toBeUndefined();
+    expect(rwkvRelativePerformance(100, 0)).toStrictEqual({
+        change: -1,
+    });
+    expect(rwkvRelativePerformance(0, 80)).toBeUndefined();
 });
 
 test("centeredMovingAverage smooths without lagging the series", () => {
@@ -268,4 +270,53 @@ test("workloadSameMemorizedSavings pairs nested preset workload labels", () => {
     ]);
 
     expect(table[0].value).toContain("10.0%");
+});
+
+test("RWKV savings compare actual memory within the same paired run", () => {
+    function comparison(
+        key: string,
+        engine: "fsrs" | "rwkv",
+        memorized: number,
+        timeCost: number,
+    ): WorkloadPoint {
+        return {
+            ...workloadPoint("Vocabulary", memorized, timeCost),
+            comparisonKey: key,
+            comparisonEngine: engine,
+            comparisonLabel: `Vocabulary (run ${key.split(":")[0]})`,
+        };
+    }
+
+    const table = rwkvSameMemorizedSavings([
+        comparison("1:0:0", "fsrs", 50, 100),
+        comparison("1:0:0", "fsrs", 80, 200),
+        comparison("1:0:0", "fsrs", 100, 300),
+        comparison("1:0:0", "rwkv", 40, 20),
+        comparison("1:0:0", "rwkv", 55, 80),
+        comparison("1:0:0", "rwkv", 85, 240),
+        comparison("2:0:0", "rwkv", 100, 1),
+    ]);
+
+    expect(table).toHaveLength(1);
+    expect(table[0].label).toBe("Vocabulary (run 1): RWKV time saving");
+    expect(table[0].value).toContain("-20.0%");
+    expect(table[0].value).toContain("20.0%");
+    expect(table[0].value).toContain("2/3 FSRS targets matched");
+});
+
+test("RWKV savings do not extrapolate when no memory targets overlap", () => {
+    const point = workloadPoint("Vocabulary", 80, 100);
+    expect(rwkvSameMemorizedSavings([
+        { ...point, comparisonKey: "1:0:0", comparisonEngine: "fsrs" },
+        { ...point, memorized: 79, comparisonKey: "1:0:0", comparisonEngine: "rwkv" },
+    ])).toStrictEqual([]);
+});
+
+test("RWKV savings include a matching point with no review time", () => {
+    const point = workloadPoint("Vocabulary", 80, 100);
+    const table = rwkvSameMemorizedSavings([
+        { ...point, comparisonKey: "1:0:0", comparisonEngine: "fsrs" },
+        { ...point, timeCost: 0, comparisonKey: "1:0:0", comparisonEngine: "rwkv" },
+    ]);
+    expect(table[0].value).toContain("100.0%");
 });

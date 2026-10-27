@@ -425,6 +425,9 @@ class RwkvReviewInput:
         float | None,
     ] = (None, None, None, None)
     enforce_grade_order: bool = True
+    fsrs_memory_state: tuple[float, float, float] | None = None
+    fsrs_parameters: tuple[float, ...] = ()
+    fsrs_historical_retention: float | None = None
 
 
 def _rwkv_state_update_input(review_input: RwkvReviewInput) -> RwkvReviewInput:
@@ -2502,6 +2505,26 @@ class RwkvStatefulReviewerBackend:
             days_to_simulate=days_to_simulate,
             scheduling=scheduling,
             state_update_interval=state_update_interval,
+            review_model=review_model,
+            progress=progress,
+        )
+
+    def compare_workloads(
+        self,
+        *,
+        inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+        request: scheduler_pb2.SimulateFsrsReviewRequest,
+        input_scale: float,
+        review_model: _RwkvSimulatorReviewModel,
+        progress: RwkvWorkloadProgressCallback | None = None,
+    ) -> object:
+        compare = getattr(self._runtime, "compare_workloads", None)
+        if not self._runtime_owns_warm_up_state() or not callable(compare):
+            raise ValueError("RWKV backend does not support shared-learner comparisons")
+        return compare(
+            inputs=inputs,
+            request=request,
+            input_scale=input_scale,
             review_model=review_model,
             progress=progress,
         )
@@ -13210,7 +13233,11 @@ def simulate_rwkv_workload_bytes(
 ) -> bytes:
     request = scheduler_pb2.SimulateFsrsReviewRequest()
     request.ParseFromString(data)
-    response = simulate_rwkv_workload(request, cancel_event=cancel_event)
+    response = (
+        compare_rwkv_and_fsrs_workload(request, cancel_event=cancel_event)
+        if request.HasField("rwkv_comparison")
+        else simulate_rwkv_workload(request, cancel_event=cancel_event)
+    )
     return response.SerializeToString()
 
 
@@ -14302,6 +14329,106 @@ def _sample_rwkv_simulation_inputs(
     ]
 
 
+def compare_rwkv_and_fsrs_workload(
+    request: scheduler_pb2.SimulateFsrsReviewRequest,
+    mw: object | None = None,
+    cancel_event: threading.Event | None = None,
+) -> scheduler_pb2.RwkvComparisonResponse:
+    """Compare both schedulers against the same simulated learner and cards."""
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+    reviewer = SimpleNamespace(mw=mw)
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        raise ValueError("RWKV backend is not available")
+    if not _reviewer_backend_warmed_up(reviewer) and not load_rwkv_state_cache(mw):
+        raise ValueError("RWKV state cache is not ready. Build it first.")
+    backend = _reviewer_backend
+    compare = getattr(backend, "compare_workloads", None)
+    restore = getattr(backend, "restore_cache_snapshot", None)
+    supports = getattr(backend, "supports_resident_workload_simulation", None)
+    if (
+        not callable(compare)
+        or not callable(restore)
+        or not callable(supports)
+        or not supports()
+    ):
+        raise ValueError("RWKV backend does not support shared-learner comparisons")
+
+    input_build = _rwkv_review_input_batches_for_search(
+        reviewer=reviewer,
+        search=request.search,
+        include_suspended_review=False,
+        include_new_cards=request.new_limit > 0,
+        include_comparison_data=True,
+    )
+    if input_build is None:
+        raise ValueError("Unable to load comparison inputs for the requested search")
+    all_inputs = _rwkv_simulation_inputs(input_build)
+    inputs = _sample_rwkv_simulation_inputs(
+        all_inputs, max(0, int(request.rwkv_workload_sample_limit))
+    )
+    response = scheduler_pb2.RwkvComparisonResponse(
+        total_cards=len(all_inputs), sampled_cards=len(inputs)
+    )
+    if not inputs:
+        response.fsrs.SetInParent()
+        response.rwkv.SetInParent()
+        return response
+    input_scale = len(all_inputs) / len(inputs)
+    review_model = _rwkv_simulator_review_model(reviewer)
+    repetitions = max(1, int(request.rwkv_comparison.repetitions))
+    if repetitions > 100:
+        raise ValueError("Comparison repetitions must be between 1 and 100")
+    target_count = len(
+        _rwkv_workload_target_drs(
+            _RWKV_WORKLOAD_MIN_DR,
+            _RWKV_WORKLOAD_MAX_DR,
+            _rwkv_workload_target_dr_step(request),
+        )
+    )
+    progress_total = 1 + target_count * repetitions * 2
+    _set_rwkv_workload_progress(0, progress_total)
+    try:
+        _check_rwkv_workload_cancel(cancel_event)
+        with _temporary_reviewer_backend_operation(
+            reviewer,
+            backend,
+            cache_snapshot=_no_rwkv_cache_snapshot,
+            restore_cache_snapshot=restore,
+            restore_required=lambda: False,
+        ) as temporary:
+            if temporary is None:
+                raise ValueError("RWKV backend state is busy")
+            operation, _ = temporary
+
+            def report_progress(current: int, total: int) -> None:
+                _check_rwkv_workload_cancel(cancel_event)
+                operation.require_current()
+                _set_rwkv_workload_progress(current, total)
+
+            operation.require_current()
+            fsrs_output, rwkv_output, estimated = compare(
+                inputs=inputs,
+                request=request,
+                input_scale=input_scale,
+                review_model=review_model,
+                progress=report_progress,
+            )
+            operation.require_current()
+            _check_rwkv_workload_cancel(cancel_event)
+            _apply_rwkv_workload_output(response.fsrs, fsrs_output)
+            _apply_rwkv_workload_output(response.rwkv, rwkv_output)
+            response.estimated_fsrs_states = estimated
+    except _ReviewerBackendWarmupInvalidated as exc:
+        raise InterruptedError("RWKV comparison invalidated by state change") from exc
+    finally:
+        if cancel_event is None or not cancel_event.is_set():
+            _set_rwkv_workload_progress(progress_total, progress_total)
+    return response
+
+
 def simulate_rwkv_workload(
     request: scheduler_pb2.SimulateFsrsReviewRequest,
     mw: object | None = None,
@@ -14435,7 +14562,6 @@ def simulate_rwkv_workload(
                     input_scale,
                     review_count_cap=review_count_cap,
                 )
-                _enforce_monotonic_rwkv_workload_review_counts(response)
                 operation.require_current()
                 logger.debug(
                     "RWKV workload simulation finished: search=%r inputs=%s days=%s "
@@ -14507,7 +14633,6 @@ def simulate_rwkv_workload(
                 input_scale,
                 review_count_cap=review_count_cap,
             )
-            _enforce_monotonic_rwkv_workload_review_counts(response)
             logger.debug(
                 "RWKV workload simulation finished: search=%r inputs=%s days=%s "
                 "sampled_inputs=%s sample_limit=%s input_scale=%.3f dr_step=%s "
@@ -14671,21 +14796,6 @@ def _scale_rwkv_workload_response(
             2**32 - 1,
             review_count,
         )
-
-
-def _enforce_monotonic_rwkv_workload_review_counts(
-    response: scheduler_pb2.SimulateFsrsWorkloadResponse,
-) -> None:
-    _enforce_monotonic_uint_map(response.review_count)
-    for preset in response.preset_workload:
-        _enforce_monotonic_uint_map(preset.review_count)
-
-
-def _enforce_monotonic_uint_map(mapping: Any) -> None:
-    running = 0
-    for key in sorted(mapping):
-        running = max(running, int(mapping[key]))
-        mapping[key] = running
 
 
 def _simulate_rwkv_workload_for_target(
@@ -24208,6 +24318,7 @@ def _rwkv_review_input_batches_for_search(
     include_new_cards: bool = False,
     batch_size_override: int | None = None,
     use_enabled_deck_filter: bool = True,
+    include_comparison_data: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
     if not use_enabled_deck_filter:
         return None
@@ -24223,6 +24334,7 @@ def _rwkv_review_input_batches_for_search(
         search=search,
         include_suspended_review=include_suspended_review,
         include_new_cards=include_new_cards,
+        include_comparison_data=include_comparison_data,
     )
     if response is None:
         return None
@@ -24750,6 +24862,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
     search: str,
     include_suspended_review: bool,
     include_new_cards: bool = False,
+    include_comparison_data: bool = False,
 ) -> object | None:
     get_rows_raw = getattr(backend, "rwkv_review_input_rows_for_search_raw", None)
     if callable(get_rows_raw) and hasattr(
@@ -24761,6 +24874,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
                 search=search,
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
+                include_comparison_data=include_comparison_data,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -24785,6 +24899,8 @@ def _rwkv_review_input_rows_for_search_backend_response(
         )
         if include_new_cards:
             kwargs["include_new_cards"] = True
+        if include_comparison_data:
+            kwargs["include_comparison_data"] = True
         return get_rows(**kwargs)
     except Exception:
         logger.debug(
@@ -24915,6 +25031,25 @@ def _rwkv_review_input_from_backend_proto_row(
     )
     state_kind = row.current_state_kind or None
     normal_state_kind = row.current_normal_state_kind or None
+    memory = row.fsrs_memory_state if row.HasField("fsrs_memory_state") else None
+    stability = (
+        memory.stability_internal
+        if memory is not None and memory.HasField("stability_internal")
+        else memory.stability
+        if memory is not None
+        else 0.0
+    )
+    fsrs_memory_state = (
+        (
+            float(stability),
+            float(memory.difficulty),
+            float(memory.stability_fast)
+            if memory.HasField("stability_fast")
+            else float(stability),
+        )
+        if memory is not None
+        else None
+    )
 
     return RwkvReviewInput(
         identity=RwkvReviewIdentity(
@@ -24958,6 +25093,13 @@ def _rwkv_review_input_from_backend_proto_row(
             row,
             "enforce_grade_order",
             True,
+        ),
+        fsrs_memory_state=fsrs_memory_state,
+        fsrs_parameters=tuple(row.fsrs_parameters),
+        fsrs_historical_retention=(
+            row.fsrs_historical_retention
+            if row.HasField("fsrs_historical_retention")
+            else None
         ),
     )
 

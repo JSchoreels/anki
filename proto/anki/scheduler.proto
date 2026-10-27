@@ -621,6 +621,31 @@ message SimulateFsrsReviewRequest {
   uint32 rwkv_workload_sample_limit = 36;
   uint32 rwkv_workload_target_step = 37;
   uint32 rwkv_workload_state_update_interval = 38;
+  optional RwkvComparisonOptions rwkv_comparison = 39;
+}
+
+message RwkvComparisonOptions {
+  enum Learner {
+    FSRS = 0;
+    RWKV = 1;
+  }
+  enum PerformanceScenario {
+    STEADY = 0;
+    TEMPORARY_DROP = 1;
+    PERSISTENT_DROP = 2;
+    TEMPORARY_IMPROVEMENT = 3;
+  }
+  Learner learner = 1;
+  PerformanceScenario scenario = 2;
+  uint32 repetitions = 3;
+}
+
+message RwkvComparisonResponse {
+  SimulateFsrsWorkloadResponse fsrs = 1;
+  SimulateFsrsWorkloadResponse rwkv = 2;
+  uint32 total_cards = 3;
+  uint32 sampled_cards = 4;
+  uint32 estimated_fsrs_states = 5;
 }
 
 message SimulateFsrsReviewResponse {
@@ -1052,6 +1077,7 @@ message RwkvReviewInputRowsForSearchRequest {
   bool include_suspended_review = 2;
   bool include_disabled_decks = 3;
   bool include_new_cards = 4;
+  bool include_comparison_data = 5;
 }
 
 message RwkvReviewInputRowsForDeckReviewQueueRequest {
@@ -1081,6 +1107,9 @@ message RwkvReviewInputRowsForCardsResponse {
     float target_retention = 17;
     uint32 batch_size = 18;
     optional bool enforce_grade_order = 19;
+    optional cards.FsrsMemoryState fsrs_memory_state = 20;
+    repeated float fsrs_parameters = 21;
+    optional float fsrs_historical_retention = 22;
   }
 
   repeated Row rows = 1;

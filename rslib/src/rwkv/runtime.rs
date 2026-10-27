@@ -378,6 +378,19 @@ impl RwkvRuntime {
             engine.simulate_workload_from_warm_up(inputs, config, progress)
         )
     }
+
+    pub fn compare_workloads_from_warm_up(
+        &self,
+        inputs: Vec<RwkvComparisonCard>,
+        config: RwkvComparisonConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<RwkvComparisonOutput> {
+        dispatch!(
+            self,
+            engine,
+            engine.compare_workloads_from_warm_up(inputs, config, progress)
+        )
+    }
 }
 
 #[cfg(test)]

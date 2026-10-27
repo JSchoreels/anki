@@ -16,6 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
+from anki import scheduler_pb2
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
@@ -1145,6 +1146,54 @@ class _RustRwkvRuntime:
             build_elapsed_ms + predict_elapsed_ms,
         )
         return output
+
+    def compare_workloads(
+        self,
+        *,
+        inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+        request: scheduler_pb2.SimulateFsrsReviewRequest,
+        input_scale: float,
+        review_model: object,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> object:
+        compare = getattr(self._process, "compare_workloads_from_warm_up", None)
+        if not callable(compare):
+            raise ValueError(
+                "RWKV Rust runtime does not support shared-learner comparisons"
+            )
+        rows = [
+            (
+                _workload_input_row(review),
+                (review.card_due or 0) - (review.day_offset or 0),
+                review.fsrs_memory_state,
+                review.fsrs_parameters or tuple(request.params),
+                review.fsrs_historical_retention or request.historical_retention or 0.9,
+            )
+            for _, review, _ in inputs
+        ]
+        with self._locked_process():
+            return compare(
+                rows,
+                30,
+                99,
+                max(1, int(request.rwkv_workload_target_step)),
+                int(request.days_to_simulate),
+                float(request.review_limit) / input_scale,
+                float(request.new_limit) / input_scale,
+                bool(request.new_cards_ignore_review_limit),
+                max(1, int(request.max_interval)),
+                int(request.review_order),
+                request.suspend_after_lapse_count
+                if request.HasField("suspend_after_lapse_count")
+                else None,
+                int(request.rwkv_comparison.learner),
+                int(request.rwkv_comparison.scenario),
+                max(1, int(request.rwkv_comparison.repetitions)),
+                input_scale,
+                tuple(getattr(review_model, "grade_seconds")),
+                _workload_bucket_probabilities(review_model),
+                progress,
+            )
 
     def snapshot(self, review_input: RwkvReviewInput) -> object:
         identity = review_input.identity
