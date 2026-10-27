@@ -793,11 +793,13 @@ impl Collection {
     /// (as after an undo: the standard order applies meanwhile; the old
     /// runtime is dropped first, two don't fit a phone with a big history),
     /// and `computing` is set until it is done. `all`: the whole history must
-    /// be in it (rebuilt if it only has the newest 30%).
+    /// be in it (rebuilt if it only has the newest 30%). `check_only`: never
+    /// starts that rebuild (`available` says whether it is needed).
     pub(crate) fn rwkv_offline_calibration(
         &mut self,
         review_ids: Vec<i64>,
         all: bool,
+        check_only: bool,
     ) -> Result<RwkvOfflineCalibrationResponse> {
         let mut out = RwkvOfflineCalibrationResponse::default();
         if self.state.rwkv_offline.is_none() {
@@ -814,6 +816,10 @@ impl Collection {
             .as_ref()
             .is_none_or(|calibration| all && !calibration.all)
         {
+            if check_only {
+                self.state.rwkv_offline = Some(runtime);
+                return Ok(out);
+            }
             let model = runtime.model.clone();
             drop(runtime);
             release_freed_memory();
