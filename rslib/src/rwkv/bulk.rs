@@ -40,6 +40,18 @@ const BULK_CHUNK_ROWS: usize = 8_192;
 enum QueryRecurrence {
     Exact,
     Fast,
+    // The query reads the compacted state after the corresponding answer.
+    FastAfter,
+}
+
+impl QueryRecurrence {
+    fn fast(self) -> bool {
+        matches!(self, Self::Fast | Self::FastAfter)
+    }
+
+    fn after(self) -> bool {
+        matches!(self, Self::FastAfter)
+    }
 }
 
 pub(super) fn warm_up_reviews_bulk(
@@ -53,6 +65,34 @@ pub(super) fn warm_up_reviews_bulk(
         record_predictions,
         BULK_CHUNK_ROWS,
         QueryRecurrence::Fast,
+    )
+}
+
+pub(super) fn warm_up_reviews_post_bulk(
+    inference: &mut RwkvInference,
+    reviews: Vec<ReviewInput>,
+) -> io::Result<Vec<(usize, f32)>> {
+    warm_up_reviews_bulk_impl(
+        inference,
+        reviews,
+        true,
+        BULK_CHUNK_ROWS,
+        QueryRecurrence::FastAfter,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn warm_up_reviews_post_bulk_chunked(
+    inference: &mut RwkvInference,
+    reviews: Vec<ReviewInput>,
+    chunk_rows: usize,
+) -> io::Result<Vec<(usize, f32)>> {
+    warm_up_reviews_bulk_impl(
+        inference,
+        reviews,
+        true,
+        chunk_rows.max(1),
+        QueryRecurrence::FastAfter,
     )
 }
 
@@ -108,7 +148,7 @@ fn warm_up_reviews_bulk_impl(
         if input.ease.is_none() {
             continue;
         }
-        if record_predictions {
+        if record_predictions && !query_recurrence.after() {
             let mut query_input = input.clone();
             query_input.is_query = true;
             query_input.ease = None;
@@ -117,6 +157,15 @@ fn warm_up_reviews_bulk_impl(
         }
         answer_features.extend(inference.features.features_for(&input));
         inference.features.store_review(&input);
+        if record_predictions && query_recurrence.after() {
+            let mut query_input = input.clone();
+            query_input.is_query = true;
+            query_input.ease = None;
+            query_input.duration_millis = None;
+            query_input.current_elapsed_days = Some(0);
+            query_input.current_elapsed_seconds = Some(0);
+            query_features.extend(inference.features.features_for(&query_input));
+        }
         original_indices.push(index);
         inputs.push(input);
     }
@@ -645,7 +694,8 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
         v0_query_snapshot: v0_query
             .as_deref()
             .map(|v0_query| &v0_query[..chunk_size.min(rows) * D_MODEL]),
-        approximate_query_projections: matches!(query_recurrence, QueryRecurrence::Fast),
+        approximate_query_projections: query_recurrence.fast(),
+        query_after: query_recurrence.after(),
     }));
 
     while chunk_start < rows {
@@ -680,10 +730,8 @@ fn run_layer_chunks(chunks: LayerChunks<'_>) {
                         v0_snapshot: &v0_next,
                         x_query_snapshot: x_query_next.as_deref(),
                         v0_query_snapshot: v0_query_next.as_deref(),
-                        approximate_query_projections: matches!(
-                            query_recurrence,
-                            QueryRecurrence::Fast
-                        ),
+                        approximate_query_projections: query_recurrence.fast(),
+                        query_after: query_recurrence.after(),
                     })
                 },
                 || {
@@ -774,6 +822,7 @@ struct LayerTimeStageInput<'a> {
     x_query_snapshot: Option<&'a [f32]>,
     v0_query_snapshot: Option<&'a [f32]>,
     approximate_query_projections: bool,
+    query_after: bool,
 }
 
 fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
@@ -788,6 +837,7 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
         x_query_snapshot,
         v0_query_snapshot,
         approximate_query_projections,
+        query_after,
     } = input;
     let mixer = &layer.time_mixer;
 
@@ -815,6 +865,7 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
             &x_norm,
             v0_snapshot,
             false,
+            false,
         )
     };
     let (parts, parts_query) = if let Some(x_norm_query) = x_norm_query.as_ref() {
@@ -829,6 +880,7 @@ fn prepare_layer_time_stage(input: LayerTimeStageInput<'_>) -> LayerTimeStage {
                 &x_norm,
                 v0_query_snapshot.expect("query v0 buffer"),
                 approximate_query_projections,
+                query_after,
             )
         });
         (answer, Some(query))
@@ -936,7 +988,9 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
             for (position, &stream_row) in stream_rows.iter().enumerate() {
                 let index = stream_row as usize - chunk_start;
                 let out = &mut outs[position * D_MODEL..(position + 1) * D_MODEL];
-                if let Some(parts_query) = &parts_query {
+                if let Some(parts_query) =
+                    parts_query.as_ref().filter(|_| !query_recurrence.after())
+                {
                     let out_query = &mut outs_query[position * D_MODEL..(position + 1) * D_MODEL];
                     match query_recurrence {
                         QueryRecurrence::Exact => single_timestep_into(
@@ -950,16 +1004,18 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                             out_query,
                             &mut query_next_matrix,
                         ),
-                        QueryRecurrence::Fast => single_timestep_query_fast_into(
-                            row(&parts_query.r, index),
-                            row(&parts_query.k, index),
-                            row(&parts_query.v, index),
-                            row(&parts_query.w, index),
-                            row(&parts_query.a, index),
-                            row(&parts_query.k_deformed, index),
-                            Some(&matrix),
-                            out_query,
-                        ),
+                        QueryRecurrence::Fast | QueryRecurrence::FastAfter => {
+                            single_timestep_query_fast_into(
+                                row(&parts_query.r, index),
+                                row(&parts_query.k, index),
+                                row(&parts_query.v, index),
+                                row(&parts_query.w, index),
+                                row(&parts_query.a, index),
+                                row(&parts_query.k_deformed, index),
+                                Some(&matrix),
+                                out_query,
+                            )
+                        }
                     }
                 }
                 single_timestep_into(
@@ -975,6 +1031,22 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                 );
                 std::mem::swap(&mut matrix, &mut next_matrix);
                 plan.precision.round_matrix(&mut matrix, &mut packed_matrix);
+                if query_recurrence.after() {
+                    if let Some(parts_query) = &parts_query {
+                        let out_query =
+                            &mut outs_query[position * D_MODEL..(position + 1) * D_MODEL];
+                        single_timestep_query_fast_into(
+                            row(&parts_query.r, index),
+                            row(&parts_query.k, index),
+                            row(&parts_query.v, index),
+                            row(&parts_query.w, index),
+                            row(&parts_query.a, index),
+                            row(&parts_query.k_deformed, index),
+                            plan.streams[stream_index].key.map(|_| matrix.as_slice()),
+                            out_query,
+                        );
+                    }
+                }
             }
             if plan.streams[stream_index].key.is_some() {
                 let last = *stream_rows.last().unwrap() as usize - chunk_start;
@@ -1021,7 +1093,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
             x_query.as_deref().expect("query trunk"),
             chunk_start,
             chunk_rows,
-            matches!(query_recurrence, QueryRecurrence::Fast),
+            query_recurrence.fast(),
         )
     });
 
@@ -1052,6 +1124,7 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
         &time_out,
         x,
         false,
+        false,
     );
     if let Some(cm_norm_query) = &cm_norm_query {
         channel_outputs(
@@ -1065,7 +1138,8 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
             &cm_norm,
             time_out_query.as_ref().expect("query time out"),
             x_query.take().expect("query trunk"),
-            matches!(query_recurrence, QueryRecurrence::Fast),
+            query_recurrence.fast(),
+            query_recurrence.after(),
         );
     }
 
@@ -1220,6 +1294,7 @@ fn time_parts(
     x_norm_answer: &[f32],
     v0: &[f32],
     approximate_projections: bool,
+    query_after: bool,
 ) -> BulkTimeMixParts {
     let mut parts = BulkTimeMixParts::zeroed(chunk_rows);
     let block_size = LINEAR_BLOCK_ROWS * D_MODEL;
@@ -1246,6 +1321,7 @@ fn time_parts(
                     x_norm_answer,
                     v0,
                     approximate_projections,
+                    query_after,
                     PartsBlockMut {
                         r,
                         k,
@@ -1277,6 +1353,7 @@ fn time_parts_block(
     x_norm_answer: &[f32],
     v0: &[f32],
     approximate_projections: bool,
+    query_after: bool,
     block: PartsBlockMut<'_>,
 ) {
     let rows = block.r.len() / D_MODEL;
@@ -1293,15 +1370,32 @@ fn time_parts_block(
         .take(rows)
     {
         let own = row(x_norm, block_start + index);
-        *shift = resolve_shift(
-            plan,
-            chunk_start + block_start + index,
-            chunk_start,
-            x_norm_answer,
-            own,
-            |stream_index| time_shifts[stream_index].as_deref(),
-        );
-        *shift = compact_shift(plan, chunk_start + block_start + index, shift, rounded);
+        if query_after {
+            let row_index = chunk_start + block_start + index;
+            let has_state = plan.streams[plan.stream_of_row[row_index] as usize]
+                .key
+                .is_some();
+            *shift = if has_state {
+                row(x_norm_answer, block_start + index)
+            } else {
+                own
+            };
+            if has_state && plan.precision != StatePrecision::F32 {
+                rounded.copy_from_slice(shift);
+                plan.precision.round_shift(rounded);
+                *shift = rounded;
+            }
+        } else {
+            *shift = resolve_shift(
+                plan,
+                chunk_start + block_start + index,
+                chunk_start,
+                x_norm_answer,
+                own,
+                |stream_index| time_shifts[stream_index].as_deref(),
+            );
+            *shift = compact_shift(plan, chunk_start + block_start + index, shift, rounded);
+        }
     }
     let fill_mixed = |mix_id: usize, mixed: &mut [f32]| {
         for index in 0..rows {
@@ -1479,6 +1573,7 @@ fn channel_outputs(
     time_out: &[f32],
     trunk: &mut [f32],
     approximate_projections: bool,
+    query_after: bool,
 ) {
     trunk[chunk_start * D_MODEL..(chunk_start + chunk_rows) * D_MODEL]
         .par_chunks_mut(LINEAR_BLOCK_ROWS * D_MODEL)
@@ -1491,21 +1586,39 @@ fn channel_outputs(
             for index in 0..rows {
                 let chunk_index = block_start + index;
                 let own = row(cm_norm, chunk_index);
-                let x_shift = resolve_shift(
-                    plan,
-                    chunk_start + chunk_index,
-                    chunk_start,
-                    cm_norm_answer,
-                    own,
-                    |stream_index| {
-                        stream_layers[stream_index][layer_id]
-                            .channel_shift
-                            .as_deref()
-                    },
-                );
                 let mut rounded_shift = [0.0; D_MODEL];
-                let x_shift =
-                    compact_shift(plan, chunk_start + chunk_index, x_shift, &mut rounded_shift);
+                let x_shift = if query_after {
+                    let row_index = chunk_start + chunk_index;
+                    let has_state = plan.streams[plan.stream_of_row[row_index] as usize]
+                        .key
+                        .is_some();
+                    let shift = if has_state {
+                        row(cm_norm_answer, chunk_index)
+                    } else {
+                        own
+                    };
+                    if has_state && plan.precision != StatePrecision::F32 {
+                        rounded_shift.copy_from_slice(shift);
+                        plan.precision.round_shift(&mut rounded_shift);
+                        &rounded_shift
+                    } else {
+                        shift
+                    }
+                } else {
+                    let shift = resolve_shift(
+                        plan,
+                        chunk_start + chunk_index,
+                        chunk_start,
+                        cm_norm_answer,
+                        own,
+                        |stream_index| {
+                            stream_layers[stream_index][layer_id]
+                                .channel_shift
+                                .as_deref()
+                        },
+                    );
+                    compact_shift(plan, chunk_start + chunk_index, shift, &mut rounded_shift)
+                };
                 let out = &mut mixed[index * D_MODEL..(index + 1) * D_MODEL];
                 for channel in 0..D_MODEL {
                     out[channel] = lerp(own[channel], x_shift[channel], cm.lerp_k[channel]);

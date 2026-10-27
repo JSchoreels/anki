@@ -1093,6 +1093,16 @@ impl RwkvInference {
         bulk::warm_up_reviews_bulk(self, reviews, record_predictions)
     }
 
+    /// Advance answer history and predict recall immediately after each answer.
+    /// Query rows do not advance state; elapsed days and seconds are set to
+    /// zero.
+    pub fn warm_up_reviews_post(
+        &mut self,
+        reviews: Vec<ReviewInput>,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        bulk::warm_up_reviews_post_bulk(self, reviews)
+    }
+
     /// The per-review reference implementation of `warm_up_reviews`. The bulk
     /// path must match it bit-for-bit; parity tests compare the two.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -10161,6 +10171,83 @@ order by e.id, e.cid
             .map(|(index, _)| reviews[*index].ease != Some(1))
             .collect::<Vec<_>>();
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
+    }
+
+    #[test]
+    fn bulk_post_answer_predictions_match_independent_queries() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut reviews = bulk_parity_reviews(42);
+        let mut seen_cards = std::collections::HashSet::new();
+        for review in &mut reviews {
+            if review.ease.is_none() {
+                continue;
+            }
+            if seen_cards.insert(review.card_id) {
+                review.card_type = Some(0);
+                review.current_elapsed_days = Some(0);
+                review.current_elapsed_seconds = Some(0);
+            } else {
+                review.card_type = Some(2);
+                review.current_elapsed_days = review.current_elapsed_days.map(|days| days.max(0));
+                review.current_elapsed_seconds =
+                    review.current_elapsed_seconds.map(|secs| secs.max(0));
+            }
+        }
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int8,
+            StatePrecision::Int4,
+            StatePrecision::Int4CardsInt8Notes,
+        ] {
+            let mut sequential =
+                RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                    .unwrap();
+            let mut expected = Vec::new();
+            for (index, input) in reviews.iter().enumerate() {
+                if input.ease.is_none() {
+                    continue;
+                }
+                sequential
+                    .warm_up_reviews(vec![input.clone()], false)
+                    .unwrap();
+                let mut query = input.clone();
+                query.is_query = true;
+                query.ease = None;
+                query.duration_millis = None;
+                query.current_elapsed_days = Some(0);
+                query.current_elapsed_seconds = Some(0);
+                let value = sequential
+                    .predict_retrievability_many_from_warm_up(vec![query])
+                    .unwrap()[0];
+                expected.push((index, value));
+            }
+
+            let mut bulk =
+                RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                    .unwrap();
+            let actual =
+                bulk::warm_up_reviews_post_bulk_chunked(&mut bulk, reviews.clone(), 7).unwrap();
+            assert_prediction_close(&expected, &actual, 1e-5);
+            assert_warm_up_parity(&sequential, &bulk);
+
+            let mut resumed =
+                RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                    .unwrap();
+            let mut split =
+                bulk::warm_up_reviews_post_bulk_chunked(&mut resumed, reviews[..17].to_vec(), 7)
+                    .unwrap();
+            split.extend(
+                bulk::warm_up_reviews_post_bulk_chunked(&mut resumed, reviews[17..].to_vec(), 7)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(index, value)| (index + 17, value)),
+            );
+            assert_prediction_close(&expected, &split, 1e-5);
+            assert_warm_up_parity(&sequential, &resumed);
+        }
     }
 
     #[test]

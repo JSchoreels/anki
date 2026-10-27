@@ -54,6 +54,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 #### New Features
 
+- **Faster RWKV review-gain statistics.** Search Stats Extended can compute immediate recall changes for reviewed cards using batched native replay instead of querying each answer separately.
+
 - **SM56 is the default small RWKV model.**
   - Powers both RWKV-Instant and RWKV-Curve, with f32, INT8, INT4, or mixed INT4 cards + INT8 notes (the default).
   - Preserves saved storage precision; weights and computation remain f32.
@@ -127,6 +129,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 - **Updated security dependencies.** This build includes patched HTML sanitization, asynchronous I/O, TLS and ZIP libraries, addressing newly reported CSS URL filtering, Unix file-descriptor handling, TLS handling, distrusted certificate authorities and archive extraction issues.
 
 ### Technical details
+
+- **RWKV post-answer replay:** expose packed, batched zero-elapsed predictions after each historical answer, without advancing the recurrent state for the query. A separate pre-answer pass lets Search Stats Extended compare both values in an isolated runtime. Native tests cover both engine families, all state precisions and chunk boundaries; synthetic tests across the five embedded models matched scalar queries within 0.000003.
 
 - **RWKV re-import reset boundaries:** a versioned collection-config mirror protects each boundary when an older client rewrites card data. On normal sync, newer clients reconcile a stale mirror and upload the result; scheduled exports include the effective boundary, and import, undo and redo preserve the intended history. Boundaries already stored only in card data are mirrored when the collection opens. Full-sync replacement and packages exported directly from older clients still follow those clients' normal data-retention behavior.
 

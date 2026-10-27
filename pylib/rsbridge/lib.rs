@@ -459,6 +459,16 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn warm_up_reviews_post_packed(
+        &mut self,
+        py: Python<'_>,
+        reviews: &Bound<'_, PyBytes>,
+    ) -> PyResult<Vec<(usize, f32)>> {
+        let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
+        py.detach(|| self.inner.warm_up_reviews_post(parsed_reviews))
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn warm_up_snapshot(&self, py: Python<'_>) -> RwkvWarmUpSnapshot {
         let (snapshot, cache_state) =
             py.detach(|| (self.inner.warm_up_snapshot(), self.inner.cache_state()));

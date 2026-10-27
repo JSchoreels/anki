@@ -1006,6 +1006,13 @@ reused prefix without repeating the cached card-day predictions, then replaces
 the affected day and computes later days. Model or feature-setting changes, or
 non-append changes within the cached review prefix, still require a full build.
 
+For the add-on's per-answer recall-gain graph, the packed native replay also
+exposes a post-answer prediction for each answered row. It queries the updated
+recurrent state with zero elapsed time without advancing that state a second
+time. The add-on pairs this with a separate pre-answer replay. Both passes use
+an isolated runtime; the post-answer query uses the existing fast recurrence
+projection, so tiny floating-point differences from scalar queries are possible.
+
 ## Answer Button Intervals And S90
 
 When RWKV-Curve is enabled and the desktop RWKV backend is available, the
