@@ -1893,6 +1893,17 @@ card's retained review history. This approximates the card as staying in its
 currently resolved preset for its lifetime without repeatedly evaluating add-on
 routing rules.
 
+The preset stream identifier must also be identical during history replay and
+live scoring on each device. Numeric deck-preset IDs retain their integer value.
+An add-on preset ID starts with `addon:`; its UTF-8 bytes are hashed with BLAKE2b
+configured for an eight-byte digest, interpreted as a big-endian integer, and
+masked to 63 bits. This is the same mapping as desktop Python's
+`hashlib.blake2b(..., digest_size=8)`. The Rust `blake2` crate implements that
+mapping in Kuma even when no desktop-supplied lookup table is available. Its
+eight-byte output is not a truncation of a 64-byte BLAKE2b digest: BLAKE2
+includes the requested output length in its parameters. Existing explicitly
+supplied desktop lookup entries remain supported.
+
 If **RWKV support** is enabled in the Dynamic Preset Selection add-on,
 and the current FSRS preset overlay includes structured `simulator_rules`, as
 produced by the dynamic preset add-on for interval-split presets, RWKV

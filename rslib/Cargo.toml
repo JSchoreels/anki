@@ -63,6 +63,7 @@ axum.workspace = true
 axum-client-ip.workspace = true
 axum-extra.workspace = true
 bitflags.workspace = true
+blake2.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 chrono.workspace = true
