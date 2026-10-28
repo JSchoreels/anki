@@ -739,8 +739,15 @@ impl RwkvInference {
         output_scale: f32,
         grade_seconds: &Bound<'_, PyAny>,
         bucket_probabilities: &Bound<'_, PyAny>,
+        background: &Bound<'_, PyAny>,
         progress: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<(RwkvWorkloadOutput, RwkvWorkloadOutput, u32)> {
+    ) -> PyResult<(
+        RwkvWorkloadOutput,
+        RwkvWorkloadOutput,
+        RwkvWorkloadOutput,
+        RwkvWorkloadOutput,
+        u32,
+    )> {
         let mut parsed_inputs = Vec::new();
         for value in inputs.try_iter()? {
             let value = value?;
@@ -770,6 +777,23 @@ impl RwkvInference {
             3 => rwkv::RwkvPerformanceScenario::TemporaryImprovement,
             _ => return Err(PyException::new_err("invalid performance scenario")),
         };
+        let mut parsed_background = Vec::new();
+        for value in background.try_iter()? {
+            let value = value?;
+            let tuple = value.cast::<PyTuple>()?;
+            if tuple.len() != 5 {
+                return Err(PyException::new_err(
+                    "RWKV background review must contain 5 fields",
+                ));
+            }
+            parsed_background.push(rwkv::RwkvComparisonBackgroundReview {
+                input: parse_rwkv_review_input(&tuple.get_item(0)?)?,
+                pattern_day: tuple.get_item(1)?.extract()?,
+                second_of_day: tuple.get_item(2)?.extract()?,
+                last_review_day: tuple.get_item(3)?.extract()?,
+                last_review_second: tuple.get_item(4)?.extract()?,
+            });
+        }
         let config = rwkv::RwkvComparisonConfig {
             min_dr,
             max_dr,
@@ -787,6 +811,7 @@ impl RwkvInference {
             scenario,
             repetitions,
             output_scale,
+            background: parsed_background,
             review_model: rwkv::RwkvWorkloadReviewModel {
                 grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
                 bucket_probabilities: parse_rwkv_workload_bucket_probabilities(
@@ -804,8 +829,10 @@ impl RwkvInference {
         })
         .map(|output| {
             (
-                rwkv_workload_output(output.fsrs),
-                rwkv_workload_output(output.rwkv),
+                rwkv_workload_output(output.fsrs_scored_by_fsrs),
+                rwkv_workload_output(output.rwkv_scored_by_fsrs),
+                rwkv_workload_output(output.fsrs_scored_by_rwkv),
+                rwkv_workload_output(output.rwkv_scored_by_rwkv),
                 output.estimated_fsrs_states,
             )
         })

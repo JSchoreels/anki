@@ -1151,6 +1151,7 @@ class _RustRwkvRuntime:
         self,
         *,
         inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+        background: Sequence[tuple[RwkvReviewInput, int, int, int, int]],
         request: scheduler_pb2.SimulateFsrsReviewRequest,
         input_scale: float,
         review_model: object,
@@ -1192,6 +1193,10 @@ class _RustRwkvRuntime:
                 input_scale,
                 tuple(getattr(review_model, "grade_seconds")),
                 _workload_bucket_probabilities(review_model),
+                [
+                    (_review_input_row(review), day, second, last_day, last_second)
+                    for review, day, second, last_day, last_second in background
+                ],
                 progress,
             )
 

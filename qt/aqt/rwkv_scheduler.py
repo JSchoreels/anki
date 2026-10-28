@@ -2513,6 +2513,7 @@ class RwkvStatefulReviewerBackend:
         self,
         *,
         inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+        background: Sequence[tuple[RwkvReviewInput, int, int, int, int]],
         request: scheduler_pb2.SimulateFsrsReviewRequest,
         input_scale: float,
         review_model: _RwkvSimulatorReviewModel,
@@ -2523,6 +2524,7 @@ class RwkvStatefulReviewerBackend:
             raise ValueError("RWKV backend does not support shared-learner comparisons")
         return compare(
             inputs=inputs,
+            background=background,
             request=request,
             input_scale=input_scale,
             review_model=review_model,
@@ -14329,6 +14331,56 @@ def _sample_rwkv_simulation_inputs(
     ]
 
 
+def _rwkv_comparison_background(
+    reviewer: object,
+    inputs: Sequence[tuple[int, RwkvReviewInput, int]],
+) -> list[tuple[RwkvReviewInput, int, int, int, int]]:
+    """Repeat the last 365 complete days, excluding simulated cards.
+
+    The replay begins from the resident state, so the first elapsed time for
+    each background card is measured from its latest real answer, not from the
+    old answer that preceded the pattern being replayed.
+    """
+    timing = _timing_today(reviewer)
+    today = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(today, int) or not isinstance(next_day_at, int):
+        raise ValueError("Unable to determine the comparison's starting day")
+    history = _historical_rwkv_review_inputs(reviewer)
+    sampled = {card_id for card_id, _, _ in inputs}
+    latest: dict[int, tuple[int, int, RwkvReviewIdentity]] = {}
+    for review_id, review in zip(history.review_ids, history.reviews, strict=True):
+        if review.day_offset is not None:
+            latest[review.identity.card_id] = (
+                review.day_offset - today,
+                review_id // 1000,
+                review.identity,
+            )
+    start = today - 365
+    day_start_seconds = next_day_at - 86_400
+    background: list[tuple[RwkvReviewInput, int, int, int, int]] = []
+    for review_id, review in zip(history.review_ids, history.reviews, strict=True):
+        day = review.day_offset
+        if (
+            review.identity.card_id in sampled
+            or day is None
+            or day < start
+            or day >= today
+        ):
+            continue
+        last_day, last_seconds, identity = latest[review.identity.card_id]
+        background.append(
+            (
+                replace(review, identity=identity, day_offset=today),
+                day - start,
+                (review_id // 1000 - day_start_seconds) % 86_400,
+                last_day,
+                last_seconds - day_start_seconds,
+            )
+        )
+    return background
+
+
 def compare_rwkv_and_fsrs_workload(
     request: scheduler_pb2.SimulateFsrsReviewRequest,
     mw: object | None = None,
@@ -14375,6 +14427,10 @@ def compare_rwkv_and_fsrs_workload(
     if not inputs:
         response.fsrs.SetInParent()
         response.rwkv.SetInParent()
+        response.fsrs_scored_by_fsrs.SetInParent()
+        response.rwkv_scored_by_fsrs.SetInParent()
+        response.fsrs_scored_by_rwkv.SetInParent()
+        response.rwkv_scored_by_rwkv.SetInParent()
         return response
     input_scale = len(all_inputs) / len(inputs)
     review_model = _rwkv_simulator_review_model(reviewer)
@@ -14409,8 +14465,11 @@ def compare_rwkv_and_fsrs_workload(
                 _set_rwkv_workload_progress(current, total)
 
             operation.require_current()
-            fsrs_output, rwkv_output, estimated = compare(
+            background = _rwkv_comparison_background(reviewer, inputs)
+            operation.require_current()
+            fsrs_by_fsrs, rwkv_by_fsrs, fsrs_by_rwkv, rwkv_by_rwkv, estimated = compare(
                 inputs=inputs,
+                background=background,
                 request=request,
                 input_scale=input_scale,
                 review_model=review_model,
@@ -14418,9 +14477,24 @@ def compare_rwkv_and_fsrs_workload(
             )
             operation.require_current()
             _check_rwkv_workload_cancel(cancel_event)
-            _apply_rwkv_workload_output(response.fsrs, fsrs_output)
-            _apply_rwkv_workload_output(response.rwkv, rwkv_output)
+            for target, output in (
+                (response.fsrs_scored_by_fsrs, fsrs_by_fsrs),
+                (response.rwkv_scored_by_fsrs, rwkv_by_fsrs),
+                (response.fsrs_scored_by_rwkv, fsrs_by_rwkv),
+                (response.rwkv_scored_by_rwkv, rwkv_by_rwkv),
+            ):
+                _apply_rwkv_workload_output(target, output)
+            if (
+                request.rwkv_comparison.learner
+                == scheduler_pb2.RwkvComparisonOptions.RWKV
+            ):
+                response.fsrs.CopyFrom(response.fsrs_scored_by_rwkv)
+                response.rwkv.CopyFrom(response.rwkv_scored_by_rwkv)
+            else:
+                response.fsrs.CopyFrom(response.fsrs_scored_by_fsrs)
+                response.rwkv.CopyFrom(response.rwkv_scored_by_fsrs)
             response.estimated_fsrs_states = estimated
+            response.background_reviews = len(background)
     except _ReviewerBackendWarmupInvalidated as exc:
         raise InterruptedError("RWKV comparison invalidated by state change") from exc
     finally:

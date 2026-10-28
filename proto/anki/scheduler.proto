@@ -646,6 +646,11 @@ message RwkvComparisonResponse {
   uint32 total_cards = 3;
   uint32 sampled_cards = 4;
   uint32 estimated_fsrs_states = 5;
+  SimulateFsrsWorkloadResponse fsrs_scored_by_fsrs = 6;
+  SimulateFsrsWorkloadResponse rwkv_scored_by_fsrs = 7;
+  SimulateFsrsWorkloadResponse fsrs_scored_by_rwkv = 8;
+  SimulateFsrsWorkloadResponse rwkv_scored_by_rwkv = 9;
+  uint32 background_reviews = 10;
 }
 
 message SimulateFsrsReviewResponse {
