@@ -707,7 +707,8 @@ fn query_input(row: &Row) -> ReviewInput {
 }
 
 impl Collection {
-    /// Rule changes affect scores and answer targets, but not recurrent history.
+    /// Rule changes affect scores and answer targets, but not recurrent
+    /// history.
     pub(crate) fn invalidate_rwkv_offline_targets(&mut self) {
         if let Some(runtime) = self.state.rwkv_offline.as_mut() {
             runtime.scopes.clear();

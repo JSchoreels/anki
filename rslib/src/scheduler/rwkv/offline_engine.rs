@@ -263,9 +263,9 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use anki_proto::scheduler::RwkvPrepareOfflineRequest;
 
+    use super::*;
     use crate::collection::Collection;
 
     #[test]
@@ -290,14 +290,9 @@ mod tests {
     fn sm72_offline_engine_enables_the_leak_free_rule() {
         let weights = model_file("sm72/weights.f32.bin");
         let predict = |precision, leak_free| {
-            let mut engine = Engine::load_with_precision(
-                weights.clone(),
-                0.9,
-                36_500,
-                precision,
-                leak_free,
-            )
-            .unwrap();
+            let mut engine =
+                Engine::load_with_precision(weights.clone(), 0.9, 36_500, precision, leak_free)
+                    .unwrap();
             let mut reviews: Vec<_> = (0..14)
                 .map(|index| ReviewInput {
                     card_id: 100 + index % 7,

@@ -781,10 +781,11 @@ mod test {
 
     #[test]
     fn synced_rules_drive_review_buttons_answers_and_rwkv_targets() -> Result<()> {
+        use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
+
         use crate::config::BoolKey;
         use crate::scheduler::states::CardState;
         use crate::scheduler::states::NormalState;
-        use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
