@@ -90,10 +90,11 @@ populations can take time to scan.
 Numeric HTML fields are normalized on both platforms; malformed or unusual
 markup may be interpreted differently by their respective HTML parsers.
 
-With native Dynamic DR enabled, both backends currently record the native
-grade-mapped retention on the card even when an add-on grade rule selected an
-exact target for its answer-button interval. This is existing desktop behavior
-and can make the stored value differ from that interval's target.
+With native Dynamic DR enabled, a matched add-on grade rule is a final target:
+the backend records that target on the card rather than mapping it again. Other
+answers continue to record the native grade-mapped retention. Desktop uses the
+same behavior when both its scheduler and the add-on support final per-grade
+overrides; older desktop builds retain their existing answer behavior.
 
 ## Bundled RWKV Models
 

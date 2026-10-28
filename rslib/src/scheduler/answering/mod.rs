@@ -74,6 +74,7 @@ pub struct CardAnswer {
     pub milliseconds_taken: u32,
     pub custom_data: Option<String>,
     pub desired_retention_override: Option<f32>,
+    pub desired_retention_override_is_final: bool,
     pub rwkv_s90: Option<f32>,
     pub rwkv_retrievability: Option<f32>,
     pub rwkv_review_kind: Option<u32>,
@@ -630,13 +631,29 @@ impl Collection {
         let usn = self.usn()?;
 
         let (rules, matched) = self.addon_retention_for_card(&card)?;
-        if let Some(rules) = rules {
+        if let Some(rules) = rules.filter(|_| !answer.desired_retention_override_is_final) {
             let base = answer
                 .desired_retention_override
                 .or(matched.map(|value| value.retention));
             answer.desired_retention_override = rules.target_for_grade(base, answer.rating.index());
+            answer.desired_retention_override_is_final = rules
+                .has_grade_rule(answer.rating.index())
+                && answer.desired_retention_override.is_some();
+        }
+        if answer.desired_retention_override_is_final {
+            require!(
+                answer
+                    .desired_retention_override
+                    .is_some_and(|value| { value.is_finite() && value > 0.0 && value <= 1.0 }),
+                "a final desired retention override must be greater than 0 and at most 1",
+            );
         }
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
+        if answer.desired_retention_override_is_final {
+            // The supplied scheduling state already uses the final target. Do
+            // not replace it with a second native Dynamic DR mapping on save.
+            updater.dynamic_desired_retentions = None;
+        }
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
         // If the states aren't equal, it's probably because some time has passed.
@@ -1195,6 +1212,7 @@ pub mod test_helpers {
                 milliseconds_taken: 0,
                 custom_data: None,
                 desired_retention_override: None,
+                desired_retention_override_is_final: false,
                 rwkv_s90: None,
                 rwkv_retrievability: None,
                 rwkv_review_kind: None,
@@ -1358,6 +1376,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: Some(20.0),
             rwkv_retrievability: Some(0.62),
             rwkv_review_kind: None,
@@ -1394,6 +1413,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: Some(20.0),
             rwkv_retrievability: None,
             rwkv_review_kind: None,
@@ -1423,6 +1443,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: Some(RevlogReviewKind::Relearning as u32),
@@ -1456,6 +1477,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
@@ -1478,6 +1500,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
@@ -1558,6 +1581,7 @@ pub(crate) mod test {
                 milliseconds_taken: 0,
                 custom_data: None,
                 desired_retention_override: None,
+                desired_retention_override_is_final: false,
                 rwkv_s90: None,
                 rwkv_retrievability: None,
                 rwkv_review_kind: None,
@@ -1855,6 +1879,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: Some(0.95),
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
@@ -1864,6 +1889,81 @@ pub(crate) mod test {
         let card = col.storage.get_card(card.id)?.unwrap();
         assert_eq!(card.desired_retention, Some(0.95));
 
+        Ok(())
+    }
+
+    #[test]
+    fn final_desired_retention_override_preserves_the_answer_target() -> Result<()> {
+        use crate::services::SchedulerService;
+
+        fn answer(is_final: bool) -> Result<(f32, f32)> {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.fsrs_dynamic_desired_retention_enabled = true;
+                config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
+                config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+                config.fsrs_dynamic_desired_retention_avg_drs = vec![0.8, 0.9];
+                config.fsrs_dynamic_desired_retention_min = 0.75;
+                config.fsrs_dynamic_desired_retention_max = 0.95;
+            });
+            NoteAdder::basic(&mut col).add(&mut col);
+            let card_id = col.answer_easy().card_id;
+            col.set_due_date(&[card_id], "0", None)?;
+            let states =
+                col.get_scheduling_states_with_desired_retention_override(card_id, Some(0.85))?;
+            let mapped = states.dynamic_desired_retentions.unwrap()[2];
+            let states: anki_proto::scheduler::SchedulingStates = states.into();
+            let _ = SchedulerService::answer_card(
+                &mut col,
+                anki_proto::scheduler::CardAnswer {
+                    card_id: card_id.0,
+                    current_state: states.current,
+                    new_state: states.good,
+                    rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+                    answered_at_millis: TimestampMillis::now().0,
+                    desired_retention_override: Some(0.85),
+                    desired_retention_override_is_final: is_final,
+                    ..Default::default()
+                },
+            )?;
+            Ok((col.get_first_card().desired_retention.unwrap(), mapped))
+        }
+
+        let (saved_base, mapped) = answer(false)?;
+        let (saved_final, _) = answer(true)?;
+        assert_eq!(saved_base, (mapped * 100.0).round() / 100.0);
+        assert_ne!(saved_base, 0.85);
+        assert_eq!(saved_final, 0.85);
+        Ok(())
+    }
+
+    #[test]
+    fn final_desired_retention_override_requires_a_valid_target() -> Result<()> {
+        use crate::services::SchedulerService;
+
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.get_first_card();
+        let states: anki_proto::scheduler::SchedulingStates =
+            col.get_scheduling_states(card.id)?.into();
+        for target in [None, Some(0.0), Some(1.1), Some(f32::NAN)] {
+            let result = SchedulerService::answer_card(
+                &mut col,
+                anki_proto::scheduler::CardAnswer {
+                    card_id: card.id.0,
+                    current_state: states.current.clone(),
+                    new_state: states.good.clone(),
+                    rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+                    answered_at_millis: TimestampMillis::now().0,
+                    desired_retention_override: target,
+                    desired_retention_override_is_final: true,
+                    ..Default::default()
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(col.get_first_card(), card);
+        }
         Ok(())
     }
 
@@ -2019,6 +2119,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: Some(0.95),
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
@@ -2184,6 +2285,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
@@ -2337,6 +2439,7 @@ pub(crate) mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: Some(RevlogReviewKind::Relearning as u32),
