@@ -11556,10 +11556,14 @@ def _reviewed_rwkv_pair(
             col.add_note(note, DeckId(1))
             card = note.cards()[0]
             card_ids.append(card.id)
-            for ease in (4,) if learning_only else (4, 3):
-                card = col.get_card(card.id)
-                card.start_timer()
-                col.sched.answerCard(card, ease)
+            ratings = (scheduler_pb2.CardAnswer.EASY,)
+            if not learning_only:
+                ratings += (scheduler_pb2.CardAnswer.GOOD,)
+            for rating in ratings:
+                # Grade Now uses the Rust test clock, as later mutations do.
+                col._backend.grade_now(
+                    card_ids=[card.id], rating=rating, card_options=[]
+                )
 
         timers: list[Callable[[], None]] = []
         mw = SimpleNamespace(
@@ -12542,9 +12546,19 @@ def test_external_scheduling_preserves_prepared_new_card_reset(
 
 
 @pytest.mark.parametrize("native_history", [True, False])
+@pytest.mark.parametrize("python_clock_ahead", [False, True])
 def test_grade_now_starts_fresh_after_unlogged_learning_reset(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, native_history: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    native_history: bool,
+    python_clock_ahead: bool,
 ) -> None:
+    if python_clock_ahead:
+        # The Rust test clock can be two hours behind Python near rollover.
+        monkeypatch.setattr(
+            "anki.scheduler.v3.int_time",
+            lambda scale=1: int((time.time() + 2 * 60 * 60) * scale),
+        )
     with _reviewed_rwkv_pair(
         monkeypatch, tmp_path, native_history, learning_only=True
     ) as setup:
