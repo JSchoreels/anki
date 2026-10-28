@@ -12,6 +12,9 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
+use blake2::digest::consts::U8;
+use blake2::digest::Digest as Blake2Digest;
+use blake2::Blake2b;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -1082,8 +1085,24 @@ fn rwkv_stable_preset_id(
             .parse()
             .ok()
             .or_else(|| stable_preset_ids.get(id).copied())
+            .or_else(|| rwkv_stable_preset_id_from_string(id))
             .or_invalid("missing stable id for add-on FSRS preset"),
     }
+}
+
+/// Match desktop's `_stable_preset_id`: deck ids are decimal i64s, while
+/// add-on ids (which start with `addon:`) use an eight-byte BLAKE2b digest.
+/// This is BLAKE2b configured for an eight-byte output, not a truncated
+/// 64-byte digest; the output length is part of BLAKE2's parameters.
+fn rwkv_stable_preset_id_from_string(id: &str) -> Option<i64> {
+    if id.is_empty() {
+        return None;
+    }
+    if id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return id.parse().ok();
+    }
+    let digest = Blake2b::<U8>::digest(id.as_bytes());
+    Some(i64::from_be_bytes(digest.into()) & i64::MAX)
 }
 
 fn rwkv_first_review_uses_card_creation(
@@ -1307,6 +1326,83 @@ mod test {
     use crate::notes::NoteId;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+
+    #[test]
+    fn stable_preset_ids_match_desktop_blake2b_vectors() {
+        // Generated with Python hashlib.blake2b(..., digest_size=8), including
+        // a UTF-8 ID and a digest whose high bit must be cleared.
+        for (id, expected) in [
+            ("addon:test:moved", 334_249_656_965_035_719),
+            (
+                "addon:fsrs-dynamic-preset-selection:日本語",
+                5_066_060_561_763_284_113,
+            ),
+            (
+                "addon:uuid:550e8400-e29b-41d4-a716-446655440000",
+                5_599_663_058_818_127_186,
+            ),
+            ("000123", 123),
+        ] {
+            assert_eq!(rwkv_stable_preset_id_from_string(id), Some(expected));
+        }
+        assert_eq!(rwkv_stable_preset_id_from_string(""), None);
+        assert_eq!(
+            rwkv_stable_preset_id_from_string("9223372036854775808"),
+            None
+        );
+    }
+
+    #[test]
+    fn addon_preset_history_replays_without_a_desktop_lookup_table() -> Result<()> {
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FsrsPresetSimulatorRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let card_id = col.answer_good().card_id;
+        let id = "addon:test:moved";
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: id.into(),
+                    name: "Moved".into(),
+                    desired_retention: 0.9,
+                    historical_retention: 0.9,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: format!("cid:{}", card_id.0),
+                    preset_id: id.into(),
+                }],
+                simulator_rules: vec![FsrsPresetSimulatorRule {
+                    preset_id: id.into(),
+                    ..Default::default()
+                }],
+            },
+        )?;
+
+        for dynamic_preset_replay in [false, true] {
+            let request = |stable_preset_ids| RwkvHistoricalReviewFingerprintRequest {
+                stable_preset_ids,
+                dynamic_preset_replay,
+                ..Default::default()
+            };
+            let mobile = col.rwkv_historical_review_fingerprint(request(HashMap::new()))?;
+            let desktop = col.rwkv_historical_review_fingerprint(request(HashMap::from([(
+                id.into(),
+                334_249_656_965_035_719,
+            )])))?;
+            assert_eq!(mobile.review_count, 1);
+            assert_eq!(mobile.history_hash, desktop.history_hash);
+        }
+        Ok(())
+    }
 
     #[test]
     fn historical_fingerprint_matches_python_cache_encoding() {
