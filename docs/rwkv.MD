@@ -454,6 +454,9 @@ mutation, instead of copying the persistent card type. When RWKV synthesizes a
 same-day state outside Anki's learning queues, Qt places the corresponding raw
 kind on `CardAnswer`; the Rust answer transaction validates and writes that kind
 to the revlog, so undo and redo keep the card update and review type atomic.
+Kuma's offline runtime derives the same kind when its client does not send one.
+It keeps synthetic same-day Filtered repeats separate from ordinary filtered-deck
+answers, and clears the affected transient marker when an answer is undone.
 In a rescheduling filtered deck, a learning answer that has no FSRS memory state
 keeps Anki's Learning kind, because a factor-0 Filtered row would be excluded as cramming.
 Histories without a Learning answer, such as cards introduced through Grade

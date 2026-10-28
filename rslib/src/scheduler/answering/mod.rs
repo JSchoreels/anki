@@ -472,10 +472,15 @@ impl Collection {
     /// Answer card, writing its new state to the database.
     /// Provided [CardAnswer] has its answer time capped to deck preset.
     pub fn answer_card(&mut self, answer: &mut CardAnswer) -> Result<OpOutput<()>> {
-        self.transact(Op::AnswerCard, |col| col.answer_card_inner(answer))
+        let output = self.transact(Op::AnswerCard, |col| col.answer_card_inner(answer))?;
+        self.rwkv_offline_record_answer_kind(answer, output.output.0, output.output.1);
+        Ok(output.map(|_| ()))
     }
 
-    pub(crate) fn answer_card_inner(&mut self, answer: &mut CardAnswer) -> Result<()> {
+    pub(crate) fn answer_card_inner(
+        &mut self,
+        answer: &mut CardAnswer,
+    ) -> Result<(RevlogId, bool)> {
         let card = self
             .storage
             .get_card(answer.card_id)?
@@ -497,12 +502,13 @@ impl Collection {
 
         let mut revlog_partial =
             updater.apply_study_state(current_state, answer.new_state, answer.rating)?;
+        let config_active = updater.config.inner.rwkv_review_enabled
+            || updater.config.inner.rwkv_review_instant_order_enabled;
         if answer.rwkv_review_kind.is_none() {
-            let config_active = updater.config.inner.rwkv_review_enabled
-                || updater.config.inner.rwkv_review_instant_order_enabled;
-            answer.rwkv_review_kind = self.rwkv_offline_same_day_review_kind(
+            answer.rwkv_review_kind = self.rwkv_offline_answer_review_kind(
                 answer.card_id,
                 &current_state,
+                &answer.new_state,
                 config_active,
                 answer.answered_at,
                 &updater.timing,
@@ -618,7 +624,7 @@ impl Collection {
             )?;
         }
 
-        Ok(())
+        Ok((revlog_id, config_active))
     }
 
     fn maybe_bury_siblings(&mut self, card: &Card, config: &DeckConfig) -> Result<()> {
