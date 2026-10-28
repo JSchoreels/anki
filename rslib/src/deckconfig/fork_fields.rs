@@ -14,6 +14,7 @@ use super::DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER;
 use super::DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
 use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
 use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
+use super::DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 
 const FSRS_FORK_FIELDS_KEY: &str = "jschoreels.fsrs";
@@ -217,6 +218,8 @@ struct RwkvDeckConfigFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_candidate_refresh_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_precompute_next_card: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_first_review_elapsed_from_card_creation: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_enforce_grade_order: Option<bool>,
@@ -253,6 +256,10 @@ impl RwkvDeckConfigFields {
             rwkv_review_dynamic_preset_replay: true_only(config.rwkv_review_dynamic_preset_replay),
             rwkv_review_candidate_refresh_enabled: true_only(
                 config.rwkv_review_candidate_refresh_enabled,
+            ),
+            rwkv_review_precompute_next_card: non_default(
+                config.rwkv_review_precompute_next_card,
+                DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD,
             ),
             rwkv_review_first_review_elapsed_from_card_creation: non_default(
                 config.rwkv_review_first_review_elapsed_from_card_creation,
@@ -300,6 +307,9 @@ impl RwkvDeckConfigFields {
         if let Some(value) = self.rwkv_review_candidate_refresh_enabled {
             config.rwkv_review_candidate_refresh_enabled = value;
         }
+        if let Some(value) = self.rwkv_review_precompute_next_card {
+            config.rwkv_review_precompute_next_card = value;
+        }
         if let Some(value) = self.rwkv_review_first_review_elapsed_from_card_creation {
             config.rwkv_review_first_review_elapsed_from_card_creation = value;
         }
@@ -320,6 +330,7 @@ impl RwkvDeckConfigFields {
 }
 
 pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
+    config.rwkv_review_precompute_next_card = DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD;
     if !config.rwkv_review_allow_same_day_review {
         config.rwkv_review_allow_same_day_review = DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW;
     }
@@ -454,6 +465,7 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.rwkv_review_instant_order_enabled = false;
     config.rwkv_review_dynamic_preset_replay = false;
     config.rwkv_review_candidate_refresh_enabled = false;
+    config.rwkv_review_precompute_next_card = false;
     config.rwkv_review_first_review_elapsed_from_card_creation = false;
     config.rwkv_review_enforce_grade_order = false;
     config.rwkv_review_minimum_reviews_per_day = 0;
@@ -515,6 +527,7 @@ mod tests {
             rwkv_review_instant_order_enabled: true,
             rwkv_review_dynamic_preset_replay: true,
             rwkv_review_candidate_refresh_enabled: true,
+            rwkv_review_precompute_next_card: false,
             rwkv_review_first_review_elapsed_from_card_creation: false,
             rwkv_review_enforce_grade_order: false,
             rwkv_review_minimum_reviews_per_day: 42,
@@ -546,6 +559,7 @@ mod tests {
         assert!(!storage_config.rwkv_review_instant_order_enabled);
         assert!(!storage_config.rwkv_review_dynamic_preset_replay);
         assert!(!storage_config.rwkv_review_candidate_refresh_enabled);
+        assert!(!storage_config.rwkv_review_precompute_next_card);
         assert!(!storage_config.rwkv_review_first_review_elapsed_from_card_creation);
         assert!(!storage_config.rwkv_review_enforce_grade_order);
         assert_eq!(storage_config.rwkv_review_minimum_reviews_per_day, 0);
@@ -576,6 +590,7 @@ mod tests {
         assert!(fsrs_other
             .get("rwkv_review_candidate_refresh_enabled")
             .is_none());
+        assert!(fsrs_other.get("rwkv_review_precompute_next_card").is_none());
         assert!(fsrs_other
             .get("rwkv_review_first_review_elapsed_from_card_creation")
             .is_none());
@@ -593,6 +608,7 @@ mod tests {
                 "rwkv_review_instant_order_enabled": true,
                 "rwkv_review_dynamic_preset_replay": true,
                 "rwkv_review_candidate_refresh_enabled": true,
+                "rwkv_review_precompute_next_card": false,
                 "rwkv_review_first_review_elapsed_from_card_creation": false,
                 "rwkv_review_enforce_grade_order": false,
                 "rwkv_review_minimum_reviews_per_day": 42,
@@ -662,6 +678,10 @@ mod tests {
             config.rwkv_review_candidate_refresh_enabled
         );
         assert_eq!(
+            decoded.rwkv_review_precompute_next_card,
+            config.rwkv_review_precompute_next_card
+        );
+        assert_eq!(
             decoded.rwkv_review_first_review_elapsed_from_card_creation,
             config.rwkv_review_first_review_elapsed_from_card_creation
         );
@@ -673,6 +693,23 @@ mod tests {
             decoded.rwkv_review_minimum_reviews_per_day,
             config.rwkv_review_minimum_reviews_per_day
         );
+    }
+
+    #[test]
+    fn precompute_defaults_on_and_can_be_disabled_in_storage() {
+        for enabled in [true, false] {
+            let config = DeckConfigInner {
+                rwkv_review_precompute_next_card: enabled,
+                ..Default::default()
+            };
+            let storage = deck_config_inner_for_storage(&config);
+            let mut decoded = DeckConfigInner::decode(storage.encode_to_vec().as_slice()).unwrap();
+            restore_fork_fields_from_other(&mut decoded);
+            assert_eq!(decoded.rwkv_review_precompute_next_card, enabled);
+        }
+        let mut old_config = DeckConfigInner::default();
+        restore_fork_fields_from_other(&mut old_config);
+        assert!(old_config.rwkv_review_precompute_next_card);
     }
 
     #[test]

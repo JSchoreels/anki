@@ -1414,6 +1414,7 @@ def card_stats() -> bytes:
         card=card,
         fallback_source=_card_stats_fallback_retrievability_source(response),
         request_retry=request_rwkv_retry,
+        wait_for_backend=True,
     ):
         rows.append(CardInfoRow(label=label, value=value))
 

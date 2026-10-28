@@ -216,6 +216,7 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_minimum_reviews_per_day`, which defaults to `0`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
+`rwkv_review_precompute_next_card`, which defaults to `true`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
 `rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
 `true`, and `rwkv_review_enforce_grade_order`, which defaults to `true`.
@@ -232,8 +233,9 @@ fields. The two spacing minimums appear in one row with units inside the fields.
 The RWKV card keeps minimum daily reviews, repeat spacing, Curve intervals and
 maintenance actions visible. Its initially collapsed **Advanced** section contains
 the profile-wide model switch and **Compare RWKV with FSRS**. With Instant enabled,
-it also contains **Use faster, approximate queue updates** and **Update the RWKV
-queue every**; these two settings still belong to the selected deck preset.
+it also contains **Precompute next card before this card answer**, **Use faster,
+approximate queue updates**, and **Update the RWKV queue every**; these settings
+belong to the selected deck preset.
 
 Deck Options hides `rwkv_review_refresh_on_exit` while retaining its saved
 behavior. Creation-time prediction is always enabled; the retained
@@ -934,15 +936,25 @@ RWKV scope to converge to its RWKV eligibility counts before the reviewer is
 opened.
 
 When the desktop Dynamic Desired Retention provider is available, RWKV review
-input batches are resolved through its bulk API before queue scoring or RWKV
-rescheduling predictions are made. The resolved target retention is carried with
-each transient queue score, so Rust queue gathering and deck counts compare RWKV
-retrievability against the same target the desktop scorer used. RWKV reschedule
-requests also carry the resolved target and persist it to the card's desired
-retention field together with the new interval and S90 value. When the provider
+inputs are resolved before queue scoring or RWKV rescheduling predictions are
+made. Batches use its bulk API; single-card work uses its single-card API when
+available, with the bulk API as a fallback. Searches with a required `cid:`
+filter prepare exact FSRS metrics only for those cards; searches that do not
+require specific IDs retain collection-wide preparation. The resolved target
+retention is carried with each transient queue score, so Rust queue gathering
+and deck counts compare RWKV retrievability against the same target the desktop
+scorer used. RWKV reschedule requests also persist the resolved desired retention
+to the card together with the new interval and S90 value. When the provider
 reports that its rules changed, RWKV discards resolved targets and transient
 scores, rejects in-flight work prepared with the old rules, and refreshes the
 current screen's study queues and due counts.
+
+In one benchmark on a copied collection with 7,449 review candidates, one search
+rule and three field rules, the warm median for ten one-card Dynamic Desired
+Retention lookups fell from 141 ms through the bulk API to 0.25 ms through the
+RWKV single-card path. Full-deck rule resolution remained 316 ms in that run,
+while the SM72 prediction stage took 40 ms. These are separate stage timings,
+not measurements of the complete delay between reviews.
 
 ## Stats And Search
 
@@ -1220,57 +1232,38 @@ that simulator falls back to the Python loop. Optional smoothing applies a
 centered moving window to neighboring retention points. Both simulator paths
 report progress while running.
 
-After an answer is applied on desktop, the reviewer updates the in-memory RWKV
-state. Every `rwkv_review_refresh_interval` answered reviews, it refreshes the
-transient RWKV score map and invalidates the active queue so the next queue
-build admits cards from the refreshed score map. With candidate refresh
-disabled, that refresh scores the full deck-tree candidate set. With candidate
-refresh enabled and an existing score map available, it scores only the current
-candidate window and keeps the remaining installed scores. This matters when
-the first queue was built before RWKV scores were ready, or when refreshed
-scores make a card outside the previous review-limit slice more urgent. It does
-not synchronously refresh the full deck tree after every answer when the refresh
-interval is greater than `1`, as that can be too expensive for large deck
-trees. Answering a card restored by undo follows the same refresh interval; its
-temporary one-card display queue does not force an otherwise-early full refresh.
-Undo marks only the restored cards dirty in cached queue inputs, so the next due
-refresh reloads those cards instead of rebuilding the full deck input set.
-Between interval refreshes, Anki refreshes only the answered card's
-installed queue score from the updated RWKV state, so a stale pre-answer low
-score cannot immediately re-admit the same card. When a due post-answer refresh
-is deferred until after the next question is shown, Anki patches only the
-needed session-local intervening-review metadata, capped at the configured
-threshold, on the installed score map before selecting that next question.
-Installed score requests also record
-intervening-review counts for recently answered cards in the selected deck tree
-from the revlog, plus cards already answered in the current reviewer session,
-which lets the backend enforce `rwkv_review_min_intervening_reviews` without
-storing a synced per-card counter.
-Due post-answer refreshes show the next question after answer operation
-bookkeeping, then refresh the
-queue-score map for later queue builds. The refresh is split into a short
-collection task that snapshots candidate inputs, a model-scoring task that does
-not hold the collection executor, and a short collection task that installs the
-scores only if the RWKV state generation has not advanced. The first card after
-the answer may still be selected from the previously installed map. For
-example, with refresh interval `2`, after the second answered review Anki shows
-the third question first, then starts the queue-score refresh while the front
-side is visible. If that refresh finishes before the third answer is submitted,
-later queue builds can use the refreshed map; otherwise Anki keeps using the
-previously installed map until a later refresh completes. Skipped post-answer
-interval refreshes fetch the next card after the answered-card score update.
-When the answered card was the last queued card, Anki uses the same split
-prepare/score/install pipeline before requesting the next card. If the backend
-is busy, this required refresh waits for prediction access. If concurrent state
-work makes the prepared snapshot stale, Anki rebuilds and retries it once before
-requesting the next card. Pre-answer counts can still overstate the queue that
-remains after answer-time eligibility updates. If the next-card fetch is empty
-while a post-answer refresh is deferred, Anki promotes that refresh to a required
-refresh and retries the fetch once before ending the review session. If the backend
-cannot provide the immutable input snapshot, Anki continues with normal queue
-order instead of falling back to a long Python-side full-deck scan. This is
-especially important after undo restores RWKV state and invalidates predictions
-that were computed for the now-undone answer.
+After an answer, the reviewer updates the in-memory RWKV state. With **Precompute
+next card before this card answer** enabled (the default), the next card is
+selected using the existing score map. At the configured refresh interval, the
+map is then updated in the background for subsequent cards. This does not run
+separate predictions for hypothetical answers, but the next card's score may
+have changed after the actual answer. With candidate refresh enabled, a
+background update scores only its current candidate window and retains the
+other scores; otherwise it scores the full deck-tree candidate set. Between
+interval updates, Anki refreshes the answered card's score.
+
+With precomputation disabled and Ascending Retrievability review order or
+retrievability-based new-card gathering selected, Anki waits for a full
+post-answer update before fetching the next card. It reloads current inputs and
+dynamic retention targets for all candidates, rather than reusing stale elapsed
+times or limiting the update to the candidate window. This takes precedence
+over the refresh interval and approximate-candidate setting. Other review orders
+continue to use their configured refresh interval.
+
+Both modes use the scheduler's normal answer, eligibility, review-limit, mixing,
+and repeat-spacing rules. Installed score requests include intervening-review
+counts from the revlog and current session. Before selecting a card from a
+deferred map, Anki also updates the necessary session-local spacing metadata.
+When the last queued card or review is answered, or the score map was invalidated,
+Anki waits for a refresh before fetching again. If a deferred fetch is empty,
+the reviewer performs the refresh and retries before ending the session.
+
+The refresh uses a collection task to build candidate inputs, a model task off
+the collection executor, and a collection task to install scores only if the
+RWKV state and queue context remain current. Required refreshes wait for busy
+prediction access and retry once if installation becomes stale. If the backend
+cannot provide a usable snapshot, Anki continues with the normal queue instead
+of performing a long Python-side full-deck scan.
 
 If that queue is empty while RWKV resident state is unavailable, the
 reviewer waits for the labelled state-cache recovery operation, then installs
@@ -1279,12 +1272,6 @@ state-cache operation is shared rather than duplicated. Recovery is attempted
 once for that empty queue; failure or a still-empty recovered queue ends the
 session normally. Completion cannot resume a reviewer session the user has left
 or whose collection or card generation has changed.
-
-With candidate refresh disabled, due interval refreshes remain exact. Anki does
-not precompute post-answer queue maps for all possible answer buttons while the
-answer is shown; that can require scoring the same deck-tree candidates multiple
-times before the user has picked an answer. Instead, queue scoring uses the
-actual answered ease after the next question has been displayed.
 
 When `rwkv_review_refresh_on_exit` is enabled, leaving the reviewer after at
 least one answered card also starts a background RWKV queue-score refresh. This
@@ -1356,9 +1343,11 @@ progress or after recovery fails.
 Card Info marks temporary inference contention and state recovery separately
 from missing backends or prediction errors. Its current/previous-card pages
 retry temporary failures after 0.5, 1, 2, 4, and 8 seconds, stopping when values
-are ready, the card changes, or the page closes. Retries never wait for the
-inference lock on the UI thread. The state-ready hook still refreshes an open
-window after a longer recovery finishes.
+are ready, the card changes, or the page closes. Each HTTP background request
+can wait up to 100 ms for prediction access; it rechecks the RWKV state after
+waiting and discards stale results. Retries never wait for the inference lock on
+the UI thread. The state-ready hook still refreshes an open window after a longer
+recovery finishes.
 Before publication, Anki explicitly closes both the state-store writer and its
 cache-validation database readers. On Windows, publishing the rebuilt cache also
 retries transient file-sharing failures caused by another process briefly holding

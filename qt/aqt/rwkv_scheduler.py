@@ -140,6 +140,9 @@ _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
 _REVIEWER_PENDING_ANSWER_STATE_ATTR = "_rwkv_pending_answer_state"
 _REVIEWER_ANSWER_PRESET_OVERRIDE_ATTR = "_rwkv_answer_preset_override"
 _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR = "_rwkv_synthetic_answer_states"
+_REVIEW_ORDER_RETRIEVABILITY_ASCENDING = (
+    deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING
+)
 _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_DESCENDING
 )
@@ -163,6 +166,7 @@ _DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS = 5
 _MIN_RWKV_REVIEW_BATCH_SIZE = 64
 _MAX_RWKV_REVIEW_BATCH_SIZE = 8192
 _AUTO_RWKV_RETRIEVABILITY_BATCH_SIZE = 2048
+_RWKV_CARD_INFO_PREDICTION_WAIT_SECONDS = 0.1
 _MIN_RWKV_REVIEW_REFRESH_INTERVAL = 1
 _MAX_RWKV_REVIEW_REFRESH_INTERVAL = 10_000
 _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
@@ -3690,6 +3694,7 @@ def _try_reviewer_backend_prediction_access(
     expected_resident_state_generation: int | None = None,
     expected_state_token: _ReviewerBackendPredictionStateToken | None = None,
     wait_for_access: bool = False,
+    wait_timeout_seconds: float | None = None,
 ) -> Iterator[RwkvReviewerBackend | None]:
     """Claim access to resident backend state for prediction."""
 
@@ -3710,7 +3715,12 @@ def _try_reviewer_backend_prediction_access(
     ):
         yield None
         return
-    if not _reviewer_backend_execution_lock.acquire(blocking=wait_for_access):
+    acquired = (
+        _reviewer_backend_execution_lock.acquire(timeout=wait_timeout_seconds)
+        if wait_timeout_seconds is not None
+        else _reviewer_backend_execution_lock.acquire(blocking=wait_for_access)
+    )
+    if not acquired:
         yield None
         return
 
@@ -5715,6 +5725,7 @@ def prepare_reviewer_queue_order_async_work(
     reviewer: object,
     *,
     reason: str = "review queue",
+    wait_for_backend: bool = False,
 ) -> RwkvReviewQueueOrderAsyncWork | None:
     """Build immutable RWKV queue scoring work while holding collection access.
 
@@ -5795,27 +5806,31 @@ def prepare_reviewer_queue_order_async_work(
                 deck_id,
             )
             return None
-        candidate_work = _candidate_refreshed_rwkv_review_queue_async_work(
-            reviewer=reviewer,
-            deck_id=deck_id,
-            deck_config=deck_config,
-            reason=reason,
-            batch_size=batch_size,
-            state_generation=state_generation,
-            backend_assignment_generation=backend_assignment_generation,
-            context=context,
-            warmup_elapsed_ms=warmup_elapsed_ms,
-            start=start,
-            expected_backend=backend,
-        )
-        if candidate_work is not None:
-            return candidate_work
+        exact_order = not _rwkv_review_precompute_next_card(deck_config)
+        if not exact_order:
+            candidate_work = _candidate_refreshed_rwkv_review_queue_async_work(
+                reviewer=reviewer,
+                deck_id=deck_id,
+                deck_config=deck_config,
+                reason=reason,
+                batch_size=batch_size,
+                state_generation=state_generation,
+                backend_assignment_generation=backend_assignment_generation,
+                context=context,
+                warmup_elapsed_ms=warmup_elapsed_ms,
+                start=start,
+                expected_backend=backend,
+                wait_for_backend=wait_for_backend,
+            )
+            if candidate_work is not None:
+                return candidate_work
 
         input_build = _rwkv_review_input_batches_for_deck_review_queue(
             reviewer=reviewer,
             deck_id=deck_id,
             batch_size_override=batch_size,
             include_new_cards=_new_gather_uses_retrievability(deck_config),
+            use_cache=not exact_order,
         )
         if input_build is None:
             logger.debug(
@@ -5838,6 +5853,7 @@ def prepare_reviewer_queue_order_async_work(
             build_start=start,
             fresh_for_backend_state=True,
             expected_backend=backend,
+            wait_for_backend=wait_for_backend,
         )
     except Exception:
         logger.exception("RWKV async %s scoring preparation failed", reason)
@@ -6118,6 +6134,8 @@ def _aborted_reviewer_queue_order_async_result(
 def install_reviewer_queue_order_async_result(
     reviewer: object,
     result: RwkvReviewQueueOrderAsyncResult,
+    *,
+    wait_for_backend: bool = False,
 ) -> bool:
     if not _rwkv_review_queue_async_collection_is_current(result):
         return False
@@ -6127,6 +6145,7 @@ def install_reviewer_queue_order_async_result(
         expected_state_generation=result.state_generation,
         expected_resident_state_key=result.resident_state_key,
         expected_resident_state_generation=result.resident_state_generation,
+        wait_for_access=wait_for_backend,
     ) as backend:
         if backend is None or not _rwkv_review_queue_order_async_result_is_current(
             reviewer,
@@ -6409,8 +6428,12 @@ def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
         return False
 
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-    return isinstance(deck_config, dict) and _new_gather_uses_retrievability(
-        deck_config
+    if not isinstance(deck_config, dict):
+        return False
+    review_order = deck_config.get("reviewOrder", deck_config.get("review_order"))
+    return not _rwkv_review_precompute_next_card(deck_config) and (
+        review_order == _REVIEW_ORDER_RETRIEVABILITY_ASCENDING
+        or _new_gather_uses_retrievability(deck_config)
     )
 
 
@@ -8179,6 +8202,7 @@ def rwkv_card_info_rows(
     fallback_source: str,
     include_after_review: bool = True,
     request_retry: Callable[[], None] | None = None,
+    wait_for_backend: bool = False,
 ) -> list[tuple[str, str]]:
     card_id = _card_id(card)
     if not rwkv_review_active(reviewer, card):
@@ -8204,6 +8228,7 @@ def rwkv_card_info_rows(
         fallback_source=fallback_source,
         _candidate=candidate,
         request_retry=request_retry,
+        wait_for_backend=wait_for_backend,
     )
     if queried_diagnostics is None:
         diagnostics = RwkvReviewerDiagnostics(
@@ -8232,6 +8257,7 @@ def rwkv_card_info_rows(
                 card,
                 _candidate=candidate,
                 request_retry=request_retry,
+                wait_for_backend=wait_for_backend,
             )
         )
     return rows
@@ -8363,6 +8389,7 @@ def rwkv_card_info_after_review_rows(
     *,
     _candidate: RwkvReviewCandidate | None = None,
     request_retry: Callable[[], None] | None = None,
+    wait_for_backend: bool = False,
 ) -> list[tuple[str, str]]:
     try:
         backend = _reviewer_backend
@@ -8376,6 +8403,14 @@ def rwkv_card_info_after_review_rows(
             logger.debug(
                 "RWKV card info after-review prediction skipped: warm-up pending"
             )
+            if request_retry is not None:
+                request_retry()
+            return _unavailable_rwkv_card_info_after_review_rows()
+
+        state_token = _capture_reviewer_backend_prediction_state_token(
+            reviewer, expected_backend=backend
+        )
+        if state_token is None:
             if request_retry is not None:
                 request_retry()
             return _unavailable_rwkv_card_info_after_review_rows()
@@ -8428,6 +8463,8 @@ def rwkv_card_info_after_review_rows(
             answer_inputs=answer_inputs,
             horizon_inputs=horizon_inputs,
             request_retry=request_retry,
+            state_token=state_token,
+            wait_for_backend=wait_for_backend,
         )
         if score_batches is None or len(score_batches) != len(labeled_eases):
             return _unavailable_rwkv_card_info_after_review_rows()
@@ -8470,9 +8507,15 @@ def _rwkv_card_info_after_review_score_batches(
     answer_inputs: Sequence[RwkvReviewInput],
     horizon_inputs: Sequence[tuple[int, RwkvReviewInput]],
     request_retry: Callable[[], None] | None = None,
+    state_token: _ReviewerBackendPredictionStateToken | None = None,
+    wait_for_backend: bool = False,
 ) -> Sequence[Sequence[tuple[int, float]]] | None:
     with _try_reviewer_backend_prediction_access(
         expected_backend=backend,
+        expected_state_token=state_token,
+        wait_timeout_seconds=(
+            _RWKV_CARD_INFO_PREDICTION_WAIT_SECONDS if wait_for_backend else None
+        ),
     ) as current_backend:
         if current_backend is None or not _reviewer_backend_warmed_up(reviewer):
             logger.debug(
@@ -8500,6 +8543,7 @@ def _rwkv_card_info_after_review_score_batches(
                 if not _reviewer_backend_prediction_access_is_current(
                     current_backend,
                     expected_state_generation=state_generation,
+                    expected_state_token=state_token,
                 ) or not _reviewer_backend_warmed_up(reviewer):
                     if request_retry is not None:
                         request_retry()
@@ -8527,6 +8571,7 @@ def _rwkv_card_info_after_review_score_batches(
         if not _reviewer_backend_prediction_access_is_current(
             current_backend,
             expected_state_generation=state_generation,
+            expected_state_token=state_token,
         ) or not _reviewer_backend_warmed_up(reviewer):
             if request_retry is not None:
                 request_retry()
@@ -9478,6 +9523,7 @@ def _queried_card_info_diagnostics(
     fallback_source: str,
     _candidate: RwkvReviewCandidate | None = None,
     request_retry: Callable[[], None] | None = None,
+    wait_for_backend: bool = False,
 ) -> RwkvReviewerDiagnostics | None:
     backend = _reviewer_backend
     if backend is None:
@@ -9504,6 +9550,9 @@ def _queried_card_info_diagnostics(
             return None
         with _try_reviewer_backend_prediction_access(
             expected_state_token=state_token,
+            wait_timeout_seconds=(
+                _RWKV_CARD_INFO_PREDICTION_WAIT_SECONDS if wait_for_backend else None
+            ),
         ) as current_backend:
             if current_backend is None:
                 if request_retry is not None:
@@ -20817,6 +20866,21 @@ def _rwkv_review_candidate_refresh_enabled(deck_config: dict[str, object]) -> bo
     return value if isinstance(value, bool) else False
 
 
+def _rwkv_review_precompute_next_card(deck_config: dict[str, object]) -> bool:
+    nested = _rwkv_other_config(deck_config)
+    if nested is not None:
+        value = nested.get("rwkv_review_precompute_next_card")
+        if isinstance(value, bool):
+            return value
+
+    value = _rwkv_config_direct_value(
+        deck_config,
+        "rwkvReviewPrecomputeNextCard",
+        "rwkv_review_precompute_next_card",
+    )
+    return value if isinstance(value, bool) else True
+
+
 def _rwkv_config_direct_value(
     deck_config: dict[str, object],
     camel_key: str,
@@ -21631,6 +21695,30 @@ def _dynamic_desired_retention_targets_for_inputs(
         return {}
 
     col = _collection(reviewer)
+    if len(current_desired_retentions) == 1:
+        info_for_card = _dynamic_desired_retention_api_function(
+            "effective_desired_retention_info"
+        )
+        get_card = getattr(col, "get_card", None)
+        if info_for_card is not None and callable(get_card):
+            card_id, current_target = next(iter(current_desired_retentions.items()))
+            try:
+                card = get_card(card_id)
+                if _card_id(card) == card_id:
+                    info = info_for_card(
+                        collection=col,
+                        card=card,
+                        current_desired_retention=current_target,
+                    )
+                    target = getattr(info, "desired_retention", None)
+                    if _valid_probability(target):
+                        return {card_id: float(target)}
+            except Exception:
+                logger.debug(
+                    "failed to resolve single-card Dynamic DR target for RWKV",
+                    exc_info=True,
+                )
+
     if info_for_card_ids is not None:
         # Passing ids spares a backend round trip per card; the provider reads
         # only the note fields its rules need.
@@ -21925,6 +22013,7 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
     warmup_elapsed_ms: float,
     start: float,
     expected_backend: RwkvReviewerBackend,
+    wait_for_backend: bool = False,
 ) -> RwkvReviewQueueOrderAsyncWork | None:
     if not _rwkv_review_candidate_refresh_enabled(deck_config):
         return None
@@ -21988,6 +22077,7 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
         ),
         fresh_for_backend_state=False,
         expected_backend=expected_backend,
+        wait_for_backend=wait_for_backend,
     )
 
 
@@ -22006,6 +22096,7 @@ def _rwkv_review_queue_async_work_from_input_build(  # noqa: PLR0913
     partial_refresh: RwkvReviewQueuePartialRefresh | None = None,
     fresh_for_backend_state: bool,
     expected_backend: RwkvReviewerBackend | None = None,
+    wait_for_backend: bool = False,
 ) -> RwkvReviewQueueOrderAsyncWork | None:
     collection_owner = getattr(reviewer, "mw", None)
     collection = _collection(reviewer)
@@ -22026,6 +22117,7 @@ def _rwkv_review_queue_async_work_from_input_build(  # noqa: PLR0913
         expected_backend=expected_backend,
         expected_backend_assignment_generation=backend_assignment_generation,
         expected_state_generation=state_generation,
+        wait_for_access=wait_for_backend,
     ) as backend:
         if backend is None:
             logger.debug(
@@ -24399,6 +24491,7 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     deck_id: int,
     batch_size_override: int | None,
     include_new_cards: bool,
+    use_cache: bool = True,
 ) -> RwkvReviewInputBatchBuild | None:
     cache_key = _rwkv_review_input_batch_cache_key(
         reviewer=reviewer,
@@ -24406,7 +24499,7 @@ def _rwkv_review_input_batches_for_deck_review_queue(
         batch_size_override=batch_size_override,
         include_new_cards=include_new_cards,
     )
-    if cache_key is not None:
+    if cache_key is not None and use_cache:
         cached = _cached_rwkv_review_input_batch_build(reviewer, cache_key)
         if cached is not None:
             return cached

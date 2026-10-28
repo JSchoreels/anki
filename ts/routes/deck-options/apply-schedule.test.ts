@@ -14,6 +14,7 @@ test("each schedule category can be copied independently", () => {
         desiredRetention: 0.9,
         fsrsParams7: Array(34).fill(2),
         rwkvReviewMinElapsedSecs: 60,
+        rwkvReviewPrecomputeNextCard: false,
         maximumReviewInterval: 1000,
         newPerDay: 50,
     });
@@ -22,6 +23,7 @@ test("each schedule category can be copied independently", () => {
         desiredRetention: 0.8,
         fsrsParams7: Array(34).fill(1),
         rwkvReviewMinElapsedSecs: 10,
+        rwkvReviewPrecomputeNextCard: true,
         maximumReviewInterval: 500,
         newPerDay: 20,
     });
@@ -40,6 +42,7 @@ test("each schedule category can be copied independently", () => {
                     expect(updated.desiredRetention).toBe(retention ? 0.9 : 0.8);
                     expect(updated.fsrsParams7).toEqual(Array(34).fill(settings ? 2 : 1));
                     expect(updated.rwkvReviewMinElapsedSecs).toBe(settings ? 60 : 10);
+                    expect(updated.rwkvReviewPrecomputeNextCard).toBe(!settings);
                     expect(updated.maximumReviewInterval).toBe(settings ? 1000 : 500);
                     expect(updated.newPerDay).toBe(20);
                 }

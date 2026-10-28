@@ -48,6 +48,7 @@ const modelSettingFields = [
     "rwkvReviewEnforceGradeOrder",
     "rwkvReviewMinimumReviewsPerDay",
     "rwkvReviewCandidateRefreshEnabled",
+    "rwkvReviewPrecomputeNextCard",
     "rwkvReviewRefreshInterval",
     "rwkvReviewMinInterveningReviews",
     "rwkvReviewMinElapsedSecs",

@@ -794,6 +794,46 @@ def test_after_answering_tracks_answered_card() -> None:
     assert reviewer._answeredIds == [123]
 
 
+@pytest.mark.parametrize("precompute", [True, False])
+def test_after_answering_uses_precomputed_queue_or_waits_for_full_refresh(
+    monkeypatch: pytest.MonkeyPatch, precompute: bool
+) -> None:
+    calls: list[str] = []
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123)
+    reviewer._answeredIds = []
+    reviewer.state = "transition"
+    reviewer._v3 = SimpleNamespace(
+        queued_cards=SimpleNamespace(new_count=0, learning_count=0, review_count=5)
+    )
+    reviewer.check_timebox = lambda: False
+    reviewer.nextCard = lambda: calls.append("next")
+    reviewer._prepare_rwkv_queue_order_then_next_card = lambda *args, **kwargs: (
+        calls.append("refresh-before-next")
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "reviewer_queue_order_enabled", lambda _: True
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "reviewer_queue_order_refresh_due", lambda _: precompute
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_refresh_before_next_card",
+        lambda _: not precompute,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_needs_intervening_review_refresh",
+        lambda _: False,
+    )
+
+    reviewer._after_answering(3)
+
+    assert calls == (["next"] if precompute else ["refresh-before-next"])
+    assert bool(getattr(reviewer, "_rwkv_deferred_queue_refresh", None)) is precompute
+
+
 def test_after_answering_refreshes_rwkv_queue_order_after_next_card(
     monkeypatch,
 ) -> None:
@@ -801,17 +841,17 @@ def test_after_answering_refreshes_rwkv_queue_order_after_next_card(
     work = object()
     result = object()
 
-    def prepare_reviewer_queue_order_async_work(reviewer: object) -> object:
+    def prepare_reviewer_queue_order_async_work(reviewer: object, **kwargs) -> object:
         calls.append("build")
         return work
 
-    def score_reviewer_queue_order_async_work(arg: object) -> object:
+    def score_reviewer_queue_order_async_work(arg: object, **kwargs) -> object:
         assert arg is work
         calls.append("score")
         return result
 
     def install_reviewer_queue_order_async_result(
-        reviewer: object, arg: object
+        reviewer: object, arg: object, **kwargs
     ) -> bool:
         assert arg is result
         calls.append("install")
@@ -975,7 +1015,7 @@ def test_after_answering_refreshes_invalidated_rwkv_queue_before_next_card(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_reviewer_queue_order_async_work",
-        lambda reviewer: calls.append("build") or work,
+        lambda reviewer, **kwargs: calls.append("build") or work,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
@@ -985,7 +1025,7 @@ def test_after_answering_refreshes_invalidated_rwkv_queue_before_next_card(
         ),
     )
 
-    def install(reviewer: object, scored_result: object) -> bool:
+    def install(reviewer: object, scored_result: object, **kwargs) -> bool:
         assert scored_result is result
         calls.append("install")
         aqt.rwkv_scheduler._clear_reviewer_queue_order_refresh_required(
@@ -1167,7 +1207,7 @@ def test_last_queued_card_uses_async_snapshot_and_advances_when_unavailable(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_reviewer_queue_order_async_work",
-        lambda reviewer: calls.append("build") or None,
+        lambda reviewer, **kwargs: calls.append("build") or None,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
@@ -1214,7 +1254,7 @@ def test_required_rwkv_queue_refresh_waits_and_retries_stale_install(
     second_result = object()
     works = iter((first_work, second_work))
 
-    def prepare_reviewer_queue_order_async_work(reviewer: object) -> object:
+    def prepare_reviewer_queue_order_async_work(reviewer: object, **kwargs) -> object:
         work = next(works)
         calls.append("build:first" if work is first_work else "build:second")
         return work
@@ -1235,6 +1275,7 @@ def test_required_rwkv_queue_refresh_waits_and_retries_stale_install(
     def install_reviewer_queue_order_async_result(
         reviewer: object,
         result: object,
+        **kwargs,
     ) -> bool:
         if result is first_result:
             calls.append("install:first")
@@ -1331,18 +1372,18 @@ def test_rwkv_queue_refresh_coalesces_overlapping_requests(monkeypatch) -> None:
         ) -> None:
             jobs.append((task, on_done, uses_collection))
 
-    def prepare(reviewer: object) -> object:
+    def prepare(reviewer: object, **kwargs) -> object:
         nonlocal build_count
         build_count += 1
         calls.append(f"build:{build_count}")
         return SimpleNamespace(number=build_count)
 
-    def score(work: object) -> object:
+    def score(work: object, **kwargs) -> object:
         number = getattr(work, "number")
         calls.append(f"score:{number}")
         return SimpleNamespace(number=number)
 
-    def install(reviewer: object, result: object) -> bool:
+    def install(reviewer: object, result: object, **kwargs) -> bool:
         calls.append(f"install:{getattr(result, 'number')}")
         return True
 
@@ -1420,19 +1461,19 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         review_count=9,
     )
 
-    def prepare_reviewer_queue_order_async_work(reviewer: object) -> object:
+    def prepare_reviewer_queue_order_async_work(reviewer: object, **kwargs) -> object:
         assert reviewer.card.id == 333
         assert reviewer.state == "question"
         calls.append("build")
         return work
 
-    def score_reviewer_queue_order_async_work(arg: object) -> object:
+    def score_reviewer_queue_order_async_work(arg: object, **kwargs) -> object:
         assert arg is work
         calls.append("score")
         return result
 
     def install_reviewer_queue_order_async_result(
-        reviewer: object, arg: object
+        reviewer: object, arg: object, **kwargs
     ) -> bool:
         assert arg is result
         calls.append("install")
@@ -1865,11 +1906,12 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
         reviewer: object,
         *,
         reason: str = "review queue",
+        wait_for_backend: bool = False,
     ) -> object:
         calls.append(f"build:{reason}")
         return work
 
-    def score_reviewer_queue_order_async_work(arg: object) -> object:
+    def score_reviewer_queue_order_async_work(arg: object, **kwargs) -> object:
         assert arg is work
         calls.append("score")
         return result
@@ -1877,6 +1919,7 @@ def test_cleanup_triggers_rwkv_queue_order_exit_refresh(monkeypatch) -> None:
     def install_reviewer_queue_order_async_result(
         reviewer: object,
         arg: object,
+        **kwargs,
     ) -> bool:
         assert arg is result
         calls.append("install")
@@ -2004,7 +2047,7 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_reviewer_queue_order_async_work",
-        lambda reviewer: calls.append("prepare") or work,
+        lambda reviewer, **kwargs: calls.append("prepare") or work,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
@@ -2014,7 +2057,7 @@ def test_refresh_queues_with_rwkv_queue_order_prepares_before_first_card(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "install_reviewer_queue_order_async_result",
-        lambda reviewer, value: calls.append("install") or True,
+        lambda reviewer, value, **kwargs: calls.append("install") or True,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
@@ -2081,7 +2124,7 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_reviewer_queue_order_async_work",
-        lambda reviewer: calls.append("prepare") or work,
+        lambda reviewer, **kwargs: calls.append("prepare") or work,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
@@ -2091,7 +2134,7 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "install_reviewer_queue_order_async_result",
-        lambda reviewer, value: calls.append("install") or True,
+        lambda reviewer, value, **kwargs: calls.append("install") or True,
     )
 
     reviewer = Reviewer.__new__(Reviewer)
@@ -2476,7 +2519,7 @@ def test_deleted_card_is_cleared_and_blocked_while_rwkv_queue_refreshes(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_reviewer_queue_order_async_work",
-        lambda reviewer: None,
+        lambda reviewer, **kwargs: None,
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
@@ -2829,7 +2872,7 @@ def test_next_card_retries_after_deferred_rwkv_refresh_before_ending(
             future.set_result(task())
             on_done(future)
 
-    def prepare(reviewer: object) -> object:
+    def prepare(reviewer: object, **kwargs) -> object:
         assert reviewer is reviewer_instance
         calls.append("build")
         return work
@@ -2840,7 +2883,7 @@ def test_next_card_retries_after_deferred_rwkv_refresh_before_ending(
         calls.append("score")
         return result
 
-    def install(reviewer: object, arg: object) -> bool:
+    def install(reviewer: object, arg: object, **kwargs) -> bool:
         assert reviewer is reviewer_instance
         assert arg is result
         calls.append("install")

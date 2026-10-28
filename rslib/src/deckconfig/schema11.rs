@@ -27,6 +27,7 @@ use super::DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER;
 use super::DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION;
 use super::DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS;
 use super::DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS;
+use super::DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD;
 use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 use super::INITIAL_EASE_FACTOR_THOUSANDS;
 use crate::serde::default_on_invalid;
@@ -595,6 +596,7 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_instant_order_enabled: c.rwkv_review_instant_order_enabled,
             rwkv_review_dynamic_preset_replay: c.rwkv_review_dynamic_preset_replay,
             rwkv_review_candidate_refresh_enabled: c.rwkv_review_candidate_refresh_enabled,
+            rwkv_review_precompute_next_card: DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD,
             rwkv_review_first_review_elapsed_from_card_creation: c
                 .rwkv_review_first_review_elapsed_from_card_creation,
             rwkv_review_enforce_grade_order: c.rwkv_review_enforce_grade_order,
@@ -994,6 +996,23 @@ mod test {
             DEFAULT_RWKV_REVIEW_BATCH_SIZE
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_precompute_setting_survives_schema11_roundtrip() -> Result<()> {
+        for enabled in [true, false] {
+            let mut config = DeckConfig::default();
+            config.inner.rwkv_review_precompute_next_card = enabled;
+            let encoded = serde_json::to_value(DeckConfSchema11::from(config))?;
+            let decoded: DeckConfSchema11 = serde_json::from_value(encoded)?;
+            assert_eq!(
+                DeckConfig::from(decoded)
+                    .inner
+                    .rwkv_review_precompute_next_card,
+                enabled
+            );
+        }
         Ok(())
     }
 
