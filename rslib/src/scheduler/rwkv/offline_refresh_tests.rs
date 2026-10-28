@@ -88,6 +88,110 @@ fn answer_queued_review(
 }
 
 #[test]
+fn synced_retention_rules_refresh_live_offline_scores() -> Result<()> {
+    let (_dir, mut col) = offline_review_collection(
+        "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+        1,
+        false,
+        3,
+        0,
+        false,
+    )?;
+    let _ = queued_for_review(&mut col)?;
+    assert!(!col.state.rwkv_offline.as_ref().unwrap().scopes.is_empty());
+    col.set_config(
+        crate::scheduler::addon_desired_retention::CONFIG_KEY,
+        &serde_json::json!({
+            "version": 1,
+            "rules": [{"query": "deck:Default", "desired_retention": 0.75}]
+        }),
+    )?;
+    assert!(col.state.rwkv_offline.as_ref().unwrap().scopes.is_empty());
+    let _ = queued_for_review(&mut col)?;
+    let scope = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)];
+    assert_eq!(scope.cards.len(), 3);
+    assert!(scope
+        .cards
+        .iter()
+        .all(|card| card.target_retention == Some(0.75)));
+    Ok(())
+}
+
+#[test]
+fn synced_retention_rules_keep_the_configured_queue_refresh_interval() -> Result<()> {
+    let (_dir, mut col) = offline_review_collection(
+        "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+        3,
+        false,
+        8,
+        0,
+        false,
+    )?;
+    col.set_config(
+        crate::scheduler::addon_desired_retention::CONFIG_KEY,
+        &serde_json::json!({
+            "version": 1,
+            "rules": [{"query": "deck:Default", "desired_retention": 0.99}]
+        }),
+    )?;
+    let queue = queued_for_review(&mut col)?;
+    assert!(!queue.cards.is_empty());
+    answer_queued_review(&mut col, &queue)?;
+    let _ = queued_for_review(&mut col)?;
+    let runtime = col.state.rwkv_offline.as_ref().unwrap();
+    let scope = &runtime.scopes[&DeckId(1)];
+    assert_eq!(scope.answered.len(), 1);
+    assert!(scope.generation < runtime.generation);
+    Ok(())
+}
+
+#[test]
+fn synced_retention_search_refreshes_after_a_note_changes() -> Result<()> {
+    let (_dir, mut col) = offline_review_collection(
+        "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+        3,
+        false,
+        3,
+        0,
+        false,
+    )?;
+    let ids = col.search_cards("deck:Default", SortMode::NoOrder)?;
+    let cards = col.all_cards_for_ids(&ids, false)?;
+    let (card_id, note_id) = (cards[0].id, cards[0].note_id);
+    col.set_config(
+        crate::scheduler::addon_desired_retention::CONFIG_KEY,
+        &serde_json::json!({
+            "version": 1,
+            "rules": [{"query": "tag:priority", "desired_retention": 0.99}]
+        }),
+    )?;
+    let _ = queued_for_review(&mut col)?;
+    let prior = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)];
+    assert_ne!(
+        prior
+            .cards
+            .iter()
+            .find(|card| card.card_id == card_id)
+            .unwrap()
+            .target_retention,
+        Some(0.99)
+    );
+    col.add_tags_to_notes(&[note_id], "priority")?;
+    let _ = queued_for_review(&mut col)?;
+    let updated = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)];
+    assert_eq!(
+        updated
+            .cards
+            .iter()
+            .find(|card| card.card_id == card_id)
+            .unwrap()
+            .target_retention,
+        Some(0.99)
+    );
+    Ok(())
+}
+
+#[test]
 fn offline_review_queue_refreshes_at_the_configured_interval() -> Result<()> {
     for model in [
         "../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",

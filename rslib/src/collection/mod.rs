@@ -173,6 +173,8 @@ pub struct CollectionState {
         ),
     >,
     pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
+    /// Unfiltered per-note field populations used by add-on percentile rules.
+    pub(crate) addon_retention_populations: HashMap<(NotetypeId, u16), Arc<Vec<f64>>>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
     /// True if legacy Python code has executed SQL that has modified the
     /// database, requiring modification time to be bumped.

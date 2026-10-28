@@ -29,6 +29,7 @@ impl Collection {
                 let changes = if have_op {
                     let changes = self.op_changes();
                     self.maybe_clear_fsrs_preset_overlay_cache_after_op(&changes);
+                    self.maybe_clear_addon_retention_scores_after_op(&changes);
                     self.maybe_clear_study_queues_after_op(&changes);
                     self.maybe_coalesce_note_undo_entry(&changes);
                     changes
@@ -79,6 +80,20 @@ impl Collection {
         let c = &changes.changes;
         if c.card || c.note || c.deck || c.deck_config || c.tag || c.notetype {
             self.clear_fsrs_preset_overlay_card_matches();
+        }
+    }
+
+    fn maybe_clear_addon_retention_scores_after_op(&mut self, changes: &OpChanges) {
+        let c = &changes.changes;
+        if (c.note
+            || c.tag
+            || c.deck_config
+            || c.notetype
+            || ((c.card || c.deck) && changes.op != Op::AnswerCard))
+            && crate::scheduler::addon_desired_retention::AddonRetentionRules::from_collection(self)
+                .is_some()
+        {
+            self.invalidate_rwkv_offline_targets();
         }
     }
 }

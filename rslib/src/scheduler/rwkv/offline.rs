@@ -690,6 +690,18 @@ fn query_input(row: &Row) -> ReviewInput {
 }
 
 impl Collection {
+    /// Rule changes affect scores and answer targets, but not recurrent history.
+    pub(crate) fn invalidate_rwkv_offline_targets(&mut self) {
+        if let Some(runtime) = self.state.rwkv_offline.as_mut() {
+            runtime.scopes.clear();
+            runtime.curve_s90.clear();
+        }
+        self.state.rwkv_retrievability_scores = None;
+        self.state.rwkv_count_cards.clear();
+        self.state.addon_retention_populations.clear();
+        self.state.card_queues = None;
+    }
+
     pub(crate) fn rwkv_prepare_offline(
         &mut self,
         input: RwkvPrepareOfflineRequest,
@@ -1536,6 +1548,19 @@ impl Collection {
         let collection_mod = self.storage.get_collection_timestamps()?.collection_change;
         if runtime.identity.is_some() && runtime.checked_at_mod == Some(collection_mod) {
             return Ok(0);
+        }
+        // Search and field rules can change their targets when notes, tags,
+        // decks, or scheduling data change. Keep the recurrent state, but do
+        // not reuse scores computed from an older collection snapshot.
+        if runtime.identity.is_some()
+            && crate::scheduler::addon_desired_retention::AddonRetentionRules::from_collection(self)
+                .is_some()
+        {
+            runtime.scopes.clear();
+            runtime.curve_s90.clear();
+            self.state.rwkv_retrievability_scores = None;
+            self.state.addon_retention_populations.clear();
+            self.state.card_queues = None;
         }
         let stamp = self.rwkv_offline_replay_stamp()?;
         if runtime.identity.is_some() && stamp.is_some() && stamp == runtime.checked_stamp {
