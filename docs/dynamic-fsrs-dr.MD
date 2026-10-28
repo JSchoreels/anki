@@ -23,8 +23,9 @@ second native Dynamic DR mapping. The flag requires a finite override greater
 than zero and at most one. Ordinary overrides remain base targets, and older
 clients that omit the flag retain their existing behavior. Preview answers do
 not change the card's stored desired retention. Kuma also marks a matched
-synced add-on grade rule as final when it can apply that rule to the answer
-state; unsupported states retain the native grade mapping.
+synced add-on grade rule as final when the answer state has that rule's
+resulting interval; unsupported or externally modified states retain the
+native grade mapping.
 
 Browser Stability and Retrievability sorts read each matching card and its resolved FSRS preset so that FSRS-7 values use the exact model curve. Those sorts resolve presets in a batch, including add-on preset overlay rules, before computing per-card sort metrics.
 
