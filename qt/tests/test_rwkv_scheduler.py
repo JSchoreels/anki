@@ -10915,7 +10915,7 @@ def test_post_sync_refresh_skips_view_refresh_when_collection_closed(
         gui_hooks.rwkv_state_did_prepare.remove(recorder)
 
 
-def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
+def test_post_sync_refresh_replays_reviews_older_than_eight_days(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -10948,22 +10948,25 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
 
     rows.append((review_ids[7], 1, 10, 100, 1, 1234, 1, 8, 2400))
     rows.sort()
+    # A collection marker alone cannot prove that post-sync history is the
+    # same, even if it happens to match the pre-sync marker.
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_state_cache_collection_unchanged", lambda *_args: True
+    )
     _taskman, _progress_updates = _attach_progress_taskman(reviewer.mw)
     completed: list[bool] = []
 
     rwkv_scheduler.refresh_rwkv_state_after_sync(
         reviewer.mw,
         lambda: completed.append(True),
-        remote_review_ids=(review_ids[7],),
     )
 
     assert completed == [True]
-    assert runtime.reviewed == []
+    assert runtime.reviewed == [(1, 2), (1, 1), (1, 3), (1, 4), (1, 2), (1, 3), (1, 4)]
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
     assert metadata is not None
-    assert metadata["ignoredReviewIds"] == [review_ids[7]]
-    assert len(warnings) == 1
-    assert "1 synchronized review older than 8 days" in warnings[0]
+    assert "ignoredReviewIds" not in metadata
+    assert warnings == []
     assert (
         rwkv_scheduler._read_rwkv_state_cache_binary(
             reviewer,
@@ -10972,13 +10975,44 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
         is not None
     )
 
-    assert rwkv_scheduler._warm_up_reviewer_backend(
-        reviewer,
-        force_rebuild=True,
+
+def test_old_cache_with_excluded_reviews_is_rebuilt_on_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    review_ids = {day: (day * 86_400 + 100) * 1000 for day in (0, 7, 8, 16)}
+    rows = [
+        (review_ids[0], 1, 10, 100, 2, 1234, 1, 1, 2500),
+        (review_ids[8], 1, 10, 100, 3, 1234, 1, 9, 2500),
+        (review_ids[16], 1, 10, 100, 4, 1234, 1, 17, 2500),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"model": "test"}
     )
-    rebuilt_metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
-    assert rebuilt_metadata is not None
-    assert "ignoredReviewIds" not in rebuilt_metadata
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+
+    # Recreate the previous version's cache: its state omits a synchronized
+    # review even though that review now exists in the collection.
+    rows.insert(1, (review_ids[7], 1, 10, 100, 1, 1234, 1, 8, 2400))
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    metadata["ignoredReviewIds"] = [review_ids[7]]
+    cache_dir = rwkv_scheduler._rwkv_state_cache_dir(reviewer)
+    assert cache_dir is not None
+    (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE).write_text(
+        json.dumps(metadata), encoding="utf8"
+    )
+    rwkv_scheduler._invalidate_reviewer_backend_state(reviewer, reason="test restart")
+    runtime.reviewed.clear()
+
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+    assert runtime.reviewed == [(1, 2), (1, 1), (1, 3), (1, 4)]
+    rebuilt = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert rebuilt is not None
+    assert "ignoredReviewIds" not in rebuilt
 
 
 def test_rwkv_restore_writes_store_checkpoint_when_ignored_reviews_change(

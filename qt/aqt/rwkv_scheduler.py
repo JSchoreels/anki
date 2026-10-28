@@ -10400,14 +10400,11 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
     require_retrievability_cache: bool = False,
     record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
-    additional_ignored_review_ids: Sequence[int] = (),
     on_cache_persistence_error: Callable[[Exception], None] | None = None,
     discard_resident_state: bool = False,
     revalidate_only: bool = False,
 ) -> bool:
-    if revalidate_only and (
-        force_rebuild or discard_resident_state or additional_ignored_review_ids
-    ):
+    if revalidate_only and (force_rebuild or discard_resident_state):
         return False
     context = _reviewer_backend_warmup_context(reviewer)
     if context is None:
@@ -10446,11 +10443,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
     revalidated = False
     full_warm_up_completed = False
     try:
-        if (
-            not force_rebuild
-            and not discard_resident_state
-            and not additional_ignored_review_ids
-        ):
+        if not force_rebuild and not discard_resident_state:
             identity = _revalidate_resident_reviewer_backend_state(
                 reviewer, key, warmup_generation
             )
@@ -10519,7 +10512,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
                 require_retrievability_cache=require_retrievability_cache,
                 record_retrievability_cache=record_retrievability_cache,
                 progress=progress,
-                additional_ignored_review_ids=additional_ignored_review_ids,
+                force_history_validation=discard_resident_state,
             )
             restore_elapsed_ms = (time.monotonic() - restore_start) * 1000
             _require_reviewer_backend_warmup_current(is_current)
@@ -12839,16 +12832,11 @@ def revalidate_rwkv_state_after_legacy_reset(mw: object) -> None:
 def refresh_rwkv_state_after_sync(
     mw: object,
     on_done: Callable[[], None],
-    *,
-    remote_review_ids: Sequence[int] = (),
 ) -> None:
     """Reconcile resident RWKV state with the merged review history."""
 
     col = getattr(mw, "col", None)
     reviewer = SimpleNamespace(mw=mw)
-    ignored_review_count_before = len(
-        _rwkv_state_cache_ignored_review_ids(_read_rwkv_state_cache_metadata(reviewer))
-    )
     if not _rwkv_collection_config_state(reviewer).review_enabled:
         on_done()
         return
@@ -12891,7 +12879,6 @@ def refresh_rwkv_state_after_sync(
         return _warm_up_reviewer_backend(
             reviewer,
             progress=progress,
-            additional_ignored_review_ids=remote_review_ids,
             discard_resident_state=True,
         )
 
@@ -12917,31 +12904,6 @@ def refresh_rwkv_state_after_sync(
             ready,
             (time.monotonic() - start) * 1000,
         )
-        ignored_review_count = len(
-            _rwkv_state_cache_ignored_review_ids(
-                _read_rwkv_state_cache_metadata(reviewer)
-            )
-        )
-        if (
-            ready
-            and remote_review_ids
-            and ignored_review_count > ignored_review_count_before
-        ):
-            from aqt.utils import show_warning
-
-            logger.warning(
-                "RWKV state ignored synchronized historical reviews: new=%s total=%s",
-                ignored_review_count - ignored_review_count_before,
-                ignored_review_count,
-            )
-            show_warning(
-                f"RWKV kept its previous state and did not incorporate "
-                f"{ignored_review_count} synchronized review"
-                f"{'' if ignored_review_count == 1 else 's'} older than 8 days.\n\n"
-                "Rebuild the RWKV state from deck options if you want "
-                "those reviews included.",
-                parent=cast(QWidget | None, mw),
-            )
         on_done()
         if col is None or getattr(mw, "col", None) is not col:
             logger.debug(
@@ -15625,7 +15587,7 @@ def _restore_reviewer_backend_cache(
     require_retrievability_cache: bool = False,
     record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
-    additional_ignored_review_ids: Sequence[int] = (),
+    force_history_validation: bool = False,
 ) -> RwkvResidentStateIdentity | None:
     restore_snapshot = getattr(backend, "restore_cache_snapshot", None)
     warm_up = getattr(backend, "warm_up", None)
@@ -15636,7 +15598,7 @@ def _restore_reviewer_backend_cache(
     stored = _read_rwkv_state_cache(
         reviewer,
         backend=backend,
-        additional_ignored_review_ids=additional_ignored_review_ids,
+        force_history_validation=force_history_validation,
     )
     if stored is None:
         return None
@@ -16790,12 +16752,12 @@ def _read_rwkv_state_cache(
     reviewer: object,
     *,
     backend: RwkvReviewerBackend | None = None,
-    additional_ignored_review_ids: Sequence[int] = (),
+    force_history_validation: bool = False,
 ) -> RwkvStoredStateCache | None:
     stored = _read_rwkv_state_cache_binary(
         reviewer,
         backend=backend,
-        additional_ignored_review_ids=additional_ignored_review_ids,
+        force_history_validation=force_history_validation,
     )
     if stored is not None:
         return stored
@@ -16808,7 +16770,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
     *,
     backend: RwkvReviewerBackend | None = None,
     dynamic_preset_replay_enabled: bool | None = None,
-    additional_ignored_review_ids: Sequence[int] = (),
+    force_history_validation: bool = False,
 ) -> RwkvStoredStateCache | None:
     location = _rwkv_state_cache_binary_location(reviewer)
     if location is None:
@@ -16820,19 +16782,9 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     ):
         return None
-    # Only synced reviews older than the replay window are ignored; newer ones
-    # are replayed, which the fast paths below can do.
-    metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
-    newest_known_review_id = max(
-        (metadata_last_review_id, *additional_ignored_review_ids)
-    )
-    ignore_cutoff = newest_known_review_id - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-    newly_ignored_review_ids = {
-        review_id
-        for review_id in additional_ignored_review_ids
-        if review_id > 0 and review_id <= ignore_cutoff
-    }
-    if not newly_ignored_review_ids and _rwkv_state_cache_collection_unchanged(
+    # A sync can change history even when the collection modification marker
+    # is unchanged. Validate its actual fingerprint before restoring state.
+    if not force_history_validation and _rwkv_state_cache_collection_unchanged(
         reviewer,
         metadata,
     ):
@@ -16846,23 +16798,17 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
     existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
-    if not newly_ignored_review_ids:
-        stored = _read_rwkv_state_cache_from_rust_fingerprint(
-            reviewer,
-            backend=backend,
-            cache_dir=cache_dir,
-            metadata=metadata,
-            ignored_review_ids=existing_ignored_review_ids,
-        )
-        if stored is not None:
-            return stored
+    stored = _read_rwkv_state_cache_from_rust_fingerprint(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=metadata,
+        ignored_review_ids=existing_ignored_review_ids,
+    )
+    if stored is not None:
+        return stored
     try:
-        current_history = _historical_rwkv_review_inputs(
-            reviewer,
-            ignored_review_ids=frozenset(
-                (*existing_ignored_review_ids, *newly_ignored_review_ids)
-            ),
-        )
+        current_history = _historical_rwkv_review_inputs(reviewer)
     except Exception:
         logger.exception("failed to validate current RWKV replay history")
         return None
@@ -18082,6 +18028,16 @@ def _rwkv_state_cache_checkpoint_path(
     )
 
 
+def _rwkv_state_cache_supported_format(metadata: dict[str, object]) -> bool:
+    # Older versions could persist state that omitted synchronized reviews.
+    # None of its stored prefixes is guaranteed complete, so rebuild from the
+    # retained history once rather than continuing that divergent state.
+    return metadata.get("version") in (
+        _RWKV_STATE_CACHE_VERSION,
+        _RWKV_STATE_CACHE_LEGACY_JSON_VERSION,
+    ) and not _rwkv_state_cache_ignored_review_ids(metadata)
+
+
 def _rwkv_state_cache_metadata_compatible(
     reviewer: object,
     metadata: dict[str, object],
@@ -18089,10 +18045,7 @@ def _rwkv_state_cache_metadata_compatible(
     dynamic_preset_replay_enabled: bool | None = None,
     replay_key: str | None = None,
 ) -> bool:
-    if metadata.get("version") not in (
-        _RWKV_STATE_CACHE_VERSION,
-        _RWKV_STATE_CACHE_LEGACY_JSON_VERSION,
-    ):
+    if not _rwkv_state_cache_supported_format(metadata):
         return False
     if metadata.get("presetReplaySemantics") != _RWKV_PRESET_REPLAY_SEMANTICS_VERSION:
         return False

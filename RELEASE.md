@@ -47,6 +47,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Include older synchronized reviews in RWKV.** Reviews received from another device are now included even when they are more than eight days old. Anki rebuilds affected RWKV states when needed, which can make the first refresh after sync take longer.
+
 - **Stop repeated RWKV recovery after re-importing a deck as new.** Re-imported new cards start fresh in RWKV, including cards whose old history ended in Learning, while their previous review logs remain available. Imports with scheduling retain their source history. Existing caches rebuild once, and reset boundaries survive ordinary card edits on older clients.
 
 - **New cards stay mixed with RWKV reviews.** Queue refreshes preserve progress through **Mix with reviews**, preventing new cards from being repeatedly postponed behind cards added to meet **Minimum reviews per day**.
@@ -56,6 +58,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
 
 ### Technical details
+
+- **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
 
 - **SM72 integration:** import the verified [SM72 release](https://github.com/JSchoreels/anki-rwkv/releases/tag/small-model-sm72-2026-10-28) (15 constant-LR epochs on all 8,000 users, then a one-epoch 32k Muon cool-down, distilled from the big model (1 leak-free epoch)). Its architecture export is byte-identical to SM56's, so it shares the small engine, state codecs and storage precisions. With SM72 selected, the runtime forces the missing note, deck and preset flags (inputs 13–15) to zero in the review, bulk-replay, scalar-query and batched-query paths; other models keep their feature path. Canonical history already excludes deleted cards' reviews, so the release's nearest-card deck rule never applies. Native parity on the full 14,403-row release vectors is 3.5e−6 (f32 weights) / 3.2e−6 (INT8 weights). Earlier releases' upstream scores used inputs with the leak and are not directly comparable. See the [SM72 integration report](docs/rwkv-sm72-2026-10-28.MD).
 
