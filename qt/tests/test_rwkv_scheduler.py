@@ -25502,3 +25502,59 @@ def test_answer_redraw_keeps_metadata_for_already_displayed_states(
     rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
     assert answer.rwkv_s90 == pytest.approx(10)
     assert answer.rwkv_retrievability == pytest.approx(0.62)
+
+
+def test_repeated_card_does_not_inherit_previous_reviewer_prediction() -> None:
+    from aqt.reviewer import Reviewer
+
+    template = _rwkv_reviewer()
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.mw = template.mw
+    reviewer.mw.reviewer = reviewer
+    reviewer._v3 = template._v3
+    reviewer._review_card_generation = 0
+    reviewer._reps = 1
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    reviewer.card = card
+    reviewer._previous_card_info = SimpleNamespace(set_card=lambda _card: None)
+    reviewer._card_info = SimpleNamespace(set_card=lambda _card: None)
+    reviewer._get_rwkv_undo_restored_card = lambda: False
+
+    def fetch_same_card() -> None:
+        reviewer.card = card
+        reviewer._v3 = template._v3
+
+    reviewer._get_next_v3_card = fetch_same_card
+    reviewer._showQuestion = lambda: None
+    reviewer.set_review_actions_blocked = lambda _blocked: None
+    reviewer._set_review_answer_actions_blocked = lambda _blocked: None
+    reviewer.nextCard()
+
+    prediction = RwkvReviewPrediction(
+        retrievability=0.62,
+        interval_overrides=RwkvIntervalOverride(again=1, hard=2, good=3, easy=4),
+        s90_overrides=RwkvIntervalOverride(again=5, hard=6, good=7, easy=8),
+    )
+
+    class Backend:
+        def predict_review(
+            self, *, reviewer: object, card: object
+        ) -> RwkvReviewPrediction:
+            return prediction
+
+    set_reviewer_backend(Backend())
+    states = SchedulingStates()
+    states.good.CopyFrom(_normal_review_state(interval=2, fuzz_delta=0))
+    update_reviewer_scheduling_states(states, reviewer, card)
+    before = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+    rwkv_scheduler.set_answer_rwkv_metadata(before, reviewer, card, ease=3)
+    assert before.rwkv_s90 == 7
+
+    reviewer.nextCard()
+    assert reviewer.card is card
+    set_reviewer_backend(None)
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, card)
+    answer = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+    assert not hasattr(answer, "rwkv_s90")
+    assert not hasattr(answer, "rwkv_retrievability")
