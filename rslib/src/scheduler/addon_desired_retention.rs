@@ -827,6 +827,8 @@ mod test {
     #[test]
     fn grade_target_with_native_dynamic_dr_uses_the_exact_grade_retention() -> Result<()> {
         use crate::config::BoolKey;
+        use crate::scheduler::answering::CardAnswer;
+        use crate::scheduler::answering::Rating;
         use crate::scheduler::states::CardState;
         use crate::scheduler::states::NormalState;
 
@@ -856,6 +858,7 @@ mod test {
         )?;
         let choices = col.get_scheduling_states(card_id)?;
         let recorded_target = choices.dynamic_desired_retentions.unwrap()[2];
+        assert_ne!((recorded_target * 100.0).round() / 100.0, 0.85);
         let CardState::Normal(NormalState::Review(good)) = choices.good else {
             panic!("expected a review state");
         };
@@ -863,9 +866,115 @@ mod test {
         let interval = col.fsrs_interval_at_retrievability_for_card(card_id, stability, 0.85)?;
         assert_eq!(good.scheduled_days, ((interval + 0.5) as u32).max(1));
         col.answer_good();
+        assert_eq!(col.get_first_card().desired_retention, Some(0.85));
+
+        // No grade rule matches Easy, so native Dynamic DR still selects and
+        // saves its per-grade mapped retention.
+        col.undo()?;
+        let choices = col.get_scheduling_states(card_id)?;
+        let mapped_easy = choices.dynamic_desired_retentions.unwrap()[3];
+        col.answer_easy();
         assert_eq!(
             col.get_first_card().desired_retention,
-            Some((recorded_target * 100.0).round() / 100.0)
+            Some((mapped_easy * 100.0).round() / 100.0)
+        );
+
+        // A caller can supply a different scheduling state. Do not pretend
+        // the grade target was applied to that modified interval.
+        col.undo()?;
+        let choices = col.get_scheduling_states(card_id)?;
+        let mapped_good = choices.dynamic_desired_retentions.unwrap()[2];
+        let mut modified_good = choices.good;
+        let CardState::Normal(NormalState::Review(ref mut review)) = modified_good else {
+            panic!("expected a review state");
+        };
+        review.scheduled_days += 1;
+        col.answer_card(&mut CardAnswer {
+            card_id,
+            current_state: choices.current,
+            new_state: modified_good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            desired_retention_override_is_final: false,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: false,
+        })?;
+        assert_eq!(
+            col.get_first_card().desired_retention,
+            Some((mapped_good * 100.0).round() / 100.0)
+        );
+
+        // Interval bounds are applied after the grade target; they must not
+        // make a valid bounded target look like an externally modified state.
+        col.undo()?;
+        let note_id = col.get_first_card().note_id;
+        let mut note = col.storage.get_note(note_id)?.unwrap();
+        note.set_field(0, "10")?;
+        col.update_note(&mut note)?;
+        col.set_config(
+            CONFIG_KEY,
+            &json!({
+                "version": 1,
+                "field_rules": [{"note_type": "Basic", "field": "Front", "value_type": "number",
+                    "thresholds": [{"value": "10", "desired_retention": 0.85,
+                        "minimum_interval": 15, "maximum_interval": 15}]}],
+                "grade_rules": [{"grade": "good", "mode": "absolute", "value": 0.85}]
+            }),
+        )?;
+        let choices = col.get_scheduling_states(card_id)?;
+        let CardState::Normal(NormalState::Review(good)) = choices.good else {
+            panic!("expected a review state");
+        };
+        assert_eq!(good.scheduled_days, 15);
+        col.answer_good();
+        assert_eq!(col.get_first_card().desired_retention, Some(0.85));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_grade_state_keeps_native_dynamic_retention() -> Result<()> {
+        use crate::config::BoolKey;
+        use crate::scheduler::states::CardState;
+        use crate::scheduler::states::NormalState;
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_dynamic_desired_retention_enabled = true;
+            config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
+            config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+            config.fsrs_dynamic_desired_retention_avg_drs = vec![0.8, 0.9];
+            config.fsrs_dynamic_desired_retention_min = 0.75;
+            config.fsrs_dynamic_desired_retention_max = 0.95;
+        });
+        let notetype = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = notetype.new_note();
+        note.set_field(0, "new card")?;
+        col.add_note(&mut note, DeckId(1))?;
+        col.set_config(
+            CONFIG_KEY,
+            &json!({
+                "version": 1,
+                "rules": [{"query": "deck:Default", "desired_retention": 0.85}],
+                "grade_rules": [{"grade": "again", "mode": "absolute", "value": 0.85}]
+            }),
+        )?;
+        let card_id = col.get_first_card().id;
+        let states = col.get_scheduling_states(card_id)?;
+        assert!(matches!(
+            states.again,
+            CardState::Normal(NormalState::Learning(_))
+        ));
+        let mapped = states.dynamic_desired_retentions.unwrap()[0];
+        col.answer_again();
+        assert_eq!(
+            col.get_first_card().desired_retention,
+            Some((mapped * 100.0).round() / 100.0)
         );
         Ok(())
     }
@@ -902,12 +1011,43 @@ mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: Some(0.6),
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
             from_queue: false,
         })?;
         assert_eq!(col.get_first_card().desired_retention, Some(0.8));
+
+        // A caller that has already supplied a final target must not have the
+        // relative grade rule applied to it a second time.
+        col.undo()?;
+        col.set_config(CONFIG_KEY, &json!({"version": 1, "grade_rules": []}))?;
+        let states =
+            col.get_scheduling_states_with_desired_retention_override(card_id, Some(0.6))?;
+        col.set_config(
+            CONFIG_KEY,
+            &json!({
+                "version": 1,
+                "grade_rules": [{"grade": "good", "mode": "relative", "value": 0.5}]
+            }),
+        )?;
+        col.answer_card(&mut CardAnswer {
+            card_id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: Some(0.6),
+            desired_retention_override_is_final: true,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: false,
+        })?;
+        assert_eq!(col.get_first_card().desired_retention, Some(0.6));
         Ok(())
     }
 }
