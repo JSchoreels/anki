@@ -8,6 +8,9 @@ mod relearning;
 mod review;
 mod revlog;
 
+#[cfg(test)]
+mod preview_s90_tests;
+
 use anki_i18n::I18n;
 use fsrs::NextStates;
 use fsrs::FSRS;
@@ -457,6 +460,10 @@ impl Collection {
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
+        let is_preview = matches!(
+            current_state,
+            CardState::Filtered(FilteredState::Preview(_))
+        );
         // If the states aren't equal, it's probably because some time has passed.
         // Try to fix this by setting elapsed_secs equal.
         self.set_elapsed_secs_equal(&current_state, &mut answer.current_state);
@@ -468,12 +475,7 @@ impl Collection {
 
         // Older imports and unlogged resets can leave a new card with active
         // history. Preview answers do not start a new learning sequence.
-        if original.ctype == CardType::New
-            && !matches!(
-                current_state,
-                CardState::Filtered(FilteredState::Preview(_))
-            )
-        {
+        if original.ctype == CardType::New && !is_preview {
             self.prepare_rwkv_new_card_reset(&mut updater.card)?;
         }
 
@@ -523,21 +525,20 @@ impl Collection {
         let deckconfig_id = updater.original_deck.config_id();
         if let Some(rwkv_s90) = answer.rwkv_s90 {
             require!(rwkv_s90.is_finite() && rwkv_s90 > 0.0, "invalid RWKV S90");
-            match &mut updater.card.memory_state {
-                Some(memory_state) => memory_state.stability = rwkv_s90,
-                None => {
-                    updater.card.memory_state = Some(fsrs_memory_state_for_s90(
-                        &updater.fsrs_preset.params,
-                        rwkv_s90,
-                    )?);
+            if !is_preview {
+                match &mut updater.card.memory_state {
+                    Some(memory_state) => memory_state.stability = rwkv_s90,
+                    None => {
+                        updater.card.memory_state = Some(fsrs_memory_state_for_s90(
+                            &updater.fsrs_preset.params,
+                            rwkv_s90,
+                        )?);
+                    }
                 }
             }
         }
         let mut card = updater.into_card();
-        if !matches!(
-            answer.current_state,
-            CardState::Filtered(FilteredState::Preview(_))
-        ) {
+        if !is_preview {
             card.last_review_time = Some(answer.answered_at.as_secs());
         }
         if let Some(data) = answer.custom_data.take() {
