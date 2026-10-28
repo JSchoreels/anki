@@ -1069,7 +1069,10 @@ impl Collection {
     /// keeps its order; only the answered card's score is patched, as the
     /// desktop's `PatchAnsweredCardRwkvReviewQueueScore` does (rebuilding the
     /// queue after every answer re-scored the scope: ~100 ms of each
-    /// Good → next card on a Tab S7+ with 9,900 due cards).
+    /// Good → next card on a Tab S7+ with 9,900 due cards), until "Update the
+    /// RWKV queue every" N answers: then the queue is rebuilt, re-scoring the
+    /// scope as the desktop's refresh does (else every other card kept its
+    /// score, and the count, until the reviewer was left).
     pub(crate) fn rwkv_offline_after_answer(
         &mut self,
         card_id: CardId,
@@ -1094,6 +1097,7 @@ impl Collection {
         let deck_id = self.get_current_deck_id();
         if matches!(self.rwkv_offline_deck_uses_instant(deck_id), Ok(true)) {
             let started = Instant::now();
+            let mut refresh_due = false;
             let patched = self.with_rwkv_offline_runtime("answer score", |col, runtime| {
                 let Some(deck) = col.storage.get_deck(deck_id)? else {
                     return Ok(());
@@ -1112,14 +1116,25 @@ impl Collection {
                 // the other recently answered cards' repeat spacing moved by one
                 let intervening = col.rwkv_offline_intervening_reviews(&deck)?;
                 col.patch_answered_card_rwkv_review_queue_score_entry(deck_id, card_id, entry)?;
-                col.update_rwkv_review_queue_intervening_reviews(deck_id, intervening)
+                col.update_rwkv_review_queue_intervening_reviews(deck_id, intervening)?;
+                // the same check as rwkv_offline_scope_scores' update_due
+                let scope = col.rwkv_offline_shared_scope(&deck)?.unwrap_or(deck);
+                let interval = col
+                    .rwkv_offline_deck_config(scope.id)?
+                    .map_or(1, |c| c.inner.rwkv_review_refresh_interval.max(1));
+                refresh_due = runtime
+                    .scopes
+                    .get(&scope.id)
+                    .is_some_and(|scope| scope.answered.len() >= interval as usize);
+                Ok(())
             });
             tracing::info!(
                 patched,
+                refresh_due,
                 ms = started.elapsed().as_millis() as u64,
                 "RWKV answer score"
             );
-            if !patched {
+            if !patched || refresh_due {
                 self.state.card_queues = None;
             }
         }
