@@ -27,6 +27,7 @@ import { decodeRequestBody } from "./helpers";
 
 test("RWKV comparison sends the selected shared learner and scenario", async ({ page }) => {
     let submitted: SimulateFsrsReviewRequest | undefined;
+    let submissions = 0;
     let noRwkvReviews = false;
     await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
         const response = await route.fetch();
@@ -37,18 +38,35 @@ test("RWKV comparison sends the selected shared learner and scenario", async ({ 
     });
     await page.route("**/_anki/startRwkvWorkload", async (route) => {
         submitted = decodeRequestBody(route.request(), SimulateFsrsReviewRequest);
+        submissions += 1;
         await route.fulfill({ body: Buffer.alloc(0) });
     });
     await page.route("**/_anki/rwkvWorkloadResult", async (route) => {
+        const fsrs = new SimulateFsrsWorkloadResponse({
+            memorized: { 90: 1.5 },
+            cost: { 90: 20 },
+            reviewCount: { 90: 3 },
+            reviewlessEndMemorized: 1,
+        });
+        const rwkv = new SimulateFsrsWorkloadResponse({
+            memorized: { 90: 1.7 },
+            cost: { 90: noRwkvReviews ? 0 : 18 },
+            reviewCount: { 90: noRwkvReviews ? 0 : 2 },
+            reviewlessEndMemorized: 1,
+        });
         const comparison = new RwkvComparisonResponse({
-            fsrs: new SimulateFsrsWorkloadResponse({
-                memorized: { 90: 1.5 },
+            fsrs,
+            rwkv,
+            fsrsScoredByFsrs: fsrs,
+            rwkvScoredByFsrs: rwkv,
+            fsrsScoredByRwkv: new SimulateFsrsWorkloadResponse({
+                memorized: { 90: 1.9 },
                 cost: { 90: 20 },
                 reviewCount: { 90: 3 },
                 reviewlessEndMemorized: 1,
             }),
-            rwkv: new SimulateFsrsWorkloadResponse({
-                memorized: { 90: 1.7 },
+            rwkvScoredByRwkv: new SimulateFsrsWorkloadResponse({
+                memorized: { 90: 1.2 },
                 cost: { 90: noRwkvReviews ? 0 : 18 },
                 reviewCount: { 90: noRwkvReviews ? 0 : 2 },
                 reviewlessEndMemorized: 1,
@@ -77,6 +95,11 @@ test("RWKV comparison sends the selected shared learner and scenario", async ({ 
     expect(submitted?.rwkvWorkloadSampleLimit).toBe(250);
     expect(submitted?.rwkvWorkloadTargetStep).toBe(10);
     await expect(comparison.getByText(/1.*of.*2.*cards simulated/)).toBeVisible();
+    await expect(comparison.getByText(/run 1\): RWKV time saving/)).toBeVisible();
+    await comparison.getByLabel("Estimate memorized with").selectOption(String(RwkvComparisonOptions_Learner.RWKV));
+    await expect(comparison.getByText("No tested points matched in simulated memory.")).toBeVisible();
+    expect(submissions).toBe(1);
+    await comparison.getByLabel("Estimate memorized with").selectOption(String(RwkvComparisonOptions_Learner.FSRS));
     await expect(comparison.getByText(/run 1\): RWKV time saving/)).toBeVisible();
     await comparison.getByLabel("Performance scenario").selectOption(
         String(RwkvComparisonOptions_PerformanceScenario.STEADY),

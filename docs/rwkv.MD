@@ -1092,7 +1092,27 @@ from historical data where available. A new card's first answer uses an 85%
 baseline before the scenario adjustment. The same card and review ordinal use
 the same random quantile in both simulations even if review dates differ; each
 additional paired run uses a different seed. RWKV updates its recurrent state
-after every simulated answer, and the resident state is never changed.
+after every simulated answer, and the resident state is never changed. Both
+models score each scheduler's exact simulated answer history, so the scoring
+model can be changed after a run without changing its answers, time, or review
+count. Each model's memorized gain is relative to its own no-target-review
+baseline; neither score is an observed future outcome.
+
+The preceding 365 complete days of retained review history provide fixed
+background activity for RWKV. Reviews of sampled target cards are excluded;
+reviews of other cards in the selected deck and outside it are included. The
+historical daily pattern repeats for simulations longer than one year, and the
+first background answer for each card uses elapsed time from its latest real
+answer, and the card's latest known identity and preset route. Historical
+learning-start events are replayed as reviews of already existing cards. The
+same background is interleaved with target answers in both policy
+runs and replayed in the no-target-review baseline. Each day's target answers
+are spaced evenly through that day's recorded background order; their exact
+time of day is not modeled. Its answers and costs do
+not count toward the selected deck's results. The recorded grades and timing
+are an assumption about future activity: background scheduling, the effects of
+performance scenarios on other cards, and the effects that applying either
+policy to every unsampled card would have on shared state are not simulated.
 
 The comparison defaults to a 250-card sample, a 10-percentage-point retention
 step from 30% through 99%, and one paired run. Sample selection is deterministic
@@ -1111,18 +1131,20 @@ reviewless baseline and can be negative.
 
 Independent retention and seed runs may execute concurrently, up to four at a
 time. The concurrency limit uses a conservative 256 MiB estimate for the
-workers' copied features and recurrent states, including full-precision state
-for new cards, and falls back to one run when the estimate is larger. This is
+workers' copied features and recurrent states, including the background cards,
+and falls back to one run when the estimate is larger. This is
 not a cap on total process memory: the resident model and state, temporary
 inference allocations, and estimate error are additional. Results are combined
 in a fixed order, and the progress callback can still cancel a running comparison.
+Long stretches of background reviews are replayed in batches, preserving their
+order and recurrent state while avoiding unused answer-head computations.
 
 This is a day-level approximation over the selected cards, using the same review
 and new-card limits, approximated review order, maximum interval, leech setting,
 and grade costs for both policies. New cards are introduced after reviews each
 day, without modeling the new/review mixing setting. It does not model separate learning or relearning
 steps, easy days, additional synthetic new cards, dynamic desired retention,
-changes of preset, reviews outside the selected cards, or the live
+changes of preset, background scheduling changes, or the live
 RWKV-Instant queue. Intervals are rounded to whole days without live scheduling
 fuzz. The comparison does not establish which scheduler performs better for a
 real learner.

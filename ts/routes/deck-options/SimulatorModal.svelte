@@ -103,8 +103,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let svg: HTMLElement | SVGElement | null = null;
     let simulationNumber = 0;
     let points: (WorkloadPoint | Point)[] = [];
-    let fsrsComparisonPoints: WorkloadPoint[] = [];
-    let rwkvComparisonPoints: WorkloadPoint[] = [];
+    let fsrsComparisonByScorer: WorkloadPoint[][] = [[], []];
+    let rwkvComparisonByScorer: WorkloadPoint[][] = [[], []];
     let reviewTimeMatrix: ReviewTimeMatrix | undefined;
     let reviewTimeAgainCoeffs: number[] = [];
     let reviewTimeHardCoeffs: number[] = [];
@@ -125,6 +125,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const RWKV_WORKLOAD_RESULT_POLL_MS = 500;
     let smooth = !compareWorkloads;
     let comparisonLearner = RwkvComparisonOptions_Learner.FSRS;
+    let comparisonScorer = RwkvComparisonOptions_Learner.FSRS;
     let comparisonScenario = RwkvComparisonOptions_PerformanceScenario.STEADY;
     let comparisonRepetitions = 1;
     let comparisonNotes: { run: number; text: string }[] = [];
@@ -164,6 +165,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: deckSize = 0;
     $: windowSize = smoothingWindowSize();
     $: processing = simulating || computingRetention;
+    $: fsrsComparisonPoints = fsrsComparisonByScorer[comparisonScorer];
+    $: rwkvComparisonPoints = rwkvComparisonByScorer[comparisonScorer];
     $: fsrsComparisonRenderPoints = smooth
         ? smoothPointsByLabel(fsrsComparisonPoints, windowSize)
         : fsrsComparisonPoints;
@@ -500,8 +503,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function simulateWorkload(): Promise<void> {
         const responses: NamedWorkloadResponse[] = [];
-        const fsrsResponses: NamedWorkloadResponse[] = [];
-        const rwkvResponses: NamedWorkloadResponse[] = [];
+        const fsrsResponses: NamedWorkloadResponse[][] = [[], []];
+        const rwkvResponses: NamedWorkloadResponse[][] = [[], []];
         updateRequest();
         try {
             await runWithBackendProgress(
@@ -511,19 +514,32 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     if (compareWorkloads) {
                         for (const { name, request } of workloadRequests("rwkv")) {
                             const result = await simulateRwkvComparison(request);
-                            if (!result.fsrs || !result.rwkv) {
+                            const fsrsScores = [
+                                result.fsrsScoredByFsrs,
+                                result.fsrsScoredByRwkv,
+                            ];
+                            const rwkvScores = [
+                                result.rwkvScoredByFsrs,
+                                result.rwkvScoredByRwkv,
+                            ];
+                            if (
+                                fsrsScores.some((score) => !score) ||
+                                rwkvScores.some((score) => !score)
+                            ) {
                                 throw new Error(
-                                    "Comparison did not return both schedulers",
+                                    "Comparison did not return both scoring models",
                                 );
                             }
-                            fsrsResponses.push({
-                                name: name.replace(/\s+\(RWKV\)$/, " (Fixed DR)"),
-                                response: result.fsrs,
-                            });
-                            rwkvResponses.push({
-                                name,
-                                response: result.rwkv,
-                            });
+                            for (let scorer = 0; scorer < 2; scorer++) {
+                                fsrsResponses[scorer].push({
+                                    name: name.replace(/\s+\(RWKV\)$/, " (Fixed DR)"),
+                                    response: fsrsScores[scorer]!,
+                                });
+                                rwkvResponses[scorer].push({
+                                    name,
+                                    response: rwkvScores[scorer]!,
+                                });
+                            }
                             const learner =
                                 request.rwkvComparison?.learner ===
                                 RwkvComparisonOptions_Learner.RWKV
@@ -550,6 +566,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                         sampled: String(result.sampledCards),
                                         total: result.totalCards,
                                         estimated: String(result.estimatedFsrsStates),
+                                        background: String(result.backgroundReviews),
                                         days: request.daysToSimulate,
                                         runs: String(
                                             request.rwkvComparison?.repetitions ?? 1,
@@ -576,20 +593,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             );
         } finally {
             simulating = false;
-            if (fsrsResponses.length && rwkvResponses.length) {
+            if (fsrsResponses[0].length && rwkvResponses[0].length) {
                 simulationNumber += 1;
-                fsrsComparisonPoints = fsrsComparisonPoints.concat(
-                    workloadPointsFromResponses(
-                        fsrsResponses,
-                        simulationNumber,
-                        "fsrs",
+                fsrsComparisonByScorer = fsrsComparisonByScorer.map((points, scorer) =>
+                    points.concat(
+                        workloadPointsFromResponses(
+                            fsrsResponses[scorer],
+                            simulationNumber,
+                            "fsrs",
+                        ),
                     ),
                 );
-                rwkvComparisonPoints = rwkvComparisonPoints.concat(
-                    workloadPointsFromResponses(
-                        rwkvResponses,
-                        simulationNumber,
-                        "rwkv",
+                rwkvComparisonByScorer = rwkvComparisonByScorer.map((points, scorer) =>
+                    points.concat(
+                        workloadPointsFromResponses(
+                            rwkvResponses[scorer],
+                            simulationNumber,
+                            "rwkv",
+                        ),
                     ),
                 );
             }
@@ -706,11 +727,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             comparisonNotes = comparisonNotes.filter(
                 (note) => note.run !== simulationNumber,
             );
-            fsrsComparisonPoints = fsrsComparisonPoints.filter(
-                (point) => Math.floor(point.label / 1000) !== simulationNumber,
+            fsrsComparisonByScorer = fsrsComparisonByScorer.map((points) =>
+                points.filter(
+                    (point) => Math.floor(point.label / 1000) !== simulationNumber,
+                ),
             );
-            rwkvComparisonPoints = rwkvComparisonPoints.filter(
-                (point) => Math.floor(point.label / 1000) !== simulationNumber,
+            rwkvComparisonByScorer = rwkvComparisonByScorer.map((points) =>
+                points.filter(
+                    (point) => Math.floor(point.label / 1000) !== simulationNumber,
+                ),
             );
             simulationNumber = Math.max(0, simulationNumber - 1);
             return;
@@ -1165,6 +1190,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 </option>
                                 <option value={RwkvComparisonOptions_Learner.RWKV}>
                                     {tr.deckConfigRwkvComparisonLearnerRwkv()}
+                                </option>
+                            </select>
+                        </label>
+                        <label>
+                            {tr.deckConfigRwkvComparisonScorer()}
+                            <select class="form-select" bind:value={comparisonScorer}>
+                                <option value={RwkvComparisonOptions_Learner.FSRS}>
+                                    FSRS
+                                </option>
+                                <option value={RwkvComparisonOptions_Learner.RWKV}>
+                                    RWKV
                                 </option>
                             </select>
                         </label>

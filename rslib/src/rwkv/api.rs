@@ -135,6 +135,16 @@ pub struct RwkvComparisonCard {
     pub historical_retention: f32,
 }
 
+/// One recorded background answer, placed in a repeating 365-day pattern.
+#[derive(Clone)]
+pub struct RwkvComparisonBackgroundReview {
+    pub input: ReviewInput,
+    pub pattern_day: u32,
+    pub second_of_day: u32,
+    pub last_review_day: i64,
+    pub last_review_second: i64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RwkvComparisonLearner {
     Fsrs,
@@ -165,10 +175,13 @@ pub struct RwkvComparisonConfig {
     pub repetitions: u32,
     pub output_scale: f32,
     pub review_model: RwkvWorkloadReviewModel,
+    pub background: Vec<RwkvComparisonBackgroundReview>,
 }
 
 pub struct RwkvComparisonOutput {
-    pub fsrs: RwkvWorkloadSimulationOutput,
-    pub rwkv: RwkvWorkloadSimulationOutput,
+    pub fsrs_scored_by_fsrs: RwkvWorkloadSimulationOutput,
+    pub rwkv_scored_by_fsrs: RwkvWorkloadSimulationOutput,
+    pub fsrs_scored_by_rwkv: RwkvWorkloadSimulationOutput,
+    pub rwkv_scored_by_rwkv: RwkvWorkloadSimulationOutput,
     pub estimated_fsrs_states: u32,
 }

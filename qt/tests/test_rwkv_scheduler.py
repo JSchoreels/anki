@@ -3180,6 +3180,8 @@ def test_comparison_returns_paired_results_for_the_same_sample(
             return (
                 (1.0, 0.5, [(90, 1.5, 0.7, 20.0, 3)]),
                 (1.0, 0.5, [(90, 1.7, 0.8, 18.0, 2)]),
+                (0.8, 0.4, [(90, 1.2, 0.6, 20.0, 3)]),
+                (0.8, 0.4, [(90, 1.4, 0.7, 18.0, 2)]),
                 1,
             )
 
@@ -3206,6 +3208,7 @@ def test_comparison_returns_paired_results_for_the_same_sample(
         grade_seconds=(1.0, 2.0, 3.0, 4.0), bucket_probabilities={}
     )
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_simulator_review_model", lambda _: model)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_comparison_background", lambda *_: [])
     request = scheduler_pb2.SimulateFsrsReviewRequest(
         search="deck:current",
         days_to_simulate=9,
@@ -3226,12 +3229,53 @@ def test_comparison_returns_paired_results_for_the_same_sample(
     assert response.estimated_fsrs_states == 1
     assert dict(response.fsrs.review_count) == {90: 3}
     assert dict(response.rwkv.review_count) == {90: 2}
+    assert dict(response.fsrs_scored_by_fsrs.memorized) == {90: pytest.approx(1.5)}
+    assert dict(response.fsrs_scored_by_rwkv.memorized) == {90: pytest.approx(1.2)}
+    assert dict(response.fsrs.memorized) == dict(response.fsrs_scored_by_rwkv.memorized)
     assert (
         response.fsrs.reviewless_end_memorized == response.rwkv.reviewless_end_memorized
     )
     assert captured[0]["include_comparison_data"] is True
     assert backend.calls[0]["input_scale"] == 2.0
     assert len(cast(Sequence[object], backend.calls[0]["inputs"])) == 1
+
+
+def test_comparison_background_uses_recent_other_cards_and_current_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    day_start = 1_000_000_000
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_timing_today",
+        lambda _: SimpleNamespace(days_elapsed=400, next_day_at=day_start + 86_400),
+    )
+    old = replace(_rwkv_review_input(card_id=2, note_id=20), day_offset=34)
+    repeated = replace(_rwkv_review_input(card_id=2, note_id=20), day_offset=35)
+    sampled = replace(_rwkv_review_input(card_id=1, note_id=10), day_offset=399)
+    latest = replace(_rwkv_review_input(card_id=2, note_id=20), day_offset=400)
+    review_ids = [
+        (day_start - 366 * 86_400 + 100) * 1000,
+        (day_start - 365 * 86_400 + 200) * 1000,
+        (day_start - 86_400 + 300) * 1000,
+        (day_start + 400) * 1000,
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        lambda _: SimpleNamespace(
+            reviews=[old, repeated, sampled, latest], review_ids=review_ids
+        ),
+    )
+
+    background = rwkv_scheduler._rwkv_comparison_background(
+        object(), [(1, sampled, 64)]
+    )
+
+    assert len(background) == 1
+    review, pattern_day, second, last_day, last_second = background[0]
+    assert review.identity.card_id == 2
+    assert review.day_offset == 400
+    assert (pattern_day, second, last_day, last_second) == (0, 200, 0, 400)
 
 
 def test_reviewer_answer_during_workload_simulation_invalidates_temporary_state(

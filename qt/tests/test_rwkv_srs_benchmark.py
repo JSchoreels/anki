@@ -89,8 +89,9 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
         ),
     )
 
-    fsrs, rwkv, estimated = runtime.compare_workloads(
+    fsrs, rwkv, fsrs_rwkv_score, rwkv_rwkv_score, estimated = runtime.compare_workloads(
         inputs=[(100, query, 64)],
+        background=[],
         request=request,
         input_scale=1.0,
         review_model=SimpleNamespace(
@@ -102,6 +103,12 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
     assert [point[0] for point in fsrs[2]] == [30, 99]
     assert [point[0] for point in rwkv[2]] == [30, 99]
     assert all(point[4] > 0 for point in fsrs[2] + rwkv[2])
+    assert [point[3:] for point in fsrs[2]] == [
+        point[3:] for point in fsrs_rwkv_score[2]
+    ]
+    assert [point[3:] for point in rwkv[2]] == [
+        point[3:] for point in rwkv_rwkv_score[2]
+    ]
     assert estimated == 0
     assert runtime.cache_state() == initial_cache
     assert runtime.warm_up_state(query) == initial_warm_state
@@ -117,6 +124,7 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
     with pytest.raises(Exception, match="comparison cancelled by test"):
         runtime.compare_workloads(
             inputs=[(100, query, 64)],
+            background=[],
             request=request,
             input_scale=1.0,
             review_model=SimpleNamespace(

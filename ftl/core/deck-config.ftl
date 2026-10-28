@@ -742,6 +742,7 @@ deck-config-fsrs-simulator-weighted-ratio-tooltip = { $time } net R*f(S) per hou
 deck-config-rwkv-comparison-learner = Simulated learner
 deck-config-rwkv-comparison-learner-fsrs = FSRS-based learner
 deck-config-rwkv-comparison-learner-rwkv = RWKV-based learner
+deck-config-rwkv-comparison-scorer = Estimate memorized with
 deck-config-rwkv-comparison-scenario = Performance scenario
 deck-config-rwkv-comparison-steady = Steady
 deck-config-rwkv-comparison-temporary-drop = Temporary drop: −15 points in the middle third
@@ -755,11 +756,11 @@ deck-config-rwkv-comparison-sample = Sampled cards (0 for all)
 deck-config-rwkv-comparison-step = Retention step (percentage points)
 deck-config-rwkv-comparison-runs = Paired simulation runs
 deck-config-rwkv-comparison-assumptions =
-    Both schedulers use the same eligible RWKV-enabled cards, starting due dates, simulated learner and average time per grade.
-    The chosen learner can favor its own model, and sampled results are estimates. One paired run can be noisy; increase the number of runs to reduce random variation.
-    More cards, finer steps and more runs take longer, especially at high retention. Review ordering is approximated.
-    The day-level comparison excludes learning and relearning steps, easy days, dynamic retention, preset switching, reviews outside the selected cards and the RWKV-Instant queue.
-deck-config-rwkv-comparison-run-details = Run { $run }, { $preset }, { $learner }, { $scenario }: { $sampled } of { $total } cards simulated; { $estimated } sampled cards used estimated FSRS states; { $days } days, { $runs } paired runs, { $step }-point retention step.
+    Both schedulers use the same cards, starting due dates, simulated learner and average time per grade. Both models estimate memory from each scheduler's simulated answers; change the scoring model without rerunning.
+    The last year of reviews on other cards is replayed as fixed background activity for RWKV, including in the no-review baseline. The learner and background remain assumptions, and sampled results are estimates. One paired run can be noisy.
+    More cards, finer steps, background reviews and more runs take longer. Review ordering is approximated.
+    The day-level comparison excludes simulated learning and relearning steps, easy days, dynamic retention, preset switching and the RWKV-Instant queue.
+deck-config-rwkv-comparison-run-details = Run { $run }, { $preset }, { $learner }, { $scenario }: { $sampled } of { $total } cards simulated; { $estimated } sampled cards used estimated FSRS states; { $background } reviews in the one-year background pattern; { $days } days, { $runs } paired runs, { $step }-point retention step.
 deck-config-rwkv-comparison-matched-memory-help =
     The chart compares the same requested retention, which can produce different simulated memory.
     Below, each FSRS point is matched with the cheapest RWKV point on the tested grid with at least as much simulated memory.
