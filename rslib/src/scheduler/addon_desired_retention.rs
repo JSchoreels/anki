@@ -880,6 +880,49 @@ mod test {
     }
 
     #[test]
+    fn unsupported_grade_state_keeps_native_dynamic_retention() -> Result<()> {
+        use crate::config::BoolKey;
+        use crate::scheduler::states::CardState;
+        use crate::scheduler::states::NormalState;
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_dynamic_desired_retention_enabled = true;
+            config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
+            config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
+            config.fsrs_dynamic_desired_retention_avg_drs = vec![0.8, 0.9];
+            config.fsrs_dynamic_desired_retention_min = 0.75;
+            config.fsrs_dynamic_desired_retention_max = 0.95;
+        });
+        let notetype = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = notetype.new_note();
+        note.set_field(0, "new card")?;
+        col.add_note(&mut note, DeckId(1))?;
+        col.set_config(
+            CONFIG_KEY,
+            &json!({
+                "version": 1,
+                "rules": [{"query": "deck:Default", "desired_retention": 0.85}],
+                "grade_rules": [{"grade": "again", "mode": "absolute", "value": 0.85}]
+            }),
+        )?;
+        let card_id = col.get_first_card().id;
+        let states = col.get_scheduling_states(card_id)?;
+        assert!(matches!(
+            states.again,
+            CardState::Normal(NormalState::Learning(_))
+        ));
+        let mapped = states.dynamic_desired_retentions.unwrap()[0];
+        col.answer_again();
+        assert_eq!(
+            col.get_first_card().desired_retention,
+            Some((mapped * 100.0).round() / 100.0)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn relative_grade_uses_an_explicit_base_override_on_answer() -> Result<()> {
         use crate::config::BoolKey;
         use crate::scheduler::answering::CardAnswer;

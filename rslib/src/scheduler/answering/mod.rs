@@ -320,12 +320,12 @@ fn addon_review_state_mut(state: &mut CardState) -> Option<&mut ReviewState> {
     }
 }
 
-fn apply_addon_grade_target(state: &mut CardState, target: f32, ctx: &CardStateUpdater) {
+fn apply_addon_grade_target(state: &mut CardState, target: f32, ctx: &CardStateUpdater) -> bool {
     let Some(review) = addon_review_state_mut(state) else {
-        return;
+        return false;
     };
     let Some(memory) = review.memory_state else {
-        return;
+        return false;
     };
     let stability = if memory.stability_internal.is_finite() && memory.stability_internal > 0.0 {
         memory.stability_internal
@@ -333,7 +333,7 @@ fn apply_addon_grade_target(state: &mut CardState, target: f32, ctx: &CardStateU
         memory.stability
     };
     if !stability.is_finite() || stability <= 0.0 {
-        return;
+        return false;
     }
     match fsrs_interval_at_retrievability_for_params(&ctx.fsrs_preset.params, stability, target) {
         Ok(interval) if interval.is_finite() && interval > 0.0 => {
@@ -344,9 +344,13 @@ fn apply_addon_grade_target(state: &mut CardState, target: f32, ctx: &CardStateU
                 days = days.min(maximum);
             }
             review.scheduled_days = days;
+            true
         }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(?error, "Dynamic DR grade interval failed"),
+        Ok(_) => false,
+        Err(error) => {
+            tracing::warn!(?error, "Dynamic DR grade interval failed");
+            false
+        }
     }
 }
 
@@ -498,7 +502,7 @@ impl Collection {
                         continue;
                     }
                 }
-                apply_addon_grade_target(state, target, ctx);
+                let _ = apply_addon_grade_target(state, target, ctx);
             }
         }
         if let Some(matched) = matched {
@@ -631,14 +635,15 @@ impl Collection {
         let usn = self.usn()?;
 
         let (rules, matched) = self.addon_retention_for_card(&card)?;
+        let mut addon_grade_target = None;
         if let Some(rules) = rules.filter(|_| !answer.desired_retention_override_is_final) {
             let base = answer
                 .desired_retention_override
                 .or(matched.map(|value| value.retention));
             answer.desired_retention_override = rules.target_for_grade(base, answer.rating.index());
-            answer.desired_retention_override_is_final = rules
-                .has_grade_rule(answer.rating.index())
-                && answer.desired_retention_override.is_some();
+            if rules.has_grade_rule(answer.rating.index()) {
+                addon_grade_target = answer.desired_retention_override;
+            }
         }
         if answer.desired_retention_override_is_final {
             require!(
@@ -649,6 +654,14 @@ impl Collection {
             );
         }
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
+        if let Some(target) = addon_grade_target {
+            // Only opt in when this kind of answer state can actually receive
+            // the exact target. Filtered/unsupported states retain native DR.
+            let mut state = answer.new_state;
+            answer.desired_retention_override_is_final =
+                updater.dynamic_desired_retentions.is_some()
+                    && apply_addon_grade_target(&mut state, target, &updater);
+        }
         if answer.desired_retention_override_is_final {
             // The supplied scheduling state already uses the final target. Do
             // not replace it with a second native Dynamic DR mapping on save.
