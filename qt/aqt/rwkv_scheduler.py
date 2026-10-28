@@ -18011,6 +18011,16 @@ def _rwkv_state_cache_checkpoint_path(
     )
 
 
+def _rwkv_state_cache_supported_format(metadata: dict[str, object]) -> bool:
+    # Older versions could persist state that omitted synchronized reviews.
+    # None of its stored prefixes is guaranteed complete, so rebuild from the
+    # retained history once rather than continuing that divergent state.
+    return metadata.get("version") in (
+        _RWKV_STATE_CACHE_VERSION,
+        _RWKV_STATE_CACHE_LEGACY_JSON_VERSION,
+    ) and not _rwkv_state_cache_ignored_review_ids(metadata)
+
+
 def _rwkv_state_cache_metadata_compatible(
     reviewer: object,
     metadata: dict[str, object],
@@ -18018,12 +18028,7 @@ def _rwkv_state_cache_metadata_compatible(
     dynamic_preset_replay_enabled: bool | None = None,
     replay_key: str | None = None,
 ) -> bool:
-    # Older versions could persist state that omitted synchronized reviews.
-    # None of its stored prefixes is guaranteed complete, so rebuild from the
-    # retained history once rather than continuing that divergent state.
-    if _rwkv_state_cache_ignored_review_ids(metadata) or metadata.get(
-        "version"
-    ) not in (_RWKV_STATE_CACHE_VERSION, _RWKV_STATE_CACHE_LEGACY_JSON_VERSION):
+    if not _rwkv_state_cache_supported_format(metadata):
         return False
     if metadata.get("presetReplaySemantics") != _RWKV_PRESET_REPLAY_SEMANTICS_VERSION:
         return False
