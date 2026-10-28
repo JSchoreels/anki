@@ -55,6 +55,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Faster RWKV-Instant refreshes with Dynamic Desired Retention.** With precomputation off, preparing and predicting a warm full-deck queue on a copied collection with 7,449 candidates fell from a median of 157 ms to 117 ms. The complete delay between cards also includes score installation and the UI transition.
+
 - **Faster Dynamic Desired Retention during review.** Warm single-card RWKV target lookups took a median of about 140 ms before and less than 1 ms after on ten sampled cards from a copied collection with 7,449 review candidates. Full-deck refreshes still depend on the configured rules and collection size.
 
 - **Fewer temporary Unknown RWKV values in Card Info.** Its background requests can briefly wait for another prediction to finish, and discard results if the model state changes during the wait.
@@ -76,6 +78,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **RWKV review ordering:** The default reuses the previously computed score map and refreshes in the background. Disabling precomputation refreshes the full candidate set after each answer, independent of the interval and approximate-candidate settings. Card Info waits up to 100 ms for prediction access off the UI thread and retries if the state changes or remains busy.
 
 - **Dynamic Desired Retention lookups:** RWKV uses the provider's single-card API for one-card work and falls back to the bulk API when necessary. Searches that require `cid:` and exact FSRS metrics prepare those metrics only for the specified cards; other searches retain their existing behavior. On the same copied collection with a warm provider, the ten-card median was 141 ms for the previous one-card bulk lookup and 0.25 ms for the new RWKV lookup. Full-deck rule resolution remained about 316 ms with the tested rules, separate from the approximately 40 ms SM72 prediction stage.
+
+- **RWKV queue input preparation:** Dynamic Desired Retention targets are applied while constructing native review inputs, avoiding a second copy of each changed input, and stable preset IDs use a bounded cache. Twelve alternating, warm measurements with session-cached rules gave medians of 157 ms before and 117 ms after, including SM72 prediction and excluding score installation and UI transitions. All 7,449 inputs and predictions matched when compared on the same frozen card data.
 
 - **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
 

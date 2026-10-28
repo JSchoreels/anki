@@ -965,6 +965,15 @@ The target-retention results matched in this unchanged collection. These timings
 exclude score installation and the UI transition, and the first session refresh
 still populates the cache.
 
+Queue loading now applies Dynamic Desired Retention targets as native response
+rows are converted to review inputs, avoiding a second copy of changed inputs,
+and uses a bounded cache for the stable preset ID conversions.
+In 12 alternating warm measurements with session-cached rules on the same copy,
+input preparation and SM72 prediction fell from a median of 157 ms to 117 ms;
+the non-provider, non-model portion fell from 114 ms to 73 ms. All 7,449 inputs
+and predictions matched when the old and new paths used the same frozen response.
+These figures also exclude score installation and the UI transition.
+
 ## Stats And Search
 
 Ordinary graph requests return their available statistics immediately when

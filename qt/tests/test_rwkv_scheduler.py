@@ -6232,6 +6232,75 @@ def test_live_review_after_explicit_filtered_answer_respects_scheduler_state() -
     assert review_state == int(RwkvReviewState.REVIEW)
 
 
+def test_rwkv_deck_inputs_apply_dynamic_targets_while_preserving_card_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row
+    response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse(
+        rows=[
+            row(
+                card_id=1, note_id=11, target_retention=0.9, current_elapsed_seconds=45
+            ),
+            row(card_id=2, note_id=22, target_retention=0.8),
+            row(card_id=3, note_id=33, target_retention=-0.1),
+            row(card_id=4, note_id=44, target_retention=0.7),
+        ]
+    )
+    col = SimpleNamespace(_backend=object())
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+    def resolver(
+        *,
+        collection: object,
+        card_ids: Sequence[int],
+        current_desired_retentions: Mapping[int, float],
+    ) -> dict[int, object]:
+        assert collection is col
+        assert card_ids == [1, 2, 3, 4]
+        assert current_desired_retentions == pytest.approx(
+            {1: 0.9, 2: 0.8, 3: 0.9, 4: 0.7}
+        )
+        return {
+            1: SimpleNamespace(desired_retention=0.923456789),
+            2: SimpleNamespace(desired_retention=0.80000001),
+            3: SimpleNamespace(desired_retention=1.1),
+        }
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_batch_cache_key",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_rows_for_deck_review_queue_backend_response",
+        lambda *args, **kwargs: response,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_info_for_card_ids_resolver",
+        lambda: resolver,
+    )
+
+    result = rwkv_scheduler._rwkv_review_input_batches_for_deck_review_queue(
+        reviewer=reviewer,
+        deck_id=1,
+        batch_size_override=512,
+        include_new_cards=False,
+        use_cache=False,
+    )
+
+    assert result is not None
+    inputs = dict(result.inputs_by_batch_size[512])
+    assert inputs[1].identity.note_id == 11
+    assert inputs[1].current_elapsed_seconds == 45
+    assert inputs[1].target_retentions == (0.923456789,) * 4
+    assert inputs[2].target_retentions == (response.rows[1].target_retention,) * 4
+    assert inputs[3].target_retentions == (0.9,) * 4
+    assert inputs[4].target_retentions == (response.rows[3].target_retention,) * 4
+    assert result.dynamic_desired_retentions_resolved
+
+
 def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
