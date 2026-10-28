@@ -23,7 +23,8 @@ switches.
 **Machine Learning Based scheduling** remains a visible, collection-wide switch.
 Selecting either model selector enables it, so an FSRS due-date choice uses the
 native FSRS scheduler. Turning it off retains Anki's existing global SM2 behavior
-for native interval scheduling; RWKV settings remain independent. The model
+for native interval scheduling; RWKV settings remain independent. RWKV-Curve
+still records its S90 for answered cards when that switch is off. The model
 selectors change the current preset, not the models selected on other presets.
 
 When Curve writes due dates, Deck Options shows desired retention and RWKV

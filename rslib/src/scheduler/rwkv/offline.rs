@@ -1234,6 +1234,11 @@ impl Collection {
         if !self.rwkv_offline_enabled() {
             return None;
         }
+        // If the new query cannot be scored, its answer must not reuse a
+        // prediction left over from an earlier state of this card.
+        if let Some(runtime) = self.state.rwkv_offline.as_mut() {
+            runtime.curve_s90.remove(&card_id);
+        }
         let mut curve = None;
         self.with_rwkv_offline_runtime("curve", |col, runtime| {
             col.rwkv_offline_sync_history(runtime)?;
@@ -2032,6 +2037,10 @@ impl Collection {
         Ok(scored)
     }
 }
+
+#[cfg(test)]
+#[path = "offline_curve_fsrs_off_tests.rs"]
+mod curve_fsrs_off_tests;
 
 #[cfg(test)]
 mod test {

@@ -28,6 +28,7 @@ use super::timespan::answer_button_time_collapsible;
 use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
 use crate::card::CardType;
+use crate::card::FsrsMemoryState;
 use crate::config::BoolKey;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
@@ -329,6 +330,28 @@ fn use_external_intervals(state_ctx: &mut StateContext, intervals: [Option<f32>;
     }
 }
 
+/// Match desktop's `apply_review_s90_overrides` on the returned answer states.
+fn use_external_s90(state: &mut CardState, s90: f32) {
+    let review = match state {
+        CardState::Normal(NormalState::Review(review)) => review,
+        CardState::Normal(NormalState::Relearning(relearning)) => &mut relearning.review,
+        _ => return,
+    };
+    if let Some(memory) = &mut review.memory_state {
+        memory.stability = s90;
+        if memory.difficulty <= 0.0 {
+            memory.difficulty = 5.0;
+        }
+    } else {
+        review.memory_state = Some(FsrsMemoryState {
+            stability: s90,
+            stability_internal: s90,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+    }
+}
+
 impl Collection {
     /// Return the next states that will be applied for each answer button.
     pub fn get_scheduling_states(&mut self, cid: CardId) -> Result<SchedulingStates> {
@@ -357,7 +380,10 @@ impl Collection {
         // desktop's Python: the offline runtime gives the intervals its
         // reviewer hands to `scheduling_states_with_intervals`. None (FSRS's
         // intervals) when there is no offline runtime, e.g. on the desktop.
-        let curve = if ctx.config.inner.rwkv_review_enabled && ctx.fsrs_next_states.is_some() {
+        let curve = if ctx.config.inner.rwkv_review_enabled
+            && (ctx.fsrs_next_states.is_some()
+                || !matches!(current, CardState::Filtered(FilteredState::Preview(_))))
+        {
             let targets = ctx
                 .dynamic_desired_retentions
                 .unwrap_or([ctx.desired_retention.unwrap_or(0.9); 4]);
@@ -379,6 +405,26 @@ impl Collection {
             use_external_intervals(&mut state_ctx, intervals);
         }
         let mut states = current.next_states(&state_ctx);
+        if let Some(intervals) = curve {
+            for (index, state) in [
+                &mut states.again,
+                &mut states.hard,
+                &mut states.good,
+                &mut states.easy,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if intervals[index].is_some() {
+                    if let Some(s90) = self
+                        .rwkv_offline_curve_s90(ctx.card.id, index)
+                        .filter(|s90| s90.is_finite() && *s90 > 0.0)
+                    {
+                        use_external_s90(state, s90);
+                    }
+                }
+            }
+        }
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
             ctx.fsrs_preset.dynamic_desired_retention.is_some();
