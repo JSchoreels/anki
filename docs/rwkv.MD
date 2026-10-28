@@ -35,9 +35,10 @@ the review scheduler's card comes first and its fallback follows. Instant with
 a Curve fallback shows only the RWKV card, with Instant before Curve. Ordering
 uses the selected models and keeps the existing components mounted, preserving
 editing state and the initial desired-retention baseline.
-Synced RWKV-Curve due dates can guide the next mobile session, but mobile
-clients do not load the RWKV backend and continue to schedule answers with
-FSRS/SM2. Choosing a model affects future answers; use the existing explicit
+Synced RWKV-Curve due dates can guide the next mobile session. Kuma loads its
+offline RWKV backend and can schedule answers with Curve; mobile clients without
+that runtime continue to schedule answers with FSRS/SM2. Choosing a model affects
+future answers; use the existing explicit
 reschedule controls to update stored due dates for cards already scheduled.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
