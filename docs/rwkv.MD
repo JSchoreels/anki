@@ -90,9 +90,10 @@ populations can take time to scan.
 Numeric HTML fields are normalized on both platforms; malformed or unusual
 markup may be interpreted differently by their respective HTML parsers.
 
-With native Dynamic DR enabled, a matched add-on grade rule is a final target:
-the backend records that target on the card rather than mapping it again. Other
-answers continue to record the native grade-mapped retention. Desktop uses the
+With native Dynamic DR enabled, a matched add-on grade rule is a final target
+when it can be applied to the answer state: the backend records that target on
+the card rather than mapping it again. Unsupported states and other answers
+continue to record the native grade-mapped retention. Desktop uses the
 same behavior when both its scheduler and the add-on support final per-grade
 overrides; older desktop builds retain their existing answer behavior.
 
