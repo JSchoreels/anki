@@ -1021,3 +1021,63 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn synced_dynamic_retention_rules_drive_the_other_client() -> Result<()> {
+    use anki_proto::scheduler::card_answer::Rating;
+    use anki_proto::scheduler::GradeNowRequest;
+    use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
+
+    use crate::config::BoolKey;
+
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        let mut source = ctx.col1();
+        col1_setup(&mut source);
+        source.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let card_id = source.get_first_card().id;
+        let grade = || GradeNowRequest {
+            card_ids: vec![card_id.0],
+            rating: Rating::Easy as i32,
+            card_options: vec![],
+        };
+        source.grade_now(grade())?;
+        assert!(matches!(
+            ctx.normal_sync(&mut source).await.required,
+            SyncActionRequired::FullSyncRequired { .. }
+        ));
+        ctx.full_upload(source).await;
+        ctx.full_download(ctx.col2()).await;
+
+        let mut source = ctx.col1();
+        let mut other = ctx.col2();
+        let rules = serde_json::json!({
+            "version": 1,
+            "rules": [{"query": "deck:Default", "desired_retention": 0.75}],
+            "grade_rules": [{"grade": "easy", "mode": "absolute", "value": 0.85}]
+        });
+        source.set_config_json(
+            crate::scheduler::addon_desired_retention::CONFIG_KEY,
+            &rules,
+            false,
+        )?;
+        ctx.normal_sync(&mut source).await;
+        ctx.normal_sync(&mut other).await;
+        assert_eq!(
+            other.get_config_optional::<serde_json::Value, _>(
+                crate::scheduler::addon_desired_retention::CONFIG_KEY
+            ),
+            Some(rules)
+        );
+        let rows = other.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+            card_ids: vec![card_id.0],
+            include_disabled_decks: true,
+            ..Default::default()
+        })?;
+        assert_eq!(rows.rows[0].target_retention, 0.75);
+        other.grade_now(grade())?;
+        assert_eq!(other.get_first_card().desired_retention, Some(0.85));
+        Ok(())
+    })
+    .await
+}
