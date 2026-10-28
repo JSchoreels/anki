@@ -486,6 +486,10 @@ impl Collection {
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
+        let is_preview = matches!(
+            current_state,
+            CardState::Filtered(FilteredState::Preview(_))
+        );
         // If the states aren't equal, it's probably because some time has passed.
         // Try to fix this by setting elapsed_secs equal.
         self.set_elapsed_secs_equal(&current_state, &mut answer.current_state);
@@ -508,7 +512,7 @@ impl Collection {
                 &updater.timing,
             )?;
         }
-        if answer.rwkv_s90.is_none() && updater.config.inner.rwkv_review_enabled {
+        if !is_preview && answer.rwkv_s90.is_none() && updater.config.inner.rwkv_review_enabled {
             // the S90 of the Curve answer shown, as the desktop's
             // `set_answer_rwkv_metadata` sends it
             answer.rwkv_s90 = self.rwkv_offline_curve_s90(answer.card_id, answer.rating.index());
@@ -557,21 +561,20 @@ impl Collection {
         let deckconfig_id = updater.original_deck.config_id();
         if let Some(rwkv_s90) = answer.rwkv_s90 {
             require!(rwkv_s90.is_finite() && rwkv_s90 > 0.0, "invalid RWKV S90");
-            match &mut updater.card.memory_state {
-                Some(memory_state) => memory_state.stability = rwkv_s90,
-                None => {
-                    updater.card.memory_state = Some(fsrs_memory_state_for_s90(
-                        &updater.fsrs_preset.params,
-                        rwkv_s90,
-                    )?);
+            if !is_preview {
+                match &mut updater.card.memory_state {
+                    Some(memory_state) => memory_state.stability = rwkv_s90,
+                    None => {
+                        updater.card.memory_state = Some(fsrs_memory_state_for_s90(
+                            &updater.fsrs_preset.params,
+                            rwkv_s90,
+                        )?);
+                    }
                 }
             }
         }
         let mut card = updater.into_card();
-        if !matches!(
-            answer.current_state,
-            CardState::Filtered(FilteredState::Preview(_))
-        ) {
+        if !is_preview {
             card.last_review_time = Some(answer.answered_at.as_secs());
         }
         if let Some(data) = answer.custom_data.take() {
