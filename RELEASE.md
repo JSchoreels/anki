@@ -39,6 +39,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### New Features
 
+- **New default small RWKV model: small model, leak-free (SM72).** It replaces SM56 with the same size (**331,511 parameters, 8.3× fewer than the big model**, about 4.6 KB of state per card and note instead of 25.7 KB) and was trained without the signal that a card is deleted later, which live Anki never has. On the 732-user held-out set, with leak-free inputs for every model, its Curve / Instant LogLoss is **0.30038 / 0.27687**: **+0.24% / +0.24%** against the shipped big model and **+0.47% / +0.40%** against the big model (1 leak-free epoch). Against SM56 on the same inputs both point estimates are lower (−0.000276 Curve, −0.000575 Instant; the Instant gain is clear of zero on all three held-out sets). **Use Smaller Model** now selects SM72; a successful Deck Options save upgrades SM40, SM36, SM55 or SM56 to SM72, and Legacy stays available. Reopen the profile to apply it.
+
 - **Faster RWKV review-gain statistics for compatible add-ons.** A batched native replay API lets Search Stats Extended compare recall immediately before and after reviews without querying each answer separately.
 
 - **Clearer RWKV model help.** The model descriptions and links now appear directly below **Use Smaller Model** in Deck Options → RWKV → Advanced.
@@ -58,6 +60,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 ### Technical details
 
 - **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
+
+- **SM72 integration:** import the verified [SM72 release](https://github.com/JSchoreels/anki-rwkv/releases/tag/small-model-sm72-2026-10-28) (15 constant-LR epochs on all 8,000 users, then a one-epoch 32k Muon cool-down, distilled from the big model (1 leak-free epoch)). Its architecture export is byte-identical to SM56's, so it shares the small engine, state codecs and storage precisions. With SM72 selected, the runtime forces the missing note, deck and preset flags (inputs 13–15) to zero in the review, bulk-replay, scalar-query and batched-query paths; other models keep their feature path. Canonical history already excludes deleted cards' reviews, so the release's nearest-card deck rule never applies. Native parity on the full 14,403-row release vectors is 3.5e−6 (f32 weights) / 3.2e−6 (INT8 weights). Earlier releases' upstream scores used inputs with the leak and are not directly comparable. See the [SM72 integration report](docs/rwkv-sm72-2026-10-28.MD).
 
 - **RWKV re-import reset boundaries:** A versioned collection-config mirror protects each boundary when an older client rewrites card data. On normal sync, newer clients reconcile a stale mirror and upload the result; scheduled exports include the effective boundary, and import, undo and redo preserve the intended history. Boundaries already stored only in card data are mirrored when the collection opens. Full-sync replacement and packages exported directly from older clients still follow those clients' normal data-retention behavior. Genuine history and preset-routing changes continue to trigger safe recovery.
 

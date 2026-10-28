@@ -1,0 +1,768 @@
+{
+ "label": "s-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon",
+ "created": "2026-10-28 08:40:27",
+ "checkpoint": {
+  "path": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/expertium/E89-F65e-F77a/master.pth",
+  "bytes": 1489805,
+  "sha256": "58a391e3070382ed6152e0ba48aaaf4c5f6542dda3033526f9306536a721f5d9"
+ },
+ "parameters": 331511,
+ "architecture": {
+  "format": "anki-rwkv small-model export",
+  "spec_version": 1,
+  "architecture": "w64",
+  "d_model": 64,
+  "card_features": 92,
+  "features_fc_dim": 128,
+  "head_fc_dim": 128,
+  "curve_head": "power_mixture",
+  "num_curves": 3,
+  "num_points": 128,
+  "ahead_residual": false,
+  "zero_features": [
+   22
+  ],
+  "layer_schedule": "interleaved",
+  "layer_steps": [
+   [
+    0,
+    0
+   ],
+   [
+    1,
+    0
+   ],
+   [
+    2,
+    0
+   ],
+   [
+    3,
+    0
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    0,
+    1
+   ],
+   [
+    1,
+    1
+   ],
+   [
+    3,
+    1
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    4,
+    2
+   ],
+   [
+    1,
+    3
+   ]
+  ],
+  "streams": [
+   {
+    "name": "card_id",
+    "n_layers": 2,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "deck_id",
+    "n_layers": 4,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "note_id",
+    "n_layers": 1,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "preset_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "user_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   }
+  ],
+  "constants": {
+   "layer_norm_eps": 1e-05,
+   "group_norm_eps": 0.00064,
+   "normalize_eps": 1e-12,
+   "softplus_threshold": 20.0,
+   "prob_clamp": 1e-05,
+   "s_point_spread": 18.5,
+   "s_max": 22.0,
+   "s_min": 0.1,
+   "curve_base": 0.9,
+   "point_spread": 18.5,
+   "max_e": 21.0,
+   "point_min": 0.5,
+   "power_clamp": 25.0,
+   "power_s_eps": 1e-07,
+   "min_elapsed_seconds": 1.0
+  },
+  "inputs": {
+   "streams_order": [
+    "card_id",
+    "deck_id",
+    "note_id",
+    "preset_id",
+    "user_id"
+   ],
+   "features": "92 card features of rwkv.prepare_batch / rwkv.data_processing (the same input layout and normalization the fork's 2.76M model uses: rslib/src/rwkv/mod.rs CARD_FEATURES)",
+   "label_elapsed_seconds": "curve query time in seconds (labels[..., 0])"
+  },
+  "outputs": {
+   "p_curve": "recall probability at the queried elapsed time (ahead / curve head)",
+   "p_imm": "1 - P(again) of the 4-rating head (instant head), clamped to [1e-5, 1 - 1e-5]",
+   "p_rating": "softmax over again/hard/good/easy"
+  }
+ },
+ "training": {
+  "checkpoint_folder_result": {
+   "model": "expertium",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/expertium/big-leakfree-1ep/master.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour"
+    },
+    "chunk_reviews": 32768,
+    "state_carry": {
+     "lanes": "strided"
+    },
+    "training_seed": 2025,
+    "optimizer": "expertium-iter53"
+   },
+   "config": {
+    "MODEL": "expertium",
+    "DTYPE": "bfloat16",
+    "WKV_BACKEND": "nvrtc",
+    "SEED": 2025,
+    "BATCH_CHUNKS": 1,
+    "CHUNK_REVIEWS": 32768,
+    "PREFETCH_WORKERS": 5,
+    "PREFETCH_BATCHES": 10,
+    "CPU_THREADS": 4,
+    "EPOCHS": 1,
+    "DATA_PATH": "<workspace>/anki-rwkv/data/anki-revlogs-10k-original-20261011",
+    "DATASET_REVISION": "75299740cff05894ef42d7ad990666691efdd2da",
+    "GPU_MEMORY_FRACTION": 0.8,
+    "PEAK_LR": 0.0007,
+    "WARMUP_STEPS": 5
+   },
+   "torch": "2.9.1+cu128",
+   "cuda": "12.8",
+   "gpu": "NVIDIA GeForce RTX 5080",
+   "training_dropout": "enabled",
+   "device_used_at_start_mib": 1290.75,
+   "master_dtype": "float32",
+   "float32_matmul_precision": "highest",
+   "cuda_matmul_allow_tf32": false,
+   "rss_sampling": "process tree at user transitions; sampled maximum, not continuous peak",
+   "provenance": {
+    "captured_utc": "2026-10-27T23:25:48.967570+00:00",
+    "git_commit": "74806caa35f9609ac4cee9c6b08a497beb5d8361",
+    "git_dirty": true,
+    "git_status_porcelain_z": " M artifacts/small-model/sm72s/launch-sm72s.sh\u0000",
+    "source_tree_sha256": "1cc380b9952035d2f17e96ad3f9dbe8f071a61fab9452b2246c270da487111f8",
+    "source_archive": "artifacts/sources/experiment-sources/1cc380b9952035d2f17e96ad3f9dbe8f071a61fab9452b2246c270da487111f8/source.zip",
+    "source_paths": [
+     "rwkv",
+     "expertium",
+     "scripts",
+     "configs",
+     "pyproject.toml",
+     "uv.lock",
+     "justfile",
+     "upstream.json"
+    ]
+   },
+   "status": "complete",
+   "smoke_only": false,
+   "implementation_sha256": "557bf6339f9744d90c44a214ff3a24980873736fe1d22694c3d06fd77823b5a4",
+   "started_utc": "2026-10-27T23:25:49.942773+00:00",
+   "training_users": 7141,
+   "evaluation_users": 0,
+   "progress_users": 7141,
+   "updates": 19720,
+   "review_presentations": 519842056,
+   "training_curve_labels": 451595590,
+   "training_instant_labels": 451595590,
+   "hierarchical_padded_positions": 6886081930,
+   "peak_process_tree_rss_mib": 9586.77734375,
+   "gpu_copy_milliseconds": 48440.042419433594,
+   "gpu_copy_overlap_training_milliseconds": 449.45672607421875,
+   "initial_parameter_sha256": "75fe4c3a20659eab7157d74da596993ec2d57a49127cc641b4b29e726b3a4b3d",
+   "expertium_catch_up": {
+    "keys": [
+     "architecture",
+     "distillation",
+     "optimizer"
+    ],
+    "architecture": {
+     "name": "w64",
+     "parameters": 331511
+    },
+    "lr_schedule": {
+     "decay_start": 0.0,
+     "decay_end": 1.0,
+     "shape": "one_minus_sin",
+     "final": 0.0,
+     "total_reviews": 581942724
+    },
+    "optimizer": "expertium-iter53",
+    "deleted_cards": "neighbour",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/expertium/big-leakfree-1ep/master.pth",
+     "teacher_sha256": "ac7f0d8a96cbc086eb17307ee13c67cf8e4a68e9b3d70dd5657eaa9957d9d240",
+     "teacher_parameters": null,
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour",
+     "replay_manifest_sha256": "c81d6968ee4475fbf8bcf25167ba808dc90fb79cfd49e3511ed100aed05bfcd6",
+     "replay_teacher_precision": "float32 weights, float32 state (compress_quant fork path, state_bits 0)"
+    },
+    "state_carry": {
+     "precision": "deploy",
+     "carry": true,
+     "lanes": "strided",
+     "mode": "strided lanes (v2): update u holds window u of every lane; lane starts from zero",
+     "stats": {
+      "users": 7141,
+      "updates": 19720,
+      "streams_calls": 19720,
+      "peak_table_bytes": 682104849
+     }
+    }
+   },
+   "discarded_primer_seconds": 2.4036006000824273,
+   "model_setup_seconds": 3.249493299983442,
+   "warmup_job_workers": 1,
+   "prestarted_worker_pids": [
+    412,
+    9040,
+    10640,
+    56660,
+    59300
+   ],
+   "prestarted_workers": 5,
+   "pool_ready_wait_seconds": 0.0002818000502884388,
+   "pool_prestart_seconds": 2.4542914000339806,
+   "host_placement": {
+    "mode": "physical",
+    "main_process_cpus": [
+     2,
+     3,
+     6,
+     7,
+     10,
+     11
+    ],
+    "worker_cpus": [
+     0,
+     4,
+     8,
+     14,
+     12
+    ],
+    "workers": 5,
+    "physical_cores": 8,
+    "main_core_scheduling_classes": [
+     6,
+     6,
+     5
+    ],
+    "restored_main_process_cpus": 16
+   },
+   "process_qos": {
+    "mode": "above_normal_unthrottled",
+    "processes": [
+     {
+      "pid": 62216,
+      "role": "main",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 412,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 9040,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 10640,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 56660,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 59300,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     }
+    ],
+    "timer_resolution_100ns": {
+     "coarsest": 156250,
+     "finest": 5000,
+     "current": 5000
+    }
+   },
+   "training_started_utc": "2026-10-27T23:25:54.544350+00:00",
+   "nvrtc_max_timesteps": 131072,
+   "deferred_read_depth": 2,
+   "lean_step_reset": {
+    "master_parameters": 420,
+    "child_parameters": 420
+   },
+   "bookkeeping_stride": 8,
+   "rss_sampling_skipped_processes": 0,
+   "training_elapsed_seconds": 25131.118379099993,
+   "latest_snapshot": {
+    "reason": "periodic",
+    "utc": "2026-10-28T06:02:01.249544+00:00",
+    "progress_users": 6800,
+    "folder": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/expertium/E89-F65e-F77a/snapshots/users-06800"
+   },
+   "training_seconds": 25141.115297700046,
+   "training_gc": {
+    "generation_0": {
+     "collections": 78092,
+     "seconds": 5.018324293661863
+    },
+    "generation_1": {
+     "collections": 7100,
+     "seconds": 2.504419799777679
+    },
+    "generation_2": {
+     "collections": 166,
+     "seconds": 14.521376100135967
+    }
+   },
+   "cold_training_seconds": 25141.115297700046,
+   "reviews_per_second": 20676.968775826586,
+   "cold_reviews_per_second": 20676.968775826586,
+   "coverage": "<7141 entries omitted>",
+   "peak_allocated_mib": 7426.681640625,
+   "peak_reserved_mib": 12850.0,
+   "allocator_stats": {
+    "num_alloc_retries": 1,
+    "num_ooms": 0,
+    "num_device_alloc": 851,
+    "num_device_free": 322
+   },
+   "trained_parameter_sha256": "23e0f847bc1f03c8dfc5d6de4df03a563c4146e05d3555de98c961fd524cc5f9",
+   "update_offset_end": 353248,
+   "case_elapsed_seconds": 25147.02061720006
+  },
+  "decay_dir": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon",
+  "decay": {
+   "created_utc": "2026-10-27T19:05:37.395693+00:00",
+   "source_run": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run",
+   "source_epoch": 15,
+   "source_case": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-15/expertium/E89-F65e-F77a",
+   "source_update_offset_end": 331170,
+   "model": "expertium",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/expertium/big-leakfree-1ep/master.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour"
+    },
+    "chunk_reviews": 32768,
+    "state_carry": {
+     "lanes": "strided"
+    },
+    "training_seed": 2025,
+    "optimizer": "expertium-iter53"
+   },
+   "dropped_width32_options": [
+    "exact_group_norm",
+    "exact_index",
+    "native_glue",
+    "native_group_norm",
+    "native_index",
+    "native_wkv",
+    "prefetch_rows",
+    "row_tiles_exact",
+    "skip_padding_sources",
+    "wkv_tile"
+   ],
+   "fraction_of_epoch_reviews": 1.0,
+   "training_users": 8000,
+   "training_reviews": 581942738,
+   "train_users_from": "tier final (artifacts/accuracy/tiers.json)",
+   "shuffle_seed": 1,
+   "lr": "7e-4 -> 0, shape one_minus_sin, over all 581,942,738 reviews",
+   "evaluation_set": "none",
+   "evaluation_users": 0,
+   "control": "epoch-15 scores of the same users in <workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-15/expertium/E89-F65e-F77a/result.json",
+   "trimmed_unlabelled_tails": [
+    {
+     "user_id": 5599,
+     "from": 32782,
+     "to": 32768,
+     "dropped_reviews": 14
+    }
+   ],
+   "training_reviews_after_trims": 581942724
+  },
+  "decay_protocol_full_run": {
+   "epoch": 15,
+   "evaluate": false,
+   "init_master": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/expertium/E89-F65e-F77a/snapshots/users-00859/master.pth",
+   "update_offset": 333528,
+   "lr_schedule": {
+    "decay_start": 0.0,
+    "decay_end": 1.0,
+    "shape": "one_minus_sin",
+    "final": 0.0
+   },
+   "benchmark_db": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/label-db",
+   "evaluation_set": "none",
+   "snapshot_users": 400,
+   "control_dir": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/control",
+   "optimizer_state": "snapshot",
+   "init_optimizer": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/expertium/E89-F65e-F77a/snapshots/users-00859/optimizer.pth",
+   "lr_resume": {
+    "total_reviews": 581942724,
+    "reviews_offset": 62100668
+   },
+   "resumed": {
+    "done_users": 859,
+    "from": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/expertium/E89-F65e-F77a/snapshots/users-00859",
+    "attempts": [
+     "attempt-1"
+    ]
+   }
+  }
+ },
+ "evaluation": {
+  "heldout": "<workspace>/wt/sm72s/artifacts/small-model/heldout.jsonl",
+  "reference": "fork/w8+s8",
+  "labels": {},
+  "heldout_report_rows": []
+ },
+ "parity": {
+  "checkpoint": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/expertium/E89-F65e-F77a/master.pth",
+  "users": [
+   4676,
+   1745,
+   516
+  ],
+  "dtype": "float32",
+  "variants": {
+   "fp32": {
+    "max_abs_dp_labelled": {
+     "p_curve": 1.1920928955078125e-06,
+     "p_imm": 8.344650268554688e-07,
+     "p_rating": 1.1622905731201172e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 3.0,
+      "numpy_seconds": 1.72,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 4.76837158203125e-07,
+      "p_imm_all_positions": 4.76837158203125e-07,
+      "p_rating": 8.344650268554688e-07,
+      "p_rating_all_positions": 8.344650268554688e-07
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 3.83,
+      "numpy_seconds": 1.96,
+      "p_curve": 1.1920928955078125e-06,
+      "p_curve_all_positions": 1.1920928955078125e-06,
+      "p_imm": 8.344650268554688e-07,
+      "p_imm_all_positions": 8.344650268554688e-07,
+      "p_rating": 8.344650268554688e-07,
+      "p_rating_all_positions": 8.344650268554688e-07
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 3.07,
+      "numpy_seconds": 1.98,
+      "p_curve": 5.960464477539062e-07,
+      "p_curve_all_positions": 5.960464477539062e-07,
+      "p_imm": 7.152557373046875e-07,
+      "p_imm_all_positions": 7.152557373046875e-07,
+      "p_rating": 1.1622905731201172e-06,
+      "p_rating_all_positions": 1.1622905731201172e-06
+     }
+    ],
+    "pass_1e-5": true
+   },
+   "w8": {
+    "max_abs_dp_labelled": {
+     "p_curve": 1.1920928955078125e-06,
+     "p_imm": 8.344650268554688e-07,
+     "p_rating": 1.2516975402832031e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 3.1,
+      "numpy_seconds": 1.78,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 5.960464477539062e-07,
+      "p_imm_all_positions": 5.960464477539062e-07,
+      "p_rating": 8.940696716308594e-07,
+      "p_rating_all_positions": 8.940696716308594e-07
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 3.79,
+      "numpy_seconds": 1.95,
+      "p_curve": 1.1920928955078125e-06,
+      "p_curve_all_positions": 1.1920928955078125e-06,
+      "p_imm": 8.344650268554688e-07,
+      "p_imm_all_positions": 8.344650268554688e-07,
+      "p_rating": 1.2516975402832031e-06,
+      "p_rating_all_positions": 1.3709068298339844e-06
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 3.19,
+      "numpy_seconds": 2.01,
+      "p_curve": 5.960464477539062e-07,
+      "p_curve_all_positions": 5.960464477539062e-07,
+      "p_imm": 6.556510925292969e-07,
+      "p_imm_all_positions": 6.556510925292969e-07,
+      "p_rating": 8.642673492431641e-07,
+      "p_rating_all_positions": 8.642673492431641e-07
+     }
+    ],
+    "pass_1e-5": true
+   }
+  }
+ },
+ "files": {
+  "architecture.json": {
+   "bytes": 16034,
+   "sha256": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3"
+  },
+  "master.pth": {
+   "bytes": 1489805,
+   "sha256": "58a391e3070382ed6152e0ba48aaaf4c5f6542dda3033526f9306536a721f5d9"
+  },
+  "parity.json": {
+   "bytes": 3206,
+   "sha256": "c7649431b74094831df0af79d3e7e3b8f618f349a768f100d0f7d4f47f4cbcc4"
+  },
+  "weights.f32.bin": {
+   "bytes": 1351553,
+   "sha256": "81c41d17cbc3db11d844773044d0a5102e77e81b4d3e089b684d5f3da78acc0e"
+  },
+  "weights.int8.bin": {
+   "bytes": 436391,
+   "sha256": "ac0eb7af5a504eabc464497f02e82ee8680828b60bd16f1534aa1cbe105d72e9"
+  }
+ },
+ "provenance": {
+  "captured_utc": "2026-10-28T07:40:27.983834+00:00",
+  "git_commit": "74806caa35f9609ac4cee9c6b08a497beb5d8361",
+  "git_dirty": true,
+  "git_status_porcelain_z": " M artifacts/small-model/sm72s/launch-sm72s.sh\u0000 M artifacts/small-model/sm72s/sm72s_rule.py\u0000",
+  "source_tree_sha256": "1cc380b9952035d2f17e96ad3f9dbe8f071a61fab9452b2246c270da487111f8",
+  "source_archive": "artifacts/sources/experiment-sources/1cc380b9952035d2f17e96ad3f9dbe8f071a61fab9452b2246c270da487111f8/source.zip",
+  "source_paths": [
+   "rwkv",
+   "expertium",
+   "scripts",
+   "configs",
+   "pyproject.toml",
+   "uv.lock",
+   "justfile",
+   "upstream.json"
+  ]
+ }
+}

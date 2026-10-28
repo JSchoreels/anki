@@ -11,7 +11,7 @@ Behavior can differ between RWKV variants, add-ons, forks, and versions. The
 fork-specific statements below describe the current repository and may change
 as the code changes.
 
-Last reviewed: 2026-10-08.
+Last reviewed: 2026-10-28.
 
 ## Sources
 
@@ -55,6 +55,7 @@ Last reviewed: 2026-10-08.
 - [6. History and state in this fork](#6-history-and-state-in-this-fork)
   - [Which review events enter the RWKV history?](#which-review-events-enter-the-rwkv-history)
   - [How is RWKV state rebuilt?](#how-is-rwkv-state-rebuilt)
+  - [Which model does the fork use, and what does leak-free mean?](#which-model-does-the-fork-use-and-what-does-leak-free-mean)
 - [7. Platform and implementation scope](#7-platform-and-implementation-scope)
   - [Does the fork run on mobile?](#does-the-fork-run-on-mobile)
   - [Is this an official Anki release?](#is-this-an-official-anki-release)
@@ -446,6 +447,29 @@ line with the collection history after a substantial change.
 
 The exact time and memory cost depend on the collection, the model, and the
 runtime. The repository does not define one fixed rebuild time for all users.
+
+### Which model does the fork use, and what does leak-free mean?
+
+By default, **Use Smaller Model** (Deck Options → RWKV → Advanced) selects the
+small model, leak-free (SM72): 331,511 parameters, 8.3× fewer than the big
+Legacy model, and about 4.6 KB of state per card and note instead of 25.7 KB.
+Turning the switch off selects the big Legacy model, which keeps working as
+before.
+
+In the public training data, a card that was deleted before the export is
+missing from the cards table. A naive feature builder then marks its note,
+deck and preset as missing, which tells a model that the card will be deleted
+later. Live Anki never reviews a deleted card, so that is information from the
+future. SM72 was trained and scored without it: the three missing-identity
+inputs are always zero, and the fork forces them to zero whenever SM72 is
+selected. The fork's history replay already skips deleted cards' reviews, so
+every replayed review has its real note, deck and preset.
+
+On held-out users, with leak-free inputs for every model, SM72's LogLoss is
+within about 0.5% of the big model (1 leak-free epoch) and within about 0.3%
+of the shipped big model, for both Curve and Instant. See
+[the model documentation](docs/rwkv.MD#small-model-leak-free-sm72) for the
+full table.
 
 ## 7. Platform and implementation scope
 

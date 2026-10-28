@@ -77,32 +77,110 @@ fn rwkv_sm56_matches_published_vectors() {
     check_published_vectors("sm56", &data);
 }
 
+fn sm72_vectors() -> Vec<u8> {
+    if let Ok(path) = std::env::var("ANKI_RWKV_SM72_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm72-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
+#[test]
+fn rwkv_sm72_matches_published_vectors() {
+    check_published_vectors("sm72", &sm72_vectors());
+}
+
+/// The leak-free small model (SM72) was trained with the missing note, deck
+/// and preset flags always zero. Setting them must not change any of its
+/// outputs, while the same weights without the rule do read them.
+#[test]
+fn rwkv_sm72_ignores_missing_id_flags_in_every_inference_path() {
+    let vectors: Vec<Vectors> = serde_json::from_slice(&sm72_vectors()).unwrap();
+    let user = &vectors[0];
+    let mut model = SrsModel::load(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../qt/aqt/rwkv_inference/sm72/weights.f32.bin"),
+    )
+    .unwrap();
+    for leak_free in [false, true] {
+        model.leak_free_inputs = leak_free;
+        let mut states = ReviewStateMaps::default();
+        let mut changed = false;
+        for row in user.rows.iter().take(200) {
+            assert!(row.features[13..16].iter().all(|&flag| flag == 0.0));
+            let mut flagged = row.features.clone();
+            flagged[13..16].fill(1.0);
+            let input = vector_input(row);
+            let state = states.state_ref(&input);
+            let heads = model.review(&row.features, state);
+            let flagged_heads = model.review(&flagged, state);
+            let queries = [
+                ReviewPredictionQueryRef {
+                    features: &row.features,
+                    state,
+                },
+                ReviewPredictionQueryRef {
+                    features: &flagged,
+                    state,
+                },
+            ];
+            let scalar = model.review_retrievability_query_refs_scalar(&queries);
+            let batched = model.review_retrievability_query_refs_batched(&queries);
+            let same = heads.retrievability == flagged_heads.retrievability
+                && heads.button_probabilities == flagged_heads.button_probabilities
+                && predict_curve(&heads.curve, row.elapsed)
+                    == predict_curve(&flagged_heads.curve, row.elapsed)
+                && scalar[0] == scalar[1]
+                && batched[0] == batched[1];
+            if leak_free {
+                assert!(same, "{} flags changed an output", user.name);
+            }
+            changed |= !same;
+            if !row.skip {
+                states.store(&input, heads.next_state);
+            }
+        }
+        assert_eq!(changed, !leak_free);
+    }
+}
+
+fn vector_input(row: &VectorRow) -> ReviewInput {
+    ReviewInput {
+        card_id: row.ids[0],
+        deck_id: Some(row.ids[1]),
+        note_id: Some(row.ids[2]),
+        preset_id: Some(row.ids[3]),
+        is_query: row.skip,
+        ease: None,
+        duration_millis: None,
+        card_type: None,
+        day_offset: None,
+        current_elapsed_days: None,
+        current_elapsed_seconds: None,
+        target_retentions: [None; 4],
+        enforce_grade_order: true,
+    }
+}
+
 fn check_published_vectors(package: &str, data: &[u8]) {
     let vectors: Vec<Vectors> = serde_json::from_slice(data).unwrap();
     for format in ["f32", "int8"] {
-        let model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        let mut model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
             "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
         )))
         .unwrap();
+        // Runtime input rule of the leak-free model; its vectors keep the
+        // flags at zero, so this only mirrors the runtime configuration.
+        model.leak_free_inputs = package == "sm72";
         let mut maximum = 0.0_f32;
         for user in &vectors {
             let mut states = ReviewStateMaps::default();
             for (index, row) in user.rows.iter().enumerate() {
-                let input = ReviewInput {
-                    card_id: row.ids[0],
-                    deck_id: Some(row.ids[1]),
-                    note_id: Some(row.ids[2]),
-                    preset_id: Some(row.ids[3]),
-                    is_query: row.skip,
-                    ease: None,
-                    duration_millis: None,
-                    card_type: None,
-                    day_offset: None,
-                    current_elapsed_days: None,
-                    current_elapsed_seconds: None,
-                    target_retentions: [None; 4],
-                    enforce_grade_order: true,
-                };
+                let input = vector_input(row);
                 let heads = model.review(&row.features, states.state_ref(&input));
                 let mut actual = vec![heads.retrievability.clamp(1e-5, 1.0 - 1e-5)];
                 actual.extend(heads.button_probabilities);
@@ -143,6 +221,7 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
         include_str!("../../../qt/aqt/rwkv_inference/sm36/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm55/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm56/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm72/architecture.json"),
     ] {
         check_compiled_architecture(source);
     }
