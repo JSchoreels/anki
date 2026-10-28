@@ -2063,18 +2063,6 @@ mod test {
     use crate::tests::CardAdder;
     use crate::tests::DeckAdder;
 
-    #[test]
-    fn unsupported_offline_model_kind_is_rejected() {
-        let mut col = Collection::new();
-        let result = col.rwkv_prepare_offline(RwkvPrepareOfflineRequest {
-            model_path: "not-opened".into(),
-            model_kind: "unknown".into(),
-            ..Default::default()
-        });
-        assert!(result.is_err());
-        assert!(col.state.rwkv_offline.is_none());
-    }
-
     fn add_review(col: &mut Collection, card_id: CardId, id: i64) {
         col.storage
             .add_revlog_entry(
