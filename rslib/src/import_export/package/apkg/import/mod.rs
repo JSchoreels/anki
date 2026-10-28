@@ -38,6 +38,7 @@ type TemplateMap = std::collections::HashMap<u16, u16>;
 struct Context<'a> {
     target_col: &'a mut Collection,
     merge_notetypes: bool,
+    with_scheduling: bool,
     update_notes: UpdateCondition,
     update_notetypes: UpdateCondition,
     media_manager: MediaManager,
@@ -91,6 +92,7 @@ impl<'a> Context<'a> {
         Ok(Self {
             target_col,
             merge_notetypes: options.merge_notetypes,
+            with_scheduling: options.with_scheduling,
             update_notes: options.update_notes(),
             update_notetypes: options.update_notetypes(),
             media_manager,

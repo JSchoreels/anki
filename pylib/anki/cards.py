@@ -50,6 +50,7 @@ class Card(DeprecatedNamesMixin):
     desired_retention: float | None
     decay: float | None
     last_review_time: int | None
+    rwkv_history_reset_after: int | None
 
     def __init__(
         self,
@@ -109,6 +110,11 @@ class Card(DeprecatedNamesMixin):
             if card.HasField("last_review_time_secs")
             else None
         )
+        self.rwkv_history_reset_after = (
+            card.rwkv_history_reset_after
+            if card.HasField("rwkv_history_reset_after")
+            else None
+        )
 
     def _to_backend_card(self) -> cards_pb2.Card:
         # mtime & usn are set by backend
@@ -134,6 +140,7 @@ class Card(DeprecatedNamesMixin):
             desired_retention=self.desired_retention,
             decay=self.decay,
             last_review_time_secs=self.last_review_time,
+            rwkv_history_reset_after=self.rwkv_history_reset_after,
         )
 
     @deprecated(info="please use col.update_card()")

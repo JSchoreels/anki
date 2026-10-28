@@ -28,6 +28,15 @@ pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 const REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER: &str =
     "reviewRetrievabilityCacheCleanupFullSync";
 const REVIEW_RETRIEVABILITY_CACHE_WRITE_SAVEPOINT: &str = "review_retrievability_cache_write";
+/// Effective desktop-compatible reset boundary for the card aliased as `c`.
+pub(crate) const RWKV_HISTORY_RESET_AFTER_SQL: &str = "coalesce(
+    (select case when json_valid(cast(val as text)) then
+       case when json_type(cast(val as text), '$.after') = 'integer'
+       then max(json_extract(cast(val as text), '$.after'), 0) end end
+     from config where key = 'rwkvHistoryReset_' || c.id),
+    case when json_valid(c.data) then
+      case when json_type(c.data, '$.rwkv_reset_after') = 'integer'
+      then max(json_extract(c.data, '$.rwkv_reset_after'), 0) else 0 end else 0 end)";
 const FSRS_REVIEW_RETRIEVABILITY_SAMPLE_ROLES: &str =
     "'final_fit', 'validation_fold', 'post_optimization'";
 const RWKV_REVIEW_RETRIEVABILITY_SAMPLE_ROLES: &str =
@@ -611,6 +620,26 @@ impl SqliteStorage {
             .map_err(Into::into)
     }
 
+    /// The newest scheduling answer not followed by a Forget reset.
+    pub(crate) fn last_unreset_review(&self, card_id: CardId) -> Result<Option<RevlogId>> {
+        self.db
+            .prepare_cached(
+                "select id from revlog
+                 where cid = ?1 and ease between 1 and 4
+                   and type in (0, 1, 2, 3, 4, 5)
+                   and not (type = 3 and factor = 0)
+                   and id > coalesce((
+                     select max(id) from revlog
+                     where cid = ?1 and type = 4 and ease = 0 and factor = 0
+                   ), 0)
+                 order by id desc limit 1",
+            )?
+            .query_row([card_id], |row| row.get(0))
+            .optional()
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
     pub(crate) fn times_of_last_review(
         &self,
         card_ids: &[CardId],
@@ -638,6 +667,37 @@ impl SqliteStorage {
             }
         }
 
+        Ok(review_times)
+    }
+
+    pub(crate) fn rwkv_times_of_last_review(
+        &self,
+        card_ids: &[CardId],
+    ) -> Result<HashMap<CardId, TimestampSecs>> {
+        if card_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut ids = String::new();
+        ids_to_string(&mut ids, card_ids);
+        let sql = format!(
+            "select c.id, (select r.id / 1000 from revlog r
+             where r.cid = c.id and r.ease between 1 and 4
+               and r.type in (0, 1, 2, 3, 4, 5)
+               and not (r.type = 3 and r.factor = 0)
+               and r.id > coalesce((select max(id) from revlog
+                 where cid = c.id and type = 4 and ease = 0 and factor = 0), 0)
+               and r.id > ({RWKV_HISTORY_RESET_AFTER_SQL})
+             order by r.id desc limit 1) from cards c where c.id in {ids}"
+        );
+        let mut stmt = self.db.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut review_times = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let cid: CardId = row.get(0)?;
+            if let Some(time) = row.get::<_, Option<TimestampSecs>>(1)? {
+                review_times.insert(cid, time);
+            }
+        }
         Ok(review_times)
     }
 
@@ -736,6 +796,10 @@ impl SqliteStorage {
                  where r.ease between 1 and 4
                    and r.type in (0, 1, 2, 3, 4, 5)
                    and not (r.type = 3 and r.factor = 0)
+                   and c.type != 0
+                   and r.id > coalesce((select max(id) from revlog
+                     where cid = r.cid and type = 4 and ease = 0 and factor = 0), 0)
+                   and r.id > ({RWKV_HISTORY_RESET_AFTER_SQL})
                    and r.id in {ids}
                  order by r.id"
             );
@@ -760,12 +824,18 @@ impl SqliteStorage {
             ),
             None => (String::new(), "not indexed", String::new()),
         };
-        let cards: HashMap<i64, (i64, i64)> = self
+        let cards: HashMap<i64, (i64, i64, i64, i64)> = self
             .db
             .prepare(&format!(
-                "select id, nid, case when odid != 0 then odid else did end from cards {cards_filter}"
+                "select c.id, c.nid, case when c.odid != 0 then c.odid else c.did end,
+                        c.type, ({RWKV_HISTORY_RESET_AFTER_SQL}) from cards c {cards_filter}"
             ))?
-            .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+                ))
+            })?
             .collect::<std::result::Result<_, _>>()?;
         // Forget keeps the revlog. Honor its reset boundary even before the
         // first new answer, including requests carrying legacy cutoffs.
@@ -804,9 +874,12 @@ order by r.id"
                 continue;
             }
             let card_id: i64 = row.get(1)?;
-            let Some(&(note_id, deck_id)) = cards.get(&card_id) else {
+            let Some(&(note_id, deck_id, card_type, reset_after)) = cards.get(&card_id) else {
                 continue;
             };
+            if card_type == 0 || review_id <= reset_after {
+                continue;
+            }
             if latest_resets
                 .get(&card_id)
                 .is_some_and(|&reset_id| review_id <= reset_id)
@@ -1006,6 +1079,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::card::CardType;
     use crate::collection::Collection;
     use crate::collection::CollectionBuilder;
 
@@ -1846,7 +1920,9 @@ with latest_resets as (
   where r.ease between 1 and 4
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
+    and c.type != 0
     and r.id > coalesce(resets.reset_id, 0)
+    and r.id > ({RWKV_HISTORY_RESET_AFTER_SQL})
     {ignored_clause}
 ), retained_starts as (
   select
@@ -1888,7 +1964,7 @@ order by e.id, e.cid"
 
     #[test]
     fn rwkv_historical_review_rows_match_window_query() -> Result<()> {
-        let (col, _tempdir, _col_path) = temp_collection("rwkv-historical-rows")?;
+        let (mut col, _tempdir, _col_path) = temp_collection("rwkv-historical-rows")?;
         let mut seed = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = |bound: u64| {
             seed ^= seed << 13;
@@ -1896,41 +1972,67 @@ order by e.id, e.cid"
             seed ^= seed << 17;
             seed % bound
         };
-        for card_index in 0..40_i64 {
-            let card_id = 1_000 + card_index;
-            let odid = if card_index % 7 == 0 { 9 } else { 0 };
-            col.storage.db.execute(
-                "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl,
-                 factor, reps, lapses, left, odue, odid, flags, data)
-                 values (?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, 0, '')",
-                params![card_id, card_id / 3, 1 + card_index % 4, odid],
-            )?;
-        }
+        let mut card_ids = Vec::new();
+        col.transact_no_undo(|col| {
+            for card_index in 0..40_i64 {
+                let mut card = Card::new(
+                    NoteId(1_000 + card_index / 3),
+                    0,
+                    DeckId(1 + card_index % 4),
+                    0,
+                );
+                card.ctype = if card_index % 2 == 0 {
+                    CardType::Review
+                } else {
+                    CardType::New
+                };
+                card.original_deck_id = DeckId(if card_index % 7 == 0 { 9 } else { 0 });
+                card.rwkv_history_reset_after = (card_index % 4 == 0).then_some(13_000);
+                col.add_card(&mut card)?;
+                if card_index % 8 == 0 {
+                    let mut mirrored = card.clone();
+                    mirrored.rwkv_history_reset_after = Some(14_000);
+                    col.mirror_rwkv_history_reset(&mirrored)?;
+                }
+                card_ids.push(card.id.0);
+            }
+            Ok(())
+        })?;
         // Card 5000 has reviews but no card row, so the join drops them.
-        let card_ids = (1_000..1_040).chain([5_000]).collect::<Vec<i64>>();
+        card_ids.push(5_000);
         let mut review_ids = Vec::new();
-        for review_index in 0..2_000_i64 {
-            let review_id = 10_000 + review_index * 3 + next(3) as i64;
-            let card_id = card_ids[next(card_ids.len() as u64) as usize];
-            // Bias towards learning rows so cards restart learning often.
-            let kind = [0, 0, 0, 1, 1, 2, 3, 4, 5, 6][next(10) as usize];
-            let ease = next(6) as i64;
-            let factor = if next(5) == 0 { 0 } else { 2_500 };
-            col.storage.db.execute(
-                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)
-                 values (?, ?, 0, ?, ?, 0, ?, ?, ?)",
-                params![
-                    review_id,
-                    card_id,
-                    ease,
-                    next(40) as i64 - 10,
-                    factor,
-                    next(60_000) as i64,
-                    kind
-                ],
-            )?;
-            review_ids.push(review_id);
-        }
+        col.transact_no_undo(|col| {
+            for review_index in 0..2_000_i64 {
+                let review_id = 10_000 + review_index * 3 + next(3) as i64;
+                let card_id = card_ids[next(card_ids.len() as u64) as usize];
+                // Bias towards learning rows so cards restart learning often.
+                let kind = [
+                    RevlogReviewKind::Learning,
+                    RevlogReviewKind::Learning,
+                    RevlogReviewKind::Learning,
+                    RevlogReviewKind::Review,
+                    RevlogReviewKind::Review,
+                    RevlogReviewKind::Relearning,
+                    RevlogReviewKind::Filtered,
+                    RevlogReviewKind::Manual,
+                    RevlogReviewKind::Rescheduled,
+                ][next(9) as usize];
+                let ease = next(6) as u8;
+                let factor = if next(5) == 0 { 0 } else { 2_500 };
+                let id = col.add_revlog_entry_undoable(RevlogEntry {
+                    id: RevlogId(review_id),
+                    cid: CardId(card_id),
+                    button_chosen: ease,
+                    interval: next(40) as i32 - 10,
+                    ease_factor: factor,
+                    taken_millis: next(60_000) as u32,
+                    review_kind: kind,
+                    ..Default::default()
+                })?;
+                review_ids.push(id.0);
+            }
+            Ok(())
+        })?;
 
         let (rows, active) = col.storage.rwkv_historical_review_rows(&[])?;
         assert!(active.is_empty());
