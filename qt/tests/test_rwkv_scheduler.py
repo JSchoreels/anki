@@ -3218,8 +3218,18 @@ def test_rwkv_workload_simulation_uses_embedded_runtime_fast_path(
     assert key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
 
 
+@pytest.mark.parametrize(
+    ("learner", "both_learners"),
+    [
+        (scheduler_pb2.RwkvComparisonOptions.RWKV, False),
+        (scheduler_pb2.RwkvComparisonOptions.FSRS, True),
+        (scheduler_pb2.RwkvComparisonOptions.RWKV, True),
+    ],
+)
 def test_comparison_returns_paired_results_for_the_same_sample(
     monkeypatch: pytest.MonkeyPatch,
+    learner: int,
+    both_learners: bool,
 ) -> None:
     reviews = [
         replace(
@@ -3288,7 +3298,16 @@ def test_comparison_returns_paired_results_for_the_same_sample(
         grade_seconds=(1.0, 2.0, 3.0, 4.0), bucket_probabilities={}
     )
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_simulator_review_model", lambda _: model)
-    monkeypatch.setattr(rwkv_scheduler, "_rwkv_comparison_background", lambda *_: [])
+    background = [(reviews[1], 0, 0, -1, -1)]
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_comparison_background", lambda *_: background
+    )
+    progress_updates: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_set_rwkv_workload_progress",
+        lambda a, b: progress_updates.append((a, b)),
+    )
     request = scheduler_pb2.SimulateFsrsReviewRequest(
         search="deck:current",
         days_to_simulate=9,
@@ -3296,9 +3315,10 @@ def test_comparison_returns_paired_results_for_the_same_sample(
         rwkv_workload_sample_limit=1,
         rwkv_workload_target_step=10,
         rwkv_comparison=scheduler_pb2.RwkvComparisonOptions(
-            learner=scheduler_pb2.RwkvComparisonOptions.RWKV,
+            learner=learner,
             scenario=scheduler_pb2.RwkvComparisonOptions.TEMPORARY_DROP,
             repetitions=1,
+            compare_both_learners=both_learners,
         ),
     )
 
@@ -3311,13 +3331,42 @@ def test_comparison_returns_paired_results_for_the_same_sample(
     assert dict(response.rwkv.review_count) == {90: 2}
     assert dict(response.fsrs_scored_by_fsrs.memorized) == {90: pytest.approx(1.5)}
     assert dict(response.fsrs_scored_by_rwkv.memorized) == {90: pytest.approx(1.2)}
-    assert dict(response.fsrs.memorized) == dict(response.fsrs_scored_by_rwkv.memorized)
+    primary_score = (
+        response.fsrs_scored_by_rwkv
+        if learner == scheduler_pb2.RwkvComparisonOptions.RWKV
+        else response.fsrs_scored_by_fsrs
+    )
+    assert dict(response.fsrs.memorized) == dict(primary_score.memorized)
     assert (
         response.fsrs.reviewless_end_memorized == response.rwkv.reviewless_end_memorized
     )
     assert captured[0]["include_comparison_data"] is True
     assert backend.calls[0]["input_scale"] == 2.0
     assert len(cast(Sequence[object], backend.calls[0]["inputs"])) == 1
+    assert response.background_reviews == 1
+    assert len(backend.calls) == (2 if both_learners else 1)
+    assert response.HasField("other_learner") is both_learners
+    if both_learners:
+        first, second = backend.calls
+        assert first["inputs"] is second["inputs"]
+        assert first["background"] is second["background"] is background
+        assert first["review_model"] is second["review_model"] is model
+        other_request = cast(scheduler_pb2.SimulateFsrsReviewRequest, second["request"])
+        assert other_request.rwkv_comparison.learner != learner
+        assert (
+            other_request.rwkv_comparison.scenario == request.rwkv_comparison.scenario
+        )
+        assert not other_request.rwkv_comparison.compare_both_learners
+        assert response.other_learner.background_reviews == 1
+        assert dict(response.other_learner.fsrs_scored_by_fsrs.memorized) == {
+            90: pytest.approx(1.5)
+        }
+    total = 34 if both_learners else 17
+    assert progress_updates == (
+        [(0, total), (3, total), (20, total), (total, total)]
+        if both_learners
+        else [(0, total), (3, total), (total, total)]
+    )
 
 
 def test_comparison_background_uses_recent_other_cards_and_current_elapsed_time(

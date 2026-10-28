@@ -765,6 +765,29 @@ deck-config-rwkv-comparison-temporary-improvement-short = temporary improvement
 deck-config-rwkv-comparison-sample = Sampled cards (0 for all)
 deck-config-rwkv-comparison-step = Retention step (percentage points)
 deck-config-rwkv-comparison-runs = Paired simulation runs
+deck-config-rwkv-comparison-both-learners = Compare both answer models
+deck-config-rwkv-comparison-graph-learner = Answer model for graph
+deck-config-rwkv-comparison-both-run-learner = both answer models
+deck-config-rwkv-comparison-graph-answer-note = The graph shows the selected answer model for paired runs. Single-model runs keep their original answer model.
+deck-config-rwkv-comparison-agreement-min-retention = Minimum retention shown in agreement (%)
+deck-config-rwkv-comparison-agreement-title = Scheduler agreement on net efficiency
+deck-config-rwkv-comparison-agreement-help =
+    Each cell compares RWKV scheduling with FSRS scheduling at the same requested retention.
+    The two lines use FSRS and RWKV to predict answers; each line shows the percentage change using FSRS and RWKV to estimate memory, in that order.
+    A winner requires all four comparisons to agree. Differences shown as 0.0% count as ties. A percentage is unavailable if review time is zero or FSRS efficiency is not positive.
+    These are unsmoothed simulated averages, not proof of a real-world advantage; small differences may be noise. Smoothing the graph does not change this table.
+    To compare horizons, change Days to simulate and run again. Each row keeps its own settings and card sample.
+deck-config-rwkv-comparison-agreement-run = Run { $run }: { $preset }, { $days } days
+deck-config-rwkv-comparison-agreement-retention = Requested retention
+deck-config-rwkv-comparison-agreement-fsrs = FSRS scheduler higher
+deck-config-rwkv-comparison-agreement-rwkv = RWKV scheduler higher
+deck-config-rwkv-comparison-agreement-mixed = Mixed / tied
+deck-config-rwkv-comparison-agreement-unavailable = Unavailable
+deck-config-rwkv-comparison-agreement-fsrs-answers = FSRS answers
+deck-config-rwkv-comparison-agreement-rwkv-answers = RWKV answers
+deck-config-rwkv-comparison-agreement-memory-order = Memory estimates: FSRS / RWKV
+deck-config-rwkv-comparison-agreement-empty = No tested retentions at or above the minimum.
+deck-config-rwkv-comparison-agreement-both-help = Running both answer models takes longer; each uses the same cards, starting state, scenario, and background reviews.
 deck-config-rwkv-comparison-assumptions =
     Both schedulers use the same cards, starting due dates, simulated learner and average time per grade. Both models estimate memory from each scheduler's simulated answers; change the scoring model without rerunning.
     The last year of reviews on other cards is replayed as fixed background activity for RWKV, including in the no-review baseline. The learner and background remain assumptions, and sampled results are estimates. One paired run can be noisy.

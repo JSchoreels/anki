@@ -641,6 +641,8 @@ message RwkvComparisonOptions {
   Learner learner = 1;
   PerformanceScenario scenario = 2;
   uint32 repetitions = 3;
+  // Also simulate the other learner using the same prepared inputs.
+  bool compare_both_learners = 4;
 }
 
 message RwkvComparisonResponse {
@@ -654,6 +656,8 @@ message RwkvComparisonResponse {
   SimulateFsrsWorkloadResponse fsrs_scored_by_rwkv = 8;
   SimulateFsrsWorkloadResponse rwkv_scored_by_rwkv = 9;
   uint32 background_reviews = 10;
+  // Present when compare_both_learners was requested.
+  RwkvComparisonResponse other_learner = 11;
 }
 
 message SimulateFsrsReviewResponse {
