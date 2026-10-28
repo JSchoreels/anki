@@ -381,6 +381,7 @@ class RwkvReviewerPrediction:
     interval_override_used: bool = False
     s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
     button_probabilities: RwkvButtonProbabilities | None = None
+    review_card_generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -4133,6 +4134,13 @@ def update_reviewer_scheduling_states(
 ) -> SchedulingStates:
     """Apply desktop RWKV predictions before answer buttons are rendered."""
 
+    # A card may be presented again after answering or undoing it. A redraw of
+    # the same presentation, however, can retain its already-rendered states.
+    if _current_reviewer_prediction(reviewer, card) is None and hasattr(
+        reviewer, _REVIEWER_PREDICTION_ATTR
+    ):
+        delattr(reviewer, _REVIEWER_PREDICTION_ATTR)
+
     backend = _reviewer_backend
     if backend is None:
         return states
@@ -4211,6 +4219,15 @@ def update_reviewer_scheduling_states(
                 has_interval_overrides = _has_interval_overrides(
                     prediction.interval_overrides
                 )
+                updated_states = states
+                if curve_enabled and has_interval_overrides:
+                    updated_states = rwkv_curve_scheduling_states(
+                        reviewer,
+                        card,
+                        states,
+                        prediction.interval_overrides,
+                        prediction.s90_overrides,
+                    )
                 _store_reviewer_prediction(
                     reviewer,
                     card,
@@ -4218,14 +4235,7 @@ def update_reviewer_scheduling_states(
                     review_enabled=review_active,
                     interval_override_used=curve_enabled and has_interval_overrides,
                 )
-                if curve_enabled and has_interval_overrides:
-                    return rwkv_curve_scheduling_states(
-                        reviewer,
-                        card,
-                        states,
-                        prediction.interval_overrides,
-                        prediction.s90_overrides,
-                    )
+                return updated_states
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
 
@@ -8126,8 +8136,10 @@ def current_reviewer_diagnostics(
 
 
 def has_reviewer_prediction(reviewer: object) -> bool:
-    return isinstance(
-        getattr(reviewer, _REVIEWER_PREDICTION_ATTR, None), RwkvReviewerPrediction
+    prediction = getattr(reviewer, _REVIEWER_PREDICTION_ATTR, None)
+    return isinstance(prediction, RwkvReviewerPrediction) and (
+        prediction.review_card_generation
+        == getattr(reviewer, "_review_card_generation", None)
     )
 
 
@@ -9155,6 +9167,7 @@ def _store_reviewer_prediction(
             interval_override_used=interval_override_used,
             s90_overrides=prediction.s90_overrides,
             button_probabilities=prediction.button_probabilities,
+            review_card_generation=getattr(reviewer, "_review_card_generation", None),
         ),
     )
 
@@ -9167,6 +9180,10 @@ def _current_reviewer_prediction(
     if not isinstance(prediction, RwkvReviewerPrediction):
         return None
     if prediction.card_id != _card_id(card):
+        return None
+    if prediction.review_card_generation != getattr(
+        reviewer, "_review_card_generation", None
+    ):
         return None
 
     return prediction

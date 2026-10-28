@@ -25382,3 +25382,179 @@ def test_redo_of_another_card_keeps_the_undo_restored_card_on_screen() -> None:
     rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
 
     assert reviewer._rwkv_undo_restored_card_active is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["no_backend", "not_ready", "busy", "no_prediction", "error", "states_error"],
+)
+def test_failed_prediction_does_not_reuse_old_answer_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    reviewer = _rwkv_reviewer()
+    reviewer._review_card_generation = 1
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    prediction = RwkvReviewPrediction(
+        retrievability=0.62,
+        interval_overrides=RwkvIntervalOverride(again=1, hard=2, good=3, easy=4),
+        s90_overrides=RwkvIntervalOverride(again=5, hard=6, good=7, easy=8),
+    )
+    rwkv_scheduler._store_reviewer_prediction(
+        reviewer, card, prediction, review_enabled=True, interval_override_used=True
+    )
+    assert rwkv_scheduler.has_reviewer_prediction(reviewer)
+    # The same card has been presented again after an answer or undo.
+    reviewer._review_card_generation = 2
+    assert rwkv_scheduler._current_reviewer_prediction(reviewer, card) is None
+    assert not rwkv_scheduler.has_reviewer_prediction(reviewer)
+
+    if failure != "no_backend":
+
+        class Backend:
+            def predict_review_curve(
+                self, *, reviewer: object, card: object
+            ) -> RwkvReviewPrediction | None:
+                if failure == "error":
+                    raise RuntimeError("prediction failed")
+                if failure == "states_error":
+                    return prediction
+                return None
+
+        backend = Backend()
+        set_reviewer_backend(backend)
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_reviewer_backend_ready_for_review",
+            lambda _: failure != "not_ready",
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler, "_reviewer_backend_warmed_up", lambda _: True
+        )
+
+        @contextmanager
+        def access(**_kwargs: object) -> Iterator[object | None]:
+            yield None if failure == "busy" else backend
+
+        monkeypatch.setattr(
+            rwkv_scheduler, "_try_reviewer_backend_prediction_access", access
+        )
+        if failure == "states_error":
+
+            def fail_to_build_states(*_args: object) -> SchedulingStates:
+                raise RuntimeError("could not build scheduling states")
+
+            monkeypatch.setattr(
+                rwkv_scheduler, "rwkv_curve_scheduling_states", fail_to_build_states
+            )
+
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, card)
+    answer = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+    assert rwkv_scheduler._current_reviewer_prediction(reviewer, card) is None
+    assert not hasattr(answer, "rwkv_s90")
+    assert not hasattr(answer, "rwkv_retrievability")
+
+
+@pytest.mark.parametrize("failure", ["no_prediction", "states_error"])
+def test_answer_redraw_keeps_metadata_for_already_displayed_states(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    prediction = RwkvReviewPrediction(
+        retrievability=0.62,
+        interval_overrides=RwkvIntervalOverride(again=1, hard=4, good=9, easy=18),
+        s90_overrides=RwkvIntervalOverride(again=2, hard=5, good=10, easy=20),
+    )
+
+    class Backend:
+        failed = False
+
+        def predict_review(
+            self, *, reviewer: object, card: object
+        ) -> RwkvReviewPrediction | None:
+            if self.failed and failure == "no_prediction":
+                return None
+            return prediction
+
+    backend = Backend()
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer._review_card_generation = 1
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=0))
+    displayed = update_reviewer_scheduling_states(states, reviewer, card)
+    assert displayed.good.normal.review.scheduled_days == 9
+    reviewer._v3.states = displayed
+
+    backend.failed = True
+    if failure == "states_error":
+
+        def fail_to_build_states(*_args: object) -> SchedulingStates:
+            raise RuntimeError("could not build scheduling states")
+
+        monkeypatch.setattr(
+            rwkv_scheduler, "rwkv_curve_scheduling_states", fail_to_build_states
+        )
+    redrawn = update_reviewer_scheduling_states(displayed, reviewer, card)
+    assert redrawn == displayed
+    answer = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+    assert answer.rwkv_s90 == pytest.approx(10)
+    assert answer.rwkv_retrievability == pytest.approx(0.62)
+
+
+def test_repeated_card_does_not_inherit_previous_reviewer_prediction() -> None:
+    from aqt.reviewer import Reviewer
+
+    template = _rwkv_reviewer()
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.mw = template.mw
+    reviewer.mw.reviewer = reviewer
+    reviewer._v3 = template._v3
+    reviewer._review_card_generation = 0
+    reviewer._reps = 1
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    reviewer.card = card
+    reviewer._previous_card_info = SimpleNamespace(set_card=lambda _card: None)
+    reviewer._card_info = SimpleNamespace(set_card=lambda _card: None)
+    reviewer._get_rwkv_undo_restored_card = lambda: False
+
+    def fetch_same_card() -> None:
+        reviewer.card = card
+        reviewer._v3 = template._v3
+
+    reviewer._get_next_v3_card = fetch_same_card
+    reviewer._showQuestion = lambda: None
+    reviewer.set_review_actions_blocked = lambda _blocked: None
+    reviewer._set_review_answer_actions_blocked = lambda _blocked: None
+    reviewer.nextCard()
+
+    prediction = RwkvReviewPrediction(
+        retrievability=0.62,
+        interval_overrides=RwkvIntervalOverride(again=1, hard=2, good=3, easy=4),
+        s90_overrides=RwkvIntervalOverride(again=5, hard=6, good=7, easy=8),
+    )
+
+    class Backend:
+        def predict_review(
+            self, *, reviewer: object, card: object
+        ) -> RwkvReviewPrediction:
+            return prediction
+
+    set_reviewer_backend(Backend())
+    states = SchedulingStates()
+    states.good.CopyFrom(_normal_review_state(interval=2, fuzz_delta=0))
+    update_reviewer_scheduling_states(states, reviewer, card)
+    before = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+    rwkv_scheduler.set_answer_rwkv_metadata(before, reviewer, card, ease=3)
+    assert before.rwkv_s90 == 7
+
+    reviewer.nextCard()
+    assert reviewer.card is card
+    set_reviewer_backend(None)
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, card)
+    answer = SimpleNamespace(answered_at_millis=(42 * 86_400 + 100) * 1000)
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+    assert not hasattr(answer, "rwkv_s90")
+    assert not hasattr(answer, "rwkv_retrievability")
