@@ -31,7 +31,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple, Protocol, TypedDict, TypeVar, cast
@@ -9972,6 +9972,7 @@ def _fsrs_preset_ids_response_items(response: object) -> dict[int, str]:
     return resolved
 
 
+@lru_cache(maxsize=256)
 def _stable_preset_id(preset_id: str) -> int:
     if preset_id.isdecimal():
         return int(preset_id)
@@ -21699,6 +21700,19 @@ def _dynamic_desired_retention_targets_for_inputs(
     reviewer: object,
     inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
 ) -> dict[int, float]:
+    return _dynamic_desired_retention_targets_for_current_retentions(
+        reviewer,
+        (
+            (card_id, _rwkv_review_input_target_retention(review_input))
+            for card_id, review_input in inputs_by_card_id
+        ),
+    )
+
+
+def _dynamic_desired_retention_targets_for_current_retentions(
+    reviewer: object,
+    current_retentions: Iterable[tuple[int, float | None]],
+) -> dict[int, float]:
     info_for_card_ids = _dynamic_desired_retention_info_for_card_ids_resolver()
     info_for_cards = (
         _dynamic_desired_retention_info_for_cards_resolver()
@@ -21710,9 +21724,8 @@ def _dynamic_desired_retention_targets_for_inputs(
 
     current_desired_retentions = {
         card_id: target_retention
-        for card_id, review_input in inputs_by_card_id
-        if (target_retention := _rwkv_review_input_target_retention(review_input))
-        is not None
+        for card_id, target_retention in current_retentions
+        if target_retention is not None
     }
     if not current_desired_retentions:
         return {}
@@ -24558,6 +24571,7 @@ def _rwkv_review_input_batches_for_deck_review_queue(
         load_start=load_start,
         source_label="deck_review_queue_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
+        resolve_dynamic_desired_retentions=True,
     )
     input_build = _resolve_dynamic_desired_retentions_for_input_build(
         reviewer,
@@ -24858,6 +24872,7 @@ def _rwkv_review_input_batch_build_from_backend_response(
     load_start: float,
     source_label: str,
     source_size: int,
+    resolve_dynamic_desired_retentions: bool = False,
 ) -> RwkvReviewInputBatchBuild:
     if isinstance(response, scheduler_pb2.RwkvReviewInputRowsForCardsResponse):
         return _rwkv_review_input_batch_build_from_backend_proto_response(
@@ -24867,6 +24882,7 @@ def _rwkv_review_input_batch_build_from_backend_response(
             load_start=load_start,
             source_label=source_label,
             source_size=source_size,
+            resolve_dynamic_desired_retentions=resolve_dynamic_desired_retentions,
         )
 
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
@@ -24923,13 +24939,27 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
     load_start: float,
     source_label: str,
     source_size: int,
+    resolve_dynamic_desired_retentions: bool = False,
 ) -> RwkvReviewInputBatchBuild:
+    target_retentions_by_card_id = (
+        _dynamic_desired_retention_targets_for_current_retentions(
+            reviewer,
+            (
+                (row.card_id, _rwkv_backend_proto_target_retention(row))
+                for row in response.rows
+            ),
+        )
+        if resolve_dynamic_desired_retentions
+        else {}
+    )
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
     parsed_cards = 0
     eligible_cards = 0
     for row in response.rows:
         parsed_cards += 1
-        review_input = _rwkv_review_input_from_backend_proto_row(row)
+        review_input = _rwkv_review_input_from_backend_proto_row(
+            row, target_retentions_by_card_id.get(row.card_id)
+        )
         card_id = review_input.identity.card_id
         batch_size = (
             batch_size_override
@@ -24965,6 +24995,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
         load_elapsed_ms=elapsed_ms,
         candidate_elapsed_ms=elapsed_ms,
         searched_rows=source_size,
+        dynamic_desired_retentions_resolved=resolve_dynamic_desired_retentions,
     )
 
 
@@ -25180,15 +25211,26 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
     )
 
 
-def _rwkv_review_input_from_backend_proto_row(
+def _rwkv_backend_proto_target_retention(
     row: scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row,
-) -> RwkvReviewInput:
-    preset_id = _stable_preset_id(row.preset_id) if row.preset_id else None
-    target_retention = (
+) -> float:
+    return (
         row.target_retention
         if _valid_probability(row.target_retention)
         else _RWKV_DEFAULT_TARGET_RETENTION
     )
+
+
+def _rwkv_review_input_from_backend_proto_row(
+    row: scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row,
+    dynamic_target_retention: float | None = None,
+) -> RwkvReviewInput:
+    preset_id = _stable_preset_id(row.preset_id) if row.preset_id else None
+    target_retention = _rwkv_backend_proto_target_retention(row)
+    if dynamic_target_retention is not None and not math.isclose(
+        target_retention, dynamic_target_retention, rel_tol=0.0, abs_tol=1e-6
+    ):
+        target_retention = dynamic_target_retention
     state_kind = row.current_state_kind or None
     normal_state_kind = row.current_normal_state_kind or None
     memory = row.fsrs_memory_state if row.HasField("fsrs_memory_state") else None
