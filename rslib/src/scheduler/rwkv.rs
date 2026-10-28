@@ -1511,6 +1511,7 @@ mod test {
     fn historical_fingerprint_retains_latest_learning_sequence_and_ignores_reviews() -> Result<()> {
         let mut col = Collection::new();
         let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        card.ctype = CardType::Review;
         col.add_card(&mut card)?;
         let first_review_id = card.id.0 + 10_000;
         let review_ids = [
@@ -1604,6 +1605,7 @@ mod test {
     fn historical_fingerprint_validates_appended_history_prefix() -> Result<()> {
         let mut col = Collection::new();
         let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        card.ctype = CardType::Review;
         col.add_card(&mut card)?;
         let first_review_id = card.id.0 + 10_000;
         let add_review = |col: &mut Collection, review_id: i64, review_kind| {
@@ -1679,6 +1681,7 @@ mod test {
         let mut card_ids = Vec::new();
         for index in 0..3 {
             let mut card = Card::new(NoteId(10 + index), 0, DeckId(1), 0);
+            card.ctype = CardType::Review;
             col.add_card(&mut card)?;
             for step in 0..3 {
                 col.storage.add_revlog_entry(
