@@ -15,6 +15,7 @@ pub enum ModelKind {
     Sm36,
     Sm55,
     Sm56,
+    Sm72,
 }
 
 impl ModelKind {
@@ -25,11 +26,18 @@ impl ModelKind {
             "sm36" => Ok(Self::Sm36),
             "sm55" => Ok(Self::Sm55),
             "sm56" => Ok(Self::Sm56),
+            "sm72" => Ok(Self::Sm72),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
             )),
         }
+    }
+
+    /// Checkpoints trained without the deleted-card signal: their missing
+    /// note, deck and preset flags (inputs 13..15) are always zero.
+    pub fn leak_free_inputs(self) -> bool {
+        matches!(self, Self::Sm72)
     }
 }
 
@@ -63,16 +71,21 @@ impl RwkvRuntime {
     ) -> io::Result<Self> {
         if matches!(
             model,
-            ModelKind::Sm40 | ModelKind::Sm36 | ModelKind::Sm55 | ModelKind::Sm56
+            ModelKind::Sm40 | ModelKind::Sm36 | ModelKind::Sm55 | ModelKind::Sm56 | ModelKind::Sm72
         ) == super::SMALL_MODEL
         {
-            super::RwkvInference::load_with_precision(
+            let engine = super::RwkvInference::load_with_precision(
                 path,
                 target_retention,
                 max_interval_days,
                 precision,
-            )
-            .map(|engine| Self::Primary(Box::new(engine)))
+            )?;
+            let engine = if model.leak_free_inputs() {
+                engine.with_leak_free_inputs()?
+            } else {
+                engine
+            };
+            Ok(Self::Primary(Box::new(engine)))
         } else {
             let precision = match precision {
                 StatePrecision::F32 => super::alternate::StatePrecision::F32,
@@ -82,13 +95,18 @@ impl RwkvRuntime {
                     super::alternate::StatePrecision::Int4CardsInt8Notes
                 }
             };
-            super::alternate::RwkvInference::load_with_precision(
+            let engine = super::alternate::RwkvInference::load_with_precision(
                 path,
                 target_retention,
                 max_interval_days,
                 precision,
-            )
-            .map(|engine| Self::Alternate(Box::new(engine)))
+            )?;
+            let engine = if model.leak_free_inputs() {
+                engine.with_leak_free_inputs()?
+            } else {
+                engine
+            };
+            Ok(Self::Alternate(Box::new(engine)))
         }
     }
 
@@ -404,6 +422,7 @@ mod tests {
             ModelKind::Sm36 => "../qt/aqt/rwkv_inference/sm36/weights.f32.bin",
             ModelKind::Sm55 => "../qt/aqt/rwkv_inference/sm55/weights.f32.bin",
             ModelKind::Sm56 => "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            ModelKind::Sm72 => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -429,6 +448,7 @@ mod tests {
                 (ModelKind::Sm36, load(ModelKind::Sm36, precision)),
                 (ModelKind::Sm55, load(ModelKind::Sm55, precision)),
                 (ModelKind::Sm56, load(ModelKind::Sm56, precision)),
+                (ModelKind::Sm72, load(ModelKind::Sm72, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
@@ -451,5 +471,59 @@ mod tests {
             }
         }
         assert!(ModelKind::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn rwkv_runtime_feeds_only_sm72_leak_free_inputs() {
+        assert_eq!(ModelKind::parse("sm72").unwrap(), ModelKind::Sm72);
+        // The same checkpoint without the runtime's input rule.
+        let unadjusted = |model: ModelKind| {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
+                ModelKind::Sm56 => "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+                _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
+            });
+            if super::super::SMALL_MODEL {
+                RwkvRuntime::Primary(Box::new(
+                    super::super::RwkvInference::load(path, 0.9, 36_500).unwrap(),
+                ))
+            } else {
+                RwkvRuntime::Alternate(Box::new(
+                    super::super::alternate::RwkvInference::load(path, 0.9, 36_500).unwrap(),
+                ))
+            }
+        };
+        let predict = |mut engine: RwkvRuntime, missing_ids: bool| {
+            let mut answers = crate::rwkv::precision_tests::reviews(14);
+            if missing_ids {
+                // Identities absent from the history set the missing-ID flags.
+                for input in &mut answers {
+                    input.note_id = None;
+                    input.deck_id = None;
+                    input.preset_id = None;
+                }
+            }
+            let mut query = answers[0].clone();
+            query.is_query = true;
+            query.ease = None;
+            query.duration_millis = None;
+            engine.warm_up_reviews(answers, false).unwrap();
+            engine
+                .predict_retrievability_many_from_warm_up(vec![query])
+                .unwrap()
+        };
+        for model in [ModelKind::Sm56, ModelKind::Sm72] {
+            assert_eq!(model.leak_free_inputs(), model == ModelKind::Sm72);
+            for missing_ids in [false, true] {
+                let runtime = predict(load(model, StatePrecision::F32), missing_ids);
+                let raw = predict(unadjusted(model), missing_ids);
+                // Only SM72 with missing identities sees different inputs.
+                assert_eq!(
+                    runtime == raw,
+                    !(model.leak_free_inputs() && missing_ids),
+                    "{model:?} missing_ids={missing_ids}: {runtime:?} vs {raw:?}"
+                );
+            }
+        }
+        assert!(!ModelKind::Legacy.leak_free_inputs());
     }
 }

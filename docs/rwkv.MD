@@ -52,7 +52,8 @@ intraday seconds without fuzz only when **Allow same day review for
 generated intervals use day-based review states with a minimum of one day.
 Configured learning/relearning steps still take precedence while learning queues
 are enabled. Intervals at or above 12 hours use normal whole-day fuzz and
-answer-button ordering.
+answer-button ordering. Preview-only filtered answers do not apply Curve's
+predicted S90 to the card's stored memory state.
 
 **Allow same day review for (re)learning steps** defaults to on; explicitly saved
 off choices are preserved. **Skip learning/relearning queues with FSRS/RWKV**
@@ -64,25 +65,26 @@ it is turned off again.
 ## Bundled RWKV Models
 
 Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
-local profile. The original Legacy
-model and the 331,511-parameter SM40, SM36 Muon, SM55 and SM56 models are bundled. Only the
-selected model and its state are loaded.
+local profile. The original Legacy big model (2,762,884 parameters) and the
+331,511-parameter small models SM40, SM36 Muon, SM55, SM56 and the small model,
+leak-free (SM72) are bundled. Only the selected model and its state are loaded.
 
-The switch is on by default and selects **New - Smaller Model** (SM56) when on
-and **Legacy - Bigger Model** when off. An explicitly saved Legacy selection
-loads with the switch off. SM40, SM36 and SM55 are no longer offered in the UI.
+The switch is on by default and selects **New - Smaller Model**, the small model,
+leak-free (SM72), when on and **Legacy - Bigger Model** when off. An explicitly
+saved Legacy selection loads with the switch off. SM40, SM36, SM55 and SM56 are no
+longer offered in the UI.
 An inline legend directly below the switch explains both choices, their
 profile-wide scope and how to apply changes. It is visible whenever Advanced is open.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55` and `sm56` as supported
-values. Missing or unsupported values resolve to SM56 in existing and new profiles.
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56` and `sm72` as
+supported values. Missing or unsupported values resolve to `sm72` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40`, `sm36` and `sm55` choices switch to `sm56`; `legacy` and
-`sm56` are preserved. The older models remain supported by the runtime. Profile
-creation explicitly stores `sm56`. Neither model choice nor state precision is synced.
+Deck Options save, older `sm40`, `sm36`, `sm55` and `sm56` choices switch to `sm72`; `legacy`
+and `sm72` are preserved. The older models remain supported by the runtime. Profile
+creation explicitly stores `sm72`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
 changes; closing and discarding leaves both profile keys unchanged.
@@ -98,16 +100,19 @@ does not rewrite collection data or existing scheduling dates.
 Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
-remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55 and
-SM56 weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
-`qt/aqt/rwkv_inference/sm55/` and `qt/aqt/rwkv_inference/sm56/`. Their architecture exports are byte-identical to
-SM40's. SM55 retains Muon and extends the final decay from 5,000 training users
+remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55,
+SM56 and SM72 weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
+`qt/aqt/rwkv_inference/sm55/`, `qt/aqt/rwkv_inference/sm56/` and
+`qt/aqt/rwkv_inference/sm72/`. Their architecture exports describe SM40's
+architecture; SM72's `architecture.json` is byte-identical to the SM56 release
+export and is kept unformatted, so every file matches its release manifest. SM55 retains Muon and extends the final decay from 5,000 training users
 to 8,000. SM56 also trains its ten base epochs on all 8,000 users before the
 8,000-user Muon decay; these checkpoints change weights without changing feature construction,
 recurrent equations, curve evaluation or state encoding. The
 [SM36 integration report](rwkv-sm36-2026-10-22.MD),
-[SM55 integration report](rwkv-sm55-2026-10-22.MD) and
-[SM56 integration report](rwkv-sm56-2026-10-24.MD) record package provenance,
+[SM55 integration report](rwkv-sm55-2026-10-22.MD),
+[SM56 integration report](rwkv-sm56-2026-10-24.MD) and
+[SM72 integration report](rwkv-sm72-2026-10-28.MD) record package provenance,
 reference/native parity and the scope of the upstream quality evidence. The
 [four-model backup comparison](rwkv-four-model-quality-2026-10-22.MD) scores all
 four checkpoints on identical retained reviews with f32 compute weights and the
@@ -120,18 +125,74 @@ The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for bot
 fixed architectures and dispatches at its public operation boundary. Tensor loops
 retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; all five models are available at runtime in
-either build. SM40, SM36, SM55 and SM56 share the small architecture's specialization;
+Legacy for those comparisons; all six models are available at runtime in
+either build. SM40, SM36, SM55, SM56 and SM72 share the small architecture's specialization;
 only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40, SM36, SM55 and SM56 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36, SM55, SM56 and SM72 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
 entity codes, canonical history and routing rules are unchanged. Its Curve head
 is a mixture of three learned power curves and its Instant head remains a
 four-rating classifier.
+
+### Small Model, Leak-Free (SM72)
+
+The small model, leak-free (SM72) is the default small model. It has the same
+architecture and size as SM56 (331,511 parameters, 8.3× fewer than the big
+model), but every input it was trained and scored on was built **leak-free**:
+the signal that a card is deleted later is removed. In the training data a
+deleted card is missing from the cards table, so a naive feature builder sets
+the missing-note, missing-deck and missing-preset flags (inputs 13, 14 and 15)
+and gives all deleted cards one shared placeholder deck and preset. Live Anki
+never reviews a deleted card, so that signal is information from the future.
+SM72 was trained for 15 constant-LR epochs on all 8,000 final-tier users,
+followed by a one-epoch 32k Muon cool-down from epoch 15, with distillation
+from the big model (1 leak-free epoch).
+
+Upstream LogLoss on held-out users, scored with INT8 per-channel weights and
+INT8 card/note state (w8+s8) and leak-free inputs for every model (lower is
+better; brackets are 95% review-weighted user-bootstrap intervals):
+
+| Held-out set | Big model (1 leak-free epoch), Curve / Instant | Shipped big model (Legacy), Curve / Instant | SM72, Curve / Instant | SM72 vs big model (1 leak-free epoch) | SM72 vs shipped big model |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 464-user set (458 users) | 0.29530 / 0.27215 | 0.29591 / 0.27260 | 0.29681 / 0.27326 | +0.51% [+0.29, +0.80] / +0.41% [+0.36, +0.46] | +0.30% / +0.24% |
+| 732-user set (722 users) | 0.29897 / 0.27576 | 0.29966 / 0.27620 | 0.30038 / 0.27687 | +0.47% [+0.30, +0.66] / +0.40% [+0.37, +0.44] | +0.24% / +0.24% |
+| 732+long set (725 users) | 0.30123 / 0.27658 | 0.30142 / 0.27706 | 0.30231 / 0.27775 | +0.36% [+0.10, +0.59] / +0.42% [+0.37, +0.49] | +0.30% / +0.25% |
+
+On the same leak-free inputs, SM56 scores 0.30066 / 0.27745 on the 732-user
+set; SM72 minus SM56 is −0.000276 [−0.000547, +0.000062] Curve and
+−0.000575 [−0.000655, −0.000501] Instant there, and the Instant gain is clear
+of zero on all three sets. Earlier releases were scored with the leak in their
+inputs, so their published numbers are not directly comparable with these.
+The author's own collection, the spaced-review slice and INT4 card state were
+not measured for SM72; the matched backup comparison linked from Deck Options
+predates SM72 and does not include it.
+
+**Leak-free input rule.** When SM72 is selected, the runtime forces inputs 13,
+14 and 15 to zero on every row, in the per-review, query, batched-query and
+bulk-replay paths, because SM72 never saw them set in training. Other models,
+Legacy included, keep their own feature path unchanged. The upstream rule for
+a card missing from the cards table is: keep a note of its own
+(`314159265358979323 + card_id`), take the deck of the existing card with the
+nearest card id (ties to the lower id) and that deck's preset (the placeholder
+preset if the deck is unknown). The fork never needs that neighbour step:
+canonical history joins the review log to `cards`, so a deleted card's reviews
+are not replayed (see [Deleted Cards' Reviews](#deleted-cards-reviews)), and
+every replayed or live review has its card's real note, deck and preset. An
+input that still lacks an identity uses the existing placeholder entities with
+the flags at zero.
+
+SM72 shares the small architecture's native engine, state codecs and storage
+precisions. Its state per card plus note is the same as SM56's: about 4.6 KB at
+INT8 state, against 25.7 KB for the big model. The bundled test vectors
+(`rslib/src/rwkv/testdata/sm72-vectors.json.gz`, 500 rows per user) are
+checked for f32 and INT8 weights by `rwkv_sm72_matches_published_vectors`;
+`ANKI_RWKV_SM72_VECTORS` points the same test at the full 14,403-row vectors.
+`rwkv_sm72_ignores_missing_id_flags_in_every_inference_path` and
+`rwkv_runtime_feeds_only_sm72_leak_free_inputs` cover the input rule.
 
 The selected model and content hash participate in cache/replay identity. Native
 state-store schema 5, model-tagged runtime marker `ARWKVPROCSTATE4` and desktop
@@ -432,7 +493,9 @@ training data's difference between Anki scheduler-day offsets;
 
 Canonical RWKV history includes only reviews of cards that still exist: the
 history query joins the review log to `cards` for each review's note and deck,
-and the preset is resolved from that deck. Anki keeps a deleted card's review
+and the preset is resolved from that deck. This also satisfies the leak-free
+input rule of the small model, leak-free (SM72): no replayed review belongs to
+a deleted card. Anki keeps a deleted card's review
 log rows, but not its note, deck, or preset, and graves record only ids.
 
 Including those reviews was evaluated on 2026-09-26 and rejected. On one
@@ -648,17 +711,13 @@ cached history, they are replayed incrementally. If a synchronized review
 belongs in the middle of history, Anki validates checkpoint structure and
 identity without loading the stored state payloads, restores only the newest
 checkpoint whose canonical review prefix and replay semantics still match the
-merged collection, and replays at most the suffix after the eight-day recovery
-base in chronological order. The refreshed suffix is committed as the current
-delta child. Review-only sync changes older than that window are deliberately
-excluded from the existing recurrent state instead of triggering an unbounded
-replay. Their revlog ids are recorded in local cache metadata so future
-validation and incremental updates keep using the same effective history. Anki
-warns with the number currently excluded.
-Rebuilding the state manually includes the complete retained history again and
-clears the exclusion list. If an old review cannot be excluded safely, or sync
-also changed cards, decks, configuration, or replay semantics, Anki falls back
-to exact checkpoint recovery or a complete rebuild. A failed post-sync rebuild
+merged collection, and replays the suffix in chronological order. The refreshed
+suffix is committed as the current delta child. If an older review precedes all
+valid checkpoints, Anki rebuilds from the complete retained history. This can
+take longer after syncing a device that has been offline for a long time, but
+the resulting state includes those reviews. A cache created by an older version
+that recorded excluded synchronized reviews is also rebuilt once on its next
+load, including any reviews still retained in the collection. A failed post-sync rebuild
 leaves resident state unready; it does not restore a pre-sync state that could
 overwrite a newer refresh.
 Rebuilding the RWKV state cache from deck options always writes a fresh,
@@ -789,6 +848,9 @@ Non-answer operations that change study queues, such as moving, rescheduling,
 suspending, or restoring cards, discard transient scores and cached inputs and
 advance a queue generation. Model work prepared before that mutation is
 rejected when it tries to install.
+If a new presentation of a card cannot obtain an RWKV prediction, it does not
+attach metadata from an earlier presentation. A redraw of the same answer can
+retain metadata matching the scheduling states already shown.
 
 RWKV always uses the time since a new card was created only when predicting
 retrievability before its first Learning review. The corresponding answer is

@@ -16,6 +16,14 @@ Deck config stores Dynamic DR (ADR) data for FSRS-7 presets:
 
 When FSRS-7 Dynamic DR is enabled, the scheduler interprets the preset desired retention as a fixed-FSRS target. With current optimized policies, it uses `fixed_target_*` calibration first: for a requested fixed DR, it selects the cheapest simulated ADR frontier point whose memorized average reaches at least the fixed-FSRS memorized target. The `fixed_target_drs` entries are the fixed-FSRS targets each stored weight covers, sorted by target, so targets between two entries use the next covered ADR point. Older stored policies without `fixed_target_*` fall back to `fsrs_eq_*` interpolation, then to target average ADR DR. After choosing the cost weight, scheduling computes per-answer desired retention from the policy using internal stability and difficulty, and stores the actual chosen answer's desired retention on the card. If the requested target is outside the supported calibration range, scheduling normally uses fixed FSRS DR. When `fsrs_dynamic_desired_retention_clamp` is enabled, the scheduler clamps the requested target to the nearest supported calibration target and uses Dynamic DR with that clamped target; invalid or missing Dynamic DR policy data still uses the fixed-FSRS path.
 
+An answer may mark its `desired_retention_override` as a final per-grade target
+using `desired_retention_override_is_final`. In that case the supplied answer
+state must already use this target, and the scheduler stores it instead of a
+second native Dynamic DR mapping. The flag requires a finite override greater
+than zero and at most one. Ordinary overrides remain base targets, and older
+clients that omit the flag retain their existing behavior. Preview answers do
+not change the card's stored desired retention.
+
 Browser Stability and Retrievability sorts read each matching card and its resolved FSRS preset so that FSRS-7 values use the exact model curve. Those sorts resolve presets in a batch, including add-on preset overlay rules, before computing per-card sort metrics.
 
 Add-ons that need interval projections for many cards can call the batch desired-retention helper instead of `GetSchedulingStates` once per card. `fsrs_desired_retention_for_intervals_batch()` reads the requested cards, resolves each card's active FSRS preset in a batch, including add-on preset overlay rules, and returns the desired retention to use for interval projection. When Dynamic DR applies, the returned interval target is the Good-button ADR desired retention and the full per-answer ADR desired-retention array is included. When Dynamic DR is disabled, unavailable, or the requested target uses the fixed-FSRS fallback, the returned interval target is the requested fixed desired retention.

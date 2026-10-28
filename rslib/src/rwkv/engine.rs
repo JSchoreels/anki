@@ -318,6 +318,8 @@ const MAX_LORA_RANK: usize = 16;
 #[cfg(any(target_os = "macos", test))]
 const RETRIEVABILITY_GEMM_BATCH_SIZE: usize = 128;
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
+/// Inputs `note_id_is_nan`, `deck_id_is_nan` and `preset_id_is_nan`.
+const MISSING_ID_FLAG_FEATURES: std::ops::Range<usize> = 13..16;
 const ID_SPLIT: u64 = 4;
 const TORCH_ID_RNG_STATE_LEN: usize = 624;
 const TORCH_ID_RNG_INITIAL_INDEX: usize = 4;
@@ -719,6 +721,16 @@ impl RwkvInference {
             max_interval_days,
             precision,
         ))
+    }
+
+    /// Feeds the checkpoint leak-free inputs: the missing note, deck and
+    /// preset flags are always zero, as in its training data. Call before
+    /// the runtime is shared.
+    pub fn with_leak_free_inputs(mut self) -> io::Result<Self> {
+        Arc::get_mut(&mut self.model)
+            .ok_or_else(|| io::Error::other("RWKV model is already shared"))?
+            .leak_free_inputs = true;
+        Ok(self)
     }
 
     fn from_model(
@@ -3570,6 +3582,9 @@ struct SrsModel {
     power_heads: Option<[Linear; 3]>,
     head_p_0: Linear,
     p_linear: Linear,
+    /// Leak-free checkpoints were trained with the three missing-ID flags
+    /// (inputs 13..15) always zero.
+    leak_free_inputs: bool,
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -3659,7 +3674,20 @@ impl SrsModel {
             },
             head_p_0: weights.linear("head_p.0", D_MODEL, HEAD_DIM, true)?,
             p_linear: weights.linear("p_linear", HEAD_DIM, 4, true)?,
+            leak_free_inputs: false,
         })
+    }
+
+    /// Zeroes the inputs this checkpoint never saw set: feature 22 for the
+    /// small architecture and, for leak-free checkpoints, the missing note,
+    /// deck and preset flags.
+    fn zero_unused_features(&self, features: &mut [f32]) {
+        if SMALL_MODEL {
+            features[22] = 0.0;
+        }
+        if self.leak_free_inputs {
+            features[MISSING_ID_FLAG_FEATURES].fill(0.0);
+        }
     }
 
     fn review(&self, features: &[f32], state: SrsStateRef<'_>) -> ReviewHeads {
@@ -3771,10 +3799,8 @@ impl SrsModel {
         scratch.feature_input.reserve(rows * CARD_FEATURES);
         for item in items {
             scratch.feature_input.extend_from_slice(item.features);
-            if SMALL_MODEL {
-                let index = scratch.feature_input.len() - CARD_FEATURES + 22;
-                scratch.feature_input[index] = 0.0;
-            }
+            let start = scratch.feature_input.len() - CARD_FEATURES;
+            self.zero_unused_features(&mut scratch.feature_input[start..]);
         }
 
         self.features_0
@@ -3841,9 +3867,7 @@ impl SrsModel {
     /// The feature MLP shared by the per-review and bulk replay paths.
     fn feature_mlp(&self, features: &[f32]) -> Vec<f32> {
         let mut features = features.to_vec();
-        if SMALL_MODEL {
-            features[22] = 0.0;
-        }
+        self.zero_unused_features(&mut features);
         let mut x = self.features_0.apply(&features);
         silu_in_place(&mut x);
         x = self.features_norm.apply(&x);
@@ -3980,9 +4004,7 @@ impl SrsModel {
         scratch: &mut ReviewRetrievabilityScratch,
     ) -> f32 {
         let mut features = features.to_vec();
-        if SMALL_MODEL {
-            features[22] = 0.0;
-        }
+        self.zero_unused_features(&mut features);
         self.features_0
             .apply_into(&features, &mut scratch.feature_hidden);
         silu_in_place(&mut scratch.feature_hidden);

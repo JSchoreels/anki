@@ -39,6 +39,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### New Features
 
+- **New default small RWKV model: small model, leak-free (SM72).** It replaces SM56 with the same size (**331,511 parameters, 8.3× fewer than the big model**, about 4.6 KB of state per card and note instead of 25.7 KB) and was trained without the signal that a card is deleted later, which live Anki never has. On the 732-user held-out set, with leak-free inputs for every model, its Curve / Instant LogLoss is **0.30038 / 0.27687**: **+0.24% / +0.24%** against the shipped big model and **+0.47% / +0.40%** against the big model (1 leak-free epoch). Against SM56 on the same inputs both point estimates are lower (−0.000276 Curve, −0.000575 Instant; the Instant gain is clear of zero on all three held-out sets). **Use Smaller Model** now selects SM72; a successful Deck Options save upgrades SM40, SM36, SM55 or SM56 to SM72, and Legacy stays available. Reopen the profile to apply it.
+
 - **Compare RWKV and FSRS with a shared simulated learner.** The comparison starts both schedulers from the same cards and due dates, offers FSRS-based and RWKV-based learners, and can simulate temporary or persistent changes in performance. It replays recent reviews on other cards as background activity, and lets you switch between FSRS and RWKV estimates of the same simulated answers without rerunning. It shows matched-memory time estimates and lets you increase the sample size, retention resolution and number of paired runs.
 
 - **Faster RWKV/FSRS comparisons.** Independent simulation runs can execute concurrently. Runtime depends on the collection, the amount of replayed background activity, and the computer.
@@ -48,6 +50,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Clearer RWKV model help.** The model descriptions and links now appear directly below **Use Smaller Model** in Deck Options → RWKV → Advanced.
 
 #### Fixes
+
+- **Include older synchronized reviews in RWKV.** Reviews received from another device are now included even when they are more than eight days old. Anki rebuilds affected RWKV states when needed, which can make the first refresh after sync take longer.
 
 - **More reliable RWKV simulation results.** The standalone simulator updates RWKV after every answer by default, honors grade-order settings in its native path, and displays actual simulated review counts instead of forcing them to rise with retention. Comparison tooltips now show the correct relative change.
 
@@ -60,6 +64,10 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
 
 ### Technical details
+
+- **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
+
+- **SM72 integration:** import the verified [SM72 release](https://github.com/JSchoreels/anki-rwkv/releases/tag/small-model-sm72-2026-10-28) (15 constant-LR epochs on all 8,000 users, then a one-epoch 32k Muon cool-down, distilled from the big model (1 leak-free epoch)). Its architecture export is byte-identical to SM56's, so it shares the small engine, state codecs and storage precisions. With SM72 selected, the runtime forces the missing note, deck and preset flags (inputs 13–15) to zero in the review, bulk-replay, scalar-query and batched-query paths; other models keep their feature path. Canonical history already excludes deleted cards' reviews, so the release's nearest-card deck rule never applies. Native parity on the full 14,403-row release vectors is 3.5e−6 (f32 weights) / 3.2e−6 (INT8 weights). Earlier releases' upstream scores used inputs with the leak and are not directly comparable. See the [SM72 integration report](docs/rwkv-sm72-2026-10-28.MD).
 
 - **Shared-learner workload comparison:** Both policies use the same learner assumptions, grade costs, limits, background reviews and per-card random quantiles. Both models score each policy's answers and its matching no-target-review baseline. The simulator reports sampling, estimated FSRS states and the number of historical background answers. Simulated memory remains model-dependent, and the day-level comparison omits simulated learning steps, easy days, dynamic retention and the live RWKV-Instant queue.
 
