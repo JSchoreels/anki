@@ -778,6 +778,36 @@ test("RWKV-Instant exposes and saves the shared same-day switch with FSRS off", 
     await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewAllowSameDayReview).toBe(false);
 });
 
+test("RWKV precompute setting is visible in Advanced and saves", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        config.rwkvReviewPrecomputeNextCard = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+
+    await page.goto("/deck-options/1");
+    const advanced = page.locator("details.rwkv-advanced");
+    const precompute = advanced.getByRole("checkbox", {
+        name: "Precompute next card before this card answer",
+        exact: true,
+    });
+    await expect(precompute).toBeHidden();
+    await advanced.locator("summary").click();
+    await expect(precompute).toBeChecked();
+    await precompute.uncheck();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewPrecomputeNextCard).toBe(false);
+});
+
 for (const refreshOnExit of [false, true]) {
     test(`hidden RWKV exit refresh retains saved value ${refreshOnExit}`, async ({ page }) => {
         await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {

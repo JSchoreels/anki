@@ -46,7 +46,7 @@ def _timed(call: Callable[[], _T]) -> tuple[_T, float]:
 
 def _benchmark_dynamic_dr(
     args: argparse.Namespace,
-    reviewer: object,
+    reviewer: SimpleNamespace,
     inputs: list[tuple[int, scheduler.RwkvReviewInput]],
 ) -> tuple[dict[str, list[float]], str]:
     """Load an explicitly supplied provider copy without registering GUI hooks."""
@@ -66,8 +66,34 @@ def _benchmark_dynamic_dr(
         provider._rules, provider._field_rules, logger, provider._grade_rules
     )
     api.set_desired_retention_provider(provider)
-    samples: dict[str, list[float]] = {"dynamic_dr_cold": [], "dynamic_dr_warm": []}
+    samples: dict[str, list[float]] = {
+        "dynamic_dr_disabled": [],
+        "dynamic_dr_cold": [],
+        "dynamic_dr_warm": [],
+        "dynamic_dr_one_card_bulk": [],
+        "dynamic_dr_one_card_single": [],
+        "dynamic_dr_one_card_scheduler": [],
+    }
     try:
+        with (
+            patch.object(
+                scheduler,
+                "_dynamic_desired_retention_info_for_card_ids_resolver",
+                return_value=None,
+            ),
+            patch.object(
+                scheduler,
+                "_dynamic_desired_retention_info_for_cards_resolver",
+                return_value=None,
+            ),
+        ):
+            for _ in range(args.rounds):
+                _, elapsed = _timed(
+                    lambda: scheduler._resolve_dynamic_desired_retentions_for_inputs(
+                        reviewer, inputs
+                    )
+                )
+                samples["dynamic_dr_disabled"].append(elapsed)
         for _ in range(args.rounds):
             provider._matcher.clear_cache()
             cold, elapsed = _timed(
@@ -86,6 +112,39 @@ def _benchmark_dynamic_dr(
                 raise ValueError(
                     "Dynamic DR targets changed between cold and warm runs"
                 )
+        col = reviewer.mw.col
+        sample_count = min(10, len(inputs))
+        for index in range(sample_count):
+            card_id, review_input = inputs[index * len(inputs) // sample_count]
+            target = scheduler._rwkv_review_input_target_retention(review_input)
+            bulk, elapsed = _timed(
+                lambda: api.effective_desired_retention_info_for_card_ids(
+                    collection=col,
+                    card_ids=[card_id],
+                    current_desired_retentions={card_id: target},
+                )[card_id]
+            )
+            samples["dynamic_dr_one_card_bulk"].append(elapsed)
+
+            def single() -> object:
+                return api.effective_desired_retention_info(
+                    collection=col,
+                    card=col.get_card(cast("CardId", card_id)),
+                    current_desired_retention=target,
+                )
+
+            single_result, elapsed = _timed(single)
+            samples["dynamic_dr_one_card_single"].append(elapsed)
+            if single_result != bulk:
+                raise ValueError("Dynamic DR single-card and bulk results differ")
+            resolved_targets, elapsed = _timed(
+                lambda: scheduler._dynamic_desired_retention_targets_for_inputs(
+                    reviewer, [(card_id, review_input)]
+                )
+            )
+            samples["dynamic_dr_one_card_scheduler"].append(elapsed)
+            if resolved_targets.get(card_id) != bulk.desired_retention:
+                raise ValueError("RWKV and bulk Dynamic DR targets differ")
         if args.profile_dynamic_dr:
             provider._matcher.clear_cache()
             profiler = cProfile.Profile()
@@ -239,7 +298,11 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
             flush=True,
         )
         runtime = _RustRwkvRuntime(
-            model_path=args.weights, target_retention=0.9, max_interval_days=36_500
+            model_path=args.weights,
+            target_retention=0.9,
+            max_interval_days=36_500,
+            state_precision=args.state_precision,
+            model=args.model,
         )
         measure(
             "resident_warmup", lambda: runtime.warm_up_reviews_in_place(history.reviews)
@@ -354,6 +417,8 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
             "reviews": review_count,
             "queries": len(queries),
             "rounds": args.rounds,
+            "model": args.model,
+            "state_precision": args.state_precision,
             "prediction_parity": "exact",
             "prediction_reference_max_abs_delta": reference_max_delta,
             "prediction_reference_rank_changes": reference_rank_changes,
@@ -377,6 +442,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--collection-copy", type=Path, required=True)
     parser.add_argument("--weights", type=Path, required=True)
+    parser.add_argument(
+        "--model",
+        choices=("legacy", "sm40", "sm36", "sm55", "sm56", "sm72"),
+        default="sm40",
+    )
+    parser.add_argument(
+        "--state-precision",
+        choices=("f32", "int8", "int4", "cards_int4_notes_int8"),
+        default="f32",
+    )
     parser.add_argument("--deck-id", type=int, required=True)
     parser.add_argument("--queries", type=int, default=8803)
     parser.add_argument("--rounds", type=int, default=10)

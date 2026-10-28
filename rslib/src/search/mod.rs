@@ -194,10 +194,11 @@ impl Collection {
         exact_retrievability: bool,
         rwkv_due: bool,
         stats_search: Option<&str>,
+        exact_metric_card_ids: Option<Vec<CardId>>,
         op: impl FnOnce(&mut Self) -> Result<R>,
     ) -> Result<R> {
         if exact_retrievability {
-            self.setup_exact_retrievability_table(stats_search)?;
+            self.setup_exact_retrievability_table(stats_search, exact_metric_card_ids)?;
         }
         if rwkv_due {
             if let Err(err) = self.setup_rwkv_due_table(stats_search) {
@@ -225,7 +226,11 @@ impl Collection {
         }
     }
 
-    fn setup_exact_retrievability_table(&mut self, stats_search: Option<&str>) -> Result<()> {
+    fn setup_exact_retrievability_table(
+        &mut self,
+        stats_search: Option<&str>,
+        card_ids: Option<Vec<CardId>>,
+    ) -> Result<()> {
         let start = Instant::now();
         self.storage.db.execute_batch(&format!(
             "drop table if exists {EXACT_RETRIEVABILITY_TABLE};\
@@ -233,9 +238,11 @@ impl Collection {
                 cid integer primary key, fsrs_r real, rwkv_r real, rwkv_curve_r real, s90 real)"
         ))?;
         let ids_start = Instant::now();
-        let ids: Vec<i64> = {
+        let ids: Vec<CardId> = if let Some(card_ids) = card_ids {
+            card_ids
+        } else {
             let mut stmt = self.storage.db.prepare("select id from cards")?;
-            let rows = stmt.query_map([], |row| row.get(0))?;
+            let rows = stmt.query_map([], |row| row.get(0).map(CardId))?;
             rows.collect::<std::result::Result<_, _>>()?
         };
         let ids_elapsed_ms = ids_start.elapsed().as_secs_f64() * 1000.0;
@@ -272,13 +279,12 @@ impl Collection {
             .map(|scores| scores.len())
             .unwrap_or(0);
         let load_start = Instant::now();
-        let cards = ids
-            .into_iter()
-            .map(|cid| {
-                let card_id = CardId(cid);
-                self.storage.get_card(card_id)?.or_not_found(card_id)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut cards = Vec::with_capacity(ids.len());
+        for card_id in ids {
+            if let Some(card) = self.storage.get_card(card_id)? {
+                cards.push(card);
+            }
+        }
         let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
         let card_count = cards.len();
         let preset_start = Instant::now();
@@ -466,6 +472,7 @@ impl Collection {
             use_exact_fsrs_metrics,
             use_rwkv_due,
             stats_search,
+            required_card_ids(top_node),
             |col| {
                 let writer = SqlWriter::new(col, ReturnItemType::Cards);
                 let (sql, args) = writer.build_query(top_node, required_table)?;
@@ -591,18 +598,24 @@ impl Collection {
         let top_node = search.try_into_search()?;
         let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
         let use_rwkv_due = has_rwkv_due_state(&top_node);
-        self.with_search_auxiliary_tables(use_exact_fsrs_metrics, use_rwkv_due, None, |col| {
-            let writer = SqlWriter::new(col, item_type);
-            let (mut sql, args) = writer.build_query(&top_node, mode.required_table())?;
-            col.add_order(&mut sql, item_type, mode)?;
+        self.with_search_auxiliary_tables(
+            use_exact_fsrs_metrics,
+            use_rwkv_due,
+            None,
+            required_card_ids(&top_node),
+            |col| {
+                let writer = SqlWriter::new(col, item_type);
+                let (mut sql, args) = writer.build_query(&top_node, mode.required_table())?;
+                col.add_order(&mut sql, item_type, mode)?;
 
-            let mut stmt = col.storage.db.prepare(&sql)?;
-            let ids: Vec<_> = stmt
-                .query_map(params_from_iter(args.iter()), |row| row.get(0))?
-                .collect::<std::result::Result<_, _>>()?;
+                let mut stmt = col.storage.db.prepare(&sql)?;
+                let ids: Vec<_> = stmt
+                    .query_map(params_from_iter(args.iter()), |row| row.get(0))?
+                    .collect::<std::result::Result<_, _>>()?;
 
-            Ok(ids)
-        })
+                Ok(ids)
+            },
+        )
     }
 
     fn add_order(
@@ -664,7 +677,7 @@ impl Collection {
         let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
         let use_rwkv_due = has_rwkv_due_state(&top_node);
         if use_exact_fsrs_metrics {
-            self.setup_exact_retrievability_table(stats_search)?;
+            self.setup_exact_retrievability_table(stats_search, required_card_ids(&top_node))?;
         }
         if use_rwkv_due {
             if let Err(err) = self.setup_rwkv_due_table(stats_search) {
@@ -723,7 +736,7 @@ impl Collection {
     ) -> Result<Vec<CardId>> {
         let top_node = search.try_into_search()?;
         let use_rwkv_due = has_rwkv_due_state(&top_node);
-        self.with_search_auxiliary_tables(false, use_rwkv_due, None, |col| {
+        self.with_search_auxiliary_tables(false, use_rwkv_due, None, None, |col| {
             let mut writer = SqlWriter::new(col, ReturnItemType::Cards)
                 .with_card_id_filter_table("fsrs_preset_search_cids");
             if use_first_grade_table {
@@ -747,7 +760,7 @@ impl Collection {
         use_first_grade_table: bool,
     ) -> Result<Vec<(CardId, usize)>> {
         let use_rwkv_due = nodes.iter().any(|node| has_rwkv_due_state(node));
-        self.with_search_auxiliary_tables(false, use_rwkv_due, None, |col| {
+        self.with_search_auxiliary_tables(false, use_rwkv_due, None, None, |col| {
             let mut writer = SqlWriter::new(col, ReturnItemType::Cards)
                 .with_card_id_filter_table("fsrs_preset_search_cids");
             if use_first_grade_table {
@@ -896,6 +909,25 @@ fn exact_fsrs_sort_mode(
                 reverse,
             },
         ) => Some((ExactFsrsSortMetric::StabilityS90, *reverse)),
+        _ => None,
+    }
+}
+
+/// Return card IDs that every match must have, without narrowing an OR or NOT.
+fn required_card_ids(node: &Node) -> Option<Vec<CardId>> {
+    match node {
+        Node::Search(SearchNode::CardIds(ids)) => {
+            let mut ids = ids
+                .split(',')
+                .map(|id| id.parse::<i64>().ok().map(CardId))
+                .collect::<Option<Vec<_>>>()?;
+            ids.sort_unstable();
+            ids.dedup();
+            Some(ids)
+        }
+        Node::Group(nodes) if !nodes.iter().any(|node| matches!(node, Node::Or)) => {
+            nodes.iter().find_map(required_card_ids)
+        }
         _ => None,
     }
 }
@@ -1962,6 +1994,81 @@ mod test {
         let filtered = col.search_cards(&query, SortMode::NoOrder)?;
         let expected_match = s90 > threshold;
         assert_eq!(filtered.contains(&card.id), expected_match);
+        Ok(())
+    }
+
+    #[test]
+    fn required_card_ids_only_narrows_unconditional_card_filters() -> Result<()> {
+        for (query, expected) in [
+            ("cid:1,1,2 prop:s>0", Some(vec![CardId(1), CardId(2)])),
+            ("(prop:s>0 or tag:other) cid:2", Some(vec![CardId(2)])),
+            ("cid:1 or prop:s>0", None),
+            ("-cid:1 prop:s>0", None),
+            ("(cid:1 or cid:2) prop:s>0", None),
+        ] {
+            let node = Node::Group(parse_search(query)?);
+            assert_eq!(required_card_ids(&node), expected, "{query}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_metric_search_handles_card_id_filters_and_or() -> Result<()> {
+        let mut col = Collection::new();
+        set_selected_fsrs7_params(&mut col, fsrs7_sort_params_a())?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        for _ in 0..2 {
+            col.add_note(&mut nt.new_note(), DeckId(1))?;
+        }
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+        for id in &ids {
+            let mut card = col.storage.get_card(*id)?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            col.storage.update_card(&card)?;
+        }
+
+        let selected = format!("cid:{},{} prop:s>0", ids[0].0, ids[0].0);
+        assert_eq!(
+            col.search_cards(&selected, SortMode::NoOrder)?,
+            vec![ids[0]]
+        );
+        assert_eq!(
+            col.search_notes_unordered(&selected)?,
+            vec![col.storage.get_card(ids[0])?.unwrap().note_id]
+        );
+        {
+            let guard = col.search_cards_into_table_with_stats_search(
+                &selected,
+                SortMode::NoOrder,
+                Some(&selected),
+            )?;
+            let found = guard.col.storage.all_searched_cards_in_search_order()?;
+            assert_eq!(
+                found.into_iter().map(|card| card.id).collect::<Vec<_>>(),
+                vec![ids[0]]
+            );
+        }
+        assert!(col
+            .search_cards("cid:9223372036854775807 prop:s>0", SortMode::NoOrder)?
+            .is_empty());
+        let either = format!("(cid:{} prop:s>0) or (cid:{} prop:s>0)", ids[0].0, ids[1].0);
+        let mut found = col.search_cards(&either, SortMode::NoOrder)?;
+        found.sort();
+        assert_eq!(found, ids);
+        let except_first = format!("-cid:{} prop:s>0", ids[0].0);
+        assert_eq!(
+            col.search_cards(&except_first, SortMode::NoOrder)?,
+            vec![ids[1]]
+        );
         Ok(())
     }
 

@@ -59,6 +59,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
             help: tr.deckConfigRwkvReviewCandidateRefreshTooltip(),
         },
+        rwkvPrecomputeNextCard: {
+            title: tr.deckConfigRwkvReviewPrecomputeNextCard(),
+            help: tr.deckConfigRwkvReviewPrecomputeNextCardTooltip(),
+        },
         rwkvRefreshInterval: {
             title: tr.deckConfigRwkvReviewRefreshInterval(),
             help: tr.deckConfigRwkvReviewRefreshIntervalTooltip(),
@@ -275,6 +279,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                 {#if $config.rwkvReviewInstantOrderEnabled}
                     <h2 class="rwkv-subheading">RWKV-Instant</h2>
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewPrecomputeNextCard}
+                        defaultValue={defaults.rwkvReviewPrecomputeNextCard}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvPrecomputeNextCard")}
+                        >
+                            {tr.deckConfigRwkvReviewPrecomputeNextCard()}
+                        </SettingTitle>
+                    </SwitchRow>
                     <SwitchRow
                         bind:value={$config.rwkvReviewCandidateRefreshEnabled}
                         defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}

@@ -1200,6 +1200,10 @@ class Reviewer:
             rwkv_queue_order_enabled
             and aqt.rwkv_scheduler.reviewer_queue_order_refresh_due(self)
         )
+        refresh_before_next_card = rwkv_queue_order_enabled and (
+            rwkv_queue_order_refresh_required
+            or aqt.rwkv_scheduler.reviewer_queue_order_refresh_before_next_card(self)
+        )
         rwkv_last_queued_card = (
             rwkv_queue_order_enabled and self._answered_card_was_last_queued_card()
         )
@@ -1209,19 +1213,13 @@ class Reviewer:
             and self._answered_card_was_last_queued_review()
         )
         if (
-            rwkv_queue_order_refresh_required
-            or rwkv_queue_order_refresh_due
+            rwkv_queue_order_refresh_due
+            or refresh_before_next_card
             or rwkv_last_queued_card
             or rwkv_last_queued_review
         ):
             queued_at = time.monotonic()
             answered_card_id = self.card.id
-            refresh_before_next_card = rwkv_queue_order_refresh_required or (
-                rwkv_queue_order_refresh_due
-                and aqt.rwkv_scheduler.reviewer_queue_order_refresh_before_next_card(
-                    self
-                )
-            )
             if (
                 rwkv_last_queued_card
                 or rwkv_last_queued_review
@@ -1463,13 +1461,8 @@ class Reviewer:
 
         def build_work() -> aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncWork | None:
             build_start = time.monotonic()
-            work = (
-                aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(self)
-                if reason == "review queue"
-                else aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(
-                    self,
-                    reason=reason,
-                )
+            work = aqt.rwkv_scheduler.prepare_reviewer_queue_order_async_work(
+                self, reason=reason, wait_for_backend=request.wait_for_backend
             )
             logger.debug(
                 "reviewer RWKV queue order async work prepared: "
@@ -1495,12 +1488,9 @@ class Reviewer:
                 return
 
             def score() -> aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncResult:
-                if request.wait_for_backend:
-                    return aqt.rwkv_scheduler.score_reviewer_queue_order_async_work(
-                        work,
-                        wait_for_backend=True,
-                    )
-                return aqt.rwkv_scheduler.score_reviewer_queue_order_async_work(work)
+                return aqt.rwkv_scheduler.score_reviewer_queue_order_async_work(
+                    work, wait_for_backend=request.wait_for_backend
+                )
 
             def score_done(
                 score_future: Future[
@@ -1517,8 +1507,7 @@ class Reviewer:
                 def install() -> tuple[bool, tuple[int, int, int] | None]:
                     installed = (
                         aqt.rwkv_scheduler.install_reviewer_queue_order_async_result(
-                            self,
-                            result,
+                            self, result, wait_for_backend=request.wait_for_backend
                         )
                     )
                     if not installed or remaining_count_card_id is None:

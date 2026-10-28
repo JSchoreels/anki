@@ -43,7 +43,7 @@ def cold_reviewer(monkeypatch: pytest.MonkeyPatch) -> tuple[Reviewer, SimpleName
         reviewer.state = "question"
         state.shown.append(reviewer.card.id)
 
-    def install(*args) -> bool:
+    def install(*args, **kwargs) -> bool:
         state.queued = True
         return True
 
@@ -61,7 +61,9 @@ def cold_reviewer(monkeypatch: pytest.MonkeyPatch) -> tuple[Reviewer, SimpleName
         rwkv_scheduler, "warm_up_rwkv_state", lambda *args, **kwargs: state.ready
     )
     monkeypatch.setattr(
-        rwkv_scheduler, "prepare_reviewer_queue_order_async_work", lambda _: object()
+        rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        lambda _, **kwargs: object(),
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -208,7 +210,9 @@ def test_next_card_ends_when_recovered_rwkv_queue_is_empty(
 ) -> None:
     reviewer, state = cold_reviewer
     monkeypatch.setattr(
-        rwkv_scheduler, "install_reviewer_queue_order_async_result", lambda *args: True
+        rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        lambda *args, **kwargs: True,
     )
     reviewer.nextCard()
     task, on_done, _options = state.builds.pop()
@@ -279,6 +283,79 @@ def test_next_card_recovers_through_qt_background_tasks(
         assert state.shown == [456]
         assert state.exits == []
         assert not reviewer._review_actions_are_blocked()
+    finally:
+        timeout.stop()
+        release.set()
+        taskman._collection_executor.shutdown()
+        taskman._no_collection_executor.shutdown()
+        app.processEvents()
+
+
+def test_post_answer_queue_refresh_finishes_before_next_question(
+    cold_reviewer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from threading import Event, current_thread, main_thread
+
+    from aqt.qt import QCoreApplication, QEventLoop, QTimer
+    from aqt.taskman import TaskManager
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    reviewer, _state = cold_reviewer
+    reviewer.mw.weakref = lambda: reviewer.mw
+    taskman = TaskManager(reviewer.mw)
+    reviewer.mw.taskman = taskman
+    reviewer._answeredIds = []
+    reviewer._v3 = SimpleNamespace(
+        queued_cards=SimpleNamespace(new_count=0, learning_count=0, review_count=5)
+    )
+    reviewer.check_timebox = lambda: False
+    loop = QEventLoop()
+    release = Event()
+    events = []
+
+    def observe_waiting() -> None:
+        events.append(("waiting", reviewer.state, reviewer.card.id))
+        release.set()
+
+    def score(*args, **kwargs) -> object:
+        events.append(("worker", current_thread() is not main_thread()))
+        taskman.run_on_main(observe_waiting)
+        if not release.wait(10):
+            raise TimeoutError("Qt did not deliver the waiting-state callback")
+        return object()
+
+    def install(*args, **kwargs) -> bool:
+        events.append(("installed",))
+        return True
+
+    def next_card() -> None:
+        events.append(("next",))
+        loop.quit()
+
+    reviewer.nextCard = next_card
+    monkeypatch.setattr(
+        rwkv_scheduler, "reviewer_queue_order_refresh_due", lambda _: False
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "reviewer_queue_order_refresh_before_next_card", lambda _: True
+    )
+    monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
+    monkeypatch.setattr(
+        rwkv_scheduler, "install_reviewer_queue_order_async_result", install
+    )
+    timeout = QTimer()
+    timeout.setSingleShot(True)
+    timeout.timeout.connect(loop.quit)
+    timeout.start(10_000)
+    QTimer.singleShot(0, lambda: reviewer._after_answering(3))
+    try:
+        loop.exec()
+        assert events == [
+            ("worker", True),
+            ("waiting", "transition", 123),
+            ("installed",),
+            ("next",),
+        ]
     finally:
         timeout.stop()
         release.set()

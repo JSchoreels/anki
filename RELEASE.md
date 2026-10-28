@@ -39,6 +39,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### New Features
 
+- **Choose when RWKV-Instant updates the review order.** The new Advanced option **Precompute next card before this card answer** is on by default and uses the existing queue for the next card. Turn it off to refresh the full retrievability order after each answer before the next card appears.
+
 - **New default small RWKV model: small model, leak-free (SM72).** It replaces SM56 with the same size (**331,511 parameters, 8.3× fewer than the big model**, about 4.6 KB of state per card and note instead of 25.7 KB) and was trained without the signal that a card is deleted later, which live Anki never has. On the 732-user held-out set, with leak-free inputs for every model, its Curve / Instant LogLoss is **0.30038 / 0.27687**: **+0.24% / +0.24%** against the shipped big model and **+0.47% / +0.40%** against the big model (1 leak-free epoch). Against SM56 on the same inputs both point estimates are lower (−0.000276 Curve, −0.000575 Instant; the Instant gain is clear of zero on all three held-out sets). **Use Smaller Model** now selects SM72; a successful Deck Options save upgrades SM40, SM36, SM55 or SM56 to SM72, and Legacy stays available. Reopen the profile to apply it.
 
 - **Compare RWKV and FSRS with a shared simulated learner.** The comparison starts both schedulers from the same cards and due dates, offers FSRS-based and RWKV-based learners, and can simulate temporary or persistent changes in performance. It replays recent reviews on other cards as background activity, and lets you switch between FSRS and RWKV estimates of the same simulated answers without rerunning. It shows matched-memory time estimates and lets you increase the sample size, retention resolution and number of paired runs.
@@ -50,6 +52,10 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Clearer RWKV model help.** The model descriptions and links now appear directly below **Use Smaller Model** in Deck Options → RWKV → Advanced.
 
 #### Fixes
+
+- **Faster Dynamic Desired Retention during review.** Warm single-card RWKV target lookups took a median of about 140 ms before and less than 1 ms after on ten sampled cards from a copied collection with 7,449 review candidates. Full-deck refreshes still depend on the configured rules and collection size.
+
+- **Fewer temporary Unknown RWKV values in Card Info.** Its background requests can briefly wait for another prediction to finish, and discard results if the model state changes during the wait.
 
 - **Include older synchronized reviews in RWKV.** Reviews received from another device are now included even when they are more than eight days old. Anki rebuilds affected RWKV states when needed, which can make the first refresh after sync take longer.
 
@@ -64,6 +70,10 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
 
 ### Technical details
+
+- **RWKV review ordering:** The default reuses the previously computed score map and refreshes in the background. Disabling precomputation refreshes the full candidate set after each answer, independent of the interval and approximate-candidate settings. Card Info waits up to 100 ms for prediction access off the UI thread and retries if the state changes or remains busy.
+
+- **Dynamic Desired Retention lookups:** RWKV uses the provider's single-card API for one-card work and falls back to the bulk API when necessary. Searches that require `cid:` and exact FSRS metrics prepare those metrics only for the specified cards; other searches retain their existing behavior. On the same copied collection with a warm provider, the ten-card median was 141 ms for the previous one-card bulk lookup and 0.25 ms for the new RWKV lookup. Full-deck rule resolution remained about 316 ms with the tested rules, separate from the approximately 40 ms SM72 prediction stage.
 
 - **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
 

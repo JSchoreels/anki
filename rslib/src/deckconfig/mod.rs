@@ -41,6 +41,7 @@ pub const DEFAULT_REVIEW_FUZZ_FACTOR_LONG: f32 = 0.05;
 pub const DEFAULT_REVIEW_FUZZ_ENABLED: bool = true;
 pub(crate) const DEFAULT_RWKV_REVIEW_BATCH_SIZE: u32 = 512;
 pub(crate) const DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL: u32 = 1;
+pub(crate) const DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD: bool = true;
 pub(crate) const DEFAULT_RWKV_REVIEW_ALLOW_SAME_DAY_REVIEW: bool = true;
 pub(crate) const DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS: u32 = 5;
 pub(crate) const DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS: u32 = 30;
@@ -90,6 +91,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     rwkv_review_instant_order_enabled: false,
     rwkv_review_dynamic_preset_replay: false,
     rwkv_review_candidate_refresh_enabled: false,
+    rwkv_review_precompute_next_card: DEFAULT_RWKV_REVIEW_PRECOMPUTE_NEXT_CARD,
     rwkv_review_min_intervening_reviews: DEFAULT_RWKV_REVIEW_MIN_INTERVENING_REVIEWS,
     rwkv_review_min_elapsed_secs: DEFAULT_RWKV_REVIEW_MIN_ELAPSED_SECS,
     rwkv_review_first_review_elapsed_from_card_creation:
