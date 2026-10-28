@@ -11,10 +11,9 @@
 //! consume them: before a review queue is built, and before deck counts are
 //! computed.
 //!
-//! Nothing here writes to cards. The one write is to the revlog: an answer to
-//! a review card that was already answered today is recorded with the kind the
-//! desktop records (`rwkv_offline_same_day_review_kind`). If scoring fails, the
-//! installed scores are cleared and the standard scheduler order applies.
+//! Nothing here writes to cards. It records answers with the same revlog kind
+//! as the desktop, including filtered decks and same-day repeats. If scoring
+//! fails, the installed scores are cleared and the standard scheduler applies.
 //!
 //! The model state is also kept in a file next to the collection
 //! (`offline_state.rs`): a new start loads it and replays only the reviews
@@ -55,10 +54,16 @@ use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::decks::limits::LimitTreeMap;
 use crate::rwkv::ReviewInput;
 use crate::rwkv::StatePrecision;
+use crate::scheduler::answering::CardAnswer;
 use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
 use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
 use crate::scheduler::states::CardState;
+use crate::scheduler::states::FilteredState;
 use crate::scheduler::states::NormalState;
+
+#[cfg(test)]
+#[path = "offline_review_kind_tests.rs"]
+mod review_kind_tests;
 
 /// The desktop always loads the model with these (they only affect interval
 /// outputs, which Instant does not use).
@@ -1155,6 +1160,72 @@ impl Collection {
         }
     }
 
+    /// The raw kind desktop puts on an answer when RWKV is active.
+    pub(crate) fn rwkv_offline_answer_review_kind(
+        &mut self,
+        card_id: CardId,
+        current_state: &CardState,
+        next_state: &CardState,
+        config_active: bool,
+        answered_at: TimestampMillis,
+        timing: &SchedTimingToday,
+    ) -> Result<Option<u32>> {
+        if !self.rwkv_offline_enabled() || !config_active {
+            return Ok(None);
+        }
+        let kind = match current_state {
+            CardState::Normal(NormalState::New(_) | NormalState::Learning(_)) => 0,
+            CardState::Normal(NormalState::Review(_)) => self
+                .rwkv_offline_same_day_review_kind(
+                    card_id,
+                    current_state,
+                    config_active,
+                    answered_at,
+                    timing,
+                )?
+                .unwrap_or(1),
+            CardState::Normal(NormalState::Relearning(_)) => 2,
+            CardState::Filtered(FilteredState::Rescheduling(current))
+                if matches!(
+                    current.original_state,
+                    NormalState::New(_) | NormalState::Learning(_)
+                ) && matches!(next_state, CardState::Filtered(FilteredState::Rescheduling(next))
+                        if matches!(next.original_state, NormalState::Learning(learning) if learning.memory_state.is_none())) =>
+            {
+                // Filtered factor-0 learning rows would be discarded as cramming.
+                0
+            }
+            CardState::Filtered(_) => 3,
+        };
+        Ok(Some(kind))
+    }
+
+    /// After the answer transaction commits, retain only synthetic Filtered
+    /// repeats; a real filtered-deck answer must not extend that sequence.
+    pub(crate) fn rwkv_offline_record_answer_kind(
+        &mut self,
+        answer: &CardAnswer,
+        id: RevlogId,
+        config_active: bool,
+    ) {
+        self.state
+            .rwkv_synthetic_filtered_answers
+            .remove(&answer.card_id);
+        if self.rwkv_offline_enabled()
+            && config_active
+            && answer.from_queue
+            && matches!(
+                answer.current_state,
+                CardState::Normal(NormalState::Review(_))
+            )
+            && answer.rwkv_review_kind == Some(3)
+        {
+            self.state
+                .rwkv_synthetic_filtered_answers
+                .insert(answer.card_id, id);
+        }
+    }
+
     /// The revlog kind the desktop records when a review card is answered
     /// again on the day of its previous answer (`CardAnswer.rwkv_review_kind`,
     /// see `_rwkv_review_state_for_live_context` in rwkv_scheduler.py), so
@@ -1204,10 +1275,15 @@ impl Collection {
         const FILTERED: u32 = 3;
         Ok(match (previous_kind, previous_ease) {
             (1, 1) | (2, 1 | 2) => Some(RELEARNING),
-            // 3: an earlier same-day repeat (rows with factor 0, i.e. cramming,
-            // are excluded above). The desktop keeps FILTERED for the third
-            // and later repeats too.
-            (0 | 1 | 2 | 3, _) => Some(FILTERED),
+            (0 | 1 | 2, _) => Some(FILTERED),
+            // Only a synthetic repeat chains; a real filtered-deck answer
+            // returns to Review when the card is answered normally.
+            (3, _)
+                if self.state.rwkv_synthetic_filtered_answers.get(&card_id)
+                    == Some(&RevlogId(previous_id)) =>
+            {
+                Some(FILTERED)
+            }
             _ => None,
         })
     }
@@ -1244,6 +1320,25 @@ impl Collection {
                 return Ok(());
             };
             let mut input = query_input(&row);
+            if matches!(current_state, CardState::Filtered(_)) {
+                // The batch row describes the underlying card, but Curve's
+                // hypothetical answers use the actual filtered study state.
+                input.card_type = Some(4);
+                let Some(mut card) = col.storage.get_card(card_id)? else {
+                    return Ok(());
+                };
+                col.populate_rwkv_last_review_times(std::slice::from_mut(&mut card))?;
+                input.current_elapsed_days = card
+                    .last_review_time
+                    .map(|last| i64::from(timing.next_day_at.elapsed_days_since_clamped(last)));
+                input.current_elapsed_seconds = card
+                    .last_review_time
+                    .map(|last| i64::from(TimestampSecs::now().elapsed_secs_since_clamped(last)));
+            } else if let CardState::Normal(NormalState::Learning(learning)) = current_state {
+                // Desktop uses the scheduler's learning-step elapsed time.
+                input.current_elapsed_days = None;
+                input.current_elapsed_seconds = Some(i64::from(learning.elapsed_secs));
+            }
             // A review card answered earlier today is asked as the relearning
             // or filtered review its answer will be recorded as (the desktop's
             // `_rwkv_review_state_for_live_context`).
