@@ -86,15 +86,28 @@ impl Engine {
         target_retention: f32,
         max_interval_days: u32,
         precision: StatePrecision,
+        leak_free_inputs: bool,
     ) -> io::Result<Self> {
         Ok(if is_small_model(&fs::read(&path)?) {
-            Self::Small(rwkv_small::RwkvInference::load_with_precision(
+            let engine = rwkv_small::RwkvInference::load_with_precision(
                 path,
                 target_retention,
                 max_interval_days,
                 small_precision(precision),
-            )?)
+            )?;
+            let engine = if leak_free_inputs {
+                engine.with_leak_free_inputs()?
+            } else {
+                engine
+            };
+            Self::Small(engine)
         } else {
+            if leak_free_inputs {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SM72 requires a small-model checkpoint",
+                ));
+            }
             Self::Big(rwkv::RwkvInference::load_with_precision(
                 path,
                 target_retention,
@@ -245,5 +258,88 @@ impl Snapshot {
             Self::Big(state) => state.cache_state(),
             Self::Small(state) => state.cache_state(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anki_proto::scheduler::RwkvPrepareOfflineRequest;
+
+    use crate::collection::Collection;
+
+    #[test]
+    fn unsupported_offline_model_kind_is_rejected() {
+        let mut col = Collection::new();
+        let result = col.rwkv_prepare_offline(RwkvPrepareOfflineRequest {
+            model_path: "not-opened".into(),
+            model_kind: "unknown".into(),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        assert!(col.state.rwkv_offline.is_none());
+    }
+
+    fn model_file(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../qt/aqt/rwkv_inference")
+            .join(name)
+    }
+
+    #[test]
+    fn sm72_offline_engine_enables_the_leak_free_rule() {
+        let weights = model_file("sm72/weights.f32.bin");
+        let predict = |precision, leak_free| {
+            let mut engine = Engine::load_with_precision(
+                weights.clone(),
+                0.9,
+                36_500,
+                precision,
+                leak_free,
+            )
+            .unwrap();
+            let mut reviews: Vec<_> = (0..14)
+                .map(|index| ReviewInput {
+                    card_id: 100 + index % 7,
+                    note_id: None,
+                    deck_id: None,
+                    preset_id: None,
+                    is_query: false,
+                    ease: Some((index % 4 + 1) as u8),
+                    duration_millis: Some(1234 + index * 7),
+                    card_type: Some(if index < 7 { 0 } else { 2 }),
+                    day_offset: Some(1000 + index / 7),
+                    current_elapsed_days: Some(index / 7),
+                    current_elapsed_seconds: Some(index / 7 * 86_400),
+                    target_retentions: [Some(0.9); 4],
+                    enforce_grade_order: true,
+                })
+                .collect();
+            let mut query = reviews[0].clone();
+            query.is_query = true;
+            query.ease = None;
+            query.duration_millis = None;
+            engine
+                .warm_up_reviews(std::mem::take(&mut reviews), false)
+                .unwrap();
+            engine
+                .predict_retrievability_many_from_warm_up(vec![query])
+                .unwrap()[0]
+        };
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int8,
+            StatePrecision::Int4CardsInt8Notes,
+        ] {
+            assert_ne!(predict(precision, true), predict(precision, false));
+        }
+        assert!(Engine::load_with_precision(
+            model_file("RWKV_trained_on_5000_10000.bin"),
+            0.9,
+            36_500,
+            StatePrecision::F32,
+            true,
+        )
+        .is_err());
     }
 }

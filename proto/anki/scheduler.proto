@@ -997,6 +997,9 @@ message RwkvPrepareOfflineRequest {
   // How card/note states are kept: "f32", "int8" or "int4"; empty: int8 (the
   // fork's desktop default).
   string state_precision = 2;
+  // "sm72" enables the input rules used by the leak-free SM72 checkpoint.
+  // Empty retains the original automatic big/small model behavior.
+  string model_kind = 3;
 }
 
 message RwkvPrepareOfflineResponse {

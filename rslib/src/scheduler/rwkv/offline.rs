@@ -116,9 +116,24 @@ pub(super) struct OfflineModel {
     pub(super) precision: StatePrecision,
 }
 
-static REGISTERED_MODEL: Mutex<Option<OfflineModel>> = Mutex::new(None);
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SelectedOfflineModel {
+    pub(super) model: OfflineModel,
+    pub(super) leak_free_inputs: bool,
+}
 
-fn registered_model() -> Option<OfflineModel> {
+impl From<OfflineModel> for SelectedOfflineModel {
+    fn from(model: OfflineModel) -> Self {
+        Self {
+            model,
+            leak_free_inputs: false,
+        }
+    }
+}
+
+static REGISTERED_MODEL: Mutex<Option<SelectedOfflineModel>> = Mutex::new(None);
+
+fn registered_model() -> Option<SelectedOfflineModel> {
     REGISTERED_MODEL.lock().unwrap().clone()
 }
 
@@ -176,7 +191,7 @@ impl ReplayStamp {
 }
 
 pub(crate) struct RwkvOfflineRuntime {
-    model: OfflineModel,
+    model: SelectedOfflineModel,
     inference: Engine,
     /// Feature/curve state of the freshly loaded model, for full rebuilds.
     initial_cache_state: Vec<u8>,
@@ -267,12 +282,14 @@ struct ScoredCard {
 }
 
 impl RwkvOfflineRuntime {
-    fn load(model: OfflineModel) -> Result<Self> {
+    fn load(model: impl Into<SelectedOfflineModel>) -> Result<Self> {
+        let model = model.into();
         let inference = Engine::load_with_precision(
-            model.path.clone(),
+            model.model.path.clone(),
             MODEL_TARGET_RETENTION,
             MODEL_MAX_INTERVAL_DAYS,
-            model.precision,
+            model.model.precision,
+            model.leak_free_inputs,
         )?;
         let initial_cache_state = inference.cache_state();
         Ok(Self {
@@ -295,7 +312,7 @@ impl RwkvOfflineRuntime {
     /// when there is a usable one. Whether that state still fits the
     /// collection is checked by the next history sync, which replays only
     /// what is missing (or everything, when the history changed otherwise).
-    fn load_with_saved_state(model: OfflineModel, path: &Path) -> Result<Self> {
+    fn load_with_saved_state(model: SelectedOfflineModel, path: &Path) -> Result<Self> {
         let mut runtime = Self::load(model)?;
         if path.exists() {
             if let Err(err) = runtime.restore_saved_state(path) {
@@ -707,16 +724,23 @@ impl Collection {
         input: RwkvPrepareOfflineRequest,
     ) -> Result<RwkvPrepareOfflineResponse> {
         require!(!input.model_path.is_empty(), "missing RWKV model path");
-        let model = OfflineModel {
-            path: PathBuf::from(input.model_path),
-            // empty: int8 (the fork's desktop default until build 107, which
-            // moved to int4 cards + int8 notes). The app's "int4" is int4
-            // cards with int8 notes: a note's state takes every answer to all
-            // its cards, and int4 drift there overflowed on long histories.
-            precision: match input.state_precision.as_str() {
-                "" => StatePrecision::Int8,
-                "int4" => StatePrecision::Int4CardsInt8Notes,
-                other => StatePrecision::parse(other)?,
+        require!(
+            input.model_kind.is_empty() || input.model_kind == "sm72",
+            "unsupported RWKV offline model kind"
+        );
+        let model = SelectedOfflineModel {
+            leak_free_inputs: input.model_kind == "sm72",
+            model: OfflineModel {
+                path: PathBuf::from(input.model_path),
+                // empty: int8 (the fork's desktop default until build 107, which
+                // moved to int4 cards + int8 notes). The app's "int4" is int4
+                // cards with int8 notes: a note's state takes every answer to all
+                // its cards, and int4 drift there overflowed on long histories.
+                precision: match input.state_precision.as_str() {
+                    "" => StatePrecision::Int8,
+                    "int4" => StatePrecision::Int4CardsInt8Notes,
+                    other => StatePrecision::parse(other)?,
+                },
             },
         };
         let mut runtime = match self.state.rwkv_offline.take() {
@@ -1739,7 +1763,7 @@ impl Collection {
     /// [Calibration].
     fn rwkv_offline_start_build(
         &mut self,
-        model: OfflineModel,
+        model: SelectedOfflineModel,
         calibrate: Option<bool>,
     ) -> Result<u64> {
         let mut building = BUILDING.lock().unwrap();

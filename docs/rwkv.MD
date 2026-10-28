@@ -181,6 +181,24 @@ The [initial SM40 comparison](rwkv-sm40-2026-10-20.MD) records the original matc
 full-history resource and quality measurements. The [dual-model follow-up](rwkv-dual-model-2026-10-20.MD) verifies identical predictions after runtime selection was added. Older dated reports below concern
 the original model and remain historical evidence.
 
+## Kuma offline SM72 model
+
+Kuma's small model can use the leak-free SM72 checkpoint from desktop. The app
+passes `model_kind: "sm72"` with the installed model path when preparing the
+offline runtime. SM72 uses the small architecture but, as on desktop, sets the
+missing note, deck and preset ID flags to zero in review, replay, scalar query
+and batched query inference. A request with no model kind keeps the previous
+automatic big/small selection and input behavior; unsupported kinds are rejected.
+The supplied SM72 kind requires a small-model checkpoint. Pair the app and
+backend changes when building Kuma.
+
+The local saved-state header includes the SM72 input rule as well as the model
+file hash and precision. Switching from SM56 to SM72 therefore rebuilds the
+offline state once from retained history; model selection and cached state are
+not synced. For `rwkv_offline_host`, set `KUMA3_RWKV_MODEL_KIND=sm72` when
+using SM72 weights. The desktop-model descriptions above describe the desktop
+code inherited at this core branch's original fork point.
+
 ## Settings And Storage
 
 Desktop-only RWKV review settings are stored in deck config `other` under the

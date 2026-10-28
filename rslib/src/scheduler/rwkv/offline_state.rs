@@ -32,7 +32,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::offline::OfflineModel;
+use super::offline::SelectedOfflineModel;
 use super::offline_engine::Engine;
 use super::offline_engine::Snapshot;
 use crate::rwkv::StatePrecision;
@@ -54,28 +54,50 @@ const STATE_VERSION: u32 = 4; // 4: desktop-compatible reimport reset boundaries
 /// state precision and this model file (its size and an FNV-1a hash of its
 /// bytes). The model doesn't change while the app runs, so its 11 MB are read
 /// and hashed once, not at every save and start.
-pub(super) fn header(model: &OfflineModel) -> io::Result<String> {
+pub(super) fn header(model: &SelectedOfflineModel) -> io::Result<String> {
     static HASHED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
     let mut cached = HASHED.lock().unwrap();
     let hashed = match cached.as_ref() {
-        Some((path, hashed)) if *path == model.path => hashed.clone(),
+        Some((path, hashed)) if *path == model.model.path => hashed.clone(),
         _ => {
-            let bytes = fs::read(&model.path)?;
+            let bytes = fs::read(&model.model.path)?;
             let mut hash = fnv::FnvHasher::default();
             hash.write(&bytes);
             let hashed = format!("{} {:016x}", bytes.len(), hash.finish());
-            *cached = Some((model.path.clone(), hashed.clone()));
+            *cached = Some((model.model.path.clone(), hashed.clone()));
             hashed
         }
     };
     // int4 keeps note states in int8 since kuma3 17: a file from before
     // holds int4 note states and is rebuilt. Since the fork's build 107 that
     // is its Int4CardsInt8Notes; the header stays, so no rebuild.
-    let precision = match model.precision {
+    let precision = match model.model.precision {
         StatePrecision::Int4CardsInt8Notes => "Int4Int8Notes".to_string(),
         other => format!("{other:?}"),
     };
-    Ok(format!("state{STATE_VERSION} {precision} {hashed}"))
+    // The same weights and precision produce different state when SM72's
+    // input rule is enabled. Keep old headers for other models unchanged.
+    let input_rule = if model.leak_free_inputs { " sm72" } else { "" };
+    Ok(format!(
+        "state{STATE_VERSION} {precision} {hashed}{input_rule}"
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn sm72_input_rule_changes_the_saved_state_header() -> io::Result<()> {
+    let mut model = SelectedOfflineModel {
+        model: super::offline::OfflineModel {
+            path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../qt/aqt/rwkv_inference/sm72/weights.f32.bin"),
+            precision: StatePrecision::Int8,
+        },
+        leak_free_inputs: false,
+    };
+    let ordinary = header(&model)?;
+    model.leak_free_inputs = true;
+    assert_eq!(header(&model)?, format!("{ordinary} sm72"));
+    Ok(())
 }
 
 /// Writes the file whole (to a temporary file, then renamed), so a crash
@@ -254,9 +276,14 @@ mod tests {
         let header = String::from_utf8(get_bytes(&mut input, 4096).unwrap()).unwrap();
         drop(input);
 
-        let mut inference =
-            Engine::load_with_precision(PathBuf::from(model), 0.9, 36_500, StatePrecision::F32)
-                .unwrap();
+        let mut inference = Engine::load_with_precision(
+            PathBuf::from(model),
+            0.9,
+            36_500,
+            StatePrecision::F32,
+            false,
+        )
+        .unwrap();
         let started = Instant::now();
         let identity = read(&file, &header, &mut inference).unwrap();
         eprintln!("read {} ms", started.elapsed().as_millis());
