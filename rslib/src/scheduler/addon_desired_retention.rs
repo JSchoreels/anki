@@ -908,6 +908,31 @@ mod test {
             col.get_first_card().desired_retention,
             Some((mapped_good * 100.0).round() / 100.0)
         );
+
+        // Interval bounds are applied after the grade target; they must not
+        // make a valid bounded target look like an externally modified state.
+        col.undo()?;
+        let note_id = col.get_first_card().note_id;
+        let mut note = col.storage.get_note(note_id)?.unwrap();
+        note.set_field(0, "10")?;
+        col.update_note(&mut note)?;
+        col.set_config(
+            CONFIG_KEY,
+            &json!({
+                "version": 1,
+                "field_rules": [{"note_type": "Basic", "field": "Front", "value_type": "number",
+                    "thresholds": [{"value": "10", "desired_retention": 0.85,
+                        "minimum_interval": 15, "maximum_interval": 15}]}],
+                "grade_rules": [{"grade": "good", "mode": "absolute", "value": 0.85}]
+            }),
+        )?;
+        let choices = col.get_scheduling_states(card_id)?;
+        let CardState::Normal(NormalState::Review(good)) = choices.good else {
+            panic!("expected a review state");
+        };
+        assert_eq!(good.scheduled_days, 15);
+        col.answer_good();
+        assert_eq!(col.get_first_card().desired_retention, Some(0.85));
         Ok(())
     }
 
