@@ -242,6 +242,9 @@ struct ScopeScores {
     /// Cards answered since the last update of the whole scope (or of its
     /// candidates): their scores are older than their answer.
     answered: Vec<CardId>,
+    /// Check for newly eligible reviews when reviews or the whole queue run
+    /// out.
+    force_refresh: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1074,6 +1077,7 @@ impl Collection {
         &mut self,
         card_id: CardId,
         mod_before: TimestampMillis,
+        queue_exhausted: bool,
     ) {
         if !self.rwkv_offline_enabled() {
             return;
@@ -1092,12 +1096,20 @@ impl Collection {
             self.state.rwkv_offline = Some(runtime);
         }
         let deck_id = self.get_current_deck_id();
-        if matches!(self.rwkv_offline_deck_uses_instant(deck_id), Ok(true)) {
+        if let Ok(Some(config)) = self.rwkv_offline_deck_config(deck_id) {
+            if !config.inner.rwkv_review_instant_order_enabled {
+                return;
+            }
+            let interval = config.inner.rwkv_review_refresh_interval.max(1) as usize;
             let started = Instant::now();
             let patched = self.with_rwkv_offline_runtime("answer score", |col, runtime| {
                 let Some(deck) = col.storage.get_deck(deck_id)? else {
                     return Ok(());
                 };
+                // The fast append can decline an answer when another operation
+                // changed the collection. Bring the model up to date before
+                // scoring the card or checking the refresh interval.
+                col.rwkv_offline_sync_history(runtime)?;
                 let rows = col
                     .rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
                         card_ids: vec![card_id.0],
@@ -1112,7 +1124,25 @@ impl Collection {
                 // the other recently answered cards' repeat spacing moved by one
                 let intervening = col.rwkv_offline_intervening_reviews(&deck)?;
                 col.patch_answered_card_rwkv_review_queue_score_entry(deck_id, card_id, entry)?;
-                col.update_rwkv_review_queue_intervening_reviews(deck_id, intervening)
+                col.update_rwkv_review_queue_intervening_reviews(deck_id, intervening)?;
+                if runtime.scopes.values().any(|scores| {
+                    scores.force_refresh
+                        || (queue_exhausted && !scores.answered.is_empty())
+                        || scores.answered.len() >= interval
+                }) {
+                    let scope = col.rwkv_offline_shared_scope(&deck)?.unwrap_or(deck);
+                    if let Some(scores) = runtime.scopes.get_mut(&scope.id) {
+                        if queue_exhausted && !scores.answered.is_empty() {
+                            scores.force_refresh = true;
+                        }
+                        if scores.force_refresh || scores.answered.len() >= interval {
+                            // The next fetch rescans the scope (or its candidates)
+                            // and rebuilds the queue with the new scores.
+                            col.state.card_queues = None;
+                        }
+                    }
+                }
+                Ok(())
             });
             tracing::info!(
                 patched,
@@ -1747,13 +1777,20 @@ impl Collection {
             .filter(|scope| scope.days_elapsed == days_elapsed)
         {
             let expired = now.0 - scope.computed_at.0 >= max_age_secs;
-            if scope.generation == runtime.generation && !expired {
+            // A partial queue update can mark the scope current while other
+            // cards still have older scores. Deck counts need a full update.
+            if scope.generation == runtime.generation
+                && (partial || scope.fully_computed_generation == runtime.generation)
+                && !expired
+                && !scope.force_refresh
+            {
                 return Ok(scope.cards.clone());
             }
             let interval = config
                 .as_ref()
                 .map_or(1, |c| c.inner.rwkv_review_refresh_interval.max(1));
-            let update_due = expired || scope.answered.len() >= interval as usize;
+            let update_due =
+                scope.force_refresh || expired || scope.answered.len() >= interval as usize;
             let approximate = config
                 .as_ref()
                 .is_some_and(|c| c.inner.rwkv_review_candidate_refresh_enabled);
@@ -1786,10 +1823,7 @@ impl Collection {
                         ranked.select_nth_unstable_by(batch, |a, b| rank(a).total_cmp(&rank(b)));
                     }
                     card_ids.extend(ranked[..batch].iter().map(|card| card.card_id));
-                    scope.answered.clear();
-                    scope.computed_at = now;
                 }
-                scope.generation = runtime.generation;
                 let rows = self
                     .rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
                         card_ids: card_ids.iter().map(|id| id.0).collect(),
@@ -1812,6 +1846,12 @@ impl Collection {
                         .into_iter()
                         .filter(|card| tree.contains(&card.deck_id)),
                 );
+                if update_due {
+                    scope.answered.clear();
+                    scope.force_refresh = false;
+                    scope.computed_at = now;
+                }
+                scope.generation = runtime.generation;
                 return Ok(scope.cards.clone());
             }
         }
@@ -1852,6 +1892,7 @@ impl Collection {
                 fully_computed_generation: runtime.generation,
                 cards: cards.clone(),
                 answered: Vec::new(),
+                force_refresh: false,
             },
         );
         Ok(cards)
@@ -1989,14 +2030,289 @@ impl Collection {
 
 #[cfg(test)]
 mod test {
+    use anki_proto::scheduler::card_answer::Rating;
+    use anki_proto::scheduler::CardAnswer;
+    use anki_proto::scheduler::GetQueuedCardsRequest;
+    use tempfile::TempDir;
+
     use super::*;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::preset::AddonFsrsPreset;
     use crate::scheduler::fsrs::preset::AddonFsrsVersion;
     use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::services::SchedulerService;
+    use crate::tests::open_fs_test_collection;
     use crate::tests::CardAdder;
     use crate::tests::DeckAdder;
+
+    fn offline_review_collection(
+        model_path: &str,
+        interval: u32,
+        approximate: bool,
+        reviews: u32,
+        extra_new: usize,
+        subdeck: bool,
+    ) -> Result<(TempDir, Collection)> {
+        let (mut col, dir) = open_fs_test_collection("rwkv-refresh");
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.rwkv_review_instant_order_enabled = true;
+            config.rwkv_review_refresh_interval = interval;
+            config.rwkv_review_candidate_refresh_enabled = approximate;
+            config.rwkv_review_batch_size = 64;
+            config.rwkv_review_minimum_reviews_per_day = reviews;
+            config.review_order = ReviewCardOrder::RetrievabilityAscending as i32;
+            config.new_mix =
+                anki_proto::deck_config::deck_config::config::ReviewMix::AfterReviews as i32;
+        });
+        let deck_id = if subdeck {
+            let deck = DeckAdder::new("Default::Child").add(&mut col);
+            col.set_current_deck(deck.id)?;
+            deck.id
+        } else {
+            DeckId(1)
+        };
+        let cards: Vec<_> = (0..reviews)
+            .map(|_| CardAdder::new().deck(deck_id).add(&mut col)[0].id)
+            .collect();
+        col.set_due_date(&cards, "0", None)?;
+        for _ in 0..extra_new {
+            CardAdder::new().deck(deck_id).add(&mut col);
+        }
+        let model = OfflineModel {
+            path: Path::new(env!("CARGO_MANIFEST_DIR")).join(model_path),
+            precision: StatePrecision::Int8,
+        };
+        let mut runtime = RwkvOfflineRuntime::load(model)?;
+        col.rwkv_offline_sync_history(&mut runtime)?;
+        col.state.rwkv_offline = Some(Box::new(runtime));
+        Ok((dir, col))
+    }
+
+    fn queued_for_review(col: &mut Collection) -> Result<anki_proto::scheduler::QueuedCards> {
+        SchedulerService::get_queued_cards(
+            col,
+            GetQueuedCardsRequest {
+                fetch_limit: 1,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn answer_queued_review(
+        col: &mut Collection,
+        queue: &anki_proto::scheduler::QueuedCards,
+    ) -> Result<()> {
+        let card = queue.cards.first().unwrap();
+        let states = card.states.clone().unwrap();
+        let _ = SchedulerService::answer_card(
+            col,
+            CardAnswer {
+                card_id: card.card.as_ref().unwrap().id,
+                current_state: states.current,
+                new_state: states.good,
+                rating: Rating::Good as i32,
+                answered_at_millis: TimestampMillis::now().0,
+                milliseconds_taken: 0,
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn offline_review_queue_refreshes_at_the_configured_interval() -> Result<()> {
+        for model in [
+            "../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+        ] {
+            for interval in [1, 3] {
+                for approximate in [false, true] {
+                    let (_dir, mut col) =
+                        offline_review_collection(model, interval, approximate, 8, 0, false)?;
+                    let mut queue = queued_for_review(&mut col)?;
+                    assert_eq!(queue.review_count, 8);
+                    let initial = col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)]
+                        .cards
+                        .clone();
+                    let mut answered_ids = HashSet::new();
+                    for answered in 1..=interval {
+                        answered_ids.insert(CardId(queue.cards[0].card.as_ref().unwrap().id));
+                        answer_queued_review(&mut col, &queue)?;
+                        queue = queued_for_review(&mut col)?;
+                        let runtime = col.state.rwkv_offline.as_ref().unwrap();
+                        let scope = &runtime.scopes[&DeckId(1)];
+                        assert_eq!(queue.review_count, 8 - answered);
+                        if answered < interval {
+                            assert_eq!(scope.answered.len(), answered as usize);
+                            assert!(scope.generation < runtime.generation);
+                        } else {
+                            assert!(
+                                scope.answered.is_empty(),
+                                "queue was not refreshed at answer {answered}"
+                            );
+                            assert_eq!(scope.generation, runtime.generation);
+                            assert!(
+                                scope.cards.iter().any(|card| {
+                                    !answered_ids.contains(&card.card_id)
+                                        && initial.iter().any(|old| {
+                                            old.card_id == card.card_id
+                                                && (old.retrievability - card.retrievability).abs()
+                                                    > 0.0001
+                                        })
+                                }),
+                                "refresh did not update any unanswered card's recall"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn offline_deck_counts_do_not_reuse_a_partial_queue_refresh() -> Result<()> {
+        for (interval, approximate) in [(1, true), (3, false)] {
+            let (_dir, mut col) = offline_review_collection(
+                "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+                interval,
+                approximate,
+                8,
+                0,
+                false,
+            )?;
+            let queue = queued_for_review(&mut col)?;
+            answer_queued_review(&mut col, &queue)?;
+            // An unrelated event may also cause the reviewer to rebuild its queue.
+            col.clear_study_queues();
+            let _ = queued_for_review(&mut col)?;
+            let runtime = col.state.rwkv_offline.as_ref().unwrap();
+            let scope = &runtime.scopes[&DeckId(1)];
+            assert_eq!(scope.generation, runtime.generation);
+            assert!(scope.fully_computed_generation < runtime.generation);
+
+            let _ = col.deck_tree(Some(TimestampSecs::now()))?;
+            let runtime = col.state.rwkv_offline.as_ref().unwrap();
+            let scope = &runtime.scopes[&DeckId(1)];
+            assert_eq!(scope.fully_computed_generation, runtime.generation);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn offline_review_queue_refreshes_when_reviews_run_out_before_the_interval() -> Result<()> {
+        for extra_new in [0, 2] {
+            for approximate in [false, true] {
+                let (_dir, mut col) = offline_review_collection(
+                    "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+                    20,
+                    approximate,
+                    8,
+                    extra_new,
+                    false,
+                )?;
+                let mut queue = queued_for_review(&mut col)?;
+                for _ in 0..8 {
+                    answer_queued_review(&mut col, &queue)?;
+                    queue = queued_for_review(&mut col)?;
+                }
+                assert_eq!(queue.review_count, 0);
+                assert_eq!(queue.new_count, extra_new as u32);
+                let runtime = col.state.rwkv_offline.as_ref().unwrap();
+                let scope = &runtime.scopes[&DeckId(1)];
+                assert_eq!(scope.generation, runtime.generation);
+                assert!(scope.answered.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn offline_subdeck_uses_its_shared_scopes_refresh_interval() -> Result<()> {
+        let (_dir, mut col) = offline_review_collection(
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            2,
+            false,
+            8,
+            0,
+            true,
+        )?;
+        let mut queue = queued_for_review(&mut col)?;
+        for _ in 0..2 {
+            answer_queued_review(&mut col, &queue)?;
+            queue = queued_for_review(&mut col)?;
+        }
+        let runtime = col.state.rwkv_offline.as_ref().unwrap();
+        let scope = &runtime.scopes[&DeckId(1)];
+        assert_eq!(scope.generation, runtime.generation);
+        assert!(scope.answered.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn offline_answer_catches_up_when_the_fast_append_cannot_run() -> Result<()> {
+        let (_dir, mut col) = offline_review_collection(
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            20,
+            false,
+            8,
+            0,
+            false,
+        )?;
+        let mut queue = queued_for_review(&mut col)?;
+        answer_queued_review(&mut col, &queue)?;
+        queue = queued_for_review(&mut col)?;
+        let runtime = col.state.rwkv_offline.as_mut().unwrap();
+        let before = runtime.identity.as_ref().unwrap().review_count;
+        // A separate collection change makes the cheap append unsafe.
+        runtime.checked_at_mod = Some(TimestampMillis(0));
+        answer_queued_review(&mut col, &queue)?;
+        let runtime = col.state.rwkv_offline.as_ref().unwrap();
+        assert_eq!(runtime.identity.as_ref().unwrap().review_count, before + 1);
+        Ok(())
+    }
+
+    #[test]
+    fn offline_deck_counts_rescore_cards_outside_the_approximate_batch() -> Result<()> {
+        let (_dir, mut col) = offline_review_collection(
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            1,
+            true,
+            80,
+            0,
+            false,
+        )?;
+        let queue = queued_for_review(&mut col)?;
+        let answered_id = CardId(queue.cards[0].card.as_ref().unwrap().id);
+        let original = col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)]
+            .cards
+            .clone();
+        answer_queued_review(&mut col, &queue)?;
+        let _ = queued_for_review(&mut col)?;
+        let partial = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)].cards;
+        let untouched: Vec<_> = partial
+            .iter()
+            .filter(|card| card.card_id != answered_id)
+            .filter_map(|card| {
+                original
+                    .iter()
+                    .find(|old| {
+                        old.card_id == card.card_id && old.retrievability == card.retrievability
+                    })
+                    .copied()
+            })
+            .collect();
+        assert!(untouched.len() >= 15);
+
+        let _ = col.deck_tree(Some(TimestampSecs::now()))?;
+        let refreshed = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)].cards;
+        assert!(untouched.iter().any(|old| refreshed.iter().any(|card| {
+            card.card_id == old.card_id && (card.retrievability - old.retrievability).abs() > 0.0001
+        })));
+        Ok(())
+    }
 
     fn add_review(col: &mut Collection, card_id: CardId, id: i64) {
         col.storage
