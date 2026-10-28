@@ -526,6 +526,7 @@ fn prepare_and_wait(col: &mut Col, model_path: &str) -> anki::error::Result<()> 
         RwkvPrepareOfflineRequest {
             model_path: model_path.into(),
             state_precision: state_precision(),
+            model_kind: std::env::var("KUMA3_RWKV_MODEL_KIND").unwrap_or_default(),
         },
     )?;
     wait_ready(col)
