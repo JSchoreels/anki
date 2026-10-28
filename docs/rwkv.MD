@@ -3,7 +3,7 @@
 For the offline comparison of missing whole-card histories versus holes within
 histories, see [History Omission Accuracy Benchmark](rwkv-history-ablation.MD).
 
-The RWKV review scheduler is a desktop-only review-time scheduler. In Deck
+The RWKV review scheduler runs in desktop Anki and in Kuma's offline runtime. In Deck
 Options, **Scheduler → Review scheduler** selects FSRS-6, FSRS-7, RWKV-Curve,
 or RWKV-Instant for the preset. Curve uses RWKV-Curve answer intervals and stores
 RWKV-Curve S90 values. Instant selects review cards independently of their
@@ -35,9 +35,10 @@ the review scheduler's card comes first and its fallback follows. Instant with
 a Curve fallback shows only the RWKV card, with Instant before Curve. Ordering
 uses the selected models and keeps the existing components mounted, preserving
 editing state and the initial desired-retention baseline.
-Synced RWKV-Curve due dates can guide the next mobile session, but mobile
-clients do not load the RWKV backend and continue to schedule answers with
-FSRS/SM2. Choosing a model affects future answers; use the existing explicit
+Synced RWKV-Curve due dates can guide the next mobile session. Kuma loads its
+offline RWKV backend and can schedule answers with Curve; mobile clients without
+that runtime continue to schedule answers with FSRS/SM2. Choosing a model affects
+future answers; use the existing explicit
 reschedule controls to update stored due dates for cards already scheduled.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
@@ -60,6 +61,39 @@ defaults to off. Leave queue skipping off to use manual learning/relearning
 delays. Turning it on bypasses the delays without deleting the saved step lists;
 cards already graduated to Review do not automatically return to learning when
 it is turned off again.
+
+## Dynamic Desired Retention add-on on Kuma
+
+Kuma can evaluate the desktop Dynamic Desired Retention add-on's synced search,
+field, and grade rules. This is separate from the native FSRS Dynamic DR preset
+setting. To share existing rules, first sync desktop, save the add-on's rule
+table, and sync again; then sync Kuma. Rules are edited on desktop. The add-on
+stores only the three rule lists in the versioned `dynamicDesiredRetentionRules`
+collection configuration value. A missing or unsupported version leaves
+normal deck and preset behavior in place. Empty lists explicitly clear rules.
+Anki syncs collection configuration as a snapshot. A stale device that makes a
+newer, unrelated collection change before syncing can remove or revert the
+rules, so sync each device before making offline changes. Clear and sync the
+rules before disabling the desktop add-on if Kuma should stop applying them.
+
+Search rules are checked first in order, followed by note-type and field rules.
+Numeric rules support step and linear thresholds, higher or lower priority,
+relative top percentiles, visible numbers in HTML, and per-slice interval
+bounds. Percentile populations count notes rather than sibling cards. Grade
+rules use the same absolute or relative targets and native Dynamic DR
+precedence as the desktop add-on. Kuma uses matched targets for answer states,
+saved answers, RWKV scoring, and Curve rescheduling. It discards cached scores
+when rules or relevant notes, tags, cards, or decks change; ordinary answers
+continue to follow the configured RWKV queue-refresh interval. Search and
+percentile results are evaluated from the current collection, so large rule
+populations can take time to scan.
+Numeric HTML fields are normalized on both platforms; malformed or unusual
+markup may be interpreted differently by their respective HTML parsers.
+
+With native Dynamic DR enabled, both backends currently record the native
+grade-mapped retention on the card even when an add-on grade rule selected an
+exact target for its answer-button interval. This is existing desktop behavior
+and can make the stored value differ from that interval's target.
 
 ## Bundled RWKV Models
 

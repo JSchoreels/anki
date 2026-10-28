@@ -683,6 +683,18 @@ fn query_input(row: &Row) -> ReviewInput {
 }
 
 impl Collection {
+    /// Rule changes affect scores and answer targets, but not recurrent history.
+    pub(crate) fn invalidate_rwkv_offline_targets(&mut self) {
+        if let Some(runtime) = self.state.rwkv_offline.as_mut() {
+            runtime.scopes.clear();
+            runtime.curve_s90.clear();
+        }
+        self.state.rwkv_retrievability_scores = None;
+        self.state.rwkv_count_cards.clear();
+        self.state.addon_retention_populations.clear();
+        self.state.card_queues = None;
+    }
+
     pub(crate) fn rwkv_prepare_offline(
         &mut self,
         input: RwkvPrepareOfflineRequest,
@@ -1445,6 +1457,19 @@ impl Collection {
         if runtime.identity.is_some() && runtime.checked_at_mod == Some(collection_mod) {
             return Ok(0);
         }
+        // Search and field rules can change their targets when notes, tags,
+        // decks, or scheduling data change. Keep the recurrent state, but do
+        // not reuse scores computed from an older collection snapshot.
+        if runtime.identity.is_some()
+            && crate::scheduler::addon_desired_retention::AddonRetentionRules::from_collection(self)
+                .is_some()
+        {
+            runtime.scopes.clear();
+            runtime.curve_s90.clear();
+            self.state.rwkv_retrievability_scores = None;
+            self.state.addon_retention_populations.clear();
+            self.state.card_queues = None;
+        }
         let stamp = self.rwkv_offline_replay_stamp()?;
         if runtime.identity.is_some() && stamp.is_some() && stamp == runtime.checked_stamp {
             // Only what the replay doesn't read changed (deck options, notes).
@@ -2123,6 +2148,110 @@ mod test {
                 ..Default::default()
             },
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn synced_retention_rules_refresh_live_offline_scores() -> Result<()> {
+        let (_dir, mut col) = offline_review_collection(
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            1,
+            false,
+            3,
+            0,
+            false,
+        )?;
+        let _ = queued_for_review(&mut col)?;
+        assert!(!col.state.rwkv_offline.as_ref().unwrap().scopes.is_empty());
+        col.set_config(
+            crate::scheduler::addon_desired_retention::CONFIG_KEY,
+            &serde_json::json!({
+                "version": 1,
+                "rules": [{"query": "deck:Default", "desired_retention": 0.75}]
+            }),
+        )?;
+        assert!(col.state.rwkv_offline.as_ref().unwrap().scopes.is_empty());
+        let _ = queued_for_review(&mut col)?;
+        let scope = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)];
+        assert_eq!(scope.cards.len(), 3);
+        assert!(scope
+            .cards
+            .iter()
+            .all(|card| card.target_retention == Some(0.75)));
+        Ok(())
+    }
+
+    #[test]
+    fn synced_retention_rules_keep_the_configured_queue_refresh_interval() -> Result<()> {
+        let (_dir, mut col) = offline_review_collection(
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            3,
+            false,
+            8,
+            0,
+            false,
+        )?;
+        col.set_config(
+            crate::scheduler::addon_desired_retention::CONFIG_KEY,
+            &serde_json::json!({
+                "version": 1,
+                "rules": [{"query": "deck:Default", "desired_retention": 0.99}]
+            }),
+        )?;
+        let queue = queued_for_review(&mut col)?;
+        assert!(!queue.cards.is_empty());
+        answer_queued_review(&mut col, &queue)?;
+        let _ = queued_for_review(&mut col)?;
+        let runtime = col.state.rwkv_offline.as_ref().unwrap();
+        let scope = &runtime.scopes[&DeckId(1)];
+        assert_eq!(scope.answered.len(), 1);
+        assert!(scope.generation < runtime.generation);
+        Ok(())
+    }
+
+    #[test]
+    fn synced_retention_search_refreshes_after_a_note_changes() -> Result<()> {
+        let (_dir, mut col) = offline_review_collection(
+            "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+            3,
+            false,
+            3,
+            0,
+            false,
+        )?;
+        let ids = col.search_cards("deck:Default", SortMode::NoOrder)?;
+        let cards = col.all_cards_for_ids(&ids, false)?;
+        let (card_id, note_id) = (cards[0].id, cards[0].note_id);
+        col.set_config(
+            crate::scheduler::addon_desired_retention::CONFIG_KEY,
+            &serde_json::json!({
+                "version": 1,
+                "rules": [{"query": "tag:priority", "desired_retention": 0.99}]
+            }),
+        )?;
+        let _ = queued_for_review(&mut col)?;
+        let prior = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)];
+        assert_ne!(
+            prior
+                .cards
+                .iter()
+                .find(|card| card.card_id == card_id)
+                .unwrap()
+                .target_retention,
+            Some(0.99)
+        );
+        col.add_tags_to_notes(&[note_id], "priority")?;
+        let _ = queued_for_review(&mut col)?;
+        let updated = &col.state.rwkv_offline.as_ref().unwrap().scopes[&DeckId(1)];
+        assert_eq!(
+            updated
+                .cards
+                .iter()
+                .find(|card| card.card_id == card_id)
+                .unwrap()
+                .target_retention,
+            Some(0.99)
+        );
         Ok(())
     }
 
