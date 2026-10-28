@@ -328,6 +328,12 @@ impl CardQueues {
             // we discard the returned undo information in this case
             self.update_learning_cutoff_and_count();
         }
+        self.counts_snapshot()
+    }
+
+    /// Inspect the current visible counts without advancing the learning
+    /// cutoff.
+    pub(crate) fn counts_snapshot(&self) -> Counts {
         Counts {
             learning: if self.blocked_rwkv_learning_cards.is_empty() {
                 self.counts.learning
