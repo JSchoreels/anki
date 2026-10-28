@@ -52,7 +52,8 @@ intraday seconds without fuzz only when **Allow same day review for
 generated intervals use day-based review states with a minimum of one day.
 Configured learning/relearning steps still take precedence while learning queues
 are enabled. Intervals at or above 12 hours use normal whole-day fuzz and
-answer-button ordering.
+answer-button ordering. Preview-only filtered answers do not apply Curve's
+predicted S90 to the card's stored memory state.
 
 **Allow same day review for (re)learning steps** defaults to on; explicitly saved
 off choices are preserved. **Skip learning/relearning queues with FSRS/RWKV**
