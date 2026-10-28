@@ -336,8 +336,21 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<anki_proto::collection::OpChanges> {
         let card_id = CardId(input.card_id);
         let mod_before = self.storage.get_collection_timestamps()?.collection_change;
+        let reviews_before = self
+            .state
+            .rwkv_offline
+            .as_ref()
+            .and(self.state.card_queues.as_ref())
+            .map(|queue| queue.counts_snapshot().review);
         let output = self.answer_card(&mut input.into())?;
-        self.rwkv_offline_after_answer(card_id, mod_before);
+        let queue_exhausted = reviews_before.is_some_and(|reviews_before| {
+            self.state.card_queues.as_ref().is_some_and(|queue| {
+                let counts = queue.counts_snapshot();
+                (reviews_before > 0 && counts.review == 0)
+                    || (counts.new == 0 && counts.learning == 0 && counts.review == 0)
+            })
+        });
+        self.rwkv_offline_after_answer(card_id, mod_before, queue_exhausted);
         Ok(output.into())
     }
 
