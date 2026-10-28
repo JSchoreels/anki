@@ -684,6 +684,7 @@ mod tests {
                 milliseconds_taken: 0,
                 custom_data: None,
                 desired_retention_override: None,
+                desired_retention_override_is_final: false,
                 rwkv_s90: None,
                 rwkv_retrievability: None,
                 rwkv_review_kind: None,

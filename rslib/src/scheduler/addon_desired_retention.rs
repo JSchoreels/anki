@@ -856,6 +856,7 @@ mod test {
         )?;
         let choices = col.get_scheduling_states(card_id)?;
         let recorded_target = choices.dynamic_desired_retentions.unwrap()[2];
+        assert_ne!((recorded_target * 100.0).round() / 100.0, 0.85);
         let CardState::Normal(NormalState::Review(good)) = choices.good else {
             panic!("expected a review state");
         };
@@ -863,9 +864,17 @@ mod test {
         let interval = col.fsrs_interval_at_retrievability_for_card(card_id, stability, 0.85)?;
         assert_eq!(good.scheduled_days, ((interval + 0.5) as u32).max(1));
         col.answer_good();
+        assert_eq!(col.get_first_card().desired_retention, Some(0.85));
+
+        // No grade rule matches Easy, so native Dynamic DR still selects and
+        // saves its per-grade mapped retention.
+        col.undo()?;
+        let choices = col.get_scheduling_states(card_id)?;
+        let mapped_easy = choices.dynamic_desired_retentions.unwrap()[3];
+        col.answer_easy();
         assert_eq!(
             col.get_first_card().desired_retention,
-            Some((recorded_target * 100.0).round() / 100.0)
+            Some((mapped_easy * 100.0).round() / 100.0)
         );
         Ok(())
     }
@@ -902,12 +911,43 @@ mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: Some(0.6),
+            desired_retention_override_is_final: false,
             rwkv_s90: None,
             rwkv_retrievability: None,
             rwkv_review_kind: None,
             from_queue: false,
         })?;
         assert_eq!(col.get_first_card().desired_retention, Some(0.8));
+
+        // A caller that has already supplied a final target must not have the
+        // relative grade rule applied to it a second time.
+        col.undo()?;
+        col.set_config(CONFIG_KEY, &json!({"version": 1, "grade_rules": []}))?;
+        let states =
+            col.get_scheduling_states_with_desired_retention_override(card_id, Some(0.6))?;
+        col.set_config(
+            CONFIG_KEY,
+            &json!({
+                "version": 1,
+                "grade_rules": [{"grade": "good", "mode": "relative", "value": 0.5}]
+            }),
+        )?;
+        col.answer_card(&mut CardAnswer {
+            card_id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: Some(0.6),
+            desired_retention_override_is_final: true,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: false,
+        })?;
+        assert_eq!(col.get_first_card().desired_retention, Some(0.6));
         Ok(())
     }
 }
