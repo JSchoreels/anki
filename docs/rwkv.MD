@@ -3,7 +3,7 @@
 For the offline comparison of missing whole-card histories versus holes within
 histories, see [History Omission Accuracy Benchmark](rwkv-history-ablation.MD).
 
-The RWKV review scheduler is a desktop-only review-time scheduler. In Deck
+The RWKV review scheduler runs in desktop Anki and in Kuma's offline runtime. In Deck
 Options, **Scheduler → Review scheduler** selects FSRS-6, FSRS-7, RWKV-Curve,
 or RWKV-Instant for the preset. Curve uses RWKV-Curve answer intervals and stores
 RWKV-Curve S90 values. Instant selects review cards independently of their
@@ -35,9 +35,10 @@ the review scheduler's card comes first and its fallback follows. Instant with
 a Curve fallback shows only the RWKV card, with Instant before Curve. Ordering
 uses the selected models and keeps the existing components mounted, preserving
 editing state and the initial desired-retention baseline.
-Synced RWKV-Curve due dates can guide the next mobile session, but mobile
-clients do not load the RWKV backend and continue to schedule answers with
-FSRS/SM2. Choosing a model affects future answers; use the existing explicit
+Synced RWKV-Curve due dates can guide the next mobile session. Kuma loads its
+offline RWKV backend and can schedule answers with Curve; mobile clients without
+that runtime continue to schedule answers with FSRS/SM2. Choosing a model affects
+future answers; use the existing explicit
 reschedule controls to update stored due dates for cards already scheduled.
 
 RWKV-Curve keeps answer intervals and S90 values fractional while evaluating
@@ -297,7 +298,18 @@ state used to assign future encodings, so restored desktop sessions keep using
 the same benchmark-compatible ID features for cards, notes, decks, and presets.
 While the runtime is resident, Anki also keeps its canonical history and replay
 identity in memory. A completed local answer clears that identity after updating
-the recurrent state. Before applying that answer, Anki falls back to canonical
+the recurrent state. New cards start a fresh RWKV history even when an older
+unscheduled import reused a card ID with retained review logs. The effective
+boundary is stored in synced card data and a versioned
+`rwkvHistoryReset_<card id>` collection-config entry so older clients can
+rewrite the card without losing it. Imports, the first non-preview answer, Set
+Due Date, undo and redo preserve the corresponding boundary decision. A
+scheduled import retains its source history and boundary. Normal sync merges
+newer boundary decisions if an older client sends stale configuration. A full
+sync that replaces the collection, or a scheduled package exported by an older
+client after it stripped the card field, can still lose a boundary.
+
+Before applying that answer, Anki falls back to canonical
 recovery if an unmarked new learning start replaces older retained history or
 if the answer changed dynamic preset routing. With dynamic preset replay, the
 answer is applied under the preset historical replay would choose for it. Anki
@@ -310,8 +322,9 @@ state before relearning begins, so the first new answer does not require another
 collection-wide recovery. Anki's Forget operation does not delete the underlying
 review log. Normal preparation, recovery, restart, and **Build Cache** all apply
 the same reset boundary. The former profile-local preservation markers are no
-longer read or written. Replay semantics version 5 invalidates caches built with
-the earlier preservation rule; the next preparation rebuilds them once. Undoing
+longer read or written. Desktop replay semantics version 7 and Kuma's offline
+state version 4 invalidate caches built before these reset rules; the next
+preparation rebuilds them once. Undoing
 Forget removes its boundary through Anki's normal undo operation, restoring the
 eligible history on the next replay. The state-store schema
 remains version 12. Append-only **Grade Now** batches apply

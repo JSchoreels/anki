@@ -73,7 +73,7 @@ impl CollectionBuilder {
         let media_folder = self.media_folder.clone().unwrap_or_default();
         let media_db = self.media_db.clone().unwrap_or_default();
         let storage = SqliteStorage::open_or_create(&col_path, &tr, server, self.check_integrity)?;
-        let col = Collection {
+        let mut col = Collection {
             storage,
             session_id: Arc::new(()),
             col_path,
@@ -87,6 +87,9 @@ impl CollectionBuilder {
             },
         };
 
+        if !server {
+            col.migrate_rwkv_history_reset_mirrors()?;
+        }
         Ok(col)
     }
 
@@ -159,12 +162,13 @@ pub struct CollectionState {
     /// What the last deck count did with each RWKV scope's cards, by scope
     /// deck (read by the RWKV forecast).
     pub(crate) rwkv_count_cards: HashMap<DeckId, RwkvCountCards>,
-    /// Last review time by card, valid while the card's (mtime, reps) match:
-    /// each queue build looked it up in the revlog for every due card.
+    /// Last review time by card, valid while mtime, reps and reset boundary
+    /// match: each queue build looked it up in the revlog for every due
+    /// card.
     pub(crate) rwkv_last_review_times: HashMap<
         CardId,
         (
-            (crate::timestamp::TimestampSecs, u32),
+            (crate::timestamp::TimestampSecs, u32, Option<i64>),
             Option<crate::timestamp::TimestampSecs>,
         ),
     >,

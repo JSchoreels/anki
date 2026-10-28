@@ -26,6 +26,8 @@ use crate::card::Card;
 use crate::card::CardId;
 use crate::card::CardQueue;
 use crate::card::CardType;
+use crate::config::rwkv_history_reset_config_key;
+use crate::config::RwkvHistoryResetMirror;
 use crate::deckconfig::DeckConfigId;
 use crate::deckconfig::ReviewCardOrder;
 use crate::decks::Deck;
@@ -98,6 +100,7 @@ fn row_to_card(row: &Row) -> result::Result<Card, rusqlite::Error> {
         desired_retention: data.fsrs_desired_retention,
         decay: data.decay,
         last_review_time: data.last_review_time,
+        rwkv_history_reset_after: data.rwkv_history_reset_after,
         custom_data: data.custom_data,
     })
 }
@@ -221,11 +224,46 @@ and (data not like '%"s_int":%' or data not like '%"s_fast":%')"#,
     }
 
     pub fn get_card(&self, cid: CardId) -> Result<Option<Card>> {
-        self.db
+        let mut card = self
+            .db
             .prepare_cached(concat!(include_str!("get_card.sql"), " where id = ?"))?
             .query_row(params![cid], row_to_card)
-            .optional()
-            .map_err(Into::into)
+            .optional()?;
+        if let Some(card) = &mut card {
+            self.populate_rwkv_history_reset(card)?;
+        }
+        Ok(card)
+    }
+
+    pub(crate) fn populate_rwkv_history_reset(&self, card: &mut Card) -> Result<()> {
+        if let Some(boundary) = self
+            .get_config_value::<RwkvHistoryResetMirror>(&rwkv_history_reset_config_key(card.id))?
+        {
+            if let Some(after) = boundary.after {
+                card.rwkv_history_reset_after = (after > 0).then_some(after);
+            }
+        }
+        Ok(())
+    }
+
+    /// Fields written by an earlier build need a synchronized mirror before an
+    /// older client has a chance to rewrite their cards.
+    pub(crate) fn unmirrored_rwkv_history_resets(
+        &self,
+    ) -> Result<Vec<(CardId, i64, TimestampSecs)>> {
+        self.db
+            .prepare(
+                r#"select c.id, json_extract(c.data, '$.rwkv_reset_after'), c.mod from cards c
+                 where c.data like '%"rwkv_reset_after"%'
+                 and case when json_valid(c.data) then
+                   json_type(c.data, '$.rwkv_reset_after') = 'integer'
+                   and json_extract(c.data, '$.rwkv_reset_after') > 0
+                 else false end
+                 and not exists (select 1 from config
+                   where key = 'rwkvHistoryReset_' || c.id)"#,
+            )?
+            .query_and_then([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect()
     }
 
     pub(crate) fn get_all_card_entries(&self) -> Result<Vec<CardEntry>> {

@@ -149,20 +149,160 @@ impl Collection {
 
 #[cfg(test)]
 mod tests {
+    use anki_proto::scheduler::card_answer::Rating;
+    use anki_proto::scheduler::CardAnswer;
+    use anki_proto::scheduler::GetQueuedCardsRequest;
+    use serde_json::json;
+
     use super::*;
     use crate::notes::NoteId;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::services::SchedulerService;
+    use crate::tests::open_fs_test_collection;
+    use crate::tests::CardAdder;
+
+    fn answer_next(col: &mut Collection) -> Result<CardId> {
+        let queue = SchedulerService::get_queued_cards(
+            col,
+            GetQueuedCardsRequest {
+                fetch_limit: 1,
+                ..Default::default()
+            },
+        )?;
+        let card = &queue.cards[0];
+        let card_id = CardId(card.card.as_ref().unwrap().id);
+        let states = card.states.clone().unwrap();
+        let _ = SchedulerService::answer_card(
+            col,
+            CardAnswer {
+                card_id: card_id.0,
+                current_state: states.current,
+                new_state: states.good,
+                rating: Rating::Good as i32,
+                answered_at_millis: TimestampMillis::now().0,
+                ..Default::default()
+            },
+        )?;
+        Ok(card_id)
+    }
+
+    fn prepare_unlogged_new_card(col: &mut Collection) -> Result<(CardId, i64)> {
+        let card_id = CardAdder::new().add(col)[0].id;
+        col.set_due_date(&[card_id], "0", None)?;
+        assert_eq!(answer_next(col)?, card_id);
+        let history = col.rwkv_historical_review_inputs(Default::default())?;
+        let previous = history.reviews.last().unwrap().review_id;
+        let mut card = col.all_cards_for_ids(&[card_id], false)?.remove(0);
+        card.ctype = CardType::New;
+        card.queue = CardQueue::New;
+        let _ = col.update_cards_maybe_undoable(vec![card], true)?;
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        Ok((card_id, previous))
+    }
+
+    #[test]
+    fn synced_reset_mirror_limits_history() -> Result<()> {
+        let (mut col, _dir) = open_fs_test_collection("rwkv-synced-reset");
+        let card_id = CardAdder::new().add(&mut col)[0].id;
+        for _ in 0..2 {
+            col.set_due_date(&[card_id], "0", None)?;
+            assert_eq!(answer_next(&mut col)?, card_id);
+        }
+        let before = col.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(before.reviews.len(), 2);
+        col.set_config_json(
+            &format!("rwkvHistoryReset_{}", card_id.0),
+            &json!({"after": before.reviews[0].review_id, "updated": 1}),
+            false,
+        )?;
+        let after = col.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(after.reviews.len(), 1);
+        assert_eq!(after.reviews[0].review_id, before.reviews[1].review_id);
+        Ok(())
+    }
+
+    #[test]
+    fn unlogged_new_card_reset_survives_first_answer_undo_and_redo() -> Result<()> {
+        let (mut col, _dir) = open_fs_test_collection("rwkv-new-answer-reset");
+        let (card_id, previous) = prepare_unlogged_new_card(&mut col)?;
+        assert_eq!(answer_next(&mut col)?, card_id);
+        let history = col.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(history.reviews.len(), 1);
+        assert!(history.reviews[0].review_id > previous);
+        let card = col.storage.get_card(card_id)?.unwrap();
+        assert_eq!(card.rwkv_history_reset_after, Some(previous));
+        let _ = col.undo()?;
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        let _ = col.redo()?;
+        assert_eq!(
+            col.rwkv_historical_review_inputs(Default::default())?
+                .reviews
+                .len(),
+            1
+        );
+        assert_eq!(
+            col.storage
+                .get_card(card_id)?
+                .unwrap()
+                .rwkv_history_reset_after,
+            Some(previous)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unlogged_new_card_reset_survives_set_due_date_undo_and_redo() -> Result<()> {
+        let (mut col, _dir) = open_fs_test_collection("rwkv-new-due-reset");
+        let (card_id, previous) = prepare_unlogged_new_card(&mut col)?;
+        col.set_due_date(&[card_id], "0", None)?;
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        assert_eq!(
+            col.storage
+                .get_card(card_id)?
+                .unwrap()
+                .rwkv_history_reset_after,
+            Some(previous)
+        );
+        let _ = col.undo()?;
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        let _ = col.redo()?;
+        assert!(col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        assert_eq!(
+            col.storage
+                .get_card(card_id)?
+                .unwrap()
+                .rwkv_history_reset_after,
+            Some(previous)
+        );
+        Ok(())
+    }
 
     #[test]
     fn historical_inputs_use_forget_boundary_before_relearning() -> Result<()> {
         let mut col = Collection::new();
         let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        card.ctype = CardType::Review;
         col.add_card(&mut card)?;
         let start = 1_700_000_000_000;
         let add_review = |col: &mut Collection, offset, kind, button, factor| {
-            col.storage.add_revlog_entry(
-                &RevlogEntry {
+            col.transact_no_undo(|col| {
+                let _ = col.add_revlog_entry_undoable(RevlogEntry {
                     id: RevlogId(start + offset),
                     cid: card.id,
                     usn: Usn(0),
@@ -172,9 +312,9 @@ mod tests {
                     taken_millis: 1_000,
                     review_kind: kind,
                     ..Default::default()
-                },
-                false,
-            )
+                })?;
+                Ok(())
+            })
         };
         add_review(&mut col, 0, RevlogReviewKind::Learning, 3, 2_500)?;
         add_review(&mut col, 1, RevlogReviewKind::Review, 3, 2_500)?;
@@ -237,13 +377,15 @@ mod tests {
         let mut col = Collection::new();
         let mut first = Card::new(NoteId(10), 0, DeckId(1), 0);
         let mut second = Card::new(NoteId(20), 0, DeckId(1), 0);
+        first.ctype = CardType::Review;
+        second.ctype = CardType::Review;
         col.add_card(&mut first)?;
         col.add_card(&mut second)?;
         let day = 86_400_000;
         let start = 1_700_000_000_000;
         let add_review = |col: &mut Collection, card: CardId, offset, interval, kind| {
-            col.storage.add_revlog_entry(
-                &RevlogEntry {
+            col.transact_no_undo(|col| {
+                let _ = col.add_revlog_entry_undoable(RevlogEntry {
                     id: RevlogId(start + offset * day),
                     cid: card,
                     usn: Usn(0),
@@ -253,9 +395,9 @@ mod tests {
                     taken_millis: 1_000,
                     review_kind: kind,
                     ..Default::default()
-                },
-                false,
-            )
+                })?;
+                Ok(())
+            })
         };
         add_review(&mut col, first.id, 0, 1, RevlogReviewKind::Learning)?;
         add_review(&mut col, second.id, 1, 2, RevlogReviewKind::Learning)?;

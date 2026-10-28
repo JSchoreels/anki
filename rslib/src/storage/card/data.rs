@@ -68,6 +68,13 @@ pub(crate) struct CardData {
     )]
     pub(crate) last_review_time: Option<TimestampSecs>,
 
+    #[serde(
+        rename = "rwkv_reset_after",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "default_on_invalid"
+    )]
+    pub(crate) rwkv_history_reset_after: Option<i64>,
+
     /// A string representation of a JSON object storing optional data
     /// associated with the card, so v3 custom scheduling code can persist
     /// state.
@@ -86,6 +93,7 @@ impl CardData {
             fsrs_desired_retention: card.desired_retention,
             decay: card.decay,
             last_review_time: card.last_review_time,
+            rwkv_history_reset_after: card.rwkv_history_reset_after,
             custom_data: card.custom_data.clone(),
         }
     }
@@ -214,6 +222,7 @@ mod test {
             fsrs_desired_retention: Some(0.987654),
             decay: Some(0.123456),
             last_review_time: None,
+            rwkv_history_reset_after: None,
             custom_data: "".to_string(),
         };
         assert_eq!(

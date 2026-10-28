@@ -779,6 +779,69 @@ async fn upload_download(ctx: &SyncTestContext) -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn rwkv_reset_history_survives_normal_sync_between_clients() -> Result<()> {
+    use anki_proto::scheduler::card_answer::Rating;
+    use anki_proto::scheduler::GradeNowRequest;
+    use anki_proto::scheduler::ScheduleCardsAsNewRequest;
+
+    use crate::services::SchedulerService;
+
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        let mut source = ctx.col1();
+        col1_setup(&mut source);
+        let card_id = source.get_first_card().id;
+        let grade = || GradeNowRequest {
+            card_ids: vec![card_id.0],
+            rating: Rating::Easy as i32,
+            card_options: vec![],
+        };
+        source.grade_now(grade())?;
+        let old_history = source.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(old_history.reviews.len(), 1);
+        let old_review_id = old_history.reviews[0].review_id;
+
+        let initial_sync = ctx.normal_sync(&mut source).await;
+        assert!(matches!(
+            initial_sync.required,
+            SyncActionRequired::FullSyncRequired { .. }
+        ));
+        ctx.full_upload(source).await;
+        ctx.full_download(ctx.col2()).await;
+
+        let mut source = ctx.col1();
+        let mut other = ctx.col2();
+        let _ = SchedulerService::schedule_cards_as_new(
+            &mut source,
+            ScheduleCardsAsNewRequest {
+                card_ids: vec![card_id.0],
+                log: false,
+                ..Default::default()
+            },
+        )?;
+        assert!(source
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews
+            .is_empty());
+        source.grade_now(grade())?;
+        let fresh = source.rwkv_historical_review_inputs(Default::default())?;
+        assert_eq!(fresh.reviews.len(), 1);
+        assert!(fresh.reviews[0].review_id > old_review_id);
+
+        ctx.normal_sync(&mut source).await;
+        ctx.normal_sync(&mut other).await;
+        assert_eq!(
+            other
+                .rwkv_historical_review_inputs(Default::default())?
+                .reviews,
+            fresh.reviews
+        );
+        Ok(())
+    })
+    .await
+}
+
 // Regular syncs
 /////////////////////
 
