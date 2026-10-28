@@ -2,7 +2,7 @@
  "label": "s-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon",
  "created": "2026-10-28 08:40:27",
  "checkpoint": {
-  "path": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/expertium/E89-F65e-F77a/master.pth",
+  "path": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/run/E89-F65e-F77a/master.pth",
   "bytes": 1489805,
   "sha256": "58a391e3070382ed6152e0ba48aaaf4c5f6542dda3033526f9306536a721f5d9"
  },
@@ -193,7 +193,7 @@
  },
  "training": {
   "checkpoint_folder_result": {
-   "model": "expertium",
+   "model": "rwkv-small",
    "track": "E89-F65e-F77a",
    "options": {
     "prefetch_users": true,
@@ -225,7 +225,7 @@
     "wddm_flush": true,
     "architecture": "w64",
     "distillation": {
-     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/expertium/big-leakfree-1ep/master.pth",
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
      "alpha": 0.9,
      "decay_alpha": 0.5,
      "kd_source": "replay",
@@ -236,10 +236,10 @@
      "lanes": "strided"
     },
     "training_seed": 2025,
-    "optimizer": "expertium-iter53"
+    "optimizer": "muon-iter53"
    },
    "config": {
-    "MODEL": "expertium",
+    "MODEL": "rwkv-small",
     "DTYPE": "bfloat16",
     "WKV_BACKEND": "nvrtc",
     "SEED": 2025,
@@ -273,7 +273,7 @@
     "source_archive": "artifacts/sources/experiment-sources/1cc380b9952035d2f17e96ad3f9dbe8f071a61fab9452b2246c270da487111f8/source.zip",
     "source_paths": [
      "rwkv",
-     "expertium",
+     "rwkv-small",
      "scripts",
      "configs",
      "pyproject.toml",
@@ -298,7 +298,7 @@
    "gpu_copy_milliseconds": 48440.042419433594,
    "gpu_copy_overlap_training_milliseconds": 449.45672607421875,
    "initial_parameter_sha256": "75fe4c3a20659eab7157d74da596993ec2d57a49127cc641b4b29e726b3a4b3d",
-   "expertium_catch_up": {
+   "catch_up": {
     "keys": [
      "architecture",
      "distillation",
@@ -315,10 +315,10 @@
      "final": 0.0,
      "total_reviews": 581942724
     },
-    "optimizer": "expertium-iter53",
+    "optimizer": "muon-iter53",
     "deleted_cards": "neighbour",
     "distillation": {
-     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/expertium/big-leakfree-1ep/master.pth",
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
      "teacher_sha256": "ac7f0d8a96cbc086eb17307ee13c67cf8e4a68e9b3d70dd5657eaa9957d9d240",
      "teacher_parameters": null,
      "alpha": 0.9,
@@ -464,7 +464,7 @@
     "reason": "periodic",
     "utc": "2026-10-28T06:02:01.249544+00:00",
     "progress_users": 6800,
-    "folder": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/expertium/E89-F65e-F77a/snapshots/users-06800"
+    "folder": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/run/E89-F65e-F77a/snapshots/users-06800"
    },
    "training_seconds": 25141.115297700046,
    "training_gc": {
@@ -502,9 +502,9 @@
    "created_utc": "2026-10-27T19:05:37.395693+00:00",
    "source_run": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run",
    "source_epoch": 15,
-   "source_case": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-15/expertium/E89-F65e-F77a",
+   "source_case": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-15/run/E89-F65e-F77a",
    "source_update_offset_end": 331170,
-   "model": "expertium",
+   "model": "rwkv-small",
    "track": "E89-F65e-F77a",
    "options": {
     "prefetch_users": true,
@@ -536,7 +536,7 @@
     "wddm_flush": true,
     "architecture": "w64",
     "distillation": {
-     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/expertium/big-leakfree-1ep/master.pth",
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
      "alpha": 0.9,
      "decay_alpha": 0.5,
      "kd_source": "replay",
@@ -547,7 +547,7 @@
      "lanes": "strided"
     },
     "training_seed": 2025,
-    "optimizer": "expertium-iter53"
+    "optimizer": "muon-iter53"
    },
    "dropped_width32_options": [
     "exact_group_norm",
@@ -569,7 +569,7 @@
    "lr": "7e-4 -> 0, shape one_minus_sin, over all 581,942,738 reviews",
    "evaluation_set": "none",
    "evaluation_users": 0,
-   "control": "epoch-15 scores of the same users in <workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-15/expertium/E89-F65e-F77a/result.json",
+   "control": "epoch-15 scores of the same users in <workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-15/run/E89-F65e-F77a/result.json",
    "trimmed_unlabelled_tails": [
     {
      "user_id": 5599,
@@ -583,7 +583,7 @@
   "decay_protocol_full_run": {
    "epoch": 15,
    "evaluate": false,
-   "init_master": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/expertium/E89-F65e-F77a/snapshots/users-00859/master.pth",
+   "init_master": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/run/E89-F65e-F77a/snapshots/users-00859/master.pth",
    "update_offset": 333528,
    "lr_schedule": {
     "decay_start": 0.0,
@@ -596,14 +596,14 @@
    "snapshot_users": 400,
    "control_dir": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/control",
    "optimizer_state": "snapshot",
-   "init_optimizer": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/expertium/E89-F65e-F77a/snapshots/users-00859/optimizer.pth",
+   "init_optimizer": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/run/E89-F65e-F77a/snapshots/users-00859/optimizer.pth",
    "lr_resume": {
     "total_reviews": 581942724,
     "reviews_offset": 62100668
    },
    "resumed": {
     "done_users": 859,
-    "from": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/expertium/E89-F65e-F77a/snapshots/users-00859",
+    "from": "artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/attempts/attempt-1/run/E89-F65e-F77a/snapshots/users-00859",
     "attempts": [
      "attempt-1"
     ]
@@ -617,7 +617,7 @@
   "heldout_report_rows": []
  },
  "parity": {
-  "checkpoint": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/expertium/E89-F65e-F77a/master.pth",
+  "checkpoint": "<workspace>/wt/sm72s/artifacts/small-model/scale-w64kd-final-sc-lanes-leakfree-dec15-1ep32k-muon/run/E89-F65e-F77a/master.pth",
   "users": [
    4676,
    1745,
@@ -735,8 +735,8 @@
    "sha256": "58a391e3070382ed6152e0ba48aaaf4c5f6542dda3033526f9306536a721f5d9"
   },
   "parity.json": {
-   "bytes": 3206,
-   "sha256": "c7649431b74094831df0af79d3e7e3b8f618f349a768f100d0f7d4f47f4cbcc4"
+   "bytes": 3187,
+   "sha256": "7a6a6eb80646c1653149461819f1647eb7b14ab0bf894814febbdf2b425349be"
   },
   "weights.f32.bin": {
    "bytes": 1351553,
@@ -756,7 +756,7 @@
   "source_archive": "artifacts/sources/experiment-sources/1cc380b9952035d2f17e96ad3f9dbe8f071a61fab9452b2246c270da487111f8/source.zip",
   "source_paths": [
    "rwkv",
-   "expertium",
+   "rwkv-small",
    "scripts",
    "configs",
    "pyproject.toml",
