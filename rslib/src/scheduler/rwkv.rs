@@ -715,22 +715,94 @@ impl Collection {
         Ok(card.last_review_time)
     }
 
+    /// Keep older, unlogged new-card resets when a scheduling operation makes
+    /// the card non-new. The card update and boundary share the operation's
+    /// undo.
+    pub(crate) fn prepare_rwkv_new_card_reset(&mut self, card: &mut Card) -> Result<()> {
+        if card.ctype == CardType::New {
+            if let Some(previous) = self.storage.last_unreset_review(card.id)? {
+                card.rwkv_history_reset_after = Some(
+                    card.rwkv_history_reset_after
+                        .unwrap_or_default()
+                        .max(previous.0),
+                );
+            }
+            self.mirror_rwkv_history_reset(card)?;
+        }
+        Ok(())
+    }
+
+    /// Keep the mirror in the same undoable operation as the card change.
+    pub(crate) fn mirror_rwkv_history_reset(&mut self, card: &Card) -> Result<()> {
+        let key = crate::config::rwkv_history_reset_config_key(card.id);
+        let boundary = card.rwkv_history_reset_after.unwrap_or_default().max(0);
+        let previous: Option<crate::config::RwkvHistoryResetMirror> =
+            self.storage.get_config_value(&key)?;
+        if (boundary > 0 || previous.is_some())
+            && previous.map_or(true, |mirror| mirror.after != Some(boundary))
+        {
+            let mirror = crate::config::RwkvHistoryResetMirror::new(Some(boundary), previous);
+            self.set_config(key.as_str(), &mirror)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn migrate_rwkv_history_reset_mirrors(&mut self) -> Result<()> {
+        let boundaries = self.storage.unmirrored_rwkv_history_resets()?;
+        if !boundaries.is_empty() {
+            self.transact_no_undo(|col| {
+                for (card_id, boundary, modified) in boundaries {
+                    let key = crate::config::rwkv_history_reset_config_key(card_id);
+                    let mirror = crate::config::RwkvHistoryResetMirror {
+                        after: Some(boundary),
+                        updated: modified.0.saturating_mul(1000),
+                    };
+                    col.set_config(key.as_str(), &mirror)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mirror_rwkv_card_only_reset(&mut self, card: &Card) -> Result<()> {
+        if let Some(boundary) = card.rwkv_history_reset_after.filter(|after| *after > 0) {
+            let key = crate::config::rwkv_history_reset_config_key(card.id);
+            let mirror = crate::config::RwkvHistoryResetMirror {
+                after: Some(boundary),
+                updated: card.mtime.0.saturating_mul(1000),
+            };
+            self.set_config(key.as_str(), &mirror)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn populate_rwkv_last_review_times(&mut self, cards: &mut [Card]) -> Result<()> {
-        // A review changes the card's mtime and reps (an undo restores both).
-        let key = |card: &Card| (card.mtime, card.reps);
+        for card in cards.iter_mut() {
+            self.storage.populate_rwkv_history_reset(card)?;
+        }
+        let needs_review_time = |card: &Card| {
+            card.last_review_time.is_none()
+                || card.rwkv_history_reset_after.is_some_and(|cutoff| {
+                    card.last_review_time
+                        .is_some_and(|time| time.0.saturating_mul(1000) <= cutoff)
+                })
+        };
+        // A review changes mtime and reps; a synced boundary can change
+        // independently of either, so it must be part of the cache key.
+        let key = |card: &Card| (card.mtime, card.reps, card.rwkv_history_reset_after);
         let cache = &self.state.rwkv_last_review_times;
         let missing_card_ids: Vec<_> = cards
             .iter()
             .filter(|card| {
-                card.last_review_time.is_none()
-                    && cache.get(&card.id).is_none_or(|(k, _)| *k != key(card))
+                needs_review_time(card) && cache.get(&card.id).is_none_or(|(k, _)| *k != key(card))
             })
             .map(|card| card.id)
             .collect();
-        let review_times = self.storage.times_of_last_review(&missing_card_ids)?;
+        let review_times = self.storage.rwkv_times_of_last_review(&missing_card_ids)?;
         let cache = &mut self.state.rwkv_last_review_times;
         for card in cards {
-            if card.last_review_time.is_some() {
+            if !needs_review_time(card) {
                 continue;
             }
             card.last_review_time = match cache.get(&card.id) {

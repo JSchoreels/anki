@@ -223,7 +223,7 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "weights.f32.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 13
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 5
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 7
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
@@ -274,6 +274,20 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
     )
 
 
+def _rwkv_history_reset_after_sql(card_alias: str = "c") -> str:
+    data = f"{card_alias}.data"
+    return (
+        "coalesce((select case when json_valid(cast(val as text)) then "
+        "case when json_type(cast(val as text), '$.after') = 'integer' "
+        "then max(json_extract(cast(val as text), '$.after'), 0) end end "
+        f"from config where key = 'rwkvHistoryReset_' || {card_alias}.id), "
+        f"case when json_valid({data}) then "
+        f"case when json_type({data}, '$.rwkv_reset_after') = 'integer' "
+        f"then max(json_extract({data}, '$.rwkv_reset_after'), 0) "
+        "else 0 end else 0 end)"
+    )
+
+
 _reviewer_backend_state_lock = threading.RLock()
 _reviewer_backend_execution_lock = threading.RLock()
 _reviewer_backend_prediction_local = threading.local()
@@ -287,6 +301,7 @@ _reviewer_backend_warmup_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_revalidation_candidates: dict[
     tuple[int, int], tuple[int, RwkvResidentStateIdentity]
 ] = {}
+_reviewer_backend_prepared_learning_restarts: dict[tuple[int, int], dict[int, int]] = {}
 _reviewer_backend_warmup_pending_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_cold_fallback_generations: dict[tuple[int, int], int] = {}
 _rwkv_memorised_history_identity_cache: dict[
@@ -3588,6 +3603,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
             _reviewer_backend_warmup_generations.get(key, 0) + 1
         )
     _reviewer_backend_warmup_states.clear()
+    _reviewer_backend_prepared_learning_restarts.clear()
     _reviewer_backend_revalidation_candidates.clear()
     _reviewer_backend_warmup_pending_generations.clear()
     _reviewer_backend_cold_fallback_generations.clear()
@@ -4716,12 +4732,17 @@ def prepare_grade_now_reconciliation(
         ):
             return None
 
-        histories_by_card_id = _rwkv_grade_now_card_histories(
-            _historical_rwkv_review_rows(
-                reviewer,
-                card_ids=valid_card_ids,
+        history_rows, _ignored = _historical_rwkv_replay_rows(
+            reviewer,
+            deck_id=None,
+            card_ids=valid_card_ids,
+            ignored_review_ids=frozenset(
+                _rwkv_state_cache_ignored_review_ids(
+                    _read_rwkv_state_cache_metadata(reviewer)
+                )
             ),
         )
+        histories_by_card_id = _rwkv_grade_now_card_histories(history_rows)
         identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
         for card_id in valid_card_ids:
             identity = rwkv_review_identity(reviewer, get_card(card_id))
@@ -5370,7 +5391,24 @@ def _rwkv_live_answer_canonical_recovery_reason(
             return "review answer history cannot be verified"
         rows = _historical_rwkv_review_rows(reviewer, card_ids=[card_id])
         if len(rows) > 1:
-            return "review answer replaced retained learning history"
+            key = _reviewer_backend_warmup_key(reviewer)
+            with _reviewer_backend_state_lock:
+                prepared_after = (
+                    _reviewer_backend_prepared_learning_restarts.get(key, {}).get(
+                        card_id
+                    )
+                    if key is not None
+                    else None
+                )
+            if not (
+                prepared_after == rows[-2][0] and rows[-1][6] == 0 and rows[-2][6] != 0
+            ):
+                return "review answer replaced retained learning history"
+            logger.debug(
+                "RWKV answer uses prepared learning restart: card_id=%s after_review_id=%s",
+                card_id,
+                prepared_after,
+            )
 
     if not _fsrs_preset_overlay_has_known_routing_rules(reviewer):
         return None
@@ -5442,9 +5480,10 @@ def _rwkv_card_replay_preset_inputs(
             f"""
 select id, cid, 0, 0, ease, 0, type, cast(ivl as integer), cast(factor as integer)
 from revlog
-where cid = ?
+where cid = ?1
   and {_rwkv_historical_answer_sql_condition()}
-  and id > coalesce((select max(id) from revlog where cid = ? and type = 4 and ease = 0 and factor = 0), 0)
+  and id > coalesce((select max(id) from revlog where cid = ?2 and type = 4 and ease = 0 and factor = 0), 0)
+  and id > coalesce((select {_rwkv_history_reset_after_sql()} from cards c where c.id = ?1), 0)
 order by id
 """,
             card_id,
@@ -6944,6 +6983,7 @@ def _prepare_reviewer_backend_from_cache(
                 key,
                 restored_identity,
                 expected_generation=warmup_generation,
+                reviewer=reviewer,
             ):
                 logger.debug(
                     "restored RWKV reviewer state cache: elapsed_ms=%.1f",
@@ -8698,9 +8738,11 @@ def _rwkv_review_state_for_live_context(
         return base_review_state
 
     card_id = _card_id(card)
-    if card_id is None:
-        return base_review_state
-    previous = _latest_eligible_review_for_card(reviewer, card_id)
+    previous = (
+        _latest_eligible_review_for_card(reviewer, card_id)
+        if card_id is not None
+        else None
+    )
     if previous is None:
         return base_review_state
     previous_id, previous_ease, previous_kind = previous
@@ -8775,9 +8817,10 @@ def _latest_eligible_review_for_card(
             f"""
 select id, ease, type
 from revlog
-where cid = ?
+where cid = ?1
   and {_rwkv_historical_answer_sql_condition()}
-  and id > coalesce((select max(id) from revlog where cid = ? and type = 4 and ease = 0 and factor = 0), 0)
+  and id > coalesce((select max(id) from revlog where cid = ?2 and type = 4 and ease = 0 and factor = 0), 0)
+  and id > coalesce((select {_rwkv_history_reset_after_sql()} from cards c where c.id = ?1), 0)
 order by id desc
 limit 1
 """,
@@ -9952,6 +9995,7 @@ def _invalidate_reviewer_backend_state(
                 == previous_generation
             )
             identity = _reviewer_backend_warmup_states.pop(key, None)
+            _reviewer_backend_prepared_learning_restarts.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
             generation = previous_generation + 1
             _reviewer_backend_warmup_generations[key] = generation
@@ -9994,7 +10038,18 @@ def _publish_reviewer_backend_state(
     identity: RwkvResidentStateIdentity,
     *,
     expected_generation: int,
+    reviewer: object | None = None,
 ) -> bool:
+    prepared_restarts = (
+        _pending_rwkv_learning_restarts(
+            reviewer,
+            ignored_review_ids=_rwkv_state_cache_ignored_review_ids(
+                _read_rwkv_state_cache_metadata(reviewer)
+            ),
+        )
+        if reviewer is not None
+        else {}
+    )
     with _reviewer_backend_state_lock:
         current_generation = _reviewer_backend_warmup_generations.get(key, 0)
         current_backend_id = (
@@ -10003,6 +10058,7 @@ def _publish_reviewer_backend_state(
         backend_changed = current_backend_id != key[0]
         if current_generation == expected_generation and not backend_changed:
             _reviewer_backend_warmup_states[key] = identity
+            _reviewer_backend_prepared_learning_restarts[key] = prepared_restarts
             _reviewer_backend_revalidation_candidates.pop(key, None)
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache[key] = (
@@ -10082,6 +10138,7 @@ def _invalidate_reviewer_backend_states(
         ]
         for key in matching_keys:
             _reviewer_backend_warmup_states.pop(key, None)
+            _reviewer_backend_prepared_learning_restarts.pop(key, None)
             _reviewer_backend_revalidation_candidates.pop(key, None)
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache.pop(key, None)
@@ -10386,7 +10443,10 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
                         _reviewer_backend_revalidation_candidates.pop(key, None)
                     raise _ReviewerBackendWarmupInvalidated
                 if _publish_reviewer_backend_state(
-                    key, identity, expected_generation=warmup_generation
+                    key,
+                    identity,
+                    expected_generation=warmup_generation,
+                    reviewer=reviewer,
                 ):
                     revalidated = True
                     logger.debug(
@@ -10451,6 +10511,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
                     key,
                     restored_identity,
                     expected_generation=warmup_generation,
+                    reviewer=reviewer,
                 ):
                     logger.debug(
                         "restored RWKV reviewer state cache: elapsed_ms=%.1f",
@@ -10544,6 +10605,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
             key,
             _resident_state_identity(history),
             expected_generation=warmup_generation,
+            reviewer=reviewer,
         ):
             return False
         logger.debug(
@@ -19773,7 +19835,9 @@ def _historical_rwkv_replay_rows(
     """
 
     raw_rows = list(
-        _historical_rwkv_review_rows(reviewer, deck_id=deck_id, card_ids=card_ids)
+        _historical_rwkv_review_rows(
+            reviewer, deck_id=deck_id, card_ids=card_ids, exclude_new=True
+        )
     )
     active_ignored_review_ids = tuple(
         sorted(
@@ -19788,8 +19852,6 @@ def _historical_rwkv_replay_rows(
             }
         )
     )
-    if not active_ignored_review_ids:
-        return raw_rows, active_ignored_review_ids
     active_ignored_review_id_set = set(active_ignored_review_ids)
     return [
         row
@@ -19798,6 +19860,51 @@ def _historical_rwkv_replay_rows(
             row and isinstance(row[0], int) and row[0] in active_ignored_review_id_set
         )
     ], active_ignored_review_ids
+
+
+def _pending_rwkv_learning_restarts(
+    reviewer: object,
+    *,
+    ignored_review_ids: Iterable[int] = (),
+    card_ids: Sequence[int] | None = None,
+) -> dict[int, int]:
+    """Find new cards that still have an unrecorded history reset."""
+
+    db = getattr(_collection(reviewer), "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return {}
+    if card_ids is not None and not card_ids:
+        return {}
+    card_clause = f"and c.id in {ids2str(card_ids)}" if card_ids is not None else ""
+    ignored_ids = sorted(set(ignored_review_ids))
+    ignored_clause = (
+        f"and latest.id not in {ids2str(ignored_ids)}" if ignored_ids else ""
+    )
+    try:
+        rows = all_rows(
+            f"""
+select c.id, r.id
+from cards c
+join revlog r on r.id = (
+  select latest.id from revlog latest
+  where latest.cid = c.id
+    and {_rwkv_historical_answer_sql_condition("latest")}
+    and latest.id > coalesce((select max(id) from revlog where cid = c.id and type = 4 and ease = 0 and factor = 0), 0)
+    and latest.id > ({_rwkv_history_reset_after_sql()})
+    {ignored_clause}
+  order by latest.id desc limit 1
+)
+where c.type = 0
+  {card_clause}
+"""
+        )
+        return {int(card_id): int(review_id) for card_id, review_id in rows}
+    except Exception:
+        logger.debug(
+            "failed to prepare RWKV learning restart boundaries", exc_info=True
+        )
+        return {}
 
 
 def _report_rwkv_review_input_prepare_progress(
@@ -20024,6 +20131,7 @@ def _historical_rwkv_review_rows(
     deck_id: int | None = None,
     card_ids: Sequence[int] | None = None,
     limit: int | None = None,
+    exclude_new: bool = False,
 ) -> list[Sequence[object]]:
     col = _collection(reviewer)
     db = getattr(col, "db", None)
@@ -20049,6 +20157,7 @@ def _historical_rwkv_review_rows(
         card_clause = ""
         reset_card_clause = ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
+    new_clause = "and c.type != 0" if exclude_new else ""
     # Start with SELECT so DBProxy treats this history read as read-only and
     # preserves Anki's undo history.
     sql = f"""
@@ -20072,6 +20181,8 @@ left join (
 ) resets on resets.cid = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
   and r.id > coalesce(resets.reset_id, 0)
+  and r.id > ({_rwkv_history_reset_after_sql()})
+  {new_clause}
   {after_clause}
   {deck_clause}
   {card_clause}
@@ -21080,6 +21191,7 @@ def _historical_rwkv_card_ids(
             f"""
 select distinct r.cid
 from revlog r
+left join cards c on c.id = r.cid
 left join (
   select cid, max(id) as reset_id
   from revlog
@@ -21090,6 +21202,8 @@ left join (
 where r.cid in {ids2str(card_ids)}
   and {_rwkv_historical_answer_sql_condition("r")}
   and r.id > coalesce(resets.reset_id, 0)
+  and r.id > ({_rwkv_history_reset_after_sql()})
+  and (c.id is null or c.type != 0)
 """
         )
     except Exception:
@@ -24990,7 +25104,8 @@ def _rwkv_card_rows_for_ids(
         )
         rows = all_rows(
             f"""
-select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data
+select cards.id, cards.nid, did, odid, type, queue, due, odue, ivl, factor, reps, lapses, cards.data,
+       ({_rwkv_history_reset_after_sql("cards")})
 from cards
 where cards.id in {ids2str(card_ids)}
 {_rwkv_supported_state_sql_filter() if supported_state_filter else ""}
@@ -25115,11 +25230,15 @@ def _latest_eligible_review_times_for_cards(
         )
         rows = all_rows(
             f"""
-select cid, max(id)
-from revlog
-where cid in {ids2str(card_ids)}
-  and {_rwkv_historical_answer_sql_condition()}
-group by cid
+select r.cid, max(r.id)
+from revlog r
+join cards c on c.id = r.cid
+where r.cid in {ids2str(card_ids)}
+  and c.type != 0
+  and {_rwkv_historical_answer_sql_condition("r")}
+  and r.id > coalesce((select max(id) from revlog where cid = r.cid and type = 4 and ease = 0 and factor = 0), 0)
+  and r.id > ({_rwkv_history_reset_after_sql()})
+group by r.cid
 """
         )
         logger.debug(
@@ -25153,7 +25272,7 @@ group by cid
 def _stats_graph_card_fields_from_row(
     row: Sequence[object],
 ) -> RwkvStatsGraphCardFields | None:
-    if len(row) != 13:
+    if len(row) not in (13, 14):
         return None
 
     (
@@ -25170,7 +25289,8 @@ def _stats_graph_card_fields_from_row(
         reps,
         lapses,
         data,
-    ) = row
+    ) = row[:13]
+    reset_after = row[13] if len(row) == 14 else None
     int_values = (
         card_id,
         note_id,
@@ -25201,7 +25321,7 @@ def _stats_graph_card_fields_from_row(
         factor=cast(int, ease_factor),
         reps=cast(int, reps),
         lapses=cast(int, lapses),
-        last_review_time=_stats_graph_last_review_time(data),
+        last_review_time=_stats_graph_last_review_time(data, reset_after),
     )
 
 
@@ -25227,15 +25347,31 @@ def _stats_graph_card_from_row(row: Sequence[object]) -> RwkvStatsGraphCard | No
     )
 
 
-def _stats_graph_last_review_time(data: object) -> int | None:
+def _stats_graph_last_review_time(
+    data: object, effective_reset_after: object = None
+) -> int | None:
     if not isinstance(data, str) or not data:
         return None
 
     try:
-        value = json.loads(data).get("lrt")
+        card_data = json.loads(data)
+        value = card_data.get("lrt")
+        reset_after = (
+            effective_reset_after
+            if effective_reset_after is not None
+            else card_data.get("rwkv_reset_after")
+        )
     except (AttributeError, json.JSONDecodeError, TypeError):
         return None
 
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and isinstance(reset_after, int)
+        and not isinstance(reset_after, bool)
+        and value * 1000 <= reset_after
+    ):
+        return None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
@@ -25590,6 +25726,15 @@ def _elapsed_since_card_last_review(
     card: object,
 ) -> tuple[int | None, int | None]:
     last_review_time = getattr(card, "last_review_time", None)
+    reset_after = getattr(card, "rwkv_history_reset_after", None)
+    if (
+        isinstance(last_review_time, int)
+        and not isinstance(last_review_time, bool)
+        and isinstance(reset_after, int)
+        and not isinstance(reset_after, bool)
+        and last_review_time * 1000 <= reset_after
+    ):
+        last_review_time = None
     if not isinstance(last_review_time, int) or isinstance(last_review_time, bool):
         card_id = _card_id(card)
         previous = (

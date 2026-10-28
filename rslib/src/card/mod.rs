@@ -101,6 +101,8 @@ pub struct Card {
     pub(crate) desired_retention: Option<f32>,
     pub(crate) decay: Option<f32>,
     pub(crate) last_review_time: Option<TimestampSecs>,
+    /// Reviews at or before this ID belong to a previous RWKV learning history.
+    pub(crate) rwkv_history_reset_after: Option<i64>,
     /// JSON object or empty; exposed through the reviewer for persisting custom
     /// state
     pub(crate) custom_data: String,
@@ -157,6 +159,7 @@ impl Default for Card {
             desired_retention: None,
             decay: None,
             last_review_time: None,
+            rwkv_history_reset_after: None,
             custom_data: String::new(),
         }
     }

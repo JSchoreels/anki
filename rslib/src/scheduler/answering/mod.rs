@@ -495,6 +495,17 @@ impl Collection {
             answer.current_state,
         );
 
+        // Older imports and unlogged resets can leave a new card with active
+        // history. Preview answers do not start a new learning sequence.
+        if original.ctype == CardType::New
+            && !matches!(
+                current_state,
+                CardState::Filtered(FilteredState::Preview(_))
+            )
+        {
+            self.prepare_rwkv_new_card_reset(&mut updater.card)?;
+        }
+
         let mut revlog_partial =
             updater.apply_study_state(current_state, answer.new_state, answer.rating)?;
         if answer.rwkv_review_kind.is_none() {

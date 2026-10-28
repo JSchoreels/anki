@@ -27,6 +27,7 @@ pub struct NormalSyncer<'a> {
     remote_collection_changed: bool,
     remote_review_ids: Vec<RevlogId>,
     remote_non_review_collection_changed: bool,
+    pub(in crate::sync) rwkv_mirrors_need_upload: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -70,10 +71,36 @@ impl NormalSyncer<'_> {
             remote_collection_changed: false,
             remote_review_ids: vec![],
             remote_non_review_collection_changed: false,
+            rwkv_mirrors_need_upload: false,
         }
     }
 
     pub async fn sync(&mut self) -> error::Result<SyncOutput> {
+        self.rwkv_mirrors_need_upload = false;
+        let first = self.sync_once().await?;
+        if self.rwkv_mirrors_need_upload && first.required == SyncActionRequired::NoChanges {
+            // Send boundaries recovered from a stale legacy config snapshot
+            // back to the server before reporting the sync as complete.
+            self.rwkv_mirrors_need_upload = false;
+            let mut second = self.sync_once().await?;
+            if second.server_message.is_empty() {
+                second.server_message = first.server_message;
+            }
+            if second.new_endpoint.is_none() {
+                second.new_endpoint = first.new_endpoint;
+            }
+            second.remote_collection_changed |= first.remote_collection_changed;
+            second.remote_non_review_collection_changed |=
+                first.remote_non_review_collection_changed;
+            let mut review_ids = first.remote_review_ids;
+            review_ids.extend(second.remote_review_ids);
+            second.remote_review_ids = review_ids;
+            return Ok(second);
+        }
+        Ok(first)
+    }
+
+    async fn sync_once(&mut self) -> error::Result<SyncOutput> {
         debug!("fetching meta...");
         let local = self.col.sync_meta()?;
         let local_bytes = local.collection_bytes;
@@ -153,6 +180,9 @@ impl NormalSyncer<'_> {
         self.sanity_check().await?;
         debug!("finalize");
         self.finalize(&state).await?;
+        if self.rwkv_mirrors_need_upload {
+            self.col.set_modified_after_last_sync()?;
+        }
         state.required = SyncActionRequired::NoChanges;
         let mut output: SyncOutput = state.into();
         output.remote_collection_changed = self.remote_collection_changed;

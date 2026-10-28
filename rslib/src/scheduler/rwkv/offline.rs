@@ -59,6 +59,7 @@ use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
 use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
 use crate::scheduler::states::CardState;
 use crate::scheduler::states::NormalState;
+use crate::storage::RWKV_HISTORY_RESET_AFTER_SQL;
 
 /// The desktop always loads the model with these (they only affect interval
 /// outputs, which Instant does not use).
@@ -153,8 +154,8 @@ struct HistoryPlan {
 struct ReplayStamp {
     revlog_rows: u64,
     last_review_id: i64,
-    /// Cards (id, note, home deck), each deck's options group, the options
-    /// groups, the day boundary and the dynamic preset setting.
+    /// Cards (id, note, home deck, new status and reset boundary), each
+    /// deck's options group, the day boundary and dynamic preset setting.
     rest: u64,
 }
 
@@ -1102,6 +1103,10 @@ impl Collection {
                 let Some(deck) = col.storage.get_deck(deck_id)? else {
                     return Ok(());
                 };
+                // The fast append can decline an answer when another operation
+                // changed the collection. Bring the model up to date before
+                // scoring the card or checking the refresh interval.
+                col.rwkv_offline_sync_history(runtime)?;
                 let rows = col
                     .rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
                         card_ids: vec![card_id.0],
@@ -1163,7 +1168,11 @@ impl Collection {
             .db
             .query_row(
                 &format!(
-                    "select r.id, r.ease, r.type from revlog r where r.cid = ? and {} \
+                    "select r.id, r.ease, r.type from revlog r
+                     join cards c on c.id = r.cid where r.cid = ? and {}
+                     and r.id > coalesce((select max(id) from revlog
+                       where cid = r.cid and type = 4 and ease = 0 and factor = 0), 0)
+                     and r.id > ({RWKV_HISTORY_RESET_AFTER_SQL})
                      order by r.id desc limit 1",
                     RWKV_COUNTED_REVIEW
                 ),
@@ -1493,12 +1502,13 @@ impl Collection {
         }
         let mut hash = fnv::FnvHasher::default();
         {
-            let mut cards = self.storage.db.prepare(
-                "select id, nid, case when odid != 0 then odid else did end from cards order by id",
-            )?;
+            let mut cards = self.storage.db.prepare(&format!(
+                "select c.id, c.nid, case when c.odid != 0 then c.odid else c.did end,
+                        c.type = 0, ({RWKV_HISTORY_RESET_AFTER_SQL}) from cards c order by c.id"
+            ))?;
             let mut rows = cards.query([])?;
             while let Some(row) = rows.next()? {
-                for column in 0..3 {
+                for column in 0..5 {
                     hash.write_i64(row.get(column)?);
                 }
             }
@@ -2004,28 +2014,189 @@ impl Collection {
 
 #[cfg(test)]
 mod test {
+    use anki_proto::scheduler::card_answer::Rating;
+    use anki_proto::scheduler::CardAnswer;
+    use anki_proto::scheduler::GetQueuedCardsRequest;
+
     use super::*;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::preset::AddonFsrsPreset;
     use crate::scheduler::fsrs::preset::AddonFsrsVersion;
     use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::scheduler::states::ReviewState;
+    use crate::services::SchedulerService;
+    use crate::tests::open_fs_test_collection;
     use crate::tests::CardAdder;
     use crate::tests::DeckAdder;
 
     fn add_review(col: &mut Collection, card_id: CardId, id: i64) {
-        col.storage
-            .add_revlog_entry(
-                &RevlogEntry {
-                    id: RevlogId(id),
-                    cid: card_id,
-                    button_chosen: 3,
-                    review_kind: RevlogReviewKind::Learning,
-                    ..Default::default()
-                },
-                false,
-            )
-            .unwrap();
+        col.transact_no_undo(|col| {
+            let _ = col.add_revlog_entry_undoable(RevlogEntry {
+                id: RevlogId(id),
+                cid: card_id,
+                button_chosen: 3,
+                review_kind: RevlogReviewKind::Learning,
+                ..Default::default()
+            })?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn synced_reset_mirror_invalidates_the_replay_stamp() -> Result<()> {
+        let mut col = Collection::new();
+        let card = CardAdder::new().add(&mut col)[0].id;
+        let stamp = col.rwkv_offline_replay_stamp()?.unwrap();
+        col.set_config_json(
+            &format!("rwkvHistoryReset_{}", card.0),
+            &serde_json::json!({"after": 1000, "updated": 1}),
+            false,
+        )?;
+        assert_ne!(col.rwkv_offline_replay_stamp()?, Some(stamp));
+        Ok(())
+    }
+
+    fn answer_next(col: &mut Collection) -> Result<CardId> {
+        let queue = SchedulerService::get_queued_cards(
+            col,
+            GetQueuedCardsRequest {
+                fetch_limit: 1,
+                ..Default::default()
+            },
+        )?;
+        let card = &queue.cards[0];
+        let card_id = CardId(card.card.as_ref().unwrap().id);
+        let states = card.states.clone().unwrap();
+        let _ = SchedulerService::answer_card(
+            col,
+            CardAnswer {
+                card_id: card_id.0,
+                current_state: states.current,
+                new_state: states.good,
+                rating: Rating::Good as i32,
+                answered_at_millis: TimestampMillis::now().0,
+                ..Default::default()
+            },
+        )?;
+        Ok(card_id)
+    }
+
+    fn test_model() -> OfflineModel {
+        OfflineModel {
+            path: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../qt/aqt/rwkv_inference/sm56/weights.f32.bin"),
+            precision: StatePrecision::Int8,
+        }
+    }
+
+    #[test]
+    fn same_day_review_kind_ignores_reviews_before_reset() -> Result<()> {
+        let (mut col, _dir) = open_fs_test_collection("rwkv-same-day-reset");
+        let card_id = CardAdder::new().add(&mut col)[0].id;
+        col.set_due_date(&[card_id], "0", None)?;
+        assert_eq!(answer_next(&mut col)?, card_id);
+        let history = col.rwkv_historical_review_inputs(Default::default())?;
+        let previous = history.reviews[0].review_id;
+        col.state.rwkv_offline = Some(Box::new(RwkvOfflineRuntime::load(test_model())?));
+        let review = CardState::Normal(NormalState::Review(ReviewState::default()));
+        let timing = col.timing_today()?;
+        assert_eq!(
+            col.rwkv_offline_same_day_review_kind(
+                card_id,
+                &review,
+                true,
+                TimestampMillis::now(),
+                &timing
+            )?,
+            Some(3)
+        );
+        col.set_config_json(
+            &format!("rwkvHistoryReset_{}", card_id.0),
+            &serde_json::json!({"after": previous, "updated": 1}),
+            false,
+        )?;
+        assert_eq!(
+            col.rwkv_offline_same_day_review_kind(
+                card_id,
+                &review,
+                true,
+                TimestampMillis::now(),
+                &timing
+            )?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn synced_reset_mirror_invalidates_cached_last_review_time() -> Result<()> {
+        let (mut col, _dir) = open_fs_test_collection("rwkv-last-review-reset");
+        let card_id = CardAdder::new().add(&mut col)[0].id;
+        col.set_due_date(&[card_id], "0", None)?;
+        assert_eq!(answer_next(&mut col)?, card_id);
+        let previous = col
+            .rwkv_historical_review_inputs(Default::default())?
+            .reviews[0]
+            .review_id;
+        let mut card = col.all_cards_for_ids(&[card_id], false)?.remove(0);
+        card.last_review_time = None;
+        let _ = col.update_cards_maybe_undoable(vec![card], true)?;
+        let mut cards = col.all_cards_for_ids(&[card_id], false)?;
+        col.populate_rwkv_last_review_times(&mut cards)?;
+        assert!(cards[0].last_review_time.is_some());
+
+        let key = format!("rwkvHistoryReset_{}", card_id.0);
+        col.set_config_json(
+            &key,
+            &serde_json::json!({"after": previous, "updated": 1}),
+            false,
+        )?;
+        col.populate_rwkv_last_review_times(&mut cards)?;
+        assert_eq!(cards[0].last_review_time, None);
+        col.set_config_json(&key, &serde_json::json!({"after": 0, "updated": 2}), false)?;
+        col.populate_rwkv_last_review_times(&mut cards)?;
+        assert!(cards[0].last_review_time.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn first_answer_after_unlogged_reset_updates_the_resident_model() -> Result<()> {
+        let (mut col, _dir) = open_fs_test_collection("rwkv-new-reset-model");
+        let first = CardAdder::new().add(&mut col)[0].id;
+        let second = CardAdder::new().add(&mut col)[0].id;
+        col.set_due_date(&[first, second], "0", None)?;
+        let kept = answer_next(&mut col)?;
+        let reset = answer_next(&mut col)?;
+        assert_ne!(kept, reset);
+        let mut card = col.all_cards_for_ids(&[reset], false)?.remove(0);
+        card.ctype = CardType::New;
+        card.queue = CardQueue::New;
+        let _ = col.update_cards_maybe_undoable(vec![card], true)?;
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.rwkv_review_instant_order_enabled = true;
+        });
+        let mut runtime = RwkvOfflineRuntime::load(test_model())?;
+        col.rwkv_offline_sync_history(&mut runtime)?;
+        assert_eq!(runtime.identity.as_ref().unwrap().review_count, 1);
+        col.state.rwkv_offline = Some(Box::new(runtime));
+        assert_eq!(answer_next(&mut col)?, reset);
+        let history = col.rwkv_historical_review_inputs(Default::default())?;
+        let runtime = col.state.rwkv_offline.as_ref().unwrap();
+        assert_eq!(runtime.identity.as_ref().unwrap().review_count, 2);
+        assert_eq!(
+            runtime.identity.as_ref().unwrap(),
+            history
+                .metadata
+                .as_ref()
+                .unwrap()
+                .identity
+                .as_ref()
+                .unwrap()
+        );
+        Ok(())
     }
 
     #[test]
@@ -2121,14 +2292,21 @@ mod test {
         col.set_v2_rollover(9)?;
         assert_ne!(col.rwkv_offline_replay_stamp()?.unwrap(), switched);
 
-        // a deleted review
-        col.storage
-            .db
-            .execute("delete from revlog where id = 1000000", [])?;
-        assert_ne!(
-            col.rwkv_offline_replay_stamp()?.unwrap().revlog_rows,
-            stamp.revlog_rows
-        );
+        // Undo removes an added review and changes the replay stamp again.
+        let before_answer = col.rwkv_offline_replay_stamp()?;
+        col.transact(Op::AnswerCard, |col| {
+            let _ = col.add_revlog_entry_undoable(RevlogEntry {
+                id: RevlogId(3_000_000),
+                cid: card,
+                button_chosen: 3,
+                review_kind: RevlogReviewKind::Learning,
+                ..Default::default()
+            })?;
+            Ok(())
+        })?;
+        assert_ne!(col.rwkv_offline_replay_stamp()?, before_answer);
+        let _ = col.undo()?;
+        assert_eq!(col.rwkv_offline_replay_stamp()?, before_answer);
 
         // preset overlay rules match cards by search: always the full check
         col.set_config(
