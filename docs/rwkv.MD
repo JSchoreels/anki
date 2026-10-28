@@ -789,6 +789,9 @@ Non-answer operations that change study queues, such as moving, rescheduling,
 suspending, or restoring cards, discard transient scores and cached inputs and
 advance a queue generation. Model work prepared before that mutation is
 rejected when it tries to install.
+If a new presentation of a card cannot obtain an RWKV prediction, it does not
+attach metadata from an earlier presentation. A redraw of the same answer can
+retain metadata matching the scheduling states already shown.
 
 RWKV always uses the time since a new card was created only when predicting
 retrievability before its first Learning review. The corresponding answer is
