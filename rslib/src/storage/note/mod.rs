@@ -48,6 +48,28 @@ impl super::SqliteStorage {
             .collect()
     }
 
+    /// Read only the requested field for matching notes, without copying all
+    /// fields of every note during a bulk retention-rule or percentile scan.
+    pub(crate) fn get_note_field_by_ids(
+        &self,
+        nids: &[NoteId],
+        notetype_id: NotetypeId,
+        field_index: u16,
+    ) -> Result<HashMap<NoteId, String>> {
+        if nids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut sql =
+            String::from("select id, field_at_index(flds, ?) from notes where mid = ? and id in ");
+        ids_to_string(&mut sql, nids);
+        self.db
+            .prepare(&sql)?
+            .query_and_then(params![field_index, notetype_id], |row| {
+                Ok((row.get::<_, NoteId>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect()
+    }
+
     pub fn get_note_without_fields(&self, nid: NoteId) -> Result<Option<Note>> {
         self.db
             .prepare_cached(concat!(

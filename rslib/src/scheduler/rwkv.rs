@@ -25,6 +25,7 @@ use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
 use crate::prelude::*;
+use crate::scheduler::addon_desired_retention::AddonRetentionRules;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
@@ -589,6 +590,11 @@ impl Collection {
             .map(|partial| partial.card.clone())
             .collect();
         let presets_by_card = self.fsrs_presets_for_cards(&preset_cards)?;
+        let addon_targets = if let Some(rules) = AddonRetentionRules::from_collection(self) {
+            rules.matches(self, &preset_cards)?
+        } else {
+            HashMap::new()
+        };
         let rows = eligible
             .into_iter()
             .filter_map(|partial| {
@@ -610,7 +616,12 @@ impl Collection {
                     current_normal_state_kind: partial.state.normal_state_kind,
                     current_elapsed_days: partial.state.elapsed_days,
                     current_elapsed_seconds: partial.state.elapsed_seconds,
-                    target_retention: valid_rwkv_target_retention(partial.target_retention),
+                    target_retention: valid_rwkv_target_retention(
+                        addon_targets
+                            .get(&partial.card.id)
+                            .map(|result| result.retention)
+                            .unwrap_or(partial.target_retention),
+                    ),
                     batch_size: partial.batch_size,
                     enforce_grade_order: Some(partial.enforce_grade_order),
                 })

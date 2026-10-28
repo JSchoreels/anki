@@ -6,6 +6,7 @@ use crate::config::SchedulerVersion;
 use crate::error::Result;
 use crate::prelude::*;
 
+pub(crate) mod addon_desired_retention;
 pub mod answering;
 pub mod bury_and_suspend;
 pub(crate) mod congrats;

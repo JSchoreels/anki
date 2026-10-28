@@ -250,6 +250,11 @@ impl Collection {
         {
             // Preset overlay searches may match on any of these.
             self.clear_fsrs_preset_overlay_card_matches();
+            if crate::scheduler::addon_desired_retention::AddonRetentionRules::from_collection(self)
+                .is_some()
+            {
+                self.invalidate_rwkv_offline_targets();
+            }
         }
         self.merge_notetypes(remote.notetypes, latest_usn)?;
         self.merge_decks(remote.decks_and_config.decks, latest_usn)?;
@@ -270,6 +275,9 @@ impl Collection {
                 .set_all_config(config, latest_usn, TimestampSecs::now())?;
             for key in changed_keys {
                 self.invalidate_fsrs_preset_overlay_for_config_key(&key);
+                if key == crate::scheduler::addon_desired_retention::CONFIG_KEY {
+                    self.invalidate_rwkv_offline_targets();
+                }
             }
         }
 

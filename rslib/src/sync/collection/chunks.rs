@@ -114,6 +114,14 @@ impl NormalSyncer<'_> {
             self.mark_remote_collection_changed(
                 !chunk.cards.is_empty() || !chunk.notes.is_empty() || !chunk.revlog.is_empty(),
             );
+            if (!chunk.cards.is_empty() || !chunk.notes.is_empty())
+                && crate::scheduler::addon_desired_retention::AddonRetentionRules::from_collection(
+                    self.col,
+                )
+                .is_some()
+            {
+                self.col.invalidate_rwkv_offline_targets();
+            }
             for entry in &chunk.revlog {
                 self.record_remote_review(entry.id);
             }

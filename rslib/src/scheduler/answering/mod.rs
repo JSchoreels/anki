@@ -22,6 +22,7 @@ use super::states::steps::LearningSteps;
 use super::states::CardState;
 use super::states::FilteredState;
 use super::states::NormalState;
+use super::states::ReviewState;
 use super::states::SchedulingStates;
 use super::states::StateContext;
 use super::timespan::answer_button_time_collapsible;
@@ -34,7 +35,10 @@ use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
 use crate::prelude::*;
 use crate::revlog::RevlogReviewKind;
+use crate::scheduler::addon_desired_retention::AddonRetentionRules;
+use crate::scheduler::addon_desired_retention::RetentionMatch;
 use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionStates;
+use crate::scheduler::fsrs::memory_state::fsrs_interval_at_retrievability_for_params;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
@@ -307,6 +311,44 @@ impl Rating {
     }
 }
 
+fn addon_review_state_mut(state: &mut CardState) -> Option<&mut ReviewState> {
+    match state {
+        CardState::Normal(NormalState::Review(review)) => Some(review),
+        CardState::Normal(NormalState::Relearning(relearning)) => Some(&mut relearning.review),
+        _ => None,
+    }
+}
+
+fn apply_addon_grade_target(state: &mut CardState, target: f32, ctx: &CardStateUpdater) {
+    let Some(review) = addon_review_state_mut(state) else {
+        return;
+    };
+    let Some(memory) = review.memory_state else {
+        return;
+    };
+    let stability = if memory.stability_internal.is_finite() && memory.stability_internal > 0.0 {
+        memory.stability_internal
+    } else {
+        memory.stability
+    };
+    if !stability.is_finite() || stability <= 0.0 {
+        return;
+    }
+    match fsrs_interval_at_retrievability_for_params(&ctx.fsrs_preset.params, stability, target) {
+        Ok(interval) if interval.is_finite() && interval > 0.0 => {
+            let mut days = (interval + 0.5) as u32;
+            days = days.max(1);
+            let maximum = ctx.config.inner.maximum_review_interval;
+            if maximum > 0 {
+                days = days.min(maximum);
+            }
+            review.scheduled_days = days;
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(?error, "Dynamic DR grade interval failed"),
+    }
+}
+
 /// An external scheduler's unrounded intervals in days (RWKV-Curve), one per
 /// answer button, in place of FSRS's; the state machine then applies the
 /// short-interval, fuzz and load-balance rules to them as usual.
@@ -350,8 +392,10 @@ impl Collection {
         card: Card,
         desired_retention_override: Option<f32>,
     ) -> Result<(SchedulingStates, Card)> {
+        let (addon_rules, addon_match) = self.addon_retention_for_card(&card)?;
+        let base_override = desired_retention_override.or(addon_match.map(|value| value.retention));
         let note_id = card.note_id;
-        let ctx = self.card_state_updater(card, desired_retention_override)?;
+        let ctx = self.card_state_updater(card, base_override)?;
         let current = ctx.current_card_state();
         // RWKV-Curve (a Curve preset, or Instant's Curve due dates) without the
         // desktop's Python: the offline runtime gives the intervals its
@@ -382,7 +426,98 @@ impl Collection {
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
             ctx.fsrs_preset.dynamic_desired_retention.is_some();
+        if let Some(rules) = addon_rules.as_ref() {
+            self.apply_addon_retention_states(
+                &mut states,
+                &ctx,
+                rules,
+                addon_match,
+                base_override,
+            )?;
+        }
         Ok((states, ctx.into_card()))
+    }
+
+    fn addon_retention_for_card(
+        &mut self,
+        card: &Card,
+    ) -> Result<(Option<AddonRetentionRules>, Option<RetentionMatch>)> {
+        let Some(rules) = AddonRetentionRules::from_collection(self) else {
+            return Ok((None, None));
+        };
+        let result = rules
+            .matches(self, std::slice::from_ref(card))?
+            .get(&card.id)
+            .copied();
+        Ok((Some(rules), result))
+    }
+
+    fn apply_addon_retention_states(
+        &mut self,
+        states: &mut SchedulingStates,
+        ctx: &CardStateUpdater,
+        rules: &AddonRetentionRules,
+        matched: Option<RetentionMatch>,
+        base: Option<f32>,
+    ) -> Result<()> {
+        if rules.has_grade_rules() {
+            for (index, state) in [
+                &mut states.again,
+                &mut states.hard,
+                &mut states.good,
+                &mut states.easy,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let Some(target) = rules.target_for_grade(base, index) else {
+                    continue;
+                };
+                if ctx.config.inner.fsrs_dynamic_desired_retention_enabled {
+                    // Match the desktop add-on's native Dynamic DR branch.
+                    let source = match self.card_state_updater(ctx.card.clone(), Some(target)) {
+                        Ok(source) => source,
+                        Err(error) => {
+                            tracing::warn!(?error, "Dynamic DR grade states failed");
+                            continue;
+                        }
+                    };
+                    if !rules.has_grade_rule(index) || source.dynamic_desired_retentions.is_none() {
+                        let current = source.current_card_state();
+                        let load_balancer =
+                            self.review_load_balancer_ctx(&source, source.card.note_id)?;
+                        let source_states =
+                            current.next_states(&source.state_context(load_balancer)?);
+                        *state = match index {
+                            0 => source_states.again,
+                            1 => source_states.hard,
+                            2 => source_states.good,
+                            _ => source_states.easy,
+                        };
+                        continue;
+                    }
+                }
+                apply_addon_grade_target(state, target, ctx);
+            }
+        }
+        if let Some(matched) = matched {
+            for state in [
+                &mut states.again,
+                &mut states.hard,
+                &mut states.good,
+                &mut states.easy,
+            ] {
+                if let Some(review) = addon_review_state_mut(state) {
+                    if let Some(minimum) = matched.minimum_interval {
+                        review.scheduled_days = review.scheduled_days.max(minimum);
+                    }
+                    if let Some(maximum) = matched.maximum_interval {
+                        review.scheduled_days = review.scheduled_days.min(maximum);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn review_load_balancer_ctx(
@@ -416,8 +551,10 @@ impl Collection {
         intervals: [Option<f32>; 4],
     ) -> Result<SchedulingStates> {
         let card = self.storage.get_card(cid)?.or_not_found(cid)?;
+        let (addon_rules, addon_match) = self.addon_retention_for_card(&card)?;
+        let base_override = addon_match.map(|value| value.retention);
         let note_id = card.note_id;
-        let ctx = self.card_state_updater(card, None)?;
+        let ctx = self.card_state_updater(card, base_override)?;
         let current = ctx.current_card_state();
         let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
         let mut state_ctx = ctx.state_context(load_balancer_ctx)?;
@@ -426,6 +563,15 @@ impl Collection {
         states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
         states.dynamic_desired_retention_enabled =
             ctx.fsrs_preset.dynamic_desired_retention.is_some();
+        if let Some(rules) = addon_rules.as_ref() {
+            self.apply_addon_retention_states(
+                &mut states,
+                &ctx,
+                rules,
+                addon_match,
+                base_override,
+            )?;
+        }
         Ok(states)
     }
 
@@ -483,6 +629,13 @@ impl Collection {
         let original = card.clone();
         let usn = self.usn()?;
 
+        let (rules, matched) = self.addon_retention_for_card(&card)?;
+        if let Some(rules) = rules {
+            let base = answer
+                .desired_retention_override
+                .or(matched.map(|value| value.retention));
+            answer.desired_retention_override = rules.target_for_grade(base, answer.rating.index());
+        }
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
