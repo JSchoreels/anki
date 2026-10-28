@@ -264,6 +264,21 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anki_proto::scheduler::RwkvPrepareOfflineRequest;
+
+    use crate::collection::Collection;
+
+    #[test]
+    fn unsupported_offline_model_kind_is_rejected() {
+        let mut col = Collection::new();
+        let result = col.rwkv_prepare_offline(RwkvPrepareOfflineRequest {
+            model_path: "not-opened".into(),
+            model_kind: "unknown".into(),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        assert!(col.state.rwkv_offline.is_none());
+    }
 
     fn model_file(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
