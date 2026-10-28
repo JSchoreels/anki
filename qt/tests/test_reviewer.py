@@ -13,7 +13,6 @@ import pytest
 
 import aqt.reviewer as reviewer_module
 import aqt.rwkv_scheduler
-from anki import cards_pb2
 from anki.collection import Collection, OpChanges
 from anki.consts import QUEUE_TYPE_NEW, QUEUE_TYPE_REV
 from anki.deck_config_pb2 import DeckConfig
@@ -742,7 +741,8 @@ def test_answer_card_updates_undo_actions_before_after_answering(monkeypatch) ->
     )
     reviewer.state = "answer"
     reviewer._answer_rendered = True
-    reviewer._desired_retention_override = None
+    reviewer._desired_retention_override = 0.85
+    reviewer._desired_retention_override_is_final = True
     reviewer._scheduling_states_pending = False
     reviewer._v3 = SimpleNamespace(
         states=states,
@@ -765,11 +765,22 @@ def test_answer_card_updates_undo_actions_before_after_answering(monkeypatch) ->
 
     monkeypatch.setattr("aqt.reviewer.answer_card", fake_answer_card)
 
+    def mark_grade_target(answer: tuple[bool, int], reviewer: Reviewer, card: object):
+        # A previous blocked attempt cannot carry this flag into a new answer.
+        assert reviewer._desired_retention_override_is_final is False
+        reviewer._desired_retention_override_is_final = True
+        return answer
+
+    monkeypatch.setattr(
+        reviewer_module.gui_hooks, "reviewer_will_answer_card", mark_grade_target
+    )
+
     reviewer._answerCard(3)
 
     assert calls == ["rwkv", "undo", "after"]
     assert captured_answers[0].rwkv_s90 == 10
     assert captured_answers[0].rwkv_retrievability == 0.62
+    assert captured_answers[0].desired_retention_override_is_final is True
 
 
 def test_after_answering_tracks_answered_card() -> None:
