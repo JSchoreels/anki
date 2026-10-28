@@ -247,6 +247,10 @@ struct ScopeScores {
     force_refresh: bool,
 }
 
+#[cfg(test)]
+#[path = "offline_preview_s90_tests.rs"]
+mod preview_s90_tests;
+
 #[derive(Clone, Copy)]
 struct ScoredCard {
     card_id: CardId,
