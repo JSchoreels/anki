@@ -938,7 +938,9 @@ opened.
 When the desktop Dynamic Desired Retention provider is available, RWKV review
 inputs are resolved before queue scoring or RWKV rescheduling predictions are
 made. Batches use its bulk API; single-card work uses its single-card API when
-available, with the bulk API as a fallback. Searches with a required `cid:`
+available, with the bulk API as a fallback. When the add-on's review-session
+cache is enabled, bulk matches can reflect earlier review state until the session
+ends. Searches with a required `cid:`
 filter prepare exact FSRS metrics only for those cards; searches that do not
 require specific IDs retain collection-wide preparation. The resolved target
 retention is carried with each transient queue score, so Rust queue gathering
@@ -955,6 +957,13 @@ Retention lookups fell from 141 ms through the bulk API to 0.25 ms through the
 RWKV single-card path. Full-deck rule resolution remained 316 ms in that run,
 while the SM72 prediction stage took 40 ms. These are separate stage timings,
 not measurements of the complete delay between reviews.
+
+In separate five-pass measurements on the same copy, building fresh queue inputs
+and predicting with SM72 took a median of 470 ms without the add-on's session
+cache and 161 ms with it warm; Dynamic DR resolution fell from 262 ms to 11 ms.
+The target-retention results matched in this unchanged collection. These timings
+exclude score installation and the UI transition, and the first session refresh
+still populates the cache.
 
 ## Stats And Search
 
@@ -1258,10 +1267,11 @@ interval updates, Anki refreshes the answered card's score.
 With precomputation disabled and Ascending Retrievability review order or
 retrievability-based new-card gathering selected, Anki waits for a full
 post-answer update before fetching the next card. It reloads current inputs and
-dynamic retention targets for all candidates, rather than reusing stale elapsed
-times or limiting the update to the candidate window. This takes precedence
-over the refresh interval and approximate-candidate setting. Other review orders
-continue to use their configured refresh interval.
+requests dynamic retention targets for all candidates, rather than reusing stale
+elapsed times or limiting the update to the candidate window. The Dynamic DR
+provider may still reuse session-cached rule matches if configured to do so.
+This takes precedence over the refresh interval and approximate-candidate
+setting. Other review orders continue to use their configured refresh interval.
 
 Both modes use the scheduler's normal answer, eligibility, review-limit, mixing,
 and repeat-spacing rules. Installed score requests include intervening-review
