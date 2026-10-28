@@ -666,10 +666,7 @@ fn query_input(row: &Row) -> ReviewInput {
         card_id: row.card_id,
         note_id: Some(row.note_id),
         deck_id: Some(row.deck_id),
-        // Add-on preset ids that are not numbers have no stable id here; the
-        // history replay refuses those collections, so this is never reached
-        // with one.
-        preset_id: row.preset_id.parse().ok(),
+        preset_id: super::rwkv_stable_preset_id_from_string(&row.preset_id),
         is_query: true,
         ease: None,
         duration_millis: None,
@@ -2050,6 +2047,20 @@ mod test {
     use crate::tests::open_fs_test_collection;
     use crate::tests::CardAdder;
     use crate::tests::DeckAdder;
+
+    #[test]
+    fn query_uses_the_same_stable_preset_as_history() {
+        let row = Row {
+            preset_id: "addon:test:moved".into(),
+            ..Default::default()
+        };
+        assert_eq!(query_input(&row).preset_id, Some(334_249_656_965_035_719));
+        let numeric = Row {
+            preset_id: "123".into(),
+            ..Default::default()
+        };
+        assert_eq!(query_input(&numeric).preset_id, Some(123));
+    }
 
     fn offline_review_collection(
         model_path: &str,
