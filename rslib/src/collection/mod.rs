@@ -28,6 +28,7 @@ use crate::notetype::Notetype;
 use crate::notetype::NotetypeId;
 use crate::progress::ProgressState;
 use crate::require;
+use crate::revlog::RevlogId;
 use crate::scheduler::fsrs::preset::FsrsPresetOverlayCache;
 use crate::scheduler::queue::CardQueues;
 use crate::scheduler::queue::DeferredRwkvReview;
@@ -152,6 +153,9 @@ pub struct CollectionState {
     pub(crate) rwkv_retrievability_scores: Option<RwkvRetrievabilityScores>,
     /// Model state for RWKV-Instant on clients without the desktop's Python.
     pub(crate) rwkv_offline: Option<Box<crate::scheduler::rwkv::RwkvOfflineRuntime>>,
+    /// Most recent synthetic same-day Filtered answer for each card. This is
+    /// session-local, like the desktop reviewer's synthetic answer state.
+    pub(crate) rwkv_synthetic_filtered_answers: HashMap<CardId, RevlogId>,
     /// What the last deck count did with each RWKV scope's cards, by scope
     /// deck (read by the RWKV forecast).
     pub(crate) rwkv_count_cards: HashMap<DeckId, RwkvCountCards>,
