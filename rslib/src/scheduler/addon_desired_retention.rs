@@ -827,6 +827,8 @@ mod test {
     #[test]
     fn grade_target_with_native_dynamic_dr_uses_the_exact_grade_retention() -> Result<()> {
         use crate::config::BoolKey;
+        use crate::scheduler::answering::CardAnswer;
+        use crate::scheduler::answering::Rating;
         use crate::scheduler::states::CardState;
         use crate::scheduler::states::NormalState;
 
@@ -875,6 +877,36 @@ mod test {
         assert_eq!(
             col.get_first_card().desired_retention,
             Some((mapped_easy * 100.0).round() / 100.0)
+        );
+
+        // A caller can supply a different scheduling state. Do not pretend
+        // the grade target was applied to that modified interval.
+        col.undo()?;
+        let choices = col.get_scheduling_states(card_id)?;
+        let mapped_good = choices.dynamic_desired_retentions.unwrap()[2];
+        let mut modified_good = choices.good;
+        let CardState::Normal(NormalState::Review(ref mut review)) = modified_good else {
+            panic!("expected a review state");
+        };
+        review.scheduled_days += 1;
+        col.answer_card(&mut CardAnswer {
+            card_id,
+            current_state: choices.current,
+            new_state: modified_good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            desired_retention_override_is_final: false,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: false,
+        })?;
+        assert_eq!(
+            col.get_first_card().desired_retention,
+            Some((mapped_good * 100.0).round() / 100.0)
         );
         Ok(())
     }

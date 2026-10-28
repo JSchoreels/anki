@@ -320,6 +320,17 @@ fn addon_review_state_mut(state: &mut CardState) -> Option<&mut ReviewState> {
     }
 }
 
+fn apply_addon_interval_bounds(state: &mut CardState, matched: RetentionMatch) {
+    if let Some(review) = addon_review_state_mut(state) {
+        if let Some(minimum) = matched.minimum_interval {
+            review.scheduled_days = review.scheduled_days.max(minimum);
+        }
+        if let Some(maximum) = matched.maximum_interval {
+            review.scheduled_days = review.scheduled_days.min(maximum);
+        }
+    }
+}
+
 fn apply_addon_grade_target(state: &mut CardState, target: f32, ctx: &CardStateUpdater) -> bool {
     let Some(review) = addon_review_state_mut(state) else {
         return false;
@@ -512,14 +523,7 @@ impl Collection {
                 &mut states.good,
                 &mut states.easy,
             ] {
-                if let Some(review) = addon_review_state_mut(state) {
-                    if let Some(minimum) = matched.minimum_interval {
-                        review.scheduled_days = review.scheduled_days.max(minimum);
-                    }
-                    if let Some(maximum) = matched.maximum_interval {
-                        review.scheduled_days = review.scheduled_days.min(maximum);
-                    }
-                }
+                apply_addon_interval_bounds(state, matched);
             }
         }
         Ok(())
@@ -655,12 +659,18 @@ impl Collection {
         }
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
         if let Some(target) = addon_grade_target {
-            // Only opt in when this kind of answer state can actually receive
-            // the exact target. Filtered/unsupported states retain native DR.
+            // Only opt in if the supplied state actually has the interval the
+            // grade rule would produce. Unsupported or externally modified
+            // states retain native DR.
             let mut state = answer.new_state;
-            answer.desired_retention_override_is_final =
-                updater.dynamic_desired_retentions.is_some()
-                    && apply_addon_grade_target(&mut state, target, &updater);
+            if updater.dynamic_desired_retentions.is_some()
+                && apply_addon_grade_target(&mut state, target, &updater)
+            {
+                if let Some(matched) = matched {
+                    apply_addon_interval_bounds(&mut state, matched);
+                }
+                answer.desired_retention_override_is_final = state == answer.new_state;
+            }
         }
         if answer.desired_retention_override_is_final {
             // The supplied scheduling state already uses the final target. Do
