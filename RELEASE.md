@@ -45,6 +45,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Include older synchronized reviews in RWKV.** Reviews received from another device are now included even when they are more than eight days old. Anki rebuilds affected RWKV states when needed, which can make the first refresh after sync take longer.
+
 - **Stop repeated RWKV recovery after re-importing a deck as new.** Re-imported new cards start fresh in RWKV, including cards whose old history ended in Learning, while their previous review logs remain available. Imports with scheduling retain their source history. Existing caches rebuild once, and reset boundaries survive ordinary card edits on older clients.
 
 - **New cards stay mixed with RWKV reviews.** Queue refreshes preserve progress through **Mix with reviews**, preventing new cards from being repeatedly postponed behind cards added to meet **Minimum reviews per day**.
@@ -54,6 +56,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
 
 ### Technical details
+
+- **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
 
 - **RWKV re-import reset boundaries:** A versioned collection-config mirror protects each boundary when an older client rewrites card data. On normal sync, newer clients reconcile a stale mirror and upload the result; scheduled exports include the effective boundary, and import, undo and redo preserve the intended history. Boundaries already stored only in card data are mirrored when the collection opens. Full-sync replacement and packages exported directly from older clients still follow those clients' normal data-retention behavior. Genuine history and preset-routing changes continue to trigger safe recovery.
 

@@ -391,10 +391,8 @@ def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
     def refresh(
         _mw: object,
         on_done: Callable[[], None],
-        *,
-        remote_review_ids: tuple[int, ...],
     ) -> None:
-        calls.append(f"rwkv refresh {remote_review_ids}")
+        calls.append("rwkv refresh")
         on_done()
 
     monkeypatch.setattr(
@@ -410,7 +408,7 @@ def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
         "clear models",
         "sync finish",
         "reset",
-        "rwkv refresh (123,)",
+        "rwkv refresh",
         "done",
     ]
 

@@ -648,17 +648,13 @@ cached history, they are replayed incrementally. If a synchronized review
 belongs in the middle of history, Anki validates checkpoint structure and
 identity without loading the stored state payloads, restores only the newest
 checkpoint whose canonical review prefix and replay semantics still match the
-merged collection, and replays at most the suffix after the eight-day recovery
-base in chronological order. The refreshed suffix is committed as the current
-delta child. Review-only sync changes older than that window are deliberately
-excluded from the existing recurrent state instead of triggering an unbounded
-replay. Their revlog ids are recorded in local cache metadata so future
-validation and incremental updates keep using the same effective history. Anki
-warns with the number currently excluded.
-Rebuilding the state manually includes the complete retained history again and
-clears the exclusion list. If an old review cannot be excluded safely, or sync
-also changed cards, decks, configuration, or replay semantics, Anki falls back
-to exact checkpoint recovery or a complete rebuild. A failed post-sync rebuild
+merged collection, and replays the suffix in chronological order. The refreshed
+suffix is committed as the current delta child. If an older review precedes all
+valid checkpoints, Anki rebuilds from the complete retained history. This can
+take longer after syncing a device that has been offline for a long time, but
+the resulting state includes those reviews. A cache created by an older version
+that recorded excluded synchronized reviews is also rebuilt once on its next
+load, including any reviews still retained in the collection. A failed post-sync rebuild
 leaves resident state unready; it does not restore a pre-sync state that could
 overwrite a newer refresh.
 Rebuilding the RWKV state cache from deck options always writes a fresh,
