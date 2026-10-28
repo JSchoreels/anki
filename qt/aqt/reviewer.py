@@ -222,6 +222,7 @@ class Reviewer:
         self._refresh_needed: RefreshNeeded | None = None
         self._v3: V3CardInfo | None = None
         self._desired_retention_override: float | None = None
+        self._desired_retention_override_is_final = False
         self._qa_update_id = 0
         self._question_update_id: int | None = None
         self._question_rendered = False
@@ -554,6 +555,7 @@ class Reviewer:
         self._v3 = None
         self._scheduling_states_pending = False
         self._desired_retention_override = None
+        self._desired_retention_override_is_final = False
         self._question_update_id = None
         self._question_rendered = False
         self._answer_update_id = None
@@ -1114,6 +1116,7 @@ class Reviewer:
             return
         if self.state != "answer" or not self._answer_rendered:
             return
+        self._desired_retention_override_is_final = False
         proceed, ease = gui_hooks.reviewer_will_answer_card(
             (True, ease), self, self.card
         )
@@ -1134,6 +1137,9 @@ class Reviewer:
             states=self._v3.states,
             rating=self._v3.rating_from_ease(ease),
             desired_retention_override=self._desired_retention_override,
+        )
+        answer.desired_retention_override_is_final = getattr(
+            self, "_desired_retention_override_is_final", False
         )
         aqt.rwkv_scheduler.set_answer_rwkv_metadata(answer, self, self.card, ease)
         logger.debug(

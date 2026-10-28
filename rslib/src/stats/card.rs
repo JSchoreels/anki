@@ -385,6 +385,7 @@ mod test {
                     milliseconds_taken: 0,
                     custom_data: None,
                     desired_retention_override: skip_scheduling_states.then_some(0.95),
+                    desired_retention_override_is_final: false,
                     rwkv_s90: None,
                     rwkv_retrievability: None,
                     rwkv_review_kind: None,
