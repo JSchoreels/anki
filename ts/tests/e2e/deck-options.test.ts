@@ -113,6 +113,97 @@ test("RWKV comparison sends the selected shared learner and scenario", async ({ 
     await expect(noReviewsRow).toContainText("100.0%");
 });
 
+test("RWKV comparison shows agreement for both answer models and multiple horizons", async ({ page }) => {
+    const requests: SimulateFsrsReviewRequest[] = [];
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!.rwkvReviewEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/startRwkvWorkload", async (route) => {
+        requests.push(decodeRequestBody(route.request(), SimulateFsrsReviewRequest));
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    await page.route("**/_anki/rwkvWorkloadResult", async (route) => {
+        const score = (values: Record<number, number>) =>
+            new SimulateFsrsWorkloadResponse({
+                memorized: values,
+                cost: { 40: 3600, 50: 3600, 70: 3600, 80: 3600 },
+                reviewCount: { 40: 1, 50: 1, 70: 1, 80: 1 },
+                reviewlessEndMemorized: 10,
+            });
+        const fsrs = score({ 40: 20, 50: 20, 70: 20, 80: 20 });
+        const rwkvAnswers = score({ 40: 21, 50: 21, 70: 21, 80: 21 });
+        const fsrsAnswersFsrsScore = score({ 40: 22, 50: 22, 70: 22, 80: 20 });
+        const fsrsAnswersRwkvScore = score({ 40: 22, 50: 22, 70: 18, 80: 22 });
+        const comparison = new RwkvComparisonResponse({
+            fsrsScoredByFsrs: fsrs,
+            rwkvScoredByFsrs: rwkvAnswers,
+            fsrsScoredByRwkv: fsrs,
+            rwkvScoredByRwkv: rwkvAnswers,
+            otherLearner: new RwkvComparisonResponse({
+                fsrsScoredByFsrs: fsrs,
+                rwkvScoredByFsrs: fsrsAnswersFsrsScore,
+                fsrsScoredByRwkv: fsrs,
+                rwkvScoredByRwkv: fsrsAnswersRwkvScore,
+            }),
+            sampledCards: 1,
+            totalCards: 2,
+        });
+        await route.fulfill({ body: Buffer.from(comparison.toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const card = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+    await card.locator("details.rwkv-advanced summary").click();
+    await card.getByRole("button", { name: "Compare RWKV with FSRS", exact: true }).click();
+    const comparison = page.getByRole("dialog").filter({
+        has: page.getByRole("heading", { name: "FSRS / RWKV Efficiency Comparison (Experimental)", exact: true }),
+    });
+    await comparison.getByRole("checkbox", { name: "Compare both answer models" }).check();
+    await comparison.getByLabel("Answer model for graph").selectOption(String(RwkvComparisonOptions_Learner.RWKV));
+    const days = comparison.getByRole("spinbutton").first();
+    await days.fill("30");
+    await days.blur();
+    await comparison.getByRole("button", { name: "Simulate", exact: true }).click();
+    const agreement = comparison.getByRole("region", { name: "Scheduler agreement on net efficiency" });
+    const first = agreement.getByRole("row").nth(1);
+    await expect(first.getByRole("rowheader")).toContainText("30");
+    await expect(agreement.getByRole("columnheader", { name: "40%" })).toHaveCount(0);
+    await expect(first.getByRole("cell").nth(0)).toContainText("RWKV scheduler higher");
+    await expect(first.getByRole("cell").nth(0)).toContainText("+20.0% / +20.0%");
+    await expect(first.getByRole("cell").nth(0)).toContainText("+10.0% / +10.0%");
+    await expect(first.getByRole("cell").nth(1)).toContainText("Mixed / tied");
+    await expect(first.getByRole("cell").nth(2)).toContainText("Mixed / tied");
+    expect(requests[0].daysToSimulate).toBe(30);
+    expect(requests[0].rwkvComparison?.compareBothLearners).toBe(true);
+    expect(requests[0].rwkvComparison?.learner).toBe(RwkvComparisonOptions_Learner.RWKV);
+    const rwkvLine = comparison.locator("g.lines path[data-group='1003']");
+    const rwkvAnswersLine = await rwkvLine.getAttribute("d");
+    await comparison.getByLabel("Answer model for graph").selectOption(String(RwkvComparisonOptions_Learner.FSRS));
+    await expect.poll(() => rwkvLine.getAttribute("d")).not.toBe(rwkvAnswersLine);
+    expect(requests).toHaveLength(1);
+    await comparison.getByLabel("Answer model for graph").selectOption(String(RwkvComparisonOptions_Learner.RWKV));
+
+    const minimumRetention = comparison.getByRole("spinbutton").nth(6);
+    await minimumRetention.fill("80");
+    await minimumRetention.blur();
+    await expect(agreement.getByRole("columnheader", { name: "50%" })).toHaveCount(0);
+    await expect(agreement.getByRole("columnheader", { name: "80%" })).toBeVisible();
+    await minimumRetention.fill("50");
+    await minimumRetention.blur();
+
+    await days.fill("180");
+    await days.blur();
+    await comparison.getByRole("button", { name: "Simulate", exact: true }).click();
+    await expect(agreement.getByRole("row").nth(2).getByRole("rowheader")).toContainText("180");
+    expect(requests[1].daysToSimulate).toBe(180);
+    await comparison.getByRole("button", { name: "Clear Last Simulation" }).click();
+    await expect(agreement.getByRole("row")).toHaveCount(2);
+    await expect(first).toBeVisible();
+});
+
 test(
     "RWKV Advanced hides model, queue and comparison controls and preserves precision on Save",
     async ({ page }, testInfo) => {

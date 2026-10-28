@@ -1195,6 +1195,19 @@ limits are distributed over days. Use sample cap `0` for all eligible cards,
 step `1` for every retention point, or more paired runs to reduce random noise;
 these settings can take substantially longer. The graph can still be jagged:
 review counts are actual simulated counts, not forced to rise with retention.
+Optionally compare both answer models in one operation. It reuses the prepared
+sample, starting RWKV state, grade-time model and background history for both,
+and runs both schedulers and both memory estimators for each answer model. The
+agreement table compares the schedulers' net memorized gain per hour at the
+same requested retention. It shows a winner only when all four answer-model and
+memory-estimator combinations agree; differences displayed as 0.0% are ties.
+If a scheduler has no review time, or FSRS's net efficiency is nonpositive,
+the corresponding percentage is unavailable. The table defaults to showing
+retentions of at least 50%; its minimum can be changed without rerunning.
+Change the horizon and simulate again to add another row; each row records its
+own run and preset rather than combining independently prepared simulations.
+Agreement shows the direction of simulated averages, not statistical significance
+or proof of an advantage with a real learner. Both-answer-model runs take longer.
 Graph hover comparisons use the same requested retention, which can yield
 different simulated memory. A separate time-saving range matches each FSRS point
 to the cheapest tested RWKV point with at least as much simulated memory; it

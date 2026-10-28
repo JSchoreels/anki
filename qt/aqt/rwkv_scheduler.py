@@ -14452,13 +14452,29 @@ def compare_rwkv_and_fsrs_workload(
     response = scheduler_pb2.RwkvComparisonResponse(
         total_cards=len(all_inputs), sampled_cards=len(inputs)
     )
+    comparisons = [(request, response)]
+    if request.rwkv_comparison.compare_both_learners:
+        other_request = scheduler_pb2.SimulateFsrsReviewRequest()
+        other_request.CopyFrom(request)
+        other_request.rwkv_comparison.learner = (
+            scheduler_pb2.RwkvComparisonOptions.FSRS
+            if request.rwkv_comparison.learner
+            == scheduler_pb2.RwkvComparisonOptions.RWKV
+            else scheduler_pb2.RwkvComparisonOptions.RWKV
+        )
+        other_request.rwkv_comparison.compare_both_learners = False
+        other_response = response.other_learner
+        other_response.total_cards = len(all_inputs)
+        other_response.sampled_cards = len(inputs)
+        comparisons.append((other_request, other_response))
     if not inputs:
-        response.fsrs.SetInParent()
-        response.rwkv.SetInParent()
-        response.fsrs_scored_by_fsrs.SetInParent()
-        response.rwkv_scored_by_fsrs.SetInParent()
-        response.fsrs_scored_by_rwkv.SetInParent()
-        response.rwkv_scored_by_rwkv.SetInParent()
+        for _, result in comparisons:
+            result.fsrs.SetInParent()
+            result.rwkv.SetInParent()
+            result.fsrs_scored_by_fsrs.SetInParent()
+            result.rwkv_scored_by_fsrs.SetInParent()
+            result.fsrs_scored_by_rwkv.SetInParent()
+            result.rwkv_scored_by_rwkv.SetInParent()
         return response
     input_scale = len(all_inputs) / len(inputs)
     review_model = _rwkv_simulator_review_model(reviewer)
@@ -14472,7 +14488,8 @@ def compare_rwkv_and_fsrs_workload(
             _rwkv_workload_target_dr_step(request),
         )
     )
-    progress_total = 1 + target_count * repetitions * 2
+    progress_per_learner = 1 + target_count * repetitions * 2
+    progress_total = progress_per_learner * len(comparisons)
     _set_rwkv_workload_progress(0, progress_total)
     try:
         _check_rwkv_workload_cancel(cancel_event)
@@ -14487,42 +14504,48 @@ def compare_rwkv_and_fsrs_workload(
                 raise ValueError("RWKV backend state is busy")
             operation, _ = temporary
 
-            def report_progress(current: int, total: int) -> None:
-                _check_rwkv_workload_cancel(cancel_event)
-                operation.require_current()
-                _set_rwkv_workload_progress(current, total)
-
             operation.require_current()
             background = _rwkv_comparison_background(reviewer, inputs)
             operation.require_current()
-            fsrs_by_fsrs, rwkv_by_fsrs, fsrs_by_rwkv, rwkv_by_rwkv, estimated = compare(
-                inputs=inputs,
-                background=background,
-                request=request,
-                input_scale=input_scale,
-                review_model=review_model,
-                progress=report_progress,
-            )
-            operation.require_current()
-            _check_rwkv_workload_cancel(cancel_event)
-            for target, output in (
-                (response.fsrs_scored_by_fsrs, fsrs_by_fsrs),
-                (response.rwkv_scored_by_fsrs, rwkv_by_fsrs),
-                (response.fsrs_scored_by_rwkv, fsrs_by_rwkv),
-                (response.rwkv_scored_by_rwkv, rwkv_by_rwkv),
-            ):
-                _apply_rwkv_workload_output(target, output)
-            if (
-                request.rwkv_comparison.learner
-                == scheduler_pb2.RwkvComparisonOptions.RWKV
-            ):
-                response.fsrs.CopyFrom(response.fsrs_scored_by_rwkv)
-                response.rwkv.CopyFrom(response.rwkv_scored_by_rwkv)
-            else:
-                response.fsrs.CopyFrom(response.fsrs_scored_by_fsrs)
-                response.rwkv.CopyFrom(response.rwkv_scored_by_fsrs)
-            response.estimated_fsrs_states = estimated
-            response.background_reviews = len(background)
+            for index, (learner_request, result) in enumerate(comparisons):
+
+                def report_progress(current: int, _total: int) -> None:
+                    _check_rwkv_workload_cancel(cancel_event)
+                    operation.require_current()
+                    _set_rwkv_workload_progress(
+                        index * progress_per_learner + current, progress_total
+                    )
+
+                fsrs_by_fsrs, rwkv_by_fsrs, fsrs_by_rwkv, rwkv_by_rwkv, estimated = (
+                    compare(
+                        inputs=inputs,
+                        background=background,
+                        request=learner_request,
+                        input_scale=input_scale,
+                        review_model=review_model,
+                        progress=report_progress,
+                    )
+                )
+                operation.require_current()
+                _check_rwkv_workload_cancel(cancel_event)
+                for target, output in (
+                    (result.fsrs_scored_by_fsrs, fsrs_by_fsrs),
+                    (result.rwkv_scored_by_fsrs, rwkv_by_fsrs),
+                    (result.fsrs_scored_by_rwkv, fsrs_by_rwkv),
+                    (result.rwkv_scored_by_rwkv, rwkv_by_rwkv),
+                ):
+                    _apply_rwkv_workload_output(target, output)
+                if (
+                    learner_request.rwkv_comparison.learner
+                    == scheduler_pb2.RwkvComparisonOptions.RWKV
+                ):
+                    result.fsrs.CopyFrom(result.fsrs_scored_by_rwkv)
+                    result.rwkv.CopyFrom(result.rwkv_scored_by_rwkv)
+                else:
+                    result.fsrs.CopyFrom(result.fsrs_scored_by_fsrs)
+                    result.rwkv.CopyFrom(result.rwkv_scored_by_fsrs)
+                result.estimated_fsrs_states = estimated
+                result.background_reviews = len(background)
     except _ReviewerBackendWarmupInvalidated as exc:
         raise InterruptedError("RWKV comparison invalidated by state change") from exc
     finally:
