@@ -1318,15 +1318,9 @@ title="{}" {}>{}</button>""".format(
                 after_sync()
 
             if refresh_rwkv_state and remote_collection_changes.collection_changed:
-                ignored_review_candidates = (
-                    ()
-                    if remote_collection_changes.non_review_collection_changed
-                    else remote_collection_changes.review_ids
-                )
                 rwkv_scheduler.refresh_rwkv_state_after_sync(
                     self,
                     finish_sync,
-                    remote_review_ids=ignored_review_candidates,
                 )
             else:
                 finish_sync()
