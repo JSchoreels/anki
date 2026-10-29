@@ -65,9 +65,7 @@ def test_deck_options_loads_existing_profile_model_and_precision(
     assert result.rwkv_profile_settings.model == (model or "sm72e20")
     # Full int4 was removed; a stored "int4" falls back to the default.
     assert result.rwkv_profile_settings.state_precision == (
-        precision
-        if precision not in (None, "int4")
-        else "cards_int4_notes_int8"
+        precision if precision not in (None, "int4") else "cards_int4_notes_int8"
     )
 
 
