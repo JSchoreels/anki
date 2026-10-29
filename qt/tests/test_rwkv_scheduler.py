@@ -10364,7 +10364,7 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
 
 
-@pytest.mark.parametrize("next_mode", ["f32", "int4", "cards_int4_notes_int8"])
+@pytest.mark.parametrize("next_mode", ["f32", "cards_int4_notes_int8"])
 def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
     monkeypatch, tmp_path, next_mode
 ) -> None:
@@ -22862,7 +22862,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "device": "cpu",
             "dtype": "float",
             "state_precision": "cards_int4_notes_int8",
-            "model": "sm72",
+            "model": "sm72e20",
         }
     ]
 
@@ -24029,7 +24029,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "device": "cpu",
             "dtype": "float",
             "state_precision": "cards_int4_notes_int8",
-            "model": "sm72",
+            "model": "sm72e20",
         }
     ]
 
@@ -24103,7 +24103,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "device": "mps",
             "dtype": "bfloat16",
             "state_precision": "cards_int4_notes_int8",
-            "model": "sm72",
+            "model": "sm72e20",
         }
     ]
 

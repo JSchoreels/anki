@@ -204,7 +204,7 @@ def main() -> None:
     parser.add_argument(
         "--precision",
         default="cards_int4_notes_int8",
-        choices=("cards_int4_notes_int8", "int8", "int4", "f32"),
+        choices=("cards_int4_notes_int8", "int8", "f32"),
     )
     args = parser.parse_args()
     if args.rounds < 1 or not 4096 <= args.block_bytes <= 16 * 1024 * 1024:
