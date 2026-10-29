@@ -502,9 +502,7 @@ def _import_rsbridge(root: Path) -> object:
         ("sm72e20", "sm72e20/weights.f32.bin"),
     ],
 )
-@pytest.mark.parametrize(
-    "state_precision", ["f32", "int8", "int4", "cards_int4_notes_int8"]
-)
+@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
 def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
     tmp_path, model_name, filename, state_precision
 ) -> None:
@@ -603,9 +601,7 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         ("sm72e20", "sm72e20/weights.f32.bin"),
     ],
 )
-@pytest.mark.parametrize(
-    "state_precision", ["f32", "int8", "int4", "cards_int4_notes_int8"]
-)
+@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
 def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     model_name, filename, state_precision
 ) -> None:

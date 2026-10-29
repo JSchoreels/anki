@@ -4,10 +4,9 @@
 use super::state_scope_bench::load_for_scopes;
 use super::*;
 
-const PRECISIONS: [(StatePrecision, [bool; 3]); 5] = [
+const PRECISIONS: [(StatePrecision, [bool; 3]); 4] = [
     (StatePrecision::F32, [false; 3]),
     (StatePrecision::Int8, [false; 3]),
-    (StatePrecision::Int4, [false; 3]),
     (StatePrecision::Int4CardsInt8Notes, [false; 3]),
     (StatePrecision::Int8, [true; 3]),
 ];
@@ -59,6 +58,16 @@ pub(super) fn snapshot_bytes(inference: &RwkvInference) -> Vec<u8> {
     .unwrap();
     write_snapshot_optional_bytes(&mut out, Some(&inference.cache_state())).unwrap();
     out
+}
+
+#[test]
+fn rwkv_state_precision_rejects_removed_full_int4_without_panicking() {
+    // Full int4 was removed; callers fall back to the default policy.
+    assert!(StatePrecision::parse("int4").is_err());
+    assert_eq!(
+        StatePrecision::parse("cards_int4_notes_int8").unwrap(),
+        StatePrecision::Int4CardsInt8Notes
+    );
 }
 
 #[test]

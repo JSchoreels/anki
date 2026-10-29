@@ -63,8 +63,11 @@ def test_deck_options_loads_existing_profile_model_and_precision(
         result = DeckConfigsForUpdate.FromString(mediasrv.get_deck_configs_for_update())
     assert result.fsrs
     assert result.rwkv_profile_settings.model == (model or "sm72e20")
+    # Full int4 was removed; a stored "int4" falls back to the default.
     assert result.rwkv_profile_settings.state_precision == (
-        precision or "cards_int4_notes_int8"
+        precision
+        if precision not in (None, "int4")
+        else "cards_int4_notes_int8"
     )
 
 
@@ -102,7 +105,8 @@ def test_deck_options_applies_local_choices_only_after_a_successful_save(
 
 
 @pytest.mark.parametrize(
-    "model,precision", [("unknown", "int8"), ("legacy", "unknown"), ("", "")]
+    "model,precision",
+    [("unknown", "int8"), ("legacy", "unknown"), ("legacy", "int4"), ("", "")],
 )
 def test_deck_options_rejects_invalid_runtime_settings_before_starting_save(
     monkeypatch, model, precision
@@ -181,7 +185,7 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
 ):
     import aqt
 
-    profile = {"rwkvModel": saved_model, "rwkvStatePrecision": "int4"}
+    profile = {"rwkvModel": saved_model, "rwkvStatePrecision": "int8"}
     monkeypatch.setattr(aqt, "mw", SimpleNamespace(pm=SimpleNamespace(profile=profile)))
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -192,7 +196,7 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
     assert rwkv_scheduler._rwkv_state_precision() == "f32"
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
     assert rwkv_scheduler._rwkv_model() == saved_model
-    assert rwkv_scheduler._rwkv_state_precision() == "int4"
+    assert rwkv_scheduler._rwkv_state_precision() == "int8"
     root = Path(rwkv_scheduler.__file__).parent / "rwkv_inference"
     assert rwkv_scheduler.embedded_rwkv_model_path() == root / filename
 
@@ -289,7 +293,9 @@ def test_profile_model_and_precision_reach_the_native_backend(
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
     assert backend.model_name == (model or "sm72e20")
-    assert backend.state_precision == (precision or "cards_int4_notes_int8")
+    assert backend.state_precision == (
+        precision if precision not in (None, "int4") else "cards_int4_notes_int8"
+    )
 
 
 @pytest.mark.parametrize("active_model", RWKV_MODELS)

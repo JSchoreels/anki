@@ -340,7 +340,7 @@ deck-config-hard-interval-tooltip = The multiplier applied to a review interval 
 deck-config-new-interval-tooltip = The multiplier applied to a review interval when answering `Again`.
 deck-config-minimum-interval-tooltip = The minimum interval given to a review card after answering `Again`.
 
-## RWKV model and recurrent state precision. Keep f32, int8 and int4 unchanged.
+## RWKV model and recurrent state precision. Keep f32, int8 and int4 cards + int8 notes unchanged.
 
 deck-config-rwkv-model-and-storage = Model and storage
 deck-config-rwkv-profile-settings-scope = Applies to all decks in this profile on this computer. These settings do not sync. Save and reopen the profile to apply changes and rebuild RWKV state from review history.
@@ -365,9 +365,8 @@ deck-config-rwkv-model-explanation = New - Smaller Model (SM72, cool-down from e
 deck-config-rwkv-model-results = Results: <a href="{ $factory }">Model Factory results</a> · <a href="{ $backup }">Matched backup comparison</a>
 deck-config-rwkv-f32 = f32 — full precision fallback
 deck-config-rwkv-int8 = int8 — cards and notes
-deck-config-rwkv-int4 = int4 — experimental, reduced accuracy
 deck-config-rwkv-int4-cards-int8-notes = int4 cards + int8 notes — default
-deck-config-rwkv-precision-explanation = Applies to card and note state in memory and on disk for this profile. Computation remains at full precision. Both int4 options save more memory but can change predictions; int4 cards + int8 notes keeps note state at int8.
+deck-config-rwkv-precision-explanation = Applies to card and note state in memory and on disk for this profile. Computation remains at full precision. int4 cards + int8 notes saves more memory but can change predictions; note state stays at int8.
 
 deck-config-rwkv-description =
     RWKV is a neural network designed to improve predictions of retrievability:

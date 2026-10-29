@@ -280,10 +280,15 @@ The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Storage precision is a hidden setting for the whole local profile:
 `cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
-(cards and notes), `f32` (the original full-precision fallback), or `int4`
-(experimental, cards and notes). All four models support all four modes. The profile
-key is `rwkvStatePrecision`; absent or unsupported values default to
-`cards_int4_notes_int8` in both new and existing profiles. Explicitly saved
+(cards and notes), or `f32` (the original full-precision fallback). All models
+support all three modes. The profile key is `rwkvStatePrecision`; absent or
+unsupported values default to `cards_int4_notes_int8` in both new and existing
+profiles. The former full `int4` mode (cards and notes) was removed: it is no
+longer accepted, and a profile that still stores `int4` uses the default. On a
+9,539-step note history from a held-out benchmark user, int4 note state grew to
+about 1e32 by step 6000 and overflowed to infinity at step 6843, while f32 stayed
+near 5 and int8 near 6.5. Cache identity includes the precision, so a state
+written in full int4 is never reused; it is rebuilt from review history. Explicitly saved
 precision choices, including `int8`, are preserved when saving Deck Options or
 switching models. This choice is local and is
 not synced.
@@ -307,8 +312,8 @@ batches or active replay streams. Bulk replay preserves the last answer's exact
 integer codes and scales, so checkpoint reloads do not add another quantization.
 The mixed mode uses the existing INT4 encoding for cards and INT8 encoding for
 notes, including during bulk replay and checkpoint continuation; no cache schema
-change is needed. The `int4` mode also quantizes notes and remains an
-experimental choice. The
+change is needed. Notes stay at INT8 because INT4 note state can diverge on
+long note histories. The
 [legacy-model mixed-precision comparison](rwkv-hybrid-precision-2026-10-18.MD)
 measured a 24.29% smaller total serialized state payload versus INT8 on one
 collection; it does not establish SM40's accuracy tradeoff.
