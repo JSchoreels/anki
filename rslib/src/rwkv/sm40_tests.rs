@@ -89,22 +89,48 @@ fn sm72_vectors() -> Vec<u8> {
     }
 }
 
+fn sm72e20_vectors() -> Vec<u8> {
+    if let Ok(path) = std::env::var("ANKI_RWKV_SM72E20_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm72e20-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
 #[test]
 fn rwkv_sm72_matches_published_vectors() {
     check_published_vectors("sm72", &sm72_vectors());
 }
 
-/// The leak-free small model (SM72) was trained with the missing note, deck
-/// and preset flags always zero. Setting them must not change any of its
-/// outputs, while the same weights without the rule do read them.
+#[test]
+fn rwkv_sm72e20_matches_published_vectors() {
+    check_published_vectors("sm72e20", &sm72e20_vectors());
+}
+
+/// The leak-free small models (SM72, both cool-downs) were trained with the
+/// missing note, deck and preset flags always zero. Setting them must not
+/// change any of their outputs, while the same weights without the rule do
+/// read them.
 #[test]
 fn rwkv_sm72_ignores_missing_id_flags_in_every_inference_path() {
-    let vectors: Vec<Vectors> = serde_json::from_slice(&sm72_vectors()).unwrap();
+    check_ignores_missing_id_flags("sm72", &sm72_vectors());
+}
+
+#[test]
+fn rwkv_sm72e20_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm72e20", &sm72e20_vectors());
+}
+
+fn check_ignores_missing_id_flags(package: &str, data: &[u8]) {
+    let vectors: Vec<Vectors> = serde_json::from_slice(data).unwrap();
     let user = &vectors[0];
-    let mut model = SrsModel::load(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/sm72/weights.f32.bin"),
-    )
+    let mut model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../qt/aqt/rwkv_inference/{package}/weights.f32.bin"
+    )))
     .unwrap();
     for leak_free in [false, true] {
         model.leak_free_inputs = leak_free;
@@ -175,7 +201,7 @@ fn check_published_vectors(package: &str, data: &[u8]) {
         .unwrap();
         // Runtime input rule of the leak-free model; its vectors keep the
         // flags at zero, so this only mirrors the runtime configuration.
-        model.leak_free_inputs = package == "sm72";
+        model.leak_free_inputs = package.starts_with("sm72");
         let mut maximum = 0.0_f32;
         for user in &vectors {
             let mut states = ReviewStateMaps::default();
@@ -222,6 +248,7 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
         include_str!("../../../qt/aqt/rwkv_inference/sm55/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm56/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm72/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm72e20/architecture.json"),
     ] {
         check_compiled_architecture(source);
     }

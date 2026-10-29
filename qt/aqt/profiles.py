@@ -247,7 +247,7 @@ class ProfileManager:
         from aqt.rwkv_model import RWKV_MODEL_KEY
 
         prof = profileConf.copy()
-        prof[RWKV_MODEL_KEY] = "sm72"
+        prof[RWKV_MODEL_KEY] = "sm72e20"
         if self.db.scalar("select 1 from profiles where name = ? collate nocase", name):
             return
         self.db.execute(
