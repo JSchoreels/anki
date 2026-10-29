@@ -196,7 +196,7 @@ test(
         await model.check();
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
-            model: "sm72",
+            model: "sm72e20",
             statePrecision: "int8",
         });
         await page.reload();
@@ -211,8 +211,8 @@ test(
     },
 );
 
-for (const model of ["sm40", "sm36", "sm55", "sm56"]) {
-    test(`saving older RWKV model ${model} chooses SM72 without changing hidden precision`, async ({ page }) => {
+for (const model of ["sm40", "sm36", "sm55", "sm56", "sm72"]) {
+    test(`saving older RWKV model ${model} chooses SM72 (cool-down from epoch 20) without changing hidden precision`, async ({ page }) => {
         let saved: UpdateDeckConfigsRequest | undefined;
         await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
             const response = await route.fetch();
@@ -232,7 +232,7 @@ for (const model of ["sm40", "sm36", "sm55", "sm56"]) {
         await page.reload();
         expect(saved).toBeUndefined();
         await page.getByRole("button", { name: "Save", exact: true }).click();
-        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm72", statePrecision: "f32" });
+        await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({ model: "sm72e20", statePrecision: "f32" });
         await page.reload();
         await page.locator("details.rwkv-advanced summary").click();
         await expect(page.getByRole("checkbox", { name: "Use Smaller Model", exact: true })).toBeChecked();
