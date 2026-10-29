@@ -51,6 +51,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Removed the full int4 RWKV storage option.** Int4 note state could diverge on long note histories (one 9,539-step sequence reached about 1e32 by step 6000 and overflowed at step 6843). Storage choices are now f32, int8, and the default int4 cards + int8 notes. A profile that saved the full int4 choice uses the default after restarting, and its cached state is rebuilt from review history.
+
 - **Include older synchronized reviews in RWKV.** Reviews received from another device are now included even when they are more than eight days old. Anki rebuilds affected RWKV states when needed, which can make the first refresh after sync take longer.
 
 - **More reliable RWKV simulation results.** The standalone simulator updates RWKV after every answer by default, honors grade-order settings in its native path, and displays actual simulated review counts instead of forcing them to rise with retention. Comparison tooltips now show the correct relative change.
@@ -64,6 +66,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
 
 ### Technical details
+
+- **Full int4 state precision removed:** `int4` is no longer in the supported precision list or accepted by the native parser, so a stored `int4` falls back to `cards_int4_notes_int8` in the profile helper, and Deck Options rejects it as unsupported. The int4 matrix codec remains for the card half of the default policy. Precision is part of the replay identity (`statePrecision`), so caches written in full int4 do not match and are rebuilt rather than reused.
 
 - **RWKV history recovery:** Post-sync validation uses the full retained history, restores a matching checkpoint when available, and otherwise replays from the beginning. Caches that previously excluded synchronized reviews are rebuilt once on their next load.
 

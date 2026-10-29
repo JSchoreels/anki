@@ -33,7 +33,6 @@ impl StatePrecision {
         match value {
             "f32" => Ok(Self::F32),
             "int8" => Ok(Self::Int8),
-            "int4" => Ok(Self::Int4),
             "cards_int4_notes_int8" => Ok(Self::Int4CardsInt8Notes),
             _ => Err(invalid_state()),
         }

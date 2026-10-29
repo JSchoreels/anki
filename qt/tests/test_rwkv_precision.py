@@ -16,7 +16,8 @@ from aqt.rwkv_precision import state_precision_for_profile
         ({"rwkvStatePrecision": 8}, "cards_int4_notes_int8"),
         ({"rwkvStatePrecision": "int8"}, "int8"),
         ({"rwkvStatePrecision": "f32"}, "f32"),
-        ({"rwkvStatePrecision": "int4"}, "int4"),
+        # Full int4 was removed: stored profiles fall back to the default.
+        ({"rwkvStatePrecision": "int4"}, "cards_int4_notes_int8"),
         ({"rwkvStatePrecision": "cards_int4_notes_int8"}, "cards_int4_notes_int8"),
     ],
 )

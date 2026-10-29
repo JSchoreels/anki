@@ -440,7 +440,6 @@ mod tests {
         for precision in [
             StatePrecision::F32,
             StatePrecision::Int8,
-            StatePrecision::Int4,
             StatePrecision::Int4CardsInt8Notes,
         ] {
             let mut legacy = load(ModelKind::Legacy, precision);
