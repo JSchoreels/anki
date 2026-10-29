@@ -451,7 +451,7 @@ runtime. The repository does not define one fixed rebuild time for all users.
 ### Which model does the fork use, and what does leak-free mean?
 
 By default, **Use Smaller Model** (Deck Options → RWKV → Advanced) selects the
-small model, leak-free (SM72): 331,511 parameters, 8.3× fewer than the big
+small model, leak-free, cool-down from epoch 20 (SM72): 331,511 parameters, 8.3× fewer than the big
 Legacy model, and about 4.6 KB of state per card and note instead of 25.7 KB.
 Turning the switch off selects the big Legacy model, which keeps working as
 before.
@@ -462,11 +462,11 @@ deck and preset as missing, which tells a model that the card will be deleted
 later. Live Anki never reviews a deleted card, so that is information from the
 future. SM72 was trained and scored without it: the three missing-identity
 inputs are always zero, and the fork forces them to zero whenever SM72 is
-selected. The fork's history replay already skips deleted cards' reviews, so
+selected (both its cool-downs, from epoch 15 and from epoch 20). The fork's history replay already skips deleted cards' reviews, so
 every replayed review has its real note, deck and preset.
 
 On held-out users, with leak-free inputs for every model, SM72's LogLoss is
-within about 0.5% of the big model (1 leak-free epoch) and within about 0.3%
+within about 0.4% of the big model (1 leak-free epoch) and within about 0.2%
 of the shipped big model, for both Curve and Instant. See
 [the model documentation](docs/rwkv.MD#small-model-leak-free-sm72) for the
 full table.

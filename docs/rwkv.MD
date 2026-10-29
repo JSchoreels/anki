@@ -67,24 +67,25 @@ it is turned off again.
 Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
 local profile. The original Legacy big model (2,762,884 parameters) and the
 331,511-parameter small models SM40, SM36 Muon, SM55, SM56 and the small model,
-leak-free (SM72) are bundled. Only the selected model and its state are loaded.
+leak-free (SM72, cool-down from epoch 15 and from epoch 20) are bundled. Only the selected model and its state are loaded.
 
 The switch is on by default and selects **New - Smaller Model**, the small model,
-leak-free (SM72), when on and **Legacy - Bigger Model** when off. An explicitly
-saved Legacy selection loads with the switch off. SM40, SM36, SM55 and SM56 are no
-longer offered in the UI.
+leak-free, cool-down from epoch 20 (SM72, profile key `sm72e20`), when on and
+**Legacy - Bigger Model** when off. An explicitly saved Legacy selection loads
+with the switch off. SM40, SM36, SM55, SM56 and the SM72 cool-down from epoch 15
+are no longer offered in the UI.
 An inline legend directly below the switch explains both choices, their
 profile-wide scope and how to apply changes. It is visible whenever Advanced is open.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56` and `sm72` as
-supported values. Missing or unsupported values resolve to `sm72` in existing and new profiles.
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` as
+supported values. Missing or unsupported values resolve to `sm72e20` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40`, `sm36`, `sm55` and `sm56` choices switch to `sm72`; `legacy`
-and `sm72` are preserved. The older models remain supported by the runtime. Profile
-creation explicitly stores `sm72`. Neither model choice nor state precision is synced.
+Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56` and `sm72` choices switch to `sm72e20`; `legacy`
+and `sm72e20` are preserved. The older models remain supported by the runtime. Profile
+creation explicitly stores `sm72e20`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
 changes; closing and discarding leaves both profile keys unchanged.
@@ -101,18 +102,19 @@ Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
 remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55,
-SM56 and SM72 weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
-`qt/aqt/rwkv_inference/sm55/`, `qt/aqt/rwkv_inference/sm56/` and
-`qt/aqt/rwkv_inference/sm72/`. Their architecture exports describe SM40's
-architecture; SM72's `architecture.json` is byte-identical to the SM56 release
-export and is kept unformatted, so every file matches its release manifest. SM55 retains Muon and extends the final decay from 5,000 training users
+SM56, SM72 and SM72 (cool-down from epoch 20) weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
+`qt/aqt/rwkv_inference/sm55/`, `qt/aqt/rwkv_inference/sm56/`,
+`qt/aqt/rwkv_inference/sm72/` and `qt/aqt/rwkv_inference/sm72e20/`. Their architecture exports describe SM40's
+architecture; the SM72 `architecture.json` files are byte-identical to the SM56 release
+export and are kept unformatted, so every file matches its release manifest. SM55 retains Muon and extends the final decay from 5,000 training users
 to 8,000. SM56 also trains its ten base epochs on all 8,000 users before the
 8,000-user Muon decay; these checkpoints change weights without changing feature construction,
 recurrent equations, curve evaluation or state encoding. The
 [SM36 integration report](rwkv-sm36-2026-10-22.MD),
 [SM55 integration report](rwkv-sm55-2026-10-22.MD),
 [SM56 integration report](rwkv-sm56-2026-10-24.MD) and
-[SM72 integration report](rwkv-sm72-2026-10-28.MD) record package provenance,
+[SM72 integration report](rwkv-sm72-2026-10-28.MD) and
+[SM72 cool-down from epoch 20 integration report](rwkv-sm72e20-2026-10-29.MD) record package provenance,
 reference/native parity and the scope of the upstream quality evidence. The
 [four-model backup comparison](rwkv-four-model-quality-2026-10-22.MD) scores all
 four checkpoints on identical retained reviews with f32 compute weights and the
@@ -126,11 +128,11 @@ fixed architectures and dispatches at its public operation boundary. Tensor loop
 retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
 Legacy for those comparisons; all six models are available at runtime in
-either build. SM40, SM36, SM55, SM56 and SM72 share the small architecture's specialization;
+either build. SM40, SM36, SM55, SM56 and both SM72 cool-downs share the small architecture's specialization;
 only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40, SM36, SM55, SM56 and SM72 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36, SM55, SM56 and both SM72 cool-downs have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
@@ -140,7 +142,9 @@ four-rating classifier.
 
 ### Small Model, Leak-Free (SM72)
 
-The small model, leak-free (SM72) is the default small model. It has the same
+The small model, leak-free, cool-down from epoch 20 (SM72, key `sm72e20`) is the
+default small model; the earlier cool-down from epoch 15 (key `sm72`) stays bundled
+and selectable by a saved choice. Both have the same
 architecture and size as SM56 (331,511 parameters, 8.3× fewer than the big
 model), but every input it was trained and scored on was built **leak-free**:
 the signal that a card is deleted later is removed. In the training data a
@@ -148,30 +152,34 @@ deleted card is missing from the cards table, so a naive feature builder sets
 the missing-note, missing-deck and missing-preset flags (inputs 13, 14 and 15)
 and gives all deleted cards one shared placeholder deck and preset. Live Anki
 never reviews a deleted card, so that signal is information from the future.
-SM72 was trained for 15 constant-LR epochs on all 8,000 final-tier users,
-followed by a one-epoch 32k Muon cool-down from epoch 15, with distillation
-from the big model (1 leak-free epoch).
+SM72 (cool-down from epoch 20) was trained for 20 constant-LR epochs on all
+8,000 final-tier users, followed by a one-epoch 32k Muon cool-down from epoch 20,
+with distillation from the big model (1 leak-free epoch); the cool-down from
+epoch 15 used 15 constant-LR epochs.
 
 Upstream LogLoss on held-out users, scored with INT8 per-channel weights and
 INT8 card/note state (w8+s8) and leak-free inputs for every model (lower is
 better; brackets are 95% review-weighted user-bootstrap intervals):
 
-| Held-out set | Big model (1 leak-free epoch), Curve / Instant | Shipped big model (Legacy), Curve / Instant | SM72, Curve / Instant | SM72 vs big model (1 leak-free epoch) | SM72 vs shipped big model |
+| Held-out set | Big model (1 leak-free epoch), Curve / Instant | Shipped big model (Legacy), Curve / Instant | SM72 (cool-down from epoch 20), Curve / Instant | vs big model (1 leak-free epoch) | vs shipped big model |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 464-user set (458 users) | 0.29530 / 0.27215 | 0.29591 / 0.27260 | 0.29681 / 0.27326 | +0.51% [+0.29, +0.80] / +0.41% [+0.36, +0.46] | +0.30% / +0.24% |
-| 732-user set (722 users) | 0.29897 / 0.27576 | 0.29966 / 0.27620 | 0.30038 / 0.27687 | +0.47% [+0.30, +0.66] / +0.40% [+0.37, +0.44] | +0.24% / +0.24% |
-| 732+long set (725 users) | 0.30123 / 0.27658 | 0.30142 / 0.27706 | 0.30231 / 0.27775 | +0.36% [+0.10, +0.59] / +0.42% [+0.37, +0.49] | +0.30% / +0.25% |
+| 464-user set (458 users) | 0.29530 / 0.27215 | 0.29591 / 0.27260 | 0.29666 / 0.27303 | +0.46% [+0.25, +0.73] / +0.33% [+0.28, +0.37] | +0.25% / +0.16% |
+| 732-user set (722 users) | 0.29897 / 0.27576 | 0.29966 / 0.27620 | 0.30019 / 0.27664 | +0.41% [+0.25, +0.59] / +0.32% [+0.29, +0.35] | +0.18% / +0.16% |
+| 732+long set (725 users) | 0.30123 / 0.27658 | 0.30142 / 0.27706 | 0.30204 / 0.27750 | +0.27% [−0.02, +0.52] / +0.34% [+0.29, +0.39] | +0.21% / +0.16% |
 
-On the same leak-free inputs, SM56 scores 0.30066 / 0.27745 on the 732-user
-set; SM72 minus SM56 is −0.000276 [−0.000547, +0.000062] Curve and
-−0.000575 [−0.000655, −0.000501] Instant there, and the Instant gain is clear
-of zero on all three sets. Earlier releases were scored with the leak in their
+On the same leak-free inputs, SM56 scores 0.30066 / 0.27745 and the earlier
+SM72 cool-down from epoch 15 scores 0.30038 / 0.27687 on the 732-user set. On
+that set the cool-down from epoch 20 minus SM56 is −0.000472 [−0.000735,
+−0.000120] Curve and −0.000804 [−0.000894, −0.000721] Instant (the Instant gain
+is clear of zero on all three sets); minus the cool-down from epoch 15 it is
+−0.000196 [−0.000312, −0.000100] Curve and −0.000229 [−0.000263, −0.000199]
+Instant, clear of zero on both heads on all three sets. Earlier releases were scored with the leak in their
 inputs, so their published numbers are not directly comparable with these.
 The author's own collection, the spaced-review slice and INT4 card state were
 not measured for SM72; the matched backup comparison linked from Deck Options
 predates SM72 and does not include it.
 
-**Leak-free input rule.** When SM72 is selected, the runtime forces inputs 13,
+**Leak-free input rule.** When either SM72 cool-down is selected, the runtime forces inputs 13,
 14 and 15 to zero on every row, in the per-review, query, batched-query and
 bulk-replay paths, because SM72 never saw them set in training. Other models,
 Legacy included, keep their own feature path unchanged. The upstream rule for
@@ -188,11 +196,12 @@ the flags at zero.
 SM72 shares the small architecture's native engine, state codecs and storage
 precisions. Its state per card plus note is the same as SM56's: about 4.6 KB at
 INT8 state, against 25.7 KB for the big model. The bundled test vectors
-(`rslib/src/rwkv/testdata/sm72-vectors.json.gz`, 500 rows per user) are
-checked for f32 and INT8 weights by `rwkv_sm72_matches_published_vectors`;
-`ANKI_RWKV_SM72_VECTORS` points the same test at the full 14,403-row vectors.
-`rwkv_sm72_ignores_missing_id_flags_in_every_inference_path` and
-`rwkv_runtime_feeds_only_sm72_leak_free_inputs` cover the input rule.
+(`rslib/src/rwkv/testdata/sm72-vectors.json.gz` and `sm72e20-vectors.json.gz`,
+500 rows per user) are checked for f32 and INT8 weights by
+`rwkv_sm72_matches_published_vectors` and `rwkv_sm72e20_matches_published_vectors`;
+`ANKI_RWKV_SM72_VECTORS` and `ANKI_RWKV_SM72E20_VECTORS` point the same tests at the
+full 14,403-row vectors. `rwkv_sm72_ignores_missing_id_flags_in_every_inference_path`,
+its `sm72e20` twin and `rwkv_runtime_feeds_only_sm72_leak_free_inputs` cover the input rule.
 
 The selected model and content hash participate in cache/replay identity. Native
 state-store schema 5, model-tagged runtime marker `ARWKVPROCSTATE4` and desktop
@@ -494,7 +503,7 @@ training data's difference between Anki scheduler-day offsets;
 Canonical RWKV history includes only reviews of cards that still exist: the
 history query joins the review log to `cards` for each review's note and deck,
 and the preset is resolved from that deck. This also satisfies the leak-free
-input rule of the small model, leak-free (SM72): no replayed review belongs to
+input rule of the small models, leak-free (SM72): no replayed review belongs to
 a deleted card. Anki keeps a deleted card's review
 log rows, but not its note, deck, or preset, and graves record only ids.
 
