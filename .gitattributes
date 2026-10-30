@@ -8,3 +8,4 @@ qt/aqt/rwkv_inference/sm36/* -text whitespace=cr-at-eol linguist-vendored
 qt/aqt/rwkv_inference/sm55/* -text whitespace=cr-at-eol linguist-vendored
 qt/aqt/rwkv_inference/sm72/* -text whitespace=cr-at-eol linguist-vendored
 qt/aqt/rwkv_inference/sm72e20/* -text whitespace=cr-at-eol linguist-vendored
+qt/aqt/rwkv_inference/sm72e25/* -text whitespace=cr-at-eol linguist-vendored
