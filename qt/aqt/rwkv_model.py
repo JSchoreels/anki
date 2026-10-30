@@ -4,7 +4,7 @@
 from collections.abc import Mapping
 from pathlib import Path
 
-RWKV_MODELS = ("legacy", "sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20")
+RWKV_MODELS = ("legacy", "sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25")
 RWKV_MODEL_KEY = "rwkvModel"
 RWKV_MODEL_FILES = {
     "legacy": Path("RWKV_trained_on_5000_10000.bin"),
@@ -14,10 +14,11 @@ RWKV_MODEL_FILES = {
     "sm56": Path("sm56/weights.f32.bin"),
     "sm72": Path("sm72/weights.f32.bin"),
     "sm72e20": Path("sm72e20/weights.f32.bin"),
+    "sm72e25": Path("sm72e25/weights.f32.bin"),
 }
 
 
 def model_for_profile(profile: Mapping[str, object] | None) -> str:
     # Profiles without an explicit choice use the leak-free small model.
     value = profile.get(RWKV_MODEL_KEY) if profile else None
-    return value if isinstance(value, str) and value in RWKV_MODELS else "sm72e20"
+    return value if isinstance(value, str) and value in RWKV_MODELS else "sm72e25"

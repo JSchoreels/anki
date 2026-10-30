@@ -352,15 +352,16 @@ deck-config-rwkv-model-sm36 = SM36 Muon
 deck-config-rwkv-model-sm55 = SM55 — previous smaller model
 deck-config-rwkv-model-sm56 = Previous smaller model (SM56)
 deck-config-rwkv-model-sm72 = Previous smaller model (SM72, cool-down from epoch 15)
-deck-config-rwkv-model-sm72e20 = New - Smaller Model
+deck-config-rwkv-model-sm72e20 = Previous smaller model (SM72, cool-down from epoch 20)
+deck-config-rwkv-model-sm72e25 = New - Smaller Model
 deck-config-rwkv-use-smaller-model = Use Smaller Model
 deck-config-rwkv-model-help = About prediction models
 deck-config-rwkv-model-off = Off — Legacy - Bigger Model
 deck-config-rwkv-model-on = On — New - Smaller Model
-deck-config-rwkv-model-smaller-description = Small model, leak-free, cool-down from epoch 20 (SM72): the default smaller model, trained without the deleted-card signal.
+deck-config-rwkv-model-smaller-description = Small model, leak-free, cool-down from epoch 25 (SM72): the default smaller model, trained without the deleted-card signal.
 deck-config-rwkv-model-bigger-description = The original model. Uses more memory and takes longer.
-deck-config-rwkv-model-migration = Previously saved older small models (SM40, SM36, SM55, SM56 and the small model, leak-free, cool-down from epoch 15, SM72) switch to the small model, leak-free, cool-down from epoch 20 (SM72) when you save.
-deck-config-rwkv-model-explanation = New - Smaller Model (SM72, cool-down from epoch 20) is the default. Saved Legacy choices are preserved; older small models switch to the small model, leak-free, cool-down from epoch 20 (SM72) on Save.
+deck-config-rwkv-model-migration = Previously saved older small models (SM40, SM36, SM55, SM56 and the small model, leak-free, cool-down from epoch 15 or 20, SM72) switch to the small model, leak-free, cool-down from epoch 25 (SM72) when you save.
+deck-config-rwkv-model-explanation = New - Smaller Model (SM72, cool-down from epoch 25) is the default. Saved Legacy choices are preserved; older small models switch to the small model, leak-free, cool-down from epoch 25 (SM72) on Save.
 # Preserve the links and URL variables.
 deck-config-rwkv-model-results = Results: <a href="{ $factory }">Model Factory results</a> · <a href="{ $backup }">Matched backup comparison</a>
 deck-config-rwkv-f32 = f32 — full precision fallback
