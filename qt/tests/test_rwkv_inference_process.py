@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 _RWKV_MODEL_FILENAME = "sm40v2/weights.f32.bin"
-_RWKV_ABS_TOL = 1e-6
+# The resident and per-review paths round differently on aarch64 (2.6e-6 seen on macOS CI).
+_RWKV_ABS_TOL = 1e-5
 
 _RWKV_REVIEWS = [
     {
