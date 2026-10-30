@@ -17,6 +17,7 @@ pub enum ModelKind {
     Sm56,
     Sm72,
     Sm72e20,
+    Sm72e25,
 }
 
 impl ModelKind {
@@ -29,6 +30,7 @@ impl ModelKind {
             "sm56" => Ok(Self::Sm56),
             "sm72" => Ok(Self::Sm72),
             "sm72e20" => Ok(Self::Sm72e20),
+            "sm72e25" => Ok(Self::Sm72e25),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -39,7 +41,7 @@ impl ModelKind {
     /// Checkpoints trained without the deleted-card signal: their missing
     /// note, deck and preset flags (inputs 13..15) are always zero.
     pub fn leak_free_inputs(self) -> bool {
-        matches!(self, Self::Sm72 | Self::Sm72e20)
+        matches!(self, Self::Sm72 | Self::Sm72e20 | Self::Sm72e25)
     }
 }
 
@@ -79,6 +81,7 @@ impl RwkvRuntime {
                 | ModelKind::Sm56
                 | ModelKind::Sm72
                 | ModelKind::Sm72e20
+                | ModelKind::Sm72e25
         ) == super::SMALL_MODEL
         {
             let engine = super::RwkvInference::load_with_precision(
@@ -431,6 +434,7 @@ mod tests {
             ModelKind::Sm56 => "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
             ModelKind::Sm72 => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
+            ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -457,6 +461,7 @@ mod tests {
                 (ModelKind::Sm56, load(ModelKind::Sm56, precision)),
                 (ModelKind::Sm72, load(ModelKind::Sm72, precision)),
                 (ModelKind::Sm72e20, load(ModelKind::Sm72e20, precision)),
+                (ModelKind::Sm72e25, load(ModelKind::Sm72e25, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
@@ -485,11 +490,13 @@ mod tests {
     fn rwkv_runtime_feeds_only_sm72_leak_free_inputs() {
         assert_eq!(ModelKind::parse("sm72").unwrap(), ModelKind::Sm72);
         assert_eq!(ModelKind::parse("sm72e20").unwrap(), ModelKind::Sm72e20);
+        assert_eq!(ModelKind::parse("sm72e25").unwrap(), ModelKind::Sm72e25);
         // The same checkpoint without the runtime's input rule.
         let unadjusted = |model: ModelKind| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
                 ModelKind::Sm56 => "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
                 ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
+                ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
                 _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             });
             if super::super::SMALL_MODEL {
@@ -521,7 +528,12 @@ mod tests {
                 .predict_retrievability_many_from_warm_up(vec![query])
                 .unwrap()
         };
-        for model in [ModelKind::Sm56, ModelKind::Sm72, ModelKind::Sm72e20] {
+        for model in [
+            ModelKind::Sm56,
+            ModelKind::Sm72,
+            ModelKind::Sm72e20,
+            ModelKind::Sm72e25,
+        ] {
             assert_eq!(model.leak_free_inputs(), model != ModelKind::Sm56);
             for missing_ids in [false, true] {
                 let runtime = predict(load(model, StatePrecision::F32), missing_ids);

@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 _RWKV_MODEL_FILENAME = "sm40v2/weights.f32.bin"
-_RWKV_ABS_TOL = 1e-6
+# The resident and per-review paths round differently on aarch64 (2.6e-6 seen on macOS CI).
+_RWKV_ABS_TOL = 1e-5
 
 _RWKV_REVIEWS = [
     {
@@ -500,6 +501,7 @@ def _import_rsbridge(root: Path) -> object:
         ("sm56", "sm56/weights.f32.bin"),
         ("sm72", "sm72/weights.f32.bin"),
         ("sm72e20", "sm72e20/weights.f32.bin"),
+        ("sm72e25", "sm72e25/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
@@ -599,6 +601,7 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         ("sm56", "sm56/weights.f32.bin"),
         ("sm72", "sm72/weights.f32.bin"),
         ("sm72e20", "sm72e20/weights.f32.bin"),
+        ("sm72e25", "sm72e25/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
