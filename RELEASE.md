@@ -57,6 +57,12 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **Keep RWKV-Instant review order up to date as time passes.** Full queue updates now use the current elapsed time for each card, so recently failed cards can return to their expected position without syncing.
 
+- **Keep preview reviews from changing saved memory estimates.** Answering a card in a preview-only filtered deck no longer applies RWKV-Curve stability or a desired-retention override to the card.
+
+- **Avoid reusing an earlier RWKV prediction when a card returns.** If a fresh prediction is unavailable for a new presentation, the answer no longer receives metadata from that card's previous presentation.
+
+- **Preserve final desired-retention targets from compatible add-ons.** A per-answer target explicitly marked as final is stored as supplied instead of being mapped through Dynamic Desired Retention a second time.
+
 - **Faster RWKV-Instant refreshes with Dynamic Desired Retention.** With precomputation off, preparing and predicting a warm full-deck queue on a copied collection with 7,449 candidates fell from a median of 157 ms to 117 ms. The complete delay between cards also includes score installation and the UI transition.
 
 - **Faster Dynamic Desired Retention during review.** Warm single-card RWKV target lookups took a median of about 140 ms before and less than 1 ms after on ten sampled cards from a copied collection with 7,449 review candidates. Full-deck refreshes still depend on the configured rules and collection size.
@@ -75,7 +81,7 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **Draft builds no longer offer older published updates.** Automatic checks and Tools → Check for Updates compare the full fork build number, preventing a newer draft from prompting to install an older or equal published build with the same application version. Newer builds continue to be offered.
 
-- **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
+- **Updated security dependencies.** This build includes patched Zstandard components and an updated Markdown parser to address reported security issues.
 
 ### Technical details
 
@@ -106,6 +112,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **RWKV queue mixing:** Queue refreshes retain the new/review mixing progress, including when the minimum-review queue is extended.
 
 - **Zstandard security update:** Update `zstd` to 0.14.3, `zstd-safe` to 8.2.0 and `zstd-sys` to 2.1.2, together with `async-compression` 0.4.51 and `compression-codecs` 0.4.46. This addresses [RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391), [RUSTSEC-2026-0398](https://rustsec.org/advisories/RUSTSEC-2026-0398), [RUSTSEC-2026-0403](https://rustsec.org/advisories/RUSTSEC-2026-0403) and [RUSTSEC-2026-0410](https://rustsec.org/advisories/RUSTSEC-2026-0410), which were detected by the Linux CI dependency audit.
+
+- **Markdown parser security update:** Update `pulldown-cmark` to 0.13.5 for [RUSTSEC-2026-0414](https://rustsec.org/advisories/RUSTSEC-2026-0414).
 
 ## 26.09.3+fsrs7.build.107 — 2026-10-24
 
