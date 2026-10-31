@@ -1821,6 +1821,31 @@ mod test {
     }
 
     #[test]
+    fn new_review_input_uses_card_creation_time() -> Result<()> {
+        let col = Collection::new();
+        let card = Card {
+            id: CardId(1_700_000_000_000),
+            ctype: CardType::New,
+            queue: CardQueue::New,
+            ..Default::default()
+        };
+        let timing = SchedTimingToday {
+            now: TimestampSecs(1_700_086_401),
+            days_elapsed: 1,
+            next_day_at: TimestampSecs(1_700_100_000),
+        };
+
+        let state = col
+            .rwkv_review_input_state(&card, timing, false, true)?
+            .unwrap();
+
+        assert_eq!(state.elapsed_since, Some(TimestampSecs(1_700_000_000)));
+        assert_eq!(state.elapsed_seconds, Some(86_401));
+        assert_eq!(state.elapsed_days, Some(1));
+        Ok(())
+    }
+
+    #[test]
     fn review_input_rows_for_search_uses_search_table() -> Result<()> {
         let mut col = Collection::new();
         col.update_default_deck_config(|config| {
@@ -1890,8 +1915,12 @@ mod test {
         assert_eq!(row.card_id, new_card.id.0);
         assert_eq!(row.current_state_kind, "normal");
         assert_eq!(row.current_normal_state_kind, "new");
-        assert_eq!(row.current_elapsed_days, Some(0));
-        assert_eq!(row.current_elapsed_seconds, Some(0));
+        let elapsed_seconds = row.current_elapsed_seconds.unwrap();
+        assert_eq!(row.current_elapsed_days, Some(elapsed_seconds / 86_400));
+        assert_eq!(
+            row.current_elapsed_since_secs,
+            Some(new_card.id.as_secs().0)
+        );
 
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
@@ -2010,8 +2039,12 @@ mod test {
             .unwrap();
         assert_eq!(new_row.current_state_kind, "normal");
         assert_eq!(new_row.current_normal_state_kind, "new");
-        assert_eq!(new_row.current_elapsed_days, Some(0));
-        assert_eq!(new_row.current_elapsed_seconds, Some(0));
+        let elapsed_seconds = new_row.current_elapsed_seconds.unwrap();
+        assert_eq!(new_row.current_elapsed_days, Some(elapsed_seconds / 86_400));
+        assert_eq!(
+            new_row.current_elapsed_since_secs,
+            Some(new_card.id.as_secs().0)
+        );
 
         Ok(())
     }
