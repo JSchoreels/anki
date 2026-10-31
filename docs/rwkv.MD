@@ -1292,7 +1292,9 @@ separate predictions for hypothetical answers, but the next card's score may
 have changed after the actual answer. With candidate refresh enabled, a
 background update scores only its current candidate window and retains the
 other scores; otherwise it scores the full deck-tree candidate set. Between
-interval updates, Anki refreshes the answered card's score.
+interval updates, Anki refreshes the answered card's score. Full-deck updates
+calculate each cached input's elapsed time from its last review or creation time
+at a single current timestamp; answered cards receive a fresh time reference.
 
 With precomputation disabled and Ascending Retrievability review order or
 retrievability-based new-card gathering selected, Anki waits for a full

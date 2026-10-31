@@ -55,6 +55,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Keep RWKV-Instant review order up to date as time passes.** Full queue updates now use the current elapsed time for each card, so recently failed cards can return to their expected position without syncing.
+
 - **Faster RWKV-Instant refreshes with Dynamic Desired Retention.** With precomputation off, preparing and predicting a warm full-deck queue on a copied collection with 7,449 candidates fell from a median of 157 ms to 117 ms. The complete delay between cards also includes score installation and the UI transition.
 
 - **Faster Dynamic Desired Retention during review.** Warm single-card RWKV target lookups took a median of about 140 ms before and less than 1 ms after on ten sampled cards from a copied collection with 7,449 review candidates. Full-deck refreshes still depend on the configured rules and collection size.
@@ -76,6 +78,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated compression dependencies.** This build includes patched Zstandard components that address newly reported stream-handling, decompression and WebAssembly allocation issues.
 
 ### Technical details
+
+- **RWKV elapsed-time refresh:** Full queue scoring recalculates cached candidates' elapsed times from their last-review or creation timestamps. On synthetic decks, median input preparation over nine updates with one simulated newly answered card each changed from 1.19 ms to 5.54 ms for 2,000 cards and from 2.45 ms to 27.26 ms for 10,000 cards. Every cached input needed updating; these measurements exclude prediction, score installation and UI transitions.
 
 - **RWKV review ordering:** The default reuses the previously computed score map and refreshes in the background. Disabling precomputation refreshes the full candidate set after each answer, independent of the interval and approximate-candidate settings. Card Info waits up to 100 ms for prediction access off the UI thread and retries if the state changes or remains busy.
 

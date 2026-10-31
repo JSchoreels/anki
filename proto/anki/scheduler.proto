@@ -1122,6 +1122,8 @@ message RwkvReviewInputRowsForCardsResponse {
     optional cards.FsrsMemoryState fsrs_memory_state = 20;
     repeated float fsrs_parameters = 21;
     optional float fsrs_historical_retention = 22;
+    // Unix time from which current_elapsed_seconds was calculated.
+    optional int64 current_elapsed_since_secs = 23;
   }
 
   repeated Row rows = 1;

@@ -17249,6 +17249,137 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
     assert scores[0].intervening_reviews == 0
 
 
+def test_cached_queue_inputs_advance_elapsed_times_and_refresh_answered_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 1_000_000
+    day = 0
+    elapsed_since: dict[int, int | None] = {
+        1: now - 100,
+        2: now - 50,
+        3: now - 86_395,
+        4: None,
+        5: now + 20,
+    }
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+
+    def row(card_id: int) -> SimpleNamespace:
+        since = elapsed_since[card_id]
+        elapsed = max(0, now - since) if since is not None else None
+        is_new = card_id == 3
+        return SimpleNamespace(
+            card_id=card_id,
+            note_id=card_id * 10,
+            deck_id=100,
+            preset_id="addon-preset",
+            card_type=0 if is_new else 2,
+            card_queue=0 if is_new else 2,
+            card_due=50,
+            interval_days=4,
+            ease_factor=2500,
+            reps=5,
+            lapses=1,
+            day_offset=42 + day,
+            current_state_kind="normal" if since is not None else "",
+            current_normal_state_kind=("new" if is_new else "review")
+            if since is not None
+            else "",
+            current_elapsed_days=(elapsed // 86_400 if is_new else 1 + day)
+            if elapsed is not None
+            else None,
+            current_elapsed_seconds=elapsed,
+            current_elapsed_since_secs=since,
+            target_retention=0.86,
+            batch_size=512,
+        )
+
+    class Rpc(_RwkvQueueScoreRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deck_calls = 0
+            self.card_calls: list[list[int]] = []
+            self.fail_card_refresh = False
+
+        def rwkv_review_input_rows_for_deck_review_queue(
+            self, **_kwargs: object
+        ) -> SimpleNamespace:
+            self.deck_calls += 1
+            return SimpleNamespace(rows=[row(card_id) for card_id in elapsed_since])
+
+        def rwkv_review_input_rows_for_cards(self, **kwargs: object) -> SimpleNamespace:
+            card_ids = list(cast(Sequence[int], kwargs["card_ids"]))
+            self.card_calls.append(card_ids)
+            if self.fail_card_refresh:
+                raise RuntimeError("card refresh failed")
+            return SimpleNamespace(rows=[row(card_id) for card_id in card_ids])
+
+    rpc = Rpc()
+    reviewer = _rwkv_queue_reviewer(rpc=rpc, review_order=7, card_count=5)
+    reviewer._answeredIds = []
+    reviewer.mw.col.db.list = lambda *_args: [2]
+    reviewer.mw.col.sched._timing_today = lambda: SimpleNamespace(
+        days_elapsed=42 + day, next_day_at=(43 + day) * 86_400
+    )
+
+    def inputs() -> dict[int, RwkvReviewInput]:
+        result = rwkv_scheduler._rwkv_review_input_batches_for_deck_review_queue(
+            reviewer=reviewer,
+            deck_id=100,
+            batch_size_override=512,
+            include_new_cards=True,
+        )
+        assert result is not None
+        return dict(rwkv_scheduler._rwkv_review_input_build_inputs(result))
+
+    initial = inputs()
+    assert initial[1].current_elapsed_seconds == 100
+    assert initial[3].current_elapsed_days == 0
+    assert initial[4].current_elapsed_seconds is None
+
+    now += 10
+    aged = inputs()
+    assert aged[1].current_elapsed_seconds == 110
+    assert aged[1] == replace(initial[1], current_elapsed_seconds=110)
+    assert aged[2].current_elapsed_seconds == 60
+    assert aged[3].current_elapsed_seconds == 86_405
+    assert aged[3].current_elapsed_days == 1
+    assert aged[3] == replace(
+        initial[3], current_elapsed_seconds=86_405, current_elapsed_days=1
+    )
+    assert aged[4].current_elapsed_seconds is None
+    assert aged[5].current_elapsed_seconds == 0
+
+    elapsed_since[2] = now
+    reviewer._answeredIds.append(2)
+    now += 7
+    after_answer = inputs()
+    assert after_answer[1].current_elapsed_seconds == 117
+    assert after_answer[2].current_elapsed_seconds == 7
+    assert after_answer[3].current_elapsed_seconds == 86_412
+
+    now += 4
+    later = inputs()
+    assert later[2].current_elapsed_seconds == 11
+    assert later[5].current_elapsed_seconds == 1
+    assert rpc.deck_calls == 1
+    assert rpc.card_calls == [[2]]
+
+    day += 1
+    now += 10
+    after_rollover = inputs()
+    assert after_rollover[1].current_elapsed_days == 2
+    assert after_rollover[1].current_elapsed_seconds == 131
+    assert rpc.deck_calls == 2
+
+    elapsed_since[2] = now
+    reviewer._answeredIds.append(2)
+    rpc.fail_card_refresh = True
+    after_failure = inputs()
+    assert after_failure[2].current_elapsed_seconds == 0
+    assert rpc.deck_calls == 3
+    assert rpc.card_calls == [[2], [2]]
+
+
 def test_cached_queue_inputs_add_newly_eligible_answered_card(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -17378,8 +17509,7 @@ def test_cached_queue_input_refresh_retries_after_backend_failure(
     first = rwkv_scheduler._cached_rwkv_review_input_batch_build(reviewer, cache_key)
     second = rwkv_scheduler._cached_rwkv_review_input_batch_build(reviewer, cache_key)
 
-    assert first is not None
-    assert first.session_answered_ids == ()
+    assert first is None
     assert second is not None
     assert second.session_answered_ids == (2,)
     assert {

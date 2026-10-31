@@ -513,6 +513,7 @@ class RwkvReviewInputBatchBuild:
     dynamic_desired_retentions_resolved: bool = False
     session_answered_ids: tuple[int, ...] = ()
     dirty_card_ids: tuple[int, ...] = ()
+    elapsed_since_secs_by_card_id: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -24440,6 +24441,7 @@ def _rwkv_review_input_batches_from_backend_for_ids(
     include_new_cards: bool,
     batch_size_override: int | None,
     use_enabled_deck_filter: bool,
+    track_elapsed_since: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
     if not card_ids:
         return RwkvReviewInputBatchBuild(
@@ -24479,6 +24481,7 @@ def _rwkv_review_input_batches_from_backend_for_ids(
         load_start=load_start,
         source_label="cards",
         source_size=len(card_ids),
+        track_elapsed_since=track_elapsed_since,
     )
 
 
@@ -24538,7 +24541,7 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     if cache_key is not None and use_cache:
         cached = _cached_rwkv_review_input_batch_build(reviewer, cache_key)
         if cached is not None:
-            return cached
+            return _rwkv_review_input_batch_with_current_elapsed(cached)
         cache = _rwkv_review_input_batch_cache(reviewer)
         if cache:
             logger.debug(
@@ -24572,6 +24575,7 @@ def _rwkv_review_input_batches_for_deck_review_queue(
         source_label="deck_review_queue_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
         resolve_dynamic_desired_retentions=True,
+        track_elapsed_since=True,
     )
     input_build = _resolve_dynamic_desired_retentions_for_input_build(
         reviewer,
@@ -24579,7 +24583,49 @@ def _rwkv_review_input_batches_for_deck_review_queue(
     )
     if cache_key is not None:
         _cache_rwkv_review_input_batch_build(reviewer, cache_key, input_build)
-    return input_build
+    return _rwkv_review_input_batch_with_current_elapsed(input_build)
+
+
+def _rwkv_review_input_batch_with_current_elapsed(
+    input_build: RwkvReviewInputBatchBuild,
+) -> RwkvReviewInputBatchBuild:
+    """Recalculate time-sensitive fields without changing cached card data."""
+    elapsed_since = input_build.elapsed_since_secs_by_card_id
+    if not elapsed_since:
+        return input_build
+
+    now = int(time.time())
+    inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
+    for batch_size, inputs in input_build.inputs_by_batch_size.items():
+        updated_inputs = []
+        for card_id, review_input in inputs:
+            since = elapsed_since.get(card_id)
+            if since is not None:
+                seconds = min(max(now - since, 0), 0xFFFF_FFFF)
+                days = (
+                    seconds // 86_400
+                    if review_input.current_normal_state_kind == "new"
+                    else review_input.current_elapsed_days
+                )
+                if (
+                    seconds != review_input.current_elapsed_seconds
+                    or days != review_input.current_elapsed_days
+                ):
+                    # All attributes are constructor fields. Copying them directly
+                    # avoids dataclass field introspection for every cached card.
+                    review_input = type(review_input)(
+                        **(
+                            vars(review_input)
+                            | {
+                                "current_elapsed_seconds": seconds,
+                                "current_elapsed_days": days,
+                            }
+                        )
+                    )
+            updated_inputs.append((card_id, review_input))
+        inputs_by_batch_size[batch_size] = updated_inputs
+
+    return replace(input_build, inputs_by_batch_size=inputs_by_batch_size)
 
 
 def _rwkv_review_input_batch_cache_key(
@@ -24747,20 +24793,16 @@ def _cached_rwkv_review_input_batch_build(
         include_new_cards=cache_key[2],
         batch_size_override=cache_key[1],
         use_enabled_deck_filter=True,
+        track_elapsed_since=True,
     )
     if refreshed_build is None:
         logger.debug(
-            "RWKV review input cache refresh deferred after backend failure: "
+            "RWKV review input cache refresh failed; reloading deck: "
             "deck_id=%s refresh_ids=%s",
             cache_key[0],
             len(refresh_ids),
         )
-        return replace(
-            cached,
-            preset_elapsed_ms=0.0,
-            load_elapsed_ms=0.0,
-            candidate_elapsed_ms=0.0,
-        )
+        return None
 
     cached_input_card_ids = {
         card_id
@@ -24821,6 +24863,21 @@ def _cached_rwkv_review_input_batch_build(
         refreshed_input_count += len(inputs)
 
     input_count = sum(len(inputs) for inputs in merged_inputs_by_batch_size.values())
+    refreshed_card_ids = {
+        card_id
+        for inputs in refreshed_inputs_by_batch_size.values()
+        for card_id, _ in inputs
+    }
+    elapsed_since_secs_by_card_id = {
+        card_id: since
+        for card_id, since in cached.elapsed_since_secs_by_card_id.items()
+        if card_id not in refresh_id_set
+    }
+    elapsed_since_secs_by_card_id.update(
+        (card_id, since)
+        for card_id, since in refreshed_build.elapsed_since_secs_by_card_id.items()
+        if card_id in refreshed_card_ids
+    )
     updated = replace(
         cached,
         inputs_by_batch_size=merged_inputs_by_batch_size,
@@ -24832,6 +24889,7 @@ def _cached_rwkv_review_input_batch_build(
         dirty_card_ids=tuple(
             card_id for card_id in dirty_card_ids if card_id not in refresh_id_set
         ),
+        elapsed_since_secs_by_card_id=elapsed_since_secs_by_card_id,
     )
     cache[cache_key] = updated
     cache.move_to_end(cache_key)
@@ -24873,6 +24931,7 @@ def _rwkv_review_input_batch_build_from_backend_response(
     source_label: str,
     source_size: int,
     resolve_dynamic_desired_retentions: bool = False,
+    track_elapsed_since: bool = False,
 ) -> RwkvReviewInputBatchBuild:
     if isinstance(response, scheduler_pb2.RwkvReviewInputRowsForCardsResponse):
         return _rwkv_review_input_batch_build_from_backend_proto_response(
@@ -24883,9 +24942,11 @@ def _rwkv_review_input_batch_build_from_backend_response(
             source_label=source_label,
             source_size=source_size,
             resolve_dynamic_desired_retentions=resolve_dynamic_desired_retentions,
+            track_elapsed_since=track_elapsed_since,
         )
 
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
+    elapsed_since_secs_by_card_id: dict[int, int] = {}
     parsed_cards = 0
     eligible_cards = 0
     rows = getattr(response, "rows", ())
@@ -24904,6 +24965,12 @@ def _rwkv_review_input_batch_build_from_backend_response(
             else _rwkv_backend_row_batch_size(row)
         )
         inputs_by_batch_size.setdefault(batch_size, []).append((card_id, review_input))
+        if track_elapsed_since:
+            elapsed_since = _rwkv_backend_optional_int(
+                row, "current_elapsed_since_secs"
+            )
+            if elapsed_since is not None:
+                elapsed_since_secs_by_card_id[card_id] = elapsed_since
         eligible_cards += 1
 
     elapsed_ms = (time.monotonic() - load_start) * 1000
@@ -24928,6 +24995,7 @@ def _rwkv_review_input_batch_build_from_backend_response(
         load_elapsed_ms=elapsed_ms,
         candidate_elapsed_ms=elapsed_ms,
         searched_rows=source_size,
+        elapsed_since_secs_by_card_id=elapsed_since_secs_by_card_id,
     )
 
 
@@ -24940,6 +25008,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
     source_label: str,
     source_size: int,
     resolve_dynamic_desired_retentions: bool = False,
+    track_elapsed_since: bool = False,
 ) -> RwkvReviewInputBatchBuild:
     target_retentions_by_card_id = (
         _dynamic_desired_retention_targets_for_current_retentions(
@@ -24953,6 +25022,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
         else {}
     )
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
+    elapsed_since_secs_by_card_id: dict[int, int] = {}
     parsed_cards = 0
     eligible_cards = 0
     for row in response.rows:
@@ -24971,6 +25041,8 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
             )
         )
         inputs_by_batch_size.setdefault(batch_size, []).append((card_id, review_input))
+        if track_elapsed_since and row.HasField("current_elapsed_since_secs"):
+            elapsed_since_secs_by_card_id[card_id] = row.current_elapsed_since_secs
         eligible_cards += 1
 
     elapsed_ms = (time.monotonic() - load_start) * 1000
@@ -24996,6 +25068,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
         candidate_elapsed_ms=elapsed_ms,
         searched_rows=source_size,
         dynamic_desired_retentions_resolved=resolve_dynamic_desired_retentions,
+        elapsed_since_secs_by_card_id=elapsed_since_secs_by_card_id,
     )
 
 

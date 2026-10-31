@@ -512,6 +512,7 @@ impl Collection {
                     current_normal_state_kind: partial.state.normal_state_kind,
                     current_elapsed_days: partial.state.elapsed_days,
                     current_elapsed_seconds: partial.state.elapsed_seconds,
+                    current_elapsed_since_secs: partial.state.elapsed_since.map(|time| time.0),
                     target_retention: valid_rwkv_target_retention(partial.target_retention),
                     batch_size: partial.batch_size,
                     enforce_grade_order: Some(partial.enforce_grade_order),
@@ -550,13 +551,16 @@ impl Collection {
     ) -> Result<Option<RwkvReviewInputState>> {
         match (card.ctype, card.queue) {
             (CardType::New, CardQueue::New) => {
-                let elapsed_seconds = first_review_elapsed_from_card_creation
-                    .then(|| timing.now.elapsed_secs_since_clamped(card.id.as_secs()));
+                let elapsed_since =
+                    first_review_elapsed_from_card_creation.then(|| card.id.as_secs());
+                let elapsed_seconds =
+                    elapsed_since.map(|since| timing.now.elapsed_secs_since_clamped(since));
                 Ok(Some(RwkvReviewInputState {
                     state_kind: "normal".to_string(),
                     normal_state_kind: "new".to_string(),
                     elapsed_days: elapsed_seconds.map(|elapsed_seconds| elapsed_seconds / 86_400),
                     elapsed_seconds,
+                    elapsed_since,
                 }))
             }
             (CardType::Review, CardQueue::Review | CardQueue::Suspended) => {
@@ -582,10 +586,12 @@ impl Collection {
                         .unwrap_or_default(),
                     elapsed_days,
                     elapsed_seconds,
+                    elapsed_since: last_review_time,
                 }))
             }
             (CardType::Learn, CardQueue::Learn | CardQueue::DayLearn) => {
-                let elapsed_seconds = self.rwkv_last_review_time(card)?.map(|last_review_time| {
+                let elapsed_since = self.rwkv_last_review_time(card)?;
+                let elapsed_seconds = elapsed_since.map(|last_review_time| {
                     TimestampSecs::now().elapsed_secs_since_clamped(last_review_time)
                 });
                 Ok(Some(RwkvReviewInputState {
@@ -597,6 +603,7 @@ impl Collection {
                         .unwrap_or_default(),
                     elapsed_days: None,
                     elapsed_seconds,
+                    elapsed_since,
                 }))
             }
             (CardType::Relearn, CardQueue::Learn | CardQueue::DayLearn) => {
@@ -606,6 +613,7 @@ impl Collection {
                         normal_state_kind: String::new(),
                         elapsed_days: None,
                         elapsed_seconds: None,
+                        elapsed_since: None,
                     }));
                 };
                 Ok(Some(RwkvReviewInputState {
@@ -619,6 +627,7 @@ impl Collection {
                     elapsed_seconds: Some(
                         TimestampSecs::now().elapsed_secs_since_clamped(last_review_time),
                     ),
+                    elapsed_since: Some(last_review_time),
                 }))
             }
             _ => Ok(None),
@@ -1188,6 +1197,7 @@ struct RwkvReviewInputState {
     normal_state_kind: String,
     elapsed_days: Option<u32>,
     elapsed_seconds: Option<u32>,
+    elapsed_since: Option<TimestampSecs>,
 }
 
 fn rwkv_fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
@@ -1583,6 +1593,7 @@ mod test {
         assert_eq!(row.current_elapsed_days, Some(39));
         let elapsed_seconds = row.current_elapsed_seconds.unwrap();
         assert!((38 * 86_400..=39 * 86_400).contains(&elapsed_seconds));
+        assert_eq!(row.current_elapsed_since_secs, Some(last_review_time.0));
         assert_eq!(row.target_retention, 0.86);
         assert_eq!(row.batch_size, 1024);
         assert_eq!(row.enforce_grade_order, Some(false));
@@ -1647,7 +1658,37 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].current_elapsed_days, Some(39));
         assert!(response.rows[0].current_elapsed_seconds.is_some());
+        assert_eq!(
+            response.rows[0].current_elapsed_since_secs,
+            Some(last_review_time.0)
+        );
 
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_leave_missing_review_time_unset() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+        });
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        col.add_card(&mut card)?;
+
+        let response =
+            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                card_ids: vec![card.id.0],
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].current_elapsed_seconds, None);
+        assert_eq!(response.rows[0].current_elapsed_since_secs, None);
         Ok(())
     }
 
@@ -1772,6 +1813,10 @@ mod test {
         assert_eq!(included.rows[0].current_normal_state_kind, "new");
         assert!(included.rows[0].current_elapsed_days.is_some());
         assert!(included.rows[0].current_elapsed_seconds.is_some());
+        assert_eq!(
+            included.rows[0].current_elapsed_since_secs,
+            Some(card.id.as_secs().0)
+        );
         Ok(())
     }
 
