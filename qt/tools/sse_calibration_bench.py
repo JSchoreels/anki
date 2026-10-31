@@ -15,7 +15,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import resource
 import sys
 import tempfile
 import threading
@@ -27,8 +26,12 @@ from typing import Any
 
 
 def peak_mib() -> float:
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return rss / (1024**2 if sys.platform == "darwin" else 1024)
+    if sys.platform != "win32":
+        import resource
+
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return rss / (1024**2 if sys.platform == "darwin" else 1024)
+    raise NotImplementedError("Peak RSS measurement requires a POSIX platform")
 
 
 def parse_args() -> argparse.Namespace:

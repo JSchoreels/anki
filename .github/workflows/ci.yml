@@ -552,9 +552,16 @@ jobs:
       || contains(github.event.pull_request.labels.*.name, 'check:windows')
     runs-on: windows-11-vs2026-arm
     name: check (windows-arm)
-    # Unlike the x64 Windows runner, windows-11-arm has no D: drive, so we use
-    # the default C:-based CARGO_HOME and TEMP.
+    # Keep temporary paths short for Visual Studio and NuGet on ARM, which has
+    # no D: drive like the x64 runner.
+    env:
+      TEMP: C:\tmp
+      TMP: C:\tmp
     steps:
+      - name: Prepare temporary directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v4
         with:
           submodules: true
