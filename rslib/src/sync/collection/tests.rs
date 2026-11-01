@@ -32,6 +32,7 @@ use crate::decks::DeckKind;
 use crate::error::SyncError;
 use crate::error::SyncErrorKind;
 use crate::log::set_global_logger;
+use crate::notes::AddNoteRequest;
 use crate::notetype::all_stock_notetypes;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
@@ -328,6 +329,39 @@ async fn sync_roundtrip() -> Result<()> {
         let ctx = SyncTestContext::new(client);
         upload_download(&ctx).await?;
         regular_sync(&ctx).await?;
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn normal_sync_transfers_large_batches_between_clients() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        upload_download(&ctx).await?;
+        let mut desktop = ctx.col1();
+        let mut other = ctx.col2();
+        let notetype = desktop.basic_notetype();
+        let mut requests = (0..600)
+            .map(|index| {
+                let mut note = notetype.new_note();
+                note.set_field(0, format!("sync batch note {index}"))?;
+                Ok(AddNoteRequest {
+                    note,
+                    deck_id: DeckId(1),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        desktop.add_notes(&mut requests)?;
+
+        ctx.normal_sync(&mut desktop).await;
+        assert!(ctx.normal_sync(&mut other).await.remote_collection_changed);
+        assert_eq!(other.storage.get_all_note_ids()?.len(), 601);
+        assert_eq!(other.storage.get_all_card_ids()?.len(), 601);
+        for request in &requests {
+            let received = other.storage.get_note(request.note.id)?.unwrap();
+            assert_eq!(received.fields(), request.note.fields());
+        }
         Ok(())
     })
     .await
