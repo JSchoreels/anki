@@ -1094,6 +1094,24 @@ days and 600 elapsed seconds. These rows report RWKV-Instant predictions after
 each hypothetical answer; they are separate from the RWKV-Curve predictions
 used for answer-button intervals.
 
+When the selected model folder has the optional answer-time head
+(`time_head.f32.bin`, bundled with `sm72e25`), Card Info also shows
+**RWKV : Answer Time by Button**, the predicted median answer time if the next
+answer is Again, Hard, Good or Easy, and **RWKV : Expected Answer Time**, the
+median over the four answers weighted by the answer-button probabilities, with
+the chance of a Good answer under 3.9 seconds. The head reads the frozen small
+model at the query (the residual after the input encoder and after each of the
+four layer rounds, layer-normalised, and the Instant head's hidden layer) and 26
+causal features of the canonical RWKV history: the card's last three recorded
+answer times, review count and last grade, the collection's running median time
+per grade, the previous answer time, a running average, elapsed days and the
+review count. The rows appear only for a card whose previous review was on an
+earlier day; new cards and cards already reviewed today have none. The history
+features come from one native pass over the canonical history
+(`RwkvAnswerTimeHistoryFeatures`), cached until the review log changes.
+Scheduling, queue order and every other prediction never read the answer time;
+a model folder without the head file loads and behaves exactly as before.
+
 For RWKV-Curve-enabled cards, **RWKV Curve Next S90** reports the Curve S90
 predicted for each hypothetical answer, while **FSRS Next S90** reports Anki's
 FSRS S90 from the unmodified scheduling states for the same four answers.

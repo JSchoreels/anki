@@ -1,7 +1,8 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""Convert published SM40 vectors; requires NumPy only for this preparation."""
+"""Convert published SM40 vectors (and answer-time head vectors when present);
+requires NumPy only for this preparation."""
 
 import argparse
 import gzip
@@ -11,15 +12,41 @@ from pathlib import Path
 import numpy as np  # type: ignore[import-not-found]
 
 
+def answer_time_vectors(data: dict, count: int) -> dict:
+    """Answer-time head vectors (package sm72e25-time) for the first `count` rows:
+    the query rows' history features and head logits, and the revlog prefix the
+    history features are computed from."""
+    keep = data["time_row"] < count
+    review_th = data["time_review_th"][keep]
+    reviews = int(review_th.max()) if len(review_th) else 0
+    return {
+        "rows": data["time_row"][keep].tolist(),
+        "review_th": review_th.tolist(),
+        "explicit": data["time_explicit"][keep].tolist(),
+        "fp32": data["fp32_time_logits"][keep].tolist(),
+        "int8": data["int8_time_logits"][keep].tolist(),
+        "revlog": [
+            data[f"rev_{name}"][:reviews].tolist()
+            for name in ("card_id", "rating", "duration", "elapsed_days")
+        ],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument(
+        "--time-only",
+        action="store_true",
+        help="keep only the answer-time vectors (the rows are the model's own vectors)",
+    )
     args = parser.parse_args()
     users = []
     for path in sorted((args.package / "testvectors").glob("user_*.npz")):
-        data = np.load(path, allow_pickle=False)
+        # Decompress each array once: NpzFile reads a member on every access.
+        data = dict(np.load(path, allow_pickle=False))
         count = (
             len(data["features"])
             if args.limit == 0
@@ -56,12 +83,19 @@ def main() -> None:
                     ],
                 }
             )
-        users.append(
-            {"name": path.name, "sweep": data["sweep_seconds"].tolist(), "rows": rows}
-        )
-    data = json.dumps(users, separators=(",", ":")).encode()
+        user = {
+            "name": path.name,
+            "sweep": data["sweep_seconds"].tolist(),
+            "rows": rows,
+        }
+        if "time_row" in data:
+            user["time"] = answer_time_vectors(data, count)
+        if args.time_only:
+            user["rows"] = []
+        users.append(user)
+    output = json.dumps(users, separators=(",", ":")).encode()
     args.output.write_bytes(
-        gzip.compress(data, mtime=0) if args.output.suffix == ".gz" else data
+        gzip.compress(output, mtime=0) if args.output.suffix == ".gz" else output
     )
 
 

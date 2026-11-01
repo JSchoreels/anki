@@ -54,6 +54,11 @@ from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
 from aqt.qt import QMessageBox, QWidget
+from aqt.rwkv_answer_time import (
+    ANSWER_TIME_FEATURES,
+    RwkvAnswerTimePrediction,
+    answer_time_card_info_rows,
+)
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -2775,6 +2780,35 @@ class RwkvStatefulReviewerBackend:
 
     def _advance_state_generation(self) -> None:
         self._state_generation += 1
+
+    def has_answer_time_head(self) -> bool:
+        has_head = getattr(self._runtime, "has_answer_time_head", None)
+        return bool(has_head()) if callable(has_head) else False
+
+    def predict_answer_time(
+        self,
+        candidate: RwkvReviewCandidate,
+        history_features: Sequence[float],
+    ) -> RwkvAnswerTimePrediction | None:
+        """The optional answer-time head's prediction for the card's next
+        answer; scheduling never reads it."""
+        predict = getattr(self._runtime, "predict_answer_times", None)
+        if not callable(predict) or not self.has_answer_time_head():
+            return None
+        identity = rwkv_review_identity(candidate.reviewer, candidate.card)
+        if identity is None:
+            return None
+        review_input = rwkv_review_input(
+            reviewer=candidate.reviewer,
+            card=candidate.card,
+            identity=identity,
+            ease=None,
+        )
+        predictions = predict(
+            [self._prediction_request(identity, review_input)],
+            [history_features],
+        )
+        return predictions[0] if predictions else None
 
     def _prediction_request(
         self,
@@ -8244,6 +8278,15 @@ def rwkv_card_info_rows(
     diagnostics = _with_card_info_prediction_details(diagnostics)
 
     rows = _card_info_diagnostic_rows(diagnostics)
+    if queried_diagnostics is not None and diagnostics.retrievability is not None:
+        rows.extend(
+            _rwkv_card_info_answer_time_rows(
+                reviewer,
+                card,
+                candidate=candidate,
+                wait_for_backend=wait_for_backend,
+            )
+        )
     if rwkv_review_enabled(reviewer, card):
         rows.extend(
             _rwkv_card_info_next_s90_rows(
@@ -8262,6 +8305,92 @@ def rwkv_card_info_rows(
             )
         )
     return rows
+
+
+def _rwkv_card_info_answer_time_rows(
+    reviewer: object,
+    card: object,
+    *,
+    candidate: RwkvReviewCandidate,
+    wait_for_backend: bool,
+) -> list[tuple[str, str]]:
+    """Predicted answer times from the model's optional answer-time head; no
+    rows without the head, for a card last reviewed today or a new card."""
+    backend = _reviewer_backend
+    card_id = _card_id(card)
+    has_head = getattr(backend, "has_answer_time_head", None)
+    predict = getattr(backend, "predict_answer_time", None)
+    if card_id is None or not callable(has_head) or not callable(predict):
+        return []
+    try:
+        if not has_head() or not _prepare_reviewer_backend_for_card_info(reviewer):
+            return []
+        features = _rwkv_answer_time_history_features(reviewer, card_id)
+        if features is None:
+            return []
+        state_token = _capture_reviewer_backend_prediction_state_token(
+            reviewer,
+            expected_backend=backend,
+        )
+        if state_token is None:
+            return []
+        with _try_reviewer_backend_prediction_access(
+            expected_state_token=state_token,
+            wait_timeout_seconds=(
+                _RWKV_CARD_INFO_PREDICTION_WAIT_SECONDS if wait_for_backend else None
+            ),
+        ) as current_backend:
+            if current_backend is not backend:
+                return []
+            prediction = predict(candidate, features)
+    except Exception:
+        logger.debug("RWKV card info answer time unavailable", exc_info=True)
+        return []
+    return answer_time_card_info_rows(prediction)
+
+
+_rwkv_answer_time_history_cache: tuple[tuple[object, ...], list[float]] | None = None
+
+
+def _rwkv_answer_time_history_features(
+    reviewer: object,
+    card_id: int,
+) -> list[float] | None:
+    """The answer-time head's 26 history features for one card after the
+    collection's whole canonical RWKV history (one native pass), cached until
+    the review log or the ignored reviews change."""
+    global _rwkv_answer_time_history_cache
+
+    collection = _collection(reviewer)
+    build = getattr(
+        getattr(collection, "_backend", None),
+        "rwkv_answer_time_history_features",
+        None,
+    )
+    db = getattr(collection, "db", None)
+    if not callable(build) or db is None:
+        return None
+    ignored = frozenset(
+        _rwkv_state_cache_ignored_review_ids(_read_rwkv_state_cache_metadata(reviewer))
+    )
+    revlog = db.first("select count(), coalesce(max(id), 0) from revlog")
+    key = (id(collection), card_id, tuple(revlog or ()), ignored)
+    cached = _rwkv_answer_time_history_cache
+    if cached is not None and cached[0] == key:
+        return list(cached[1])
+
+    from aqt.rwkv_history import history_fingerprint_request
+
+    response = build(
+        history=history_fingerprint_request(reviewer, ignored),
+        card_ids=[card_id],
+    )
+    for row in response.cards:
+        if row.card_id == card_id and len(row.features) == ANSWER_TIME_FEATURES:
+            features = [float(value) for value in row.features]
+            _rwkv_answer_time_history_cache = (key, features)
+            return list(features)
+    return None
 
 
 def _card_info_diagnostic_rows(
