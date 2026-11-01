@@ -1131,6 +1131,13 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<anki_proto::scheduler::RwkvHistoricalReviewInputsResponse> {
         Collection::rwkv_historical_review_inputs(self, input)
     }
+
+    fn rwkv_answer_time_history_features(
+        &mut self,
+        input: anki_proto::scheduler::RwkvAnswerTimeHistoryFeaturesRequest,
+    ) -> Result<anki_proto::scheduler::RwkvAnswerTimeHistoryFeaturesResponse> {
+        Collection::rwkv_answer_time_history_features(self, input)
+    }
 }
 
 fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: bool) -> bool {

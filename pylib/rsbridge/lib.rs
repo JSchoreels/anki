@@ -33,6 +33,12 @@ struct RwkvInferenceState {
 
 type RwkvUnroundedIntervalTuple = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
 type RwkvProbabilityTuple = (f32, f32, f32, f32);
+type RwkvAnswerTimeTuple = (
+    RwkvProbabilityTuple,
+    RwkvProbabilityTuple,
+    f32,
+    RwkvProbabilityTuple,
+);
 type RwkvSerializedStateMap = Vec<(i64, Py<PyBytes>)>;
 type RwkvSerializedState = (
     Option<Py<PyBytes>>,
@@ -293,6 +299,59 @@ impl RwkvInference {
                             unrounded_interval_tuple(output.s90s),
                             probability_tuple(output.button_probabilities),
                         )
+                    })
+                    .collect()
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    /// Whether the model folder had the optional answer-time head.
+    fn has_answer_time_head(&self) -> bool {
+        self.inner.has_answer_time_head()
+    }
+
+    /// Per prediction request (the `predict_many` tuple) and its 26 history
+    /// features: `None`, or (median seconds per grade, P(under 3.9 s) per
+    /// grade, grade-mixed median seconds, the instant head's grade
+    /// probabilities).
+    fn predict_answer_times(
+        &mut self,
+        requests: &Bound<'_, PyAny>,
+        history: Vec<Vec<f32>>,
+    ) -> PyResult<Vec<Option<RwkvAnswerTimeTuple>>> {
+        let mut parsed_requests = Vec::new();
+        for request in requests.try_iter()? {
+            parsed_requests.push(parse_rwkv_prediction_request(&request?)?);
+        }
+        let history = history
+            .into_iter()
+            .map(|row| {
+                <[f32; rwkv::ANSWER_TIME_FEATURES]>::try_from(row.as_slice()).map_err(|_| {
+                    PyException::new_err(format!(
+                        "RWKV answer-time history must contain {} values",
+                        rwkv::ANSWER_TIME_FEATURES
+                    ))
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        self.inner
+            .predict_answer_times(parsed_requests, history)
+            .map(|outputs| {
+                outputs
+                    .into_iter()
+                    .map(|output| {
+                        output.map(|prediction| {
+                            (
+                                probability_tuple(std::array::from_fn(|grade| {
+                                    prediction.median_seconds(grade)
+                                })),
+                                probability_tuple(std::array::from_fn(|grade| {
+                                    prediction.fast_probability(grade)
+                                })),
+                                prediction.mixed_median_seconds(),
+                                probability_tuple(prediction.button_probabilities),
+                            )
+                        })
                     })
                     .collect()
             })

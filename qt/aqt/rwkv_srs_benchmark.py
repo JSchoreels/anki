@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from anki import scheduler_pb2
+from aqt.rwkv_answer_time import (
+    RwkvAnswerTimePrediction,
+    answer_time_prediction_from_native,
+)
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
@@ -716,29 +720,7 @@ class _RustRwkvRuntime:
             ]
 
         build_start = time.monotonic()
-        rows = [
-            (
-                request.review_input.identity.card_id,
-                request.review_input.identity.note_id,
-                request.review_input.identity.deck_id,
-                request.review_input.identity.preset_id,
-                request.review_input.is_query,
-                request.review_input.ease,
-                request.review_input.duration_millis,
-                request.review_input.card_type,
-                request.review_input.day_offset,
-                request.review_input.current_elapsed_days,
-                request.review_input.current_elapsed_seconds,
-                *request.review_input.target_retentions,
-                request.review_input.enforce_grade_order,
-                _state_bytes(request.card_state),
-                _state_bytes(request.note_state),
-                _state_bytes(request.deck_state),
-                _state_bytes(request.preset_state),
-                _state_bytes(request.global_state),
-            )
-            for request in requests
-        ]
+        rows = [_rust_prediction_row(request) for request in requests]
         build_elapsed_ms = (time.monotonic() - build_start) * 1000
         predict_start = time.monotonic()
         logger.debug(
@@ -787,6 +769,27 @@ class _RustRwkvRuntime:
                 button_probabilities,
             ) in outputs
         ]
+
+    def has_answer_time_head(self) -> bool:
+        has_head = getattr(self._process, "has_answer_time_head", None)
+        return bool(has_head()) if callable(has_head) else False
+
+    def predict_answer_times(
+        self,
+        requests: Sequence[RwkvReviewPredictionRequest],
+        history_features: Sequence[Sequence[float]],
+    ) -> Sequence[RwkvAnswerTimePrediction | None]:
+        """Answer times of query requests from the optional answer-time head;
+        None without the head or for a query on the card's last review day."""
+        predict = getattr(self._process, "predict_answer_times", None)
+        if not callable(predict) or not self.has_answer_time_head():
+            return [None] * len(requests)
+        rows = [_rust_prediction_row(request) for request in requests]
+        with self._locked_process():
+            outputs = predict(rows, [list(row) for row in history_features])
+        if len(outputs) != len(requests):
+            raise ValueError("RWKV Rust answer-time prediction count mismatch")
+        return [answer_time_prediction_from_native(output) for output in outputs]
 
     def predict_retrievability_many(
         self,
@@ -1621,6 +1624,30 @@ def _report_warmup_progress(
 ) -> None:
     if progress is not None:
         progress(RwkvWarmUpProgress(processed_reviews=processed, total_reviews=total))
+
+
+def _rust_prediction_row(request: RwkvReviewPredictionRequest) -> tuple:
+    review_input = request.review_input
+    return (
+        review_input.identity.card_id,
+        review_input.identity.note_id,
+        review_input.identity.deck_id,
+        review_input.identity.preset_id,
+        review_input.is_query,
+        review_input.ease,
+        review_input.duration_millis,
+        review_input.card_type,
+        review_input.day_offset,
+        review_input.current_elapsed_days,
+        review_input.current_elapsed_seconds,
+        *review_input.target_retentions,
+        review_input.enforce_grade_order,
+        _state_bytes(request.card_state),
+        _state_bytes(request.note_state),
+        _state_bytes(request.deck_state),
+        _state_bytes(request.preset_state),
+        _state_bytes(request.global_state),
+    )
 
 
 def _state_bytes(state: object | None) -> bytes | None:
