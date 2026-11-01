@@ -94,7 +94,7 @@ impl Collection {
         input: RwkvAnswerTimeHistoryFeaturesRequest,
     ) -> Result<RwkvAnswerTimeHistoryFeaturesResponse> {
         let mut history = crate::rwkv::AnswerTimeHistory::new();
-        self.visit_rwkv_historical_reviews(
+        let _ = self.visit_rwkv_historical_reviews(
             input.history.unwrap_or_default(),
             RwkvHistoricalReplayOptions::default(),
             |review, _hash, _is_checkpoint| {
