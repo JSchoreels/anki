@@ -18,6 +18,22 @@ from anki.errors import Interrupted
 from aqt import rwkv_scheduler as scheduler
 
 
+def history_fingerprint_request(
+    reviewer: object, ignored_review_ids: Set[int]
+) -> scheduler_pb2.RwkvHistoricalReviewFingerprintRequest:
+    """The canonical history selection the full replay uses."""
+    return scheduler_pb2.RwkvHistoricalReviewFingerprintRequest(
+        ignored_review_ids=sorted(ignored_review_ids),
+        dynamic_preset_replay=(
+            scheduler._rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
+        ),
+        stable_preset_ids=scheduler._rwkv_history_stable_preset_ids(reviewer),
+        first_review_uses_creation_by_config_id=(
+            scheduler._rwkv_first_review_uses_creation_by_config_id(reviewer)
+        ),
+    )
+
+
 def full_review_inputs(
     reviewer: object,
     build: Callable[
@@ -37,16 +53,7 @@ def full_review_inputs(
     )
     elapsed_source = scheduler.RwkvFirstReviewElapsedSource
     request = scheduler_pb2.RwkvHistoricalReviewInputsRequest(
-        history=scheduler_pb2.RwkvHistoricalReviewFingerprintRequest(
-            ignored_review_ids=sorted(ignored_review_ids),
-            dynamic_preset_replay=(
-                scheduler._rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
-            ),
-            stable_preset_ids=scheduler._rwkv_history_stable_preset_ids(reviewer),
-            first_review_uses_creation_by_config_id=(
-                scheduler._rwkv_first_review_uses_creation_by_config_id(reviewer)
-            ),
-        ),
+        history=history_fingerprint_request(reviewer, ignored_review_ids),
         # An absent override selects each deck's policy; False explicitly
         # selects missing elapsed time for every first review.
         first_review_uses_creation=(
