@@ -55,6 +55,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Faster uploads during normal sync.** When many small review or card changes are waiting to be sent, Anki combines them into fewer requests. The improvement depends on the number of changes and network latency; downloading still uses the server's batch size.
+
 - **Keep RWKV-Instant review order up to date as time passes.** Full queue updates now use the current elapsed time for each card, so recently failed cards can return to their expected position without syncing.
 
 - **Keep preview reviews from changing saved memory estimates.** Answering a card in a preview-only filtered deck no longer applies RWKV-Curve stability or a desired-retention override to the card.
@@ -84,6 +86,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 - **Updated security dependencies.** This build includes patched Zstandard components and an updated Markdown parser to address reported security issues.
 
 ### Technical details
+
+- **Normal sync uploads:** Combine up to four existing collection chunks when their combined serialized request stays below 512 KiB. Larger original chunks remain separate. The sync transaction and wire format are unchanged.
 
 - **RWKV elapsed-time refresh:** Full queue scoring recalculates cached candidates' elapsed times from their last-review or creation timestamps. On synthetic decks, median input preparation over nine updates with one simulated newly answered card each changed from 1.19 ms to 5.54 ms for 2,000 cards and from 2.45 ms to 27.26 ms for 10,000 cards. Every cached input needed updating; these measurements exclude prediction, score installation and UI transitions.
 
