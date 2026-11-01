@@ -184,6 +184,20 @@ impl RwkvRuntime {
         dispatch!(self, engine, engine.predict_retrievability_many(requests))
     }
 
+    /// Whether the model folder had the optional answer-time head.
+    pub fn has_answer_time_head(&self) -> bool {
+        dispatch!(self, engine, engine.has_answer_time_head())
+    }
+
+    /// See [`super::RwkvInference::predict_answer_times`].
+    pub fn predict_answer_times(
+        &mut self,
+        requests: Vec<ReviewPredictionRequest>,
+        history: Vec<[f32; super::ANSWER_TIME_FEATURES]>,
+    ) -> io::Result<Vec<Option<super::AnswerTimePrediction>>> {
+        dispatch!(self, engine, engine.predict_answer_times(requests, history))
+    }
+
     pub fn predict_retrievability_many_from_warm_up(
         &mut self,
         inputs: Vec<ReviewInput>,
@@ -547,5 +561,96 @@ mod tests {
             }
         }
         assert!(!ModelKind::Legacy.leak_free_inputs());
+    }
+
+    /// The answer-time head is optional: a model folder without
+    /// `time_head.f32.bin` loads as before and predicts no answer time, and
+    /// loading the head changes no grade output.
+    #[test]
+    fn rwkv_runtime_answer_time_head_is_optional_and_leaves_grades_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = dir.path().join("weights.f32.bin");
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin"),
+            &bare,
+        )
+        .unwrap();
+        let answers = crate::rwkv::precision_tests::reviews(21);
+        let mut query = answers[0].clone();
+        query.is_query = true;
+        query.ease = None;
+        query.duration_millis = None;
+        query.current_elapsed_days = Some(3);
+        query.current_elapsed_seconds = Some(3 * 86_400);
+        let mut same_day = query.clone();
+        same_day.current_elapsed_days = Some(0);
+        same_day.current_elapsed_seconds = Some(600);
+        let mut history = super::super::AnswerTimeHistory::new();
+        for answer in &answers {
+            history.push(
+                answer.card_id,
+                answer.ease.unwrap() as i64,
+                answer.duration_millis.unwrap(),
+            );
+        }
+        let features = history.features(query.card_id, 3);
+        let run = |mut engine: RwkvRuntime| {
+            engine.warm_up_reviews(answers.clone(), false).unwrap();
+            let request = |input: &ReviewInput| ReviewPredictionRequest {
+                input: input.clone(),
+                state: engine.warm_up_state(input),
+            };
+            let requests = vec![request(&query), request(&same_day)];
+            let again = vec![request(&query), request(&same_day)];
+            let grades = engine.predict_many(requests).unwrap();
+            let times = engine
+                .predict_answer_times(again, vec![features; 2])
+                .unwrap();
+            let grades: Vec<_> = grades
+                .into_iter()
+                .map(|output| {
+                    (
+                        output.retrievability.to_bits(),
+                        output.curve_retrievability.map(f32::to_bits),
+                        output.button_probabilities.map(f32::to_bits),
+                        output.intervals.map(|v| v.map(f32::to_bits)),
+                        output.s90s.map(|v| v.map(f32::to_bits)),
+                        output.current_interval,
+                        output.current_s90.map(f32::to_bits),
+                    )
+                })
+                .collect();
+            (engine.has_answer_time_head(), grades, times)
+        };
+        let (with_head, grades, times) = run(load(ModelKind::Sm72e25, StatePrecision::F32));
+        let (without_head, bare_grades, bare_times) = run(RwkvRuntime::load_with_precision(
+            bare,
+            0.9,
+            36_500,
+            StatePrecision::F32,
+            ModelKind::Sm72e25,
+        )
+        .unwrap());
+        assert!(with_head && !without_head);
+        assert_eq!(grades, bare_grades);
+        assert_eq!(bare_times, vec![None, None]);
+        let prediction = times[0]
+            .as_ref()
+            .expect("a later-day query has an answer time");
+        assert!(times[1].is_none(), "same-day queries have no answer time");
+        for grade in 0..4 {
+            let total: f32 = prediction.probabilities[grade].iter().sum();
+            assert!((total - 1.0).abs() < 1e-5);
+            let median = prediction.median_seconds(grade);
+            assert!(median > 0.25 && median <= 60.0, "{median}");
+        }
+        assert_eq!(
+            prediction.button_probabilities.map(f32::to_bits),
+            grades[0].2,
+            "the head's trunk pass gives the grade path's button probabilities"
+        );
+        // Legacy never has a head.
+        assert!(!load(ModelKind::Legacy, StatePrecision::F32).has_answer_time_head());
     }
 }
