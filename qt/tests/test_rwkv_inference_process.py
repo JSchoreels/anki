@@ -966,7 +966,7 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
             preset_state=None,
             global_state=None,
         )
-        return (*args[:15], True, *args[15:])
+        return (*args[:15], True, *args[15:20])
 
     with_head = load("sm72e25/weights.f32.bin", "sm72e25")
     without_head = load("sm72e20/weights.f32.bin", "sm72e20")
