@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
+use answer_time_items::AnswerTimePrediction as AnswerTimeOutput;
 use rayon::prelude::*;
 use rusqlite::blob::Blob;
 use rusqlite::params;
@@ -30,7 +31,6 @@ use crate::rwkv::answer_time as answer_time_items;
 use crate::rwkv::answer_time::set_answer_time_elapsed;
 use crate::rwkv::answer_time::ANSWER_TIME_FORMAT_VERSION;
 use crate::scheduler::rwkv::relative_overdueness;
-use answer_time_items::AnswerTimePrediction as AnswerTimeOutput;
 
 #[path = "architecture.rs"]
 mod architecture;
