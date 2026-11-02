@@ -1156,6 +1156,13 @@ per-grade Dynamic DR targets and uses the matching target for Again, Hard, Good,
 and Easy. Otherwise it uses the resolved preset desired retention, with
 deck-config desired retention and `0.9` as fallbacks.
 
+When a compatible Dynamic Desired Retention add-on supplies answer-button grade
+rules, each configured rule replaces that grade's target before RWKV-Curve is
+queried. Unconfigured grades retain their native Dynamic DR or base targets.
+The add-on leaves the resulting Curve intervals intact and applies any field
+interval bounds afterward. If Curve cannot supply all four answer intervals,
+the normal FSRS fallback continues to apply the grade rules.
+
 The same per-grade RWKV-Curve is also evaluated at `90%` retrievability. That
 interval is the RWKV S90 equivalent. The selected answer's S90 is written to the
 card memory-state payload as `memory_state.stability`, which is the user-facing
