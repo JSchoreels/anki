@@ -55,6 +55,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Use answer-button retention rules with RWKV-Curve.** Configured Dynamic Desired Retention grade rules now select RWKV-Curve targets without replacing its button intervals with FSRS estimates.
+
 - **Faster uploads during normal sync.** When many small review or card changes are waiting to be sent, Anki combines them into fewer requests. The improvement depends on the number of changes and network latency; downloading still uses the server's batch size.
 
 - **Keep RWKV-Instant review order up to date as time passes.** Full queue updates now use the current elapsed time for each card, so recently failed cards can return to their expected position without syncing.

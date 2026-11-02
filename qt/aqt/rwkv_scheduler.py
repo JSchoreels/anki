@@ -8780,6 +8780,11 @@ def rwkv_review_input(
             reviewer=reviewer,
             card=card,
             states=_scheduling_states(reviewer),
+            apply_grade_rules=(
+                ease is None
+                and isinstance(deck_config, dict)
+                and _rwkv_review_config_enabled(deck_config)
+            ),
         ),
         enforce_grade_order=(
             not isinstance(deck_config, dict)
@@ -8990,25 +8995,65 @@ def _rwkv_target_retentions(
     reviewer: object,
     card: object,
     states: SchedulingStates | None,
+    apply_grade_rules: bool,
 ) -> tuple[float | None, float | None, float | None, float | None]:
+    desired_retention = _rwkv_base_target_retention(reviewer, card)
+    retentions: tuple[float, ...] = (desired_retention,) * 4
     if states is not None and getattr(
         states, "dynamic_desired_retention_enabled", False
     ):
-        retentions = tuple(
+        dynamic_retentions = tuple(
             value
             for value in getattr(states, "dynamic_desired_retentions", [])
             if _valid_probability(value)
         )
-        if len(retentions) == 4:
-            return cast(tuple[float, float, float, float], retentions)
+        if len(dynamic_retentions) == 4:
+            retentions = dynamic_retentions
 
+    if apply_grade_rules:
+        grade_retentions = _rwkv_grade_retentions(desired_retention)
+        retentions = tuple(
+            grade_retentions.get(grade, retention)
+            for grade, retention in zip(_RWKV_RATING_FIELDS, retentions, strict=True)
+        )
+    return cast(tuple[float, float, float, float], retentions)
+
+
+def _rwkv_base_target_retention(reviewer: object, card: object) -> float:
     desired_retention = _reviewer_desired_retention_override(reviewer)
     if desired_retention is None:
         desired_retention = _desired_retention_for_card(reviewer, card)
     if desired_retention is None:
         desired_retention = _RWKV_DEFAULT_TARGET_RETENTION
+    return desired_retention
 
-    return (desired_retention, desired_retention, desired_retention, desired_retention)
+
+def _rwkv_grade_retentions(desired_retention: float) -> dict[str, float]:
+    resolver = _dynamic_desired_retention_api_function("review_grade_retentions")
+    if resolver is None:
+        return {}
+    resolved = resolver(current_desired_retention=desired_retention)
+    if not isinstance(resolved, Mapping):
+        return {}
+    return {
+        grade: float(value)
+        for grade in _RWKV_RATING_FIELDS
+        if _valid_probability(value := resolved.get(grade))
+    }
+
+
+def current_reviewer_curve_grade_retentions(
+    reviewer: object, card: object
+) -> dict[str, float] | None:
+    """Return grade targets used for the current Curve prediction, if applied."""
+    prediction = _current_reviewer_prediction(reviewer, card)
+    if (
+        prediction is None
+        or not prediction.interval_override_used
+        or not rwkv_review_enabled(reviewer, card)
+    ):
+        return None
+    return _rwkv_grade_retentions(_rwkv_base_target_retention(reviewer, card))
 
 
 def _reviewer_desired_retention_override(reviewer: object) -> float | None:

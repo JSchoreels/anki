@@ -6083,6 +6083,120 @@ def test_rwkv_review_input_uses_dynamic_desired_retention_per_grade() -> None:
     assert review_input.target_retentions == pytest.approx((0.81, 0.82, 0.83, 0.84))
 
 
+@pytest.mark.parametrize("native_dynamic_dr", [False, True])
+def test_rwkv_curve_uses_addon_grade_targets_with_card_level_retention(
+    monkeypatch: pytest.MonkeyPatch, native_dynamic_dr: bool
+) -> None:
+    reviewer = _rwkv_reviewer(preset_desired_retention=0.75)
+    reviewer._desired_retention_override = 0.6
+    if native_dynamic_dr:
+        reviewer._v3.states.dynamic_desired_retention_enabled = True
+        reviewer._v3.states.dynamic_desired_retentions.extend([0.61, 0.65, 0.70, 0.72])
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    calls: list[float] = []
+
+    def resolve(*, current_desired_retention: float) -> dict[str, float]:
+        calls.append(current_desired_retention)
+        return {"easy": 0.8}
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_api_function",
+        lambda name: resolve if name == "review_grade_retentions" else None,
+    )
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert calls == [0.6]
+    expected = (0.61, 0.65, 0.70, 0.8) if native_dynamic_dr else (0.6, 0.6, 0.6, 0.8)
+    assert review_input.target_retentions == pytest.approx(expected)
+
+
+def test_rwkv_instant_does_not_use_answer_grade_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=False,
+        rwkv_review_instant_order_enabled=True,
+        preset_desired_retention=0.75,
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_api_function",
+        lambda name: pytest.fail(f"unexpected grade lookup: {name}"),
+    )
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert review_input.target_retentions == pytest.approx((0.75, 0.75, 0.75, 0.75))
+
+
+def test_rwkv_curve_exposes_grade_targets_only_after_a_prediction_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Backend:
+        input: RwkvReviewInput | None = None
+
+        def predict_review_curve(
+            self, *, reviewer: object, card: object
+        ) -> RwkvReviewPrediction:
+            identity = rwkv_review_identity(reviewer, card)
+            assert identity is not None
+            self.input = rwkv_review_input(
+                reviewer=reviewer, card=card, identity=identity, ease=None
+            )
+            return RwkvReviewPrediction(
+                interval_overrides=RwkvIntervalOverride(
+                    again=1, hard=4, good=9, easy=18
+                )
+            )
+
+    backend = Backend()
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer(preset_desired_retention=0.75)
+    reviewer._desired_retention_override = 0.6
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_api_function",
+        lambda name: (
+            (lambda *, current_desired_retention: {"easy": 0.8})
+            if name == "review_grade_retentions"
+            else None
+        ),
+    )
+    states = SchedulingStates()
+    for grade in ("again", "hard", "good", "easy"):
+        getattr(states, grade).CopyFrom(_normal_review_state(interval=3, fuzz_delta=0))
+
+    assert (
+        rwkv_scheduler.current_reviewer_curve_grade_retentions(reviewer, card) is None
+    )
+    updated = update_reviewer_scheduling_states(states, reviewer, card)
+
+    assert backend.input is not None
+    assert backend.input.target_retentions == pytest.approx((0.6, 0.6, 0.6, 0.8))
+    assert updated.easy.normal.review.scheduled_days == 18
+    assert rwkv_scheduler.current_reviewer_curve_grade_retentions(reviewer, card) == {
+        "easy": 0.8
+    }
+    reviewer._review_card_generation = 2
+    assert (
+        rwkv_scheduler.current_reviewer_curve_grade_retentions(reviewer, card) is None
+    )
+
+
 def test_rwkv_review_input_encodes_filtered_state_like_training_data() -> None:
     reviewer = _rwkv_reviewer()
     reviewer._v3.states.current.Clear()
