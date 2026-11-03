@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
+use answer_time_items::AnswerTimePrediction as AnswerTimeOutput;
 use rayon::prelude::*;
 use rusqlite::blob::Blob;
 use rusqlite::params;
@@ -26,6 +27,9 @@ use rusqlite::Transaction;
 use rusqlite::MAIN_DB;
 
 use crate::card::CardType;
+use crate::rwkv::answer_time as answer_time_items;
+use crate::rwkv::answer_time::set_answer_time_elapsed;
+use crate::rwkv::answer_time::ANSWER_TIME_FORMAT_VERSION;
 use crate::scheduler::rwkv::relative_overdueness;
 
 #[path = "architecture.rs"]
@@ -431,6 +435,8 @@ pub struct RwkvInference {
     #[cfg(test)]
     captured_curves: Option<Vec<ReviewCurve>>,
     model: Arc<SrsModel>,
+    /// Optional answer-time head (`time_head.*.bin` next to the weights).
+    answer_time_head: Option<Arc<AnswerTimeHead>>,
     features: FeatureState,
     curves: HashMap<i64, ReviewCurve>,
     warm_up_states: ReviewStateMaps,
@@ -715,12 +721,63 @@ impl RwkvInference {
         max_interval_days: u32,
         precision: StatePrecision,
     ) -> io::Result<Self> {
-        Ok(Self::from_model(
+        let mut engine = Self::from_model(
             SrsModel::load(&path)?,
             target_retention,
             max_interval_days,
             precision,
-        ))
+        );
+        engine.answer_time_head = AnswerTimeHead::load_beside(&path)?.map(Arc::new);
+        Ok(engine)
+    }
+
+    /// Whether the optional answer-time head was loaded with the model.
+    pub fn has_answer_time_head(&self) -> bool {
+        self.answer_time_head.is_some()
+    }
+
+    /// Predicts the answer time of each query from the frozen trunk and the
+    /// history features of [`crate::rwkv::AnswerTimeHistory::features`]
+    /// (computed after every review before the query; their elapsed-days
+    /// entries are replaced by the query's own). `None` without the head and
+    /// for queries on the day of the card's previous review or on a new card:
+    /// the head was trained only on reviews on a later day. Grade outputs are
+    /// computed elsewhere and never change.
+    pub fn predict_answer_times(
+        &mut self,
+        requests: Vec<ReviewPredictionRequest>,
+        history: Vec<[f32; answer_time_items::ANSWER_TIME_FEATURES]>,
+    ) -> io::Result<Vec<Option<AnswerTimeOutput>>> {
+        if requests.len() != history.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "RWKV answer-time history count mismatch",
+            ));
+        }
+        let Some(head) = self.answer_time_head.clone() else {
+            return Ok(vec![None; requests.len()]);
+        };
+        let mut out = Vec::with_capacity(requests.len());
+        for (request, mut explicit) in requests.into_iter().zip(history) {
+            if !request.input.is_query {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV answer-time prediction only supports query inputs",
+                ));
+            }
+            let elapsed = elapsed_days(&request.input, elapsed_seconds(&request.input));
+            if elapsed < 1 {
+                out.push(None);
+                continue;
+            }
+            set_answer_time_elapsed(&mut explicit, elapsed);
+            let item = self.prediction_work_item(&request.input, &request.state)?;
+            let (frozen, button_probabilities) = self
+                .model
+                .answer_time_inputs(&item.features, item.state.as_ref());
+            out.push(Some(head.predict(&frozen, &explicit, button_probabilities)));
+        }
+        Ok(out)
     }
 
     /// Feeds the checkpoint leak-free inputs: the missing note, deck and
@@ -749,6 +806,7 @@ impl RwkvInference {
             #[cfg(test)]
             captured_curves: None,
             model: Arc::new(model),
+            answer_time_head: None,
             features: FeatureState::default(),
             curves: HashMap::new(),
             warm_up_states: ReviewStateMaps::default(),
@@ -1915,6 +1973,7 @@ insert into segments (
             #[cfg(test)]
             captured_curves: None,
             model: Arc::clone(&self.model),
+            answer_time_head: self.answer_time_head.clone(),
             features,
             curves,
             warm_up_states: ReviewStateMaps::default(),
@@ -3996,6 +4055,56 @@ impl SrsModel {
         heads
     }
 
+    /// The answer-time head's frozen inputs at a query and the instant head's
+    /// grade probabilities. Runs the same trunk as [`Self::review_features`]
+    /// and keeps the residual after the input encoder and after each layer
+    /// round, layer-normalised without affine parameters, then the instant
+    /// head's hidden layer.
+    fn answer_time_inputs(&self, features: &[f32], state: SrsStateRef<'_>) -> (Vec<f32>, [f32; 4]) {
+        let unit = Norm {
+            groups: 1,
+            dim: D_MODEL,
+            eps: 1e-5,
+            weight: vec![1.0; D_MODEL],
+            bias: vec![0.0; D_MODEL],
+        };
+        let mut out = Vec::with_capacity(AnswerTimeHead::FROZEN);
+        let mut x = self.feature_mlp(features);
+        out.extend(unit.apply(&x));
+        let states = [
+            state.card,
+            state.deck,
+            state.note,
+            state.preset,
+            state.global,
+        ];
+        let decoded: Vec<_> = states
+            .iter()
+            .map(|state| state.map(ModuleState::decoded))
+            .collect();
+        let mut v0 = [const { Vec::new() }; 5];
+        for (index, &(module_id, layer_id)) in LAYER_STEPS.iter().enumerate() {
+            let previous = decoded[module_id]
+                .as_ref()
+                .and_then(|state| state.layers.get(layer_id));
+            let (next, value, _) =
+                self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
+            x = next;
+            v0[module_id] = value;
+            if index + 1 == LAYER_STEPS.len() || LAYER_STEPS[index + 1].1 != layer_id {
+                out.extend(unit.apply(&x));
+            }
+        }
+        let prehead = self.prehead_norm.apply(&x);
+        let mut head_p = self.head_p_0.apply(&prehead);
+        relu_in_place(&mut head_p);
+        let probabilities = softmax(&self.p_linear.apply(&head_p));
+        out.extend_from_slice(&head_p);
+        let mut button_probabilities = [0.0; 4];
+        button_probabilities.copy_from_slice(&probabilities);
+        (out, button_probabilities)
+    }
+
     #[cfg(any(not(target_os = "macos"), test))]
     fn review_retrievability_features(
         &self,
@@ -4050,6 +4159,105 @@ impl SrsModel {
         1.0 - scratch.probabilities[0]
     }
 }
+
+/// The answer-time head on the frozen trunk: Linear, ReLU, Linear to 4
+/// grades x 16 log-time bins. Its inputs are the query's residual after the
+/// input encoder and after each layer round (layer-normalised without
+/// affine parameters), the instant head's hidden layer, and the history
+/// features.
+struct AnswerTimeHead {
+    hidden: Linear,
+    out: Linear,
+}
+
+impl AnswerTimeHead {
+    const FROZEN: usize = (ANSWER_TIME_ROUNDS + 1) * D_MODEL + HEAD_DIM;
+    const INPUTS: usize = Self::FROZEN + answer_time_items::ANSWER_TIME_FEATURES;
+
+    /// Loads `time_head.f32.bin` (or `time_head.int8.bin` beside INT8
+    /// weights) from the folder of the weights; `None` when the folder has
+    /// none or the engine is not the small one.
+    fn load_beside(weights: &Path) -> io::Result<Option<Self>> {
+        if !SMALL_MODEL {
+            return Ok(None);
+        }
+        let int8 = weights
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("int8"));
+        let path = weights.with_file_name(if int8 {
+            "time_head.int8.bin"
+        } else {
+            "time_head.f32.bin"
+        });
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Self::load(&path).map(Some)
+    }
+
+    fn load(path: &PathBuf) -> io::Result<Self> {
+        let weights = WeightMap::load(path)?;
+        let version = weights.tensor("time_head.format_version", &[1])?.values[0];
+        if version != ANSWER_TIME_FORMAT_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported RWKV answer-time head format {version}"),
+            ));
+        }
+        let hidden = weights
+            .tensors
+            .get("time_mlps.0.hidden.weight")
+            .map(|tensor| tensor.shape[0])
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    missing_weight("time_mlps.0.hidden.weight"),
+                )
+            })?;
+        Ok(Self {
+            hidden: weights.linear("time_mlps.0.hidden", Self::INPUTS, hidden, true)?,
+            out: weights.linear(
+                "time_mlps.0.out",
+                hidden,
+                4 * answer_time_items::ANSWER_TIME_BINS,
+                true,
+            )?,
+        })
+    }
+
+    fn logits(&self, frozen: &[f32], explicit: &[f32]) -> Vec<f32> {
+        let mut inputs = Vec::with_capacity(Self::INPUTS);
+        inputs.extend_from_slice(frozen);
+        inputs.extend_from_slice(explicit);
+        let mut hidden = self.hidden.apply(&inputs);
+        relu_in_place(&mut hidden);
+        self.out.apply(&hidden)
+    }
+
+    fn predict(
+        &self,
+        frozen: &[f32],
+        explicit: &[f32],
+        button_probabilities: [f32; 4],
+    ) -> AnswerTimeOutput {
+        AnswerTimeOutput::from_logits(&self.logits(frozen, explicit), button_probabilities)
+    }
+}
+
+/// Layer rounds of the interleaved schedule (the small model: 4). A round
+/// ends where the next step starts another layer index.
+const ANSWER_TIME_ROUNDS: usize = {
+    let mut rounds = 0;
+    let mut index = 0;
+    while index < LAYER_STEPS.len() {
+        if index + 1 == LAYER_STEPS.len() || LAYER_STEPS[index + 1].1 != LAYER_STEPS[index].1 {
+            rounds += 1;
+        }
+        index += 1;
+    }
+    rounds
+};
 
 struct ReviewHeads {
     retrievability: f32,

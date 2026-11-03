@@ -946,3 +946,42 @@ def test_rwkv_inference_process_preserves_large_elapsed_seconds(
     assert torch.isfinite(prediction).all()
     assert elapsed_tensors[0].dtype == torch.int64
     assert elapsed_tensors[0].item() == elapsed_seconds
+
+
+def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
+    root = Path(__file__).resolve().parents[2]
+    rsbridge = _import_rsbridge(root)
+
+    def load(filename: str, model: str):
+        path = root / "qt/aqt/rwkv_inference" / filename
+        return rsbridge.RwkvInference(str(path), 0.9, 36500, model=model)
+
+    def request(review: dict[str, int]) -> tuple[object, ...]:
+        args = _rwkv_review_args(
+            review,
+            is_query=True,
+            card_state=None,
+            note_state=None,
+            deck_state=None,
+            preset_state=None,
+            global_state=None,
+        )
+        return (*args[:15], True, *args[15:20])
+
+    with_head = load("sm72e25/weights.f32.bin", "sm72e25")
+    without_head = load("sm72e20/weights.f32.bin", "sm72e20")
+    assert with_head.has_answer_time_head()
+    assert not without_head.has_answer_time_head()
+    later_day = request(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200))
+    same_day = request(dict(_RWKV_REVIEWS[3], elapsed_days=0, elapsed_seconds=600))
+    history = [[0.0] * 26]
+    ((medians, fast, mixed, buttons),) = with_head.predict_answer_times(
+        [later_day], history
+    )
+    assert all(0.25 < value <= 60 for value in (*medians, mixed))
+    assert all(0 <= value <= 1 for value in fast)
+    assert abs(sum(buttons) - 1) < 1e-5
+    assert with_head.predict_answer_times([same_day], history) == [None]
+    assert without_head.predict_answer_times([later_day], history) == [None]
+    with pytest.raises(Exception, match="26 values"):
+        with_head.predict_answer_times([later_day], [[0.0] * 25])

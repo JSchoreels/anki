@@ -11,8 +11,13 @@
 // API.
 const SMALL_MODEL: bool = cfg!(feature = "rwkv-sm40");
 mod alternate;
+mod answer_time;
 mod api;
 mod runtime;
+pub use answer_time::AnswerTimeHistory;
+pub use answer_time::AnswerTimePrediction;
+pub use answer_time::ANSWER_TIME_BINS;
+pub use answer_time::ANSWER_TIME_FEATURES;
 pub use runtime::ModelKind;
 pub use runtime::RwkvRuntime;
 pub use runtime::RwkvRuntimeState;

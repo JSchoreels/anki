@@ -152,6 +152,10 @@ service SchedulerService {
       returns (RwkvHistoricalReviewFingerprintResponse);
   rpc RwkvHistoricalReviewInputs(RwkvHistoricalReviewInputsRequest)
       returns (RwkvHistoricalReviewInputsResponse);
+  // Computes the RWKV answer-time head's history features for cards from the
+  // canonical RWKV history (the same traversal as the inputs above).
+  rpc RwkvAnswerTimeHistoryFeatures(RwkvAnswerTimeHistoryFeaturesRequest)
+      returns (RwkvAnswerTimeHistoryFeaturesResponse);
   // Deletes calibration rows that a completed RWKV calibration recompute
   // superseded.
   rpc PruneRwkvReviewRetrievabilityCacheRows(
@@ -871,6 +875,22 @@ message RwkvHistoricalReviewInputsResponse {
   RwkvHistoricalReviewMetadata metadata = 2;
   RwkvHistoricalReviewMetadata recovery_checkpoint = 3;
   repeated int64 active_ignored_review_ids = 4;
+}
+
+message RwkvAnswerTimeHistoryFeaturesRequest {
+  RwkvHistoricalReviewFingerprintRequest history = 1;
+  repeated int64 card_ids = 2;
+}
+
+message RwkvAnswerTimeHistoryFeaturesResponse {
+  message Card {
+    int64 card_id = 1;
+    // The head's 26 history features after every review in the history. The
+    // native runtime replaces the elapsed-days entries with the query's own.
+    repeated float features = 2;
+  }
+  repeated Card cards = 1;
+  uint64 review_count = 2;
 }
 
 message FuzzDeltaRequest {
