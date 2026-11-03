@@ -98,7 +98,7 @@ dependencies = [
  "prettyplease",
  "prost",
  "prost-reflect",
- "pulldown-cmark 0.13.5",
+ "pulldown-cmark 0.13.6",
  "rand 0.9.4",
  "rayon",
  "regex",
@@ -115,7 +115,7 @@ dependencies = [
  "sha1",
  "sha2 0.11.0",
  "snafu 0.8.9",
- "strum 0.27.2",
+ "strum",
  "syn 2.0.117",
  "tar",
  "tempfile",
@@ -194,7 +194,7 @@ dependencies = [
  "prost-types",
  "serde",
  "snafu 0.8.9",
- "strum 0.27.2",
+ "strum",
 ]
 
 [[package]]
@@ -1354,20 +1354,16 @@ dependencies = [
 [[package]]
 name = "fsrs"
 version = "6.6.2"
-source = "git+https://github.com/open-spaced-repetition/fsrs-rs.git?rev=0a5737406a0c5c7a5259b144738cbe4a0b649d76#0a5737406a0c5c7a5259b144738cbe4a0b649d76"
+source = "git+https://github.com/open-spaced-repetition/fsrs-rs.git?rev=af77b55f06d50d8e4c3811cc22f33609543c4b20#af77b55f06d50d8e4c3811cc22f33609543c4b20"
 dependencies = [
  "bytemuck",
  "itertools 0.15.0",
- "log",
  "ndarray",
- "priority-queue",
  "rand 0.9.4",
  "rand_distr",
  "rayon",
- "roots",
  "serde",
  "snafu 0.9.2",
- "strum 0.28.0",
  "wide",
 ]
 
@@ -2292,7 +2288,7 @@ dependencies = [
  "linkcheck",
  "regex",
  "reqwest",
- "strum 0.27.2",
+ "strum",
  "tokio",
 ]
 
@@ -3226,17 +3222,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "priority-queue"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93980406f12d9f8140ed5abe7155acb10bb1e69ea55c88960b9c2f117445ef96"
-dependencies = [
- "equivalent",
- "indexmap",
- "serde",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3349,9 +3334,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.11.1",
  "getopts",
@@ -3748,12 +3733,6 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "roots"
-version = "0.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "082f11ffa03bbef6c2c6ea6bea1acafaade2fd9050ae0234ab44a2153742b058"
 
 [[package]]
 name = "rsbridge"
@@ -4312,16 +4291,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros 0.27.2",
-]
-
-[[package]]
-name = "strum"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
-dependencies = [
- "strum_macros 0.28.0",
+ "strum_macros",
 ]
 
 [[package]]
@@ -4329,18 +4299,6 @@ name = "strum_macros"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck",
  "proc-macro2",

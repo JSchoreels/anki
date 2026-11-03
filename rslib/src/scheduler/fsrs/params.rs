@@ -23,6 +23,7 @@ use chrono::NaiveTime;
 use fsrs::compute_parameters;
 use fsrs::evaluate_with_time_series_splits;
 use fsrs::extract_simulator_config;
+use fsrs::CardPrefixes;
 use fsrs::CombinedProgressState;
 use fsrs::ComputeParametersInput;
 use fsrs::ComputeParametersVersion;
@@ -38,6 +39,14 @@ use fsrs::SimulatorConfig;
 use fsrs::FSRS;
 use itertools::Itertools;
 use prost::Message;
+
+mod compact;
+
+use compact::compact_fsrs_items_for_training;
+use compact::compact_fsrs_items_for_training_with_progress;
+use compact::compute_compact_parameters;
+use compact::fsrs_review_retrievability_predictions;
+use compact::CompactTrainingItems;
 
 use super::legacy_fsrs_params;
 use crate::card::Card;
@@ -128,9 +137,7 @@ pub(crate) struct PreparedComputeParams {
     pub dynamic_desired_retention_enabled: bool,
     pub simulator_config: SimulatorConfig,
     pub existing_card_input: Option<ExistingCardInput>,
-    pub items: Vec<FSRSItem>,
-    pub item_card_ids: Vec<i64>,
-    pub item_revlog_ids: Vec<RevlogId>,
+    pub training: CompactTrainingItems,
     pub target_counts: TrainingTargetCounts,
 }
 
@@ -306,9 +313,7 @@ impl TrainingItemsForFsrs {
 
 #[derive(Clone)]
 pub(crate) struct FsrsReviewPredictionContext {
-    items: Vec<FSRSItem>,
-    card_ids: Vec<i64>,
-    revlog_ids: Vec<RevlogId>,
+    training: CompactTrainingItems,
     model_version: ComputeParametersVersion,
     num_relearning_steps: usize,
     enable_scheduling_penalties: bool,
@@ -325,7 +330,7 @@ impl FsrsReviewPredictionContext {
             resolved_model_version(input.current_params, input.model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, input.include_same_day_reviews);
-        let training = fsrs_items_for_training_with_progress(
+        let training = compact_fsrs_items_for_training_with_progress(
             revlogs,
             next_day_at,
             input.ignore_revlogs_before,
@@ -334,9 +339,7 @@ impl FsrsReviewPredictionContext {
         )?;
         progress.check_cancelled()?;
         Ok(Self {
-            items: training.items,
-            card_ids: training.card_ids.unwrap_or_default(),
-            revlog_ids: training.revlog_ids.unwrap_or_default(),
+            training,
             model_version,
             num_relearning_steps: input.num_of_relearning_steps,
             enable_scheduling_penalties: input.enable_scheduling_penalties,
@@ -346,9 +349,7 @@ impl FsrsReviewPredictionContext {
     #[cfg(test)]
     pub(crate) fn from_prepared(prepared: &PreparedComputeParams) -> Self {
         Self {
-            items: prepared.items.clone(),
-            card_ids: prepared.item_card_ids.clone(),
-            revlog_ids: prepared.item_revlog_ids.clone(),
+            training: prepared.training.clone(),
             model_version: prepared.model_version,
             num_relearning_steps: prepared.num_of_relearning_steps,
             enable_scheduling_penalties: prepared.enable_scheduling_penalties,
@@ -431,7 +432,11 @@ const MIN_ITEMS_FOR_TRAINING: usize = 64;
 /// only. Older models use whole-day elapsed time and cannot be fairly compared
 /// against FSRS-7 training items, so they are kept only when there is too
 /// little data to train.
-fn params_to_keep(current: &[f32], optimized: Params, items: &[FSRSItem]) -> Result<Params> {
+fn params_to_keep(
+    current: &[f32],
+    optimized: Params,
+    items: &CompactTrainingItems,
+) -> Result<Params> {
     let Ok(current_fsrs) = FSRS::new(current) else {
         return Ok(optimized);
     };
@@ -443,9 +448,11 @@ fn params_to_keep(current: &[f32], optimized: Params, items: &[FSRSItem]) -> Res
         });
     }
 
-    let current_log_loss = current_fsrs.evaluate(items.to_vec(), |_| true)?.log_loss;
+    let current_log_loss = current_fsrs
+        .evaluate_from_card_prefixes(&items.prefixes, |_| true)?
+        .log_loss;
     let optimized_log_loss = FSRS::new(&optimized)?
-        .evaluate(items.to_vec(), |_| true)?
+        .evaluate_from_card_prefixes(&items.prefixes, |_| true)?
         .log_loss;
     Ok(if current_log_loss <= optimized_log_loss {
         current.to_vec()
@@ -602,16 +609,14 @@ pub(crate) fn compute_params_from_prepared(
         dynamic_desired_retention_enabled,
         simulator_config,
         existing_card_input,
-        items,
-        item_card_ids,
-        item_revlog_ids,
+        training,
         ..
     }: PreparedComputeParams,
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
     progress_phase: Option<SharedComputeParamsProgressPhase>,
     health_check: bool,
 ) -> Result<ComputeFsrsParamsResponse> {
-    let fsrs_items = items.len() as u32;
+    let fsrs_items = training.len() as u32;
     if fsrs_items == 0 {
         return Ok(ComputeFsrsParamsResponse {
             params: current_params,
@@ -635,8 +640,8 @@ pub(crate) fn compute_params_from_prepared(
     );
     let input = ComputeParametersInput {
         training_config: None,
-        train_set: items.clone(),
-        card_ids: Some(item_card_ids.clone()),
+        train_set: Vec::new(),
+        card_ids: None,
         progress: progress.clone(),
         enable_short_term: true,
         enable_sched_penalties: enable_scheduling_penalties,
@@ -646,9 +651,9 @@ pub(crate) fn compute_params_from_prepared(
     let params = coerce_computed_params_to_selected_version(
         model_version,
         &current_params,
-        compute_parameters(input)?,
+        compute_compact_parameters(&training.prefixes, input)?,
     );
-    let params = params_to_keep(&current_params, params, &items)?;
+    let params = params_to_keep(&current_params, params, &training)?;
     let existing_cards = existing_card_input
         .map(|input| existing_cards_for_dynamic_desired_retention(input, &params))
         .transpose()?
@@ -663,21 +668,17 @@ pub(crate) fn compute_params_from_prepared(
         progress_phase.as_ref(),
     )?;
 
-    let health_check_items = if include_same_day_reviews {
-        TrainingItemsForFsrs::with_card_and_revlog_ids(
-            items.clone(),
-            item_card_ids.clone(),
-            item_revlog_ids.clone(),
-        )
+    let health_check_target_count = if include_same_day_reviews {
+        training.len()
     } else {
-        TrainingItemsForFsrs::with_card_and_revlog_ids(
-            items.clone(),
-            item_card_ids.clone(),
-            item_revlog_ids.clone(),
-        )
-        .filter_non_same_day_evaluation_targets()
+        training.target_counts().long_term_targets
     };
-    let health_check_passed = if health_check && health_check_items.items.len() > 300 {
+    let health_check_passed = if health_check && health_check_target_count > 300 {
+        let health_check_items = if include_same_day_reviews {
+            training.expanded()
+        } else {
+            training.without_same_day_targets().expanded()
+        };
         evaluate_with_time_series_splits(
             ComputeParametersInput {
                 training_config: None,
@@ -1091,7 +1092,7 @@ impl Collection {
             },
         })?;
 
-        if prepared.items.is_empty() {
+        if prepared.training.is_empty() {
             return Ok(ComputeFsrsParamsResponse {
                 params: current_params.to_vec(),
                 fsrs_items: 0,
@@ -1211,18 +1212,13 @@ impl Collection {
         } else {
             None
         };
-        let training_items = fsrs_items_for_training(
+        let training = compact_fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
             include_same_day_reviews,
-        );
-        let target_counts = training_items.target_counts();
-        let TrainingItemsForFsrs {
-            items,
-            card_ids,
-            revlog_ids,
-        } = training_items;
+        )?;
+        let target_counts = training.target_counts();
         Ok(PreparedComputeParams {
             current_params: current_params.to_vec(),
             num_of_relearning_steps,
@@ -1232,9 +1228,7 @@ impl Collection {
             dynamic_desired_retention_enabled,
             simulator_config,
             existing_card_input,
-            items,
-            item_card_ids: card_ids.unwrap_or_default(),
-            item_revlog_ids: revlog_ids.unwrap_or_default(),
+            training,
             target_counts,
         })
     }
@@ -1440,23 +1434,23 @@ impl Collection {
         let model_version = model_version_for_params(params);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
-        let items = fsrs_items_for_training(
+        let items = compact_fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
             ignore_revlogs_before,
             include_same_day_reviews,
-        );
+        )?;
         let items = if include_same_day_reviews {
             items
         } else {
-            items.filter_non_same_day_evaluation_targets()
+            items.without_same_day_targets()
         };
         let target_counts = items.target_counts();
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
         let fsrs = FSRS::new(legacy_fsrs_params(params))?;
-        Ok(fsrs.evaluate(items.items, |ip| {
+        Ok(fsrs.evaluate_from_card_prefixes(&items.prefixes, |ip| {
             anki_progress
                 .update(false, |p| {
                     p.total_iterations = ip.total as u32;
@@ -1635,7 +1629,7 @@ fn create_fsrs_review_retrievability_progress_thread(
     } else {
         0
     };
-    let target_counts = training_target_counts_from_items(&context.items);
+    let target_counts = context.training.target_counts();
     let total_iterations = calibration_progress_total(total_validation_folds);
     anki_progress.update(false, |p| {
         p.current_iteration = 0;
@@ -1688,9 +1682,8 @@ pub(crate) fn fsrs_review_retrievability_cache_rows(
 ) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
     let mut rows = fsrs_review_retrievability_predictions(
         params,
-        context.items.clone(),
-        context.card_ids.clone(),
-        context.revlog_ids.clone(),
+        &context.training,
+        0..context.training.len(),
         progress,
     )?
     .into_iter()
@@ -1714,32 +1707,6 @@ pub(crate) fn fsrs_review_retrievability_cache_rows(
     Ok(rows)
 }
 
-fn fsrs_review_retrievability_predictions(
-    params: &[f32],
-    items: Vec<FSRSItem>,
-    card_ids: Vec<i64>,
-    revlog_ids: Vec<RevlogId>,
-    progress: Option<&FsrsReviewRetrievabilityProgress>,
-) -> Result<Vec<(RevlogId, f32)>> {
-    if fsrs_review_retrievability_progress_wants_abort(progress) {
-        return Err(AnkiError::Interrupted);
-    }
-    if items.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let predictions = FSRS::new(legacy_fsrs_params(params))?.predict_retrievability_with_card_ids(
-        items,
-        card_ids,
-        |_| !fsrs_review_retrievability_progress_wants_abort(progress),
-    )?;
-    Ok(revlog_ids
-        .into_iter()
-        .zip_eq(predictions)
-        .filter(|(_, prediction)| prediction.is_finite() && (0.0..=1.0).contains(prediction))
-        .collect())
-}
-
 fn fsrs_review_retrievability_progress_wants_abort(
     progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> bool {
@@ -1750,12 +1717,16 @@ fn fsrs_validation_retrievability_cache_rows(
     context: &FsrsReviewPredictionContext,
     progress: Option<&FsrsReviewRetrievabilityProgress>,
 ) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
-    if context.items.is_empty() {
+    if context.training.is_empty() {
         return Ok(Vec::new());
     }
     let mut rows = Vec::new();
+    let mut fold_prefixes = CardPrefixes {
+        cards: context.training.prefixes.cards.clone(),
+        prefixes: Vec::new(),
+    };
     for (fold_index, test) in
-        time_series_split_ranges(context.items.len(), FSRS_VALIDATION_FOLDS).enumerate()
+        time_series_split_ranges(context.training.len(), FSRS_VALIDATION_FOLDS).enumerate()
     {
         if let Some(progress) = progress {
             progress
@@ -1765,26 +1736,29 @@ fn fsrs_validation_retrievability_cache_rows(
         if fsrs_review_retrievability_progress_wants_abort(progress) {
             return Err(AnkiError::Interrupted);
         }
-        // Prepare one training prefix at a time to keep fold memory bounded.
-        let mut train_set = Vec::with_capacity(test.start);
-        for (index, item) in context.items[..test.start].iter().enumerate() {
-            if index % 1024 == 0 && fsrs_review_retrievability_progress_wants_abort(progress) {
+        // Reuse the card histories while selecting one chronological training fold.
+        fold_prefixes.prefixes.clear();
+        for chunk in context.training.prefixes.prefixes[..test.start].chunks(1024) {
+            if fsrs_review_retrievability_progress_wants_abort(progress) {
                 return Err(AnkiError::Interrupted);
             }
-            train_set.push(item.clone());
+            fold_prefixes.prefixes.extend_from_slice(chunk);
         }
-        let parameters = match compute_parameters(ComputeParametersInput {
-            training_config: None,
-            train_set,
-            card_ids: Some(context.card_ids[..test.start].to_vec()),
-            progress: progress.map(|progress| progress.training_progress.clone()),
-            enable_short_term: true,
-            enable_sched_penalties: context.enable_scheduling_penalties,
-            model_version: context.model_version,
-            num_relearning_steps: Some(context.num_relearning_steps),
-        }) {
+        let parameters = match compute_compact_parameters(
+            &fold_prefixes,
+            ComputeParametersInput {
+                training_config: None,
+                train_set: Vec::new(),
+                card_ids: None,
+                progress: progress.map(|progress| progress.training_progress.clone()),
+                enable_short_term: true,
+                enable_sched_penalties: context.enable_scheduling_penalties,
+                model_version: context.model_version,
+                num_relearning_steps: Some(context.num_relearning_steps),
+            },
+        ) {
             Ok(parameters) => parameters,
-            Err(fsrs::FSRSError::Interrupted) => return Err(AnkiError::Interrupted),
+            Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
             Err(err) => {
                 tracing::debug!(?err, fold_index, "skipping FSRS validation cache fold");
                 continue;
@@ -1792,9 +1766,8 @@ fn fsrs_validation_retrievability_cache_rows(
         };
         let predictions = match fsrs_review_retrievability_predictions(
             &parameters,
-            context.items[test.clone()].to_vec(),
-            context.card_ids[test.clone()].to_vec(),
-            context.revlog_ids[test].to_vec(),
+            &context.training,
+            test,
             progress,
         ) {
             Ok(predictions) => predictions,
@@ -1836,6 +1809,12 @@ pub(crate) struct ReviewsForFsrs {
     pub revlogs_complete: bool,
 }
 
+struct FilteredReviewsForFsrs {
+    entries: Vec<RevlogEntry>,
+    delta_ts: Vec<f32>,
+    revlogs_complete: bool,
+}
+
 /// Filter out unwanted revlog entries, then create a series of FSRS items for
 /// training/memory state calculation.
 ///
@@ -1860,19 +1839,22 @@ pub(crate) fn reviews_for_fsrs(
     .expect("preparation without a progress handler cannot be interrupted")
 }
 
-fn reviews_for_fsrs_with_progress(
+fn filtered_reviews_for_fsrs_with_progress(
     mut entries: Vec<RevlogEntry>,
     next_day_at: TimestampSecs,
     training: bool,
     ignore_revlogs_before: TimestampMillis,
     include_same_day_training_entries: bool,
     check_cancelled: &mut impl FnMut() -> Result<()>,
-) -> Result<Option<ReviewsForFsrs>> {
+) -> Result<Option<FilteredReviewsForFsrs>> {
     let mut first_of_last_learn_entries = None;
     let mut first_user_grade_idx = None;
     let mut revlogs_complete = false;
     // Working backwards from the latest review...
     for (index, entry) in entries.iter().enumerate().rev() {
+        if index % 128 == 0 {
+            check_cancelled()?;
+        }
         if entry.is_cramming() {
             continue;
         }
@@ -1952,6 +1934,37 @@ fn reviews_for_fsrs_with_progress(
     entries.retain(|entry| entry.has_rating_and_affects_scheduling());
 
     let delta_ts = fsrs_review_delta_ts(&entries, next_day_at, include_same_day_training_entries);
+
+    Ok(Some(FilteredReviewsForFsrs {
+        entries,
+        delta_ts,
+        revlogs_complete,
+    }))
+}
+
+fn reviews_for_fsrs_with_progress(
+    entries: Vec<RevlogEntry>,
+    next_day_at: TimestampSecs,
+    training: bool,
+    ignore_revlogs_before: TimestampMillis,
+    include_same_day_training_entries: bool,
+    check_cancelled: &mut impl FnMut() -> Result<()>,
+) -> Result<Option<ReviewsForFsrs>> {
+    let Some(FilteredReviewsForFsrs {
+        entries,
+        delta_ts,
+        revlogs_complete,
+    }) = filtered_reviews_for_fsrs_with_progress(
+        entries,
+        next_day_at,
+        training,
+        ignore_revlogs_before,
+        include_same_day_training_entries,
+        check_cancelled,
+    )?
+    else {
+        return Ok(None);
+    };
 
     let items = if training {
         // Convert the remaining entries into separate FSRSItems, where each item
@@ -2057,6 +2070,8 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::time::Instant;
 
+    use fsrs::CardPrefix;
+    use fsrs::CardReviews;
     use rusqlite::params;
     use tempfile::tempdir;
     use tempfile::TempDir;
@@ -2108,24 +2123,29 @@ pub(crate) mod tests {
             )
             .collect();
         let mut checks = 0;
-        let result =
-            fsrs_items_for_training_with_progress(entries, NEXT_DAY_AT, 0.into(), true, || {
+        let result = compact_fsrs_items_for_training_with_progress(
+            entries,
+            NEXT_DAY_AT,
+            0.into(),
+            true,
+            || {
                 checks += 1;
                 if checks == 3 {
                     Err(AnkiError::Interrupted)
                 } else {
                     Ok(())
                 }
-            });
+            },
+        );
         assert!(matches!(result, Err(AnkiError::Interrupted)));
         assert_eq!(checks, 3);
     }
 
     #[test]
     fn calibration_predictions_honor_cancellation_without_validation_training() {
-        let items = vec![FSRSItem {
+        let items = compact_test_items(vec![FSRSItem {
             reviews: vec![review(0), review(1)],
-        }];
+        }]);
         let progress = FsrsReviewRetrievabilityProgress {
             training_progress: Arc::new(Mutex::new(CombinedProgressState::default())),
             completed_validation_folds: Arc::new(AtomicUsize::new(0)),
@@ -2133,12 +2153,68 @@ pub(crate) mod tests {
         progress.training_progress.lock().unwrap().want_abort = true;
         let result = fsrs_review_retrievability_predictions(
             &fsrs::DEFAULT_PARAMETERS,
-            items,
-            vec![1],
-            vec![RevlogId(1)],
+            &items,
+            0..items.len(),
             Some(&progress),
         );
         assert!(matches!(result, Err(AnkiError::Interrupted)));
+    }
+
+    #[test]
+    fn compact_training_preserves_items_parameters_and_evaluation() -> Result<()> {
+        let mut revlogs = Vec::new();
+        for card in 1..=30 {
+            for days_ago in (1..=6).rev() {
+                let kind = if days_ago == 6 {
+                    RevlogReviewKind::Learning
+                } else {
+                    RevlogReviewKind::Review
+                };
+                let mut entry = revlog_for_card(card, kind, days_ago);
+                entry.id.0 += card * 100;
+                entry.button_chosen = if (card + days_ago) % 5 == 0 { 1 } else { 3 };
+                revlogs.push(entry);
+            }
+        }
+        for version in [
+            ComputeParametersVersion::Fsrs6,
+            ComputeParametersVersion::Fsrs7,
+        ] {
+            let include_same_day = version == ComputeParametersVersion::Fsrs7;
+            let expanded =
+                fsrs_items_for_training(revlogs.clone(), NEXT_DAY_AT, 0.into(), include_same_day);
+            let compact = compact_fsrs_items_for_training(
+                revlogs.clone(),
+                NEXT_DAY_AT,
+                0.into(),
+                include_same_day,
+            )?;
+            let roundtrip = compact.expanded();
+            assert_eq!(roundtrip.items, expanded.items);
+            assert_eq!(roundtrip.card_ids, expanded.card_ids);
+            assert_eq!(roundtrip.revlog_ids, expanded.revlog_ids);
+
+            let input = ComputeParametersInput {
+                model_version: version,
+                enable_short_term: true,
+                num_relearning_steps: Some(1),
+                ..Default::default()
+            };
+            let old_params = compute_parameters(ComputeParametersInput {
+                train_set: expanded.items.clone(),
+                card_ids: expanded.card_ids.clone(),
+                ..input.clone()
+            })?;
+            let new_params = compute_compact_parameters(&compact.prefixes, input)?;
+            assert_eq!(old_params, new_params);
+
+            let fsrs = FSRS::new(&old_params)?;
+            let old_eval = fsrs.evaluate(expanded.items, |_| true)?;
+            let new_eval = fsrs.evaluate_from_card_prefixes(&compact.prefixes, |_| true)?;
+            assert_eq!(old_eval.log_loss.to_bits(), new_eval.log_loss.to_bits());
+            assert_eq!(old_eval.rmse_bins.to_bits(), new_eval.rmse_bins.to_bits());
+        }
+        Ok(())
     }
 
     #[test]
@@ -2249,9 +2325,7 @@ pub(crate) mod tests {
                 dynamic_desired_retention_enabled: false,
                 simulator_config: Default::default(),
                 existing_card_input: None,
-                items: vec![],
-                item_card_ids: vec![],
-                item_revlog_ids: vec![],
+                training: Default::default(),
                 target_counts: TrainingTargetCounts::default(),
             },
             None,
@@ -2265,8 +2339,26 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn items_failed_after(days: f32, count: usize) -> Vec<FSRSItem> {
-        vec![
+    fn compact_test_items(items: Vec<FSRSItem>) -> CompactTrainingItems {
+        let mut compact = CompactTrainingItems::default();
+        for (index, item) in items.into_iter().enumerate() {
+            let card_index = index as u32;
+            let len = item.reviews.len() as u32;
+            compact.prefixes.cards.push(CardReviews {
+                card_id: index as i64 + 1,
+                reviews: item.reviews,
+            });
+            compact
+                .prefixes
+                .prefixes
+                .push(CardPrefix { card_index, len });
+            compact.revlog_ids.push(RevlogId(index as i64 + 1));
+        }
+        compact
+    }
+
+    fn items_failed_after(days: f32, count: usize) -> CompactTrainingItems {
+        compact_test_items(vec![
             FSRSItem {
                 reviews: vec![
                     FSRSReview {
@@ -2280,7 +2372,7 @@ pub(crate) mod tests {
                 ],
             };
             count
-        ]
+        ])
     }
 
     #[test]
@@ -2394,11 +2486,8 @@ pub(crate) mod tests {
     #[test]
     fn fsrs_retrievability_cache_rows_can_skip_validation_folds() -> Result<()> {
         let mut items = Vec::new();
-        let mut card_ids = Vec::new();
-        let mut revlog_ids = Vec::new();
 
         for index in 0..12 {
-            let revlog_id = RevlogId(index + 1);
             let reviews = vec![
                 FSRSReview {
                     rating: 3,
@@ -2410,14 +2499,10 @@ pub(crate) mod tests {
                 },
             ];
             items.push(FSRSItem { reviews });
-            card_ids.push(index + 1);
-            revlog_ids.push(revlog_id);
         }
 
         let context = FsrsReviewPredictionContext {
-            items,
-            card_ids,
-            revlog_ids,
+            training: compact_test_items(items),
             model_version: ComputeParametersVersion::Fsrs7,
             num_relearning_steps: 1,
             enable_scheduling_penalties: false,
@@ -2430,7 +2515,7 @@ pub(crate) mod tests {
         )?;
         assert_eq!(
             final_fit_rows.iter().map(|row| row.revlog_id).collect_vec(),
-            context.revlog_ids
+            context.training.revlog_ids
         );
         assert!(final_fit_rows.iter().all(|row| row.sample_role
             == FsrsReviewRetrievabilitySampleRole::FinalFit
@@ -2476,35 +2561,32 @@ pub(crate) mod tests {
         ] {
             let model_version = model_version_for_params(params);
             let include_same_day = include_same_day_training_entries(model_version, None);
-            let training =
+            let expanded =
                 fsrs_items_for_training(revlogs.clone(), NEXT_DAY_AT, 0.into(), include_same_day);
+            let expected = FSRS::new(legacy_fsrs_params(params))?
+                .predict_retrievability_with_card_ids(
+                    expanded.items,
+                    expanded.card_ids.unwrap(),
+                    |_| true,
+                )?;
             let context = FsrsReviewPredictionContext {
-                items: training.items,
-                card_ids: training.card_ids.unwrap(),
-                revlog_ids: training.revlog_ids.unwrap(),
+                training: compact_fsrs_items_for_training(
+                    revlogs.clone(),
+                    NEXT_DAY_AT,
+                    0.into(),
+                    include_same_day,
+                )?,
                 model_version,
                 num_relearning_steps: 1,
                 enable_scheduling_penalties: false,
             };
-            // Compare with the historical-state calculation used before the refactor.
-            let fsrs = FSRS::new(legacy_fsrs_params(params))?;
-            let expected = context
-                .items
-                .iter()
-                .map(|item| {
-                    let states = fsrs.historical_memory_states(item.clone(), None).unwrap();
-                    fsrs.current_retrievability(
-                        states[states.len() - 2],
-                        item.reviews.last().unwrap().delta_t,
-                    )
-                })
-                .collect_vec();
+            assert_eq!(context.training.revlog_ids, expanded.revlog_ids.unwrap());
 
             let rows = fsrs_review_retrievability_cache_rows(params, &context, false, None)?;
 
             assert_eq!(
                 rows.iter().map(|row| row.revlog_id).collect_vec(),
-                context.revlog_ids
+                context.training.revlog_ids
             );
             assert_eq!(
                 rows.iter().map(|row| row.prediction).collect_vec(),
@@ -2523,9 +2605,7 @@ pub(crate) mod tests {
     #[test]
     fn fsrs_retrievability_cache_rows_return_no_rows_without_targets() -> Result<()> {
         let context = FsrsReviewPredictionContext {
-            items: vec![],
-            card_ids: vec![],
-            revlog_ids: vec![],
+            training: Default::default(),
             model_version: ComputeParametersVersion::Fsrs7,
             num_relearning_steps: 1,
             enable_scheduling_penalties: false,
@@ -2672,9 +2752,9 @@ pub(crate) mod tests {
             dynamic_desired_retention_simulator_options:
                 DynamicDesiredRetentionSimulatorOptions::default(),
         })?;
-        let prepared_items = prepared.items.len();
+        let prepared_items = prepared.training.len();
         let prepared_targets = prepared.target_counts.total_targets;
-        let eval_items = prepared.items.clone();
+        let eval_items = prepared.training.prefixes.clone();
         let fsrs_prediction_context = FsrsReviewPredictionContext::from_prepared(&prepared);
         let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -2683,7 +2763,7 @@ pub(crate) mod tests {
         let optimize_ms = optimize_started.elapsed().as_secs_f64() * 1000.0;
 
         let eval_started = Instant::now();
-        let eval = FSRS::new(&output.params)?.evaluate(eval_items, |_| true)?;
+        let eval = FSRS::new(&output.params)?.evaluate_from_card_prefixes(&eval_items, |_| true)?;
         let eval_ms = eval_started.elapsed().as_secs_f64() * 1000.0;
 
         let rows_started = Instant::now();
