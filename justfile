@@ -324,6 +324,10 @@ clanki-collection-bench *args:
 sse-calibration-bench *args:
     {{ python }} qt/tools/sse_calibration_bench.py {{ args }}
 
+# Compare FSRS optimization, evaluation, and calibration using a copied collection.
+fsrs-compact-bench *args:
+    {{ python }} qt/tools/fsrs_compact_bench.py {{ args }}
+
 # Check web caching and simulate the Windows mpv transport.
 clanki-asset-audio-bench *args:
     {{ python }} qt/tools/clanki_asset_audio_bench.py {{ args }}

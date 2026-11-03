@@ -1848,14 +1848,6 @@
     "repository": "https://github.com/dtolnay/prettyplease"
   },
   {
-    "authors": "Gianmarco Garrisi <gianmarcogarrisi@tutanota.com>",
-    "description": "A Priority Queue implemented as a heap with a function to efficiently change the priority of an item.",
-    "license": "LGPL-3.0-or-later OR MPL-2.0",
-    "license_file": null,
-    "name": "priority-queue",
-    "repository": "https://github.com/garro95/priority-queue"
-  },
-  {
     "authors": "Bastian Köcher <git@kchr.de>",
     "description": "Replacement for crate (macro_rules keyword) in proc-macros",
     "license": "Apache-2.0 OR MIT",
@@ -2150,14 +2142,6 @@
     "license_file": null,
     "name": "ring",
     "repository": "https://github.com/briansmith/ring"
-  },
-  {
-    "authors": "Mikhail Vorotilov <mikhail.vorotilov@gmail.com>",
-    "description": "Library of well known algorithms for numerical root finding.",
-    "license": "BSD-2-Clause",
-    "license_file": null,
-    "name": "roots",
-    "repository": "https://github.com/vorot/roots"
   },
   {
     "authors": "The rusqlite developers",
@@ -2557,22 +2541,6 @@
     "license": "MIT",
     "license_file": null,
     "name": "strum",
-    "repository": "https://github.com/Peternator7/strum"
-  },
-  {
-    "authors": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
-    "description": "Helpful macros for working with enums and strings",
-    "license": "MIT",
-    "license_file": null,
-    "name": "strum",
-    "repository": "https://github.com/Peternator7/strum"
-  },
-  {
-    "authors": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
-    "description": "Helpful macros for working with enums and strings",
-    "license": "MIT",
-    "license_file": null,
-    "name": "strum_macros",
     "repository": "https://github.com/Peternator7/strum"
   },
   {
