@@ -65,7 +65,7 @@ process peaks, not sums of independently measured allocations. The existing
 health-check path still expands histories and creates several time-series
 splits, so a compact cross-validation API is a possible further investigation.
 
-The changes above are Anki-side changes. They are separate from the proposed
+The changes above are Anki-side changes. They are separate from the
 fsrs-rs prediction API and must not be attributed to that API or to #469 alone.
 Dynamic DR's enabled path continues to derive and shape simulator statistics.
 

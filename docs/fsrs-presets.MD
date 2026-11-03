@@ -246,7 +246,9 @@ FSRS-7 optimization and parameter evaluation store each card's review history
 once and reference its training targets by prefix. FSRS-6 optimization expands
 those targets because its trainer still requires individual items. Historical
 FSRS calibration also reuses compact histories for final-fit predictions and
-validation-fold training and predictions. The optional optimizer health check
+validation-fold training and predictions. The fsrs-rs compact prediction API
+accepts a selected prefix slice without expanding histories, and Anki maps its
+ordered results back to review IDs. The optional optimizer health check
 and time-series evaluation still use fsrs-rs's existing expanded-item API.
 When Dynamic DR is disabled, optimization skips preparing its simulator
 statistics. The health check records target counts before passing expanded

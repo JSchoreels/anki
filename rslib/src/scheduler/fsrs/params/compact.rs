@@ -216,39 +216,12 @@ pub(super) fn fsrs_review_retrievability_predictions(
         return Ok(Vec::new());
     }
 
-    let fsrs = FSRS::new(legacy_fsrs_params(params))?;
-    let prefixes = &items.prefixes.prefixes[range.clone()];
-    let mut by_card = vec![Vec::new(); items.prefixes.cards.len()];
-    for (index, prefix) in prefixes.iter().enumerate() {
-        if index % 1024 == 0 && fsrs_review_retrievability_progress_wants_abort(progress) {
-            return Err(AnkiError::Interrupted);
-        }
-        by_card[prefix.card_index as usize].push((index, prefix.len as usize));
-    }
-    let mut predictions = vec![0.0; prefixes.len()];
-    for (card, targets) in items.prefixes.cards.iter().zip(by_card) {
-        if fsrs_review_retrievability_progress_wants_abort(progress) {
-            return Err(AnkiError::Interrupted);
-        }
-        let Some(max_len) = targets.iter().map(|(_, len)| *len).max() else {
-            continue;
-        };
-        // Every target includes a current review and at least one earlier review.
-        let states = fsrs.historical_memory_states(
-            FSRSItem {
-                reviews: card.reviews[..max_len - 1].to_vec(),
-            },
-            None,
+    let predictions = FSRS::new(legacy_fsrs_params(params))?
+        .predict_retrievability_from_card_prefixes(
+            &items.prefixes.cards,
+            &items.prefixes.prefixes[range.clone()],
+            |_| !fsrs_review_retrievability_progress_wants_abort(progress),
         )?;
-        for (index, len) in targets {
-            let prediction =
-                fsrs.current_retrievability(states[len - 2], card.reviews[len - 1].delta_t);
-            if !prediction.is_finite() {
-                return Err(fsrs::FSRSError::InvalidInput.into());
-            }
-            predictions[index] = prediction;
-        }
-    }
     Ok(items.revlog_ids[range]
         .iter()
         .copied()
