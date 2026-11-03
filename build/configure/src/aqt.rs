@@ -125,6 +125,17 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
             )?;
         }
     }
+    // The optional answer-time head is read from the folder of the weights.
+    for name in ["time_head.f32.bin", "time_head.json"] {
+        let output = format!("qt/_aqt/rwkv_inference/sm72e25/{name}");
+        build.add_action(
+            format!("qt:aqt:rwkv_sm72e25_{name}"),
+            CopyFile {
+                input: format!("qt/aqt/rwkv_inference/sm72e25/{name}").into(),
+                output: &output,
+            },
+        )?;
+    }
     Ok(())
 }
 
