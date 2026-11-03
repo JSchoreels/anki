@@ -248,6 +248,9 @@ those targets because its trainer still requires individual items. Historical
 FSRS calibration also reuses compact histories for final-fit predictions and
 validation-fold training and predictions. The optional optimizer health check
 and time-series evaluation still use fsrs-rs's existing expanded-item API.
+When Dynamic DR is disabled, optimization skips preparing its simulator
+statistics. The health check records target counts before passing expanded
+items to cross-validation, avoiding an additional copy of those items.
 Review filtering, chronological target order, metrics and cached prediction
 rows remain unchanged. See [the compact-history benchmark](fsrs-compact-performance.MD)
 for the measured effects and reproduction steps.

@@ -57,6 +57,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **Faster FSRS-7 optimization and evaluation, with lower memory use.** On a copied deck with 188,183 rated reviews, optimizing without the optional health check or Dynamic DR fell from 1.57 s to 0.36 s and peak process memory from 259 MiB to 165 MiB. Evaluating current parameters fell from 0.77 s to 0.18 s. Optimized parameters and evaluation results matched the previous implementation.
 
+- **Lower memory use during FSRS optimization.** A follow-up on the same deck reduced median optimization without Dynamic DR from 365 ms to 316 ms and peak process memory from 167 MiB to 114 MiB. With the optional health check, it fell from 619 ms / 361 MiB to 561 ms / 290 MiB. The optimization responses matched.
+
 - **Lower memory use when rebuilding FSRS calibration.** On the same deck, generating final-fit predictions used 173 MiB before and 111 MiB after; generating those predictions and five validation folds used 236 MiB before and 125 MiB after. Prediction rows matched exactly.
 
 - **Use answer-button retention rules with RWKV-Curve.** Configured Dynamic Desired Retention grade rules now select RWKV-Curve targets without replacing its button intervals with FSRS estimates.
@@ -94,6 +96,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 ### Technical details
 
 - **FSRS compact histories:** Update fsrs-rs to include [#469](https://github.com/open-spaced-repetition/fsrs-rs/pull/469), prepare one history per card for FSRS-7 training and FSRS-6/7 parameter evaluation, and reuse those histories for per-review calibration and validation-fold training. FSRS-6 training and optional health-check cross-validation retain the existing item API. See the [benchmark and methodology](docs/fsrs-compact-performance.MD).
+
+- **FSRS optimization memory:** Skip simulator-statistics preparation when Dynamic DR is disabled and move the health-check items into cross-validation after recording their target counts. The [follow-up profile](docs/fsrs-optimization-profile-2026-11-03.MD) records the copied-deck methodology, individual samples and result checksums.
 
 - **Dependency maintenance:** Update pulldown-cmark to 0.13.6 for [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433.html), which blocked the dependency-license refresh.
 

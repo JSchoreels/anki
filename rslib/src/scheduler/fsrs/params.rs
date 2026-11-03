@@ -402,24 +402,30 @@ fn training_target_counts_from_items(items: &[FSRSItem]) -> TrainingTargetCounts
     }
 }
 
-fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSRSItem]) -> bool {
-    let fsrs_items = items.len() as u32;
-    if fsrs_items == 0 {
-        return false;
+struct HealthCheckTargets {
+    count: u32,
+    recalled: u32,
+}
+
+impl HealthCheckTargets {
+    fn from_items(items: &[FSRSItem]) -> Self {
+        Self {
+            count: items.len() as u32,
+            recalled: items.iter().fold(0, |passed, item| {
+                passed + (item.reviews.last().map(|review| review.rating).unwrap_or(0) > 1) as u32
+            }),
+        }
     }
-    let r = items.iter().fold(0, |passed, item| {
-        passed
-            + (item
-                .reviews
-                .last()
-                .map(|reviews| reviews.rating)
-                .unwrap_or(0)
-                > 1) as u32
-    }) as f32
-        / fsrs_items as f32;
-    let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
-    let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, fsrs_items);
-    adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
+
+    fn passed(&self, eval: ModelEvaluation) -> bool {
+        if self.count == 0 {
+            return false;
+        }
+        let r = self.recalled as f32 / self.count as f32;
+        let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
+        let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, self.count);
+        adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
+    }
 }
 
 /// Below this many items, fsrs-rs returns its default or initial parameters
@@ -679,11 +685,12 @@ pub(crate) fn compute_params_from_prepared(
         } else {
             training.without_same_day_targets().expanded()
         };
+        let health_check_targets = HealthCheckTargets::from_items(&health_check_items.items);
         evaluate_with_time_series_splits(
             ComputeParametersInput {
                 training_config: None,
-                train_set: health_check_items.items.clone(),
-                card_ids: health_check_items.card_ids.clone(),
+                train_set: health_check_items.items,
+                card_ids: health_check_items.card_ids,
                 progress: None,
                 enable_short_term: true,
                 enable_sched_penalties: enable_scheduling_penalties,
@@ -693,7 +700,7 @@ pub(crate) fn compute_params_from_prepared(
             |_| true,
         )
         .ok()
-        .map(|eval| health_check_passed_for_evaluated_targets(eval, &health_check_items.items))
+        .map(|eval| health_check_targets.passed(eval))
     } else {
         None
     };
@@ -1172,12 +1179,12 @@ impl Collection {
         } = input;
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
-        let mut simulator_config = extract_simulator_config(
-            revlogs.iter().cloned().map(Into::into).collect(),
-            timing.next_day_at.into(),
-            true,
-        );
-        if dynamic_desired_retention_enabled {
+        let simulator_config = if dynamic_desired_retention_enabled {
+            let mut simulator_config = extract_simulator_config(
+                revlogs.iter().cloned().map(Into::into).collect(),
+                timing.next_day_at.into(),
+                true,
+            );
             shape_simulator_config_for_dynamic_desired_retention(
                 &mut simulator_config,
                 &revlogs,
@@ -1190,7 +1197,10 @@ impl Collection {
                 current_params,
                 timing.next_day_at,
             )?;
-        }
+            simulator_config
+        } else {
+            SimulatorConfig::default()
+        };
         let model_version = resolved_model_version(current_params, model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
@@ -2871,6 +2881,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn prepare_params_keeps_review_statistics_when_dynamic_retention_is_enabled() -> Result<()> {
+        let mut col = Collection::new();
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let cid = col.get_first_card().id;
+        let mut learning = revlog_for_card(cid.0, RevlogReviewKind::Learning, 10);
+        learning.taken_millis = 70_000;
+        let mut review = revlog_for_card(cid.0, RevlogReviewKind::Review, 5);
+        review.taken_millis = 70_000;
+        col.storage.add_revlog_entry(&learning, false)?;
+        col.storage.add_revlog_entry(&review, false)?;
+
+        let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+            search: "",
+            ignore_revlogs_before: 0.into(),
+            current_params: &fsrs::DEFAULT_PARAMETERS,
+            num_of_relearning_steps: 1,
+            include_same_day_reviews: Some(true),
+            enable_scheduling_penalties: false,
+            model_version_override: Some(ComputeParametersVersion::Fsrs7),
+            dynamic_desired_retention_enabled: true,
+            historical_retention: 0.9,
+            desired_retention: 0.9,
+            dynamic_desired_retention_simulator_options:
+                DynamicDesiredRetentionSimulatorOptions::default(),
+        })?;
+
+        assert_eq!(prepared.simulator_config.deck_size, 1);
+        assert!(prepared.simulator_config.review_rating_cost_fn.is_some());
+        assert_ne!(
+            prepared.simulator_config.state_rating_costs[1][2],
+            SimulatorConfig::default().state_rating_costs[1][2]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dynamic_desired_retention_simulator_uses_selected_slice_shape() {
         let mut card_one_learning = revlog(RevlogReviewKind::Learning, 10);
         card_one_learning.cid = CardId(1);
@@ -3331,8 +3377,8 @@ pub(crate) mod tests {
             log_loss: 0.3,
             rmse_bins: 1.0,
         };
-        assert!(health_check_passed_for_evaluated_targets(eval, &items));
-        assert!(!health_check_passed_for_evaluated_targets(eval, &filtered));
+        assert!(HealthCheckTargets::from_items(&items).passed(eval));
+        assert!(!HealthCheckTargets::from_items(&filtered).passed(eval));
     }
 
     #[test]
