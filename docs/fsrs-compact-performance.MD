@@ -37,6 +37,8 @@ folds and sources.
 
 A [follow-up profile](fsrs-compact-prediction-profile-2026-11-03.MD) compares
 the current per-review adapter with a proposed compact fsrs-rs prediction API.
+A [later profile](fsrs-optimization-profile-2026-11-03.MD) also measures the
+original, adapter and API paths together and investigates optimizer memory use.
 
 ## Whole collection
 
