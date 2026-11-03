@@ -1,0 +1,174 @@
+{
+    "predict": {
+        "adapter": [
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 719.0008328761905,
+                "peak_rss_mib": 110.40625,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 706.3464580569416,
+                "peak_rss_mib": 112.9375,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 713.2675000466406,
+                "peak_rss_mib": 110.890625,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 702.4303330108523,
+                "peak_rss_mib": 112.671875,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 715.5858748592436,
+                "peak_rss_mib": 112.171875,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            }
+        ],
+        "integrated": [
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 823.4652921091765,
+                "peak_rss_mib": 120.078125,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 712.6917499117553,
+                "peak_rss_mib": 112.75,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 708.284999942407,
+                "peak_rss_mib": 112.96875,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 708.3752499893308,
+                "peak_rss_mib": 111.8125,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 719.0074590034783,
+                "peak_rss_mib": 114.71875,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+            }
+        ]
+    },
+    "folds": {
+        "adapter": [
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1533.2894171588123,
+                "peak_rss_mib": 124.796875,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1451.1302919127047,
+                "peak_rss_mib": 125.25,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1460.9428751282394,
+                "peak_rss_mib": 128.203125,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1441.082416800782,
+                "peak_rss_mib": 124.34375,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1436.5782919339836,
+                "peak_rss_mib": 123.546875,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            }
+        ],
+        "integrated": [
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1465.877375099808,
+                "peak_rss_mib": 126.015625,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1528.3874168526381,
+                "peak_rss_mib": 126.859375,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1509.0552500914782,
+                "peak_rss_mib": 125.953125,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1456.7390831653029,
+                "peak_rss_mib": 127.078125,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1453.087625093758,
+                "peak_rss_mib": 125.484375,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+            }
+        ]
+    }
+}

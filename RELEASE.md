@@ -99,6 +99,8 @@ Changes since the last normal release, [build 107](https://github.com/JSchoreels
 
 - **FSRS compact histories:** Update fsrs-rs to include [#469](https://github.com/open-spaced-repetition/fsrs-rs/pull/469), prepare one history per card for FSRS-7 training and FSRS-6/7 parameter evaluation, and reuse those histories for per-review calibration and validation-fold training. FSRS-6 training and optional health-check cross-validation retain the existing item API. See the [benchmark and methodology](docs/fsrs-compact-performance.MD).
 
+- **FSRS calibration predictions:** Use the fsrs-rs compact per-review API for final-fit and validation-fold predictions, with review order and cancellation preserved. The dependency is pinned to the JSchoreels fork pending upstream review; the [profile](docs/fsrs-compact-prediction-profile-2026-11-03.MD) did not establish a material speed or memory improvement over the earlier compact adapter.
+
 - **FSRS optimization memory:** Skip simulator-statistics preparation when Dynamic DR is disabled and move the health-check items into cross-validation after recording their target counts. The [follow-up profile](docs/fsrs-optimization-profile-2026-11-03.MD) records the copied-deck methodology, individual samples and result checksums.
 
 - **Dependency maintenance:** Update pulldown-cmark to 0.13.6 for [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433.html), which blocked the dependency-license refresh.
