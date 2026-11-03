@@ -35,6 +35,9 @@ builds. All 173,683 final-fit rows and all 318,419 final-fit plus validation
 rows had matching ordered checksums, including review IDs, predictions, roles,
 folds and sources.
 
+A [follow-up profile](fsrs-compact-prediction-profile-2026-11-03.MD) compares
+the current per-review adapter with a proposed compact fsrs-rs prediction API.
+
 ## Whole collection
 
 The collection contained 31,673 cards and 270,985 rated reviews. The FSRS-7
