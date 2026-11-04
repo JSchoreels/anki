@@ -30,6 +30,6 @@ RWKV_MODEL_FILES = {
 
 
 def model_for_profile(profile: Mapping[str, object] | None) -> str:
-    # Profiles without an explicit choice use the show-time retrained small model.
+    # Profiles without an explicit choice use the leak-free small model.
     value = profile.get(RWKV_MODEL_KEY) if profile else None
-    return value if isinstance(value, str) and value in RWKV_MODELS else "sm92"
+    return value if isinstance(value, str) and value in RWKV_MODELS else "sm72e25"
