@@ -451,25 +451,30 @@ runtime. The repository does not define one fixed rebuild time for all users.
 ### Which model does the fork use, and what does leak-free mean?
 
 By default, **Use Smaller Model** (Deck Options → RWKV → Advanced) selects the
-small model, leak-free, cool-down from epoch 25 (SM72): 331,511 parameters, 8.3× fewer than the big
+show-time retrain of the release (SM92): 331,511 parameters, 8.3× fewer than the big
 Legacy model, and about 4.6 KB of state per card and note instead of 25.7 KB.
 Turning the switch off selects the big Legacy model, which keeps working as
-before.
+before. SM92 is the small model, leak-free, cool-down from epoch 25 (SM72)
+retrained so that the time since a card's last review is measured the way Anki
+measures it: up to the moment the card is shown, not up to the moment it is
+answered. SM72 stays bundled.
 
 In the public training data, a card that was deleted before the export is
 missing from the cards table. A naive feature builder then marks its note,
 deck and preset as missing, which tells a model that the card will be deleted
 later. Live Anki never reviews a deleted card, so that is information from the
-future. SM72 was trained and scored without it: the three missing-identity
-inputs are always zero, and the fork forces them to zero whenever SM72 is
-selected (all its cool-downs, from epoch 15, 20 and 25). The fork's history replay already skips deleted cards' reviews, so
+future. SM72 and SM92 were trained and scored without it: the three missing-identity
+inputs are always zero, and the fork forces them to zero whenever SM72
+(all its cool-downs, from epoch 15, 20 and 25) or SM92 is selected. The fork's history replay already skips deleted cards' reviews, so
 every replayed review has its real note, deck and preset.
 
 On held-out users, with leak-free inputs for every model, SM72's LogLoss is
 within about 0.4% of the big model (1 leak-free epoch) and within about 0.2%
-of the shipped big model, for both Curve and Instant. See
-[the model documentation](docs/rwkv.MD#small-model-leak-free-sm72) for the
-full table.
+of the shipped big model, for both Curve and Instant. On the inputs Anki
+actually gives (intervals measured when the card is shown), SM92's Instant
+LogLoss is about 0.3% lower than SM72's and its Curve LogLoss is unchanged. See
+[the model documentation](docs/rwkv.MD#show-time-retrain-of-the-release-sm92)
+for the full tables.
 
 ## 7. Platform and implementation scope
 
