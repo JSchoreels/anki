@@ -110,13 +110,14 @@ function startingState(): DeckOptionsState {
 
 test.each([
     ["legacy", "legacy"],
-    ["sm40", "sm72e25"],
-    ["sm36", "sm72e25"],
-    ["sm55", "sm72e25"],
-    ["sm56", "sm72e25"],
-    ["sm72", "sm72e25"],
-    ["sm72e20", "sm72e25"],
-    ["sm72e25", "sm72e25"],
+    ["sm40", "sm92"],
+    ["sm36", "sm92"],
+    ["sm55", "sm92"],
+    ["sm56", "sm92"],
+    ["sm72", "sm92"],
+    ["sm72e20", "sm92"],
+    ["sm72e25", "sm92"],
+    ["sm92", "sm92"],
 ])("saving RWKV model %s selects %s without changing precision or pending state", (model, expected) => {
     const data = new DeckConfigsForUpdate(exampleData);
     data.rwkvProfileSettings = new RwkvProfileSettings({ model, statePrecision: "int8" });

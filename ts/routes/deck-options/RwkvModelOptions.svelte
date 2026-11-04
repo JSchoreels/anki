@@ -18,7 +18,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function changeModel(event: Event): void {
         $settings.model = (event.target as HTMLInputElement).checked
-            ? "sm72e25"
+            ? "sm92"
             : "legacy";
     }
 </script>

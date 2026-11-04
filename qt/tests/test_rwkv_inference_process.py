@@ -502,6 +502,7 @@ def _import_rsbridge(root: Path) -> object:
         ("sm72", "sm72/weights.f32.bin"),
         ("sm72e20", "sm72e20/weights.f32.bin"),
         ("sm72e25", "sm72e25/weights.f32.bin"),
+        ("sm92", "sm92/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
@@ -602,6 +603,7 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         ("sm72", "sm72/weights.f32.bin"),
         ("sm72e20", "sm72e20/weights.f32.bin"),
         ("sm72e25", "sm72e25/weights.f32.bin"),
+        ("sm92", "sm92/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
@@ -971,6 +973,7 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     with_head = load("sm72e25/weights.f32.bin", "sm72e25")
     without_head = load("sm72e20/weights.f32.bin", "sm72e20")
     assert with_head.has_answer_time_head()
+    assert load("sm92/weights.f32.bin", "sm92").has_answer_time_head()
     assert not without_head.has_answer_time_head()
     later_day = request(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200))
     same_day = request(dict(_RWKV_REVIEWS[3], elapsed_days=0, elapsed_seconds=600))

@@ -16,11 +16,11 @@ from aqt.rwkv_model import RWKV_MODELS, model_for_profile
 @pytest.mark.parametrize(
     "profile,expected",
     [
-        (None, "sm72e25"),
-        ({}, "sm72e25"),
-        ({"rwkvModel": "unknown"}, "sm72e25"),
-        ({"rwkvModel": None}, "sm72e25"),
-        ({"rwkvModel": 36}, "sm72e25"),
+        (None, "sm92"),
+        ({}, "sm92"),
+        ({"rwkvModel": "unknown"}, "sm92"),
+        ({"rwkvModel": None}, "sm92"),
+        ({"rwkvModel": 36}, "sm92"),
         ({"rwkvModel": "legacy"}, "legacy"),
         ({"rwkvModel": "sm40"}, "sm40"),
         ({"rwkvModel": "sm36"}, "sm36"),
@@ -29,9 +29,10 @@ from aqt.rwkv_model import RWKV_MODELS, model_for_profile
         ({"rwkvModel": "sm72"}, "sm72"),
         ({"rwkvModel": "sm72e20"}, "sm72e20"),
         ({"rwkvModel": "sm72e25"}, "sm72e25"),
+        ({"rwkvModel": "sm92"}, "sm92"),
     ],
 )
-def test_model_for_profile_defaults_to_sm72e25_and_preserves_explicit_choices(
+def test_model_for_profile_defaults_to_sm92_and_preserves_explicit_choices(
     profile, expected
 ):
     assert model_for_profile(profile) == expected
@@ -63,7 +64,7 @@ def test_deck_options_loads_existing_profile_model_and_precision(
     with Flask(__name__).test_request_context(data=b""):
         result = DeckConfigsForUpdate.FromString(mediasrv.get_deck_configs_for_update())
     assert result.fsrs
-    assert result.rwkv_profile_settings.model == (model or "sm72e25")
+    assert result.rwkv_profile_settings.model == (model or "sm92")
     # Full int4 was removed; a stored "int4" falls back to the default.
     assert result.rwkv_profile_settings.state_precision == (
         precision if precision not in (None, "int4") else "cards_int4_notes_int8"
@@ -151,14 +152,14 @@ def test_deck_options_pending_or_failed_save_does_not_change_profile(monkeypatch
     save.assert_not_called()
 
 
-def test_new_profiles_save_sm72e25_without_rewriting_existing_profiles():
+def test_new_profiles_save_sm92_without_rewriting_existing_profiles():
     manager = ProfileManager.__new__(ProfileManager)
     manager.db = MagicMock()
     manager.db.scalar.return_value = False
     manager.create("New profile")
     settings = pickle.loads(manager.db.execute.call_args.args[2])
-    assert model_for_profile(settings) == "sm72e25"
-    assert settings["rwkvModel"] == "sm72e25"
+    assert model_for_profile(settings) == "sm92"
+    assert settings["rwkvModel"] == "sm92"
     assert "rwkvModel" not in profileConf
     manager.db.reset_mock()
     manager.db.scalar.return_value = True
@@ -178,6 +179,7 @@ def test_new_profiles_save_sm72e25_without_rewriting_existing_profiles():
         ("sm72", "sm72/weights.f32.bin"),
         ("sm72e20", "sm72e20/weights.f32.bin"),
         ("sm72e25", "sm72e25/weights.f32.bin"),
+        ("sm92", "sm92/weights.f32.bin"),
     ],
 )
 def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
@@ -204,7 +206,7 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
 @pytest.mark.parametrize(
     "saved_model,expected_model",
     [
-        (None, "sm72e25"),
+        (None, "sm92"),
         ("legacy", "legacy"),
         ("sm40", "sm40"),
         ("sm36", "sm36"),
@@ -213,6 +215,7 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
         ("sm72", "sm72"),
         ("sm72e20", "sm72e20"),
         ("sm72e25", "sm72e25"),
+        ("sm92", "sm92"),
     ],
 )
 @pytest.mark.parametrize("active_model", RWKV_MODELS)
@@ -293,7 +296,7 @@ def test_profile_model_and_precision_reach_the_native_backend(
     )
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
-    assert backend.model_name == (model or "sm72e25")
+    assert backend.model_name == (model or "sm92")
     assert backend.state_precision == (
         precision if precision not in (None, "int4") else "cards_int4_notes_int8"
     )
