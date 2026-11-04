@@ -1,0 +1,105 @@
+{
+ "format": "anki-rwkv answer-time head",
+ "format_version": 1,
+ "model": "sm92 (the show-time retrain of the release): the head reads its frozen trunk; queries use show-time intervals (the package's INTEGRATION.md section 6.10)",
+ "weights": {
+  "f32": "time_head.f32.bin",
+  "int8": "time_head.int8.bin",
+  "tensors": {
+   "time_mlps.0.hidden.weight": [
+    128,
+    474
+   ],
+   "time_mlps.0.hidden.bias": [
+    128
+   ],
+   "time_mlps.0.out.weight": [
+    64,
+    128
+   ],
+   "time_mlps.0.out.bias": [
+    64
+   ],
+   "time_head.format_version": [
+    1
+   ]
+  }
+ },
+ "head": "logits = out(relu(hidden(inputs))); inputs = 474 float32 values at the query (instant) row",
+ "inputs": {
+  "frozen": {
+   "count": 448,
+   "layout": [
+    "layer_norm(x0) (64): the residual after the input encoder (features2card, after its SiLU)",
+    "layer_norm(x1) (64): after layer round 0 (steps (0,0) (1,0) (2,0) (3,0) (4,0))",
+    "layer_norm(x2) (64): after layer round 1 (steps (0,1) (1,1) (3,1) (4,1))",
+    "layer_norm(x3) (64): after layer round 2 (steps (1,2) (3,2) (4,2))",
+    "layer_norm(x4) (64): after layer round 3 (step (1,3)) = the final residual before prehead_norm",
+    "head_p (128): relu(head_p.0(prehead_norm(x4))), the instant head's hidden layer"
+   ],
+   "layer_norm": "no affine parameters, eps 1e-5, biased variance (torch.nn.functional.layer_norm)"
+  },
+  "explicit": {
+   "count": 26,
+   "names": [
+    "card_last_ln_t_1",
+    "card_last_ln_t_2",
+    "card_last_ln_t_3",
+    "card_none_1",
+    "card_none_2",
+    "card_none_3",
+    "card_reviews_ln1p",
+    "card_last_grade_1",
+    "card_last_grade_2",
+    "card_last_grade_3",
+    "card_last_grade_4",
+    "user_median_ln_t_g1",
+    "user_median_ln_t_g2",
+    "user_median_ln_t_g3",
+    "user_median_ln_t_g4",
+    "user_count_ln1p_g1",
+    "user_count_ln1p_g2",
+    "user_count_ln1p_g3",
+    "user_count_ln1p_g4",
+    "user_median_ln_t_all",
+    "user_prev_ln_t",
+    "user_prev_none",
+    "user_ema_ln_t",
+    "elapsed_days_ln1p",
+    "new_card",
+    "user_index_ln1p"
+   ],
+   "source": "the user's reviews before the query (card id, grade 1-4, duration ms) and the query's own card id and elapsed days; reference: reference/answer_time_numpy.py explicit_features (= scripts/sm82c_head.py explicit_features)",
+   "ln_time": "ln(max(duration_ms, 1) / 1000) in float64; only durations > 0 are recorded",
+   "centre": "ln times are centred on ln 8 s",
+   "median": "exact running median (two heaps; even count = mean of the two middle values) per grade 1-4 of recorded times, fallback the median over all grades, then ln 8 s"
+  }
+ },
+ "output": {
+  "bins": 16,
+  "layout": "logits [4 grades (Again, Hard, Good, Easy) x 16 bins], softmax per grade",
+  "bin_edges_ms": [
+   500.0,
+   703.8545954947423,
+   990.8225831981346,
+   1394.7900570079573,
+   1963.4587827508485,
+   2763.9789746073957,
+   3890.878606256521,
+   5477.2255750516615,
+   7710.340783122887,
+   10853.917586063153,
+   15279.159544143497,
+   21508.613320885503,
+   30277.872657249376,
+   42622.43962321917,
+   60000.0
+  ],
+  "bins_meaning": "bin 0 < 500 ms, bin k = [edge k-1, edge k), bin 15 >= 60 s (the time cap)",
+  "cap_ms": 60000,
+  "median": "ln seconds, linear in ln time inside the crossing bin (bin 0 from ln 0.25 s, bin 15 = 60 s); reference median_log_s",
+  "fast_threshold_ms": 3890.878606256521,
+  "fast": "P(answer under 3.891 s | grade) = sum of bins 0..6"
+ },
+ "valid": "query (instant) rows of reviews on a later day than the card's previous review (elapsed days >= 1); first reviews and same-day reviews are not predicted (their interval input holds their own answer time in training)"
+}

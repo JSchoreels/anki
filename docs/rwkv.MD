@@ -66,26 +66,27 @@ it is turned off again.
 
 Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
 local profile. The original Legacy big model (2,762,884 parameters) and the
-331,511-parameter small models SM40, SM36 Muon, SM55, SM56 and the small model,
-leak-free (SM72, cool-down from epoch 15, from epoch 20 and from epoch 25) are bundled. Only the selected model and its state are loaded.
+331,511-parameter small models SM40, SM36 Muon, SM55, SM56, the small model,
+leak-free (SM72, cool-down from epoch 15, from epoch 20 and from epoch 25) and the
+show-time retrain of the release (SM92) are bundled. Only the selected model and its state are loaded.
 
-The switch is on by default and selects **New - Smaller Model**, the small model,
-leak-free, cool-down from epoch 25 (SM72, profile key `sm72e25`), when on and
+The switch is on by default and selects **New - Smaller Model**, the show-time
+retrain of the release (SM92, profile key `sm92`), when on and
 **Legacy - Bigger Model** when off. An explicitly saved Legacy selection loads
-with the switch off. SM40, SM36, SM55, SM56 and the SM72 cool-downs from epoch 15
-and from epoch 20 are no longer offered in the UI.
+with the switch off. SM40, SM36, SM55, SM56 and the three SM72 cool-downs are no
+longer offered in the UI.
 An inline legend directly below the switch explains both choices, their
 profile-wide scope and how to apply changes. It is visible whenever Advanced is open.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20` and `sm72e25` as
-supported values. Missing or unsupported values resolve to `sm72e25` in existing and new profiles.
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm72e25` and `sm92` as
+supported values. Missing or unsupported values resolve to `sm92` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` choices switch to `sm72e25`; `legacy`
-and `sm72e25` are preserved. The older models remain supported by the runtime. Profile
-creation explicitly stores `sm72e25`. Neither model choice nor state precision is synced.
+Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20` and `sm72e25` choices switch to `sm92`; `legacy`
+and `sm92` are preserved. The older models remain supported by the runtime. Profile
+creation explicitly stores `sm92`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
 changes; closing and discarding leaves both profile keys unchanged.
@@ -102,10 +103,10 @@ Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
 remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55,
-SM56, SM72, SM72 (cool-down from epoch 20) and SM72 (cool-down from epoch 25) weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
+SM56, SM72, SM72 (cool-down from epoch 20), SM72 (cool-down from epoch 25) and SM92 weights and metadata are under `qt/aqt/rwkv_inference/sm36/`,
 `qt/aqt/rwkv_inference/sm55/`, `qt/aqt/rwkv_inference/sm56/`,
-`qt/aqt/rwkv_inference/sm72/`, `qt/aqt/rwkv_inference/sm72e20/` and `qt/aqt/rwkv_inference/sm72e25/`. Their architecture exports describe SM40's
-architecture; the SM72 `architecture.json` files are byte-identical to the SM56 release
+`qt/aqt/rwkv_inference/sm72/`, `qt/aqt/rwkv_inference/sm72e20/`, `qt/aqt/rwkv_inference/sm72e25/` and `qt/aqt/rwkv_inference/sm92/`. Their architecture exports describe SM40's
+architecture; the SM72 and SM92 `architecture.json` files are byte-identical to the SM56 release
 export and are kept unformatted, so every file matches its release manifest. SM55 retains Muon and extends the final decay from 5,000 training users
 to 8,000. SM56 also trains its ten base epochs on all 8,000 users before the
 8,000-user Muon decay; these checkpoints change weights without changing feature construction,
@@ -115,7 +116,8 @@ recurrent equations, curve evaluation or state encoding. The
 [SM56 integration report](rwkv-sm56-2026-10-24.MD) and
 [SM72 integration report](rwkv-sm72-2026-10-28.MD),
 [SM72 cool-down from epoch 20 integration report](rwkv-sm72e20-2026-10-29.MD) and
-[SM72 cool-down from epoch 25 integration report](rwkv-sm72e25-2026-10-30.MD) record package provenance,
+[SM72 cool-down from epoch 25 integration report](rwkv-sm72e25-2026-10-30.MD) and
+[SM92 integration report](rwkv-sm92-2026-11-04.MD) record package provenance,
 reference/native parity and the scope of the upstream quality evidence. The
 [four-model backup comparison](rwkv-four-model-quality-2026-10-22.MD) scores all
 four checkpoints on identical retained reviews with f32 compute weights and the
@@ -128,12 +130,12 @@ The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for bot
 fixed architectures and dispatches at its public operation boundary. Tensor loops
 retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; all eight models are available at runtime in
-either build. SM40, SM36, SM55, SM56 and the three SM72 cool-downs share the small architecture's specialization;
+Legacy for those comparisons; all nine models are available at runtime in
+either build. SM40, SM36, SM55, SM56, the three SM72 cool-downs and SM92 share the small architecture's specialization;
 only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40, SM36, SM55, SM56 and the three SM72 cool-downs have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36, SM55, SM56, the three SM72 cool-downs and SM92 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
@@ -141,10 +143,69 @@ entity codes, canonical history and routing rules are unchanged. Its Curve head
 is a mixture of three learned power curves and its Instant head remains a
 four-rating classifier.
 
+### Show-Time Retrain of the Release (SM92)
+
+The show-time retrain of the release (SM92, key `sm92`) is the default small
+model. It has the same architecture, size and leak-free input rule as the small
+model, leak-free, cool-down from epoch 25 (SM72, key `sm72e25`, below), which
+stays bundled and selectable by a saved choice; only the weights differ.
+
+**What changed.** The review log's interval for a review runs from the card's
+previous answer to this answer, so it includes the time spent answering. Anki
+asks the model before the answer, when the card is shown, and only knows the
+time from the previous answer to that moment. SM72 learned every prediction
+with the answer-to-answer interval, so its Instant predictions in Anki use an
+interval it was not trained on. SM92 starts from SM72's epoch-25 weights, adds
+one constant-LR epoch and then SM72's exact one-epoch 32k Muon cool-down (same
+users, order, seeds and distillation targets), both with **show-time
+intervals**: every query asked before the answer (the Instant query row and the
+Curve query time) uses `floor(max(elapsed_seconds − duration / 1000, 0))`
+seconds from the previous answer, and the cumulative interval adds that
+show-time interval to the card's committed answer-to-answer intervals; a
+committed answer keeps its answer-to-answer interval.
+
+The fork already builds its inputs this way: a query's interval is `now` minus
+the card's last answer time, a committed answer's interval is its answer time
+minus the previous answer time, and `FeatureState` adds the query's interval to
+the running sum of committed intervals. `rwkv_sm92_feature_builder_matches_show_time_intervals`
+feeds each row's own interval to the native feature builder and reproduces
+the published interval inputs (features 0–7) of all 6,543 queries and 7,860
+answers of the full release vectors to 7.5e−7.
+
+Upstream LogLoss on the 732-user held-out set (722 users), w8+s8 and leak-free
+inputs for every model, paired with SM72 (cool-down from epoch 25) on the same
+users (95% review-weighted user-bootstrap intervals; "points" are % of the big
+model (1 leak-free epoch) on normal inputs, 0.29897 / 0.27576):
+
+| Inputs | SM92, Curve / Instant | SM72 (cool-down from epoch 25), Curve / Instant | SM92 minus SM72, Curve | SM92 minus SM72, Instant |
+| --- | ---: | ---: | ---: | ---: |
+| Show-time (what Anki queries) | 0.30036 / 0.27688 | 0.30041 / 0.27772 | −0.000058 [−0.000271, +0.000255] (−0.019 points) | −0.000842 [−0.001136, −0.000630] (−0.305 points) |
+| Answer-to-answer (the review log as recorded) | 0.30024 / 0.27676 | 0.30003 / 0.27654 | +0.000210 [+0.000006, +0.000527] (+0.070 points) | +0.000218 [+0.000170, +0.000272] (+0.079 points) |
+
+On show-time inputs SM92's Instant LogLoss is lower for 571 of the 722 users;
+Curve is unchanged within noise. The answer-to-answer row does not apply to the
+fork. Show-time inputs cost SM92 +0.039 / +0.043 points against its own
+answer-to-answer inputs, and SM72 +0.128 / +0.428 points. On the 732+long set
+(725 users) the show-time differences are −0.014 [−0.084, +0.087] and −0.299
+[−0.397, −0.228] points. On show-time inputs SM92 is +0.26% [+0.07, +0.46]
+Curve and −0.10% [−0.21, −0.02] Instant against the big model (1 leak-free
+epoch) on the same inputs. The 464-user set, the shipped big model, the
+author's own collection and INT4 card state were not scored for SM92.
+
+SM92 bundles its own answer-time head (`qt/aqt/rwkv_inference/sm92/time_head.f32.bin`):
+the SM72 head reads SM72's internal states, so it was retrained with the same
+recipe on the frozen SM92 model (see the [SM92 integration report](rwkv-sm92-2026-11-04.MD)).
+The bundled vectors `rslib/src/rwkv/testdata/sm92-vectors.json.gz` and
+`sm92-time-vectors.json.gz` (500 rows per user) are checked by
+`rwkv_sm92_matches_published_vectors`, `rwkv_sm92_ignores_missing_id_flags_in_every_inference_path`,
+`rwkv_sm92_answer_time_history_matches_published_features` and
+`rwkv_sm92_answer_time_head_matches_published_vectors`; `ANKI_RWKV_SM92_VECTORS` and
+`ANKI_RWKV_SM92_TIME_VECTORS` point them at the full vectors.
+
 ### Small Model, Leak-Free (SM72)
 
-The small model, leak-free, cool-down from epoch 25 (SM72, key `sm72e25`) is the
-default small model; the earlier cool-downs from epoch 15 (key `sm72`) and from
+The small model, leak-free, cool-down from epoch 25 (SM72, key `sm72e25`) was the
+default small model until SM92; it and the earlier cool-downs from epoch 15 (key `sm72`) and from
 epoch 20 (key `sm72e20`) stay bundled and selectable by a saved choice. All three have the same
 architecture and size as SM56 (331,511 parameters, 8.3× fewer than the big
 model), but every input it was trained and scored on was built **leak-free**:
@@ -182,7 +243,7 @@ The author's own collection, the spaced-review slice and INT4 card state were
 not measured for SM72 (cool-down from epoch 25); the matched backup comparison linked from Deck Options
 predates SM72 and does not include it.
 
-**Leak-free input rule.** When any SM72 cool-down is selected, the runtime forces inputs 13,
+**Leak-free input rule.** When any SM72 cool-down or SM92 is selected, the runtime forces inputs 13,
 14 and 15 to zero on every row, in the per-review, query, batched-query and
 bulk-replay paths, because SM72 never saw them set in training. Other models,
 Legacy included, keep their own feature path unchanged. The upstream rule for
@@ -1095,7 +1156,8 @@ each hypothetical answer; they are separate from the RWKV-Curve predictions
 used for answer-button intervals.
 
 When the selected model folder has the optional answer-time head
-(`time_head.f32.bin`, bundled with `sm72e25`), Card Info also shows
+(`time_head.f32.bin`, bundled with `sm92` and `sm72e25`, each trained on its own
+frozen model), Card Info also shows
 **RWKV : Answer Time by Button**, the predicted median answer time if the next
 answer is Again, Hard, Good or Easy, and **RWKV : Expected Answer Time**, the
 median over the four answers weighted by the answer-button probabilities, with

@@ -38,6 +38,11 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument(
+        "--intervals",
+        action="store_true",
+        help="add each row's interval inputs (raw elapsed seconds and days)",
+    )
+    parser.add_argument(
         "--time-only",
         action="store_true",
         help="keep only the answer-time vectors (the rows are the model's own vectors)",
@@ -54,35 +59,41 @@ def main() -> None:
         )
         rows = []
         for index in range(count):
-            rows.append(
-                {
-                    "features": data["features"][index].tolist(),
-                    "ids": [
-                        int(data[f"id_{stream}"][index])
-                        for stream in (
-                            "card_id",
-                            "deck_id",
-                            "note_id",
-                            "preset_id",
-                            "user_id",
-                        )
-                    ],
-                    "skip": bool(data["skip"][index]),
-                    "elapsed": float(data["label_elapsed_seconds"][index]),
-                    "fp32": [
-                        float(data["fp32_p_imm"][index]),
-                        *data["fp32_p_rating"][index].tolist(),
-                        float(data["fp32_p_curve"][index]),
-                        *data["fp32_p_curve_sweep"][index].tolist(),
-                    ],
-                    "int8": [
-                        float(data["int8_p_imm"][index]),
-                        *data["int8_p_rating"][index].tolist(),
-                        float(data["int8_p_curve"][index]),
-                        *data["int8_p_curve_sweep"][index].tolist(),
-                    ],
-                }
-            )
+            row = {
+                "features": data["features"][index].tolist(),
+                "ids": [
+                    int(data[f"id_{stream}"][index])
+                    for stream in (
+                        "card_id",
+                        "deck_id",
+                        "note_id",
+                        "preset_id",
+                        "user_id",
+                    )
+                ],
+                "skip": bool(data["skip"][index]),
+                "elapsed": float(data["label_elapsed_seconds"][index]),
+                "fp32": [
+                    float(data["fp32_p_imm"][index]),
+                    *data["fp32_p_rating"][index].tolist(),
+                    float(data["fp32_p_curve"][index]),
+                    *data["fp32_p_curve_sweep"][index].tolist(),
+                ],
+                "int8": [
+                    float(data["int8_p_imm"][index]),
+                    *data["int8_p_rating"][index].tolist(),
+                    float(data["int8_p_curve"][index]),
+                    *data["int8_p_curve_sweep"][index].tolist(),
+                ],
+            }
+            if args.intervals:
+                # The row's own interval inputs (seconds, days), as the
+                # trainer built them (show-time query rows in package sm92).
+                row["interval"] = [
+                    float(data["raw_elapsed_seconds"][index]),
+                    float(data["raw_elapsed_days"][index]),
+                ]
+            rows.append(row)
         user = {
             "name": path.name,
             "sweep": data["sweep_seconds"].tolist(),
