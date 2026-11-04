@@ -33,7 +33,7 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-Changes since the last normal release, [build 110](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.110). The application version remains `26.09.3+fsrs7`.
+Changes since the last normal release, [build 110](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.110). The application version is `26.09.4+fsrs7`.
 
 ### User facing changes
 
@@ -44,6 +44,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **See how long your next answer is likely to take.** With the default small model, Card Info now shows **RWKV : Answer Time by Button**, the predicted typical answer time if you press Again, Hard, Good or Easy, and **RWKV : Expected Answer Time**, the typical time over the likely answers with the chance of a Good answer under 3.9 seconds. The prediction comes from a new answer-time head on the small model: the answer-time head on richer frozen features (SM82c), trained on top of the unchanged default small model (SM92). On the 732-user held-out set its time LogLoss is **17.3% lower** than predicting each user's running median time per answer button and 20.0% lower than repeating the card's last answer time, and the error of its typical time is 27.2% lower than the median's. It is shown only for cards last reviewed on an earlier day. Scheduling, review order and every other RWKV prediction are unchanged.
 
 #### Fixes
+
+- **Security fixes from Anki 26.09.4.** Fix two shared-deck code-execution vulnerabilities, one involving embedded editor content and one in macOS **Show in Folder**. This update also removes trust in compromised eMudhra certificates from the updated bundled dependencies; keep your operating system up to date as well.
 
 - **Faster FSRS-7 optimization and evaluation, with lower memory use.** On a copied deck with 188,183 rated reviews, optimizing without the optional health check or Dynamic DR fell from 1.57 s to 0.36 s and peak process memory from 259 MiB to 165 MiB. Evaluating current parameters fell from 0.77 s to 0.18 s. Optimized parameters and evaluation results matched the previous implementation.
 
@@ -56,6 +58,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **Faster uploads during normal sync.** When many small review or card changes are waiting to be sent, Anki combines them into fewer requests. The improvement depends on the number of changes and network latency; downloading still uses the server's batch size.
 
 ### Technical details
+
+- **Anki 26.09.4 security:** Reject unmatched add-on paths instead of serving them as collection media, restrict API authorization and frontend link opening, and pass macOS Finder paths as arguments instead of AppleScript source. Update the vendored certificate dependencies, Python and installer support packages. See [GHSA-j9v5-m549-cg6c](https://github.com/ankitects/anki/security/advisories/GHSA-j9v5-m549-cg6c) and [GHSA-gfvm-4968-jp9m](https://github.com/ankitects/anki/security/advisories/GHSA-gfvm-4968-jp9m).
 
 - **FSRS compact histories:** Update fsrs-rs to include [#469](https://github.com/open-spaced-repetition/fsrs-rs/pull/469), prepare one history per card for FSRS-7 training and FSRS-6/7 parameter evaluation, and reuse those histories for per-review calibration and validation-fold training. FSRS-6 training and optional health-check cross-validation retain the existing item API. See the [benchmark and methodology](docs/fsrs-compact-performance.MD).
 
