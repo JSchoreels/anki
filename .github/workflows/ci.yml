@@ -205,6 +205,8 @@ jobs:
           SKIP_RUN: "1"
         run: ./run
 
+      # Release preflight waits for this workflow, so keep its security gate
+      # even though upstream also runs cargo-deny in a separate workflow.
       - name: Check Rust dependencies
         if: github.event_name == 'pull_request'
         id: rust-deps
