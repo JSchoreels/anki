@@ -5,6 +5,7 @@ use std::io::Read;
 
 use super::*;
 use crate::rwkv::AnswerTimeHistory;
+use crate::rwkv::ModelKind;
 use crate::rwkv::ANSWER_TIME_BINS;
 
 #[derive(serde::Deserialize)]
@@ -15,6 +16,10 @@ struct VectorRow {
     elapsed: f32,
     fp32: Vec<f32>,
     int8: Vec<f32>,
+    /// The row's own interval inputs (elapsed seconds, elapsed days), when
+    /// the package vectors were converted with them.
+    #[serde(default)]
+    interval: Option<[f64; 2]>,
 }
 #[derive(serde::Deserialize)]
 struct Vectors {
@@ -115,6 +120,18 @@ fn sm72e25_vectors() -> Vec<u8> {
     }
 }
 
+fn sm92_vectors() -> Vec<u8> {
+    if let Ok(path) = std::env::var("ANKI_RWKV_SM92_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm92-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
 #[test]
 fn rwkv_sm72_matches_published_vectors() {
     check_published_vectors("sm72", &sm72_vectors());
@@ -128,6 +145,11 @@ fn rwkv_sm72e20_matches_published_vectors() {
 #[test]
 fn rwkv_sm72e25_matches_published_vectors() {
     check_published_vectors("sm72e25", &sm72e25_vectors());
+}
+
+#[test]
+fn rwkv_sm92_matches_published_vectors() {
+    check_published_vectors("sm92", &sm92_vectors());
 }
 
 /// The leak-free small models (SM72, every cool-down) were trained with the
@@ -147,6 +169,50 @@ fn rwkv_sm72e20_ignores_missing_id_flags_in_every_inference_path() {
 #[test]
 fn rwkv_sm72e25_ignores_missing_id_flags_in_every_inference_path() {
     check_ignores_missing_id_flags("sm72e25", &sm72e25_vectors());
+}
+
+#[test]
+fn rwkv_sm92_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm92", &sm92_vectors());
+}
+
+/// The show-time retrain of the release (SM92) was trained on show-time
+/// intervals: a query row's interval runs from the card's previous answer to
+/// the moment the card is shown, and its cumulative interval is the card's
+/// committed answer-to-answer intervals plus that interval; a committed
+/// answer keeps the answer-to-answer interval. The native feature builder
+/// fed each row's own interval reproduces the published interval inputs
+/// (features 0..8) of every query and answer row.
+#[test]
+fn rwkv_sm92_feature_builder_matches_show_time_intervals() {
+    let vectors: Vec<Vectors> = serde_json::from_slice(&sm92_vectors()).unwrap();
+    let mut maximum = 0.0_f32;
+    let mut queries = 0;
+    for user in &vectors {
+        let mut features = FeatureState::default();
+        for (index, row) in user.rows.iter().enumerate() {
+            let [seconds, days] = row.interval.expect("sm92 vectors carry the row intervals");
+            let mut input = vector_input(row);
+            input.current_elapsed_seconds = Some(seconds as i64);
+            input.current_elapsed_days = Some(days as i64);
+            let actual = features.features_for(&input);
+            for (feature, (&a, &b)) in actual[..8].iter().zip(&row.features[..8]).enumerate() {
+                maximum = maximum.max((a - b).abs());
+                assert!(
+                    (a - b).abs() <= 1e-5,
+                    "{} row {index} feature {feature}: {a} != {b}",
+                    user.name
+                );
+            }
+            if row.skip {
+                queries += 1;
+            } else {
+                features.store_review(&input);
+            }
+        }
+    }
+    assert!(queries > 0);
+    println!("sm92 interval features: {queries} queries, maximum absolute error {maximum}");
 }
 
 fn check_ignores_missing_id_flags(package: &str, data: &[u8]) {
@@ -223,9 +289,9 @@ fn check_published_vectors(package: &str, data: &[u8]) {
             "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
         )))
         .unwrap();
-        // Runtime input rule of the leak-free model; its vectors keep the
+        // Runtime input rule of the leak-free models; their vectors keep the
         // flags at zero, so this only mirrors the runtime configuration.
-        model.leak_free_inputs = package.starts_with("sm72");
+        model.leak_free_inputs = ModelKind::parse(package).is_ok_and(ModelKind::leak_free_inputs);
         let mut maximum = 0.0_f32;
         for user in &vectors {
             let mut states = ReviewStateMaps::default();
@@ -274,6 +340,7 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
         include_str!("../../../qt/aqt/rwkv_inference/sm72/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm72e20/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm72e25/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm92/architecture.json"),
     ] {
         check_compiled_architecture(source);
     }
@@ -321,17 +388,35 @@ struct AnswerTimeUser {
 /// sm72e25-time). The bundled fixture keeps only the time part of the first
 /// 500 rows; its rows are those of the model's own vectors.
 fn sm72e25_answer_time_vectors() -> Vec<AnswerTimeUser> {
-    let data = if let Ok(path) = std::env::var("ANKI_RWKV_SM72E25_TIME_VECTORS") {
+    answer_time_vectors(
+        "ANKI_RWKV_SM72E25_TIME_VECTORS",
+        include_bytes!("testdata/sm72e25-time-vectors.json.gz"),
+        &sm72e25_vectors(),
+    )
+}
+
+/// The answer-time head retrained on the show-time retrain of the release
+/// (SM92), same layout as sm72e25's.
+fn sm92_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM92_TIME_VECTORS",
+        include_bytes!("testdata/sm92-time-vectors.json.gz"),
+        &sm92_vectors(),
+    )
+}
+
+fn answer_time_vectors(variable: &str, fixture: &[u8], vectors: &[u8]) -> Vec<AnswerTimeUser> {
+    let data = if let Ok(path) = std::env::var(variable) {
         fs::read(path).unwrap()
     } else {
         let mut data = Vec::new();
-        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm72e25-time-vectors.json.gz")[..])
+        flate2::read::GzDecoder::new(fixture)
             .read_to_end(&mut data)
             .unwrap();
         data
     };
     let mut users: Vec<AnswerTimeUser> = serde_json::from_slice(&data).unwrap();
-    let model: Vec<Vectors> = serde_json::from_slice(&sm72e25_vectors()).unwrap();
+    let model: Vec<Vectors> = serde_json::from_slice(vectors).unwrap();
     for user in &mut users {
         if user.rows.is_empty() {
             let rows = &model
@@ -348,6 +433,7 @@ fn sm72e25_answer_time_vectors() -> Vec<AnswerTimeUser> {
                     elapsed: row.elapsed,
                     fp32: row.fp32.clone(),
                     int8: row.int8.clone(),
+                    interval: row.interval,
                 })
                 .collect();
         }
@@ -371,8 +457,17 @@ fn grade_softmax(logits: &[f32]) -> Vec<f64> {
 /// user's revlog, equal the Python reference's at every published query.
 #[test]
 fn rwkv_sm72e25_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm72e25", sm72e25_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm92_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm92", sm92_answer_time_vectors());
+}
+
+fn check_answer_time_history(package: &str, users: Vec<AnswerTimeUser>) {
     let mut maximum = 0.0_f32;
-    for user in sm72e25_answer_time_vectors() {
+    for user in users {
         let [cards, grades, durations, elapsed] = &user.time.revlog;
         let mut wanted: HashMap<usize, usize> = HashMap::new();
         for (index, &review_th) in user.time.review_th.iter().enumerate() {
@@ -399,7 +494,7 @@ fn rwkv_sm72e25_answer_time_history_matches_published_features() {
         }
         assert_eq!(checked, user.time.rows.len(), "{}", user.name);
     }
-    println!("sm72e25 answer-time history features: maximum absolute error {maximum}");
+    println!("{package} answer-time history features: maximum absolute error {maximum}");
 }
 
 /// The answer-time head on the native trunk reproduces the Python reference
@@ -408,8 +503,17 @@ fn rwkv_sm72e25_answer_time_history_matches_published_features() {
 /// probabilities bit for bit.
 #[test]
 fn rwkv_sm72e25_answer_time_head_matches_published_vectors() {
-    let users = sm72e25_answer_time_vectors();
-    let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../qt/aqt/rwkv_inference/sm72e25");
+    check_answer_time_head("sm72e25", sm72e25_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm92_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm92", sm92_answer_time_vectors());
+}
+
+fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {
+    let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../qt/aqt/rwkv_inference/{package}"));
     for format in ["f32", "int8"] {
         let mut model = SrsModel::load(&folder.join(format!("weights.{format}.bin"))).unwrap();
         model.leak_free_inputs = true;
@@ -465,7 +569,7 @@ fn rwkv_sm72e25_answer_time_head_matches_published_vectors() {
         }
         assert!(checked > 0);
         println!(
-            "sm72e25 {format} answer-time head: {checked} queries, maximum absolute bin probability error {maximum}, logit error {logit_maximum}"
+            "{package} {format} answer-time head: {checked} queries, maximum absolute bin probability error {maximum}, logit error {logit_maximum}"
         );
     }
 }

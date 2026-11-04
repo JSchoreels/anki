@@ -112,7 +112,7 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
         },
     )?;
     for model in [
-        "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25",
+        "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92",
     ] {
         for name in ["weights.f32.bin", "architecture.json", "manifest.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
@@ -126,15 +126,17 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
         }
     }
     // The optional answer-time head is read from the folder of the weights.
-    for name in ["time_head.f32.bin", "time_head.json"] {
-        let output = format!("qt/_aqt/rwkv_inference/sm72e25/{name}");
-        build.add_action(
-            format!("qt:aqt:rwkv_sm72e25_{name}"),
-            CopyFile {
-                input: format!("qt/aqt/rwkv_inference/sm72e25/{name}").into(),
-                output: &output,
-            },
-        )?;
+    for model in ["sm72e25", "sm92"] {
+        for name in ["time_head.f32.bin", "time_head.json"] {
+            let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
+            build.add_action(
+                format!("qt:aqt:rwkv_{model}_{name}"),
+                CopyFile {
+                    input: format!("qt/aqt/rwkv_inference/{model}/{name}").into(),
+                    output: &output,
+                },
+            )?;
+        }
     }
     Ok(())
 }

@@ -22,6 +22,7 @@
         "qt/aqt/rwkv_inference/sm72/**",
         "qt/aqt/rwkv_inference/sm72e20/**",
         "qt/aqt/rwkv_inference/sm72e25/**",
+        "qt/aqt/rwkv_inference/sm92/**",
         "ftl/qt-repo",
         "ftl/core-repo",
         "ftl/usage",

@@ -18,6 +18,7 @@ pub enum ModelKind {
     Sm72,
     Sm72e20,
     Sm72e25,
+    Sm92,
 }
 
 impl ModelKind {
@@ -31,6 +32,7 @@ impl ModelKind {
             "sm72" => Ok(Self::Sm72),
             "sm72e20" => Ok(Self::Sm72e20),
             "sm72e25" => Ok(Self::Sm72e25),
+            "sm92" => Ok(Self::Sm92),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -41,7 +43,10 @@ impl ModelKind {
     /// Checkpoints trained without the deleted-card signal: their missing
     /// note, deck and preset flags (inputs 13..15) are always zero.
     pub fn leak_free_inputs(self) -> bool {
-        matches!(self, Self::Sm72 | Self::Sm72e20 | Self::Sm72e25)
+        matches!(
+            self,
+            Self::Sm72 | Self::Sm72e20 | Self::Sm72e25 | Self::Sm92
+        )
     }
 }
 
@@ -82,6 +87,7 @@ impl RwkvRuntime {
                 | ModelKind::Sm72
                 | ModelKind::Sm72e20
                 | ModelKind::Sm72e25
+                | ModelKind::Sm92
         ) == super::SMALL_MODEL
         {
             let engine = super::RwkvInference::load_with_precision(
@@ -449,6 +455,7 @@ mod tests {
             ModelKind::Sm72 => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
             ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
+            ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -476,6 +483,7 @@ mod tests {
                 (ModelKind::Sm72, load(ModelKind::Sm72, precision)),
                 (ModelKind::Sm72e20, load(ModelKind::Sm72e20, precision)),
                 (ModelKind::Sm72e25, load(ModelKind::Sm72e25, precision)),
+                (ModelKind::Sm92, load(ModelKind::Sm92, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
@@ -505,12 +513,14 @@ mod tests {
         assert_eq!(ModelKind::parse("sm72").unwrap(), ModelKind::Sm72);
         assert_eq!(ModelKind::parse("sm72e20").unwrap(), ModelKind::Sm72e20);
         assert_eq!(ModelKind::parse("sm72e25").unwrap(), ModelKind::Sm72e25);
+        assert_eq!(ModelKind::parse("sm92").unwrap(), ModelKind::Sm92);
         // The same checkpoint without the runtime's input rule.
         let unadjusted = |model: ModelKind| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
                 ModelKind::Sm56 => "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
                 ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
                 ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
+                ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
                 _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             });
             if super::super::SMALL_MODEL {
@@ -547,6 +557,7 @@ mod tests {
             ModelKind::Sm72,
             ModelKind::Sm72e20,
             ModelKind::Sm72e25,
+            ModelKind::Sm92,
         ] {
             assert_eq!(model.leak_free_inputs(), model != ModelKind::Sm56);
             for missing_ids in [false, true] {
@@ -568,11 +579,19 @@ mod tests {
     /// loading the head changes no grade output.
     #[test]
     fn rwkv_runtime_answer_time_head_is_optional_and_leaves_grades_unchanged() {
+        for (model, folder) in [(ModelKind::Sm72e25, "sm72e25"), (ModelKind::Sm92, "sm92")] {
+            check_answer_time_head_is_optional(model, folder);
+        }
+        // Legacy never has a head.
+        assert!(!load(ModelKind::Legacy, StatePrecision::F32).has_answer_time_head());
+    }
+
+    fn check_answer_time_head_is_optional(model: ModelKind, folder: &str) {
         let dir = tempfile::tempdir().unwrap();
         let bare = dir.path().join("weights.f32.bin");
         std::fs::copy(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin"),
+                .join(format!("../qt/aqt/rwkv_inference/{folder}/weights.f32.bin")),
             &bare,
         )
         .unwrap();
@@ -623,15 +642,12 @@ mod tests {
                 .collect();
             (engine.has_answer_time_head(), grades, times)
         };
-        let (with_head, grades, times) = run(load(ModelKind::Sm72e25, StatePrecision::F32));
-        let (without_head, bare_grades, bare_times) = run(RwkvRuntime::load_with_precision(
-            bare,
-            0.9,
-            36_500,
-            StatePrecision::F32,
-            ModelKind::Sm72e25,
-        )
-        .unwrap());
+        let (with_head, grades, times) = run(load(model, StatePrecision::F32));
+        let (without_head, bare_grades, bare_times) =
+            run(
+                RwkvRuntime::load_with_precision(bare, 0.9, 36_500, StatePrecision::F32, model)
+                    .unwrap(),
+            );
         assert!(with_head && !without_head);
         assert_eq!(grades, bare_grades);
         assert_eq!(bare_times, vec![None, None]);
@@ -650,7 +666,5 @@ mod tests {
             grades[0].2,
             "the head's trunk pass gives the grade path's button probabilities"
         );
-        // Legacy never has a head.
-        assert!(!load(ModelKind::Legacy, StatePrecision::F32).has_answer_time_head());
     }
 }
