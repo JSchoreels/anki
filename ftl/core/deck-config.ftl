@@ -359,9 +359,9 @@ deck-config-rwkv-use-smaller-model = Use Smaller Model
 deck-config-rwkv-model-help = About prediction models
 deck-config-rwkv-model-off = Off — Legacy - Bigger Model
 deck-config-rwkv-model-on = On — New - Smaller Model
-deck-config-rwkv-model-smaller-description = Small model, leak-free, cool-down from epoch 25 (SM63): the default smaller model, trained without the deleted-card signal. The show-time retrain of the release (SM92) is an option for when Anki schedules by querying at show time.
+deck-config-rwkv-model-smaller-description = The default smaller model is SM63. It uses less memory and runs faster than the original model.
 deck-config-rwkv-model-bigger-description = The original model. Uses more memory and takes longer.
-deck-config-rwkv-model-migration = Previously saved older small models (SM40, SM36, SM55, SM56 and the small model, leak-free, cool-down from epoch 15 or 20, SM72) switch to the small model, leak-free, cool-down from epoch 25 (SM63) when you save.
+deck-config-rwkv-model-migration = Older smaller models are updated to SM63 when you save.
 deck-config-rwkv-model-explanation = New - Smaller Model (SM63, cool-down from epoch 25) is the default. Saved Legacy choices and the show-time retrain of the release (SM92) are preserved; older small models switch to the small model, leak-free, cool-down from epoch 25 (SM63) on Save.
 # Preserve the links and URL variables.
 deck-config-rwkv-model-results = Results: <a href="{ $factory }">Model Factory results</a> · <a href="{ $backup }">Matched backup comparison</a>
