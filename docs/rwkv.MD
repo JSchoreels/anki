@@ -70,8 +70,8 @@ local profile. The original Legacy big model (2,762,884 parameters) and the
 leak-free (SM72, cool-down from epoch 15, from epoch 20 and from epoch 25) and the
 show-time retrain of the release (SM92) are bundled. Only the selected model and its state are loaded.
 
-The switch is on by default and selects **New - Smaller Model**, the show-time
-retrain of the release (SM92, profile key `sm92`), when on and
+The switch is on by default and selects **New - Smaller Model**, the small model,
+leak-free, cool-down from epoch 25 (SM63, profile key `sm72e25`), when on and
 **Legacy - Bigger Model** when off. An explicitly saved Legacy selection loads
 with the switch off. SM40, SM36, SM55, SM56 and the three SM72 cool-downs are no
 longer offered in the UI.
@@ -82,11 +82,11 @@ and the matched five-model backup comparison in the SM56 report, which uses f32 
 INT4-card/INT8-note storage.
 
 The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm72e25` and `sm92` as
-supported values. Missing or unsupported values resolve to `sm92` in existing and new profiles.
+supported values. Missing or unsupported values resolve to `sm72e25` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20` and `sm72e25` choices switch to `sm92`; `legacy`
-and `sm92` are preserved. The older models remain supported by the runtime. Profile
-creation explicitly stores `sm92`. Neither model choice nor state precision is synced.
+Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` choices switch to `sm72e25`; `legacy`,
+`sm72e25` and `sm92` are preserved. The older models remain supported by the runtime. Profile
+creation explicitly stores `sm72e25`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
 changes; closing and discarding leaves both profile keys unchanged.
@@ -145,10 +145,12 @@ four-rating classifier.
 
 ### Show-Time Retrain of the Release (SM92)
 
-The show-time retrain of the release (SM92, key `sm92`) is the default small
-model. It has the same architecture, size and leak-free input rule as the small
-model, leak-free, cool-down from epoch 25 (SM72, key `sm72e25`, below), which
-stays bundled and selectable by a saved choice; only the weights differ.
+The show-time retrain of the release (SM92, key `sm92`) is an option, not the
+default: the default is the small model, leak-free, cool-down from epoch 25 (SM63, key
+`sm72e25`, below). SM92 is bundled and stays selectable by a saved choice. It has the
+same architecture, size and leak-free input rule; only the weights differ.
+
+**Why it is not the default.** SM92 was trained on show-time intervals, which only pays off once Anki schedules by querying the model at show time (retrievability below the desired retention); until then the normal-input model is better: on normal inputs the small model, leak-free, cool-down from epoch 25 (SM63) scores 0.30003 Curve / 0.27654 Instant against 0.30024 / 0.27676 for the show-time retrain of the release (SM92), on 722 users.
 
 **What changed.** The review log's interval for a review runs from the card's
 previous answer to this answer, so it includes the time spent answering. Anki
@@ -205,7 +207,7 @@ The bundled vectors `rslib/src/rwkv/testdata/sm92-vectors.json.gz` and
 ### Small Model, Leak-Free (SM72)
 
 The small model, leak-free, cool-down from epoch 25 (SM72, key `sm72e25`) was the
-default small model until SM92; it and the earlier cool-downs from epoch 15 (key `sm72`) and from
+default small model again (it was replaced by SM92 on 2026-11-04 and restored on 2026-11-05); it and the earlier cool-downs from epoch 15 (key `sm72`) and from
 epoch 20 (key `sm72e20`) stay bundled and selectable by a saved choice. All three have the same
 architecture and size as SM56 (331,511 parameters, 8.3× fewer than the big
 model), but every input it was trained and scored on was built **leak-free**:

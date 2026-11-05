@@ -451,13 +451,16 @@ runtime. The repository does not define one fixed rebuild time for all users.
 ### Which model does the fork use, and what does leak-free mean?
 
 By default, **Use Smaller Model** (Deck Options → RWKV → Advanced) selects the
-show-time retrain of the release (SM92): 331,511 parameters, 8.3× fewer than the big
+small model, leak-free, cool-down from epoch 25 (SM63): 331,511 parameters, 8.3× fewer than the big
 Legacy model, and about 4.6 KB of state per card and note instead of 25.7 KB.
 Turning the switch off selects the big Legacy model, which keeps working as
-before. SM92 is the small model, leak-free, cool-down from epoch 25 (SM72)
-retrained so that the time since a card's last review is measured the way Anki
-measures it: up to the moment the card is shown, not up to the moment it is
-answered. SM72 stays bundled.
+before. The show-time retrain of the release (SM92) is an option: it is that same
+model retrained so that the time since a card's last review is measured the way Anki
+measures it, up to the moment the card is shown, not up to the moment it is
+answered. It only pays off once Anki schedules by querying the model at show time
+(retrievability below the desired retention). Until then the normal-input model
+is better: on normal inputs SM63 scores 0.30003 Curve / 0.27654 Instant against
+0.30024 / 0.27676 for SM92 (722 users). SM92 stays bundled and selectable.
 
 In the public training data, a card that was deleted before the export is
 missing from the cards table. A naive feature builder then marks its note,
