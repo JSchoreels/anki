@@ -66,6 +66,10 @@ use crate::storage::RWKV_HISTORY_RESET_AFTER_SQL;
 #[path = "offline_review_kind_tests.rs"]
 mod review_kind_tests;
 
+#[cfg(test)]
+#[path = "offline_grade_curve_tests.rs"]
+mod grade_curve_tests;
+
 /// The desktop always loads the model with these (they only affect interval
 /// outputs, which Instant does not use).
 const MODEL_TARGET_RETENTION: f32 = 0.9;
@@ -208,10 +212,9 @@ pub(crate) struct RwkvOfflineRuntime {
     saved_review_count: Option<u64>,
     /// The state file being written ([Self::save_state]).
     saving: Option<std::thread::JoinHandle<()>>,
-    /// The S90s of the RWKV-Curve answers last given to each card
-    /// ([Collection::rwkv_offline_curve]), for its answer: a queue fetch
-    /// gives the buttons of more than the card answered next.
-    curve_s90: HashMap<CardId, [Option<f32>; 4]>,
+    /// Curve predictions for cards whose answer buttons have been prepared.
+    /// A queue fetch can prepare more than the card answered next.
+    curve_predictions: HashMap<CardId, CurvePrediction>,
     /// Once asked for ([Collection::rwkv_offline_calibration]); kept up to
     /// date by every later replay and saved with the state.
     calibration: Option<Calibration>,
@@ -268,6 +271,18 @@ struct ScopeScores {
     force_refresh: bool,
 }
 
+struct CurvePrediction {
+    s90s: [Option<f32>; 4],
+    grade_targets: Option<CurveGradeTargets>,
+}
+
+struct CurveGradeTargets {
+    current: CardState,
+    next: [CardState; 4],
+    targets: [Option<f32>; 4],
+    requested_override: Option<f32>,
+}
+
 #[cfg(test)]
 #[path = "offline_preview_s90_tests.rs"]
 mod preview_s90_tests;
@@ -303,7 +318,7 @@ impl RwkvOfflineRuntime {
             scopes: HashMap::new(),
             saved_review_count: None,
             saving: None,
-            curve_s90: HashMap::new(),
+            curve_predictions: HashMap::new(),
             calibration: None,
         })
     }
@@ -712,7 +727,7 @@ impl Collection {
     pub(crate) fn invalidate_rwkv_offline_targets(&mut self) {
         if let Some(runtime) = self.state.rwkv_offline.as_mut() {
             runtime.scopes.clear();
-            runtime.curve_s90.clear();
+            runtime.curve_predictions.clear();
         }
         self.state.rwkv_retrievability_scores = None;
         self.state.rwkv_count_cards.clear();
@@ -1341,6 +1356,7 @@ impl Collection {
         enforce_grade_order: bool,
         timing: &SchedTimingToday,
     ) -> Option<[Option<f32>; 4]> {
+        self.rwkv_offline_forget_curve(card_id);
         if !self.rwkv_offline_enabled() {
             return None;
         }
@@ -1403,10 +1419,17 @@ impl Collection {
             if let Some(input) = debug {
                 eprintln!("CURVEDEBUG {input} intervals {intervals:?} s90s {s90s:?}");
             }
-            if runtime.curve_s90.len() >= 64 {
-                runtime.curve_s90.clear(); // only the cards on screen matter
+            if runtime.curve_predictions.len() >= 64 {
+                // Only the cards on screen matter.
+                runtime.curve_predictions.clear();
             }
-            runtime.curve_s90.insert(card_id, s90s);
+            runtime.curve_predictions.insert(
+                card_id,
+                CurvePrediction {
+                    s90s,
+                    grade_targets: None,
+                },
+            );
             curve = Some(intervals);
             Ok(())
         });
@@ -1420,7 +1443,61 @@ impl Collection {
         card_id: CardId,
         rating_index: usize,
     ) -> Option<f32> {
-        self.state.rwkv_offline.as_ref()?.curve_s90.get(&card_id)?[rating_index]
+        self.state
+            .rwkv_offline
+            .as_ref()?
+            .curve_predictions
+            .get(&card_id)?
+            .s90s[rating_index]
+    }
+
+    pub(crate) fn rwkv_offline_forget_curve(&mut self, card_id: CardId) {
+        if let Some(runtime) = self.state.rwkv_offline.as_mut() {
+            runtime.curve_predictions.remove(&card_id);
+        }
+    }
+
+    /// Remember exactly which prepared answer states used add-on grade targets.
+    pub(crate) fn rwkv_offline_record_curve_grade_targets(
+        &mut self,
+        card_id: CardId,
+        current: CardState,
+        next: [CardState; 4],
+        targets: [Option<f32>; 4],
+        requested_override: Option<f32>,
+    ) {
+        if let Some(prediction) = self
+            .state
+            .rwkv_offline
+            .as_mut()
+            .and_then(|runtime| runtime.curve_predictions.get_mut(&card_id))
+        {
+            prediction.grade_targets = Some(CurveGradeTargets {
+                current,
+                next,
+                targets,
+                requested_override,
+            });
+        }
+    }
+
+    pub(crate) fn rwkv_offline_curve_grade_target(
+        &self,
+        answer: &CardAnswer,
+        index: usize,
+    ) -> Option<f32> {
+        let prediction = self
+            .state
+            .rwkv_offline
+            .as_ref()?
+            .curve_predictions
+            .get(&answer.card_id)?;
+        let grades = prediction.grade_targets.as_ref()?;
+        (grades.current == answer.current_state
+            && grades.next[index] == answer.new_state
+            && grades.requested_override == answer.desired_retention_override)
+            .then_some(grades.targets[index])
+            .flatten()
     }
 
     /// "Reschedule Cards with RWKV-Curve Intervals" without the desktop's
@@ -1582,7 +1659,7 @@ impl Collection {
                 .is_some()
         {
             runtime.scopes.clear();
-            runtime.curve_s90.clear();
+            runtime.curve_predictions.clear();
             self.state.rwkv_retrievability_scores = None;
             self.state.addon_retention_populations.clear();
             self.state.card_queues = None;

@@ -36,6 +36,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 ### User facing changes
 
+- **Use grade retention rules with RWKV-Curve on Kuma.** Answer-button grade rules now set Curve's targets, keeping its calculated intervals and recorded retention consistent with desktop.
+
 - **Remove the one-minute RWKV-Curve fallback.** When predicted recall is already at or below the target at one second, Curve now returns a one-second interval and S90 instead of one minute. This also prevents an immediately due answer from appearing later than another sub-minute answer. Configured minimum intervals and learning/relearning steps still apply.
 
 - **Simpler RWKV Deck Options.** A collapsed Advanced section now groups the “Use Smaller Model” switch, approximate queue updates, queue refresh frequency and comparison controls. The switch is on by default for SM56; turning it off selects Legacy. Its help entry explains both models and links to the Model Factory results and matched backup comparison, replacing the separate model-name line. Instant descriptions use tighter spacing, the minimum-reviews row aligns with the other controls, and the sorting recommendation line is removed. Storage precision is hidden and preserved. Previously saved SM40, SM36 or SM55 choices become SM56 after a successful Deck Options save; discarding leaves them unchanged.
@@ -86,6 +88,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 - **Updated security dependencies.** This build includes patched HTML sanitization, asynchronous I/O, TLS and ZIP libraries, addressing newly reported CSS URL filtering, Unix file-descriptor handling, TLS handling, distrusted certificate authorities and archive extraction issues.
 
 ### Technical details
+
+- **Kuma Curve grade targets:** Resolve synced add-on grade targets before querying Curve, preserve interval bounds, and record the final target only when the answered state matches the prepared prediction. Incomplete predictions fall back to the existing FSRS grade-rule path.
 
 - **Tokio security update:** raise the workspace minimum and lock Tokio from 1.52.1 to 1.53.3, addressing [RUSTSEC-2026-0386](https://github.com/RustSec/advisory-db/blob/main/crates/tokio/RUSTSEC-2026-0386.md). The Linux release CI detected the unsafe file-descriptor constructor advisory during `cargo deny check`; retain the audit policy and all existing checks.
 

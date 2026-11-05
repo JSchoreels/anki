@@ -408,6 +408,7 @@ impl Collection {
         card: Card,
         desired_retention_override: Option<f32>,
     ) -> Result<(SchedulingStates, Card)> {
+        self.rwkv_offline_forget_curve(card.id);
         let (addon_rules, addon_match) = self.addon_retention_for_card(&card)?;
         let base_override = desired_retention_override.or(addon_match.map(|value| value.retention));
         let note_id = card.note_id;
@@ -417,10 +418,20 @@ impl Collection {
         // desktop's Python: the offline runtime gives the intervals its
         // reviewer hands to `scheduling_states_with_intervals`. None (FSRS's
         // intervals) when there is no offline runtime, e.g. on the desktop.
+        let mut grade_targets = [None; 4];
         let curve = if ctx.config.inner.rwkv_review_enabled && ctx.fsrs_next_states.is_some() {
-            let targets = ctx
-                .dynamic_desired_retentions
-                .unwrap_or([ctx.desired_retention.unwrap_or(0.9); 4]);
+            let base = ctx.desired_retention.unwrap_or(0.9);
+            let mut targets = ctx.dynamic_desired_retentions.unwrap_or([base; 4]);
+            if let Some(rules) = addon_rules.as_ref() {
+                for (index, target) in targets.iter_mut().enumerate() {
+                    if rules.has_grade_rule(index) {
+                        if let Some(grade_target) = rules.target_for_grade(Some(base), index) {
+                            *target = grade_target;
+                            grade_targets[index] = Some(grade_target);
+                        }
+                    }
+                }
+            }
             self.rwkv_offline_curve(
                 ctx.card.id,
                 &current,
@@ -428,9 +439,17 @@ impl Collection {
                 ctx.config.inner.rwkv_review_enforce_grade_order,
                 &ctx.timing,
             )
+            .filter(|intervals| {
+                intervals
+                    .iter()
+                    .all(|interval| interval.is_some_and(|days| days.is_finite() && days > 0.0))
+            })
         } else {
             None
         };
+        if curve.is_none() {
+            self.rwkv_offline_forget_curve(ctx.card.id);
+        }
 
         let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
 
@@ -449,7 +468,23 @@ impl Collection {
                 rules,
                 addon_match,
                 base_override,
+                curve.is_some(),
             )?;
+        }
+        if curve.is_some() && grade_targets.iter().any(Option::is_some) {
+            let next = [states.again, states.hard, states.good, states.easy];
+            for (target, mut state) in grade_targets.iter_mut().zip(next) {
+                if addon_review_state_mut(&mut state).is_none() {
+                    *target = None;
+                }
+            }
+            self.rwkv_offline_record_curve_grade_targets(
+                ctx.card.id,
+                states.current,
+                next,
+                grade_targets,
+                desired_retention_override,
+            );
         }
         Ok((states, ctx.into_card()))
     }
@@ -475,8 +510,9 @@ impl Collection {
         rules: &AddonRetentionRules,
         matched: Option<RetentionMatch>,
         base: Option<f32>,
+        curve_uses_grade_targets: bool,
     ) -> Result<()> {
-        if rules.has_grade_rules() {
+        if rules.has_grade_rules() && !curve_uses_grade_targets {
             for (index, state) in [
                 &mut states.again,
                 &mut states.hard,
@@ -579,6 +615,7 @@ impl Collection {
                 rules,
                 addon_match,
                 base_override,
+                false,
             )?;
         }
         Ok(states)
@@ -628,6 +665,7 @@ impl Collection {
     /// Provided [CardAnswer] has its answer time capped to deck preset.
     pub fn answer_card(&mut self, answer: &mut CardAnswer) -> Result<OpOutput<()>> {
         let output = self.transact(Op::AnswerCard, |col| col.answer_card_inner(answer))?;
+        self.rwkv_offline_forget_curve(answer.card_id);
         self.rwkv_offline_record_answer_kind(answer, output.output.0, output.output.1);
         Ok(output.map(|_| ()))
     }
@@ -643,9 +681,15 @@ impl Collection {
         let original = card.clone();
         let usn = self.usn()?;
 
+        let curve_grade_target = (!answer.desired_retention_override_is_final)
+            .then(|| self.rwkv_offline_curve_grade_target(answer, answer.rating.index()))
+            .flatten();
         let (rules, matched) = self.addon_retention_for_card(&card)?;
         let mut addon_grade_target = None;
-        if let Some(rules) = rules.filter(|_| !answer.desired_retention_override_is_final) {
+        if let Some(target) = curve_grade_target {
+            answer.desired_retention_override = Some(target);
+            answer.desired_retention_override_is_final = true;
+        } else if let Some(rules) = rules.filter(|_| !answer.desired_retention_override_is_final) {
             let base = answer
                 .desired_retention_override
                 .or(matched.map(|value| value.retention));
