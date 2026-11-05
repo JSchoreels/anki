@@ -383,3 +383,53 @@ fn offline_deck_counts_rescore_cards_outside_the_approximate_batch() -> Result<(
     })));
     Ok(())
 }
+
+#[test]
+fn full_queue_refresh_uses_current_elapsed_time_without_sync() -> Result<()> {
+    let (_dir, mut col) = offline_review_collection(
+        "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
+        1,
+        false,
+        1,
+        0,
+        false,
+    )?;
+    let mut card = col.get_first_card();
+    card.last_review_time = Some(TimestampSecs::now().adding_secs(-60));
+    let card_id = card.id;
+    col.update_cards_maybe_undoable(vec![card], true)?;
+    let deck = col.storage.get_deck(DeckId(1))?.unwrap();
+    let mut runtime = col.state.rwkv_offline.take().unwrap();
+    col.rwkv_offline_sync_history(&mut runtime)?;
+
+    let rows = |col: &mut Collection| {
+        col.rwkv_review_input_rows_for_deck_review_queue(
+            RwkvReviewInputRowsForDeckReviewQueueRequest {
+                deck_id: deck.id.0,
+                ..Default::default()
+            },
+        )
+        .map(|response| response.rows)
+    };
+    let first_rows = rows(&mut col)?;
+    let first_elapsed = first_rows[0].current_elapsed_seconds.unwrap();
+    let first = col.rwkv_offline_scope_scores(&mut runtime, &deck, 30, true)?;
+    assert_eq!(first[0].card_id, card_id);
+
+    // Wait for the system clock to advance without changing the collection.
+    let start_second = TimestampSecs::now().0;
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while TimestampSecs::now().0 < start_second + 2 {
+        assert!(Instant::now() < deadline, "clock did not advance");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let later_rows = rows(&mut col)?;
+    assert!(later_rows[0].current_elapsed_seconds.unwrap() > first_elapsed);
+    runtime.scopes.get_mut(&deck.id).unwrap().force_refresh = true;
+    let later = col.rwkv_offline_scope_scores(&mut runtime, &deck, 30, true)?;
+    let expected = score_rows(&mut runtime, &later_rows)?;
+    assert_eq!(later[0].card_id, card_id);
+    assert_ne!(later[0].retrievability, first[0].retrievability);
+    assert!((later[0].retrievability - expected[0].retrievability).abs() < 0.000_01);
+    Ok(())
+}
