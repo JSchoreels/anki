@@ -38,6 +38,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 
 - **Remove the one-minute RWKV-Curve fallback.** When predicted recall is already at or below the target at one second, Curve now returns a one-second interval and S90 instead of one minute. This also prevents an immediately due answer from appearing later than another sub-minute answer. Configured minimum intervals and learning/relearning steps still apply.
 
+- **Update Markdown and compression dependencies.** Kuma includes the desktop fork's patched parser and Zstandard components.
+
 - **Simpler RWKV Deck Options.** A collapsed Advanced section now groups the “Use Smaller Model” switch, approximate queue updates, queue refresh frequency and comparison controls. The switch is on by default for SM56; turning it off selects Legacy. Its help entry explains both models and links to the Model Factory results and matched backup comparison, replacing the separate model-name line. Instant descriptions use tighter spacing, the minimum-reviews row aligns with the other controls, and the sorting recommendation line is removed. Storage precision is hidden and preserved. Previously saved SM40, SM36 or SM55 choices become SM56 after a successful Deck Options save; discarding leaves them unchanged.
 
 - **SM56 is the default small RWKV model.** On the upstream matched 723-user comparison, it lowers Curve / Instant LogLoss by 0.148% / 0.061% relative to SM55, bringing it within 0.34% / 0.47% of the big model. Turn on “Use Smaller Model” in Deck Options → RWKV → Advanced, save and reopen the profile to use SM56. Storage precision stays unchanged.
@@ -88,6 +90,8 @@ Changes since the last normal release, [build 102](https://github.com/JSchoreels
 ### Technical details
 
 - **Tokio security update:** raise the workspace minimum and lock Tokio from 1.52.1 to 1.53.3, addressing [RUSTSEC-2026-0386](https://github.com/RustSec/advisory-db/blob/main/crates/tokio/RUSTSEC-2026-0386.md). The Linux release CI detected the unsafe file-descriptor constructor advisory during `cargo deny check`; retain the audit policy and all existing checks.
+
+- **Dependency security updates:** Update `pulldown-cmark` from 0.13.3 to 0.13.6 for [RUSTSEC-2026-0414](https://rustsec.org/advisories/RUSTSEC-2026-0414) and [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433). Update `zstd` to 0.14.3, `zstd-safe` to 8.2.0, `zstd-sys` to 2.1.2, and the associated async compression crates for [RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391), [RUSTSEC-2026-0398](https://rustsec.org/advisories/RUSTSEC-2026-0398), [RUSTSEC-2026-0403](https://rustsec.org/advisories/RUSTSEC-2026-0403), and [RUSTSEC-2026-0410](https://rustsec.org/advisories/RUSTSEC-2026-0410). Applicability depends on the affected features and code paths.
 
 - **RWKV settings layout:** reuse the existing profile settings save contract and preset queue fields, with no new schema or precision changes. Ordinary save requests translate SM40/SM36/SM55 to SM56 without mutating pending state; parameter-only optimization is excluded, and the desktop still persists choices only after successful configuration saves. Runtime support for older models remains available.
 

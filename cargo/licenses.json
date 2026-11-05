@@ -3778,7 +3778,7 @@
   {
     "authors": "Alexandre Bury <alexandre.bury@gmail.com>",
     "description": "Binding for the zstd compression library.",
-    "license": "MIT",
+    "license": "BSD-3-Clause",
     "license_file": null,
     "name": "zstd",
     "repository": "https://github.com/gyscos/zstd-rs"
@@ -3786,7 +3786,7 @@
   {
     "authors": "Alexandre Bury <alexandre.bury@gmail.com>",
     "description": "Safe low-level bindings for the zstd compression library.",
-    "license": "Apache-2.0 OR MIT",
+    "license": "BSD-3-Clause",
     "license_file": null,
     "name": "zstd-safe",
     "repository": "https://github.com/gyscos/zstd-rs"
@@ -3794,7 +3794,7 @@
   {
     "authors": "Alexandre Bury <alexandre.bury@gmail.com>",
     "description": "Low-level bindings for the zstd compression library.",
-    "license": "Apache-2.0 OR MIT",
+    "license": "BSD-3-Clause",
     "license_file": null,
     "name": "zstd-sys",
     "repository": "https://github.com/gyscos/zstd-rs"
