@@ -45,6 +45,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Clearer prediction model descriptions.** Deck Options now explains the smaller model and updates to older models in plain language.
+
 - **Security fixes from Anki 26.09.4.** Fix two shared-deck code-execution vulnerabilities, one involving embedded editor content and one in macOS **Show in Folder**. This update also removes trust in compromised eMudhra certificates from the updated bundled dependencies; keep your operating system up to date as well.
 
 - **Faster FSRS-7 optimization and evaluation, with lower memory use.** On a copied deck with 188,183 rated reviews, optimizing without the optional health check or Dynamic DR fell from 1.57 s to 0.36 s and peak process memory from 259 MiB to 165 MiB. Evaluating current parameters fell from 0.77 s to 0.18 s. Optimized parameters and evaluation results matched the previous implementation.
