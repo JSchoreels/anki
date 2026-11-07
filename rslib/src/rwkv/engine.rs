@@ -10149,6 +10149,8 @@ order by e.id, e.cid
         let review_limit = scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_REVIEW_LIMIT", 9_999);
         let state_update_interval =
             scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_STATE_UPDATE_INTERVAL", 1) as u32;
+        let single_step_answers =
+            scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_SINGLE_STEP", 0) == 1;
 
         let reviews =
             collection_reviews_for_scan_bench(std::path::Path::new(&collection_path), 0, None)
@@ -10228,6 +10230,7 @@ order by e.id, e.cid
                     review_order: ReviewCardOrder::Day,
                     suspend_after_lapses: None,
                     state_update_interval,
+                    single_step_answers,
                     review_model: RwkvWorkloadReviewModel {
                         grade_seconds: [12.0, 9.0, 7.0, 5.0],
                         bucket_probabilities: vec![],
@@ -10239,7 +10242,7 @@ order by e.id, e.cid
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         let total_done = output.days.iter().map(|day| day.done.mean).sum::<f32>();
         println!(
-            "days={days} paths={paths} state_update_interval={state_update_interval} forecast_ms={elapsed_ms:.1} mean_reviews={total_done:.1} reviews_per_s={:.0}",
+            "days={days} paths={paths} state_update_interval={state_update_interval} single_step={single_step_answers} forecast_ms={elapsed_ms:.1} mean_reviews={total_done:.1} reviews_per_s={:.0}",
             total_done as f64 * paths as f64 / (elapsed_ms / 1000.0)
         );
         for day in output.days.iter().take(days as usize) {

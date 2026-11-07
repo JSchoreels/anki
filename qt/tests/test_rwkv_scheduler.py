@@ -26373,6 +26373,7 @@ def test_rwkv_workload_forecast_builds_cards_and_returns_plain_bands(
     assert call["groups"] == [(100, 50, 4, 5, 0), (200, 30, 0, 0, 0)]
     assert call["new_cards_ignore_review_limit"] is True
     assert call["days"] == 2 and call["paths"] == 2 and call["seed"] == 5
+    assert call["single_step_answers"] is False
     assert result["cards"] == 3
     assert result["cards_by_scheduler"] == {"rwkv": 2, "fsrs": 1}
     assert result["estimated_fsrs_states"] == 1

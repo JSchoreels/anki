@@ -238,6 +238,10 @@ pub struct RwkvWorkloadForecastConfig {
     pub review_order: ReviewCardOrder,
     pub suspend_after_lapses: Option<u32>,
     pub state_update_interval: u32,
+    /// Approximate mode (with `state_update_interval` 1): RWKV intervals come
+    /// from the selected grade's curve alone, without running the other three
+    /// grades for the grade-order check (one answer step instead of four).
+    pub single_step_answers: bool,
     pub review_model: RwkvWorkloadReviewModel,
 }
 

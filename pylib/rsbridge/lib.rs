@@ -970,6 +970,7 @@ impl RwkvInference {
         review_order: i32,
         suspend_after_lapses: Option<u32>,
         state_update_interval: u32,
+        single_step_answers: bool,
         grade_seconds: &Bound<'_, PyAny>,
         bucket_probabilities: &Bound<'_, PyAny>,
         progress: Option<&Bound<'_, PyAny>>,
@@ -1026,6 +1027,7 @@ impl RwkvInference {
                 .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
             suspend_after_lapses,
             state_update_interval,
+            single_step_answers,
             review_model: rwkv::RwkvWorkloadReviewModel {
                 grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
                 bucket_probabilities: parse_rwkv_workload_bucket_probabilities(

@@ -1449,7 +1449,7 @@ paths (linear interpolation between sorted values).
   graph then. Check `hasattr(aqt.rwkv_scheduler, "forecast_rwkv_workload")`
   first for older builds.
 - `forecast_rwkv_workload(*, mw=None, search="", days=30, paths=200, seed=0,
-  state_update_interval=1, max_interval=36500, progress=None,
+  state_update_interval=1, fast=False, max_interval=36500, progress=None,
   cancel_event=None) -> dict`: blocking; run it off the UI thread. `search` is
   an Anki search (`""` = whole collection; SSE can pass `cid:1,2,3`). `days`
   1..365, `paths` 1..2000. `progress(current_path, total_paths)` is called as
@@ -1470,6 +1470,7 @@ paths (linear interpolation between sorted values).
   "version": 1, "days": 30, "paths": 200, "seed": 0, "cards": 31537,
   "cards_by_scheduler": {"rwkv": 30000, "fsrs": 1537},
   "estimated_fsrs_states": 12, "elapsed_ms": 9000.0, "state_update_interval": 1,
+  "fast": false,
   "daily": [
     {"day": 0,
      "due": {"mean": 0, "p1": 0, "p5": 0, "p50": 0, "p95": 0, "p99": 0},
