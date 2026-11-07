@@ -39,6 +39,8 @@ use crate::scheduler::states::StateContext;
 
 const DAY_MILLIS: i64 = 86_400_000;
 const SESSION_BREAK_MILLIS: u32 = 30 * 60 * 1000;
+const DECODED_BASE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+const DECODED_PATH_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 
 struct InstantCard {
     input: RwkvInstantForecastCard,
@@ -428,17 +430,24 @@ impl RwkvInference {
         group_ids.sort_unstable();
         group_ids.dedup();
         progress(0, config.paths)?;
-        let state_len = self
-            .warm_up_states
-            .state_len_for(&StreamIds::for_workload_inputs(
-                &inputs
-                    .iter()
-                    .map(|card| card.input.clone())
-                    .collect::<Vec<_>>(),
-            ));
-        let concurrent = (WORKLOAD_TARGET_STATE_BUDGET_BYTES / state_len.max(1))
-            .clamp(1, rayon::current_num_threads())
-            .min(config.paths as usize);
+        let ids = StreamIds::for_workload_inputs(
+            &inputs
+                .iter()
+                .map(|card| card.input.clone())
+                .collect::<Vec<_>>(),
+        );
+        let state_len = self.warm_up_states.state_len_for(&ids);
+        let decoded =
+            ForecastDecodedStates::new(&self.warm_up_states, &ids, DECODED_BASE_BUDGET_BYTES)?;
+        let decoded_path_budget = if decoded.bytes == 0 {
+            0
+        } else {
+            DECODED_PATH_BUDGET_BYTES
+        };
+        let concurrent = (WORKLOAD_TARGET_STATE_BUDGET_BYTES.saturating_sub(decoded.bytes)
+            / state_len.saturating_add(decoded_path_budget).max(1))
+        .clamp(1, rayon::current_num_threads())
+        .min(config.paths as usize);
         enum Message {
             Heartbeat,
             Finished(u32, io::Result<(ForecastPath, u32)>),
@@ -449,8 +458,8 @@ impl RwkvInference {
         let mut results = (0..config.paths).map(|_| None).collect::<Vec<_>>();
         let mut estimated = 0;
         std::thread::scope(|scope| {
-            let (next_path, stopped, inputs, group_ids, config) =
-                (&next_path, &stopped, &inputs, &group_ids, &config);
+            let (next_path, stopped, inputs, group_ids, config, decoded) =
+                (&next_path, &stopped, &inputs, &group_ids, &config, &decoded);
             scope.spawn(move || {
                 rayon::scope(|workers| {
                     for _ in 0..concurrent {
@@ -477,9 +486,14 @@ impl RwkvInference {
                                         )
                                     })
                                 };
+                                let states = SimulationStates::with_forecast_cache(
+                                    &self.warm_up_states,
+                                    decoded,
+                                    decoded_path_budget,
+                                );
                                 let result = worker.instant_forecast_path(
                                     inputs,
-                                    &self.warm_up_states,
+                                    states,
                                     group_ids,
                                     config,
                                     config.seed.wrapping_add(path),
@@ -526,13 +540,12 @@ impl RwkvInference {
     fn instant_forecast_path(
         &mut self,
         inputs: &[RwkvInstantForecastCard],
-        base: &ReviewStateMaps,
+        mut states: SimulationStates<'_>,
         group_ids: &[i64],
         config: &RwkvInstantForecastConfig,
         seed: u32,
         check_cancel: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(ForecastPath, u32)> {
-        let mut states = SimulationStates::new(base);
         let mut decks = config.decks.clone();
         let deck_configs = config
             .deck_configs
@@ -621,6 +634,10 @@ impl RwkvInference {
             let mut answers_today = 0u32;
             let mut new_answered = 0usize;
             let mut main_answered = 0usize;
+            // Except when gathering by retrievability, new-card ordering only
+            // depends on the day, seed and immutable card metadata. Answering
+            // a new card removes it from this order; it never becomes new again.
+            let mut new_order: Option<Vec<usize>> = None;
             while millis < day_start + DAY_MILLIS {
                 if sample % 128 == 0 {
                     check_cancel()?;
@@ -725,59 +742,72 @@ impl RwkvInference {
                     .filter(|(_, card)| card.input.queue == 2)
                     .map(|(index, _)| index)
                     .collect::<Vec<_>>();
-                let mut new = cards
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, card)| card.input.queue == 0)
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>();
+                let mut new = if let Some(order) = &new_order {
+                    order
+                        .iter()
+                        .copied()
+                        .filter(|&index| cards[index].input.queue == 0)
+                        .collect::<Vec<_>>()
+                } else {
+                    cards
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, card)| card.input.queue == 0)
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>()
+                };
                 let gather = study_preset.inner.new_card_gather_priority();
-                new.sort_by(|&a, &b| {
-                    let a = &cards[a];
-                    let b = &cards[b];
-                    let position = || a.input.new_position.cmp(&b.input.new_position);
-                    let deck = || {
-                        deck_order
-                            .get(&a.input.group)
-                            .cmp(&deck_order.get(&b.input.group))
-                    };
-                    let random = |card: &InstantCard, note: bool| {
-                        let input = &card.input.input.review_input;
-                        let id = if note {
-                            input.note_id.unwrap_or(input.card_id)
-                        } else {
-                            input.card_id
+                if new_order.is_none() {
+                    new.sort_by(|&a, &b| {
+                        let a = &cards[a];
+                        let b = &cards[b];
+                        let position = || a.input.new_position.cmp(&b.input.new_position);
+                        let deck = || {
+                            deck_order
+                                .get(&a.input.group)
+                                .cmp(&deck_order.get(&b.input.group))
                         };
-                        simulation_unit_hash(id, day as i64, i64::from(seed))
-                    };
-                    let order = match gather {
-                        NewCardGatherPriority::Deck => deck().then_with(position),
-                        NewCardGatherPriority::DeckThenRandomNotes => {
-                            deck().then_with(|| random(a, true).total_cmp(&random(b, true)))
-                        }
-                        NewCardGatherPriority::LowestPosition => position(),
-                        NewCardGatherPriority::HighestPosition => position().reverse(),
-                        NewCardGatherPriority::RandomNotes => {
-                            random(a, true).total_cmp(&random(b, true))
-                        }
-                        NewCardGatherPriority::RandomCards => {
-                            random(a, false).total_cmp(&random(b, false))
-                        }
-                        NewCardGatherPriority::AscendingRetrievability => {
-                            a.score.total_cmp(&b.score).then_with(position)
-                        }
-                        NewCardGatherPriority::DescendingRetrievability => {
-                            b.score.total_cmp(&a.score).then_with(position)
-                        }
-                    };
-                    order.then_with(|| {
-                        a.input
-                            .input
-                            .review_input
-                            .card_id
-                            .cmp(&b.input.input.review_input.card_id)
-                    })
-                });
+                        let random = |card: &InstantCard, note: bool| {
+                            let input = &card.input.input.review_input;
+                            let id = if note {
+                                input.note_id.unwrap_or(input.card_id)
+                            } else {
+                                input.card_id
+                            };
+                            simulation_unit_hash(id, day as i64, i64::from(seed))
+                        };
+                        let order = match gather {
+                            NewCardGatherPriority::Deck => deck().then_with(position),
+                            NewCardGatherPriority::DeckThenRandomNotes => {
+                                deck().then_with(|| random(a, true).total_cmp(&random(b, true)))
+                            }
+                            NewCardGatherPriority::LowestPosition => position(),
+                            NewCardGatherPriority::HighestPosition => position().reverse(),
+                            NewCardGatherPriority::RandomNotes => {
+                                random(a, true).total_cmp(&random(b, true))
+                            }
+                            NewCardGatherPriority::RandomCards => {
+                                random(a, false).total_cmp(&random(b, false))
+                            }
+                            NewCardGatherPriority::AscendingRetrievability => {
+                                a.score.total_cmp(&b.score).then_with(position)
+                            }
+                            NewCardGatherPriority::DescendingRetrievability => {
+                                b.score.total_cmp(&a.score).then_with(position)
+                            }
+                        };
+                        order.then_with(|| {
+                            a.input
+                                .input
+                                .review_input
+                                .card_id
+                                .cmp(&b.input.input.review_input.card_id)
+                        })
+                    });
+                    if !score_new {
+                        new_order = Some(new.clone());
+                    }
+                }
                 let (learning_queue, review_queue, new_queue) = instant_study_candidates(
                     &reviews
                         .iter()

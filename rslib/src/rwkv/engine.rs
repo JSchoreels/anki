@@ -2501,8 +2501,7 @@ insert into segments (
     ) -> io::Result<()> {
         let heads = self.review_heads_for_state(input, states.state_ref(input))?;
         self.features.store_review(input);
-        states.store(input, heads.next_state);
-        Ok(())
+        states.store(input, heads.next_state)
     }
 
     fn simulation_memorized_for_inputs(
@@ -5022,11 +5021,76 @@ impl StreamIds {
     }
 }
 
+/// Decoded copies of the compressed resident streams most often queried by an
+/// Instant forecast. They are immutable and shared by all simulated paths.
+#[derive(Default)]
+struct ForecastDecodedStates {
+    card: HashMap<i64, ModuleState>,
+    note: HashMap<i64, ModuleState>,
+    bytes: usize,
+}
+
+impl ForecastDecodedStates {
+    fn new(base: &ReviewStateMaps, ids: &StreamIds, budget: usize) -> io::Result<Self> {
+        fn add(
+            source: &HashMap<i64, ModuleState>,
+            ids: &HashSet<i64>,
+            target: &mut HashMap<i64, ModuleState>,
+            bytes: &mut usize,
+            budget: usize,
+        ) -> io::Result<()> {
+            for id in ids {
+                if *bytes >= budget {
+                    break;
+                }
+                let Some(state) = source.get(id).filter(|state| state.packed.is_some()) else {
+                    continue;
+                };
+                let decoded = state.try_decoded()?.into_owned();
+                let size = forecast_decoded_state_size(&decoded);
+                if size <= budget.saturating_sub(*bytes) {
+                    target.insert(*id, decoded);
+                    *bytes += size;
+                }
+            }
+            Ok(())
+        }
+
+        let mut cache = Self::default();
+        add(
+            &base.card,
+            &ids.card,
+            &mut cache.card,
+            &mut cache.bytes,
+            budget,
+        )?;
+        add(
+            &base.note,
+            &ids.note,
+            &mut cache.note,
+            &mut cache.bytes,
+            budget,
+        )?;
+        Ok(cache)
+    }
+}
+
+fn forecast_decoded_state_size(state: &ModuleState) -> usize {
+    // Decoded compact matrices retain their packed representation too. The
+    // 50% margin covers that, plus map and Vec allocation metadata.
+    serialized_module_state_len(state).saturating_mul(3) / 2
+        + 128
+        + state.layers.len() * std::mem::size_of::<LayerState>()
+}
+
 /// The review states a simulation sees: `base` until the simulation advances
 /// a stream, then its own copy of that stream. A simulation therefore holds
 /// only the streams it advanced, and never changes `base`.
 struct SimulationStates<'a> {
     base: &'a ReviewStateMaps,
+    decoded: Option<&'a ForecastDecodedStates>,
+    decoded_own_bytes: usize,
+    decoded_own_budget: usize,
     card: HashMap<i64, ModuleState>,
     note: HashMap<i64, ModuleState>,
     deck: HashMap<i64, ModuleState>,
@@ -5038,6 +5102,9 @@ impl<'a> SimulationStates<'a> {
     fn new(base: &'a ReviewStateMaps) -> Self {
         Self {
             base,
+            decoded: None,
+            decoded_own_bytes: 0,
+            decoded_own_budget: 0,
             card: HashMap::new(),
             note: HashMap::new(),
             deck: HashMap::new(),
@@ -5046,33 +5113,102 @@ impl<'a> SimulationStates<'a> {
         }
     }
 
+    fn with_forecast_cache(
+        base: &'a ReviewStateMaps,
+        decoded: &'a ForecastDecodedStates,
+        own_budget: usize,
+    ) -> Self {
+        let mut states = Self::new(base);
+        states.decoded = Some(decoded);
+        states.decoded_own_budget = own_budget;
+        states
+    }
+
     fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
         fn lookup<'s>(
             own: &'s HashMap<i64, ModuleState>,
+            decoded: Option<&'s HashMap<i64, ModuleState>>,
             base: &'s HashMap<i64, ModuleState>,
             id: i64,
         ) -> Option<&'s ModuleState> {
-            own.get(&id).or_else(|| base.get(&id))
+            own.get(&id)
+                .or_else(|| decoded.and_then(|states| states.get(&id)))
+                .or_else(|| base.get(&id))
         }
         SrsStateRef {
-            card: lookup(&self.card, &self.base.card, input.card_id),
-            note: input
-                .note_id
-                .and_then(|id| lookup(&self.note, &self.base.note, id)),
+            card: lookup(
+                &self.card,
+                self.decoded.map(|cache| &cache.card),
+                &self.base.card,
+                input.card_id,
+            ),
+            note: input.note_id.and_then(|id| {
+                lookup(
+                    &self.note,
+                    self.decoded.map(|cache| &cache.note),
+                    &self.base.note,
+                    id,
+                )
+            }),
             deck: input
                 .deck_id
-                .and_then(|id| lookup(&self.deck, &self.base.deck, id)),
+                .and_then(|id| lookup(&self.deck, None, &self.base.deck, id)),
             preset: input
                 .preset_id
-                .and_then(|id| lookup(&self.preset, &self.base.preset, id)),
+                .and_then(|id| lookup(&self.preset, None, &self.base.preset, id)),
             global: self.global.as_ref().or(self.base.global.as_ref()),
         }
     }
 
-    fn store(&mut self, input: &ReviewInput, state: SrsState) {
-        self.card.insert(input.card_id, state.card);
+    fn store(&mut self, input: &ReviewInput, state: SrsState) -> io::Result<()> {
+        fn store_stream(
+            states: &mut HashMap<i64, ModuleState>,
+            cache: Option<&HashMap<i64, ModuleState>>,
+            id: i64,
+            state: ModuleState,
+            used: &mut usize,
+            budget: usize,
+        ) -> io::Result<()> {
+            let cached = cache.is_some_and(|cache| cache.contains_key(&id));
+            let previous = states
+                .get(&id)
+                .filter(|state| cached && state.packed.is_none());
+            let previous_size = previous.map_or(0, forecast_decoded_state_size);
+            let state =
+                if cached && state.packed.is_some() && (*used < budget || previous.is_some()) {
+                    let decoded = state.try_decoded()?.into_owned();
+                    let size = forecast_decoded_state_size(&decoded);
+                    if size <= budget.saturating_sub(*used).saturating_add(previous_size) {
+                        *used = used.saturating_sub(previous_size) + size;
+                        decoded
+                    } else {
+                        *used = used.saturating_sub(previous_size);
+                        state
+                    }
+                } else {
+                    *used = used.saturating_sub(previous_size);
+                    state
+                };
+            states.insert(id, state);
+            Ok(())
+        }
+        store_stream(
+            &mut self.card,
+            self.decoded.map(|cache| &cache.card),
+            input.card_id,
+            state.card,
+            &mut self.decoded_own_bytes,
+            self.decoded_own_budget,
+        )?;
         if let Some(note_id) = input.note_id {
-            self.note.insert(note_id, state.note);
+            store_stream(
+                &mut self.note,
+                self.decoded.map(|cache| &cache.note),
+                note_id,
+                state.note,
+                &mut self.decoded_own_bytes,
+                self.decoded_own_budget,
+            )?;
         }
         if let Some(deck_id) = input.deck_id {
             self.deck.insert(deck_id, state.deck);
@@ -5081,6 +5217,7 @@ impl<'a> SimulationStates<'a> {
             self.preset.insert(preset_id, state.preset);
         }
         self.global = Some(state.global);
+        Ok(())
     }
 }
 
@@ -12646,6 +12783,90 @@ order by e.id, e.cid
         let actual = worker.selected_answer_intervals_for_inputs(&inputs, &states, &ANSWER_EASES);
         let expected = ordered.map(|days| days.map(|days| clamped_interval_days(days, 36_500)));
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn forecast_decoded_cache_matches_packed_streams_after_answers() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+            let mut inference =
+                RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
+                    .unwrap();
+            let reviews = precision_tests::reviews(14);
+            inference.warm_up_reviews(reviews.clone(), false).unwrap();
+            let resident_before = precision_tests::snapshot_bytes(&inference);
+            let inputs = reviews
+                .iter()
+                .map(|review_input| RwkvWorkloadSimulationInput {
+                    review_input: review_input.clone(),
+                    interval_days: Some(1),
+                    ease_factor: Some(2500),
+                    reps: Some(1),
+                    lapses: Some(0),
+                })
+                .collect::<Vec<_>>();
+            let ids = StreamIds::for_workload_inputs(&inputs);
+            let cache =
+                ForecastDecodedStates::new(&inference.warm_up_states, &ids, 8_000_000).unwrap();
+            assert_eq!(cache.bytes == 0, precision == StatePrecision::F32);
+            assert!(cache.bytes <= 8_000_000);
+            let empty = ForecastDecodedStates::new(&inference.warm_up_states, &ids, 0).unwrap();
+            assert_eq!(empty.bytes, 0);
+
+            for own_budget in [0, 16_384, 8_000_000] {
+                let mut reference = SimulationStates::new(&inference.warm_up_states);
+                let mut cached = SimulationStates::with_forecast_cache(
+                    &inference.warm_up_states,
+                    &cache,
+                    own_budget,
+                );
+                let mut reference_worker =
+                    inference.workload_worker(inference.features.clone(), HashMap::new());
+                let mut cached_worker =
+                    inference.workload_worker(inference.features.clone(), HashMap::new());
+                for answer in reviews.iter().take(12) {
+                    for query in reviews.iter().take(8) {
+                        let left = reference_worker
+                            .review_heads_for_state(query, reference.state_ref(query))
+                            .unwrap();
+                        let right = cached_worker
+                            .review_heads_for_state(query, cached.state_ref(query))
+                            .unwrap();
+                        assert_eq!(
+                            left.retrievability.to_bits(),
+                            right.retrievability.to_bits()
+                        );
+                    }
+                    reference_worker
+                        .apply_simulation_answer(answer, &mut reference)
+                        .unwrap();
+                    cached_worker
+                        .apply_simulation_answer(answer, &mut cached)
+                        .unwrap();
+                    assert!(cached.decoded_own_bytes <= own_budget);
+                }
+            }
+            if precision != StatePrecision::F32 {
+                let input = &reviews[0];
+                let mut cached = SimulationStates::with_forecast_cache(
+                    &inference.warm_up_states,
+                    &cache,
+                    8_000_000,
+                );
+                let mut worker =
+                    inference.workload_worker(inference.features.clone(), HashMap::new());
+                let mut state = worker
+                    .review_heads_for_state(input, cached.state_ref(input))
+                    .unwrap()
+                    .next_state;
+                state.card.packed = Some(b"invalid state".to_vec());
+                assert!(cached.store(input, state).is_err());
+            }
+            assert_eq!(precision_tests::snapshot_bytes(&inference), resident_before);
+        }
     }
 
     #[test]
