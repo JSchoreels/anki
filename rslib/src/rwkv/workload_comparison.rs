@@ -718,7 +718,7 @@ fn prepare_cards(inputs: Vec<RwkvComparisonCard>) -> io::Result<(Vec<PreparedCar
     Ok((cards, estimated))
 }
 
-fn valid_memory(memory: &MemoryState) -> bool {
+pub(super) fn valid_memory(memory: &MemoryState) -> bool {
     memory.stability.is_finite()
         && memory.stability > 0.0
         && memory.stability_fast.is_finite()
@@ -870,7 +870,7 @@ fn comparison_memorized(
     Ok(totals)
 }
 
-fn fsrs_answer(
+pub(super) fn fsrs_answer(
     model: &FSRS,
     memory: Option<MemoryState>,
     retention: f32,
