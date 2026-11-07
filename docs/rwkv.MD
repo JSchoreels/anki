@@ -785,11 +785,13 @@ just rwkv-history-fingerprint-bench \
   --rounds 5
 ```
 
-After collection sync, Anki reconciles resident RWKV state only when sync
-downloaded collection changes. A no-change sync, or a sync that only uploads
-desktop changes, preserves the resident state and skips the post-sync
-operation. The normal UI reset runs before reconciliation so it cannot
-invalidate the newly refreshed state. If synchronized reviews only extend the
+After collection sync, Anki reconciles resident RWKV state when sync downloaded
+collection changes. A no-change sync, or a sync that only uploads desktop
+changes, preserves the resident state and skips the post-sync operation. This
+also covers add-ons that call `Collection.sync_collection` and fire the standard
+sync hooks. When an add-on's sync outcome is unknown or requires a full sync,
+Anki reconciles conservatively. The normal UI reset runs before reconciliation
+so it cannot invalidate the newly refreshed state. If synchronized reviews only extend the
 cached history, they are replayed incrementally. If a synchronized review
 belongs in the middle of history, Anki validates checkpoint structure and
 identity without loading the stored state payloads, restores only the newest
@@ -802,7 +804,14 @@ the resulting state includes those reviews. A cache created by an older version
 that recorded excluded synchronized reviews is also rebuilt once on its next
 load, including any reviews still retained in the collection. A failed post-sync rebuild
 leaves resident state unready; it does not restore a pre-sync state that could
-overwrite a newer refresh.
+overwrite a newer refresh. When a reviewer answer is saved while the resident
+state is cold, the live update is deferred: the next preparation replays the
+saved history, including that answer, once. This also applies after a template
+edit invalidates the resident state.
+During resident retrievability scoring, an invalid compact state is reported as
+an error with the state scope and detected validation failure; the affected
+queue refresh is skipped. The error does not replace the state with an invented
+memory estimate or establish why it became invalid.
 Rebuilding the RWKV state cache from deck options always writes a fresh,
 compacted state store. Cache format version 12 introduces delta state segments,
 so older local state caches rebuild once after upgrading.

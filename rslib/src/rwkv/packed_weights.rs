@@ -111,10 +111,12 @@ mod tests {
         assert_eq!(
             decoded
                 .model
-                .review_retrievability_query_refs_batched(&items),
+                .review_retrievability_query_refs_batched(&items)
+                .unwrap(),
             packed
                 .model
                 .review_retrievability_query_refs_batched(&items)
+                .unwrap()
         );
     }
 }

@@ -45,6 +45,10 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Keep RWKV state up to date after add-on sync.** Sync add-ons that use Anki's collection sync and standard hooks now trigger the RWKV refresh when they receive remote changes. No-change syncs continue to skip it.
+
+- **Fix an RWKV crash after editing card templates.** Answering a card after a template edit no longer applies the answer twice while restoring the review state. This could previously crash the next queue refresh for a new card and affect predictions for other cards.
+
 - **Clearer prediction model descriptions.** Deck Options now explains the smaller model and updates to older models in plain language.
 
 - **Security fixes from Anki 26.09.4.** Fix two shared-deck code-execution vulnerabilities, one involving embedded editor content and one in macOS **Show in Folder**. This update also removes trust in compromised eMudhra certificates from the updated bundled dependencies; keep your operating system up to date as well.
@@ -60,6 +64,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **Faster uploads during normal sync.** When many small review or card changes are waiting to be sent, Anki combines them into fewer requests. The improvement depends on the number of changes and network latency; downloading still uses the server's batch size.
 
 ### Technical details
+
+- **RWKV sync and scoring:** After an answer is saved while the resident state is cold, replay the saved history before applying further updates. Track the last collection sync's remote-change outcome for add-ons using the standard sync hooks; an unknown outcome or full-sync request triggers conservative reconciliation. Scalar and batched resident retrievability scoring now propagate compact-state decoding errors with the affected scope and validation failure instead of panicking.
 
 - **Anki 26.09.4 security:** Reject unmatched add-on paths instead of serving them as collection media, restrict API authorization and frontend link opening, and pass macOS Finder paths as arguments instead of AppleScript source. Update the vendored certificate dependencies, Python and installer support packages. See [GHSA-j9v5-m549-cg6c](https://github.com/ankitects/anki/security/advisories/GHSA-j9v5-m549-cg6c) and [GHSA-gfvm-4968-jp9m](https://github.com/ankitects/anki/security/advisories/GHSA-gfvm-4968-jp9m).
 

@@ -932,7 +932,7 @@ impl RwkvInference {
             work_items.push(self.prediction_work_item(&request.input, &request.state)?);
         }
 
-        Ok(self.model.review_retrievability_many(&work_items))
+        self.model.review_retrievability_many(&work_items)
     }
 
     pub fn predict_retrievability_many_from_warm_up(
@@ -961,7 +961,7 @@ impl RwkvInference {
             })
             .collect::<Vec<_>>();
 
-        Ok(self.model.review_retrievability_many_borrowed(&work_items))
+        self.model.review_retrievability_many_borrowed(&work_items)
     }
 
     pub fn predict_retrievability_many_after_review(
@@ -1221,11 +1221,11 @@ impl RwkvInference {
                             model.review_retrievability_query_refs(&[ReviewPredictionQueryRef {
                                 features: query_features,
                                 state,
-                            }])[0]
+                            }])
                         },
                         || model.review(&features, state),
                     );
-                    (Some(retrievability), heads)
+                    (Some(retrievability?[0]), heads)
                 }
                 None => (None, model.review(&features, state)),
             };
@@ -3774,7 +3774,10 @@ impl SrsModel {
             .collect()
     }
 
-    fn review_retrievability_many(&self, items: &[ReviewPredictionWorkItem]) -> Vec<f32> {
+    fn review_retrievability_many(
+        &self,
+        items: &[ReviewPredictionWorkItem],
+    ) -> io::Result<Vec<f32>> {
         let items = items
             .iter()
             .map(|item| ReviewPredictionQueryRef {
@@ -3788,7 +3791,7 @@ impl SrsModel {
     fn review_retrievability_many_borrowed(
         &self,
         items: &[ReviewPredictionBorrowedWorkItem<'_>],
-    ) -> Vec<f32> {
+    ) -> io::Result<Vec<f32>> {
         let items = items
             .iter()
             .map(|item| ReviewPredictionQueryRef {
@@ -3799,7 +3802,10 @@ impl SrsModel {
         self.review_retrievability_query_refs(&items)
     }
 
-    fn review_retrievability_query_refs(&self, items: &[ReviewPredictionQueryRef<'_>]) -> Vec<f32> {
+    fn review_retrievability_query_refs(
+        &self,
+        items: &[ReviewPredictionQueryRef<'_>],
+    ) -> io::Result<Vec<f32>> {
         #[cfg(all(target_os = "macos", not(test)))]
         {
             self.review_retrievability_query_refs_batched(items)
@@ -3815,7 +3821,7 @@ impl SrsModel {
     fn review_retrievability_query_refs_scalar(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
-    ) -> Vec<f32> {
+    ) -> io::Result<Vec<f32>> {
         items
             .par_iter()
             .map_init(
@@ -3832,18 +3838,18 @@ impl SrsModel {
     fn review_retrievability_query_refs_batched(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
-    ) -> Vec<f32> {
+    ) -> io::Result<Vec<f32>> {
         let mut retrievabilities = vec![0.0; items.len()];
         retrievabilities
             .par_chunks_mut(RETRIEVABILITY_GEMM_BATCH_SIZE)
             .zip(items.par_chunks(RETRIEVABILITY_GEMM_BATCH_SIZE))
-            .for_each_init(
+            .try_for_each_init(
                 ReviewRetrievabilityBatchScratch::default,
                 |scratch, (retrievabilities, items)| {
-                    self.review_retrievability_query_batch(items, scratch, retrievabilities);
+                    self.review_retrievability_query_batch(items, scratch, retrievabilities)
                 },
-            );
-        retrievabilities
+            )?;
+        Ok(retrievabilities)
     }
 
     #[cfg(any(target_os = "macos", test))]
@@ -3852,7 +3858,7 @@ impl SrsModel {
         items: &[ReviewPredictionQueryRef<'_>],
         scratch: &mut ReviewRetrievabilityBatchScratch,
         retrievabilities: &mut [f32],
-    ) {
+    ) -> io::Result<()> {
         let rows = items.len();
         scratch.feature_input.clear();
         scratch.feature_input.reserve(rows * CARD_FEATURES);
@@ -3874,10 +3880,10 @@ impl SrsModel {
             .apply_batch(&scratch.normalized_features, rows, &mut scratch.x);
         query_silu_batch_in_place(&mut scratch.x);
 
-        let decoded: Vec<[Option<Cow<'_, ModuleState>>; 5]> = items
+        let decoded = items
             .iter()
-            .map(|item| std::array::from_fn(|id| item.state.module(id).map(ModuleState::decoded)))
-            .collect();
+            .map(|item| item.state.try_decoded())
+            .collect::<io::Result<Vec<_>>>()?;
         let decoded_items: Vec<_> = items
             .iter()
             .zip(&decoded)
@@ -3921,6 +3927,7 @@ impl SrsModel {
             softmax_into(logits, &mut probabilities);
             *retrievability = 1.0 - probabilities[0];
         }
+        Ok(())
     }
 
     /// The feature MLP shared by the per-review and bulk replay paths.
@@ -4111,7 +4118,7 @@ impl SrsModel {
         features: &[f32],
         state: SrsStateRef<'_>,
         scratch: &mut ReviewRetrievabilityScratch,
-    ) -> f32 {
+    ) -> io::Result<f32> {
         let mut features = features.to_vec();
         self.zero_unused_features(&mut features);
         self.features_0
@@ -4124,17 +4131,7 @@ impl SrsModel {
             .apply_into(&scratch.normalized_features, &mut x);
         silu_in_place(&mut x);
 
-        let states = [
-            state.card,
-            state.deck,
-            state.note,
-            state.preset,
-            state.global,
-        ];
-        let decoded: Vec<_> = states
-            .iter()
-            .map(|state| state.map(ModuleState::decoded))
-            .collect();
+        let decoded = state.try_decoded()?;
         let mut v0 = [[0.0; D_MODEL]; 5];
         for &(module_id, layer_id) in LAYER_STEPS {
             let previous = decoded[module_id]
@@ -4156,7 +4153,7 @@ impl SrsModel {
         relu_in_place(&mut scratch.head);
         self.p_linear.apply_into(&scratch.head, &mut scratch.logits);
         softmax_into(&scratch.logits, &mut scratch.probabilities);
-        1.0 - scratch.probabilities[0]
+        Ok(1.0 - scratch.probabilities[0])
     }
 }
 
@@ -4331,6 +4328,25 @@ struct SrsStateRef<'a> {
 }
 
 impl<'a> SrsStateRef<'a> {
+    fn try_decoded(self) -> io::Result<[Option<Cow<'a, ModuleState>>; 5]> {
+        let mut decoded = std::array::from_fn(|_| None);
+        for (slot, (scope, state)) in decoded.iter_mut().zip([
+            ("card", self.card),
+            ("deck", self.deck),
+            ("note", self.note),
+            ("preset", self.preset),
+            ("global", self.global),
+        ]) {
+            *slot = state
+                .map(ModuleState::try_decoded)
+                .transpose()
+                .map_err(|error| {
+                    io::Error::new(error.kind(), format!("RWKV {scope} state: {error}"))
+                })?;
+        }
+        Ok(decoded)
+    }
+
     #[cfg(any(target_os = "macos", test))]
     fn module(self, module_id: usize) -> Option<&'a ModuleState> {
         match module_id {
@@ -11869,14 +11885,17 @@ order by e.id, e.cid
 
         let scalar = inference
             .model
-            .review_retrievability_query_refs_scalar(&items);
+            .review_retrievability_query_refs_scalar(&items)
+            .unwrap();
         assert!(inference
             .model
             .review_retrievability_query_refs_batched(&[])
+            .unwrap()
             .is_empty());
         let batched = inference
             .model
-            .review_retrievability_query_refs_batched(&items);
+            .review_retrievability_query_refs_batched(&items)
+            .unwrap();
         let max_delta = scalar
             .iter()
             .zip(&batched)
