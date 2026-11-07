@@ -54,12 +54,12 @@ from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
 from aqt.qt import QMessageBox, QWidget
-from aqt.rwkv_model import RwkvRuntimeModels
 from aqt.rwkv_answer_time import (
     ANSWER_TIME_FEATURES,
     RwkvAnswerTimePrediction,
     answer_time_card_info_rows,
 )
+from aqt.rwkv_model import RwkvRuntimeModels
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -4179,21 +4179,27 @@ def configure_reviewer_backend_from_environment() -> bool:
                 runtime_models.instant_model,
                 runtime_models.model,
             )
-        set_reviewer_backend(
-            EmbeddedRwkvReviewerBackend(
+        state_precision = _rwkv_state_precision()
+        if instant_model_path is None or runtime_models.instant_model is None:
+            # A single-model profile creates its backend exactly as before.
+            backend = EmbeddedRwkvReviewerBackend(
                 model_path=resolved_model_path,
                 device=device,
                 dtype=dtype,
-                state_precision=_rwkv_state_precision(),
+                state_precision=state_precision,
+                model=runtime_models.model,
+            )
+        else:
+            backend = EmbeddedRwkvReviewerBackend(
+                model_path=resolved_model_path,
+                device=device,
+                dtype=dtype,
+                state_precision=state_precision,
                 model=runtime_models.model,
                 instant_model_path=instant_model_path,
-                instant_model=(
-                    runtime_models.instant_model
-                    if instant_model_path is not None
-                    else None
-                ),
+                instant_model=runtime_models.instant_model,
             )
-        )
+        set_reviewer_backend(backend)
         logger.debug(
             "RWKV scheduler backend configured: backend=%s elapsed_ms=%.1f",
             type(_reviewer_backend).__name__,
