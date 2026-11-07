@@ -24,6 +24,7 @@ from aqt.rwkv_answer_time import (
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
+    RwkvForecastCardInput,
     RwkvIntervalOverride,
     RwkvRecallPoint,
     RwkvReviewCandidate,
@@ -1223,6 +1224,62 @@ class _RustRwkvRuntime:
                     (_review_input_row(review), day, second, last_day, last_second)
                     for review, day, second, last_day, last_second in background
                 ],
+                progress,
+            )
+
+    def forecast_workload(  # noqa: PLR0913
+        self,
+        *,
+        cards: Sequence[RwkvForecastCardInput],
+        groups: Sequence[tuple[int, int, int, int, int]],
+        days: int,
+        paths: int,
+        seed: int,
+        default_review_limit: int,
+        default_new_limit: int,
+        new_cards_ignore_review_limit: bool,
+        max_interval: int,
+        review_order: int,
+        suspend_after_lapses: int | None,
+        state_update_interval: int,
+        review_model: object,
+        single_step_answers: bool = False,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> object:
+        """Forecast daily workload bands from the resident warmed state."""
+        forecast = getattr(self._process, "forecast_workload_from_warm_up", None)
+        if not callable(forecast):
+            raise ValueError("RWKV Rust runtime does not support workload forecasts")
+        rows = [
+            (
+                _workload_input_row(card.review_input),
+                card.due_day,
+                int(card.group),
+                float(card.desired_retention),
+                int(card.scheduler),
+                card.review_input.fsrs_memory_state,
+                tuple(card.review_input.fsrs_parameters),
+                float(card.review_input.fsrs_historical_retention or 0.9),
+            )
+            for card in cards
+        ]
+        with self._locked_process():
+            return forecast(
+                rows,
+                list(groups),
+                int(days),
+                int(paths),
+                int(seed),
+                int(default_review_limit),
+                int(default_new_limit),
+                bool(new_cards_ignore_review_limit),
+                max(1, int(max_interval)),
+                int(review_order),
+                suspend_after_lapses,
+                max(1, int(state_update_interval)),
+                bool(single_step_answers),
+                tuple(getattr(review_model, "grade_seconds")),
+                _workload_bucket_probabilities(review_model),
                 progress,
             )
 

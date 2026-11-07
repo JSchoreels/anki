@@ -859,6 +859,25 @@ impl RwkvRuntime {
         )
     }
 
+    /// The forecast schedules RWKV presets with the curve, so a paired runtime
+    /// runs it on the release model.
+    pub fn forecast_workload_from_warm_up(
+        &self,
+        inputs: Vec<RwkvForecastCard>,
+        config: RwkvWorkloadForecastConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<RwkvWorkloadForecastOutput> {
+        if let Self::InstantOnly(_) = self {
+            return Err(no_curve_model());
+        }
+        dispatch!(
+            self,
+            engine,
+            engine.forecast_workload_from_warm_up(inputs, config, progress),
+            pair => pair.release.forecast_workload_from_warm_up(inputs, config, progress)
+        )
+    }
+
     pub fn compare_workloads_from_warm_up(
         &self,
         inputs: Vec<RwkvComparisonCard>,

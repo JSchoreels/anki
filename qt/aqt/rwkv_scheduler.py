@@ -444,6 +444,17 @@ class RwkvReviewInput:
     fsrs_historical_retention: float | None = None
 
 
+@dataclass(frozen=True)
+class RwkvForecastCardInput:
+    """One card of a workload forecast (see `forecast_rwkv_workload`)."""
+
+    review_input: RwkvReviewInput
+    due_day: int | None
+    group: int
+    desired_retention: float
+    scheduler: int
+
+
 def _rwkv_state_update_input(review_input: RwkvReviewInput) -> RwkvReviewInput:
     """Keep new-card creation age on the query, not in recurrent state."""
 
@@ -2523,6 +2534,13 @@ class RwkvStatefulReviewerBackend:
             review_model=review_model,
             progress=progress,
         )
+
+    def forecast_workload(self, **kwargs: Any) -> object:
+        """Forecast daily workload bands from the resident warmed state."""
+        forecast = getattr(self._runtime, "forecast_workload", None)
+        if not self._runtime_owns_warm_up_state() or not callable(forecast):
+            raise ValueError("RWKV backend does not support workload forecasts")
+        return forecast(**kwargs)
 
     def compare_workloads(
         self,
@@ -15008,6 +15026,426 @@ def simulate_rwkv_workload(
     return response
 
 
+RWKV_FORECAST_SCHEDULER_RWKV = 0
+RWKV_FORECAST_SCHEDULER_FSRS = 1
+RWKV_FORECAST_SCHEDULER_SM2 = 2
+_RWKV_FORECAST_SCHEDULER_NAMES = {
+    RWKV_FORECAST_SCHEDULER_RWKV: "rwkv",
+    RWKV_FORECAST_SCHEDULER_FSRS: "fsrs",
+    RWKV_FORECAST_SCHEDULER_SM2: "sm2",
+}
+_RWKV_FORECAST_BAND_KEYS = ("mean", "p1", "p5", "p50", "p95", "p99")
+_RWKV_FORECAST_METRICS = ("due", "done", "new", "lapses", "seconds")
+
+
+def forecast_rwkv_workload(
+    *,
+    mw: object | None = None,
+    search: str = "",
+    days: int = 30,
+    paths: int = 200,
+    seed: int = 0,
+    state_update_interval: int = 1,
+    fast: bool = False,
+    max_interval: int = 36500,
+    progress: RwkvWorkloadProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, object]:
+    """Forecast the daily workload of the cards matched by `search`.
+
+    Add-on API (see docs/rwkv.MD, "Workload forecast"). Simulates `paths`
+    seeded answer paths of `days` days from the current RWKV state, each
+    preset at its own desired retention (Dynamic DR included), scheduler and
+    per-deck limits, and returns plain data: per day, mean/p1/p5/p50/p95/p99
+    of reviews due, reviews done, new cards, lapses and answer seconds.
+    """
+
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+    days = int(days)
+    paths = int(paths)
+    if not 1 <= days <= 365:
+        raise ValueError("forecast days must be 1..365")
+    if not 1 <= paths <= 2000:
+        raise ValueError("forecast paths must be 1..2000")
+    reviewer = SimpleNamespace(mw=mw)
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        raise ValueError("RWKV backend is not available")
+    if not _reviewer_backend_warmed_up(reviewer) and not load_rwkv_state_cache(mw):
+        raise ValueError("RWKV state cache is not ready. Build it first.")
+    backend = _reviewer_backend
+    supports_resident = getattr(backend, "supports_resident_workload_simulation", None)
+    forecast = getattr(backend, "forecast_workload", None)
+    if (
+        not callable(supports_resident)
+        or not supports_resident()
+        or not callable(forecast)
+    ):
+        raise ValueError("RWKV backend does not support workload forecasts")
+
+    input_build = _rwkv_review_input_batches_for_search(
+        reviewer=reviewer,
+        search=search,
+        include_suspended_review=False,
+        include_new_cards=True,
+        batch_size_override=None,
+        include_comparison_data=True,
+        # FSRS and SM-2 presets are forecast with their own schedulers.
+        include_disabled_decks=True,
+    )
+    if input_build is None:
+        raise ValueError("Unable to load RWKV review inputs for the requested search")
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer, input_build
+    )
+    col = _collection(reviewer)
+    cards, groups, new_cards_ignore_review_limit = _rwkv_forecast_cards_and_groups(
+        col,
+        [review_input for _, review_input, _ in _rwkv_simulation_inputs(input_build)],
+    )
+    review_model = _rwkv_simulator_review_model(reviewer)
+    start = time.monotonic()
+    output: object = (paths, [], [], 0)
+    if cards:
+        restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
+        with _temporary_reviewer_backend_operation(
+            reviewer,
+            backend,
+            cache_snapshot=_no_rwkv_cache_snapshot,
+            restore_cache_snapshot=restore_cache_snapshot or _no_rwkv_cache_restore,
+            restore_required=lambda: False,
+        ) as temporary:
+            if temporary is None:
+                raise ValueError("RWKV backend state is busy")
+            operation, _snapshot = temporary
+
+            def report_progress(current: int, total: int) -> None:
+                _check_rwkv_workload_cancel(cancel_event)
+                operation.require_current()
+                if progress is not None:
+                    progress(current, total)
+
+            try:
+                output = forecast(
+                    cards=cards,
+                    groups=groups,
+                    days=days,
+                    paths=paths,
+                    seed=int(seed) & 0xFFFFFFFF,
+                    default_review_limit=9999,
+                    default_new_limit=0,
+                    new_cards_ignore_review_limit=new_cards_ignore_review_limit,
+                    max_interval=max_interval,
+                    review_order=0,
+                    suspend_after_lapses=None,
+                    state_update_interval=state_update_interval,
+                    single_step_answers=bool(fast),
+                    review_model=review_model,
+                    progress=report_progress,
+                )
+            except _ReviewerBackendWarmupInvalidated as exc:
+                raise InterruptedError(
+                    "RWKV workload forecast invalidated by state change"
+                ) from exc
+            operation.require_current()
+    result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
+    result["elapsed_ms"] = (time.monotonic() - start) * 1000
+    result["state_update_interval"] = max(1, int(state_update_interval))
+    result["fast"] = bool(fast)
+    logger.debug(
+        "RWKV workload forecast finished: search=%r cards=%s days=%s paths=%s "
+        "elapsed_ms=%.1f",
+        search,
+        len(cards),
+        days,
+        paths,
+        result["elapsed_ms"],
+    )
+    return result
+
+
+def _no_rwkv_cache_restore(_snapshot: object) -> None:
+    return None
+
+
+def _rwkv_forecast_cards_and_groups(
+    col: object | None,
+    review_inputs: Sequence[RwkvReviewInput],
+) -> tuple[list[RwkvForecastCardInput], list[tuple[int, int, int, int, int]], bool]:
+    """Per card: scheduler, desired retention, due day and deck limit group."""
+
+    decks = getattr(col, "decks", None)
+    today = getattr(getattr(col, "sched", None), "today", None)
+    fsrs_enabled = bool(_rwkv_forecast_col_config(col, "fsrs", False))
+    ignore_review_limit = bool(
+        _rwkv_forecast_col_config(col, "newCardsIgnoreReviewLimit", False)
+    )
+    config_by_deck: dict[int, dict[str, object]] = {}
+    groups: dict[int, tuple[int, int, int, int, int]] = {}
+
+    def deck_config(deck_id: int) -> dict[str, object]:
+        if deck_id not in config_by_deck:
+            config: object = {}
+            getter = getattr(decks, "config_dict_for_deck_id", None)
+            if callable(getter):
+                try:
+                    config = getter(deck_id)
+                except Exception:
+                    logger.debug("forecast: no deck config for deck %s", deck_id)
+            config_by_deck[deck_id] = config if isinstance(config, dict) else {}
+            groups[deck_id] = _rwkv_forecast_group(
+                decks, deck_id, config_by_deck[deck_id], today
+            )
+        return config_by_deck[deck_id]
+
+    cards = []
+    for review_input in review_inputs:
+        deck_id = int(review_input.identity.deck_id or 0)
+        config = deck_config(deck_id)
+        if _rwkv_review_config_active(config):
+            scheduler = RWKV_FORECAST_SCHEDULER_RWKV
+        elif fsrs_enabled:
+            scheduler = RWKV_FORECAST_SCHEDULER_FSRS
+        else:
+            scheduler = RWKV_FORECAST_SCHEDULER_SM2
+        retention: object = review_input.target_retentions[2]
+        if not _rwkv_forecast_retention_valid(retention):
+            retention = config.get("desiredRetention")
+        if not _rwkv_forecast_retention_valid(retention):
+            retention = 0.9
+        cards.append(
+            RwkvForecastCardInput(
+                review_input=review_input,
+                due_day=_rwkv_forecast_due_day(review_input),
+                group=deck_id,
+                desired_retention=float(cast(float, retention)),
+                scheduler=scheduler,
+            )
+        )
+    return cards, list(groups.values()), ignore_review_limit
+
+
+def _rwkv_forecast_retention_valid(value: object) -> bool:
+    return _valid_probability(value) and 0 < float(cast(float, value)) < 1
+
+
+def _rwkv_forecast_col_config(col: object | None, key: str, default: object) -> object:
+    getter = getattr(col, "get_config", None)
+    if not callable(getter):
+        return default
+    try:
+        return getter(key, default)
+    except Exception:
+        return default
+
+
+def _rwkv_forecast_group(
+    decks: object,
+    deck_id: int,
+    config: dict[str, object],
+    today: int | None,
+) -> tuple[int, int, int, int, int]:
+    def per_day(section: str, default: int) -> int:
+        value = config.get(section)
+        limit = value.get("perDay") if isinstance(value, dict) else None
+        return max(0, int(limit)) if isinstance(limit, (int, float)) else default
+
+    deck: object = None
+    getter = getattr(decks, "get", None)
+    if callable(getter):
+        try:
+            deck = getter(deck_id, default=False)
+        except Exception:
+            deck = None
+
+    def done_today(key: str) -> int:
+        value = deck.get(key) if isinstance(deck, dict) else None
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and today is not None
+            and value[0] == today
+        ):
+            return max(0, int(value[1]))
+        return 0
+
+    return (
+        deck_id,
+        per_day("rev", 9999),
+        per_day("new", 20),
+        done_today("revToday"),
+        done_today("newToday"),
+    )
+
+
+def _rwkv_forecast_due_day(review_input: RwkvReviewInput) -> int | None:
+    """Days until due from today; None lets the curve derive it."""
+
+    if review_input.card_type == CARD_TYPE_NEW:
+        return 0
+    queue = review_input.card_queue
+    if queue in (1, 4):
+        # Intraday (re)learning cards are due today.
+        return 0
+    if queue in (2, 3) and review_input.card_due is not None:
+        if review_input.day_offset is None:
+            return None
+        return max(0, int(review_input.card_due) - int(review_input.day_offset))
+    return None
+
+
+def _rwkv_forecast_result(
+    output: object,
+    cards: Sequence[RwkvForecastCardInput],
+    *,
+    days: int,
+    seed: int,
+) -> dict[str, object]:
+    path_count, day_rows, group_rows, estimated = cast(
+        tuple[int, list[tuple[Any, ...]], list[tuple[Any, ...]], int], output
+    )
+    schedulers: dict[str, int] = {}
+    for card in cards:
+        name = _RWKV_FORECAST_SCHEDULER_NAMES[card.scheduler]
+        schedulers[name] = schedulers.get(name, 0) + 1
+    return {
+        "version": 1,
+        "days": int(days),
+        "paths": int(path_count),
+        "seed": int(seed),
+        "cards": len(cards),
+        "cards_by_scheduler": schedulers,
+        "estimated_fsrs_states": int(estimated),
+        "daily": [
+            {
+                "day": int(row[0]),
+                **{
+                    metric: dict(zip(_RWKV_FORECAST_BAND_KEYS, map(float, band)))
+                    for metric, band in zip(_RWKV_FORECAST_METRICS, row[1:])
+                },
+            }
+            for row in day_rows
+        ],
+        "groups": [
+            {
+                "deck_id": int(group),
+                "due_mean": [float(value) for value in due],
+                "done_mean": [float(value) for value in done],
+                "new_mean": [float(value) for value in new],
+            }
+            for group, due, done, new in group_rows
+        ],
+    }
+
+
+def rwkv_workload_forecast_available(mw: object | None = None) -> bool:
+    """Capability check for add-ons: True when this build and the current
+    RWKV backend can run `forecast_rwkv_workload`."""
+
+    del mw
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        return False
+    supports_resident = getattr(
+        _reviewer_backend, "supports_resident_workload_simulation", None
+    )
+    runtime = getattr(_reviewer_backend, "_runtime", None)
+    process = getattr(runtime, "_process", None)
+    return (
+        callable(supports_resident)
+        and bool(supports_resident())
+        and callable(getattr(_reviewer_backend, "forecast_workload", None))
+        and callable(getattr(process, "forecast_workload_from_warm_up", None))
+    )
+
+
+@dataclass
+class _RwkvWorkloadForecastJob:
+    job_id: int
+    cancel: threading.Event
+    current: int = 0
+    total: int = 0
+    done: bool = False
+    error: str | None = None
+    result: dict[str, object] | None = None
+
+
+_rwkv_workload_forecast_jobs_lock = threading.Lock()
+_rwkv_workload_forecast_jobs: dict[int, _RwkvWorkloadForecastJob] = {}
+_rwkv_workload_forecast_next_job_id = 1
+
+
+def start_rwkv_workload_forecast(
+    mw: object | None = None, **kwargs: Any
+) -> dict[str, object]:
+    """Start `forecast_rwkv_workload(**kwargs)` on a background thread and
+    return its first progress dict; poll `rwkv_workload_forecast_progress`.
+    Starting a new forecast cancels the running one."""
+
+    global _rwkv_workload_forecast_next_job_id
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+    with _rwkv_workload_forecast_jobs_lock:
+        for previous in _rwkv_workload_forecast_jobs.values():
+            previous.cancel.set()
+        _rwkv_workload_forecast_jobs.clear()
+        job = _RwkvWorkloadForecastJob(
+            job_id=_rwkv_workload_forecast_next_job_id,
+            cancel=threading.Event(),
+        )
+        _rwkv_workload_forecast_next_job_id += 1
+        _rwkv_workload_forecast_jobs[job.job_id] = job
+
+    def report(current: int, total: int) -> None:
+        job.current, job.total = current, total
+
+    def run() -> None:
+        try:
+            job.result = forecast_rwkv_workload(
+                mw=mw, progress=report, cancel_event=job.cancel, **kwargs
+            )
+        except Exception as exc:
+            job.error = (
+                "cancelled" if job.cancel.is_set() else str(exc) or type(exc).__name__
+            )
+        finally:
+            job.done = True
+
+    threading.Thread(target=run, name="rwkv-workload-forecast", daemon=True).start()
+    return rwkv_workload_forecast_progress(job.job_id)
+
+
+def rwkv_workload_forecast_progress(job_id: int) -> dict[str, object]:
+    """JSON-able job state; `result` is set once `phase` is "complete"."""
+
+    with _rwkv_workload_forecast_jobs_lock:
+        job = _rwkv_workload_forecast_jobs.get(int(job_id))
+    if job is None:
+        return {"job_id": job_id, "phase": "missing", "done": True, "error": None}
+    phase = (
+        "running" if not job.done else "failed" if job.error is not None else "complete"
+    )
+    return {
+        "job_id": job.job_id,
+        "phase": phase,
+        "current": job.current,
+        "total": job.total,
+        "done": job.done,
+        "error": job.error,
+        "result": job.result if phase == "complete" else None,
+    }
+
+
+def cancel_rwkv_workload_forecast(job_id: int) -> None:
+    with _rwkv_workload_forecast_jobs_lock:
+        job = _rwkv_workload_forecast_jobs.get(int(job_id))
+    if job is not None:
+        job.cancel.set()
+
+
 def _rwkv_simulation_inputs(
     input_build: RwkvReviewInputBatchBuild,
 ) -> list[tuple[int, RwkvReviewInput, int]]:
@@ -24755,6 +25193,7 @@ def _rwkv_review_input_batches_for_search(
     batch_size_override: int | None = None,
     use_enabled_deck_filter: bool = True,
     include_comparison_data: bool = False,
+    include_disabled_decks: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
     if not use_enabled_deck_filter:
         return None
@@ -24771,6 +25210,7 @@ def _rwkv_review_input_batches_for_search(
         include_suspended_review=include_suspended_review,
         include_new_cards=include_new_cards,
         include_comparison_data=include_comparison_data,
+        include_disabled_decks=include_disabled_decks,
     )
     if response is None:
         return None
@@ -25388,6 +25828,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
     include_suspended_review: bool,
     include_new_cards: bool = False,
     include_comparison_data: bool = False,
+    include_disabled_decks: bool = False,
 ) -> object | None:
     get_rows_raw = getattr(backend, "rwkv_review_input_rows_for_search_raw", None)
     if callable(get_rows_raw) and hasattr(
@@ -25400,6 +25841,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
                 include_comparison_data=include_comparison_data,
+                include_disabled_decks=include_disabled_decks,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -25420,7 +25862,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
         kwargs: dict[str, object] = dict(
             search=search,
             include_suspended_review=include_suspended_review,
-            include_disabled_decks=False,
+            include_disabled_decks=include_disabled_decks,
         )
         if include_new_cards:
             kwargs["include_new_cards"] = True

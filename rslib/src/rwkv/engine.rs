@@ -44,6 +44,8 @@ mod model_bench;
 mod precision;
 #[path = "workload_comparison.rs"]
 mod workload_comparison;
+#[path = "workload_forecast.rs"]
+mod workload_forecast;
 pub use precision::StatePrecision;
 #[cfg(test)]
 #[path = "collection_benchmark.rs"]
@@ -661,6 +663,7 @@ impl ReviewPredictionQueryRef<'_> {
     }
 }
 
+#[derive(Clone)]
 struct RwkvSimulationCard {
     review_input: RwkvWorkloadSimulationInput,
     due_day: i64,
@@ -10138,6 +10141,138 @@ order by e.id, e.cid
             println!(
                 "single_timestep_warmup_fraction={:.6}",
                 (nanos as f64 / 1_000_000.0) / warmup_ms.max(f64::MIN_POSITIVE)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn rwkv_workload_forecast_collection_benchmark() {
+        let Ok(collection_path) = std::env::var("ANKI_RWKV_FORECAST_BENCH_COLLECTION") else {
+            eprintln!(
+                "set ANKI_RWKV_FORECAST_BENCH_COLLECTION to a copied collection.anki2 path to run this benchmark"
+            );
+            return;
+        };
+        let weights_path = std::env::var("ANKI_RWKV_FORECAST_BENCH_MODEL").unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(MODEL_PATH)
+                .display()
+                .to_string()
+        });
+        let days = scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_DAYS", 30) as u32;
+        let paths = scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_PATHS", 200) as u32;
+        let review_limit = scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_REVIEW_LIMIT", 9_999);
+        let state_update_interval =
+            scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_STATE_UPDATE_INTERVAL", 1) as u32;
+        let single_step_answers =
+            scan_bench_env_usize("ANKI_RWKV_FORECAST_BENCH_SINGLE_STEP", 0) == 1;
+
+        let reviews =
+            collection_reviews_for_scan_bench(std::path::Path::new(&collection_path), 0, None)
+                .expect("collection review load failed");
+        let mut inference =
+            RwkvInference::load(std::path::PathBuf::from(weights_path), 0.9, 36_500)
+                .expect("RWKV load failed");
+        let warmup_started = std::time::Instant::now();
+        inference
+            .warm_up_reviews(reviews.clone(), false)
+            .expect("RWKV warm-up failed");
+        let warmup_ms = warmup_started.elapsed().as_secs_f64() * 1000.0;
+        let today = reviews
+            .iter()
+            .filter_map(|review| review.day_offset)
+            .max()
+            .unwrap_or(0);
+        let mut latest_by_card: HashMap<i64, (&ReviewInput, i64)> = HashMap::new();
+        for review in &reviews {
+            let entry = latest_by_card.entry(review.card_id).or_insert((review, 0));
+            entry.0 = review;
+            entry.1 += 1;
+        }
+        let mut card_ids = latest_by_card.keys().copied().collect::<Vec<_>>();
+        card_ids.sort_unstable();
+        // Every reviewed card, due where the curve says (the collection copy
+        // carries no due dates in its review inputs).
+        let cards = card_ids
+            .iter()
+            .map(|card_id| {
+                let (review, reps) = latest_by_card[card_id];
+                let elapsed_days = (today - review.day_offset.unwrap_or(today)).max(0);
+                RwkvForecastCard {
+                    input: RwkvWorkloadSimulationInput {
+                        review_input: ReviewInput {
+                            is_query: true,
+                            ease: None,
+                            duration_millis: None,
+                            card_type: Some(CardType::Review as i64),
+                            day_offset: Some(today),
+                            current_elapsed_days: Some(elapsed_days),
+                            current_elapsed_seconds: Some(elapsed_days * 86_400),
+                            target_retentions: [None; 4],
+                            ..review.clone()
+                        },
+                        interval_days: Some(elapsed_days.max(1)),
+                        ease_factor: Some(2500),
+                        reps: Some(reps),
+                        lapses: Some(0),
+                    },
+                    due_day: None,
+                    group: review.deck_id.unwrap_or(0),
+                    desired_retention: 0.9,
+                    scheduler: RwkvForecastScheduler::Rwkv,
+                    fsrs_memory: None,
+                    fsrs_parameters: vec![],
+                    historical_retention: 0.9,
+                }
+            })
+            .collect::<Vec<_>>();
+        println!("collection_reviews={}", reviews.len());
+        println!("warmup_ms={warmup_ms:.1}");
+        println!("forecast_cards={}", cards.len());
+        let started = std::time::Instant::now();
+        let output = inference
+            .forecast_workload_from_warm_up(
+                cards,
+                RwkvWorkloadForecastConfig {
+                    days,
+                    paths,
+                    seed: 0,
+                    groups: vec![],
+                    default_review_limit: review_limit as u32,
+                    default_new_limit: 0,
+                    new_cards_ignore_review_limit: false,
+                    max_interval: 36_500,
+                    review_order: ReviewCardOrder::Day,
+                    suspend_after_lapses: None,
+                    state_update_interval,
+                    single_step_answers,
+                    review_model: RwkvWorkloadReviewModel {
+                        grade_seconds: [12.0, 9.0, 7.0, 5.0],
+                        bucket_probabilities: vec![],
+                    },
+                },
+                &mut |_, _| Ok(()),
+            )
+            .expect("forecast failed");
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let total_done = output.days.iter().map(|day| day.done.mean).sum::<f32>();
+        println!(
+            "days={days} paths={paths} state_update_interval={state_update_interval} single_step={single_step_answers} forecast_ms={elapsed_ms:.1} mean_reviews={total_done:.1} reviews_per_s={:.0}",
+            total_done as f64 * paths as f64 / (elapsed_ms / 1000.0)
+        );
+        for day in output.days.iter().take(days as usize) {
+            println!(
+                "day={} due_mean={:.1} due_p1={:.0} due_p5={:.0} due_p50={:.0} due_p95={:.0} due_p99={:.0} done_mean={:.1} minutes_mean={:.1}",
+                day.day,
+                day.due.mean,
+                day.due.p1,
+                day.due.p5,
+                day.due.p50,
+                day.due.p95,
+                day.due.p99,
+                day.done.mean,
+                day.seconds.mean / 60.0
             );
         }
     }
