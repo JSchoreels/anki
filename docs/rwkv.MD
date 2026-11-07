@@ -1457,15 +1457,16 @@ order, mix and refresh policy when it is in scope; otherwise the first tree in
 name order supplies that policy. Reviews use the configured
 refresh interval, candidate window and precomputation setting; queued scores
 can stay stale as they do during study, but the simulated answer probability is
-evaluated at the answer time. Paths run concurrently within the workload state
+evaluated at the answer time. A precomputed card is checked against the
+remaining deck and parent limits before it is answered. Paths run concurrently within the workload state
 memory budget and support cancellation. The forecast reuses bounded decoded
 copies of compressed card and note states across paths and retains a bounded
 number of decoded per-path updates. It also reuses new-card ordering when the
 gather order does not depend on retrievability. These caches do not change the
 configured refresh cadence, selection, or compressed-state precision.
 
-One local macOS measurement (2026-11-07), using a copied collection with 28,925
-matched cards and resident SM57 state warmed from 225,482 reviews at the
+One local macOS measurement (2026-11-07), using an all-collection search on a
+copy with 28,925 matched cards and resident SM57 state warmed from 225,482 reviews at the
 default INT4-card/INT8-note precision, compared the same seeded two-day path
 with a full refresh after each answer. The forecast took 66.5 s before and
 45.7 s after the cache and queue changes (31% less), with identical complete

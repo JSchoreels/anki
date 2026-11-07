@@ -44,6 +44,13 @@ pub(super) struct InstantReviewPolicy {
     pub day: i64,
 }
 
+pub(super) struct InstantStudyCandidates {
+    pub learning: Vec<usize>,
+    pub review: Vec<usize>,
+    pub new: Vec<usize>,
+    pub precomputed_allowed: bool,
+}
+
 pub(super) fn instant_due(card: &InstantCandidate, policy: InstantReviewPolicy) -> bool {
     if !card.instant_enabled {
         return card.due_day <= policy.day;
@@ -90,16 +97,38 @@ pub(super) fn instant_study_candidates(
     reviews: &[InstantCandidate],
     day_learning_cards: &[InstantCandidate],
     new_decks: &[i64],
+    precomputed: Option<(i32, InstantCandidate)>,
     decks: &[Deck],
     configs: &HashMap<DeckConfigId, DeckConfig>,
     today: u32,
     new_cards_ignore_review_limit: bool,
     policy: InstantReviewPolicy,
-) -> io::Result<(Vec<usize>, Vec<usize>, Vec<usize>)> {
+) -> io::Result<InstantStudyCandidates> {
     if decks.is_empty() {
         return Err(invalid("Instant forecast has no study deck"));
     }
     let mut limits = LimitTreeMap::build(decks, configs, today, new_cards_ignore_review_limit);
+    // A precomputed card can remain ahead of the freshly ordered queue, but
+    // the previous answer may have exhausted its deck's remaining limit.
+    // Check before the queue reserves any slots for other candidates.
+    let precomputed_allowed = if let Some((queue, card)) = precomputed {
+        let deck = DeckId(card.deck_id);
+        match queue {
+            0 => !limits
+                .limit_reached(deck, LimitKind::New)
+                .map_err(map_error)?,
+            1 => true,
+            2 | 3 => {
+                ignores_review_limit(&card, decks, configs)?
+                    || !limits
+                        .limit_reached(deck, LimitKind::Review)
+                        .map_err(map_error)?
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
     let mut learning = Vec::new();
     for (index, card) in day_learning_cards.iter().enumerate() {
         let deck = DeckId(card.deck_id);
@@ -132,7 +161,12 @@ pub(super) fn instant_study_candidates(
             limits.reserve_new_card(deck).map_err(map_error)?;
         }
     }
-    Ok((learning, review, new))
+    Ok(InstantStudyCandidates {
+        learning,
+        review,
+        new,
+        precomputed_allowed,
+    })
 }
 
 fn select_reviews(
@@ -450,16 +484,34 @@ mod tests {
         preset.inner.new_per_day = 1;
         let configs = HashMap::from([(DeckConfigId(1), preset)]);
         let reviews = [card(1, 1, 0.7)];
-        let shared =
-            instant_study_candidates(&reviews, &[], &[1], &decks, &configs, 0, false, policy())
-                .unwrap();
-        let separate =
-            instant_study_candidates(&reviews, &[], &[1], &decks, &configs, 0, true, policy())
-                .unwrap();
-        assert_eq!(shared.1, vec![0]);
-        assert!(shared.2.is_empty());
-        assert_eq!(separate.1, vec![0]);
-        assert_eq!(separate.2, vec![0]);
+        let shared = instant_study_candidates(
+            &reviews,
+            &[],
+            &[1],
+            None,
+            &decks,
+            &configs,
+            0,
+            false,
+            policy(),
+        )
+        .unwrap();
+        let separate = instant_study_candidates(
+            &reviews,
+            &[],
+            &[1],
+            None,
+            &decks,
+            &configs,
+            0,
+            true,
+            policy(),
+        )
+        .unwrap();
+        assert_eq!(shared.review, vec![0]);
+        assert!(shared.new.is_empty());
+        assert_eq!(separate.review, vec![0]);
+        assert_eq!(separate.new, vec![0]);
     }
 
     #[test]
@@ -475,6 +527,7 @@ mod tests {
                 &[],
                 &[],
                 &[2, 2, 2],
+                None,
                 &decks,
                 &configs,
                 0,
@@ -482,7 +535,7 @@ mod tests {
                 policy(),
             )
             .unwrap();
-            assert_eq!(result.2, vec![0]);
+            assert_eq!(result.new, vec![0]);
         }
     }
 
@@ -494,6 +547,7 @@ mod tests {
             &[card(1, 1, 0.5)],
             &[card(2, 1, 0.9)],
             &[],
+            None,
             &decks,
             &configs,
             0,
@@ -501,8 +555,131 @@ mod tests {
             policy(),
         )
         .unwrap();
-        assert_eq!(result.0, vec![0]);
-        assert!(result.1.is_empty());
+        assert_eq!(result.learning, vec![0]);
+        assert!(result.review.is_empty());
+    }
+
+    #[test]
+    fn precomputed_review_respects_the_deck_override_and_remaining_capacity() {
+        let mut root = deck(1, "Study", 1);
+        root.normal_mut().unwrap().review_limit = Some(100);
+        root.common.review_studied = 99;
+        let configs = HashMap::from([(DeckConfigId(1), config(1, 0, 200))]);
+        let precomputed = card(2, 1, 0.8);
+        // Only one slot remains, and the newly sorted queue would reserve it
+        // for a different card. The precomputed card can still use that slot.
+        let reviews = [card(1, 1, 0.7), precomputed];
+        let result = instant_study_candidates(
+            &reviews,
+            &[],
+            &[],
+            Some((2, precomputed)),
+            &[root.clone()],
+            &configs,
+            0,
+            false,
+            policy(),
+        )
+        .unwrap();
+        assert_eq!(result.review, vec![0]);
+        assert!(result.precomputed_allowed);
+
+        root.common.review_studied = 100;
+        let result = instant_study_candidates(
+            &reviews,
+            &[],
+            &[],
+            Some((2, precomputed)),
+            &[root],
+            &configs,
+            0,
+            false,
+            policy(),
+        )
+        .unwrap();
+        assert!(result.review.is_empty());
+        assert!(!result.precomputed_allowed);
+    }
+
+    #[test]
+    fn precomputed_review_respects_an_exhausted_parent_limit() {
+        let mut parent = deck(1, "Parent", 1);
+        parent.common.review_studied = 1;
+        let decks = [parent, deck(2, "Parent::Child", 2)];
+        let configs = HashMap::from([
+            (DeckConfigId(1), config(1, 0, 1)),
+            (DeckConfigId(2), config(2, 0, 20)),
+        ]);
+        let result = instant_study_candidates(
+            &[],
+            &[],
+            &[],
+            Some((2, card(1, 2, 0.7))),
+            &decks,
+            &configs,
+            0,
+            false,
+            policy(),
+        )
+        .unwrap();
+        assert!(!result.precomputed_allowed);
+    }
+
+    #[test]
+    fn precomputed_new_card_respects_both_daily_limits() {
+        let mut root = deck(1, "Study", 1);
+        root.common.review_studied = 1;
+        let mut preset = config(1, 0, 1);
+        preset.inner.new_per_day = 1;
+        let configs = HashMap::from([(DeckConfigId(1), preset)]);
+        let check = |deck: Deck, ignore_review_limit| {
+            instant_study_candidates(
+                &[],
+                &[],
+                &[],
+                Some((0, card(1, 1, 0.7))),
+                &[deck],
+                &configs,
+                0,
+                ignore_review_limit,
+                policy(),
+            )
+            .unwrap()
+            .precomputed_allowed
+        };
+        assert!(!check(root.clone(), false));
+        assert!(check(root.clone(), true));
+        root.common.new_studied = 1;
+        assert!(!check(root, true));
+    }
+
+    #[test]
+    fn precomputed_learning_and_exempt_same_day_review_can_exceed_review_limit() {
+        let mut root = deck(1, "Study", 1);
+        root.common.review_studied = 1;
+        let mut preset = config(1, 0, 1);
+        preset.inner.same_day_reviews_ignore_review_limit = true;
+        let configs = HashMap::from([(DeckConfigId(1), preset)]);
+        let mut repeated = card(1, 1, 0.7);
+        repeated.reviewed_today = true;
+        let check = |queue, candidate| {
+            instant_study_candidates(
+                &[],
+                &[],
+                &[],
+                Some((queue, candidate)),
+                &[root.clone()],
+                &configs,
+                0,
+                false,
+                policy(),
+            )
+            .unwrap()
+            .precomputed_allowed
+        };
+        assert!(check(1, card(2, 1, 0.7)));
+        assert!(!check(3, card(3, 1, 0.7)));
+        assert!(check(2, repeated));
     }
 
     #[test]

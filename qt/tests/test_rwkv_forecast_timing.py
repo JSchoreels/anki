@@ -471,3 +471,111 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     assert progress_calls > 1
     assert runtime.warm_up_state(query) == initial_state
     assert runtime.cache_state() == initial_cache
+
+
+def test_instant_forecast_precomputed_card_respects_remaining_daily_limit() -> None:
+    model = (
+        Path(__file__).parents[1]
+        / "aqt"
+        / "rwkv_inference"
+        / "sm57"
+        / "weights.f32.bin"
+    )
+    runtime = _RustRwkvRuntime(
+        model_path=model, target_retention=0.9, max_interval_days=36500, model="sm57"
+    )
+    answer = rwkv_scheduler.RwkvReviewInput(
+        identity=rwkv_scheduler.RwkvReviewIdentity(
+            card_id=100, note_id=1000, deck_id=1, preset_id=1
+        ),
+        is_query=False,
+        ease=3,
+        duration_millis=5000,
+        card_type=2,
+        card_queue=2,
+        card_due=100,
+        interval_days=5,
+        ease_factor=2500,
+        reps=3,
+        lapses=0,
+        day_offset=100,
+        current_state_kind="normal",
+        current_normal_state_kind="review",
+        current_elapsed_days=5,
+        current_elapsed_seconds=432_000,
+    )
+    answers = [
+        replace(
+            answer,
+            identity=rwkv_scheduler.RwkvReviewIdentity(
+                card_id=100 + index, note_id=1000 + index, deck_id=1, preset_id=1
+            ),
+            ease=1 + index % 4,
+            duration_millis=1000 + index * 100,
+            current_elapsed_days=1 + index % 10,
+            current_elapsed_seconds=86_400 * (1 + index % 10),
+        )
+        for index in range(30)
+    ]
+    runtime.warm_up_reviews(answers, return_snapshot=False)
+    cards = [
+        rwkv_scheduler.RwkvForecastCardInput(
+            review_input=replace(
+                review, is_query=True, ease=None, duration_millis=None
+            ),
+            due_day=0,
+            group=1,
+            desired_retention=0.99,
+            scheduler=rwkv_scheduler.RWKV_FORECAST_SCHEDULER_RWKV,
+        )
+        for review in answers
+    ]
+    # The deck's limit overrides the preset; two reviews were already done.
+    deck = decks_pb2.Deck(
+        id=1,
+        name="Study",
+        normal=decks_pb2.Deck.Normal(config_id=1, review_limit=5),
+        common=decks_pb2.Deck.Common(last_day_studied=100, review_studied=2),
+    )
+    preset = deck_config_pb2.DeckConfig(
+        id=1,
+        config=deck_config_pb2.DeckConfig.Config(
+            rwkv_review_instant_order_enabled=True,
+            reviews_per_day=200,
+            new_per_day=0,
+            maximum_review_interval=36500,
+            initial_ease=2.5,
+        ),
+    )
+    output = runtime.forecast_instant_workload(
+        cards=cards,
+        decks=[deck.SerializeToString()],
+        deck_configs=[preset.SerializeToString()],
+        study_deck_id=1,
+        instant_decks={1},
+        timing_patterns=[[(10_000, 2000), (15_000, 2000)]],
+        timing_pattern_success_shares=[(0.0, 1.0, 0.0)],
+        intervening_reviews={},
+        latest_answers_today={},
+        days=1,
+        paths=1,
+        seed=3,
+        today=100,
+        new_cards_ignore_review_limit=False,
+        fsrs_enabled=False,
+        fsrs_learning_queues_disabled=False,
+        fsrs_short_term_with_steps_enabled=True,
+        learn_ahead_secs=0,
+        day_start_secs=0,
+        now_millis=0,
+        same_day_allowed=False,
+        min_intervening_reviews=0,
+        min_elapsed_secs=0,
+        refresh_interval=1,
+        candidate_refresh_enabled=False,
+        candidate_refresh_limit=64,
+        precompute_next_card=True,
+        review_order=7,
+        review_model=SimpleNamespace(grade_seconds=(1.0,) * 4, bucket_probabilities={}),
+    )
+    assert output[1][0][2][0] == 3.0
