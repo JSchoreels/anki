@@ -308,6 +308,7 @@ class Collection(DeprecatedNamesMixin):
     ) -> None:
         self._backend = backend or RustBackend(server=server)
         self.db: DBProxy | None = None
+        self._last_sync_remote_collection_changed: bool | None = None
         self.server = server
         self.path = os.path.abspath(path)
         self.reopen()
@@ -1379,7 +1380,14 @@ class Collection(DeprecatedNamesMixin):
         )
 
     def sync_collection(self, auth: SyncAuth, sync_media: bool) -> SyncOutput:
-        return self._backend.sync_collection(auth=auth, sync_media=sync_media)
+        self._last_sync_remote_collection_changed = None
+        output = self._backend.sync_collection(auth=auth, sync_media=sync_media)
+        # A full sync may replace the collection after this call returns. Its
+        # final direction is unknown here, so conservatively report a change.
+        self._last_sync_remote_collection_changed = (
+            output.remote_collection_changed or output.required != output.NO_CHANGES
+        )
+        return output
 
     def sync_media(self, auth: SyncAuth) -> None:
         self._backend.sync_media(auth)

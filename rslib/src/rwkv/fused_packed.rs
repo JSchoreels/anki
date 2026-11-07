@@ -281,8 +281,12 @@ mod tests {
         }; 130];
         let expected = decoded
             .model
-            .review_retrievability_query_refs_batched(&items);
-        let actual = fused.model.review_retrievability_query_refs_batched(&items);
+            .review_retrievability_query_refs_batched(&items)
+            .unwrap();
+        let actual = fused
+            .model
+            .review_retrievability_query_refs_batched(&items)
+            .unwrap();
         for (expected, actual) in expected.iter().zip(actual) {
             assert!((expected - actual).abs() < 1e-5, "{expected} vs {actual}");
         }

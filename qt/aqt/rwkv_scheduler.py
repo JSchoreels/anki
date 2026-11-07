@@ -5331,14 +5331,18 @@ def record_reviewer_answer(
                 return
             if rwkv_review_active(
                 reviewer, card
-            ) and not _prepare_reviewer_backend_for_review(reviewer):
+            ) and not _reviewer_backend_ready_for_review(reviewer):
+                # The answer is already in the collection. Restoring now can
+                # replay it from the review log, so applying it again below
+                # would advance the recurrent state twice. Leave the state
+                # cold and let the next cache preparation replay it once.
                 _invalidate_reviewer_backend_state(
                     reviewer,
-                    reason="review answered before warm-up completed",
+                    reason="review answered while RWKV state was cold",
                     preserve_cold_fallback=True,
                     expected_mutation_context=mutation_context,
                 )
-                logger.debug("RWKV answer update skipped: warm-up pending")
+                logger.debug("RWKV answer update deferred: state is cold")
                 return
             if not _reviewer_backend_mutation_context_is_current(
                 mutation_context,

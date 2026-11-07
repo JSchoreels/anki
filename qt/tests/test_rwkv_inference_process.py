@@ -7,7 +7,9 @@ import importlib
 import importlib.util
 import math
 import struct
+from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1065,3 +1067,77 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve() ->
         release.restore_cache_state(paired.cache_state())
     with pytest.raises(Exception):
         paired.restore_cache_state(release.cache_state())
+
+
+def test_rsbridge_rwkv_queue_scoring_returns_an_exception_for_invalid_state(
+    monkeypatch, caplog
+) -> None:
+    from aqt import rwkv_scheduler
+    from aqt.reviewer import Reviewer
+
+    root = Path(__file__).resolve().parents[2]
+    rsbridge = _import_rsbridge(root)
+    model_path = root / "qt/aqt/rwkv_inference" / _RWKV_MODEL_FILENAME
+    runtime = rsbridge.RwkvInference(
+        str(model_path),
+        0.9,
+        36500,
+        state_precision="cards_int4_notes_int8",
+        model="sm40",
+    )
+    invalid_answer = {**_RWKV_REVIEWS[0], "duration": -10}
+
+    def input_row(review, *, is_query):
+        return (
+            *_rwkv_review_args(
+                review,
+                is_query=is_query,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
+
+    runtime.warm_up_reviews([input_row(invalid_answer, is_query=False)], False)
+
+    with pytest.raises(Exception, match="RWKV card state:.*non-finite shift"):
+        runtime.predict_retrievability_many_from_warm_up(
+            [input_row(invalid_answer, is_query=True)]
+        )
+
+    class Taskman:
+        def run_in_background(self, task, on_done, **_kwargs):
+            future = Future()
+            try:
+                future.set_result(task())
+            except Exception as error:
+                future.set_exception(error)
+            on_done(future)
+
+    completed = []
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=invalid_answer["card_id"])
+    reviewer.mw = SimpleNamespace(taskman=Taskman())
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prepare_reviewer_queue_order_async_work",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "score_reviewer_queue_order_async_work",
+        lambda *_args, **_kwargs: runtime.predict_retrievability_many_from_warm_up(
+            [input_row(invalid_answer, is_query=True)]
+        ),
+    )
+
+    reviewer._prepare_rwkv_queue_order_async(on_finished=completed.append)
+
+    assert completed == [False]
+    assert reviewer._rwkv_queue_refresh_in_flight is False
+    assert (
+        "RWKV card state: invalid RWKV compact state: non-finite shift" in caplog.text
+    )
