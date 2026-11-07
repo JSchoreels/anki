@@ -1315,6 +1315,91 @@ impl RwkvInference {
         write_snapshot_optional_bytes(&mut out, Some(&cache_state))
     }
 
+    /// `append_warm_up_snapshot_binary` for a paired runtime: every stream
+    /// state and the runtime cache hold the release's (`self`) and the
+    /// instant model's, in the layout of `crate::rwkv::paired`.
+    pub fn append_paired_warm_up_snapshot_binary(
+        &self,
+        instant: &RwkvInference,
+        path: PathBuf,
+    ) -> io::Result<()> {
+        let mut out = io::BufWriter::new(fs::OpenOptions::new().append(true).open(path)?);
+        for (release, paired) in [
+            (&self.warm_up_states.card, &instant.warm_up_states.card),
+            (&self.warm_up_states.note, &instant.warm_up_states.note),
+            (&self.warm_up_states.deck, &instant.warm_up_states.deck),
+            (&self.warm_up_states.preset, &instant.warm_up_states.preset),
+        ] {
+            write_paired_snapshot_state_map(&mut out, release, paired)?;
+        }
+        let global = match (
+            self.warm_up_states.global.as_ref(),
+            instant.warm_up_states.global.as_ref(),
+        ) {
+            (Some(release), Some(paired)) => Some(crate::rwkv::paired::join_state(
+                &serialize_module_state(release),
+                &serialize_module_state(paired),
+            )),
+            (None, None) => None,
+            _ => return Err(paired_streams_differ()),
+        };
+        write_snapshot_optional_bytes(&mut out, global.as_deref())?;
+        let cache_state =
+            crate::rwkv::paired::join_cache(&self.cache_state(), &instant.cache_state());
+        write_snapshot_optional_bytes(&mut out, Some(&cache_state))?;
+        io::Write::flush(&mut out)
+    }
+
+    /// Instant recall and button probabilities of each query request, from
+    /// the query row alone: no simulated answers, which only intervals need.
+    pub fn predict_query_outputs_many(
+        &mut self,
+        requests: &[ReviewPredictionRequest],
+    ) -> io::Result<Vec<(f32, [f32; 4])>> {
+        let mut work_items = Vec::with_capacity(requests.len());
+        for request in requests {
+            if !request.input.is_query {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV batched prediction only supports query inputs",
+                ));
+            }
+            work_items.push(self.prediction_work_item(&request.input, &request.state)?);
+        }
+        Ok(self
+            .model
+            .review_many(&work_items)
+            .into_iter()
+            .map(|heads| (heads.retrievability, heads.button_probabilities))
+            .collect())
+    }
+
+    /// `review` without intervals or S90: instant recall, button
+    /// probabilities and the next stream states. Answers advance the
+    /// resident state exactly as `review` does.
+    pub fn review_query_outputs(
+        &mut self,
+        input: ReviewInput,
+        state: ReviewState<'_>,
+    ) -> io::Result<(f32, [f32; 4], ReviewStateOwned)> {
+        let heads = self.review_heads(&input, &state)?;
+        if !input.is_query {
+            self.features.store_review(&input);
+            self.curves.insert(input.card_id, heads.curve.clone());
+        }
+        let next = ReviewStateOwned {
+            card: Some(serialize_module_state(&heads.next_state.card)),
+            deck: Some(serialize_module_state(&heads.next_state.deck)),
+            note: Some(serialize_module_state(&heads.next_state.note)),
+            preset: Some(serialize_module_state(&heads.next_state.preset)),
+            global: Some(serialize_module_state(&heads.next_state.global)),
+        };
+        if !input.is_query {
+            self.warm_up_states.store(&input, heads.next_state);
+        }
+        Ok((heads.retrievability, heads.button_probabilities, next))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn write_warm_up_state_checkpoint(
         &mut self,
@@ -1331,8 +1416,92 @@ impl RwkvInference {
         full: bool,
         durable: bool,
     ) -> io::Result<i64> {
-        let runtime_state_len = self.runtime_cache_state_len();
+        self.write_warm_up_state_checkpoint_with(
+            None,
+            path,
+            store_generation,
+            parent_segment_id,
+            last_review_id,
+            review_count,
+            history_hash,
+            replay_key,
+            previous_review_ids,
+            previous_intervals,
+            review_counts,
+            full,
+            durable,
+        )
+    }
+
+    /// Writes one segment for a paired runtime: the release (`self`) and the
+    /// instant model share the segment row; the runtime cache holds both, and
+    /// the instant model's state delta uses its own chunk index range.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_paired_warm_up_state_checkpoint(
+        &mut self,
+        instant: &mut RwkvInference,
+        path: PathBuf,
+        store_generation: &str,
+        parent_segment_id: Option<i64>,
+        last_review_id: i64,
+        review_count: i64,
+        history_hash: &str,
+        replay_key: &str,
+        previous_review_ids: &[u8],
+        previous_intervals: &[u8],
+        review_counts: &[u8],
+        full: bool,
+        durable: bool,
+    ) -> io::Result<i64> {
+        self.write_warm_up_state_checkpoint_with(
+            Some(instant),
+            path,
+            store_generation,
+            parent_segment_id,
+            last_review_id,
+            review_count,
+            history_hash,
+            replay_key,
+            previous_review_ids,
+            previous_intervals,
+            review_counts,
+            full,
+            durable,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_warm_up_state_checkpoint_with(
+        &mut self,
+        mut instant: Option<&mut RwkvInference>,
+        path: PathBuf,
+        store_generation: &str,
+        parent_segment_id: Option<i64>,
+        last_review_id: i64,
+        review_count: i64,
+        history_hash: &str,
+        replay_key: &str,
+        previous_review_ids: &[u8],
+        previous_intervals: &[u8],
+        review_counts: &[u8],
+        full: bool,
+        durable: bool,
+    ) -> io::Result<i64> {
+        let release_runtime_state_len = self.runtime_cache_state_len();
+        let runtime_state_len = match instant.as_deref() {
+            Some(instant) => {
+                crate::rwkv::paired::PAIRED_CACHE_MAGIC.len()
+                    + 8
+                    + release_runtime_state_len
+                    + instant.runtime_cache_state_len()
+            }
+            None => release_runtime_state_len,
+        };
         let state_delta_len = self.warm_up_states.checkpoint_delta_len(full)?;
+        let instant_state_delta_len = instant
+            .as_deref()
+            .map(|instant| instant.warm_up_states.checkpoint_delta_len(full))
+            .transpose()?;
         let store = match self.state_cache_store.take() {
             Some(store) if store.matches(&path, store_generation, durable) => store,
             _ => StateCacheStoreWriter::open(path, store_generation, durable)?,
@@ -1391,13 +1560,50 @@ insert into segments (
                 segment_id,
                 state_delta_len,
                 store.delta_chunk_bytes,
+                0,
             )?;
+            let instant_state_delta_chunk_ids = instant_state_delta_len
+                .map(|len| {
+                    insert_state_cache_delta_chunks(
+                        &transaction,
+                        segment_id,
+                        len,
+                        store.delta_chunk_bytes,
+                        crate::rwkv::paired::INSTANT_CHUNK_BASE,
+                    )
+                })
+                .transpose()?;
             {
                 let mut runtime_state = transaction
                     .blob_open(MAIN_DB, "segments", "runtime_state", segment_id, false)
                     .map_err(state_cache_store_error)?;
-                self.write_runtime_cache_state(&mut runtime_state)?;
+                if let Some(instant) = instant.as_deref() {
+                    io::Write::write_all(
+                        &mut runtime_state,
+                        crate::rwkv::paired::PAIRED_CACHE_MAGIC,
+                    )?;
+                    io::Write::write_all(
+                        &mut runtime_state,
+                        &(release_runtime_state_len as u64).to_le_bytes(),
+                    )?;
+                    self.write_runtime_cache_state(&mut runtime_state)?;
+                    instant.write_runtime_cache_state(&mut runtime_state)?;
+                } else {
+                    self.write_runtime_cache_state(&mut runtime_state)?;
+                }
                 runtime_state.close().map_err(state_cache_store_error)?;
+            }
+            if let (Some(instant), Some(chunk_ids), Some(len)) = (
+                instant.as_deref(),
+                instant_state_delta_chunk_ids,
+                instant_state_delta_len,
+            ) {
+                let mut state_delta =
+                    StateCacheDeltaChunkWriter::new(&transaction, chunk_ids, len)?;
+                instant
+                    .warm_up_states
+                    .write_checkpoint_delta(&mut state_delta, full)?;
+                state_delta.finish()?;
             }
             {
                 let mut state_delta = StateCacheDeltaChunkWriter::new(
@@ -1416,6 +1622,9 @@ insert into segments (
                 .release_memory()
                 .map_err(state_cache_store_error)?;
             self.warm_up_states.mark_checkpoint_saved();
+            if let Some(instant) = instant.as_deref_mut() {
+                instant.warm_up_states.mark_checkpoint_saved();
+            }
             Ok(segment_id)
         })();
         if result.is_ok() {
@@ -1443,6 +1652,32 @@ insert into segments (
         store_generation: &str,
         segment_id: i64,
     ) -> io::Result<()> {
+        self.restore_warm_up_state_checkpoint_with(None, path, store_generation, segment_id)
+    }
+
+    /// Restores a segment written by `write_paired_warm_up_state_checkpoint`.
+    pub fn restore_paired_warm_up_state_checkpoint(
+        &mut self,
+        instant: &mut RwkvInference,
+        path: PathBuf,
+        store_generation: &str,
+        segment_id: i64,
+    ) -> io::Result<()> {
+        self.restore_warm_up_state_checkpoint_with(
+            Some(instant),
+            path,
+            store_generation,
+            segment_id,
+        )
+    }
+
+    fn restore_warm_up_state_checkpoint_with(
+        &mut self,
+        instant: Option<&mut RwkvInference>,
+        path: PathBuf,
+        store_generation: &str,
+        segment_id: i64,
+    ) -> io::Result<()> {
         self.finish_warm_up_state_checkpoints()?;
         let connection = Connection::open_with_flags(
             path,
@@ -1465,12 +1700,31 @@ insert into segments (
                 )
             })?;
         let segment_chain = state_cache_segment_chain(&connection, segment_id)?;
-        let warm_up_states = read_state_cache_maps(&connection, &segment_chain)?;
-        let (features, curves) = read_runtime_cache_state(&runtime_state)?;
+        let Some(instant) = instant else {
+            let warm_up_states = read_state_cache_maps(&connection, &segment_chain, 0)?;
+            let (features, curves) = read_runtime_cache_state(&runtime_state)?;
+            self.warm_up_states = warm_up_states;
+            self.features = features;
+            self.curves = curves;
+            return Ok(());
+        };
+        instant.finish_warm_up_state_checkpoints()?;
+        let (release_runtime, instant_runtime) = crate::rwkv::paired::split_cache(&runtime_state)?;
+        let warm_up_states = read_state_cache_maps(&connection, &segment_chain, 0)?;
+        let instant_warm_up_states = read_state_cache_maps(
+            &connection,
+            &segment_chain,
+            crate::rwkv::paired::INSTANT_CHUNK_BASE,
+        )?;
+        let (features, curves) = read_runtime_cache_state(release_runtime)?;
+        let (instant_features, instant_curves) = read_runtime_cache_state(instant_runtime)?;
 
         self.warm_up_states = warm_up_states;
         self.features = features;
         self.curves = curves;
+        instant.warm_up_states = instant_warm_up_states;
+        instant.features = instant_features;
+        instant.curves = instant_curves;
         Ok(())
     }
 
@@ -4945,6 +5199,40 @@ fn write_snapshot_state_map(
     Ok(())
 }
 
+fn paired_streams_differ() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "RWKV paired models hold different streams",
+    )
+}
+
+fn write_paired_snapshot_state_map(
+    out: &mut impl io::Write,
+    release: &HashMap<i64, ModuleState>,
+    instant: &HashMap<i64, ModuleState>,
+) -> io::Result<()> {
+    if release.len() != instant.len() {
+        return Err(paired_streams_differ());
+    }
+    write_snapshot_u32(out, release.len())?;
+    let mut states = release.iter().collect::<Vec<_>>();
+    states.sort_unstable_by_key(|(identity, _)| **identity);
+    for (identity, state) in states {
+        let paired = instant.get(identity).ok_or_else(paired_streams_differ)?;
+        let release_len = serialized_module_state_len(state);
+        let instant_len = serialized_module_state_len(paired);
+        out.write_all(&identity.to_le_bytes())?;
+        write_snapshot_u32(
+            out,
+            crate::rwkv::paired::paired_len(release_len, instant_len),
+        )?;
+        crate::rwkv::paired::write_paired_header(out, release_len)?;
+        write_serialized_module_state(out, state)?;
+        write_serialized_module_state(out, paired)?;
+    }
+    Ok(())
+}
+
 fn write_snapshot_optional_bytes(out: &mut impl io::Write, value: Option<&[u8]>) -> io::Result<()> {
     match value {
         Some(value) => {
@@ -5101,10 +5389,11 @@ fn insert_state_cache_delta_chunks(
     segment_id: i64,
     state_delta_len: usize,
     chunk_bytes: usize,
+    first_chunk_index: i64,
 ) -> io::Result<Vec<i64>> {
     let mut chunk_ids = Vec::with_capacity(state_delta_len.div_ceil(chunk_bytes));
     let mut remaining = state_delta_len;
-    let mut chunk_index = 0_i64;
+    let mut chunk_index = first_chunk_index;
     while remaining > 0 {
         let chunk_len = remaining.min(chunk_bytes);
         transaction
@@ -5206,26 +5495,37 @@ impl io::Write for StateCacheDeltaChunkWriter<'_> {
     }
 }
 
-fn state_cache_delta_chunk_ids(connection: &Connection, segment_id: i64) -> io::Result<Vec<i64>> {
+/// The chunks of one state delta: a paired runtime stores the instant
+/// model's delta from `paired::INSTANT_CHUNK_BASE`, the release's from 0.
+fn state_cache_delta_chunk_ids(
+    connection: &Connection,
+    segment_id: i64,
+    first_chunk_index: i64,
+) -> io::Result<Vec<i64>> {
     let mut statement = connection
         .prepare(
             r#"
 select id, chunk_index
 from segment_state_chunks
-where segment_id = ?
+where segment_id = ? and chunk_index >= ? and chunk_index < ?
 order by chunk_index
 "#,
         )
         .map_err(state_cache_store_error)?;
     let rows = statement
-        .query_map([segment_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-        })
+        .query_map(
+            params![
+                segment_id,
+                first_chunk_index,
+                first_chunk_index + crate::rwkv::paired::INSTANT_CHUNK_BASE
+            ],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
         .map_err(state_cache_store_error)?;
     let mut chunk_ids = Vec::new();
     for (expected_index, row) in rows.enumerate() {
         let (chunk_id, chunk_index) = row.map_err(state_cache_store_error)?;
-        if chunk_index != expected_index as i64 {
+        if chunk_index != first_chunk_index + expected_index as i64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid RWKV state delta chunk sequence",
@@ -5365,6 +5665,7 @@ fn state_cache_segment_chain(
 fn read_state_cache_maps(
     connection: &Connection,
     segment_chain: &[i64],
+    first_chunk_index: i64,
 ) -> io::Result<ReviewStateMaps> {
     let mut result = ReviewStateMaps::default();
     let mut seen_card = HashSet::new();
@@ -5374,7 +5675,7 @@ fn read_state_cache_maps(
     let mut seen_global = false;
     let mut state_bytes = Vec::new();
     for segment_id in segment_chain {
-        let chunk_ids = state_cache_delta_chunk_ids(connection, *segment_id)?;
+        let chunk_ids = state_cache_delta_chunk_ids(connection, *segment_id, first_chunk_index)?;
         // SQLite streams large blob reads close to disk speed, while small
         // reads make a cold restore several times slower.
         let mut state_delta = io::BufReader::with_capacity(
@@ -11310,14 +11611,14 @@ order by e.id, e.cid
             )
             .unwrap();
         let chunk_ids =
-            insert_state_cache_delta_chunks(&transaction, 1, data.len(), CHUNK_BYTES).unwrap();
+            insert_state_cache_delta_chunks(&transaction, 1, data.len(), CHUNK_BYTES, 0).unwrap();
         let mut writer =
             StateCacheDeltaChunkWriter::new(&transaction, chunk_ids, data.len()).unwrap();
         io::Write::write_all(&mut writer, &data).unwrap();
         writer.finish().unwrap();
         transaction.commit().unwrap();
 
-        let chunk_ids = state_cache_delta_chunk_ids(&connection, 1).unwrap();
+        let chunk_ids = state_cache_delta_chunk_ids(&connection, 1, 0).unwrap();
         assert_eq!(chunk_ids.len(), 4);
         let mut reader = io::BufReader::with_capacity(
             1000,

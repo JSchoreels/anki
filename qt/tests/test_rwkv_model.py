@@ -10,7 +10,13 @@ import pytest
 
 from aqt import rwkv_scheduler
 from aqt.profiles import ProfileManager, profileConf
-from aqt.rwkv_model import RWKV_MODELS, model_for_profile
+from aqt.rwkv_model import (
+    RWKV_MODELS,
+    RwkvRuntimeModels,
+    model_for_profile,
+    runtime_models,
+    specialized_instant_model_for_profile,
+)
 
 
 @pytest.mark.parametrize(
@@ -94,10 +100,12 @@ def test_deck_options_applies_local_choices_only_after_a_successful_save(
     if has_settings:
         request.rwkv_profile_settings.model = "legacy"
         request.rwkv_profile_settings.state_precision = "cards_int4_notes_int8"
+        request.rwkv_profile_settings.specialized_instant_model = True
     mediasrv._on_update_deck_configs_success(request, close_on_success=False)
     assert profile == {
         "rwkvModel": "legacy" if should_save else "sm36",
         "rwkvStatePrecision": "cards_int4_notes_int8" if should_save else "int8",
+        **({"rwkvSpecializedInstantModel": True} if should_save else {}),
         "other": 42,
     }
     assert save.call_count == int(should_save)
@@ -334,3 +342,165 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
     assert key() == active_key
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
     assert (key() == active_key) == (saved_model == active_model)
+
+
+@pytest.mark.parametrize(
+    "instant_used,curve_used,specialized,expected",
+    [
+        # Only RWKV-Instant: the instant-only model (SM57) alone, no toggle needed.
+        (True, False, False, RwkvRuntimeModels("sm57")),
+        (True, False, True, RwkvRuntimeModels("sm57")),
+        # Both schedulers: the shared release (SM63) unless the toggle is on.
+        (True, True, False, RwkvRuntimeModels("sm72e25")),
+        (True, True, True, RwkvRuntimeModels("sm72e25", "sm57")),
+        # Only RWKV-Curve, or neither: the release alone.
+        (False, True, False, RwkvRuntimeModels("sm72e25")),
+        (False, True, True, RwkvRuntimeModels("sm72e25")),
+        (False, False, True, RwkvRuntimeModels("sm72e25")),
+    ],
+)
+def test_runtime_models_pick_the_instant_model_per_scheduler(
+    instant_used, curve_used, specialized, expected
+):
+    models = runtime_models(
+        "sm72e25",
+        instant_used=instant_used,
+        curve_used=curve_used,
+        specialized_instant_model=specialized,
+    )
+    assert models == expected
+    if instant_used:
+        assert models.instant_scheduler_model == (
+            "sm57" if specialized or not curve_used else "sm72e25"
+        )
+    # RWKV-Curve always keeps the release state; the instant-only model alone
+    # never serves a curve.
+    assert models.curve_model == (None if models.model == "sm57" else "sm72e25")
+
+
+@pytest.mark.parametrize("model", [m for m in RWKV_MODELS if m != "sm72e25"])
+@pytest.mark.parametrize("instant_used", [False, True])
+@pytest.mark.parametrize("curve_used", [False, True])
+def test_runtime_models_keep_other_models_shared(model, instant_used, curve_used):
+    # SM92, Legacy and the older small models serve both schedulers alone.
+    assert runtime_models(
+        model,
+        instant_used=instant_used,
+        curve_used=curve_used,
+        specialized_instant_model=True,
+    ) == RwkvRuntimeModels(model)
+    assert "sm57" not in RWKV_MODELS
+
+
+@pytest.mark.parametrize(
+    "profile,expected",
+    [
+        (None, False),
+        ({}, False),
+        ({"rwkvSpecializedInstantModel": False}, False),
+        ({"rwkvSpecializedInstantModel": "yes"}, False),
+        ({"rwkvSpecializedInstantModel": True}, True),
+    ],
+)
+def test_specialized_instant_model_toggle_defaults_off(profile, expected):
+    assert specialized_instant_model_for_profile(profile) is expected
+
+
+def _deck_configs(*, curve, instant):
+    return [
+        {"id": 1, "rwkvReviewEnabled": curve, "rwkvReviewInstantOrderEnabled": False},
+        {"id": 2, "rwkvReviewEnabled": False, "rwkvReviewInstantOrderEnabled": instant},
+    ]
+
+
+@pytest.mark.parametrize(
+    "curve,instant,specialized,expected",
+    [
+        (False, True, False, ("sm57", None)),
+        (True, True, False, ("sm72e25", None)),
+        (True, True, True, ("sm72e25", "sm57")),
+        (True, False, True, ("sm72e25", None)),
+    ],
+)
+def test_profile_presets_and_toggle_reach_the_native_backend(
+    monkeypatch, curve, instant, specialized, expected
+):
+    import aqt
+    from aqt import rwkv_srs_benchmark
+
+    monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
+    configs = _deck_configs(curve=curve, instant=instant)
+    monkeypatch.setattr(
+        aqt,
+        "mw",
+        SimpleNamespace(
+            pm=SimpleNamespace(
+                profile={
+                    "rwkvModel": "sm72e25",
+                    "rwkvSpecializedInstantModel": specialized,
+                }
+            ),
+            col=SimpleNamespace(
+                decks=SimpleNamespace(all_config=lambda: configs),
+                get_config=lambda key: None,
+            ),
+        ),
+    )
+    created = {}
+
+    class Runtime:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setattr(rwkv_srs_benchmark, "_RustRwkvRuntime", Runtime)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "set_reviewer_backend",
+        lambda backend: setattr(rwkv_scheduler, "_reviewer_backend", backend),
+    )
+    assert rwkv_scheduler.configure_reviewer_backend_from_environment()
+    backend = rwkv_scheduler._reviewer_backend
+    assert (backend.model_name, backend.instant_model_name) == expected
+    assert (created["model"], created["instant_model"]) == expected
+    assert Path(created["model_path"]).parent.name == expected[0]
+    if expected[1] is None:
+        assert created["instant_model_path"] is None
+    else:
+        assert Path(created["instant_model_path"]).parent.name == "sm57"
+    # The cache identity follows the runtime models until the next profile open.
+    assert rwkv_scheduler._rwkv_runtime_models() == RwkvRuntimeModels(*expected)
+
+
+def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
+    import aqt
+
+    monkeypatch.setattr(
+        aqt, "mw", SimpleNamespace(pm=SimpleNamespace(profile={"rwkvModel": "sm72e25"}))
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_dynamic_preset_replay_enabled_for_collection",
+        lambda reviewer: False,
+    )
+    keys = []
+    for instant_model in (None, "sm57"):
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_reviewer_backend",
+            SimpleNamespace(
+                model_name="sm72e25",
+                instant_model_name=instant_model,
+                state_precision="int8",
+            ),
+        )
+        keys.append(
+            rwkv_scheduler._rwkv_replay_semantics_key(
+                SimpleNamespace(),
+                first_review_elapsed_source=(
+                    rwkv_scheduler.RwkvFirstReviewElapsedSource.DECK_CONFIG
+                ),
+            )
+        )
+    assert keys[0] != keys[1]

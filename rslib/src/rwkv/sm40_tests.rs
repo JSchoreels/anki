@@ -132,6 +132,31 @@ fn sm92_vectors() -> Vec<u8> {
     }
 }
 
+/// The instant-only small model (SM57): same inputs as sm72e25 (normal
+/// intervals). Its curve head is untrained but still part of the network the
+/// vectors check.
+fn sm57_vectors() -> Vec<u8> {
+    if let Ok(path) = std::env::var("ANKI_RWKV_SM57_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm57-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
+#[test]
+fn rwkv_sm57_matches_published_vectors() {
+    check_published_vectors("sm57", &sm57_vectors());
+}
+
+#[test]
+fn rwkv_sm57_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm57", &sm57_vectors());
+}
+
 #[test]
 fn rwkv_sm72_matches_published_vectors() {
     check_published_vectors("sm72", &sm72_vectors());
@@ -341,6 +366,7 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
         include_str!("../../../qt/aqt/rwkv_inference/sm72e20/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm72e25/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm92/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm57/architecture.json"),
     ] {
         check_compiled_architecture(source);
     }

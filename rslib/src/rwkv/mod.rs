@@ -13,6 +13,7 @@ const SMALL_MODEL: bool = cfg!(feature = "rwkv-sm40");
 mod alternate;
 mod answer_time;
 mod api;
+pub mod paired;
 mod runtime;
 pub use answer_time::AnswerTimeHistory;
 pub use answer_time::AnswerTimePrediction;
