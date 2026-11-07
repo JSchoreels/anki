@@ -26496,7 +26496,7 @@ def test_rwkv_workload_forecast_builds_cards_and_returns_plain_bands(
             "rev": {"perDay": 50},
             "new": {"perDay": 4},
             "desiredRetention": 0.85,
-            "other": {"rwkv_review_enabled": True},
+            "other": {"jschoreels.rwkv": {"rwkv_review_enabled": True}},
         },
         200: {"rev": {"perDay": 30}, "new": {"perDay": 0}, "desiredRetention": 0.9},
     }

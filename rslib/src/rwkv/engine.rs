@@ -37,6 +37,10 @@ mod architecture;
 #[path = "bulk.rs"]
 mod bulk;
 use architecture::*;
+#[path = "instant_forecast_queue.rs"]
+mod instant_forecast_queue;
+#[path = "instant_workload_forecast.rs"]
+mod instant_workload_forecast;
 #[cfg(test)]
 #[path = "model_bench.rs"]
 mod model_bench;

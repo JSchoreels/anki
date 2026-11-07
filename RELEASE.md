@@ -47,6 +47,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Forecast RWKV-Instant workloads.** The add-on forecast now works with the Instant-only model and simulates past review timing and answer patterns, current review limits, and learning steps. Full queue refreshes can make large forecasts slow.
+
 - **Keep RWKV state up to date after add-on sync.** Sync add-ons that use Anki's collection sync and standard hooks now trigger the RWKV refresh when they receive remote changes. No-change syncs continue to skip it.
 
 - **Fix an RWKV crash after editing card templates.** Answering a card after a template edit no longer applies the answer twice while restoring the review state. This could previously crash the next queue refresh for a new card and affect predictions for other cards.

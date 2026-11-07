@@ -442,6 +442,8 @@ class RwkvReviewInput:
     fsrs_memory_state: tuple[float, float, float] | None = None
     fsrs_parameters: tuple[float, ...] = ()
     fsrs_historical_retention: float | None = None
+    remaining_steps: int | None = None
+    in_filtered_deck: bool = False
 
 
 @dataclass(frozen=True)
@@ -2540,6 +2542,13 @@ class RwkvStatefulReviewerBackend:
         forecast = getattr(self._runtime, "forecast_workload", None)
         if not self._runtime_owns_warm_up_state() or not callable(forecast):
             raise ValueError("RWKV backend does not support workload forecasts")
+        return forecast(**kwargs)
+
+    def forecast_instant_workload(self, **kwargs: Any) -> object:
+        """Forecast with the Instant model and recorded review timing."""
+        forecast = getattr(self._runtime, "forecast_instant_workload", None)
+        if not self._runtime_owns_warm_up_state() or not callable(forecast):
+            raise ValueError("RWKV backend does not support Instant forecasts")
         return forecast(**kwargs)
 
     def compare_workloads(
@@ -15038,6 +15047,241 @@ _RWKV_FORECAST_BAND_KEYS = ("mean", "p1", "p5", "p50", "p95", "p99")
 _RWKV_FORECAST_METRICS = ("due", "done", "new", "lapses", "seconds")
 
 
+class _RwkvInstantForecastHistory(NamedTuple):
+    patterns: list[tuple[int, list[tuple[int, int]]]]
+    review_model: _RwkvSimulatorReviewModel
+    success_shares_by_day: dict[int, tuple[float, float, float]]
+    recent_card_ids: list[int]
+    latest_answers_today: dict[int, tuple[int, int]]
+
+
+def _rwkv_forecast_review_history(
+    reviewer: object,
+    *,
+    deck_ids: set[int],
+    recent_count: int,
+) -> _RwkvInstantForecastHistory:
+    """Use Anki's canonical history API to capture real review timing."""
+
+    from aqt.rwkv_forecast_timing import review_timing_patterns
+    from aqt.rwkv_history import history_fingerprint_request
+
+    timing = _timing_today(reviewer)
+    today = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(today, int) or not isinstance(next_day_at, int):
+        raise ValueError("Unable to determine the forecast's scheduler day")
+    backend = getattr(_collection(reviewer), "_backend", None)
+    build = getattr(backend, "rwkv_historical_review_inputs", None)
+    if not callable(build):
+        raise ValueError("RWKV review history is unavailable for the forecast")
+    history = build(
+        scheduler_pb2.RwkvHistoricalReviewInputsRequest(
+            history=history_fingerprint_request(reviewer, frozenset()),
+        )
+    )
+    rows = [
+        row
+        for row in history.reviews
+        if 1 <= row.ease <= 4 and int(row.deck_id) in deck_ids
+    ]
+    patterns = review_timing_patterns(
+        (
+            (int(row.review_id), int(row.day_offset), int(row.duration_millis))
+            for row in rows
+        ),
+        today=today,
+        next_day_at=next_day_at,
+    )
+    patterns = [(day, events) for day, events in patterns if len(events) >= 2]
+    if not patterns:
+        raise ValueError("The Instant forecast needs past review timings")
+    counts = [0, 0, 0, 0]
+    totals = [0, 0, 0, 0]
+    for row in rows:
+        if today - 365 <= row.day_offset < today:
+            index = int(row.ease) - 1
+            counts[index] += 1
+            totals[index] += max(0, int(row.duration_millis))
+    success_count = sum(counts[1:])
+    if not success_count:
+        raise ValueError("The Instant forecast needs past successful review answers")
+    shares = cast(
+        tuple[float, float, float, float],
+        (0.0, *(count / success_count for count in counts[1:])),
+    )
+    review_model = _RwkvSimulatorReviewModel(
+        grade_seconds=cast(
+            tuple[float, float, float, float],
+            tuple(
+                totals[index] / counts[index] / 1000
+                if counts[index]
+                else _RWKV_SIMULATOR_DEFAULT_GRADE_SECONDS[index]
+                for index in range(4)
+            ),
+        ),
+        bucket_probabilities={
+            bucket: shares for bucket in range(_RWKV_SIMULATOR_BUCKET_COUNT)
+        },
+    )
+    counts_by_day: dict[int, list[int]] = {}
+    for row in rows:
+        if 2 <= row.ease <= 4:
+            counts_by_day.setdefault(int(row.day_offset), [0, 0, 0])[
+                int(row.ease) - 2
+            ] += 1
+    success_shares_by_day = {}
+    for day, _events in patterns:
+        day_counts = counts_by_day.get(day, [0, 0, 0])
+        total = sum(day_counts)
+        success_shares_by_day[day] = cast(
+            tuple[float, float, float],
+            tuple(count / total for count in day_counts) if total else shares[1:],
+        )
+    recent = (
+        [int(row.card_id) for row in reversed(rows[-recent_count:])]
+        if recent_count
+        else []
+    )
+    latest_today = {
+        int(row.card_id): (int(row.review_kind), int(row.ease))
+        for row in rows
+        if row.day_offset == today
+    }
+    return _RwkvInstantForecastHistory(
+        patterns, review_model, success_shares_by_day, recent, latest_today
+    )
+
+
+class _RwkvInstantForecastScope(NamedTuple):
+    decks: list[bytes]
+    deck_configs: list[bytes]
+    study_deck_id: int
+    instant_decks: set[int]
+    curve_decks: set[int]
+    study_config: deck_config_pb2.DeckConfig.Config
+
+
+def _rwkv_instant_forecast_scope(
+    col: object, cards: Sequence[RwkvForecastCardInput]
+) -> _RwkvInstantForecastScope:
+    """Read deck and preset snapshots through Anki's collection APIs."""
+    manager = getattr(col, "decks")
+    backend = getattr(col, "_backend")
+    names = {
+        str(entry.name): int(entry.id)
+        for entry in manager.all_names_and_ids(include_filtered=False)
+    }
+    by_id = {deck_id: name for name, deck_id in names.items()}
+    card_decks = {card.group for card in cards}
+    if not card_decks <= by_id.keys():
+        raise ValueError("The Instant forecast cannot simulate filtered decks")
+    selected = int(manager.selected())
+    selected_name = by_id.get(selected)
+    selected_scope = bool(selected_name) and all(
+        by_id[deck_id] == selected_name
+        or by_id[deck_id].startswith(f"{selected_name}::")
+        for deck_id in card_decks
+    )
+    required_names: set[str] = set()
+    root_for_deck: dict[int, int] = {}
+    include_parents = bool(
+        _rwkv_forecast_col_config(col, "applyAllParentLimits", False)
+    )
+    for deck_id in card_decks:
+        name = by_id[deck_id]
+        pieces = name.split("::")
+        ancestors = ["::".join(pieces[:index]) for index in range(1, len(pieces) + 1)]
+        if selected_scope and not include_parents:
+            ancestors = ancestors[ancestors.index(selected_name) :]
+        required_names.update(ancestor for ancestor in ancestors if ancestor in names)
+        root_for_deck[deck_id] = selected if selected_scope else names[ancestors[0]]
+    required_ids = {names[name] for name in required_names}
+    study_deck_id = (
+        selected
+        if selected in required_ids
+        else root_for_deck[min(card_decks, key=lambda did: by_id[did])]
+    )
+    deck_protos = [backend.get_deck(names[name]) for name in sorted(required_names)]
+    config_ids = {int(deck.normal.config_id) for deck in deck_protos}
+    configs = {
+        config_id: backend.get_deck_config(config_id) for config_id in config_ids
+    }
+    deck_by_id = {int(deck.id): deck for deck in deck_protos}
+    study_config = configs[int(deck_by_id[study_deck_id].normal.config_id)].config
+    instant_decks = {
+        deck_id
+        for deck_id, root in root_for_deck.items()
+        if (
+            configs[
+                int(deck_by_id[root].normal.config_id)
+            ].config.rwkv_review_instant_order_enabled
+            and (
+                configs[
+                    int(deck_by_id[deck_id].normal.config_id)
+                ].config.rwkv_review_instant_order_enabled
+                or configs[
+                    int(deck_by_id[deck_id].normal.config_id)
+                ].config.rwkv_review_enabled
+            )
+        )
+        or (
+            not selected_scope
+            and configs[
+                int(deck_by_id[deck_id].normal.config_id)
+            ].config.rwkv_review_instant_order_enabled
+        )
+    }
+    curve_decks = {
+        deck_id
+        for deck_id in card_decks
+        if configs[int(deck_by_id[deck_id].normal.config_id)].config.rwkv_review_enabled
+    }
+    return _RwkvInstantForecastScope(
+        [deck.SerializeToString() for deck in deck_protos],
+        [config.SerializeToString() for config in configs.values()],
+        study_deck_id,
+        instant_decks,
+        curve_decks,
+        study_config,
+    )
+
+
+def _rwkv_instant_forecast_rebase_cards(
+    cards: Sequence[RwkvForecastCardInput],
+    elapsed_since: Mapping[int, int],
+    *,
+    now: int,
+    today: int,
+    next_day_at: int,
+) -> list[RwkvForecastCardInput]:
+    """Refresh elapsed times after potentially slow history preparation."""
+    rebased = []
+    for card in cards:
+        review = card.review_input
+        since = elapsed_since.get(review.identity.card_id)
+        if since is not None:
+            seconds = max(0, now - since)
+            if review.card_type == CARD_TYPE_NEW:
+                days = seconds // 86_400
+            elif review.card_type == CARD_TYPE_LRN:
+                days = None
+            else:
+                days = max(0, (next_day_at - since) // 86_400)
+            review = replace(
+                review, current_elapsed_seconds=seconds, current_elapsed_days=days
+            )
+        due_day = card.due_day
+        if review.card_queue in (2, 3) and review.card_due is not None:
+            due_day = int(review.card_due) - today
+        rebased.append(
+            replace(
+                card, review_input=replace(review, day_offset=today), due_day=due_day
+            )
+        )
+    return rebased
+
+
 def forecast_rwkv_workload(
     *,
     mw: object | None = None,
@@ -15092,6 +15336,7 @@ def forecast_rwkv_workload(
         include_new_cards=True,
         batch_size_override=None,
         include_comparison_data=True,
+        track_elapsed_since=True,
         # FSRS and SM-2 presets are forecast with their own schedulers.
         include_disabled_decks=True,
     )
@@ -15101,11 +15346,40 @@ def forecast_rwkv_workload(
         reviewer, input_build
     )
     col = _collection(reviewer)
-    cards, groups, new_cards_ignore_review_limit = _rwkv_forecast_cards_and_groups(
-        col,
-        [review_input for _, review_input, _ in _rwkv_simulation_inputs(input_build)],
+    all_inputs = [
+        review_input
+        for batch in input_build.inputs_by_batch_size.values()
+        for _, review_input in batch
+        if review_input.card_type
+        in (CARD_TYPE_NEW, CARD_TYPE_LRN, CARD_TYPE_REV, CARD_TYPE_RELEARNING)
+        and not review_input.in_filtered_deck
+    ]
+    # Keep the existing Curve forecast unchanged. Instant includes cards in
+    # learning because their next answer can affect the shared model state.
+    all_cards, groups, new_cards_ignore_review_limit = _rwkv_forecast_cards_and_groups(
+        col, all_inputs
     )
-    review_model = _rwkv_simulator_review_model(reviewer)
+    scope = None
+    if (
+        all_cards
+        and col is not None
+        and _rwkv_collection_config_state(reviewer).instant_enabled
+    ):
+        scope = _rwkv_instant_forecast_scope(col, all_cards)
+    instant_used = bool(
+        scope and (scope.instant_decks or _rwkv_runtime_models().curve_model is None)
+    )
+    if instant_used:
+        cards = all_cards
+    else:
+        cards, groups, new_cards_ignore_review_limit = _rwkv_forecast_cards_and_groups(
+            col,
+            [
+                review_input
+                for _, review_input, _ in _rwkv_simulation_inputs(input_build)
+            ],
+        )
+    review_model = None if instant_used else _rwkv_simulator_review_model(reviewer)
     start = time.monotonic()
     output: object = (paths, [], [], 0)
     if cards:
@@ -15128,23 +15402,137 @@ def forecast_rwkv_workload(
                     progress(current, total)
 
             try:
-                output = forecast(
-                    cards=cards,
-                    groups=groups,
-                    days=days,
-                    paths=paths,
-                    seed=int(seed) & 0xFFFFFFFF,
-                    default_review_limit=9999,
-                    default_new_limit=0,
-                    new_cards_ignore_review_limit=new_cards_ignore_review_limit,
-                    max_interval=max_interval,
-                    review_order=0,
-                    suspend_after_lapses=None,
-                    state_update_interval=state_update_interval,
-                    single_step_answers=bool(fast),
-                    review_model=review_model,
-                    progress=report_progress,
-                )
+                if instant_used:
+                    instant_forecast = getattr(
+                        backend, "forecast_instant_workload", None
+                    )
+                    if not callable(instant_forecast):
+                        raise ValueError(
+                            "RWKV backend does not support Instant forecasts"
+                        )
+                    if col is None:
+                        raise ValueError("Anki collection is unavailable")
+                    if scope is None:
+                        raise ValueError(
+                            "Unable to determine the Instant forecast's study deck"
+                        )
+                    if scope.curve_decks:
+                        raise ValueError(
+                            "Instant forecasts do not yet support cards scheduled with RWKV-Curve"
+                        )
+                    timing = _timing_today(reviewer)
+                    today = getattr(timing, "days_elapsed", None)
+                    next_day_at = getattr(timing, "next_day_at", None)
+                    if not isinstance(today, int) or not isinstance(next_day_at, int):
+                        raise ValueError(
+                            "Unable to determine the forecast's scheduler day"
+                        )
+                    min_intervening = int(
+                        scope.study_config.rwkv_review_min_intervening_reviews
+                    )
+                    history = _rwkv_forecast_review_history(
+                        reviewer,
+                        deck_ids={card.group for card in cards},
+                        recent_count=min_intervening,
+                    )
+                    intervening: dict[int, int] = {}
+                    for count, card_id in enumerate(history.recent_card_ids):
+                        intervening.setdefault(card_id, count)
+                    day_start = next_day_at - 86_400
+                    now_millis = int(time.time() * 1000)
+                    cards = _rwkv_instant_forecast_rebase_cards(
+                        cards,
+                        getattr(input_build, "elapsed_since_secs_by_card_id", {}),
+                        now=now_millis // 1000,
+                        today=today,
+                        next_day_at=next_day_at,
+                    )
+                    short_term = bool(
+                        _rwkv_forecast_col_config(
+                            col, "fsrsShortTermWithStepsEnabled", True
+                        )
+                    )
+                    root_config = getattr(col, "decks").config_dict_for_deck_id(
+                        scope.study_deck_id
+                    )
+                    refresh_interval = _rwkv_review_refresh_interval(root_config)
+                    precompute = _rwkv_review_precompute_next_card(root_config)
+                    candidate_refresh = _rwkv_review_candidate_refresh_enabled(
+                        root_config
+                    )
+                    order = int(scope.study_config.review_order)
+                    if not precompute and (
+                        order == _REVIEW_ORDER_RETRIEVABILITY_ASCENDING
+                        or _new_gather_uses_retrievability(root_config)
+                    ):
+                        refresh_interval = 1
+                        candidate_refresh = False
+                    learn_ahead = _rwkv_forecast_col_config(col, "learnAheadSecs", 1200)
+                    if not isinstance(learn_ahead, int):
+                        learn_ahead = 1200
+                    output = instant_forecast(
+                        cards=cards,
+                        decks=scope.decks,
+                        deck_configs=scope.deck_configs,
+                        study_deck_id=scope.study_deck_id,
+                        instant_decks=scope.instant_decks,
+                        timing_patterns=[events for _, events in history.patterns],
+                        timing_pattern_success_shares=[
+                            history.success_shares_by_day[day]
+                            for day, _ in history.patterns
+                        ],
+                        intervening_reviews=intervening,
+                        latest_answers_today=history.latest_answers_today,
+                        days=days,
+                        paths=paths,
+                        seed=int(seed) & 0xFFFFFFFF,
+                        today=today,
+                        new_cards_ignore_review_limit=new_cards_ignore_review_limit,
+                        fsrs_enabled=bool(
+                            _rwkv_forecast_col_config(col, "fsrs", False)
+                        ),
+                        fsrs_learning_queues_disabled=bool(
+                            _rwkv_forecast_col_config(
+                                col, "fsrsLearningQueuesDisabled", False
+                            )
+                        ),
+                        fsrs_short_term_with_steps_enabled=short_term,
+                        learn_ahead_secs=max(0, learn_ahead),
+                        day_start_secs=day_start,
+                        now_millis=max(
+                            0, min(86_399_999, now_millis - day_start * 1000)
+                        ),
+                        same_day_allowed=short_term,
+                        min_intervening_reviews=min_intervening,
+                        min_elapsed_secs=int(
+                            scope.study_config.rwkv_review_min_elapsed_secs
+                        ),
+                        refresh_interval=refresh_interval,
+                        candidate_refresh_enabled=candidate_refresh,
+                        candidate_refresh_limit=_rwkv_review_batch_size(root_config),
+                        precompute_next_card=precompute,
+                        review_order=order,
+                        review_model=history.review_model,
+                        progress=report_progress,
+                    )
+                else:
+                    output = forecast(
+                        cards=cards,
+                        groups=groups,
+                        days=days,
+                        paths=paths,
+                        seed=int(seed) & 0xFFFFFFFF,
+                        default_review_limit=9999,
+                        default_new_limit=0,
+                        new_cards_ignore_review_limit=new_cards_ignore_review_limit,
+                        max_interval=max_interval,
+                        review_order=0,
+                        suspend_after_lapses=None,
+                        state_update_interval=state_update_interval,
+                        single_step_answers=bool(fast),
+                        review_model=review_model,
+                        progress=report_progress,
+                    )
             except _ReviewerBackendWarmupInvalidated as exc:
                 raise InterruptedError(
                     "RWKV workload forecast invalidated by state change"
@@ -15152,8 +15540,11 @@ def forecast_rwkv_workload(
             operation.require_current()
     result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
     result["elapsed_ms"] = (time.monotonic() - start) * 1000
-    result["state_update_interval"] = max(1, int(state_update_interval))
-    result["fast"] = bool(fast)
+    result["state_update_interval"] = (
+        1 if instant_used else max(1, int(state_update_interval))
+    )
+    result["fast"] = bool(fast) and not instant_used
+    result["model"] = "instant" if instant_used else "curve"
     logger.debug(
         "RWKV workload forecast finished: search=%r cards=%s days=%s paths=%s "
         "elapsed_ms=%.1f",
@@ -25194,6 +25585,7 @@ def _rwkv_review_input_batches_for_search(
     use_enabled_deck_filter: bool = True,
     include_comparison_data: bool = False,
     include_disabled_decks: bool = False,
+    track_elapsed_since: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
     if not use_enabled_deck_filter:
         return None
@@ -25222,6 +25614,7 @@ def _rwkv_review_input_batches_for_search(
         load_start=load_start,
         source_label="search_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
+        track_elapsed_since=track_elapsed_since,
     )
 
 
@@ -25965,6 +26358,8 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         ease_factor=_rwkv_backend_int(row, "ease_factor"),
         reps=_rwkv_backend_int(row, "reps"),
         lapses=_rwkv_backend_int(row, "lapses"),
+        remaining_steps=_rwkv_backend_optional_int(row, "remaining_steps"),
+        in_filtered_deck=_rwkv_backend_bool(row, "in_filtered_deck", False),
         day_offset=_rwkv_backend_int(row, "day_offset"),
         current_state_kind=state_kind,
         current_normal_state_kind=normal_state_kind,
@@ -26050,6 +26445,10 @@ def _rwkv_review_input_from_backend_proto_row(
         ease_factor=row.ease_factor,
         reps=row.reps,
         lapses=row.lapses,
+        remaining_steps=row.remaining_steps
+        if row.HasField("remaining_steps")
+        else None,
+        in_filtered_deck=row.in_filtered_deck,
         day_offset=row.day_offset,
         current_state_kind=state_kind,
         current_normal_state_kind=normal_state_kind,

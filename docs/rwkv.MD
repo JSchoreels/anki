@@ -1427,19 +1427,60 @@ The workload forecast answers "how many reviews will I have tomorrow, the day
 after, ..." with a mean line and widening confidence bands. It is a backend
 for add-ons such as Search Stats Extended; Anki itself shows no graph for it.
 
-**Algorithm.** For the cards matched by a search, the forecast runs `paths`
+**Instant algorithm.** When the search includes a deck studied with
+RWKV-Instant, each path starts from the resident Instant model state and
+simulates the actual matched cards. Each simulated day samples one complete
+study day from the previous 365 scheduler days with at least two answers. Its
+answer timestamps and durations set the timing, and its Hard/Good/Easy shares
+set the successful-answer mix; the current Instant recall probability decides
+whether an answer is Again. If the recorded day has no successful answers, the
+overall historical successful-answer mix is used. If more answers are needed
+than were recorded, the simulation continues at that day's median gap of at
+most one minute (or one second if no such gap exists), until the day ends.
+Day 0 starts no earlier than the current time. Missing usable historical timing
+or successful answers is reported instead of inventing a session. When no card
+is selectable, a gap of at least 30 minutes between recorded answers marks the
+start of the next simulated session; shorter gaps are not treated as new
+sessions after the queue has emptied.
+
+Instant review eligibility uses the model's current prediction and target,
+including future-due cards and the daily minimum's pull-forward rule; the
+untrained Instant-only curve head is not used. Each real deck's review minimum
+and maximum, today's counts, and the new-card limit and **New cards ignore
+review limit** setting are applied through Anki's limit tree. A selected deck's
+ancestors participate when **Limits start from top** is enabled. A search
+spanning independent deck trees applies each tree's limits separately. Cards in
+non-Instant trees retain normal due-date eligibility. For a search spanning
+trees, cards in Instant-enabled subdecks use Instant eligibility even if their
+top-level deck uses another preset. The selected study deck sets the queue
+order, mix and refresh policy when it is in scope; otherwise the first tree in
+name order supplies that policy. Reviews use the configured
+refresh interval, candidate window and precomputation setting; queued scores
+can stay stale as they do during study, but the simulated answer probability is
+evaluated at the answer time. Paths run concurrently within the workload state
+memory budget and support cancellation.
+
+New, learning and relearning cards use Anki scheduling states and the preset's
+FSRS or SM-2 settings. Intraday learning does not consume a review limit;
+interday learning does. Future Dynamic DR targets are held at their initial
+resolved values. Searches containing cards scheduled with RWKV-Curve are not
+yet supported by the Instant forecast and return a message. Suspended and
+filtered cards, reviews outside the search, sibling burying, future collection changes, load balancing,
+and custom review-fuzz settings are not modeled. A run may be slow when it
+must refresh a large queue after every answer. The simulation does not predict
+skipped days, partial sessions, or model error.
+
+**Curve algorithm.** For the cards matched by a search, the forecast runs `paths`
 independent simulated futures of `days` days. Every path starts from the same
 resident RWKV state, the cards' real due dates and today's remaining deck
 limits, and replays the DR workload simulator's day loop: due reviews in due-day
 order (presets' own review orders are not modeled), then new cards in card-ID order, each deck capped by its preset's review
 and new limits (minus what was already done today on day 0). Grades are always
-drawn from the RWKV curve model's recall probability (release model, SM63, also
-in profiles that run the instant-only model for RWKV-Instant) with the
+drawn from the RWKV curve model's recall probability with the
 historical Hard/Good/Easy mix and time per grade. The next interval comes from
 the card's own preset:
 
-- RWKV presets (RWKV-Curve, and RWKV-Instant, which is forecast with curve
-  intervals): RWKV curve intervals at the card's desired retention.
+- RWKV-Curve presets: RWKV curve intervals at the card's desired retention.
 - FSRS presets (collection FSRS on, preset not on RWKV): FSRS next states from
   the card's memory state and parameters at its desired retention; missing
   memory states are estimated from the SM-2 interval and ease
@@ -1466,7 +1507,8 @@ paths (linear interpolation between sorted values).
   first for older builds.
 - `forecast_rwkv_workload(*, mw=None, search="", days=30, paths=200, seed=0,
   state_update_interval=1, fast=False, max_interval=36500, progress=None,
-  cancel_event=None) -> dict`: blocking; run it off the UI thread. `fast=True`
+  cancel_event=None) -> dict`: blocking; run it off the UI thread. For Curve,
+  `fast=True`
   takes RWKV intervals from the selected grade's curve alone (no grade-order
   check over all four grades), about 1.5x faster; see Speed. `search` is
   an Anki search (`""` = whole collection; SSE can pass `cid:1,2,3`). `days`
@@ -1488,7 +1530,7 @@ paths (linear interpolation between sorted values).
   "version": 1, "days": 30, "paths": 200, "seed": 0, "cards": 31537,
   "cards_by_scheduler": {"rwkv": 30000, "fsrs": 1537},
   "estimated_fsrs_states": 12, "elapsed_ms": 9000.0, "state_update_interval": 1,
-  "fast": false,
+  "fast": false, "model": "instant",
   "daily": [
     {"day": 0,
      "due": {"mean": 0, "p1": 0, "p5": 0, "p50": 0, "p95": 0, "p99": 0},
@@ -1508,12 +1550,13 @@ Units and meaning, per day (`day` 0 = today, then tomorrow, ...):
 - `done`: review cards answered that day after deck limits.
 - `new`: new cards introduced that day.
 - `lapses`: review answers graded Again.
-- `seconds`: estimated answer time of all that day's answers (reviews and new
-  cards), from the per-grade time model.
+- `seconds`: estimated answer time of all that day's answers. Instant includes
+  learning and relearning, using the sampled historical durations; Curve uses
+  the per-grade time model for reviews and new cards.
 - `groups`: per deck (limit group), the mean over paths of due, done and new
   per day (no bands).
 
-**What the bands cover.** Only answer randomness under the model: which cards
+**What the Curve bands cover.** Only answer randomness under the model: which cards
 the user fails or passes, and how that moves later due dates. They assume the
 user does every review the limits allow, every day, in the simulated order.
 They do not cover skipping days, doing only part of the reviews, changing
@@ -1526,7 +1569,11 @@ new/review mix setting, easy days, burying of siblings and live fuzz are not
 modeled, and cards that are in (re)learning right now or suspended are left
 out (the same card set as the DR workload simulator).
 
-**Speed.** Cost is proportional to paths x simulated answers per path; each
+Instant bands also include the sampled historical day and its answer timings
+and successful-answer mix. Its `done` metric counts review-queue answers;
+`new` counts introductions.
+
+**Curve speed.** Cost is proportional to paths x simulated answers per path; each
 answer runs several RWKV steps (recall query, interval curves, state update),
 and answers within a path are sequential because every answer updates shared
 deck/preset/global streams. Paths run in parallel. Measured 2026-11-07 on a

@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 mod builder;
+pub(crate) use builder::intersperser::Intersperser;
 mod entry;
 mod learning;
 mod main;
