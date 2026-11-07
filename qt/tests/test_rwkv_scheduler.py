@@ -26242,3 +26242,188 @@ def test_repeated_card_does_not_inherit_previous_reviewer_prediction() -> None:
     rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
     assert not hasattr(answer, "rwkv_s90")
     assert not hasattr(answer, "rwkv_retrievability")
+
+
+def test_rwkv_workload_forecast_builds_cards_and_returns_plain_bands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rwkv_deck_review = _rwkv_review_input(card_id=1, note_id=10)
+    fsrs_review = replace(
+        _rwkv_review_input(card_id=2, note_id=20),
+        identity=RwkvReviewIdentity(card_id=2, note_id=20, deck_id=200, preset_id=2),
+        target_retentions=(0.8, 0.8, 0.8, 0.8),
+        card_queue=1,
+    )
+    new_card = replace(
+        _rwkv_review_input(card_id=3, note_id=30),
+        card_type=0,
+        card_queue=0,
+        current_elapsed_days=None,
+    )
+    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={
+            64: [(1, rwkv_deck_review), (2, fsrs_review), (3, new_card)]
+        },
+        loaded_rows=3,
+        parsed_cards=3,
+        cards_with_state=3,
+        disabled_config_cards=0,
+        eligible_cards=3,
+        deck_configs=2,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+    band = (2.0, 1.0, 1.0, 2.0, 3.0, 4.0)
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def supports_resident_workload_simulation(self) -> bool:
+            return True
+
+        def restore_cache_snapshot(self, _snapshot: object) -> None:
+            raise AssertionError("the forecast must not restore any state")
+
+        def forecast_workload(self, **kwargs: object) -> object:
+            progress = cast(Callable[[int, int], None], kwargs.pop("progress"))
+            progress(1, 2)
+            self.calls.append(kwargs)
+            return (
+                2,
+                [(0, band, band, band, band, band), (1, band, band, band, band, band)],
+                [(100, [1.0, 2.0], [1.0, 1.5], [0.0, 1.0])],
+                1,
+            )
+
+    decks = {
+        100: {"id": 100, "revToday": [42, 5], "newToday": [41, 3]},
+        200: {"id": 200},
+    }
+    configs = {
+        100: {
+            "rev": {"perDay": 50},
+            "new": {"perDay": 4},
+            "desiredRetention": 0.85,
+            "other": {"rwkv_review_enabled": True},
+        },
+        200: {"rev": {"perDay": 30}, "new": {"perDay": 0}, "desiredRetention": 0.9},
+    }
+    col_config = {"fsrs": True, "newCardsIgnoreReviewLimit": True}
+    mw = SimpleNamespace(
+        col=SimpleNamespace(
+            db=SimpleNamespace(),
+            sched=SimpleNamespace(today=42),
+            decks=SimpleNamespace(
+                get=lambda deck_id, default=False: decks.get(deck_id, default),
+                config_dict_for_deck_id=lambda deck_id: configs[deck_id],
+            ),
+            get_config=lambda key, default=None: col_config.get(key, default),
+        )
+    )
+    backend = Backend()
+    set_reviewer_backend(cast(Any, backend))
+    key = (id(backend), id(mw.col))
+    rwkv_scheduler._reviewer_backend_warmup_states[key] = _rwkv_resident_identity()
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_warmed_up", lambda _: True)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_batches_for_search",
+        lambda **kwargs: input_build if kwargs["include_comparison_data"] else None,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolve_dynamic_desired_retentions_for_input_build",
+        lambda _reviewer, build: build,
+    )
+    review_model = SimpleNamespace(grade_seconds=(1.0, 2.0, 3.0, 4.0))
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_simulator_review_model", lambda _: review_model
+    )
+    progress: list[tuple[int, int]] = []
+
+    result = rwkv_scheduler.forecast_rwkv_workload(
+        mw=mw,
+        search="deck:current",
+        days=2,
+        paths=2,
+        seed=5,
+        progress=lambda current, total: progress.append((current, total)),
+    )
+
+    assert progress == [(1, 2)]
+    (call,) = backend.calls
+    cards = cast(list[rwkv_scheduler.RwkvForecastCardInput], call["cards"])
+    assert [card.scheduler for card in cards] == [
+        rwkv_scheduler.RWKV_FORECAST_SCHEDULER_RWKV,
+        rwkv_scheduler.RWKV_FORECAST_SCHEDULER_FSRS,
+        rwkv_scheduler.RWKV_FORECAST_SCHEDULER_RWKV,
+    ]
+    # Preset DR unless the input already carries a (Dynamic DR) target.
+    assert [card.desired_retention for card in cards] == pytest.approx(
+        [0.85, 0.8, 0.85]
+    )
+    # Review due 50 - today 42; learning and new cards are due today.
+    assert [card.due_day for card in cards] == [8, 0, 0]
+    assert [card.group for card in cards] == [100, 200, 100]
+    assert call["groups"] == [(100, 50, 4, 5, 0), (200, 30, 0, 0, 0)]
+    assert call["new_cards_ignore_review_limit"] is True
+    assert call["days"] == 2 and call["paths"] == 2 and call["seed"] == 5
+    assert result["cards"] == 3
+    assert result["cards_by_scheduler"] == {"rwkv": 2, "fsrs": 1}
+    assert result["estimated_fsrs_states"] == 1
+    daily = cast(list[dict[str, Any]], result["daily"])
+    assert [day["day"] for day in daily] == [0, 1]
+    assert daily[1]["due"] == {
+        "mean": 2.0,
+        "p1": 1.0,
+        "p5": 1.0,
+        "p50": 2.0,
+        "p95": 3.0,
+        "p99": 4.0,
+    }
+    assert set(daily[0]) == {"day", "due", "done", "new", "lapses", "seconds"}
+    assert result["groups"] == [
+        {
+            "deck_id": 100,
+            "due_mean": [1.0, 2.0],
+            "done_mean": [1.0, 1.5],
+            "new_mean": [0.0, 1.0],
+        }
+    ]
+    with pytest.raises(ValueError):
+        rwkv_scheduler.forecast_rwkv_workload(mw=mw, days=0)
+
+
+def test_rwkv_workload_forecast_job_reports_progress_and_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def forecast(**kwargs: object) -> dict[str, object]:
+        progress = cast(Callable[[int, int], None], kwargs["progress"])
+        progress(3, 4)
+        calls.append(kwargs)
+        return {"version": 1, "daily": []}
+
+    monkeypatch.setattr(rwkv_scheduler, "forecast_rwkv_workload", forecast)
+    mw = SimpleNamespace()
+    started = rwkv_scheduler.start_rwkv_workload_forecast(mw, search="cid:1", days=7)
+    job_id = cast(int, started["job_id"])
+    deadline = time.monotonic() + 5
+    state = started
+    while not state["done"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+        state = rwkv_scheduler.rwkv_workload_forecast_progress(job_id)
+    assert state["phase"] == "complete"
+    assert state["result"] == {"version": 1, "daily": []}
+    assert (state["current"], state["total"]) == (3, 4)
+    assert calls[0]["search"] == "cid:1" and calls[0]["days"] == 7
+    assert calls[0]["mw"] is mw
+    assert rwkv_scheduler.rwkv_workload_forecast_progress(job_id + 100)["phase"] == (
+        "missing"
+    )

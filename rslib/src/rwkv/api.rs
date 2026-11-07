@@ -185,3 +185,100 @@ pub struct RwkvComparisonOutput {
     pub rwkv_scored_by_rwkv: RwkvWorkloadSimulationOutput,
     pub estimated_fsrs_states: u32,
 }
+
+/// Which scheduler sets the next interval of a forecast card. Grades are
+/// always drawn from the RWKV curve model's recall probability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RwkvForecastScheduler {
+    /// RWKV-Curve (and RWKV-Instant) presets: curve-model intervals at the
+    /// card's desired retention.
+    Rwkv,
+    /// FSRS presets: FSRS memory state and parameters at the card's desired
+    /// retention.
+    Fsrs,
+    /// SM-2 presets: ease-factor intervals (no fuzz, no interval modifiers).
+    Sm2,
+}
+
+#[derive(Clone)]
+pub struct RwkvForecastCard {
+    pub input: RwkvWorkloadSimulationInput,
+    /// Days from today until the card is due; <= 0 means due today. `None`
+    /// derives the due day from the curve, as the DR workload simulation does.
+    pub due_day: Option<i64>,
+    /// Limit group (usually the deck id); each group has its own limits.
+    pub group: i64,
+    pub desired_retention: f32,
+    pub scheduler: RwkvForecastScheduler,
+    pub fsrs_memory: Option<(f32, f32, f32)>,
+    pub fsrs_parameters: Vec<f32>,
+    pub historical_retention: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct RwkvForecastGroup {
+    pub group: i64,
+    pub review_limit: u32,
+    pub new_limit: u32,
+    /// Already done today: day 0 only gets the rest of each limit.
+    pub reviews_done_today: u32,
+    pub new_done_today: u32,
+}
+
+pub struct RwkvWorkloadForecastConfig {
+    pub days: u32,
+    pub paths: u32,
+    pub seed: u32,
+    pub groups: Vec<RwkvForecastGroup>,
+    /// Limits of groups missing from `groups`.
+    pub default_review_limit: u32,
+    pub default_new_limit: u32,
+    pub new_cards_ignore_review_limit: bool,
+    pub max_interval: u32,
+    pub review_order: ReviewCardOrder,
+    pub suspend_after_lapses: Option<u32>,
+    pub state_update_interval: u32,
+    pub review_model: RwkvWorkloadReviewModel,
+}
+
+/// Distribution of one daily quantity over the simulated paths.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RwkvForecastBand {
+    pub mean: f32,
+    pub p1: f32,
+    pub p5: f32,
+    pub p50: f32,
+    pub p95: f32,
+    pub p99: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RwkvForecastDay {
+    pub day: u32,
+    /// Review cards due that day (before limits, including backlog).
+    pub due: RwkvForecastBand,
+    /// Review cards answered that day (after limits).
+    pub done: RwkvForecastBand,
+    /// New cards introduced that day.
+    pub new: RwkvForecastBand,
+    /// Review answers graded Again that day.
+    pub lapses: RwkvForecastBand,
+    /// Estimated answer time of all of that day's answers, in seconds.
+    pub seconds: RwkvForecastBand,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RwkvForecastGroupDays {
+    pub group: i64,
+    pub due_mean: Vec<f32>,
+    pub done_mean: Vec<f32>,
+    pub new_mean: Vec<f32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RwkvWorkloadForecastOutput {
+    pub paths: u32,
+    pub days: Vec<RwkvForecastDay>,
+    pub groups: Vec<RwkvForecastGroupDays>,
+    pub estimated_fsrs_states: u32,
+}
