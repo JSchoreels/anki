@@ -118,6 +118,11 @@ pub(super) fn instant_study_candidates(
     let review = select_reviews(reviews, decks, configs, &mut limits, policy)?;
     let mut new = Vec::new();
     for (index, deck) in new_decks.iter().copied().enumerate() {
+        // Once the root limit is exhausted no descendant can reserve a new
+        // card, regardless of whether new cards share the review limit.
+        if limits.root_limit_reached(LimitKind::New) {
+            break;
+        }
         let deck = DeckId(deck);
         if !limits
             .limit_reached(deck, LimitKind::New)
@@ -222,6 +227,9 @@ fn select_reviews(
                     .map_err(map_error)?;
             }
         }
+    }
+    if !limits.any_rwkv_review_minimum_remaining() || limits.root_limit_reached(LimitKind::Review) {
+        return Ok(selected);
     }
     above_target.sort_by(|left, right| {
         let score = |card: &InstantCandidate| {
@@ -382,6 +390,20 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_parent_maximum_cannot_pull_above_target_for_child_minimum() {
+        let decks = [deck(1, "Parent", 1), deck(2, "Parent::Child", 2)];
+        let configs = HashMap::from([
+            (DeckConfigId(1), config(1, 1, 1)),
+            (DeckConfigId(2), config(2, 2, 20)),
+        ]);
+        let cards = [card(1, 2, 0.7), card(2, 2, 0.95)];
+        assert_eq!(
+            instant_review_candidates(&cards, &decks, &configs, 0, true, policy()).unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
     fn minimum_does_not_bypass_spacing_or_same_day_rules() {
         let decks = [deck(1, "Parent", 1)];
         let configs = HashMap::from([(DeckConfigId(1), config(1, 2, 20))]);
@@ -438,6 +460,30 @@ mod tests {
         assert!(shared.2.is_empty());
         assert_eq!(separate.1, vec![0]);
         assert_eq!(separate.2, vec![0]);
+    }
+
+    #[test]
+    fn new_card_reservations_stop_at_parent_limit() {
+        let decks = [deck(1, "Parent", 1), deck(2, "Parent::Child", 2)];
+        let mut parent = config(1, 0, 20);
+        parent.inner.new_per_day = 1;
+        let mut child = config(2, 0, 20);
+        child.inner.new_per_day = 20;
+        let configs = HashMap::from([(DeckConfigId(1), parent), (DeckConfigId(2), child)]);
+        for ignore_review_limit in [false, true] {
+            let result = instant_study_candidates(
+                &[],
+                &[],
+                &[2, 2, 2],
+                &decks,
+                &configs,
+                0,
+                ignore_review_limit,
+                policy(),
+            )
+            .unwrap();
+            assert_eq!(result.2, vec![0]);
+        }
     }
 
     #[test]

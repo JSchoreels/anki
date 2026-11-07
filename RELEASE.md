@@ -47,6 +47,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Faster RWKV-Instant forecasts.** Large forecasts reuse work between queue refreshes while keeping the configured refresh frequency, review limits, and simulated answers. In one two-day, one-path measurement on a 28,925-card collection, the forecast took 45.7 seconds instead of 66.5 seconds (31% less); larger forecasts may still take a long time.
+
 - **Forecast RWKV-Instant workloads.** The add-on forecast now works with the Instant-only model and simulates past review timing and answer patterns, current review limits, and learning steps. Full queue refreshes can make large forecasts slow.
 
 - **Keep RWKV state up to date after add-on sync.** Sync add-ons that use Anki's collection sync and standard hooks now trigger the RWKV refresh when they receive remote changes. No-change syncs continue to skip it.
