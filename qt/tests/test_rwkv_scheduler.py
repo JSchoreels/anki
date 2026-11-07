@@ -12342,6 +12342,82 @@ def _answer_rwkv_test_card(reviewer: SimpleNamespace, card_id: int, ease: int) -
     AnkiQt.on_operation_did_execute(reviewer.mw, changes, reviewer)
 
 
+@pytest.mark.parametrize("first_answer", [True, False])
+def test_template_edit_then_answer_restores_rwkv_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, first_answer: bool
+) -> None:
+    from aqt.main import AnkiQt
+    from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
+
+    with _reviewed_rwkv_pair(monkeypatch, tmp_path, native_history=True) as setup:
+        reviewer, _old_backend, _timers, card_ids = setup
+        mw = reviewer.mw
+        col = mw.col
+        notetype = col.models.current()
+        assert notetype is not None
+        if first_answer:
+            note = col.new_note(notetype)
+            note.fields[0] = "New card after template edit"
+            col.add_note(note, DeckId(1))
+            card = note.cards()[0]
+        else:
+            card = col.get_card(card_ids[0])
+
+        model = Path(__file__).parents[1] / "aqt/rwkv_inference/sm72e25/weights.f32.bin"
+        backend = EmbeddedRwkvReviewerBackend(
+            model_path=model,
+            state_precision="cards_int4_notes_int8",
+            model="sm72e25",
+        )
+        set_reviewer_backend(backend)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+        before_answer = backend.cache_snapshot()
+        mw.state = "review"
+        reviewer.card = card
+        reviewer.op_executed = lambda *_args: False
+
+        notetype["tmpls"][0]["qfmt"] += "\n<!-- template edit -->"
+        changes = col.models.update_dict(notetype)
+        AnkiQt.on_operation_did_execute(mw, changes, None)
+        assert not rwkv_scheduler._rwkv_resident_state_ready(mw)
+
+        _answer_rwkv_test_card(reviewer, card.id, 3)
+        assert rwkv_scheduler._prepare_reviewer_backend_for_review(reviewer)
+        current_card = col.get_card(card.id)
+        identity = rwkv_scheduler.rwkv_review_identity(reviewer, current_card)
+        assert identity is not None
+        query = rwkv_scheduler.rwkv_review_input(
+            reviewer=reviewer, card=current_card, identity=identity, ease=None
+        )
+        predictions = backend.predict_retrievability_inputs_from_warm_up_uncached(
+            [query]
+        )
+        assert len(predictions) == 1
+        assert 0 <= predictions[0].retrievability <= 1
+
+        after_answer = backend.cache_snapshot()
+        rebuilt = EmbeddedRwkvReviewerBackend(
+            model_path=model,
+            state_precision="cards_int4_notes_int8",
+            model="sm72e25",
+        )
+        set_reviewer_backend(rebuilt)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+        assert rebuilt.cache_snapshot() == after_answer
+
+        undone = col.undo()
+        assert rwkv_scheduler.record_collection_undo(undone) == []
+        AnkiQt.on_operation_did_execute(mw, undone.changes, None)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert rebuilt.cache_snapshot() == before_answer
+
+        redone = col.redo()
+        assert rwkv_scheduler.record_collection_redo(redone) == []
+        AnkiQt.on_operation_did_execute(mw, redone.changes, None)
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer)
+        assert rebuilt.cache_snapshot() == after_answer
+
+
 @pytest.mark.parametrize("native_history", [True, False])
 @pytest.mark.parametrize("already_imported", [True, False])
 @pytest.mark.parametrize(

@@ -172,18 +172,22 @@ fn rwkv_state_precision_queries_and_undo_read_packed_history() {
         assert_eq!(
             inference
                 .model
-                .review_retrievability_query_refs_scalar(&items),
+                .review_retrievability_query_refs_scalar(&items)
+                .unwrap(),
             inference
                 .model
                 .review_retrievability_query_refs_scalar(&expected)
+                .unwrap()
         );
         assert_eq!(
             inference
                 .model
-                .review_retrievability_query_refs_batched(&items),
+                .review_retrievability_query_refs_batched(&items)
+                .unwrap(),
             inference
                 .model
                 .review_retrievability_query_refs_batched(&expected)
+                .unwrap()
         );
         let heads = inference.model.review(&features, packed.as_ref());
         let expected_heads = inference.model.review(&features, decoded.as_ref());
@@ -215,6 +219,53 @@ fn rwkv_state_precision_queries_and_undo_read_packed_history() {
             )
             .unwrap();
         assert_eq!(snapshot_bytes(&inference), before);
+    }
+}
+
+#[test]
+fn rwkv_state_precision_queue_scoring_reports_invalid_resident_state() {
+    let mut inference = runtime(StatePrecision::Int4CardsInt8Notes, [false; 3]);
+    let mut answer = reviews(1).remove(0);
+    // Malformed historical data can produce a non-finite in-memory state.
+    answer.duration_millis = Some(-10);
+    inference
+        .warm_up_reviews(vec![answer.clone()], false)
+        .unwrap();
+
+    let mut query = answer;
+    query.is_query = true;
+    query.ease = None;
+    query.duration_millis = None;
+    let error = inference
+        .predict_retrievability_many_from_warm_up(vec![query.clone()])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "RWKV card state: invalid RWKV compact state: non-finite shift"
+    );
+
+    // macOS uses the batched path, while other platforms use the scalar path.
+    let features = inference.features.features_for(&query);
+    let items = [ReviewPredictionQueryRef {
+        features: &features,
+        state: inference.warm_up_states.state_ref(&query),
+    }];
+    for result in [
+        inference
+            .model
+            .review_retrievability_query_refs_scalar(&items),
+        inference
+            .model
+            .review_retrievability_query_refs_batched(&items),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "RWKV card state: invalid RWKV compact state: non-finite shift"
+        );
     }
 }
 

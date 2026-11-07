@@ -387,13 +387,15 @@ fn rwkv_runtime_precision_case() {
     // cfg(test) inference defaults to scalar queries for reference tests.
     let predictions = inference
         .model
-        .review_retrievability_query_refs_batched(&items);
+        .review_retrievability_query_refs_batched(&items)
+        .unwrap();
     let mut checksums = Vec::new();
     for index in 0..3 {
         let values = phase(&format!("queue_score_{index}"), true, || {
             inference
                 .model
                 .review_retrievability_query_refs_batched(&items)
+                .unwrap()
         });
         assert_eq!(values, predictions);
         checksums.push(values.iter().map(|&p| p as f64).sum::<f64>());
