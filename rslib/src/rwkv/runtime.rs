@@ -878,6 +878,20 @@ impl RwkvRuntime {
         )
     }
 
+    pub fn forecast_instant_workload_from_warm_up(
+        &self,
+        inputs: Vec<RwkvInstantForecastCard>,
+        config: RwkvInstantForecastConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<RwkvWorkloadForecastOutput> {
+        dispatch!(
+            self,
+            engine,
+            engine.forecast_instant_workload_from_warm_up(inputs, config, progress),
+            pair => pair.instant.forecast_instant_workload_from_warm_up(inputs, config, progress)
+        )
+    }
+
     pub fn compare_workloads_from_warm_up(
         &self,
         inputs: Vec<RwkvComparisonCard>,
@@ -1549,6 +1563,92 @@ mod tests {
         assert!(alone
             .simulate_workload_from_warm_up(Vec::new(), config(), &mut |_, _| Ok(()))
             .is_err());
+    }
+
+    #[test]
+    fn instant_only_forecast_pulls_future_card_for_daily_minimum() {
+        if !super::super::SMALL_MODEL {
+            return;
+        }
+        let mut runtime = RwkvRuntime::load_with_precision(
+            model_path("sm57"),
+            0.9,
+            36_500,
+            StatePrecision::F32,
+            ModelKind::Sm57,
+        )
+        .unwrap();
+        let answers = crate::rwkv::precision_tests::reviews(4);
+        runtime.warm_up_reviews(answers.clone(), false).unwrap();
+        let query = query_of(&answers[0], 3);
+        let mut deck = crate::decks::Deck::new_normal();
+        deck.id = crate::decks::DeckId(1);
+        deck.name = crate::decks::NativeDeckName::from_human_name("Study");
+        let mut preset = crate::deckconfig::DeckConfig {
+            id: crate::deckconfig::DeckConfigId(1),
+            ..Default::default()
+        };
+        preset.inner.rwkv_review_instant_order_enabled = true;
+        preset.inner.rwkv_review_minimum_reviews_per_day = 1;
+        preset.inner.reviews_per_day = 1;
+        let output = runtime
+            .forecast_instant_workload_from_warm_up(
+                vec![RwkvInstantForecastCard {
+                    input: RwkvWorkloadSimulationInput {
+                        review_input: query,
+                        interval_days: Some(30),
+                        ease_factor: Some(2500),
+                        reps: Some(3),
+                        lapses: Some(0),
+                    },
+                    due_day: 30,
+                    group: 1,
+                    desired_retention: 0.01,
+                    instant_enabled: true,
+                    intervening_reviews: None,
+                    last_kind_and_grade: None,
+                    queue: 2,
+                    learning_due_millis: 0,
+                    remaining_steps: 0,
+                    new_position: 0,
+                    fsrs_memory: None,
+                    fsrs_parameters: vec![],
+                    fsrs_historical_retention: 0.9,
+                    fsrs_enabled: false,
+                }],
+                RwkvInstantForecastConfig {
+                    days: 1,
+                    paths: 1,
+                    seed: 0,
+                    decks: vec![deck],
+                    deck_configs: vec![preset],
+                    study_deck_id: 1,
+                    today: 0,
+                    new_cards_ignore_review_limit: true,
+                    fsrs_learning_queues_disabled: false,
+                    fsrs_short_term_with_steps_enabled: true,
+                    learn_ahead_secs: 0,
+                    timing_patterns: vec![vec![(10_000, 2_000), (15_000, 3_000)]],
+                    timing_pattern_success_shares: vec![[0.0, 0.0, 1.0, 0.0]],
+                    now_millis: 0,
+                    same_day_allowed: false,
+                    min_intervening_reviews: 0,
+                    min_elapsed_secs: 0,
+                    refresh_interval: 1,
+                    candidate_refresh_enabled: false,
+                    candidate_refresh_limit: 64,
+                    precompute_next_card: true,
+                    review_order:
+                        anki_proto::deck_config::deck_config::config::ReviewCardOrder::Day,
+                    review_model: RwkvWorkloadReviewModel {
+                        grade_seconds: [1.0; 4],
+                        bucket_probabilities: Vec::new(),
+                    },
+                },
+                &mut |_, _| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(output.days[0].done.mean, 1.0);
     }
 
     fn read_u32(bytes: &[u8], at: &mut usize) -> usize {

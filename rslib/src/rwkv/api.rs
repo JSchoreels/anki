@@ -2,6 +2,13 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
+use prost::Message;
+
+use crate::deckconfig::DeckConfig;
+use crate::deckconfig::DeckConfigId;
+use crate::decks::Deck;
+use crate::decks::DeckId;
+use crate::decks::NativeDeckName;
 
 #[derive(Debug, Clone)]
 pub struct ReviewInput {
@@ -242,6 +249,115 @@ pub struct RwkvWorkloadForecastConfig {
     /// from the selected grade's curve alone, without running the other three
     /// grades for the grade-order check (one answer step instead of four).
     pub single_step_answers: bool,
+    pub review_model: RwkvWorkloadReviewModel,
+}
+
+/// A review card in the Instant forecast. The stored due day is an ordering
+/// key; eligibility comes from the current Instant prediction instead.
+#[derive(Clone)]
+pub struct RwkvInstantForecastCard {
+    pub input: RwkvWorkloadSimulationInput,
+    pub due_day: i64,
+    pub group: i64,
+    pub desired_retention: f32,
+    pub instant_enabled: bool,
+    /// Number of answers in the studied deck since this card's last answer.
+    pub intervening_reviews: Option<u32>,
+    /// The latest real answer's kind and grade, when it happened today.
+    pub last_kind_and_grade: Option<(i64, i64)>,
+    pub queue: i32,
+    /// Due time for a learning card, relative to today's rollover.
+    pub learning_due_millis: i64,
+    pub remaining_steps: u32,
+    pub new_position: u32,
+    pub fsrs_memory: Option<(f32, f32, f32)>,
+    pub fsrs_parameters: Vec<f32>,
+    pub fsrs_historical_retention: f32,
+    pub fsrs_enabled: bool,
+}
+
+/// Read-only copies of Anki's deck and preset settings for queue simulation.
+pub fn decode_instant_forecast_decks(
+    decks: Vec<Vec<u8>>,
+    configs: Vec<Vec<u8>>,
+) -> std::io::Result<(Vec<Deck>, Vec<DeckConfig>)> {
+    let invalid = |error: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, error);
+    let mut decks = decks
+        .into_iter()
+        .map(|bytes| {
+            let value = anki_proto::decks::Deck::decode(bytes.as_slice())
+                .map_err(|error| invalid(error.to_string()))?;
+            Deck::try_from(value).map_err(|error| invalid(error.to_string()))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut configs = configs
+        .into_iter()
+        .map(|bytes| {
+            anki_proto::deck_config::DeckConfig::decode(bytes.as_slice())
+                .map(DeckConfig::from)
+                .map_err(|error| invalid(error.to_string()))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    decks.sort_by(|a, b| a.name.as_native_str().cmp(b.name.as_native_str()));
+    if let Some(first) = decks.first() {
+        let root_name = first.name.as_native_str();
+        let is_tree = decks.iter().all(|deck| {
+            let name = deck.name.as_native_str();
+            name == root_name
+                || name
+                    .strip_prefix(root_name)
+                    .is_some_and(|suffix| suffix.starts_with('\u{1f}'))
+        });
+        if !is_tree {
+            // LimitTreeMap represents one tree. An unlimited virtual root
+            // lets a search spanning separate trees retain each real root's
+            // limits without imposing one deck's limits on another.
+            let mut name = "__rwkv_forecast_root__".to_owned();
+            while decks.iter().any(|deck| deck.name.as_native_str() == name) {
+                name.push('_');
+            }
+            let mut root = Deck::new_normal();
+            root.id = DeckId(i64::MIN);
+            root.name = NativeDeckName::from_human_name(&name);
+            root.normal_mut().expect("new deck is normal").config_id = i64::MIN;
+            let mut root_config = DeckConfig {
+                id: DeckConfigId(i64::MIN),
+                ..Default::default()
+            };
+            root_config.inner.reviews_per_day = i32::MAX as u32;
+            root_config.inner.new_per_day = i32::MAX as u32;
+            root_config.inner.rwkv_review_minimum_reviews_per_day = 0;
+            decks.insert(0, root);
+            configs.push(root_config);
+        }
+    }
+    Ok((decks, configs))
+}
+
+pub struct RwkvInstantForecastConfig {
+    pub days: u32,
+    pub paths: u32,
+    pub seed: u32,
+    pub decks: Vec<Deck>,
+    pub deck_configs: Vec<DeckConfig>,
+    pub study_deck_id: i64,
+    pub today: u32,
+    pub new_cards_ignore_review_limit: bool,
+    pub fsrs_learning_queues_disabled: bool,
+    pub fsrs_short_term_with_steps_enabled: bool,
+    pub learn_ahead_secs: u32,
+    /// Recorded answers as (milliseconds after scheduler rollover, answer ms).
+    pub timing_patterns: Vec<Vec<(u32, u32)>>,
+    pub timing_pattern_success_shares: Vec<[f32; 4]>,
+    pub now_millis: u32,
+    pub same_day_allowed: bool,
+    pub min_intervening_reviews: u32,
+    pub min_elapsed_secs: u32,
+    pub refresh_interval: u32,
+    pub candidate_refresh_enabled: bool,
+    pub candidate_refresh_limit: usize,
+    pub precompute_next_card: bool,
+    pub review_order: ReviewCardOrder,
     pub review_model: RwkvWorkloadReviewModel,
 }
 

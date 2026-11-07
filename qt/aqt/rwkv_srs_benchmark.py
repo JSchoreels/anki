@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import types
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -1278,6 +1278,99 @@ class _RustRwkvRuntime:
                 suspend_after_lapses,
                 max(1, int(state_update_interval)),
                 bool(single_step_answers),
+                tuple(getattr(review_model, "grade_seconds")),
+                _workload_bucket_probabilities(review_model),
+                progress,
+            )
+
+    def forecast_instant_workload(  # noqa: PLR0913
+        self,
+        *,
+        cards: Sequence[RwkvForecastCardInput],
+        decks: Sequence[bytes],
+        deck_configs: Sequence[bytes],
+        study_deck_id: int,
+        instant_decks: set[int],
+        timing_patterns: Sequence[Sequence[tuple[int, int]]],
+        timing_pattern_success_shares: Sequence[tuple[float, float, float]],
+        intervening_reviews: Mapping[int, int],
+        latest_answers_today: Mapping[int, tuple[int, int]],
+        days: int,
+        paths: int,
+        seed: int,
+        today: int,
+        new_cards_ignore_review_limit: bool,
+        fsrs_enabled: bool,
+        fsrs_learning_queues_disabled: bool,
+        fsrs_short_term_with_steps_enabled: bool,
+        learn_ahead_secs: int,
+        day_start_secs: int,
+        now_millis: int,
+        same_day_allowed: bool,
+        min_intervening_reviews: int,
+        min_elapsed_secs: int,
+        refresh_interval: int,
+        candidate_refresh_enabled: bool,
+        candidate_refresh_limit: int,
+        precompute_next_card: bool,
+        review_order: int,
+        review_model: object,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> object:
+        forecast = getattr(
+            self._process, "forecast_instant_workload_from_warm_up", None
+        )
+        if not callable(forecast):
+            raise ValueError("RWKV Rust runtime does not support Instant forecasts")
+        rows = [
+            (
+                _workload_input_row(card.review_input),
+                int(card.due_day or 0),
+                int(card.group),
+                float(card.desired_retention),
+                intervening_reviews.get(card.review_input.identity.card_id),
+                int(card.review_input.card_queue or 0),
+                (
+                    (int(card.review_input.card_due or 0) - day_start_secs) * 1000
+                    if card.review_input.card_queue == 1
+                    else int(card.due_day or 0) * 86_400_000
+                ),
+                int(card.review_input.remaining_steps or 0),
+                max(0, int(card.review_input.card_due or 0)),
+                card.review_input.fsrs_memory_state,
+                tuple(card.review_input.fsrs_parameters),
+                bool(fsrs_enabled),
+                card.group in instant_decks,
+                latest_answers_today.get(card.review_input.identity.card_id),
+                float(card.review_input.fsrs_historical_retention or 0.9),
+            )
+            for card in cards
+        ]
+        with self._locked_process():
+            return forecast(
+                rows,
+                list(decks),
+                list(deck_configs),
+                int(study_deck_id),
+                [list(pattern) for pattern in timing_patterns],
+                list(timing_pattern_success_shares),
+                int(days),
+                int(paths),
+                int(seed),
+                int(today),
+                bool(new_cards_ignore_review_limit),
+                bool(fsrs_learning_queues_disabled),
+                bool(fsrs_short_term_with_steps_enabled),
+                int(learn_ahead_secs),
+                int(now_millis),
+                bool(same_day_allowed),
+                int(min_intervening_reviews),
+                int(min_elapsed_secs),
+                int(refresh_interval),
+                bool(candidate_refresh_enabled),
+                int(candidate_refresh_limit),
+                bool(precompute_next_card),
+                int(review_order),
                 tuple(getattr(review_model, "grade_seconds")),
                 _workload_bucket_probabilities(review_model),
                 progress,

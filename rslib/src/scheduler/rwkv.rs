@@ -513,6 +513,8 @@ impl Collection {
                     current_elapsed_days: partial.state.elapsed_days,
                     current_elapsed_seconds: partial.state.elapsed_seconds,
                     current_elapsed_since_secs: partial.state.elapsed_since.map(|time| time.0),
+                    remaining_steps: Some(partial.card.remaining_steps()),
+                    in_filtered_deck: partial.card.original_deck_id.0 != 0,
                     target_retention: valid_rwkv_target_retention(partial.target_retention),
                     batch_size: partial.batch_size,
                     enforce_grade_order: Some(partial.enforce_grade_order),
@@ -1689,6 +1691,29 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].current_elapsed_seconds, None);
         assert_eq!(response.rows[0].current_elapsed_since_secs, None);
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_expose_normalized_learning_steps() -> Result<()> {
+        let mut col = Collection::new();
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.now.0 as i32);
+        card.ctype = CardType::Learn;
+        card.queue = CardQueue::Learn;
+        card.remaining_steps = 2002;
+        card.original_deck_id = DeckId(1);
+        col.add_card(&mut card)?;
+        let response =
+            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                card_ids: vec![card.id.0],
+                include_suspended_review: false,
+                include_disabled_decks: true,
+                include_new_cards: false,
+            })?;
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].remaining_steps, Some(2));
+        assert!(response.rows[0].in_filtered_deck);
         Ok(())
     }
 
