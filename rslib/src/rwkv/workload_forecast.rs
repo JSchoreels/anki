@@ -277,6 +277,7 @@ impl RwkvInference {
         let max_interval = config.max_interval.max(1);
         let state_update_interval = config.state_update_interval.max(1);
         let review_model = &config.review_model;
+        let single_step = config.single_step_answers && state_update_interval == 1;
         let mut states = SimulationStates::new(run.base_state);
         let mut cards = run
             .cards
@@ -424,7 +425,7 @@ impl RwkvInference {
                     })
                     .collect::<Vec<_>>();
                 let mut rwkv_intervals = vec![None; chunk.len()];
-                if !rwkv_positions.is_empty() {
+                if !rwkv_positions.is_empty() && !single_step {
                     let rwkv_inputs = rwkv_positions
                         .iter()
                         .map(|position| query_inputs[*position].clone())
@@ -469,8 +470,31 @@ impl RwkvInference {
                         *ease,
                         duration_millis,
                     );
+                    // Single-step answers take the RWKV interval from the
+                    // selected grade's curve alone, skipping the other three
+                    // grades of the order check.
+                    let answer_curve = if single_step
+                        && card.scheduler == RwkvForecastScheduler::Rwkv
+                    {
+                        let interval_input = simulated_answer_input(&query_inputs[position], *ease);
+                        Some(
+                            self.review_heads_for_state(
+                                &interval_input,
+                                states.state_ref(&interval_input),
+                            )?
+                            .curve,
+                        )
+                    } else {
+                        None
+                    };
                     let interval = match card.scheduler {
-                        RwkvForecastScheduler::Rwkv => rwkv_intervals[position].unwrap_or(1),
+                        RwkvForecastScheduler::Rwkv => match &answer_curve {
+                            Some(curve) => {
+                                interval_for_curve(curve, card.retention, self.max_interval_days)
+                                    .unwrap_or(1)
+                            }
+                            None => rwkv_intervals[position].unwrap_or(1),
+                        },
                         RwkvForecastScheduler::Fsrs => {
                             let elapsed = (day_i64 - card.card.last_review_day).max(0) as u32;
                             let model = card.fsrs.as_ref().expect("FSRS cards carry a model");
@@ -859,6 +883,7 @@ mod tests {
             review_order: order,
             suspend_after_lapses: None,
             state_update_interval: 1,
+            single_step_answers: false,
             review_model: review_model(),
         }
     }
@@ -967,5 +992,34 @@ mod tests {
                 assert!(band.p50 <= band.p95 && band.p95 <= band.p99);
             }
         }
+    }
+
+    #[test]
+    fn single_step_answers_stay_close_to_the_exact_forecast() {
+        let Some((inference, inputs)) = forecast_fixture(80) else {
+            return;
+        };
+        let run = |single_step_answers: bool| {
+            let mut config = forecast_config(30, 8, 3, ReviewCardOrder::Day);
+            config.default_review_limit = 9_999;
+            config.single_step_answers = single_step_answers;
+            inference
+                .forecast_workload_from_warm_up(
+                    forecast_cards(&inputs, 0.9, |_| RwkvForecastScheduler::Rwkv, |_| 0),
+                    config,
+                    &mut |_, _| Ok(()),
+                )
+                .unwrap()
+        };
+        let total = |output: &RwkvWorkloadForecastOutput| {
+            output.days.iter().map(|day| day.done.mean).sum::<f32>()
+        };
+        let (exact, fast) = (run(false), run(true));
+        assert_eq!(exact.days[0].due, fast.days[0].due);
+        let ratio = total(&fast) / total(&exact);
+        assert!(
+            (0.8..1.25).contains(&ratio),
+            "single-step/exact reviews {ratio}"
+        );
     }
 }

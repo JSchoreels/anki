@@ -775,6 +775,7 @@ def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
         0,
         None,
         1,
+        False,
         (8.0, 8.0, 8.0, 8.0),
         [],
         None,

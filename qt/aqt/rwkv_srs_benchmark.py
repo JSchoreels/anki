@@ -1243,6 +1243,7 @@ class _RustRwkvRuntime:
         suspend_after_lapses: int | None,
         state_update_interval: int,
         review_model: object,
+        single_step_answers: bool = False,
         progress: Callable[[int, int], None] | None = None,
     ) -> object:
         """Forecast daily workload bands from the resident warmed state."""
@@ -1276,6 +1277,7 @@ class _RustRwkvRuntime:
                 int(review_order),
                 suspend_after_lapses,
                 max(1, int(state_update_interval)),
+                bool(single_step_answers),
                 tuple(getattr(review_model, "grade_seconds")),
                 _workload_bucket_probabilities(review_model),
                 progress,

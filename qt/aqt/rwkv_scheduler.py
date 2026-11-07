@@ -14997,6 +14997,7 @@ def forecast_rwkv_workload(
     paths: int = 200,
     seed: int = 0,
     state_update_interval: int = 1,
+    fast: bool = False,
     max_interval: int = 36500,
     progress: RwkvWorkloadProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
@@ -15089,6 +15090,7 @@ def forecast_rwkv_workload(
                     review_order=0,
                     suspend_after_lapses=None,
                     state_update_interval=state_update_interval,
+                    single_step_answers=bool(fast),
                     review_model=review_model,
                     progress=report_progress,
                 )
@@ -15100,6 +15102,7 @@ def forecast_rwkv_workload(
     result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
     result["elapsed_ms"] = (time.monotonic() - start) * 1000
     result["state_update_interval"] = max(1, int(state_update_interval))
+    result["fast"] = bool(fast)
     logger.debug(
         "RWKV workload forecast finished: search=%r cards=%s days=%s paths=%s "
         "elapsed_ms=%.1f",
