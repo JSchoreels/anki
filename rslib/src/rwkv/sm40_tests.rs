@@ -269,8 +269,12 @@ fn check_ignores_missing_id_flags(package: &str, data: &[u8]) {
                     state,
                 },
             ];
-            let scalar = model.review_retrievability_query_refs_scalar(&queries);
-            let batched = model.review_retrievability_query_refs_batched(&queries);
+            let scalar = model
+                .review_retrievability_query_refs_scalar(&queries)
+                .unwrap();
+            let batched = model
+                .review_retrievability_query_refs_batched(&queries)
+                .unwrap();
             let same = heads.retrievability == flagged_heads.retrievability
                 && heads.button_probabilities == flagged_heads.button_probabilities
                 && predict_curve(&heads.curve, row.elapsed)
