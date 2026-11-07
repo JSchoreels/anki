@@ -15043,6 +15043,8 @@ def forecast_rwkv_workload(
         include_new_cards=True,
         batch_size_override=None,
         include_comparison_data=True,
+        # FSRS and SM-2 presets are forecast with their own schedulers.
+        include_disabled_decks=True,
     )
     if input_build is None:
         raise ValueError("Unable to load RWKV review inputs for the requested search")
@@ -25142,6 +25144,7 @@ def _rwkv_review_input_batches_for_search(
     batch_size_override: int | None = None,
     use_enabled_deck_filter: bool = True,
     include_comparison_data: bool = False,
+    include_disabled_decks: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
     if not use_enabled_deck_filter:
         return None
@@ -25158,6 +25161,7 @@ def _rwkv_review_input_batches_for_search(
         include_suspended_review=include_suspended_review,
         include_new_cards=include_new_cards,
         include_comparison_data=include_comparison_data,
+        include_disabled_decks=include_disabled_decks,
     )
     if response is None:
         return None
@@ -25775,6 +25779,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
     include_suspended_review: bool,
     include_new_cards: bool = False,
     include_comparison_data: bool = False,
+    include_disabled_decks: bool = False,
 ) -> object | None:
     get_rows_raw = getattr(backend, "rwkv_review_input_rows_for_search_raw", None)
     if callable(get_rows_raw) and hasattr(
@@ -25787,6 +25792,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
                 include_comparison_data=include_comparison_data,
+                include_disabled_decks=include_disabled_decks,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -25807,7 +25813,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
         kwargs: dict[str, object] = dict(
             search=search,
             include_suspended_review=include_suspended_review,
-            include_disabled_decks=False,
+            include_disabled_decks=include_disabled_decks,
         )
         if include_new_cards:
             kwargs["include_new_cards"] = True

@@ -26333,7 +26333,11 @@ def test_rwkv_workload_forecast_builds_cards_and_returns_plain_bands(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_rwkv_review_input_batches_for_search",
-        lambda **kwargs: input_build if kwargs["include_comparison_data"] else None,
+        lambda **kwargs: (
+            input_build
+            if kwargs["include_comparison_data"] and kwargs["include_disabled_decks"]
+            else None
+        ),
     )
     monkeypatch.setattr(
         rwkv_scheduler,
