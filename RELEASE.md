@@ -39,7 +39,7 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### New Features
 
-- **A dedicated model for RWKV-Instant.** Profiles using only Instant with the default small model now automatically use a model tuned for predicting recall right now, with no extra state memory. If you use both Instant and Curve, enable **Use dedicated model for RWKV-Instant** in Advanced for improved Instant predictions, at the cost of about twice the RWKV memory and a slower cache build. The settings use plain language without model codes or training details. Reopen the profile to apply a model change and rebuild its cache once.
+- **A dedicated model for RWKV-Instant.** Profiles using only Instant with the default small model now automatically use a model tuned for predicting recall right now, with no extra state memory. If you use both Instant and Curve, enable **Use dedicated model for RWKV-Instant** in Advanced for improved Instant predictions, at the cost of about twice the RWKV memory and a slower cache build. The settings use plain language without model codes or training details, with consistent styling for both toggles. Reopen the profile to apply a model change and rebuild its cache once.
 
 - **Answer-time predictions in Card Info.** With the default small model (SM63) or the optional show-time model (SM92), Card Info shows a typical answer time for each answer button, an expected answer time over the likely answers, and the chance of a Good answer under 3.9 seconds. On the held-out set, time prediction loss was **17.3% lower** than each user's running median time per answer button. Estimates appear only for cards last reviewed on an earlier day; they do not change scheduling or review order.
 

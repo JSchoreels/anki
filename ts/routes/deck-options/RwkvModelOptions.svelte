@@ -80,7 +80,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <style>
     .model-row {
         align-items: center;
+        color: var(--fg);
         display: flex;
+        font-size: 1rem;
         gap: 0.75rem;
         min-height: 2.5rem;
     }
