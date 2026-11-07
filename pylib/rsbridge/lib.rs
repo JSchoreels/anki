@@ -131,27 +131,58 @@ impl Backend {
 #[pymethods]
 impl RwkvInference {
     #[new]
-    #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500, state_precision="f32", model="sm40"))]
+    /// With `instant_model_path` and `instant_model`, an instant-only model
+    /// runs beside `model`: it provides instant recall and button
+    /// probabilities, `model` the curve, intervals, S90 and answer time.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500, state_precision="f32", model="sm40", instant_model_path=None, instant_model=None))]
     fn new(
         model_path: &str,
         target_retention: f32,
         max_interval_days: u32,
         state_precision: &str,
         model: &str,
+        instant_model_path: Option<&str>,
+        instant_model: Option<&str>,
     ) -> PyResult<Self> {
         let precision = rwkv::StatePrecision::parse(state_precision)
             .map_err(|err| PyException::new_err(err.to_string()))?;
         let model =
             rwkv::ModelKind::parse(model).map_err(|err| PyException::new_err(err.to_string()))?;
-        rwkv::RwkvRuntime::load_with_precision(
-            model_path.into(),
-            target_retention,
-            max_interval_days,
-            precision,
-            model,
-        )
+        match (instant_model_path, instant_model) {
+            (Some(instant_model_path), Some(instant_model)) => {
+                let instant_model = rwkv::ModelKind::parse(instant_model)
+                    .map_err(|err| PyException::new_err(err.to_string()))?;
+                rwkv::RwkvRuntime::load_paired(
+                    model_path.into(),
+                    instant_model_path.into(),
+                    target_retention,
+                    max_interval_days,
+                    precision,
+                    model,
+                    instant_model,
+                )
+            }
+            (None, None) => rwkv::RwkvRuntime::load_with_precision(
+                model_path.into(),
+                target_retention,
+                max_interval_days,
+                precision,
+                model,
+            ),
+            _ => {
+                return Err(PyException::new_err(
+                    "the instant RWKV model needs both a path and a name",
+                ))
+            }
+        }
         .map(|inner| Self { inner })
         .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    /// Whether an instant-only model runs beside the release model.
+    fn is_paired(&self) -> bool {
+        self.inner.is_paired()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -544,10 +575,11 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    fn warm_up_snapshot(&self, py: Python<'_>) -> RwkvWarmUpSnapshot {
+    fn warm_up_snapshot(&self, py: Python<'_>) -> PyResult<RwkvWarmUpSnapshot> {
         let (snapshot, cache_state) =
             py.detach(|| (self.inner.warm_up_snapshot(), self.inner.cache_state()));
-        (
+        let snapshot = snapshot.map_err(|err| PyException::new_err(err.to_string()))?;
+        Ok((
             py_state_map(py, snapshot.card_states),
             py_state_map(py, snapshot.note_states),
             py_state_map(py, snapshot.deck_states),
@@ -556,7 +588,7 @@ impl RwkvInference {
                 .global_state
                 .map(|state| PyBytes::new(py, &state).unbind()),
             PyBytes::new(py, &cache_state).unbind(),
-        )
+        ))
     }
 
     fn warm_up_state(
@@ -565,7 +597,9 @@ impl RwkvInference {
         review: &Bound<'_, PyAny>,
     ) -> PyResult<RwkvSerializedState> {
         let input = parse_rwkv_review_input(review)?;
-        let state = py.detach(|| self.inner.warm_up_state(&input));
+        let state = py
+            .detach(|| self.inner.warm_up_state(&input))
+            .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok((
             state.card.map(|state| PyBytes::new(py, &state).unbind()),
             state.note.map(|state| PyBytes::new(py, &state).unbind()),

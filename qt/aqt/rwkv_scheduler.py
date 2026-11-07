@@ -59,6 +59,7 @@ from aqt.rwkv_answer_time import (
     RwkvAnswerTimePrediction,
     answer_time_card_info_rows,
 )
+from aqt.rwkv_model import RwkvRuntimeModels
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -118,6 +119,9 @@ class RwkvReviewState(enum.IntEnum):
 class _RwkvCollectionConfigState(NamedTuple):
     review_enabled: bool
     dynamic_preset_replay_enabled: bool
+    # Some preset uses RWKV-Curve intervals / RWKV-Instant queue selection.
+    curve_enabled: bool = False
+    instant_enabled: bool = False
 
 
 class _RwkvStateCacheCheckpointEntry(TypedDict):
@@ -4163,15 +4167,39 @@ def configure_reviewer_backend_from_environment() -> bool:
 
         from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
-        set_reviewer_backend(
-            EmbeddedRwkvReviewerBackend(
+        runtime_models = _rwkv_runtime_models()
+        instant_model_path = (
+            _embedded_rwkv_model_file(runtime_models.instant_model)
+            if runtime_models.instant_model is not None
+            else None
+        )
+        if runtime_models.instant_model is not None and instant_model_path is None:
+            logger.warning(
+                "RWKV instant model %s is missing; RWKV-Instant uses %s",
+                runtime_models.instant_model,
+                runtime_models.model,
+            )
+        state_precision = _rwkv_state_precision()
+        if instant_model_path is None or runtime_models.instant_model is None:
+            # A single-model profile creates its backend exactly as before.
+            backend = EmbeddedRwkvReviewerBackend(
                 model_path=resolved_model_path,
                 device=device,
                 dtype=dtype,
-                state_precision=_rwkv_state_precision(),
-                model=_rwkv_model(),
+                state_precision=state_precision,
+                model=runtime_models.model,
             )
-        )
+        else:
+            backend = EmbeddedRwkvReviewerBackend(
+                model_path=resolved_model_path,
+                device=device,
+                dtype=dtype,
+                state_precision=state_precision,
+                model=runtime_models.model,
+                instant_model_path=instant_model_path,
+                instant_model=runtime_models.instant_model,
+            )
+        set_reviewer_backend(backend)
         logger.debug(
             "RWKV scheduler backend configured: backend=%s elapsed_ms=%.1f",
             type(_reviewer_backend).__name__,
@@ -4191,9 +4219,13 @@ def configure_reviewer_backend_from_environment() -> bool:
 
 
 def embedded_rwkv_model_path() -> Path | None:
+    return _embedded_rwkv_model_file(_rwkv_model())
+
+
+def _embedded_rwkv_model_file(model: str) -> Path | None:
     from aqt.rwkv_model import RWKV_MODEL_FILES
 
-    path = Path(__file__).parent / "rwkv_inference" / RWKV_MODEL_FILES[_rwkv_model()]
+    path = Path(__file__).parent / "rwkv_inference" / RWKV_MODEL_FILES[model]
     return path if path.exists() else None
 
 
@@ -8760,10 +8792,14 @@ def _rwkv_collection_config_state(
 
     review_enabled = False
     dynamic_preset_replay_enabled = False
+    curve_enabled = False
+    instant_enabled = False
     for config in configs:
         if not isinstance(config, dict) or not _rwkv_review_config_active(config):
             continue
         review_enabled = True
+        curve_enabled = curve_enabled or _rwkv_review_config_enabled(config)
+        instant_enabled = instant_enabled or _rwkv_review_instant_order_enabled(config)
         if _rwkv_review_dynamic_preset_replay(config):
             dynamic_preset_replay_enabled = True
 
@@ -8779,6 +8815,8 @@ def _rwkv_collection_config_state(
     return _RwkvCollectionConfigState(
         review_enabled=review_enabled,
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        curve_enabled=curve_enabled,
+        instant_enabled=instant_enabled,
     )
 
 
@@ -10731,6 +10769,7 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
             if cache_dir is not None:
                 try:
                     (cache_dir / "stash-spill.bin").unlink(missing_ok=True)
+                    (cache_dir / "stash-spill.bin.instant").unlink(missing_ok=True)
                 except OSError:
                     logger.debug(
                         "failed to delete stale RWKV state spill", exc_info=True
@@ -12585,14 +12624,17 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
     """Invalidate resident state before startup sync can change the collection."""
 
     _invalidate_reviewer_backend_runtime_state_for_profile_open()
-    from aqt.rwkv_model import model_for_profile
     from aqt.rwkv_precision import state_precision_for_profile
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
     profile = getattr(getattr(mw, "pm", None), "profile", None)
     if isinstance(_reviewer_backend, EmbeddedRwkvReviewerBackend) and (
         _reviewer_backend.state_precision != state_precision_for_profile(profile)
-        or _reviewer_backend.model_name != model_for_profile(profile)
+        or (
+            _reviewer_backend.model_name,
+            getattr(_reviewer_backend, "instant_model_name", None),
+        )
+        != tuple(_rwkv_runtime_models_for_profile(mw))
     ):
         set_reviewer_backend(None)
     _set_rwkv_state_cache_recovery_failed(mw, False)
@@ -20909,13 +20951,50 @@ def _rwkv_first_review_elapsed_config_key(
 def _rwkv_model() -> str:
     # Preferences save the choice for the next profile open. Keep cache identity
     # and background jobs on the model used by the current resident backend.
+    return _rwkv_runtime_models().model
+
+
+def _rwkv_instant_model() -> str | None:
+    """The instant-only model running beside the main model, if any."""
+    return _rwkv_runtime_models().instant_model
+
+
+def _rwkv_runtime_models() -> RwkvRuntimeModels:
     model = getattr(_reviewer_backend, "model_name", None)
     if isinstance(model, str):
-        return model
+        instant_model = getattr(_reviewer_backend, "instant_model_name", None)
+        return RwkvRuntimeModels(
+            model, instant_model if isinstance(instant_model, str) else None
+        )
     from aqt import mw
-    from aqt.rwkv_model import model_for_profile
 
-    return model_for_profile(getattr(getattr(mw, "pm", None), "profile", None))
+    return _rwkv_runtime_models_for_profile(mw)
+
+
+def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
+    """The runtime models for the open profile and the schedulers its presets use.
+
+    Read when the backend is created (profile open); a later change of the
+    profile toggle or of the presets' schedulers applies at the next open.
+    """
+    from aqt.rwkv_model import (
+        model_for_profile,
+        runtime_models,
+        specialized_instant_model_for_profile,
+    )
+
+    profile = getattr(getattr(mw, "pm", None), "profile", None)
+    model = model_for_profile(profile)
+    if os.environ.get("ANKI_RWKV_MODEL_PATH"):
+        # A custom checkpoint serves both schedulers.
+        return RwkvRuntimeModels(model)
+    config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
+    return runtime_models(
+        model,
+        instant_used=config_state.instant_enabled,
+        curve_used=config_state.curve_enabled,
+        specialized_instant_model=specialized_instant_model_for_profile(profile),
+    )
 
 
 def _rwkv_state_precision() -> str:
@@ -20938,16 +21017,20 @@ def _rwkv_replay_semantics_key(
     first_review_elapsed_source: RwkvFirstReviewElapsedSource,
 ) -> str:
     dynamic_preset_replay = _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
+    runtime_models = _rwkv_runtime_models()
     payload: dict[str, object] = {
         "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "statePrecision": _rwkv_state_precision(),
-        "model": _rwkv_model(),
+        "model": runtime_models.model,
         "firstReviewElapsedSource": first_review_elapsed_source.value,
         "dynamicPresetReplay": dynamic_preset_replay,
         "presetOverlay": (
             _fsrs_preset_overlay_config(reviewer) if dynamic_preset_replay else None
         ),
     }
+    if runtime_models.instant_model is not None:
+        # Paired states hold both models' states: never reuse single ones.
+        payload["instantModel"] = runtime_models.instant_model
     encoded = json.dumps(
         payload,
         ensure_ascii=False,

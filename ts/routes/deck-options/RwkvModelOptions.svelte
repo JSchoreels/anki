@@ -15,6 +15,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = state.rwkvProfileSettings;
     $: useSmallerModel = $settings.model !== "legacy";
+    // Only the small model (SM63) has an instant-only sibling (SM57).
+    $: hasInstantModel = $settings.model === "sm72e25";
+
+    function changeSpecializedInstantModel(event: Event): void {
+        $settings.specializedInstantModel = (event.target as HTMLInputElement).checked;
+    }
 
     function changeModel(event: Event): void {
         $settings.model = (event.target as HTMLInputElement).checked
@@ -44,6 +50,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <dd>{tr.deckConfigRwkvModelBiggerDescription()}</dd>
             </div>
         </dl>
+        {#if hasInstantModel}
+            <div class="model-row">
+                <label for="rwkv-specialized-instant-model">
+                    {tr.deckConfigRwkvSpecializedInstantModel()}
+                </label>
+                <Switch
+                    id="rwkv-specialized-instant-model"
+                    value={$settings.specializedInstantModel}
+                    {disabled}
+                    on:input={changeSpecializedInstantModel}
+                />
+            </div>
+            <p>{tr.deckConfigRwkvSpecializedInstantModelDescription()}</p>
+        {/if}
         <p>{tr.deckConfigRwkvProfileSettingsScope()}</p>
         <p>{tr.deckConfigRwkvModelMigration()}</p>
         <p>
