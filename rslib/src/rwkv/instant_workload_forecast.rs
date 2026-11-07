@@ -630,7 +630,7 @@ impl RwkvInference {
             let mut refresh = true;
             let mut refresh_at = millis;
             let mut force_full_refresh = true;
-            let mut precomputed = None;
+            let mut precomputed: Option<usize> = None;
             let mut answers_today = 0u32;
             let mut new_answered = 0usize;
             let mut main_answered = 0usize;
@@ -808,7 +808,7 @@ impl RwkvInference {
                         new_order = Some(new.clone());
                     }
                 }
-                let (learning_queue, review_queue, new_queue) = instant_study_candidates(
+                let queues = instant_study_candidates(
                     &reviews
                         .iter()
                         .map(|&index| candidates[index])
@@ -820,6 +820,7 @@ impl RwkvInference {
                     &new.iter()
                         .map(|&index| cards[index].input.group)
                         .collect::<Vec<_>>(),
+                    precomputed.map(|index| (cards[index].input.queue, candidates[index])),
                     &decks,
                     &deck_configs,
                     config.today.saturating_add(day as u32),
@@ -835,7 +836,8 @@ impl RwkvInference {
                         candidate.intervening_reviews,
                     ) == RwkvReviewScoreEligibility::Eligible
                 };
-                let reserved_day_learning = learning_queue
+                let reserved_day_learning = queues
+                    .learning
                     .into_iter()
                     .map(|index| day_learning[index])
                     .collect::<Vec<_>>();
@@ -844,11 +846,13 @@ impl RwkvInference {
                     .copied()
                     .filter(|&index| eligible_learning(index, config.min_intervening_reviews))
                     .collect::<Vec<_>>();
-                let review_queue = review_queue
+                let review_queue = queues
+                    .review
                     .into_iter()
                     .map(|index| reviews[index])
                     .collect::<Vec<_>>();
-                let new_queue = new_queue
+                let new_queue = queues
+                    .new
                     .into_iter()
                     .map(|index| new[index])
                     .collect::<Vec<_>>();
@@ -885,6 +889,9 @@ impl RwkvInference {
                 });
                 let mut queue =
                     mix_queues(main, intraday, study_preset.intraday_learning_mix(), 0, 0);
+                if !queues.precomputed_allowed {
+                    precomputed = None;
+                }
                 if queue.is_empty() && precomputed.is_none() && !did_refresh {
                     refresh = true;
                     refresh_at = millis;
