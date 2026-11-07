@@ -356,10 +356,14 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
         max_interval_days: int = 36500,
         state_precision: str = "f32",
         model: str = "sm40",
+        instant_model_path: str | Path | None = None,
+        instant_model: str | None = None,
     ) -> None:
         del device, dtype
         self.state_precision = state_precision
         self.model_name = model
+        # An instant-only model beside `model` (RWKV-Instant's outputs).
+        self.instant_model_name = instant_model
         super().__init__(
             _RustRwkvRuntime(
                 model_path=Path(model_path),
@@ -367,6 +371,10 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
                 max_interval_days=max_interval_days,
                 state_precision=state_precision,
                 model=model,
+                instant_model_path=(
+                    Path(instant_model_path) if instant_model_path is not None else None
+                ),
+                instant_model=instant_model,
             ),
         )
 
@@ -382,17 +390,32 @@ class _RustRwkvRuntime:
         max_interval_days: int,
         state_precision: str = "f32",
         model: str = "sm40",
+        instant_model_path: Path | None = None,
+        instant_model: str | None = None,
     ) -> None:
         from anki import _rsbridge
 
         rwkv_inference = getattr(_rsbridge, "RwkvInference")
-        self._process = rwkv_inference(
-            str(model_path),
-            target_retention,
-            max_interval_days,
-            state_precision,
-            model,
-        )
+        if (instant_model_path is None) != (instant_model is None):
+            raise ValueError("the instant RWKV model needs both a path and a name")
+        if instant_model_path is None:
+            self._process = rwkv_inference(
+                str(model_path),
+                target_retention,
+                max_interval_days,
+                state_precision,
+                model,
+            )
+        else:
+            self._process = rwkv_inference(
+                str(model_path),
+                target_retention,
+                max_interval_days,
+                state_precision,
+                model,
+                str(instant_model_path),
+                instant_model,
+            )
         self._process_lock = threading.RLock()
 
     def _locked_process(self) -> Any:

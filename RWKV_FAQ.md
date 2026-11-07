@@ -162,6 +162,21 @@ closer fit for a user who wants a conventional interval display while still
 using RWKV's learned representation. This distinction is also illustrated in
 the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983490/1526305928603766784/1552363440973025311).
 
+### Which model does RWKV-Instant use?
+
+With the default small model (SM63), a profile whose presets use RWKV-Instant and
+no RWKV-Curve runs RWKV-Instant on the instant-only small model (SM57), trained
+only to predict the next answer: on 1,487 held-out users its Instant LogLoss is
+0.164% lower than the small model's (SM63) (1,349 users better, 137 worse). It has no trained
+forgetting curve, so that profile gets no RWKV intervals, no RWKV workload
+simulation and no answer-time estimate in Card Info. When presets use both
+RWKV-Instant and RWKV-Curve, both share the small model (SM63) unless **Use specialized model for
+RWKV-Instant (2x RAM if used alongside RWKV-Curve)** is on under Advanced: then
+RWKV-Instant uses the instant-only model (SM57) and RWKV-Curve keeps the small
+model (SM63), with two model states (about
+twice the memory, and answers replay on both). Changes apply when the profile is
+reopened. Details: [integration report](docs/rwkv-sm93-2026-11-07.MD).
+
 ### How do intervals and desired retention fit in?
 
 An interval is an important input and output for conventional scheduling, but

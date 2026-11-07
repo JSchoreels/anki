@@ -303,6 +303,9 @@ message DeckConfigsForUpdate {
 message RwkvProfileSettings {
   string model = 1;
   string state_precision = 2;
+  // With RWKV-Curve and RWKV-Instant both in use, run the instant-only model
+  // beside the release for RWKV-Instant (two model states).
+  bool specialized_instant_model = 3;
 }
 
 enum UpdateDeckConfigsMode {

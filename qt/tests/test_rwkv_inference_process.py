@@ -567,6 +567,31 @@ def test_rsbridge_rwkv_queue_scoring_returns_an_exception_for_invalid_state(
     )
 
 
+def _load_rsbridge_runtime(
+    rsbridge: object, root: Path, model_name: str, filename: str, state_precision: str
+) -> object:
+    """`model+instant` loads the instant-only model beside `model`."""
+    folder = root / "qt/aqt/rwkv_inference"
+    model, _, instant = model_name.partition("+")
+    if not instant:
+        return rsbridge.RwkvInference(
+            str(folder / filename),
+            0.9,
+            36500,
+            state_precision=state_precision,
+            model=model,
+        )
+    return rsbridge.RwkvInference(
+        str(folder / filename),
+        0.9,
+        36500,
+        state_precision=state_precision,
+        model=model,
+        instant_model_path=str(folder / instant / "weights.f32.bin"),
+        instant_model=instant,
+    )
+
+
 @pytest.mark.parametrize(
     "model_name,filename",
     [
@@ -579,6 +604,9 @@ def test_rsbridge_rwkv_queue_scoring_returns_an_exception_for_invalid_state(
         ("sm72e20", "sm72e20/weights.f32.bin"),
         ("sm72e25", "sm72e25/weights.f32.bin"),
         ("sm92", "sm92/weights.f32.bin"),
+        # The instant-only small model (SM57) alone, and beside the release.
+        ("sm57", "sm57/weights.f32.bin"),
+        ("sm72e25+sm57", "sm72e25/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
@@ -589,9 +617,8 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
 
     root = Path(__file__).resolve().parents[2]
     rsbridge = _import_rsbridge(root)
-    model_path = root / "qt/aqt/rwkv_inference" / filename
-    runtime = rsbridge.RwkvInference(
-        str(model_path), 0.9, 36500, state_precision=state_precision, model=model_name
+    runtime = _load_rsbridge_runtime(
+        rsbridge, root, model_name, filename, state_precision
     )
     reviews = [
         (
@@ -661,8 +688,8 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         rwkv_scheduler._read_rwkv_state_cache_store_segment_history(
             path, "generation", orphan
         )
-    restored = rsbridge.RwkvInference(
-        str(model_path), 0.9, 36500, state_precision=state_precision, model=model_name
+    restored = _load_rsbridge_runtime(
+        rsbridge, root, model_name, filename, state_precision
     )
     restored.restore_warm_up_state_checkpoint(str(path), "generation", head)
     assert restored.predict_retrievability_many_from_warm_up([query]) == expected
@@ -1064,3 +1091,53 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     assert without_head.predict_answer_times([later_day], history) == [None]
     with pytest.raises(Exception, match="26 values"):
         with_head.predict_answer_times([later_day], [[0.0] * 25])
+
+
+def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve() -> None:
+    root = Path(__file__).resolve().parents[2]
+    rsbridge = _import_rsbridge(root)
+
+    def load(model_name: str, filename: str):
+        return _load_rsbridge_runtime(rsbridge, root, model_name, filename, "f32")
+
+    release = load("sm72e25", "sm72e25/weights.f32.bin")
+    instant = load("sm57", "sm57/weights.f32.bin")
+    paired = load("sm72e25+sm57", "sm72e25/weights.f32.bin")
+    assert paired.is_paired() and not release.is_paired() and not instant.is_paired()
+    assert paired.has_answer_time_head() and release.has_answer_time_head()
+    assert not instant.has_answer_time_head()
+    with pytest.raises(Exception, match="path and a name"):
+        rsbridge.RwkvInference(
+            str(root / "qt/aqt/rwkv_inference/sm72e25/weights.f32.bin"),
+            0.9,
+            36500,
+            model="sm72e25",
+            instant_model="sm57",
+        )
+
+    def args(review: dict[str, int], is_query: bool) -> tuple[object, ...]:
+        return (
+            *_rwkv_review_args(
+                review,
+                is_query=is_query,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
+
+    reviews = [args(review, False) for review in _RWKV_REVIEWS[:3]]
+    query = args(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200), True)
+    for runtime in (release, instant, paired):
+        runtime.warm_up_reviews(reviews, False)
+    paired_r = paired.predict_retrievability_many_from_warm_up([query])
+    assert paired_r == instant.predict_retrievability_many_from_warm_up([query])
+    assert paired_r != release.predict_retrievability_many_from_warm_up([query])
+    # Snapshots and caches never cross between paired and single runtimes.
+    with pytest.raises(Exception):
+        release.restore_cache_state(paired.cache_state())
+    with pytest.raises(Exception):
+        paired.restore_cache_state(release.cache_state())
