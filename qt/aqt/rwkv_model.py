@@ -3,6 +3,7 @@
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 RWKV_MODELS = (
     "legacy",
@@ -16,6 +17,12 @@ RWKV_MODELS = (
     "sm92",
 )
 RWKV_MODEL_KEY = "rwkvModel"
+# The instant-only small model (SM57): trained from the release (sm72e25) with
+# the curve loss off. It is never a profile's model choice: it serves
+# RWKV-Instant only, see runtime_models().
+RWKV_INSTANT_MODEL = "sm57"
+RWKV_INSTANT_MODEL_RELEASES = ("sm72e25",)
+RWKV_SPECIALIZED_INSTANT_MODEL_KEY = "rwkvSpecializedInstantModel"
 RWKV_MODEL_FILES = {
     "legacy": Path("RWKV_trained_on_5000_10000.bin"),
     "sm40": Path("sm40v2/weights.f32.bin"),
@@ -26,6 +33,7 @@ RWKV_MODEL_FILES = {
     "sm72e20": Path("sm72e20/weights.f32.bin"),
     "sm72e25": Path("sm72e25/weights.f32.bin"),
     "sm92": Path("sm92/weights.f32.bin"),
+    RWKV_INSTANT_MODEL: Path("sm57/weights.f32.bin"),
 }
 
 
@@ -33,3 +41,59 @@ def model_for_profile(profile: Mapping[str, object] | None) -> str:
     # Profiles without an explicit choice use the leak-free small model.
     value = profile.get(RWKV_MODEL_KEY) if profile else None
     return value if isinstance(value, str) and value in RWKV_MODELS else "sm72e25"
+
+
+def specialized_instant_model_for_profile(profile: Mapping[str, object] | None) -> bool:
+    # Off by default: with both schedulers, one shared model state.
+    value = profile.get(RWKV_SPECIALIZED_INSTANT_MODEL_KEY) if profile else None
+    return value is True
+
+
+class RwkvRuntimeModels(NamedTuple):
+    """The models the native runtime loads for one profile.
+
+    `model` is the runtime's main model. `instant_model`, when set, runs
+    beside it and provides instant recall and button probabilities, while
+    `model` keeps the curve, intervals, S90 and the answer-time head.
+    """
+
+    model: str
+    instant_model: str | None = None
+
+    @property
+    def curve_model(self) -> str | None:
+        """The model whose state serves RWKV-Curve, or None without a curve."""
+        return None if self.model == RWKV_INSTANT_MODEL else self.model
+
+    @property
+    def instant_scheduler_model(self) -> str:
+        """The model whose state serves RWKV-Instant."""
+        return self.instant_model or self.model
+
+
+def runtime_models(
+    model: str,
+    *,
+    instant_used: bool,
+    curve_used: bool,
+    specialized_instant_model: bool,
+) -> RwkvRuntimeModels:
+    """Pick the runtime models for a profile model and the schedulers in use.
+
+    Only the release (sm72e25) has an instant-only sibling; every other
+    choice (SM92, Legacy, older small models) serves both schedulers alone.
+    With the release:
+      - RWKV-Instant and no RWKV-Curve: the instant-only model alone. Its
+        curve head is untrained, so the runtime gives no curve output, no
+        intervals, no S90 and no answer time.
+      - both: the release alone by default; with the profile toggle, the
+        instant-only model runs beside it (two model states).
+      - RWKV-Curve only, or neither: the release alone.
+    """
+    if model not in RWKV_INSTANT_MODEL_RELEASES or not instant_used:
+        return RwkvRuntimeModels(model)
+    if not curve_used:
+        return RwkvRuntimeModels(RWKV_INSTANT_MODEL)
+    if specialized_instant_model:
+        return RwkvRuntimeModels(model, RWKV_INSTANT_MODEL)
+    return RwkvRuntimeModels(model)

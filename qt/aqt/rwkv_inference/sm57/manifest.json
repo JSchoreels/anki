@@ -1,0 +1,851 @@
+{
+ "label": "sm57-inst-dec1ep32k",
+ "created": "2026-11-07 10:45:01",
+ "checkpoint": {
+  "path": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
+  "bytes": 1489805,
+  "sha256": "09331f227ea4ae44475786211bf7aa2168d0bfc8359a9f77138103836c8273be"
+ },
+ "parameters": 331511,
+ "architecture": {
+  "format": "anki-rwkv small-model export",
+  "spec_version": 1,
+  "architecture": "w64",
+  "d_model": 64,
+  "card_features": 92,
+  "features_fc_dim": 128,
+  "head_fc_dim": 128,
+  "curve_head": "power_mixture",
+  "num_curves": 3,
+  "num_points": 128,
+  "ahead_residual": false,
+  "zero_features": [
+   22
+  ],
+  "layer_schedule": "interleaved",
+  "layer_steps": [
+   [
+    0,
+    0
+   ],
+   [
+    1,
+    0
+   ],
+   [
+    2,
+    0
+   ],
+   [
+    3,
+    0
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    0,
+    1
+   ],
+   [
+    1,
+    1
+   ],
+   [
+    3,
+    1
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    4,
+    2
+   ],
+   [
+    1,
+    3
+   ]
+  ],
+  "streams": [
+   {
+    "name": "card_id",
+    "n_layers": 2,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "deck_id",
+    "n_layers": 4,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "note_id",
+    "n_layers": 1,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "preset_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "user_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   }
+  ],
+  "constants": {
+   "layer_norm_eps": 1e-05,
+   "group_norm_eps": 0.00064,
+   "normalize_eps": 1e-12,
+   "softplus_threshold": 20.0,
+   "prob_clamp": 1e-05,
+   "s_point_spread": 18.5,
+   "s_max": 22.0,
+   "s_min": 0.1,
+   "curve_base": 0.9,
+   "point_spread": 18.5,
+   "max_e": 21.0,
+   "point_min": 0.5,
+   "power_clamp": 25.0,
+   "power_s_eps": 1e-07,
+   "min_elapsed_seconds": 1.0
+  },
+  "inputs": {
+   "streams_order": [
+    "card_id",
+    "deck_id",
+    "note_id",
+    "preset_id",
+    "user_id"
+   ],
+   "features": "92 card features of rwkv.prepare_batch / rwkv.data_processing (the same input layout and normalization the fork's 2.76M model uses: rslib/src/rwkv/mod.rs CARD_FEATURES)",
+   "label_elapsed_seconds": "curve query time in seconds (labels[..., 0])"
+  },
+  "outputs": {
+   "p_curve": "recall probability at the queried elapsed time (ahead / curve head)",
+   "p_imm": "1 - P(again) of the 4-rating head (instant head), clamped to [1e-5, 1 - 1e-5]",
+   "p_rating": "softmax over again/hard/good/easy"
+  }
+ },
+ "training": {
+  "checkpoint_folder_result": {
+   "model": "rwkv-small",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour"
+    },
+    "chunk_reviews": 32768,
+    "state_carry": {
+     "lanes": "strided"
+    },
+    "training_seed": 2025,
+    "optimizer": "muon-iter53",
+    "curve_loss_weight": 0.0
+   },
+   "config": {
+    "MODEL": "rwkv-small",
+    "DTYPE": "bfloat16",
+    "WKV_BACKEND": "nvrtc",
+    "SEED": 2025,
+    "BATCH_CHUNKS": 1,
+    "CHUNK_REVIEWS": 32768,
+    "PREFETCH_WORKERS": 5,
+    "PREFETCH_BATCHES": 10,
+    "CPU_THREADS": 4,
+    "EPOCHS": 1,
+    "DATA_PATH": "<workspace>/anki-rwkv/data/anki-revlogs-10k-original-20261011",
+    "DATASET_REVISION": "75299740cff05894ef42d7ad990666691efdd2da",
+    "GPU_MEMORY_FRACTION": 0.8,
+    "PEAK_LR": 0.0007,
+    "WARMUP_STEPS": 5
+   },
+   "torch": "2.9.1+cu128",
+   "cuda": "12.8",
+   "gpu": "NVIDIA GeForce RTX 5080",
+   "training_dropout": "enabled",
+   "device_used_at_start_mib": 1290.75,
+   "master_dtype": "float32",
+   "float32_matmul_precision": "highest",
+   "cuda_matmul_allow_tf32": false,
+   "rss_sampling": "process tree at user transitions; sampled maximum, not continuous peak",
+   "provenance": {
+    "captured_utc": "2026-11-06T04:37:25.727383+00:00",
+    "git_commit": "6a49c1c8e970292e466188d7aae9a8bb20290f0f",
+    "git_dirty": true,
+    "git_status_porcelain_z": " M artifacts/small-model/sm57/gpu/check.out\u0000",
+    "source_tree_sha256": "670385975f6d7944e50af7efabe9adc6e899a8654b46df1123e180d3c1868318",
+    "source_archive": "artifacts/sources/experiment-sources/670385975f6d7944e50af7efabe9adc6e899a8654b46df1123e180d3c1868318/source.zip",
+    "source_paths": [
+     "rwkv",
+     "rwkv-small",
+     "scripts",
+     "configs",
+     "pyproject.toml",
+     "uv.lock",
+     "justfile",
+     "upstream.json"
+    ]
+   },
+   "status": "complete",
+   "smoke_only": false,
+   "implementation_sha256": "34a4af357daedad7cda4ffb62589a5a7675c8053adbf47b9b0dbcf051092ac97",
+   "started_utc": "2026-11-06T04:37:26.676740+00:00",
+   "training_users": 8000,
+   "evaluation_users": 0,
+   "progress_users": 8000,
+   "updates": 22078,
+   "review_presentations": 581942724,
+   "training_curve_labels": 505739554,
+   "training_instant_labels": 505739554,
+   "hierarchical_padded_positions": 7706198061,
+   "peak_process_tree_rss_mib": 7237.87109375,
+   "gpu_copy_milliseconds": 59457.7119140625,
+   "gpu_copy_overlap_training_milliseconds": 501.217041015625,
+   "initial_parameter_sha256": "b2c3e9f0aa931ea5b942faaceb71218f1209bd7eab93eed2eaf2222a9f844a1a",
+   "curve_loss_weight": 0.0,
+   "catch_up": {
+    "keys": [
+     "architecture",
+     "distillation",
+     "optimizer"
+    ],
+    "architecture": {
+     "name": "w64",
+     "parameters": 331511
+    },
+    "lr_schedule": {
+     "decay_start": 0.0,
+     "decay_end": 1.0,
+     "shape": "one_minus_sin",
+     "final": 0.0,
+     "total_reviews": 581942724
+    },
+    "optimizer": "muon-iter53",
+    "deleted_cards": "neighbour",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
+     "teacher_sha256": "ac7f0d8a96cbc086eb17307ee13c67cf8e4a68e9b3d70dd5657eaa9957d9d240",
+     "teacher_parameters": null,
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour",
+     "replay_manifest_sha256": "c81d6968ee4475fbf8bcf25167ba808dc90fb79cfd49e3511ed100aed05bfcd6",
+     "replay_teacher_precision": "float32 weights, float32 state (compress_quant fork path, state_bits 0)"
+    },
+    "state_carry": {
+     "precision": "deploy",
+     "carry": true,
+     "lanes": "strided",
+     "mode": "strided lanes (v2): update u holds window u of every lane; lane starts from zero",
+     "stats": {
+      "users": 8000,
+      "updates": 22078,
+      "streams_calls": 22078,
+      "peak_table_bytes": 682104849
+     }
+    }
+   },
+   "discarded_primer_seconds": 2.2996051001828164,
+   "model_setup_seconds": 3.1221627998165786,
+   "warmup_job_workers": 1,
+   "prestarted_worker_pids": [
+    28516,
+    33308,
+    37076,
+    40208,
+    67500
+   ],
+   "prestarted_workers": 5,
+   "pool_ready_wait_seconds": 0.00024349987506866455,
+   "pool_prestart_seconds": 2.348507300019264,
+   "host_placement": {
+    "mode": "physical",
+    "main_process_cpus": [
+     2,
+     3,
+     6,
+     7,
+     10,
+     11
+    ],
+    "worker_cpus": [
+     0,
+     4,
+     8,
+     14,
+     12
+    ],
+    "workers": 5,
+    "physical_cores": 8,
+    "main_core_scheduling_classes": [
+     6,
+     6,
+     5
+    ],
+    "restored_main_process_cpus": 16
+   },
+   "process_qos": {
+    "mode": "above_normal_unthrottled",
+    "processes": [
+     {
+      "pid": 73404,
+      "role": "main",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 28516,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 33308,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 37076,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 40208,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 67500,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     }
+    ],
+    "timer_resolution_100ns": {
+     "coarsest": 156250,
+     "finest": 5000,
+     "current": 10000
+    }
+   },
+   "training_started_utc": "2026-11-06T04:37:31.063725+00:00",
+   "nvrtc_max_timesteps": 131072,
+   "deferred_read_depth": 2,
+   "lean_step_reset": {
+    "master_parameters": 420,
+    "child_parameters": 420
+   },
+   "bookkeeping_stride": 8,
+   "rss_sampling_skipped_processes": 0,
+   "training_elapsed_seconds": 28598.952923399862,
+   "latest_snapshot": {
+    "reason": "periodic",
+    "utc": "2026-11-06T12:07:06.318976+00:00",
+    "progress_users": 7600,
+    "folder": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/run/E89-F65e-F77a/snapshots/users-07600"
+   },
+   "training_seconds": 28615.354825200047,
+   "training_gc": {
+    "generation_0": {
+     "collections": 87354,
+     "seconds": 5.733781521907076
+    },
+    "generation_1": {
+     "collections": 7941,
+     "seconds": 2.78699269448407
+    },
+    "generation_2": {
+     "collections": 182,
+     "seconds": 16.21821269975044
+    }
+   },
+   "cold_training_seconds": 28615.354825200047,
+   "reviews_per_second": 20336.72926842457,
+   "cold_reviews_per_second": 20336.72926842457,
+   "coverage": "<8000 entries omitted>",
+   "peak_allocated_mib": 7428.205078125,
+   "peak_reserved_mib": 12840.0,
+   "allocator_stats": {
+    "num_alloc_retries": 1,
+    "num_ooms": 0,
+    "num_device_alloc": 894,
+    "num_device_free": 357
+   },
+   "trained_parameter_sha256": "c32229b54bd2d03fef6f3e29f847fdae1821ee711b154f1333c9592cf3267949",
+   "update_offset_end": 596106,
+   "case_elapsed_seconds": 28621.03180160001
+  },
+  "decay_dir": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon",
+  "decay": {
+   "created_utc": "2026-11-06T04:36:42.068265+00:00",
+   "source_run": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run",
+   "source_epoch": 25,
+   "source_case": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26/run/E89-F65e-F77a",
+   "source_update_offset_end": 574028,
+   "model": "rwkv-small",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour"
+    },
+    "chunk_reviews": 32768,
+    "state_carry": {
+     "lanes": "strided"
+    },
+    "training_seed": 2025,
+    "optimizer": "muon-iter53",
+    "curve_loss_weight": 0.0
+   },
+   "dropped_width32_options": [
+    "exact_group_norm",
+    "exact_index",
+    "native_glue",
+    "native_group_norm",
+    "native_index",
+    "native_wkv",
+    "prefetch_rows",
+    "row_tiles_exact",
+    "skip_padding_sources",
+    "wkv_tile"
+   ],
+   "fraction_of_epoch_reviews": 1.0,
+   "training_users": 8000,
+   "training_reviews": 581942738,
+   "train_users_from": "tier final (artifacts/accuracy/tiers.json)",
+   "shuffle_seed": 1,
+   "lr": "7e-4 -> 0, shape one_minus_sin, over all 581,942,738 reviews",
+   "evaluation_set": "none",
+   "evaluation_users": 0,
+   "control": "epoch-25 scores of the same users in <workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-25/run/E89-F65e-F77a/result.json",
+   "start": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26",
+   "start_master_sha256": "82c929b5ebe38b44042f55b502ce675dfcd97c485192fd0ae851b5e8bfb3b98b",
+   "architecture": "w64",
+   "sm77": "users / order / schedule from run epoch 25; start weights <workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26/run/E89-F65e-F77a",
+   "trimmed_unlabelled_tails": [
+    {
+     "user_id": 5599,
+     "from": 32782,
+     "to": 32768,
+     "dropped_reviews": 14
+    }
+   ],
+   "training_reviews_after_trims": 581942724
+  },
+  "decay_protocol_full_run": {
+   "epoch": 25,
+   "evaluate": false,
+   "init_master": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26/run/E89-F65e-F77a/master.pth",
+   "update_offset": 574028,
+   "lr_schedule": {
+    "decay_start": 0.0,
+    "decay_end": 1.0,
+    "shape": "one_minus_sin",
+    "final": 0.0
+   },
+   "benchmark_db": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/label-db",
+   "evaluation_set": "none",
+   "snapshot_users": 400,
+   "control_dir": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/control",
+   "optimizer_state": "fresh"
+  }
+ },
+ "evaluation": {
+  "scoring": "leak-free inputs (deleted cards: neighbour), normal inputs, int8 per-channel weights + int8 card/note state (w8+s8), review-weighted LogLoss, paired user bootstrap 2,000 resamples seed 0, 95% intervals",
+  "reference": "the released small model (leak-free, cool-down from epoch 25, package sm72e25)",
+  "verdict": "go",
+  "why": "instant -0.164 [-0.179, -0.152]: CI below zero and at least 0.05",
+  "validation_1500": {
+   "unit": "% of the release's LogLoss on the same users (1% of it = 1.003 points of the big model (1 leak-free epoch) on the 722 users)",
+   "users": 1487,
+   "candidate_minus_release": {
+    "curve": {
+     "new": 0.351334,
+     "ref": 0.302968,
+     "delta": 0.048366,
+     "delta_ci": [
+      0.045738,
+      0.050966
+     ],
+     "points": 15.964,
+     "points_ci": [
+      14.936,
+      17.057
+     ],
+     "users_better": 19,
+     "users_worse": 1468
+    },
+    "instant": {
+     "new": 0.279079,
+     "ref": 0.279538,
+     "delta": -0.000459,
+     "delta_ci": [
+      -0.0005,
+      -0.000423
+     ],
+     "points": -0.164,
+     "points_ci": [
+      -0.179,
+      -0.152
+     ],
+     "users_better": 1349,
+     "users_worse": 137
+    }
+   }
+  },
+  "rule_pool_722": {
+   "unit": "points = % of the big model (1 leak-free epoch) normal-input LogLoss",
+   "candidate_minus_release": {
+    "curve": {
+     "new": 0.349112,
+     "ref": 0.30003,
+     "delta": 0.049082,
+     "delta_ci": [
+      0.04546,
+      0.052991
+     ],
+     "points": 16.417,
+     "points_ci": [
+      14.959,
+      18.091
+     ],
+     "users_better": 10,
+     "users_worse": 712
+    },
+    "instant": {
+     "new": 0.276093,
+     "ref": 0.276539,
+     "delta": -0.000446,
+     "delta_ci": [
+      -0.000482,
+      -0.000408
+     ],
+     "points": -0.162,
+     "points_ci": [
+      -0.176,
+      -0.148
+     ],
+     "users_better": 646,
+     "users_worse": 75
+    }
+   }
+  },
+  "curve_head": "untrained (every curve loss term at weight 0): never use p_curve, intervals or S90 from this model"
+ },
+ "parity": {
+  "checkpoint": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
+  "users": [
+   4676,
+   1745,
+   516
+  ],
+  "dtype": "float32",
+  "variants": {
+   "fp32": {
+    "max_abs_dp_labelled": {
+     "p_curve": 3.5762786865234375e-07,
+     "p_imm": 1.9073486328125e-06,
+     "p_rating": 2.2649765014648438e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 3.62,
+      "numpy_seconds": 2.73,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 4.76837158203125e-07,
+      "p_imm_all_positions": 4.76837158203125e-07,
+      "p_rating": 1.043081283569336e-06,
+      "p_rating_all_positions": 1.043081283569336e-06
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 4.46,
+      "numpy_seconds": 2.84,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 1.6093254089355469e-06,
+      "p_imm_all_positions": 1.6093254089355469e-06,
+      "p_rating": 2.2649765014648438e-06,
+      "p_rating_all_positions": 2.2649765014648438e-06
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 3.53,
+      "numpy_seconds": 2.41,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 1.9073486328125e-06,
+      "p_imm_all_positions": 1.9073486328125e-06,
+      "p_rating": 1.8477439880371094e-06,
+      "p_rating_all_positions": 1.8477439880371094e-06
+     }
+    ],
+    "pass_1e-5": true
+   },
+   "w8": {
+    "max_abs_dp_labelled": {
+     "p_curve": 4.172325134277344e-07,
+     "p_imm": 1.5497207641601562e-06,
+     "p_rating": 2.086162567138672e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 3.59,
+      "numpy_seconds": 2.36,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 4.172325134277344e-07,
+      "p_imm_all_positions": 4.172325134277344e-07,
+      "p_rating": 9.834766387939453e-07,
+      "p_rating_all_positions": 9.834766387939453e-07
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 4.32,
+      "numpy_seconds": 2.47,
+      "p_curve": 4.172325134277344e-07,
+      "p_curve_all_positions": 4.172325134277344e-07,
+      "p_imm": 1.5497207641601562e-06,
+      "p_imm_all_positions": 1.5497207641601562e-06,
+      "p_rating": 2.086162567138672e-06,
+      "p_rating_all_positions": 2.086162567138672e-06
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 3.69,
+      "numpy_seconds": 2.46,
+      "p_curve": 3.5762786865234375e-07,
+      "p_curve_all_positions": 3.5762786865234375e-07,
+      "p_imm": 7.152557373046875e-07,
+      "p_imm_all_positions": 8.344650268554688e-07,
+      "p_rating": 1.1026859283447266e-06,
+      "p_rating_all_positions": 1.1324882507324219e-06
+     }
+    ],
+    "pass_1e-5": true
+   }
+  }
+ },
+ "files": {
+  "architecture.json": {
+   "bytes": 16034,
+   "sha256": "9bd41f1189dc0113277d371223ce805612aaec07101804160fe86312eed15de3"
+  },
+  "master.pth": {
+   "bytes": 1489805,
+   "sha256": "09331f227ea4ae44475786211bf7aa2168d0bfc8359a9f77138103836c8273be"
+  },
+  "parity.json": {
+   "bytes": 3165,
+   "sha256": "1b29446a182c04d45438f9978c84c102ed47be331bc31bf0edf7b6c41bc6d1f9"
+  },
+  "weights.f32.bin": {
+   "bytes": 1351553,
+   "sha256": "08448a2c178ba1af2837d905f7c7d2717221934dd40ea94a3877d90694a150f8"
+  },
+  "weights.int8.bin": {
+   "bytes": 436391,
+   "sha256": "3848d90d0fc251fa99e428411da0a4b34aaa1216f07593b717598ff98802389b"
+  }
+ },
+ "provenance": {
+  "captured_utc": "2026-11-07T09:45:04.168841+00:00",
+  "git_commit": "00072cacf32672abd0aaa32d6cd6ab689fac89fd",
+  "git_dirty": false,
+  "git_status_porcelain_z": "",
+  "source_tree_sha256": "04a6169fb5e06ba91e0008ae948384d3e9c2790c25fc470878be2a71613be407",
+  "source_archive": "artifacts/sources/experiment-sources/04a6169fb5e06ba91e0008ae948384d3e9c2790c25fc470878be2a71613be407/source.zip",
+  "source_paths": [
+   "rwkv",
+   "rwkv-small",
+   "scripts",
+   "configs",
+   "pyproject.toml",
+   "uv.lock",
+   "justfile",
+   "upstream.json"
+  ]
+ },
+ "use": {
+  "heads": [
+   "instant",
+   "rating"
+  ],
+  "rule": "instant-only model: trained with curve_loss_weight 0.0 from the release's epoch 25 (epoch 26 + the release's one-epoch 32k Muon cool-down). Its instant / rating head (p_imm, p_rating) is the product; its curve head was never trained (curve LogLoss +16.0% of the release's on 1,487 validation users) and must not schedule. In the Anki fork it runs beside the release (sm72e25), which keeps the curve, intervals, S90 and the answer-time head."
+ },
+ "inputs": {
+  "show_time_intervals": false,
+  "rule": "normal inputs (answer-to-answer intervals), as the release sm72e25; test vectors built by the sm72e25 testvectors/make_testvectors.py",
+  "leak_free": "RWKV_DELETED_CARDS=neighbour: missing-ID flags (features 13-15) always 0 (INTEGRATION.md 6.9)"
+ }
+}
