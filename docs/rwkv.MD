@@ -1421,6 +1421,145 @@ that simulator falls back to the Python loop. Optional smoothing applies a
 centered moving window to neighboring retention points. Both simulator paths
 report progress while running.
 
+### Workload Forecast (add-on API)
+
+The workload forecast answers "how many reviews will I have tomorrow, the day
+after, ..." with a mean line and widening confidence bands. It is a backend
+for add-ons such as Search Stats Extended; Anki itself shows no graph for it.
+
+**Algorithm.** For the cards matched by a search, the forecast runs `paths`
+independent simulated futures of `days` days. Every path starts from the same
+resident RWKV state, the cards' real due dates and today's remaining deck
+limits, and replays the DR workload simulator's day loop: due reviews in due-day
+order (presets' own review orders are not modeled), then new cards in card-ID order, each deck capped by its preset's review
+and new limits (minus what was already done today on day 0). Grades are always
+drawn from the RWKV curve model's recall probability (release model, SM63, also
+in profiles that run the instant-only model for RWKV-Instant) with the
+historical Hard/Good/Easy mix and time per grade. The next interval comes from
+the card's own preset:
+
+- RWKV presets (RWKV-Curve, and RWKV-Instant, which is forecast with curve
+  intervals): RWKV curve intervals at the card's desired retention.
+- FSRS presets (collection FSRS on, preset not on RWKV): FSRS next states from
+  the card's memory state and parameters at its desired retention; missing
+  memory states are estimated from the SM-2 interval and ease
+  (`estimated_fsrs_states` counts them).
+- SM-2 presets: ease-factor intervals (Again 1 day, Hard x1.2, Good x ease,
+  Easy x ease x 1.3, ease -200/-150/+150 permille), without fuzz or interval
+  modifiers.
+
+A mixed collection is therefore simulated as one population: each card keeps
+its own scheduler and desired retention (the input's target retention, which
+carries Dynamic DR when it is active, else the preset's DR), every deck keeps
+its own limits, and all cards share the one RWKV learner. Paths differ only in
+their grade seed (path `i` uses `seed + i`; seed 0 reproduces the DR workload
+simulator's draws exactly, and the Rust test
+`one_path_with_seed_zero_matches_the_dr_workload_simulation` checks equality of
+review count and total cost with it). The bands are per-day quantiles over the
+paths (linear interpolation between sorted values).
+
+**Python entry points** (`aqt.rwkv_scheduler`, all return JSON-able data):
+
+- `rwkv_workload_forecast_available(mw) -> bool`: capability check. False on
+  builds without the forecast or when the RWKV backend is not running; hide the
+  graph then. Check `hasattr(aqt.rwkv_scheduler, "forecast_rwkv_workload")`
+  first for older builds.
+- `forecast_rwkv_workload(*, mw=None, search="", days=30, paths=200, seed=0,
+  state_update_interval=1, fast=False, max_interval=36500, progress=None,
+  cancel_event=None) -> dict`: blocking; run it off the UI thread. `fast=True`
+  takes RWKV intervals from the selected grade's curve alone (no grade-order
+  check over all four grades), about 1.5x faster; see Speed. `search` is
+  an Anki search (`""` = whole collection; SSE can pass `cid:1,2,3`). `days`
+  1..365, `paths` 1..2000. `progress(current_path, total_paths)` is called as
+  paths finish; setting `cancel_event` stops the run with an exception. Raises
+  `ValueError` when the RWKV state cache is not ready.
+- `start_rwkv_workload_forecast(mw, **same keyword arguments) -> progress dict`,
+  `rwkv_workload_forecast_progress(job_id) -> dict`,
+  `cancel_rwkv_workload_forecast(job_id)`: the same as a background job (one at
+  a time; starting a new one cancels the old one), for web pages that poll.
+  The progress dict is `{"job_id", "phase": "running" | "complete" | "failed" |
+  "missing", "current", "total", "done", "error", "result"}`; `result` is the
+  forecast dict once `phase` is `"complete"`.
+
+**Result** (`version` 1):
+
+```json
+{
+  "version": 1, "days": 30, "paths": 200, "seed": 0, "cards": 31537,
+  "cards_by_scheduler": {"rwkv": 30000, "fsrs": 1537},
+  "estimated_fsrs_states": 12, "elapsed_ms": 9000.0, "state_update_interval": 1,
+  "fast": false,
+  "daily": [
+    {"day": 0,
+     "due": {"mean": 0, "p1": 0, "p5": 0, "p50": 0, "p95": 0, "p99": 0},
+     "done": {...}, "new": {...}, "lapses": {...}, "seconds": {...}}
+  ],
+  "groups": [
+    {"deck_id": 1, "due_mean": [...], "done_mean": [...], "new_mean": [...]}
+  ]
+}
+```
+
+Units and meaning, per day (`day` 0 = today, then tomorrow, ...):
+
+- `due`: review cards due that day before limits, including backlog carried
+  over from earlier days (new cards excluded). Today's cards already answered
+  are not included; today's due count is today's remaining review queue.
+- `done`: review cards answered that day after deck limits.
+- `new`: new cards introduced that day.
+- `lapses`: review answers graded Again.
+- `seconds`: estimated answer time of all that day's answers (reviews and new
+  cards), from the per-grade time model.
+- `groups`: per deck (limit group), the mean over paths of due, done and new
+  per day (no bands).
+
+**What the bands cover.** Only answer randomness under the model: which cards
+the user fails or passes, and how that moves later due dates. They assume the
+user does every review the limits allow, every day, in the simulated order.
+They do not cover skipping days, doing only part of the reviews, changing
+limits, presets or retention, adding new notes, model error (the RWKV recall
+predictions being wrong for this user), or learning/relearning steps within a
+day (a day-level simulation: a lapse becomes due the next day). Day 0 is nearly
+certain (its due cards are known; only lapses and time vary), and day 1 is
+close to it; the bands widen as answers compound. Parent-deck limits, the
+new/review mix setting, easy days, burying of siblings and live fuzz are not
+modeled, and cards that are in (re)learning right now or suspended are left
+out (the same card set as the DR workload simulator).
+
+**Speed.** Cost is proportional to paths x simulated answers per path; each
+answer runs several RWKV steps (recall query, interval curves, state update),
+and answers within a path are sequential because every answer updates shared
+deck/preset/global streams. Paths run in parallel. Measured 2026-11-07 on a
+temporary copy of a 31,537-card collection (13,621 reviewed cards, 214,654
+reviews; warm-up 4.1 s) with the release model (SM63), 30 days, 20 paths,
+`RAYON_NUM_THREADS=8` on a machine busy with other jobs, due dates derived from
+the curve (a 10,535-card day-0 backlog):
+
+| mode | limit/deck | answers/path | time | answers/s |
+| --- | --- | ---: | ---: | ---: |
+| exact | 400 | 21,929 | 52.9 s | 8.3k |
+| `fast=True` | 400 | 21,930 | 35.2 s | 12.5k |
+| `state_update_interval=8` | 400 | 24,431 | 42.2 s | 11.6k |
+| exact | none | 64,038 | 167.6 s | 7.6k |
+| `fast=True` | none | 66,258 | 120.2 s | 11.0k |
+| `state_update_interval=8` | none | 68,963 | 118.5 s | 11.6k |
+
+So 200 paths of a ~700-answers/day collection take about 9 minutes exact and 6
+minutes fast on 8 busy threads: run it as a background job with progress, and
+use 50-100 paths for a quick look (p1/p99 need about 100 paths to mean much).
+With the 400 limit, `fast=True` matched the exact forecast (same seeds) to
+within 0.1% of total answers and day-7/day-14 means; with the day-0 backlog and
+no limit it gave 3.5% more answers in total and a 10% higher day-29 mean.
+`state_update_interval` > 1 updates the RWKV state only every n-th answer, so
+later recall predictions ignore the skipped answers: at 8 it was no faster than
+`fast=True` and biased (+11% answers with the limit; day-7 mean due +38% and
+day-29 -27% without), so keep it at 1. Benchmark (copied collections only):
+`ANKI_RWKV_FORECAST_BENCH_COLLECTION=<copy.anki2>
+ANKI_RWKV_FORECAST_BENCH_MODEL=qt/aqt/rwkv_inference/sm72e25/weights.f32.bin
+[ANKI_RWKV_FORECAST_BENCH_PATHS=20 ANKI_RWKV_FORECAST_BENCH_REVIEW_LIMIT=400
+ANKI_RWKV_FORECAST_BENCH_SINGLE_STEP=1]
+cargo test -p anki --release rwkv::tests::rwkv_workload_forecast_collection_benchmark -- --ignored --nocapture`.
+
 After an answer, the reviewer updates the in-memory RWKV state. With **Precompute
 next card before this card answer** enabled (the default), the next card is
 selected using the existing score map. At the configured refresh interval, the

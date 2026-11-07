@@ -836,6 +836,46 @@ def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     assert runtime.simulate_workload_from_warm_up(
         workload_inputs, *workload_settings
     ) == runtime.simulate_workload(workload_inputs, snapshot, *workload_settings)
+    # One seed-0 forecast path at 90% retention replays the DR simulation's
+    # 90% target: the same answers, review count and cost.
+    forecast_inputs = [(workload_inputs[0], None, 7, 0.9, 0, None, (), 0.9)]
+    forecast_settings = (
+        [(7, 10, 0, 0, 0)],
+        5,
+        1,
+        0,
+        9999,
+        0,
+        False,
+        36500,
+        0,
+        None,
+        1,
+        False,
+        (8.0, 8.0, 8.0, 8.0),
+        [],
+        None,
+    )
+    simulated_points = runtime.simulate_workload_from_warm_up(
+        workload_inputs, *workload_settings
+    )[2]
+    paths, days, groups, estimated = runtime.forecast_workload_from_warm_up(
+        forecast_inputs, *forecast_settings
+    )
+    assert paths == 1 and estimated == 0 and len(days) == 5
+    point_90 = next(point for point in simulated_points if point[0] == 90)
+    assert sum(day[2][0] + day[3][0] for day in days) == point_90[4]
+    assert sum(day[5][0] for day in days) == pytest.approx(point_90[3])
+    assert groups[0][0] == 7 and len(groups[0][1]) == 5
+    banded = runtime.forecast_workload_from_warm_up(
+        forecast_inputs, forecast_settings[0], 5, 9, *forecast_settings[3:]
+    )
+    assert banded[0] == 9
+    for day in banded[1]:
+        for band in day[1:]:
+            mean, p1, p5, p50, p95, p99 = band
+            assert p1 <= p5 <= p50 <= p95 <= p99
+            assert p1 <= mean <= p99
     answer_inputs = []
     for ease in (1, 2, 3, 4):
         answer_input = list(query_input)
