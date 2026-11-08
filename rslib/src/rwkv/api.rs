@@ -340,6 +340,10 @@ pub struct RwkvInstantForecastConfig {
     /// When present, run three matched paths with recall offsets -sigma, 0,
     /// +sigma.
     pub scenario_sigma: Option<f32>,
+    /// Select three approximate strata of answer outcomes using actual recall.
+    pub stratified_answers: bool,
+    /// Historical adjustment to the modeled answer-outcome dispersion.
+    pub stratified_scale: f32,
     pub report_days: bool,
     pub seed: u32,
     pub decks: Vec<Deck>,

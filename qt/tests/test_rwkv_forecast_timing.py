@@ -54,24 +54,45 @@ def test_review_timing_patterns_preserve_subsecond_review_intervals() -> None:
     ) == [(99, [(10_210, 300), (10_820, 400)])]
 
 
-def test_forecast_sigma_is_daily_prediction_residual_variability() -> None:
-    # Two days with residuals +0.3 and -0.3, and one single-answer day
-    # which cannot contribute to a daily estimate.
-    targets = {1: (98, 1), 2: (98, 1), 3: (99, 0), 4: (99, 0), 5: (97, 1)}
-    predictions = [(0, 0.7), (1, 0.7), (2, 0.3), (3, 0.3), (4, 0.0)]
-    sigma, days = rwkv_scheduler._rwkv_forecast_history_sigma(
-        targets, [1, 2, 3, 4, 5], predictions
-    ) or (None, None)
-    assert days == 2
-    assert sigma == pytest.approx(0.3 * 2**0.5)
-    assert rwkv_scheduler._rwkv_forecast_history_sigma(targets, [1], [(0, 0.5)]) is None
-
-
-def test_forecast_sigma_can_be_zero_when_daily_residuals_match() -> None:
-    targets = {1: (98, 1), 2: (98, 0), 3: (99, 1), 4: (99, 0)}
-    assert rwkv_scheduler._rwkv_forecast_history_sigma(
-        targets, [1, 2, 3, 4], [(i, 0.5) for i in range(4)]
-    ) == (0.0, 2)
+def test_forecast_calibration_compares_history_with_modeled_answer_noise() -> None:
+    targets = {1: (98, 1), 2: (98, 1), 3: (99, 0), 4: (99, 0)}
+    predictions = [(i, 0.5) for i in range(4)]
+    calibrated = rwkv_scheduler._rwkv_forecast_history_calibration(
+        targets, [1, 2, 3, 4], predictions
+    )
+    assert calibrated is not None
+    assert calibrated.days == 2
+    assert calibrated.observed_sigma == pytest.approx(0.5**0.5)
+    assert calibrated.modeled_sigma == pytest.approx(0.125**0.5)
+    assert calibrated.scale == pytest.approx((3 / 2.625) ** 0.5)
+    equal = {1: (98, 1), 2: (98, 0), 3: (99, 1), 4: (99, 0)}
+    shrunk = rwkv_scheduler._rwkv_forecast_history_calibration(
+        equal, [1, 2, 3, 4], predictions
+    )
+    assert shrunk is not None
+    assert shrunk.scale == pytest.approx((20 / 21) ** 0.5)
+    assert (
+        rwkv_scheduler._rwkv_forecast_history_calibration(equal, [1], predictions)
+        is None
+    )
+    assert (
+        rwkv_scheduler._rwkv_forecast_history_calibration(
+            equal, [1, 2, 3, 4], [(i, float(i % 2)) for i in range(4)]
+        )
+        is None
+    )
+    # Variation already explained by the model must not be counted twice.
+    outcomes = [(1, 1), (1, 0), (0, 1), (1, 0), (0, 0)]
+    matching = {
+        day * 2 + index: (day, answer)
+        for day, answers in enumerate(outcomes)
+        for index, answer in enumerate(answers)
+    }
+    matching_result = rwkv_scheduler._rwkv_forecast_history_calibration(
+        matching, list(range(10)), [(i, 0.5) for i in range(10)]
+    )
+    assert matching_result is not None
+    assert matching_result.scale == pytest.approx(1.0)
 
 
 def test_forecast_scenario_result_preserves_path_identities() -> None:
@@ -99,9 +120,14 @@ def test_forecast_scenario_result_preserves_path_identities() -> None:
     )
 
 
-def test_partial_forecast_waits_for_center_and_keeps_missing_bounds() -> None:
+@pytest.mark.parametrize(
+    "metadata", [{"scenario_sigma": 0.04}, {"scenario_kind": "stratified"}]
+)
+def test_partial_forecast_waits_for_center_and_keeps_missing_bounds(
+    metadata: dict[str, object],
+) -> None:
     partial = rwkv_scheduler._RwkvForecastPartial(
-        metadata={"days": 3, "paths": 3, "cards": 5, "scenario_sigma": 0.04},
+        metadata={"days": 3, "paths": 3, "cards": 5, **metadata},
         rows={0: {0: (5, 4, 3, 2, 1)}},
     )
     assert rwkv_scheduler._rwkv_partial_forecast_result(partial)["daily"] == []
@@ -378,6 +404,8 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
         def forecast_instant_workload(self, **kwargs: Any) -> object:
             calls.append(kwargs)
             kwargs["progress"](1, 1)
+            if "day_progress" in kwargs:
+                kwargs["day_progress"](1, 0, [1, 1, 1, 1, 1])
             band = (1.0,) * 6
             return (1, [(0, band, band, band, band, band)], [], 0)
 
@@ -488,6 +516,34 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     assert call["precompute_next_card"] is True
     assert call["min_intervening_reviews"] == 2
     assert call["min_elapsed_secs"] == 30
+    streamed: list[dict[str, object]] = []
+    stratified = rwkv_scheduler.forecast_rwkv_workload(
+        mw=SimpleNamespace(col=col),
+        days=1,
+        paths=3,
+        partial_progress=lambda metadata, *_: streamed.append(metadata),
+    )
+    assert calls[-1]["stratified_answers"] is True
+    assert calls[-1]["stratified_scale"] == 1.0
+    assert "scenario_sigma" not in calls[-1]
+    assert calls[-1]["refresh_interval"] == 5
+    assert calls[-1]["candidate_refresh_enabled"] is True
+    assert stratified["scenario_kind"] == "stratified"
+    assert stratified["scenario_calibration"] == "insufficient_history"
+    assert streamed[0]["scenario_kind"] == "stratified"
+    calibration = rwkv_scheduler._RwkvForecastCalibration(0.8, 40, 0.04, 0.05)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_forecast_calibration", lambda *_: calibration
+    )
+    stratified = rwkv_scheduler.forecast_rwkv_workload(
+        mw=SimpleNamespace(col=col),
+        days=1,
+        paths=3,
+        partial_progress=lambda metadata, *_: streamed.append(metadata),
+    )
+    assert calls[-1]["stratified_scale"] == 0.8
+    assert stratified["scenario_history_days"] == 40
+    assert streamed[-1]["scenario_history_days"] == 40
 
 
 def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
@@ -604,12 +660,61 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     for path, day, values in day_events:
         assert values == pytest.approx(shifted[4][path][day])
 
+    stratified_events: list[tuple[int, int, list[float]]] = []
+    stratified = runtime.forecast_instant_workload(
+        **{**args, "paths": 3},
+        stratified_answers=True,
+        day_progress=lambda path, day, values: stratified_events.append(
+            (path, day, values)
+        ),
+    )
+    assert len(stratified) == 5
+    assert sorted(path for path, _day, _values in stratified_events) == [0, 1, 2]
+    for path, day, values in stratified_events:
+        assert values == pytest.approx(stratified[4][path][day])
+
+    new_preset = deck_config_pb2.DeckConfig()
+    new_preset.CopyFrom(preset)
+    new_preset.config.rwkv_review_minimum_reviews_per_day = 0
+    new_preset.config.reviews_per_day = 0
+    new_preset.config.new_per_day = 10
+    new_cards = [
+        replace(
+            card,
+            due_day=0,
+            review_input=replace(
+                query,
+                identity=rwkv_scheduler.RwkvReviewIdentity(
+                    card_id=200 + index, note_id=300 + index, deck_id=1, preset_id=1
+                ),
+                card_type=0,
+                card_queue=0,
+                card_due=index,
+                reps=0,
+                current_elapsed_days=None,
+                current_elapsed_seconds=None,
+            ),
+        )
+        for index in range(10)
+    ]
+    new_only = runtime.forecast_instant_workload(
+        **{
+            **args,
+            "cards": new_cards,
+            "deck_configs": [new_preset.SerializeToString()],
+            "paths": 3,
+            "new_cards_ignore_review_limit": True,
+        },
+        stratified_answers=True,
+    )
+    assert all(path[0][2] == 10 for path in new_only[4])
+
     def cancel_day(_path: int, _day: int, _values: list[float]) -> None:
         raise InterruptedError("day stream cancelled for test")
 
     with pytest.raises(Exception, match="day stream cancelled for test"):
         runtime.forecast_instant_workload(
-            **{**args, "paths": 3}, scenario_sigma=0.3, day_progress=cancel_day
+            **{**args, "paths": 3}, stratified_answers=True, day_progress=cancel_day
         )
     assert runtime.warm_up_state(query) == initial_state
     assert runtime.cache_state() == initial_cache
@@ -640,6 +745,16 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     assert answered[4][2][0][3] == 0
     with pytest.raises(Exception, match="scenario sigma"):
         runtime.forecast_instant_workload(**args, scenario_sigma=0.3)
+    with pytest.raises(Exception, match="stratified answers"):
+        runtime.forecast_instant_workload(**args, stratified_answers=True)
+    with pytest.raises(Exception, match="stratified answers"):
+        runtime.forecast_instant_workload(
+            **{**args, "paths": 3}, scenario_sigma=0.1, stratified_answers=True
+        )
+    with pytest.raises(Exception, match="stratified answers"):
+        runtime.forecast_instant_workload(
+            **{**args, "paths": 3}, stratified_answers=True, stratified_scale=-1
+        )
 
     predictions = runtime.forecast_history_predictions([answer])
     assert len(predictions) == 1
