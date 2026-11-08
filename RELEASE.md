@@ -47,6 +47,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Keep Instant forecast queue scores faithful to RWKV.** The higher and lower answer scenarios now use the model's actual scores to decide which reviews are due, instead of shifting every queued card's score.
+
 - **Estimate Instant forecast scenarios from your history.** With three paths, the forecast now compares the normal RWKV prediction with higher and lower recall scenarios calibrated from past answers, instead of treating three random futures as a reliable distribution.
 
 - **Watch Instant forecasts develop.** The graph can display each simulated day as it finishes, including the scenario spread as its paths arrive, with progress in simulated days.
