@@ -147,13 +147,13 @@ four-rating classifier.
 
 The instant-only small model (SM57, folder `qt/aqt/rwkv_inference/sm57/`, never a
 profile's `rwkvModel` value) is the small model, leak-free, cool-down from epoch 25
-(SM63) trained one more epoch plus the same one-epoch 32k Muon cool-down with the
+(SM63) trained 5 more instant-only epochs (4 more than its first version) plus the same one-epoch 32k Muon cool-down with the
 curve loss off. It serves RWKV-Instant only: its curve head is untrained, so it
 never provides curve recall, intervals, S90 or answer times. On the 1,500 validation
-users of the 8k split (1,487 scored, unseen by both) its Instant LogLoss is 0.27908
-against 0.27954 for the small model (SM63): −0.164% [−0.179, −0.152] of the small
+users of the 8k split (1,487 scored, unseen by both) its Instant LogLoss is 0.27889
+against 0.27954 for the small model (SM63): −0.231% [−0.246, −0.218] of the small
 model's (SM63) LogLoss, lower for
-1,349 users and higher for 137.
+1,358 users and higher for 128.
 
 With the small model (SM63) selected, the runtime models follow the presets'
 schedulers, read at profile open:

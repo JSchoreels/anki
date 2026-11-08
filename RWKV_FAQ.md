@@ -167,7 +167,7 @@ the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983
 With the default small model (SM63), a profile whose presets use RWKV-Instant and
 no RWKV-Curve runs RWKV-Instant on the instant-only small model (SM57), trained
 only to predict the next answer: on 1,487 held-out users its Instant LogLoss is
-0.164% lower than the small model's (SM63) (1,349 users better, 137 worse). It has no trained
+0.231% lower than the small model's (SM63) (1,358 users better, 128 worse; the model has 4 more instant-only epochs than its first version, judged on normal inputs). It has no trained
 forgetting curve, so that profile gets no RWKV intervals, no RWKV workload
 simulation and no answer-time estimate in Card Info. When presets use both
 RWKV-Instant and RWKV-Curve, both share the small model (SM63) unless **Use specialized model for
